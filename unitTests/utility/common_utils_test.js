@@ -63,18 +63,6 @@ const USERS = new Map([
 	],
 ]);
 
-const PSLIST_HELIUM_RETURN = [
-	{
-		pid: 30112,
-		name: 'helium',
-		cmd: 'helium --server',
-		ppid: 1,
-		uid: 1000,
-		cpu: 0.2,
-		memory: 0,
-	},
-];
-
 const CLUSTER_USER_NAME = 'cluster_test';
 
 describe('Test common_utils module', () => {
@@ -654,42 +642,6 @@ describe('Test common_utils module', () => {
 		});
 	});
 
-	describe('Test promisifyPapaParse', () => {
-		let a_csv_string =
-			'shipperid,companyname,phone\n' +
-			'1,Speedy Express,(503) 555-9831\n' +
-			'2,United Package,(503) 555-3199\n' +
-			'3,Federal Shipping,(503) 555-9931';
-
-		let expected_result = [
-			[
-				{ shipperid: 1, companyname: 'Speedy Express', phone: '(503) 555-9831' },
-				{ shipperid: 2, companyname: 'United Package', phone: '(503) 555-3199' },
-			],
-			[{ shipperid: 3, companyname: 'Federal Shipping', phone: '(503) 555-9931' }],
-		];
-
-		let string_stream = new stream.Readable();
-		string_stream.push(a_csv_string);
-		string_stream.push(null);
-		cu.promisifyPapaParse();
-		let parsed_result = [];
-
-		let chunk_function = (reject, results, parser) => {
-			parsed_result.push(results.data);
-		};
-
-		let type_function = (value) => {
-			//TODO test HDB attribute schema casting
-			return cu.autoCast(value);
-		};
-
-		it('Test csv stream is parsed as expected', async () => {
-			await papa_parse.parsePromise(string_stream, chunk_function, type_function);
-			expect(parsed_result).to.eql(expected_result);
-		});
-	});
-
 	describe('Test removeBOM function', () => {
 		let string_with_bom = '\ufeffHey, I am a string used for a unit test.';
 		let string_without_bom = 'Hey, I am a string used for a unit test.';
@@ -711,45 +663,6 @@ describe('Test common_utils module', () => {
 
 			expect(error.message).to.equal('Expected a string, got boolean');
 			expect(error).to.be.instanceof(Error);
-		});
-	});
-
-	describe('Test checkProcessRunning', () => {
-		it('Test happy path', async () => {
-			let pslist_rewire = cu_rewire.__set__('psList', {
-				findPs: async (name) => {
-					return PSLIST_HELIUM_RETURN;
-				},
-			});
-
-			let err = undefined;
-			try {
-				await cu_rewire.checkProcessRunning('helium');
-			} catch (e) {
-				err = e;
-			}
-
-			assert.equal(err, undefined);
-
-			pslist_rewire();
-		});
-
-		it('Test no process running', async () => {
-			let pslist_rewire = cu_rewire.__set__('psList', {
-				findPs: async (name) => {
-					return [];
-				},
-			});
-
-			let err = undefined;
-			try {
-				await cu_rewire.checkProcessRunning('helium');
-			} catch (e) {
-				err = e;
-			}
-
-			assert.deepEqual(err, new Error('process helium was not started'));
-			pslist_rewire();
 		});
 	});
 

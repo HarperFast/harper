@@ -8,7 +8,6 @@ const net = require('net');
 const RecursiveIterator = require('recursive-iterator');
 const terms = require('./hdbTerms.ts');
 const { PACKAGE_ROOT } = require('./packageUtils.js');
-const psList = require('./psList.js');
 const papaParse = require('papaparse');
 const moment = require('moment');
 const { inspect } = require('util');
@@ -65,7 +64,6 @@ exports.getPropsFilePath = getPropsFilePath;
 exports.promisifyPapaParse = promisifyPapaParse;
 exports.removeBOM = removeBOM;
 exports.createEventPromise = createEventPromise;
-exports.checkProcessRunning = checkProcessRunning;
 exports.checkSchemaTableExist = checkSchemaTableExist;
 exports.checkSchemaExists = checkSchemaExists;
 exports.checkTableExists = checkTableExists;
@@ -620,28 +618,6 @@ function createEventPromise(eventName, eventEmitterObject, timeout_promise) {
 			resolve(msg);
 		});
 	});
-}
-
-/**
- * Verifies the named process has started before fulfilling promise.
- * @returns {Promise<void>}
- */
-async function checkProcessRunning(procName) {
-	let goOn = true;
-	let x = 0;
-	do {
-		await asyncSetTimeout(HDB_PROC_START_TIMEOUT * x++);
-
-		let instances = await psList.findPs(procName);
-
-		if (instances.length > 0) {
-			goOn = false;
-		}
-	} while (goOn && x < CHECK_PROCS_LOOP_LIMIT);
-
-	if (goOn) {
-		throw new Error(`process ${procName} was not started`);
-	}
 }
 
 /**

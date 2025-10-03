@@ -17,7 +17,6 @@ const chalk = require('chalk');
 const { packageJson } = require('../../utility/packageUtils');
 const { UpgradeObject } = require('../../upgrade/UpgradeObjects');
 const fs = require('fs-extra');
-const ps_list = require('../../utility/psList');
 
 const TEST_CURR_VERS = '3.0.0';
 const TEST_DATA_VERS = '2.9.9';

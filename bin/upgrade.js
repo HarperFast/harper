@@ -17,7 +17,6 @@ const hdbUtils = require('../utility/common_utils.js');
 const installation = require('../utility/installation.ts');
 const hdbInfoController = require('../dataLayer/hdbInfoController.js');
 const upgradePrompt = require('../upgrade/upgradePrompt.js');
-const psList = require('../utility/psList.js');
 const globalSchema = require('../utility/globalSchema.js');
 const { packageJson } = require('../utility/packageUtils.js');
 const promisify = require('util').promisify;
