@@ -139,7 +139,30 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Size/memory cost: Approximately 15KB
 - Security: No reported vulnerabilities
 - Environment interaction: None
-- Overlap: None
+- Overlap: Works alongside pkijs for certificate verification
 - Can be deferred: Yes, only loaded when OCSP verification is enabled
 - Binary compilation: No
-- Eventual removal: OCSP functionality could potentially be implemented directly if needed, replaced when Node.js adds native OCSP support, or might be replaced by something like pkijs if we add CRL support
+- Eventual removal: Could be replaced when Node.js adds native OCSP support, or replaced by pkijs if it adds OCSP support
+
+## pkijs
+
+- Need for usage: Provides CRL (Certificate Revocation List) verification and advanced certificate parsing for TLS certificate validation. Used for parsing X.509 certificates, CRLs, and performing signature verification including Ed25519/Ed448 support (via patching).
+- Size/memory cost: Approximately 350KB with asn1js dependency
+- Security: No reported vulnerabilities. Well-maintained library by PeculiarVentures (security-focused company).
+- Environment interaction: None
+- Overlap: Complements easy-ocsp for certificate verification (CRL vs OCSP)
+- Can be deferred: Yes, only loaded when certificate verification is enabled
+- Binary compilation: No
+- Transitive dependencies: Requires asn1js (also added as direct dependency for version control)
+- Eventual removal: CRL functionality could potentially be implemented directly if needed, or replaced when Node.js adds native CRL support. However, pkijs is the industry standard for X.509 certificate operations in JavaScript.
+
+## asn1js
+
+- Need for usage: Required by pkijs for ASN.1 (Abstract Syntax Notation One) parsing of certificates and CRLs. ASN.1 is the encoding standard for X.509 certificates.
+- Size/memory cost: Approximately 100KB
+- Security: No reported vulnerabilities. Maintained alongside pkijs by PeculiarVentures.
+- Environment interaction: None
+- Overlap: None (fundamental dependency for certificate parsing)
+- Can be deferred: Yes, only loaded when certificate verification is enabled (loaded with pkijs)
+- Binary compilation: No
+- Eventual removal: Required as long as we use pkijs. Could be replaced if Node.js adds native ASN.1 parsing or if we implement our own X.509 parser.
