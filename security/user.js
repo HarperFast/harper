@@ -142,6 +142,7 @@ async function alterUser(jsonMessage) {
 			cleanUser.hash = cryptoHash.encrypt(cleanUser.password);
 		}
 		cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
+		cleanUser.hash_function = configuredHashFunction;
 	}
 
 	// the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly
