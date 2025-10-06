@@ -863,7 +863,6 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 											)
 										) {
 											closed = true;
-											ws.send(encode([DISCONNECT]));
 											close(1008, `Unauthorized database subscription to ${databaseName}`);
 											return;
 										}

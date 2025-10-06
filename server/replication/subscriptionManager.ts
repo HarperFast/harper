@@ -77,9 +77,10 @@ export async function startOnMainThread(options) {
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
+		const nodes = [];
 		// if we are getting notified of system table updates, hdbNodes could be absent
 		for await (const node of databases.system.hdb_nodes?.search([]) || []) {
-			routes.push(node);
+			nodes.push(node);
 		}
 		const thisName = getThisNodeName();
 		function ensureThisNode() {
@@ -108,7 +109,8 @@ export async function startOnMainThread(options) {
 				if (replicateAll) {
 					if (route.replicates == undefined) route.replicates = true;
 				}
-				if (routes.find((node) => node.url === route.url)) continue;
+				routes.push(route);
+				if (nodes.find((node) => node.url === route.url)) continue;
 				// just tentatively add this node to the list of nodes in memory
 				onNodeUpdate(route);
 			} catch (error) {
@@ -332,7 +334,9 @@ export async function startOnMainThread(options) {
 				return;
 			}
 			existingWorkerEntry.connected = false;
-			if (connection.finished) return; // intentionally closed connection
+			if (connection.finished) {
+				return;
+			} // intentionally closed connection
 			if (!env.get(CONFIG_PARAMS.REPLICATION_FAILOVER)) {
 				// if failover is disabled, immediately return
 				return;
