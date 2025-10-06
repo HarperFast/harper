@@ -50,7 +50,6 @@ import {
 } from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
 import { getLastVersion } from 'lmdb';
-import minimist from 'minimist';
 const logger = forComponent('replication').conditional;
 
 // these are the codes we use for the different commands
@@ -77,8 +76,6 @@ export const RECEIVING_STATUS_POSITION = 5;
 export const BACK_PRESSURE_RATIO_POSITION = 6;
 export const RECEIVING_STATUS_WAITING = 0;
 export const RECEIVING_STATUS_RECEIVING = 1;
-const cli_args = minimist(process.argv);
-let leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
 
 export const tableUpdateListeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -1216,7 +1213,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 										isFirst = false;
 										if (currentSequenceId === 0) {
 											logger.info?.('Replicating all tables to', remoteNodeName);
-											let lastSequenceId = currentSequenceId;
+											let lastSequenceId = Date.now(); // we need at least a default time point in case there are no records
 											const nodeId = getThisNodeId(auditStore);
 											for (const tableName in tables) {
 												if (!tableToTableEntry(tableName)) continue; // if we aren't replicating this table, skip it
@@ -1227,62 +1224,64 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 													// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
 												})) {
 													if (closed) return;
-													if (entry.localTime >= currentSequenceId) {
-														logger.trace?.(
-															connectionId,
-															'Copying record from',
-															databaseName,
-															tableName,
-															entry.key,
-															entry.localTime
-														);
-														lastSequenceId = Math.max(entry.localTime, lastSequenceId);
-														queuedEntries = true;
-														getSharedStatus()[SENDING_TIME_POSITION] = 1;
-														const encoded = createAuditEntry(
-															entry.version,
-															table.tableId,
-															entry.key,
-															null,
-															nodeId,
-															null,
-															'put',
-															decodeWithBlobCallback(
-																() => table.primaryStore.encoder.encode(entry.value),
-																(blob) => sendBlobs(blob, entry.key)
-															),
-															entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
-															entry.residencyId,
-															null,
-															entry.expiresAt
-														);
-														await sendAuditRecord(
-															{
-																// make it look like an audit record
-																recordId: entry.key,
-																tableId: table.tableId,
-																type: 'put',
-																getValue() {
-																	return entry.value;
-																},
-																encoded,
-																version: entry.version,
-																residencyId: entry.residencyId,
-																nodeId,
-																extendedType: entry.metadataFlags,
+													logger.trace?.(
+														connectionId,
+														'Copying record from',
+														databaseName,
+														tableName,
+														entry.key,
+														entry.localTime
+													);
+													lastSequenceId = Math.max(entry.localTime ?? 1, lastSequenceId);
+													queuedEntries = true;
+													getSharedStatus()[SENDING_TIME_POSITION] = 1;
+													const encoded = createAuditEntry(
+														entry.version,
+														table.tableId,
+														entry.key,
+														null,
+														nodeId,
+														null,
+														'put',
+														decodeWithBlobCallback(
+															() => table.primaryStore.encoder.encode(entry.value),
+															(blob) => sendBlobs(blob, entry.key)
+														),
+														entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
+														entry.residencyId,
+														null,
+														entry.expiresAt
+													);
+													await sendAuditRecord(
+														{
+															// make it look like an audit record
+															recordId: entry.key,
+															tableId: table.tableId,
+															type: 'put',
+															getValue() {
+																return entry.value;
 															},
-															entry.localTime
-														);
-													}
+															encoded,
+															version: entry.version,
+															residencyId: entry.residencyId,
+															nodeId,
+															extendedType: entry.metadataFlags,
+														},
+														entry.localTime
+													);
 												}
 											}
-											if (queuedEntries)
-												sendAuditRecord(
-													{
-														type: 'end_txn',
-													},
-													currentSequenceId
-												);
+											if (!currentTransaction.txnTime) {
+												// if we haven't sent any records, force a txn start and end so the subscribers records a timestamp
+												currentTransaction.txnTime = lastSequenceId;
+												writeFloat64(lastSequenceId);
+											}
+											sendAuditRecord(
+												{
+													type: 'end_txn',
+												},
+												lastSequenceId
+											);
 											getSharedStatus()[SENDING_TIME_POSITION] = 0;
 											currentSequenceId = lastSequenceId;
 										}
@@ -1332,11 +1331,17 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 				getSharedStatus();
 				const eventLength = decoder.readInt();
 				if (eventLength === 9 && decoder.getUint8(decoder.position) == REMOTE_SEQUENCE_UPDATE) {
+					// this is an empty txn ending, but need to record the timestamps
 					decoder.position++;
 					lastSequenceIdReceived = sequenceIdReceived = decoder.readFloat64();
 					replicationSharedStatus[RECEIVED_VERSION_POSITION] = lastSequenceIdReceived;
 					replicationSharedStatus[RECEIVED_TIME_POSITION] = Date.now();
 					replicationSharedStatus[RECEIVING_STATUS_POSITION] = RECEIVING_STATUS_WAITING;
+					tableSubscriptionToReplicator.send({
+						type: 'end_txn',
+						localTime: lastSequenceIdReceived,
+						remoteNodeIds: receivingDataFromNodeIds,
+					});
 					logger.trace?.('received remote sequence update', lastSequenceIdReceived, databaseName);
 					break;
 				}
@@ -1702,22 +1707,14 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 				startTime = lastTxnTimes.get(nodeId);
 				logger.debug?.('Updating start time from more recent txn recorded', connectedNode.name, startTime);
 			}
-			if (!leaderUrl) {
-				// if it is not explicitly specified, choose the first available node as the server we will copy from
-				leaderUrl = server.nodes[0]?.url;
-			}
-			if (startTime === 1 && leaderUrl) {
+			if (startTime === 1) {
 				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
-				try {
-					if (new URL(leaderUrl).hostname === node.name) {
-						logger.warn?.(`Requesting full copy of database ${databaseName} from ${leaderUrl}`);
-						startTime = 0; // use this to indicate that we want to fully copy
-					} else {
-						// for all other nodes, start at right now (minus a minute for overlap)
-						startTime = Date.now() - 60000;
-					}
-				} catch (error) {
-					logger.error?.('Error parsing leader URL', leaderUrl, error);
+				if (node.isLeader) {
+					logger.warn?.(`Requesting full copy of database ${databaseName} from ${node.url}`);
+					startTime = 0; // use this to indicate that we want to fully copy
+				} else {
+					// for all other nodes, start at right now (minus a minute for overlap)
+					startTime = Date.now() - 60000;
 				}
 			}
 			logger.trace?.(connectionId, 'defining subscription request', node.name, databaseName, new Date(startTime));
@@ -1726,6 +1723,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 				replicateByDefault,
 				tables: tableSubs, // omitted or included based on flag above
 				startTime,
+				isLeader: node.isLeader,
 				endTime: node.endTime,
 			};
 		});

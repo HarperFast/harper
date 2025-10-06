@@ -31,6 +31,7 @@ export interface Server {
 interface Node {
 	name: string;
 	shard: number;
+	url: string;
 }
 export interface ServerOptions {
 	port?: number;

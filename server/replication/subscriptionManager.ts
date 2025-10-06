@@ -22,6 +22,10 @@ const { cloneDeep } = lodash;
 import env from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { X509Certificate } from 'crypto';
+import process from 'node:process';
+import minimist from 'minimist';
+const cliArgs = minimist(process.argv);
+
 type ConnectedWorkerStatus = {
 	worker: Worker | null;
 	connected?: boolean;
@@ -46,6 +50,7 @@ export let disconnectedFromNode; // this is set by thread to handle when a node 
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
 const nodeMap = new Map(); // this is a map of all nodes that are available to connect to
 const selfCatchupOfDatabase = new Map<string, number>(); // this is a map of databases that need to catch up to themselves, and the time of the last audit entry (to start from)
+const routes = [];
 export async function startOnMainThread(options) {
 	// we do all of the main management of tracking connections and subscriptions on the main thread and delegate
 	// the actual work to the worker threads
@@ -66,10 +71,9 @@ export async function startOnMainThread(options) {
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
-		const nodes = [];
 		// if we are getting notified of system table updates, hdbNodes could be absent
 		for await (const node of databases.system.hdb_nodes?.search([]) || []) {
-			nodes.push(node);
+			routes.push(node);
 		}
 		const thisName = getThisNodeName();
 		function ensureThisNode() {
@@ -98,7 +102,7 @@ export async function startOnMainThread(options) {
 				if (replicateAll) {
 					if (route.replicates == undefined) route.replicates = true;
 				}
-				if (nodes.find((node) => node.url === route.url)) continue;
+				if (routes.find((node) => node.url === route.url)) continue;
 				// just tentatively add this node to the list of nodes in memory
 				onNodeUpdate(route);
 			} catch (error) {
@@ -226,6 +230,10 @@ export async function startOnMainThread(options) {
 			if (existingEntry) {
 				worker = existingEntry.worker;
 				existingEntry.nodes = nodes;
+				if (shouldSubscribe) {
+					// already subscribed, don't need to do anything
+					return;
+				}
 			} else if (shouldSubscribe) {
 				nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
 				worker = httpWorkers[nextWorkerIndex++];
@@ -247,6 +255,12 @@ export async function startOnMainThread(options) {
 				});
 			}
 			if (shouldSubscribe) {
+				let leaderUrl: string =
+					cliArgs.HDB_LEADER_URL ?? // first see if there was a leader explicitly specified
+					process.env.HDB_LEADER_URL ??
+					routes[0]?.url ?? // if we have routes, use the first one
+					Array.from(getHDBNodeTable().primaryStore.getRange({}))[0]?.url; // try to find the first node
+				nodes[0].isLeader = !leaderUrl || nodes[0].url === leaderUrl;
 				setTimeout(() => {
 					const request = {
 						type: 'subscribe-to-node',
