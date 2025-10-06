@@ -478,7 +478,7 @@ export function makeTable(options) {
 										// if there was an onCommit callback, call that. This function can be async
 										// and if so, we want to delay the recording of the sequence id until it finished
 										// (as it can be used to indicate more associated actions, like blob transfer, are in flight)
-										const onCommitFinished = txnInProgress?.committed.then(event.onCommit) ?? event.onCommit();
+										const onCommitFinished = txnInProgress ? txnInProgress.committed.then(event.onCommit) : event.onCommit();
 										if (updateRecordedSequenceId) {
 											if (onCommitFinished?.then) onCommitFinished.then(updateRecordedSequenceId);
 											else updateRecordedSequenceId();
