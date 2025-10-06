@@ -15,7 +15,13 @@ import {
 	lastTimeInAuditStore,
 } from './replicator.ts';
 import { parentPort } from 'worker_threads';
-import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes.ts';
+import {
+	subscribeToNodeUpdates,
+	getHDBNodeTable,
+	iterateRoutes,
+	shouldReplicateToNode,
+	type Node,
+} from './knownNodes.ts';
 import * as logger from '../../utility/logging/harper_logger.js';
 import lodash from 'lodash';
 const { cloneDeep } = lodash;
@@ -263,6 +269,7 @@ export async function startOnMainThread(options) {
 				nodes[0].isLeader = !leaderUrl || nodes[0].url === leaderUrl;
 				setTimeout(() => {
 					const request = {
+						...nodes[0],
 						type: 'subscribe-to-node',
 						database: databaseName,
 						nodes,
@@ -362,7 +369,7 @@ export async function startOnMainThread(options) {
 					if (node.endTime < Date.now()) continue; // already expired
 					nodes.push(node);
 					logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
-					connectToNextWorker(node, connection.database);
+					connectToNextWorker(node, connection.database, failoverWorkerEntry.nodes[0]);
 					hasMovedNodes = true;
 				}
 				existingWorkerEntry.nodes = [existingWorkerEntry.nodes[0]]; // only keep our own subscription
@@ -412,14 +419,11 @@ export async function startOnMainThread(options) {
 			if (!failOverConnections || failOverConnections == mainWorkerEntry) continue;
 			const { worker: failOverWorker, nodes: failOverNodes, connected } = failOverConnections;
 			if (!failOverNodes) continue;
-			if (connected === false && failOverNodes[0].shard === restoredNode.shard) {
+			if (connected === false && failOverNodes[0].shard === restoredNode.shard && node.url === restoredNode.url) {
 				// if it is not connected and has extra nodes, grab them
 				for (let node of failOverNodes) {
 					connectToNextWorker(node, connection.database);
 				}
-
-				hasChanges = true;
-				mainWorkerEntry.nodes.push(failOverNodes[0]);
 			} else {
 				// remove the restored node from any other connections list of node
 				const filtered = failOverNodes.filter((node) => {
@@ -440,27 +444,22 @@ export async function startOnMainThread(options) {
 				}
 			}
 		}
-		if (hasChanges && mainWorkerEntry.worker) {
-			// if the reconnected node changed subscriptions reissue the subscriptions
-			mainWorkerEntry.worker.postMessage({
-				type: 'subscribe-to-node',
-				database: connection.database,
-				nodes: mainWorkerEntry.nodes,
-			});
-		}
 	};
-	function connectToNextWorker(node, database) {
+	function connectToNextWorker(node: Node, database: string, connectingNode = node) {
 		const httpWorkers = workers.filter((worker: any) => worker.name === 'http');
 		nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
 		const worker = httpWorkers[nextWorkerIndex++];
-		node.worker = worker;
+		// not enumerable property, we don't want this to be serialized in the postMessage
+		Object.defineProperty(node, 'worker', { value: worker, configurable: true });
 		if (worker) {
 			worker.postMessage({
+				url: connectingNode.url,
+				name: connectingNode.name,
 				type: 'subscribe-to-node',
 				database,
 				nodes: [node],
 			});
-		} else subscribeToNode({ database, nodes: [node] });
+		} else subscribeToNode({ url: connectingNode.url, name: connectingNode.name, database, nodes: [node] });
 	}
 	onMessageByType('disconnected-from-node', disconnectedFromNode);
 	onMessageByType('connected-to-node', connectedToNode);

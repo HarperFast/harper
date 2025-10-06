@@ -404,7 +404,7 @@ export function setReplicator(dbName: string, table: any, options: any) {
 		{ intermediateSource: true }
 	);
 }
-const connections = new Map();
+const connections = new Map<string, Map<string, NodeReplicationConnection>>();
 
 /**
  * Get or create a connection to the specified node
@@ -413,22 +413,25 @@ const connections = new Map();
  * @param dbName
  */
 function getSubscriptionConnection(
-	url: string,
+	subscriptionUrl: string,
+	connectingUrl: string,
 	subscription: any,
 	dbName: string,
-	node_name?: string,
+	nodeName?: string,
 	authorization?: string
 ) {
-	let dbConnections = connections.get(url);
+	const connectionKey = connectingUrl + '-' + subscriptionUrl;
+	let dbConnections = connections.get(connectionKey);
 	if (!dbConnections) {
-		connections.set(url, (dbConnections = new Map()));
+		dbConnections = new Map();
+		connections.set(connectionKey, dbConnections);
 	}
 	let connection = dbConnections.get(dbName);
 	if (connection) return connection;
 	if (subscription) {
 		dbConnections.set(
 			dbName,
-			(connection = new NodeReplicationConnection(url, subscription, dbName, node_name, authorization))
+			(connection = new NodeReplicationConnection(connectingUrl, subscription, dbName, nodeName, authorization))
 		);
 		connection.connect();
 		connection.once('finished', () => dbConnections.delete(dbName));
@@ -483,7 +486,7 @@ export async function sendOperationToNode(node, operation, options) {
  * Subscribe to a node for a database, getting the necessary connection and subscription and signaling the start of the subscription
  * @param request
  */
-export function subscribeToNode(request) {
+export function subscribeToNode(request: any) {
 	try {
 		if (isMainThread) {
 			logger.warn(
@@ -505,9 +508,10 @@ export function subscribeToNode(request) {
 		}
 		const connection = getSubscriptionConnection(
 			request.nodes[0].url,
+			request.url,
 			subscriptionToTable,
 			request.database,
-			request.nodes[0].name,
+			request.name,
 			request.nodes[0].authorization
 		);
 		if (request.nodes[0].name === undefined) {
@@ -526,7 +530,7 @@ export function subscribeToNode(request) {
 		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
 	}
 }
-export async function unsubscribeFromNode({ name, url, database }) {
+export async function unsubscribeFromNode({ name, url, nodes, database }) {
 	logger.trace(
 		'Unsubscribing from node',
 		name,
@@ -535,7 +539,8 @@ export async function unsubscribeFromNode({ name, url, database }) {
 		'nodes',
 		Array.from(getHDBNodeTable().primaryStore.getRange({}))
 	);
-	const dbConnections = connections.get(url);
+	const connectionKey = url + '-' + nodes[0].url;
+	const dbConnections = connections.get(connectionKey);
 	if (dbConnections) {
 		const connection = dbConnections.get(database);
 		if (connection) {

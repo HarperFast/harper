@@ -1646,7 +1646,11 @@ export function makeTable(options) {
 										if (precedesExisting === 0) {
 											return; // treat a tie as a duplicate and drop it
 										}
-										if (precedesExisting > 0) continue; // if the existing version is older, we can skip this update
+										if (precedesExisting > 0) {
+											// if the existing version is older, we can skip this update
+											localTime = auditRecord.previousLocalTime;
+											continue;
+										}
 									}
 									if (auditRecord.type === 'patch') {
 										// record patches so we can reply in order
