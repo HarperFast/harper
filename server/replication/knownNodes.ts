@@ -183,7 +183,7 @@ function startSubscriptionToReplications() {
 		});
 	});
 }
-type Route = {
+export type Route = {
 	url?: string;
 	subscriptions?: { database: string; schema: string; subscribe: boolean }[];
 	hostname?: string;

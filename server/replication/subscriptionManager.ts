@@ -21,6 +21,7 @@ import {
 	iterateRoutes,
 	shouldReplicateToNode,
 	type Node,
+	type Route,
 } from './knownNodes.ts';
 import * as logger from '../../utility/logging/harper_logger.js';
 import lodash from 'lodash';
@@ -28,7 +29,6 @@ const { cloneDeep } = lodash;
 import env from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { X509Certificate } from 'crypto';
-import process from 'node:process';
 import minimist from 'minimist';
 const cliArgs = minimist(process.argv);
 
@@ -56,7 +56,7 @@ export let disconnectedFromNode; // this is set by thread to handle when a node 
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
 const nodeMap = new Map(); // this is a map of all nodes that are available to connect to
 const selfCatchupOfDatabase = new Map<string, number>(); // this is a map of databases that need to catch up to themselves, and the time of the last audit entry (to start from)
-const routes = [];
+const routes: Route[] = [];
 export async function startOnMainThread(options) {
 	// we do all of the main management of tracking connections and subscriptions on the main thread and delegate
 	// the actual work to the worker threads
