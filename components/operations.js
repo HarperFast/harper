@@ -226,12 +226,19 @@ async function addComponent(req) {
 
 	log.trace(`adding component`);
 	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	const { project } = req;
+	const { project, install } = req;
+
+	const template = req.template || 'https://github.com/harperdb/application-template';
 
 	try {
 		const projectDir = path.join(cfDir, project);
 		fs.mkdirSync(projectDir, { recursive: true });
-		fs.copySync(APPLICATION_TEMPLATE, projectDir);
+		const application = new Application({
+			name: project,
+			packageIdentifier: template,
+			install,
+		});
+		await prepareApplication(application);
 		let response = await replicateOperation(req);
 		response.message = `Successfully added project: ${project}`;
 		return response;

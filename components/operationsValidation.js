@@ -188,6 +188,11 @@ function addComponentValidator(req) {
 			.custom(checkProjectExists.bind(null, false))
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		template: Joi.string().optional(),
+		install: Joi.object({
+			command: Joi.string().optional(),
+			timeout: Joi.number().optional(),
+		}).optional(),
 	});
 
 	return validator.validateBySchema(req, addFuncSchema);
