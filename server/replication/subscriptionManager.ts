@@ -151,7 +151,7 @@ export async function startOnMainThread(options) {
 						for (const [database, { worker }] of dbReplicationWorkers) {
 							dbReplicationWorkers.delete(database);
 							logger.warn('Node was deleted, unsubscribing from node', hostname, database, url);
-							worker?.postMessage({ type: 'unsubscribe-from-node', node: hostname, database, url });
+							worker?.postMessage({ type: 'unsubscribe-from-node', node: hostname, nodes, database, url });
 						}
 						break;
 					}
@@ -305,6 +305,7 @@ export async function startOnMainThread(options) {
 					database: databaseName,
 					url: node.url,
 					name: node.name,
+					nodes,
 				};
 				if (worker) {
 					worker.postMessage(request);
@@ -436,6 +437,8 @@ export async function startOnMainThread(options) {
 							node.worker.postMessage({
 								type: 'unsubscribe-to-node',
 								database: connection.database,
+								url: connection.url,
+								nodes: [node],
 							});
 							return false;
 						}

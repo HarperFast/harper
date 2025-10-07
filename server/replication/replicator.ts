@@ -530,10 +530,9 @@ export function subscribeToNode(request: any) {
 		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
 	}
 }
-export async function unsubscribeFromNode({ name, url, nodes, database }) {
+export async function unsubscribeFromNode({ url, nodes, database }) {
 	logger.trace(
 		'Unsubscribing from node',
-		name,
 		url,
 		database,
 		'nodes',
