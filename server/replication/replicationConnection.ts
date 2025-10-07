@@ -103,7 +103,7 @@ type NodeSubscription = {
 	endTime: number;
 };
 
-let replicationSecureContext: tls.SecureContext & { caCount?: number };
+let replicationSecureContext: tls.SecureContext & { caCount?: number; derivedFromContext?: tls.SecureContext };
 
 export async function createWebSocket(
 	url: string,
@@ -150,13 +150,17 @@ export async function createWebSocket(
 	};
 	if (secureContext) {
 		// check to see if our cached secure context is still valid
-		if (replicationSecureContext?.caCount !== replicationCertificateAuthorities.size) {
+		if (
+			replicationSecureContext?.caCount !== replicationCertificateAuthorities.size ||
+			replicationSecureContext?.derivedFromContext !== secureContext
+		) {
 			// create a secure context and cache by the number of replication CAs (if that changes, we need to create a new secure context)
 			replicationSecureContext = tls.createSecureContext({
 				...secureContext.options,
 				ca: [...replicationCertificateAuthorities, ...secureContext.options.availableCAs.values()], // add CA if secure context had one
 			});
 			replicationSecureContext.caCount = replicationCertificateAuthorities.size;
+			replicationSecureContext.derivedFromContext = secureContext;
 		}
 		wsOptions.secureContext = replicationSecureContext;
 	}
