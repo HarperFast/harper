@@ -539,7 +539,7 @@ export async function unsubscribeFromNode({ name, url, nodes, database }) {
 		'nodes',
 		Array.from(getHDBNodeTable().primaryStore.getRange({}))
 	);
-	const connectionKey = url + '-' + nodes[0].url;
+	const connectionKey = url + '-' + (nodes[0]?.url ?? url);
 	const dbConnections = connections.get(connectionKey);
 	if (dbConnections) {
 		const connection = dbConnections.get(database);
