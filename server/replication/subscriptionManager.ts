@@ -267,7 +267,11 @@ export async function startOnMainThread(options) {
 					cliArgs.HDB_LEADER_URL ?? // first see if there was a leader explicitly specified
 					process.env.HDB_LEADER_URL ??
 					routes[0]?.url ?? // if we have routes, use the first one
-					Array.from(getHDBNodeTable().primaryStore.getRange({}))[0]?.url; // try to find the first node
+					Array.from(
+						getHDBNodeTable()
+							.primaryStore.getRange({})
+							.filter((node) => node.name !== getThisNodeName()) // find the first node that is not this one
+					)[0]?.url; // try to find the first node
 				nodes[0].isLeader = !leaderUrl || nodes[0].url === leaderUrl;
 				setTimeout(() => {
 					const request = {

@@ -1365,8 +1365,8 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 						auditRecord.recordId
 					);
 				}
+				const id = auditRecord.recordId;
 				try {
-					const id = auditRecord.recordId;
 					decodeBlobsWithWrites(
 						() => {
 							event = {
@@ -1386,7 +1386,9 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 						(blob) => receiveBlobs(blob, id)
 					);
 				} catch (error) {
-					error.message += 'typed structures for current decoder' + JSON.stringify(tableDecoder.decoder.typedStructs);
+					error.message += ' record id: ' + id;
+					error.message += ' typed structures for current decoder' + JSON.stringify(tableDecoder.decoder.typedStructs);
+					error.message += ' structures for current decoder' + JSON.stringify(tableDecoder.decoder.structures);
 					throw error;
 				}
 				beginTxn = false;
