@@ -1,4 +1,5 @@
 import { basename, extname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import { Databases, databases, table, Tables, tables } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads';
@@ -9,6 +10,100 @@ import { Attribute } from './Table.ts';
 import { FileEntry } from '../components/EntryHandler.ts';
 
 const dataLoaderLogger = harperLogger.forComponent('dataLoader');
+
+/** System table name for storing data loader hashes */
+const DATA_LOADER_HASH_TABLE = 'hdb_dataloader_hash';
+
+/** Lazy-initialized cache for the hash tracking table */
+let _hashTrackingTable: ReturnType<typeof table>;
+
+/**
+ * Computes a deterministic hash of a record's content for tracking data file changes.
+ * The hash is computed from a stable JSON representation (sorted keys) to ensure
+ * the same content always produces the same hash, regardless of key order.
+ *
+ * @param record - The record object to hash
+ * @returns A hex string hash of the record content
+ */
+export function computeRecordHash(record: Record<string, any>): string {
+	// Sort keys for deterministic hashing
+	const sortedKeys = Object.keys(record).sort();
+	const sortedRecord: Record<string, any> = {};
+	for (const key of sortedKeys) {
+		sortedRecord[key] = record[key];
+	}
+
+	// Compute hash of the stable JSON representation
+	const content = JSON.stringify(sortedRecord);
+	return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Gets or creates the hash tracking table in the system database.
+ * Lazy-initializes the table on first access.
+ */
+function getHashTrackingTable(databasesRef: Databases) {
+	// Always check databasesRef first (important for testing with mocks)
+	if (databasesRef.system && databasesRef.system[DATA_LOADER_HASH_TABLE]) {
+		return databasesRef.system[DATA_LOADER_HASH_TABLE];
+	}
+
+	// Use cached table if available
+	if (_hashTrackingTable) {
+		return _hashTrackingTable;
+	}
+
+	// Create the system table for tracking hashes
+	_hashTrackingTable = table({
+		database: 'system',
+		table: DATA_LOADER_HASH_TABLE,
+		attributes: [
+			{ name: 'id', type: 'string', isPrimaryKey: true }, // Format: "database:table:recordId"
+			{ name: 'hash', type: 'string' },
+		],
+	});
+
+	return _hashTrackingTable;
+}
+
+/**
+ * Gets the stored hash for a record from the tracking table
+ */
+async function getStoredHash(
+	database: string | undefined,
+	tableName: string,
+	recordId: string,
+	databasesRef: Databases
+): Promise<string | null> {
+	try {
+		const trackingTable = getHashTrackingTable(databasesRef);
+		const hashId = database ? `${database}:${tableName}:${recordId}` : `${tableName}:${recordId}`;
+		const hashRecord = await trackingTable.get(hashId);
+		return hashRecord?.hash || null;
+	} catch (error) {
+		dataLoaderLogger.error?.(`Failed to get stored hash: ${error.message}`);
+		return null;
+	}
+}
+
+/**
+ * Stores the hash for a record in the tracking table
+ */
+async function storeHash(
+	database: string | undefined,
+	tableName: string,
+	recordId: string,
+	hash: string,
+	databasesRef: Databases
+): Promise<void> {
+	try {
+		const trackingTable = getHashTrackingTable(databasesRef);
+		const hashId = database ? `${database}:${tableName}:${recordId}` : `${tableName}:${recordId}`;
+		await trackingTable.put({ id: hashId, hash });
+	} catch (error) {
+		dataLoaderLogger.error?.(`Failed to store hash: ${error.message}`);
+	}
+}
 
 /**
  * Set up file handlers for data files and loads them into the appropriate tables
@@ -60,9 +155,6 @@ export async function loadDataFile(
 		} else {
 			throw new UnsupportedFileExtensionError(absolutePath, fileExt);
 		}
-
-		// Get the last modified time from the file
-		data.mtime = stats.mtimeMs;
 	} catch (error) {
 		// Re-throw DataLoaderErrors
 		if (error instanceof DataLoaderError) {
@@ -169,22 +261,61 @@ export async function loadDataFile(
 							existingRecord = await tableRef.get(recordId);
 						}
 
+						// Compute hash of the new record from the data file
+						const newRecordHash = computeRecordHash(newRecord);
+
 						if (!existingRecord) {
 							// If the record doesn't exist yet, insert it
 							newRecords++;
-							return tableRef.put(newRecord);
+							const result = await tableRef.put(newRecord);
+							// Store the hash in the tracking table
+							await storeHash(database, tableName, recordId, newRecordHash, databasesRef);
+							return result;
 						}
 
-						// Check timestamps to see if we should update
-						const existingTimestamp = existingRecord.getUpdatedTime();
-						const updateRecord = data.mtime > existingTimestamp;
+						// Check if there's a stored hash for this record
+						const existingHash = await getStoredHash(database, tableName, recordId, databasesRef);
 
-						if (updateRecord) {
-							// New record is newer, update it
+						if (!existingHash) {
+							// No hash means this record wasn't loaded by the data loader
+							// (likely created via operations API or other means)
+							// Don't overwrite user-created records
+							skippedRecords++;
+							return Promise.resolve({ inserted: 0, updated: 0 });
+						}
+
+						// Compute hash of only the fields that exist in the data file
+						// This allows users to add extra fields without triggering a "modified" detection
+						// Note: This is a simple top-level field comparison - nested object changes
+						// within data file fields will still be detected as modifications
+						const existingRecordSubset: Record<string, any> = {};
+						for (const key of Object.keys(newRecord)) {
+							if (key in existingRecord) {
+								existingRecordSubset[key] = existingRecord[key];
+							}
+						}
+						const existingRecordHash = computeRecordHash(existingRecordSubset);
+
+						if (existingRecordHash !== existingHash) {
+							// The existing record's data file fields don't match the stored hash,
+							// meaning those fields were modified externally (via operations API, etc.)
+							// Don't overwrite user-modified records
+							skippedRecords++;
+							return Promise.resolve({ inserted: 0, updated: 0 });
+						}
+
+						// Compare hashes to detect actual content changes in the data file
+						if (newRecordHash !== existingHash) {
+							// Hash differs - the data file content has changed
+							// Use patch to update only the fields from the data file,
+							// preserving any additional fields the user may have added
 							updatedRecords++;
-							return tableRef.put(newRecord);
+							await tableRef.patch(recordId, newRecord);
+							await storeHash(database, tableName, recordId, newRecordHash, databasesRef);
+							// Return a result indicating update (patch doesn't return a value)
+							return { updated: 1 };
 						} else {
-							// Existing record is newer or same age, skip
+							// Hash matches - content hasn't changed, skip update
 							skippedRecords++;
 							return Promise.resolve({ inserted: 0, updated: 0 });
 						}
@@ -338,7 +469,6 @@ export interface DataFileFormat {
 	database?: string; // Optional database name
 	table: string; // Required table name
 	records: Record<string, any>[]; // Array of records to load
-	mtime: number; // Last modified time
 }
 
 // Define the class for data loader results

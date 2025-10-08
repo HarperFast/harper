@@ -11,6 +11,7 @@ const loggerStub = {
 	info: sinon.stub(),
 	error: sinon.stub(),
 	debug: sinon.stub(),
+	trace: sinon.stub(),
 };
 const forComponentStub = sinon.stub(harperLogger, 'forComponent').returns(loggerStub);
 
@@ -27,6 +28,7 @@ const {
 	DataLoaderResult,
 	loadDataFile,
 	handleApplication,
+	computeRecordHash,
 } = require('../../resources/dataLoader.ts');
 
 // Restore the forComponent stub immediately after import to prevent it from affecting other modules
@@ -331,11 +333,35 @@ records:
 			assert.ok(result.message.includes('No records to process'));
 		});
 
-		it('should skip records with newer timestamps', async function () {
-			// Create mock records with future timestamps
-			const futureTime = Date.now() + 10000;
-			const existingRecord1 = createMockRecord({ id: 1, name: 'Existing 1', _updatedTime: futureTime });
-			const existingRecord2 = createMockRecord({ id: 2, name: 'Existing 2', _updatedTime: futureTime });
+		it('should skip records with matching hash (no content changes)', async function () {
+			// Create the hash that would be generated for the records in jsonDataFile
+			// jsonDataFile has: { id: 1, name: 'JSON Item 1', value: 300 } and { id: 2, name: 'JSON Item 2', value: 400 }
+			const hash1 = computeRecordHash({ id: 1, name: 'JSON Item 1', value: 300 });
+			const hash2 = computeRecordHash({ id: 2, name: 'JSON Item 2', value: 400 });
+
+			const existingRecord1 = createMockRecord({
+				id: 1,
+				name: 'JSON Item 1',
+				value: 300,
+			});
+			const existingRecord2 = createMockRecord({
+				id: 2,
+				name: 'JSON Item 2',
+				value: 400,
+			});
+
+			// Create mock hash tracking table with matching hashes
+			const mockHashTable = {
+				get: sinon.stub().callsFake((id) => {
+					if (id === 'dev:test_table_json:1') {
+						return Promise.resolve({ id: 'dev:test_table_json:1', hash: hash1 });
+					} else if (id === 'dev:test_table_json:2') {
+						return Promise.resolve({ id: 'dev:test_table_json:2', hash: hash2 });
+					}
+					return Promise.resolve(null);
+				}),
+				put: sinon.stub().resolves(),
+			};
 
 			// Create mock table
 			const mockTable = {
@@ -343,39 +369,65 @@ records:
 				put: sinon.stub().resolves({ inserted: 1 }),
 			};
 
+			// Mock the system database with hash tracking table
+			mockDatabases.system = {
+				hdb_dataloader_hash: mockHashTable,
+			};
 			mockDatabases.dev = {
 				test_table_json: mockTable,
 			};
 
-			// Mock stat to return old file mtime
-			const fs = require('node:fs/promises');
-			const statStub = sinon.stub(fs, 'stat');
-			statStub.resolves({ mtimeMs: Date.now() - 10000 });
+			const result = await loadDataFile(await createFileEntry(jsonDataFile), mockTables, mockDatabases);
 
-			try {
-				const result = await loadDataFile(await createFileEntry(jsonDataFile), mockTables, mockDatabases);
-
-				assert.ok(result instanceof DataLoaderResult);
-				assert.equal(result.status, 'skipped');
-				assert.ok(result.message.includes('already up-to-date'));
-				assert.equal(mockTable.put.callCount, 0);
-			} finally {
-				statStub.restore();
-			}
+			assert.ok(result instanceof DataLoaderResult);
+			assert.equal(result.status, 'skipped');
+			assert.ok(result.message.includes('already up-to-date'));
+			assert.equal(mockTable.put.callCount, 0);
+			// Verify hash table was queried for both records
+			assert.equal(mockHashTable.get.callCount, 2);
 		});
 
-		it('should update records with older timestamps', async function () {
-			// Create mock records with past timestamps
-			const pastTime = Date.now() - 10000;
-			const existingRecord1 = createMockRecord({ id: 1, name: 'Old 1', _updatedTime: pastTime });
-			const existingRecord2 = createMockRecord({ id: 2, name: 'Old 2', _updatedTime: pastTime });
+		it('should update records with different hash (content changed)', async function () {
+			// Create records with different hashes (representing old content)
+			// Old hashes for different content
+			const oldHash1 = computeRecordHash({ id: 1, name: 'Old Name 1', value: 100 });
+			const oldHash2 = computeRecordHash({ id: 2, name: 'Old Name 2', value: 200 });
+
+			const existingRecord1 = createMockRecord({
+				id: 1,
+				name: 'Old Name 1',
+				value: 100,
+			});
+			const existingRecord2 = createMockRecord({
+				id: 2,
+				name: 'Old Name 2',
+				value: 200,
+			});
+
+			// Create mock hash tracking table with database:table:id format
+			const mockHashTable = {
+				get: sinon.stub().callsFake((id) => {
+					if (id === 'dev:test_table_json:1') {
+						return Promise.resolve({ id: 'dev:test_table_json:1', hash: oldHash1 });
+					} else if (id === 'dev:test_table_json:2') {
+						return Promise.resolve({ id: 'dev:test_table_json:2', hash: oldHash2 });
+					}
+					return Promise.resolve(null);
+				}),
+				put: sinon.stub().resolves(),
+			};
 
 			// Create mock table
 			const mockTable = {
 				get: sinon.stub().onCall(0).resolves(existingRecord1).onCall(1).resolves(existingRecord2),
 				put: sinon.stub().resolves({ updated: 1 }),
+				patch: sinon.stub().resolves(),
 			};
 
+			// Mock the system database with hash tracking table
+			mockDatabases.system = {
+				hdb_dataloader_hash: mockHashTable,
+			};
 			mockDatabases.dev = {
 				test_table_json: mockTable,
 			};
@@ -386,7 +438,8 @@ records:
 			assert.equal(result.status, 'success');
 			assert.equal(result.count, 2);
 			assert.ok(result.message.includes('updated 2 records'));
-			assert.equal(mockTable.put.callCount, 2);
+			// Should use patch instead of put for updates
+			assert.equal(mockTable.patch.callCount, 2);
 		});
 
 		it('should handle mixed new, updated, and skipped records', async function () {
@@ -403,10 +456,31 @@ records:
 				})
 			);
 
-			const pastTime = Date.now() - 10000;
-			const futureTime = Date.now() + 10000;
-			const existingRecord2 = createMockRecord({ id: 2, name: 'Old', _updatedTime: pastTime });
-			const existingRecord3 = createMockRecord({ id: 3, name: 'Current', _updatedTime: futureTime });
+			// Record 2 has old hash (will be updated)
+			// The stored hash should be for the fields that were originally in the data file
+			const oldHash2 = computeRecordHash({ id: 2, name: 'Old Name' });
+			const existingRecord2 = createMockRecord({
+				id: 2,
+				name: 'Old Name',
+				extraField: 'user added this', // User added extra field
+			});
+
+			// Record 3 has matching hash (will be skipped)
+			const hash3 = computeRecordHash({ id: 3, name: 'To Skip' });
+			const existingRecord3 = createMockRecord({ id: 3, name: 'To Skip' });
+
+			// Create mock hash tracking table
+			const mockHashTable = {
+				get: sinon.stub().callsFake((id) => {
+					if (id === 'mixed_table:2') {
+						return Promise.resolve({ id: 'mixed_table:2', hash: oldHash2 });
+					} else if (id === 'mixed_table:3') {
+						return Promise.resolve({ id: 'mixed_table:3', hash: hash3 });
+					}
+					return Promise.resolve(null);
+				}),
+				put: sinon.stub().resolves(),
+			};
 
 			// Create mock table
 			const mockTable = {
@@ -419,8 +493,13 @@ records:
 					.onCall(2)
 					.resolves(existingRecord3),
 				put: sinon.stub().resolves({ inserted: 1 }),
+				patch: sinon.stub().resolves(),
 			};
 
+			// Mock the system database with hash tracking table
+			mockDatabases.system = {
+				hdb_dataloader_hash: mockHashTable,
+			};
 			mockTables.mixed_table = mockTable;
 
 			const result = await loadDataFile(await createFileEntry(mixedFile), mockTables, mockDatabases);
@@ -430,7 +509,177 @@ records:
 			assert.equal(result.count, 2); // 1 new + 1 updated
 			assert.ok(result.message.includes('Loaded 1 new and updated 1 records'));
 			assert.ok(result.message.includes('(1 records skipped)'));
-			assert.equal(mockTable.put.callCount, 2);
+			// 1 put for new record, 1 patch for updated record
+			assert.equal(mockTable.put.callCount, 1);
+			assert.equal(mockTable.patch.callCount, 1);
+		});
+
+		it('should skip records without hash (user-created via operations API)', async function () {
+			// Simulate records that were created via operations API
+			// These won't have a hash in the system table
+			const userRecord1 = createMockRecord({ id: 1, name: 'User Created', value: 999 });
+			const userRecord2 = createMockRecord({ id: 2, name: 'User Modified', value: 888 });
+
+			// Create mock table
+			const mockTable = {
+				get: sinon.stub().onCall(0).resolves(userRecord1).onCall(1).resolves(userRecord2),
+				put: sinon.stub().resolves({ inserted: 1 }),
+			};
+
+			mockDatabases.dev = {
+				test_table_json: mockTable,
+			};
+
+			const result = await loadDataFile(await createFileEntry(jsonDataFile), mockTables, mockDatabases);
+
+			assert.ok(result instanceof DataLoaderResult);
+			assert.equal(result.status, 'skipped');
+			assert.ok(result.message.includes('already up-to-date'));
+			// Should not call put since records don't have hash (user-created)
+			assert.equal(mockTable.put.callCount, 0);
+		});
+
+		it('should skip records modified by user after data loader created them', async function () {
+			// Simulate records that were originally loaded by data loader,
+			// but then modified by user via operations API
+			// Original hashes when data loader first loaded them
+			const originalHash1 = computeRecordHash({ id: 1, name: 'JSON Item 1', value: 300 });
+			const originalHash2 = computeRecordHash({ id: 2, name: 'JSON Item 2', value: 400 });
+
+			// Current records - user has modified them
+			const modifiedRecord1 = createMockRecord({
+				id: 1,
+				name: 'User Modified Name',
+				value: 9999,
+			});
+			const modifiedRecord2 = createMockRecord({
+				id: 2,
+				name: 'Another User Change',
+				value: 8888,
+			});
+
+			// Create mock hash tracking table with original hashes
+			const mockHashTable = {
+				get: sinon.stub().callsFake((id) => {
+					if (id === 'dev:test_table_json:1') {
+						return Promise.resolve({ id: 'dev:test_table_json:1', hash: originalHash1 });
+					} else if (id === 'dev:test_table_json:2') {
+						return Promise.resolve({ id: 'dev:test_table_json:2', hash: originalHash2 });
+					}
+					return Promise.resolve(null);
+				}),
+				put: sinon.stub().resolves(),
+			};
+
+			// Create mock table returning the modified records
+			const mockTable = {
+				get: sinon.stub().onCall(0).resolves(modifiedRecord1).onCall(1).resolves(modifiedRecord2),
+				put: sinon.stub().resolves({ updated: 1 }),
+			};
+
+			// Mock the system database with hash tracking table
+			mockDatabases.system = {
+				hdb_dataloader_hash: mockHashTable,
+			};
+			mockDatabases.dev = {
+				test_table_json: mockTable,
+			};
+
+			const result = await loadDataFile(await createFileEntry(jsonDataFile), mockTables, mockDatabases);
+
+			assert.ok(result instanceof DataLoaderResult);
+			assert.equal(result.status, 'skipped');
+			assert.ok(result.message.includes('already up-to-date'));
+			// Should not call put - user modifications should be preserved
+			assert.equal(mockTable.put.callCount, 0);
+			// Verify hash table was queried
+			assert.equal(mockHashTable.get.callCount, 2);
+		});
+
+		it('should update records when user added extra fields but did not modify original fields', async function () {
+			// Simulate records where user added extra fields but didn't modify the original fields from the data file
+			// Original hashes when data loader first loaded them (only id, name, value)
+			const originalHash1 = computeRecordHash({ id: 1, name: 'JSON Item 1', value: 300 });
+			const originalHash2 = computeRecordHash({ id: 2, name: 'JSON Item 2', value: 400 });
+
+			// Current records - user has added extra fields but NOT modified original fields
+			const recordWithExtraFields1 = createMockRecord({
+				id: 1,
+				name: 'JSON Item 1', // Same as original
+				value: 300, // Same as original
+				customField: 'User added this', // Extra field
+				anotherField: 999, // Extra field
+			});
+			const recordWithExtraFields2 = createMockRecord({
+				id: 2,
+				name: 'JSON Item 2', // Same as original
+				value: 400, // Same as original
+				userMetadata: { added: true }, // Extra field
+			});
+
+			// Now the data file has changed (new values for original fields)
+			const newHash1 = computeRecordHash({ id: 1, name: 'JSON Item 1', value: 350 }); // value changed to 350
+			const newHash2 = computeRecordHash({ id: 2, name: 'JSON Item 2', value: 450 }); // value changed to 450
+
+			// Update the jsonDataFile content
+			const updatedJsonFile = join(tempDir, 'updated-with-extra-fields.json');
+			await writeFile(
+				updatedJsonFile,
+				JSON.stringify({
+					database: 'dev',
+					table: 'test_table_json',
+					records: [
+						{ id: 1, name: 'JSON Item 1', value: 350 },
+						{ id: 2, name: 'JSON Item 2', value: 450 },
+					],
+				})
+			);
+
+			// Create mock hash tracking table with original hashes
+			const mockHashTable = {
+				get: sinon.stub().callsFake((id) => {
+					if (id === 'dev:test_table_json:1') {
+						return Promise.resolve({ id: 'dev:test_table_json:1', hash: originalHash1 });
+					} else if (id === 'dev:test_table_json:2') {
+						return Promise.resolve({ id: 'dev:test_table_json:2', hash: originalHash2 });
+					}
+					return Promise.resolve(null);
+				}),
+				put: sinon.stub().resolves(),
+			};
+
+			// Create mock table returning the records with extra fields
+			const mockTable = {
+				get: sinon
+					.stub()
+					.onCall(0)
+					.resolves(recordWithExtraFields1)
+					.onCall(1)
+					.resolves(recordWithExtraFields2),
+				put: sinon.stub().resolves({ inserted: 1 }),
+				patch: sinon.stub().resolves(),
+			};
+
+			// Mock the system database with hash tracking table
+			mockDatabases.system = {
+				hdb_dataloader_hash: mockHashTable,
+			};
+			mockDatabases.dev = {
+				test_table_json: mockTable,
+			};
+
+			const result = await loadDataFile(await createFileEntry(updatedJsonFile), mockTables, mockDatabases);
+
+			assert.ok(result instanceof DataLoaderResult);
+			assert.equal(result.status, 'success');
+			assert.equal(result.count, 2);
+			assert.ok(result.message.includes('updated 2 records'));
+			// Should call patch to update the original fields while preserving extra fields
+			assert.equal(mockTable.patch.callCount, 2);
+			assert.equal(mockTable.put.callCount, 0); // Should not use put
+			// Verify hash table was queried and updated
+			assert.equal(mockHashTable.get.callCount, 2);
+			assert.equal(mockHashTable.put.callCount, 2); // New hashes stored
 		});
 
 		it('should handle errors during record processing', async function () {
@@ -562,8 +811,8 @@ records:
 
 			// Empty YAML file returns null which should throw EmptyFileError
 			await assert.rejects(loadDataFile(await createFileEntry(emptyYamlFile), mockTables, mockDatabases), {
-				name: 'FileParseError',
-				message: /Cannot set properties of null/,
+				name: 'EmptyFileError',
+				message: /is empty or invalid/,
 			});
 		});
 
@@ -571,10 +820,10 @@ records:
 			const nullYamlFile = join(tempDir, 'null.yaml');
 			await writeFile(nullYamlFile, 'null');
 
-			// null YAML should be caught during parsing
+			// null YAML should throw EmptyFileError
 			await assert.rejects(loadDataFile(await createFileEntry(nullYamlFile), mockTables, mockDatabases), {
-				name: 'FileParseError',
-				message: /Cannot set properties of null/,
+				name: 'EmptyFileError',
+				message: /is empty or invalid/,
 			});
 		});
 
@@ -611,9 +860,20 @@ records:
 				batchPut: sinon.stub().resolves(),
 			};
 
+			// Mock hash tracking table
+			const mockHashTable = {
+				get: sinon.stub().resolves(null),
+				put: sinon.stub().resolves(),
+			};
+
+			// Add system database with hash tracking table to mockDatabases
+			mockDatabases.system = {
+				hdb_dataloader_hash: mockHashTable,
+			};
+
 			const originalTable = databasesModule.table;
 			sinon.stub(databasesModule, 'table').callsFake(async (options) => {
-				if (options.name === 'new_table' && options.database === 'testdb') {
+				if (options.table === 'new_table' && options.database === 'testdb') {
 					// Verify attributes were passed correctly
 					assert.equal(options.attributes.length, 3);
 					assert.equal(options.attributes[0].name, 'id');
@@ -636,7 +896,7 @@ records:
 					`Unexpected message: ${result.message}`
 				);
 
-				// Verify table was called with correct parameters
+				// Verify table was called once (hash tracking table is provided via mock)
 				assert.ok(databasesModule.table.calledOnce);
 			} finally {
 				// Restore the stub
