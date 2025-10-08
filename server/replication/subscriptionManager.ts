@@ -266,13 +266,17 @@ export async function startOnMainThread(options) {
 				let leaderUrl: string =
 					cliArgs.HDB_LEADER_URL ?? // first see if there was a leader explicitly specified
 					process.env.HDB_LEADER_URL ??
-					routes[0]?.url ?? // if we have routes, use the first one
-					Array.from(
-						getHDBNodeTable()
-							.primaryStore.getRange({})
-							.filter((node) => node.name !== getThisNodeName()) // find the first node that is not this one
-					)[0]?.url; // try to find the first node
-				nodes[0].isLeader = !leaderUrl || nodes[0].url === leaderUrl;
+					routes[0]?.url; // if we have routes, use the first one
+
+				let leaderName = leaderUrl
+					? new URL(leaderUrl).hostname
+					: Array.from(
+							getHDBNodeTable()
+								.primaryStore.getKeys({})
+								.filter((nodeName) => nodeName !== getThisNodeName()) // find the first node that is not this one
+						)[0]; // try to find the first node
+				logger.warn(`Setting up subscription with leader ${leaderName} for node ${nodes[0].name}`);
+				nodes[0].isLeader = !leaderName || nodes[0].name === leaderName;
 				setTimeout(() => {
 					const request = {
 						...nodes[0],

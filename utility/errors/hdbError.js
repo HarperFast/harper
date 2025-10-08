@@ -18,6 +18,8 @@ class HdbError extends Error {
 	constructor(errOrig, httpMsg, httpCode, logLevel, logMsg) {
 		super();
 
+		require('../logging/harper_logger.js').warn(`An HDB Error was created: ${this.stack}`);
+
 		//This line ensures the original stack trace is captured and does not include the 'handle' or 'constructor' methods
 		Error.captureStackTrace(this, handleHDBError);
 
