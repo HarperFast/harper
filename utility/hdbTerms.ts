@@ -586,6 +586,7 @@ export const CONFIG_PARAMS = {
 	LICENSE_MODE: 'license_mode',
 	LICENSE_REGION: 'license_region',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
+	LOGGING_COLORS: 'logging_colors',
 	LOGGING_CONSOLE: 'logging_console',
 	LOGGING_FILE: 'logging_file',
 	LOGGING_LEVEL: 'logging_level',
@@ -638,8 +639,10 @@ export const CONFIG_PARAMS = {
 	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP: 'replication_mtls_certificateVerification_ocsp',
 	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_TIMEOUT: 'replication_mtls_certificateVerification_ocsp_timeout',
 	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_CACHETTL: 'replication_mtls_certificateVerification_ocsp_cacheTtl',
-	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_ERRORCACHETTL: 'replication_mtls_certificateVerification_ocsp_errorCacheTtl',
-	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_FAILUREMODE: 'replication_mtls_certificateVerification_ocsp_failureMode',
+	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_ERRORCACHETTL:
+		'replication_mtls_certificateVerification_ocsp_errorCacheTtl',
+	REPLICATION_MTLS_CERTIFICATEVERIFICATION_OCSP_FAILUREMODE:
+		'replication_mtls_certificateVerification_ocsp_failureMode',
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
 	REPLICATION_FAILOVER: 'replication_failOver',

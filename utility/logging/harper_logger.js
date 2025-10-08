@@ -50,6 +50,7 @@ const CLOSE_LOG_FD_TIMEOUT = 10000;
 let logConsole;
 let log_to_file;
 let logToStdstreams;
+let colorMode;
 let logLevel;
 let logName;
 let logRoot;
@@ -321,6 +322,7 @@ function initLogSettings(forceInit = false) {
 				configLogPath: logRoot,
 				toFile: log_to_file,
 				logConsole,
+				colorMode,
 				rotation,
 				toStream: logToStdstreams,
 			} = getLogConfig(
@@ -528,7 +530,7 @@ function createLogger({
 		{
 			stdout: logPrepend(writeToLog ?? logStdOut),
 			stderr: logPrepend(writeToLog ?? logStdErr),
-			colorMode: logToStdstreams ?? false,
+			colorMode: (logToStdstreams && colorMode) || false,
 		},
 		level
 	);
@@ -809,6 +811,7 @@ function getLogConfig(hdbConfigPath) {
 		const toFile = configDoc.getIn(['logging', 'file']);
 		const toStream = configDoc.getIn(['logging', 'stdStreams']);
 		const logConsole = configDoc.getIn(['logging', 'console']);
+		const colorMode = configDoc.getIn(['logging', 'colors']) ?? true; // default to true
 		const rotation = configDoc.getIn(['logging', 'rotation'])?.toJSON();
 
 		return {
@@ -817,6 +820,7 @@ function getLogConfig(hdbConfigPath) {
 			toFile,
 			toStream,
 			logConsole,
+			colorMode,
 			rotation,
 		};
 	} catch (err) {
