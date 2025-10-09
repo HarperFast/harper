@@ -353,6 +353,14 @@ function isStatusUpdateEnabled() {
 }
 
 /**
+ * Check if we should only wait for system database to sync
+ * @returns {boolean} - True if only system database should be monitored
+ */
+function isSystemDatabaseOnlySync() {
+	return process.env.CLONE_NODE_SYSTEM_DB_ONLY === 'true';
+}
+
+/**
  * Monitor sync status and optionally update 'availability' status when synchronization is complete
  * @param {Object} targetTimestamps - Object with database names as keys and timestamps as values
  * @returns {Promise<void>}
@@ -368,9 +376,13 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	const maxWaitTime = Math.max(1, parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT) || 300000); // 5 minutes default, min 1ms
 	const checkInterval = Math.max(1, parseInt(process.env.HDB_CLONE_CHECK_INTERVAL) || 10000); // 10 seconds default, min 1ms
 	const shouldUpdateStatus = isStatusUpdateEnabled();
+	const systemDatabaseOnly = isSystemDatabaseOnlySync();
 
 	console.log('Starting sync monitoring');
 	console.log(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
+	if (systemDatabaseOnly) {
+		console.log('Only waiting for system database to sync (CLONE_NODE_SYSTEM_DB_ONLY=true)');
+	}
 
 	const timeoutAt = Date.now() + maxWaitTime;
 	let syncComplete = false;
@@ -378,16 +390,24 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	while (!syncComplete && Date.now() < timeoutAt) {
 		try {
 			// Check if all databases are synchronized
-			syncComplete = await checkSyncStatus(targetTimestamps);
+			syncComplete = await checkSyncStatus(targetTimestamps, systemDatabaseOnly);
 
 			if (syncComplete) {
-				console.log('All databases synchronized');
+				if (systemDatabaseOnly) {
+					console.log('System database synchronized (user databases may still be syncing)');
+				} else {
+					console.log('All databases synchronized');
+				}
 
 				// Only update status if enabled
 				if (shouldUpdateStatus) {
 					try {
 						await setStatus({ id: 'availability', status: 'Available' });
-						console.log('Successfully updated availability status to Available');
+						if (systemDatabaseOnly) {
+							console.log('Successfully updated availability status to Available (system database ready, user databases may still be syncing)');
+						} else {
+							console.log('Successfully updated availability status to Available');
+						}
 					} catch (error) {
 						console.error('Error updating status:', error);
 						// Don't fail the sync monitoring due to status update failure
@@ -412,9 +432,10 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 /**
  * Check if all databases are synchronized by comparing timestamps
  * @param {Object} targetTimestamps - Target timestamps to check against
+ * @param {boolean} systemDatabaseOnly - If true, only check system database synchronization
  * @returns {Promise<boolean>} - True if all databases are synchronized
  */
-async function checkSyncStatus(targetTimestamps) {
+async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 	// Get cluster status
 	const clusterResponse = await clusterStatus();
 
@@ -432,6 +453,9 @@ async function checkSyncStatus(targetTimestamps) {
 			// Skip if no target time for this database
 			if (!targetTime) continue;
 
+			// Skip non-system databases if only checking system database
+			if (systemDatabaseOnly && dbName !== SYSTEM_SCHEMA_NAME) continue;
+
 			// Raw version timestamp from RECEIVED_VERSION_POSITION (high-precision float64)
 			// This preserves sub-millisecond precision needed for accurate sync comparison
 			const receivedVersion = socket.lastReceivedVersion;
@@ -443,7 +467,9 @@ async function checkSyncStatus(targetTimestamps) {
 			}
 
 			if (receivedVersion < targetTime) {
-				console.log(`Database ${dbName}: Not yet synchronized (received: ${receivedVersion}, target: ${targetTime})`);
+				console.log(
+					`Database ${dbName}: Not yet synchronized (received: ${receivedVersion}, target: ${targetTime}, gap: ${targetTime - receivedVersion}ms)`
+				);
 				return false;
 			}
 
