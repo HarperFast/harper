@@ -443,6 +443,7 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 	for (const connection of clusterResponse.connections) {
 		// ...but not always database_sockets
 		if (!connection.database_sockets) {
+			console.log(`Connection ${connection.name || 'unknown'}: No database_sockets, skipping`);
 			continue;
 		}
 
@@ -451,10 +452,16 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 			const targetTime = targetTimestamps[dbName];
 
 			// Skip if no target time for this database
-			if (!targetTime) continue;
+			if (!targetTime) {
+				console.log(`Database ${dbName}: No target timestamp, skipping sync check`);
+				continue;
+			}
 
 			// Skip non-system databases if only checking system database
-			if (systemDatabaseOnly && dbName !== SYSTEM_SCHEMA_NAME) continue;
+			if (systemDatabaseOnly && dbName !== SYSTEM_SCHEMA_NAME) {
+				console.log(`Database ${dbName}: Skipping (waiting for system database only)`);
+				continue;
+			}
 
 			// Raw version timestamp from RECEIVED_VERSION_POSITION (high-precision float64)
 			// This preserves sub-millisecond precision needed for accurate sync comparison

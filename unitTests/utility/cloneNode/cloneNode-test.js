@@ -443,6 +443,7 @@ describe('cloneNode', () => {
 
 			const result = await checkSyncStatus(targetTimestamps);
 			assert.strictEqual(result, true);
+			assert(consoleLogStub.calledWith('Database db2: No target timestamp, skipping sync check'));
 		});
 
 		it('should handle sub-millisecond precision correctly (precision loss test)', async () => {
@@ -578,6 +579,7 @@ describe('cloneNode', () => {
 
 			// Should return true since no database_sockets to check
 			assert.strictEqual(result, true);
+			assert(consoleLogStub.calledWith('Connection remote-node: No database_sockets, skipping'));
 		});
 
 		it('should handle cluster status with backPressurePercent and status info', async () => {
@@ -672,6 +674,7 @@ describe('cloneNode', () => {
 			// Should only check system database and return true (system synced, userdb skipped)
 			assert.strictEqual(result, true);
 			assert(consoleLogStub.calledWith(`Database ${SYSTEM_SCHEMA_NAME}: Synchronized`));
+			assert(consoleLogStub.calledWith('Database userdb: Skipping (waiting for system database only)'));
 			assert(consoleLogStub.neverCalledWith('Database userdb: Synchronized'));
 		});
 
