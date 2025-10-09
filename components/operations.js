@@ -226,7 +226,7 @@ async function addComponent(req) {
 
 	log.trace(`adding component`);
 	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	const { project, install } = req;
+	const { project, install_command, install_timeout } = req;
 
 	const template = req.template || 'https://github.com/harperdb/application-template';
 
@@ -236,7 +236,10 @@ async function addComponent(req) {
 		const application = new Application({
 			name: project,
 			packageIdentifier: template,
-			install,
+			install: {
+				command: install_command,
+				timeout: install_timeout,
+			},
 		});
 		await prepareApplication(application);
 		let response = await replicateOperation(req);

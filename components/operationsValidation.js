@@ -189,10 +189,8 @@ function addComponentValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		template: Joi.string().optional(),
-		install: Joi.object({
-			command: Joi.string().optional(),
-			timeout: Joi.number().optional(),
-		}).optional(),
+		install_command: Joi.string().optional(),
+		install_timeout: Joi.number().optional(),
 	});
 
 	return validator.validateBySchema(req, addFuncSchema);
@@ -246,6 +244,8 @@ function deployComponentValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		package: Joi.string().optional(),
 		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
+		install_command: Joi.string().optional(),
+		install_timeout: Joi.number().optional(),
 	});
 
 	return validator.validateBySchema(req, deployProjSchema);
