@@ -19,7 +19,7 @@ If you experience or witness behavior that violates our Code of Conduct, please:
 
 ## Harper Customers
 
-If you are a HarperDB customer, you can reach our support team directly at **support@harperdb.io**.
+If you are a Harper customer, you can reach our support team directly at **support@harperdb.io**.
 
 ## Other Inquiries
 

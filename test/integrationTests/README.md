@@ -12,7 +12,7 @@ These tests primarily use [supertest](https://www.npmjs.com/package/supertest) f
 > [!Note]
 > The tests are not currently independent or idempotent. Until the entire suite is updated, it is recommended to run them via the `tests/testSuite.mjs` file (which runs them in the correct order). Furthermore, we recommend a clean Harper instance as sometimes existing artifacts can cause failures.
 
-1. Run Harper: `env LICENSE_MODE=test harperdb start`
+1. Run Harper: `harper start`
 2. Ensure the environment variables `HDB_ADMIN_USERNAME` and `HDB_ADMIN_PASSWORD` are set
    1. They can be set in the path directly, or via a `.env` file in the `integrationTests/apiTests/` directory. For an example, see the `.env.example` file.
    2. Values set in the path take precedence over those in a `.env` file.
@@ -23,10 +23,10 @@ These tests primarily use [supertest](https://www.npmjs.com/package/supertest) f
 > [!Note]
 > On Node.js versions less than v22, you need to include the `--experimental-default-type=module` flag to support ESM syntax.
 
-In certain environments, such as a Docker container, you may need to manually copy the CSV files used in certain tests to the container. The CSV files are located in `harperdb/test/data/`. Depending on your setup, you can use the `FILES_LOCATION` environment variable to specify the location of these files. For example:
+In certain environments, such as a Docker container, you may need to manually copy the CSV files used in certain tests to the container. The CSV files are located in `harper/test/data/`. Depending on your setup, you can use the `FILES_LOCATION` environment variable to specify the location of these files. For example:
 
 ```bash
-FILES_LOCATION=/home/harperdb/test/data/ npm run test:integration
+FILES_LOCATION=/home/harper/test/data/ npm run test:integration
 ```
 
 ## Test Reporters
