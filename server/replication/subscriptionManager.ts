@@ -275,8 +275,9 @@ export async function startOnMainThread(options) {
 								.primaryStore.getKeys({})
 								.filter((nodeName) => nodeName !== getThisNodeName()) // find the first node that is not this one
 						)[0]; // try to find the first node
-				logger.warn(`Setting up subscription with leader ${leaderName} for node ${nodes[0].name}`);
-				nodes[0].isLeader = !leaderName || nodes[0].name === leaderName;
+				const nodeName = nodes[0].name ?? (nodes[0].url && new URL(nodes[0].url).hostname);
+				logger.warn(`Setting up subscription with leader ${leaderName} for node ${nodeName}`);
+				nodes[0].isLeader = !leaderName || nodeName === leaderName;
 				setTimeout(() => {
 					const request = {
 						...nodes[0],
