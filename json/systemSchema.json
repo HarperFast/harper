@@ -1,0 +1,373 @@
+{
+	"hdb_user": {
+		"hash_attribute": "username",
+		"name": "hdb_user",
+		"schema": "system",
+		"residence": ["*"],
+		"attributes": [
+			{
+				"attribute": "username"
+			},
+			{
+				"attribute": "password"
+			},
+			{
+				"attribute": "role"
+			},
+			{
+				"attribute": "active"
+			},
+			{
+				"attribute": "hash"
+			},
+			{
+				"attribute": "refresh_token"
+			},
+			{
+				"attribute": "hash_function"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_role": {
+		"hash_attribute": "id",
+		"name": "hdb_role",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"attribute": "role"
+			},
+			{
+				"attribute": "permission"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		],
+		"residence": ["*"]
+	},
+	"hdb_job": {
+		"hash_attribute": "id",
+		"name": "hdb_job",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"attribute": "user"
+			},
+			{
+				"attribute": "type"
+			},
+			{
+				"attribute": "status"
+			},
+			{
+				"attribute": "start_datetime"
+			},
+			{
+				"attribute": "end_datetime"
+			},
+			{
+				"attribute": "message"
+			},
+			{
+				"attribute": "created_datetime"
+			},
+			{
+				"attribute": "request"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_license": {
+		"hash_attribute": "id",
+		"table": "hdb_license",
+		"database": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"name": "level"
+			},
+			{
+				"name": "region",
+				"indexed": true
+			},
+			{
+				"name": "reads"
+			},
+			{
+				"name": "writes"
+			},
+			{
+				"name": "readBytes"
+			},
+			{
+				"name": "writeBytes"
+			},
+			{
+				"name": "realTimeMessages"
+			},
+			{
+				"name": "realTimeBytes"
+			},
+			{
+				"name": "cpuTime"
+			},
+			{
+				"name": "storage"
+			},
+			{
+				"name": "usedReads"
+			},
+			{
+				"name": "usedWrites"
+			},
+			{
+				"name": "usedReadBytes"
+			},
+			{
+				"name": "usedWriteBytes"
+			},
+			{
+				"name": "usedRealTimeMessages"
+			},
+			{
+				"name": "usedRealTimeBytes"
+			},
+			{
+				"name": "usedCpuTime"
+			},
+			{
+				"name": "usedStorage"
+			},
+			{
+				"name": "expiration"
+			},
+			{
+				"name": "autoRenew"
+			},
+			{
+				"name": "__createdtime__",
+				"indexed": true
+			},
+			{
+				"name": "__updatedtime__",
+				"indexed": true
+			}
+		]
+	},
+	"hdb_info": {
+		"hash_attribute": "info_id",
+		"name": "hdb_info",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "info_id"
+			},
+			{
+				"attribute": "data_version_num"
+			},
+			{
+				"attribute": "hdb_version_num"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_nodes": {
+		"hash_attribute": "name",
+		"name": "hdb_nodes",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "name"
+			},
+			{
+				"attribute": "subscriptions"
+			},
+			{
+				"attribute": "system_info"
+			},
+			{
+				"attribute": "url"
+			},
+			{
+				"attribute": "routes"
+			},
+			{
+				"attribute": "revoked_certificates"
+			},
+			{
+				"attribute": "shard"
+			}
+		]
+	},
+	"hdb_certificate": {
+		"hash_attribute": "name",
+		"name": "hdb_certificate",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "name"
+			},
+			{
+				"attribute": "uses"
+			},
+			{
+				"attribute": "certificate"
+			},
+			{
+				"attribute": "is_authority"
+			},
+			{
+				"attribute": "private_key_name"
+			},
+			{
+				"attribute": "details"
+			},
+			{
+				"attribute": "is_self_signed"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_analytics_hostname": {
+		"hash_attribute": "id",
+		"name": "hdb_analytics_hostname",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"attribute": "hostname"
+			}
+		]
+	},
+	"hdb_analytics": {
+		"hash_attribute": "id",
+		"name": "hdb_analytics",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"name": "metric"
+			},
+			{
+				"name": "path"
+			},
+			{
+				"name": "method"
+			},
+			{
+				"name": "type"
+			}
+		]
+	},
+	"hdb_raw_analytics": {
+		"hash_attribute": "id",
+		"name": "hdb_raw_analytics",
+		"schema": "system",
+		"audit": false,
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"attribute": "time"
+			},
+			{
+				"attribute": "metrics"
+			}
+		]
+	},
+	"hdb_temp": {
+		"hash_attribute": "id",
+		"name": "hdb_temp",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_durable_session": {
+		"hash_attribute": "id",
+		"name": "hdb_durable_session",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_session_will": {
+		"hash_attribute": "id",
+		"name": "hdb_session_will",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_certificate_cache": {
+		"hash_attribute": "certificate_id",
+		"name": "hdb_certificate_cache",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "certificate_id"
+			}
+		]
+	},
+	"hdb_crl_cache": {
+		"hash_attribute": "distribution_point",
+		"name": "hdb_crl_cache",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "distribution_point"
+			}
+		]
+	},
+	"hdb_revoked_certificates": {
+		"hash_attribute": "composite_id",
+		"name": "hdb_revoked_certificates",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "composite_id"
+			}
+		]
+	}
+}

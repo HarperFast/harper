@@ -1,0 +1,311 @@
+import { describe, it, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { testData } from '../config/envConfig.mjs';
+import { checkJob, getJobId } from '../utils/jobs.mjs';
+import { setTimeout } from 'node:timers/promises';
+import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
+
+describe('9. Transactions', () => {
+	beforeEach(timestamp);
+
+	//Transactions Folder
+
+	//Delete Audit Logs Before Tests
+
+	it('create test table', async () => {
+		await req()
+			.send({
+				operation: 'create_table',
+				schema: 'test_delete_before',
+				table: 'testerama',
+				hash_attribute: 'id',
+			})
+			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
+			.expect(200);
+		await setTimeout(500);
+	});
+
+	it('Insert new records', async () => {
+		await req()
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'testerama',
+				records: [
+					{ id: 1, address: '24 South st' },
+					{ id: 2, address: '6 Truck Lane' },
+					{
+						id: 3,
+						address: '19 Broadway',
+					},
+					{ id: 4, address: '34A Mountain View' },
+					{ id: 5, address: '234 Curtis St' },
+					{
+						id: 6,
+						address: '115 Way Rd',
+					},
+				],
+			})
+			.expect((r) => assert.equal(r.body.inserted_hashes.length, 6, r.text))
+			.expect(200);
+		await setTimeout(1000);
+	});
+
+	it('Insert additional new records', () => {
+		testData.insert_timestamp = new Date().getTime();
+		return req()
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'testerama',
+				records: [
+					{ id: 11, address: '24 South st' },
+					{ id: 12, address: '6 Truck Lane' },
+					{ id: 13, address: '19 Broadway' },
+				],
+			})
+			.expect((r) => assert.equal(r.body.inserted_hashes.length, 3, r.text))
+			.expect(200);
+	});
+
+	it('Delete records before', async () => {
+		const response = await req()
+			.send({
+				operation: 'delete_audit_logs_before',
+				timestamp: `${testData.insert_timestamp}`,
+				schema: 'test_delete_before',
+				table: 'testerama',
+			})
+			.expect(200);
+
+		const id = await getJobId(response.body);
+		const jobResponse = await checkJob(id, 15);
+		assert.ok(jobResponse.body[0].message.includes('Successfully completed'), jobResponse.text);
+	});
+
+	//Read Transaction Logs
+
+	it('create test table', async () => {
+		await req()
+			.send({
+				operation: 'create_table',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				hash_attribute: 'id',
+			})
+			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
+			.expect(200);
+		await setTimeout(500);
+	});
+
+	it('Insert new records', async () => {
+		await req()
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				records: [
+					{ id: 1, name: 'Penny' },
+					{ id: 2, name: 'Kato', age: 6 },
+				],
+			})
+			.expect((r) => assert.equal(r.body.inserted_hashes.length, 2, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Insert more records', async () => {
+		await req()
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				records: [{ id: 3, name: 'Riley', age: 7 }],
+			})
+			.expect((r) => assert.equal(r.body.inserted_hashes.length, 1, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Update records', async () => {
+		await req()
+			.send({
+				operation: 'update',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				records: [
+					{ id: 1, name: 'Penny B', age: 8 },
+					{ id: 2, name: 'Kato B' },
+				],
+			})
+			.expect((r) => assert.equal(r.body.update_hashes.length, 2, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Insert another record', async () => {
+		await req()
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				records: [{ id: 'blerrrrr', name: 'Rosco' }],
+			})
+			.expect((r) => assert.equal(r.body.inserted_hashes.length, 1, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Update a record', async () => {
+		await req()
+			.send({
+				operation: 'update',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				records: [{ id: 'blerrrrr', breed: 'Mutt' }],
+			})
+			.expect((r) => assert.equal(r.body.update_hashes.length, 1, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Delete some records', async () => {
+		await req()
+			.send({ operation: 'delete', schema: 'test_delete_before', table: 'test_read', hash_values: [3, 1] })
+			.expect((r) => assert.equal(r.body.deleted_hashes.length, 2, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Insert another record', async () => {
+		await req()
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				records: [{ id: 4, name: 'Griff' }],
+			})
+			.expect((r) => assert.equal(r.body.inserted_hashes.length, 1, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Upsert records', async () => {
+		await req()
+			.send({
+				operation: 'upsert',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				records: [
+					{ id: 4, name: 'Griffy Jr.' },
+					{ id: 5, name: 'Gizmo', age: 10 },
+					{ name: 'Moe', age: 11 },
+				],
+			})
+			.expect((r) => assert.equal(r.body.upserted_hashes.length, 3, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Check upsert transaction', async () => {
+		await req()
+			.send({
+				operation: 'read_audit_log',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				search_type: 'hash_value',
+				search_values: [5],
+			})
+			.expect((r) => {
+				assert.equal(r.body['5'].length, 1, r.text);
+				const transaction = r.body['5'][0];
+				assert.equal(transaction.operation, 'upsert', r.text);
+				assert.equal(transaction.records.length, 1, r.text);
+				Object.keys(transaction.records[0]).forEach((key) => {
+					assert.ok(['id', 'name', 'age', '__updatedtime__', '__createdtime__'].includes(key), r.text);
+				});
+			});
+		await setTimeout(100);
+	});
+
+	it('Fetch all Transactions', async () => {
+		await req()
+			.send({ operation: 'read_audit_log', schema: 'test_delete_before', table: 'test_read' })
+			.expect((r) => {
+				assert.equal(r.body.length, 8, r.text);
+
+				const expected_attrs = ['id', 'name', '__updatedtime__'];
+				const other_attrs = ['age', '__createdtime__'];
+
+				const upsert_trans = r.body[7];
+
+				assert.equal(upsert_trans.operation, 'upsert', r.text);
+				assert.equal(upsert_trans.records.length, 3, r.text);
+
+				assert.equal(upsert_trans.records[0].id, 4, r.text);
+				Object.keys(upsert_trans.records[0]).forEach((key) => {
+					assert.ok([...expected_attrs, ...other_attrs].includes(key), r.text);
+				});
+
+				assert.equal(upsert_trans.records[1].id, 5, r.text);
+				Object.keys(upsert_trans.records[1]).forEach((key) => {
+					assert.ok([...expected_attrs, ...other_attrs].includes(key), r.text);
+				});
+
+				assert.equal(typeof upsert_trans.records[2].id, 'number', r.text);
+				Object.keys(upsert_trans.records[2]).forEach((key) => {
+					assert.ok([...expected_attrs, ...other_attrs].includes(key), r.text);
+				});
+			});
+		await setTimeout(100);
+	});
+
+	it('Fetch timestamp Transactions', async () => {
+		await req()
+			.send({
+				operation: 'read_audit_log',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				search_type: 'timestamp',
+				search_values: [],
+			})
+			.expect((r) => assert.equal(r.body.length, 8, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Fetch user transactions', async () => {
+		await req()
+			.send({
+				operation: 'read_audit_log',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				search_type: 'username',
+				search_values: [`${testData.username}`],
+			})
+			.expect((r) => assert.equal(r.body[testData.username].length, 8, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('Fetch hash transactions', async () => {
+		await req()
+			.send({
+				operation: 'read_audit_log',
+				schema: 'test_delete_before',
+				table: 'test_read',
+				search_type: 'hash_value',
+				search_values: [1, 'blerrrrr'],
+			})
+			.expect((r) => assert.equal(r.body['1'].length, 3, r.text))
+			.expect((r) => assert.equal(r.body['blerrrrr'].length, 2, r.text))
+			.expect(200);
+		await setTimeout(100);
+	});
+
+	it('drop test_read table', async () => {
+		await req().send({ operation: 'drop_table', schema: 'test_delete_before', table: 'test_read' }).expect(200);
+		await setTimeout(500);
+	});
+});

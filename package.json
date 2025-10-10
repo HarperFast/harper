@@ -1,38 +1,145 @@
 {
 	"name": "harper",
-	"description": "",
-	"version": "0.0.0",
+	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
+	"version": "5.0.0-unreleased",
+	"type": "commonjs",
 	"private": true,
 	"license": "Apache-2.0",
-	"homepage": "https://harpersystems.dev/",
+	"homepage": "https://harper.fast",
 	"bugs": {
-		"url": "https://github.com/harperdb/harper/issues",
-		"email": "support@harperdb.io"
+		"url": "https://github.com/harperfast/harper/issues",
+		"email": "opensource@harperdb.io"
 	},
 	"author": {
 		"name": "HarperDB, Inc.",
-		"email": "support@harperdb.io",
-		"url": "https://harpersystems.dev/"
+		"email": "opensource@harperdb.io",
+		"url": "https://harper.fast"
 	},
 	"contributors": [],
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/harperdb/harper.git"
+		"url": "https://github.com/harperfast/harper.git"
 	},
-	"scripts": {},
-	"dependencies": {},
+	"bin": {
+		"harper": "./dist/bin/harperdb.js"
+	},
+	"files": [
+		"dist",
+		"static",
+		"SECURITY.md",
+		"SUPPORT.md",
+		"CODE_OF_CONDUCT.md"
+	],
+	"scripts": {
+		"build": "tsc --project tsconfig.build.json",
+		"build:watch": "npm run build -- --watch --incremental",
+		"lint": "eslint .",
+		"format:check": "prettier --check .",
+		"format:write": "prettier --write .",
+		"test:integration": "node --test test/integrationTests/tests/testSuite.mjs"
+	},
 	"engines": {
-		"node": ">=20"
+		"node": ">=20",
+		"minimum-node": "20.0.0"
 	},
 	"devEngines": {
 		"runtime": {
 			"name": "node",
-			"version": ">=20",
+			"version": ">=22",
 			"onFail": "error"
 		},
 		"packageManager": {
 			"name": "npm",
 			"onFail": "error"
 		}
+	},
+	"devDependencies": {
+		"@harperdb/code-guidelines": "^0.0.5",
+		"eslint": "^9.36.0",
+		"fast-glob": "^3.3.3",
+		"fs-extra": "^11.3.2",
+		"globals": "^16.4.0",
+		"prettier": "^3.6.2",
+		"supertest": "^7.1.4",
+		"typescript": "^5.7.3",
+		"typescript-eslint": "^8.45.0"
+	},
+	"dependencies": {
+		"@aws-sdk/client-s3": "3.824.0",
+		"@aws-sdk/lib-storage": "3.824.0",
+		"@endo/static-module-record": "^1.0.4",
+		"@fastify/autoload": "5.10.0",
+		"@fastify/compress": "~6.5.0",
+		"@fastify/cors": "~9.0.1",
+		"@fastify/static": "~7.0.4",
+		"@turf/area": "6.5.0",
+		"@turf/boolean-contains": "6.5.0",
+		"@turf/boolean-disjoint": "6.5.0",
+		"@turf/boolean-equal": "6.5.0",
+		"@turf/circle": "6.5.0",
+		"@turf/difference": "6.5.0",
+		"@turf/distance": "6.5.0",
+		"@turf/helpers": "6.5.0",
+		"@turf/length": "6.5.0",
+		"alasql": "4.6.6",
+		"argon2": "0.43.0",
+		"asn1js": "3.0.6",
+		"cbor-x": "1.6.0",
+		"chalk": "4.1.2",
+		"chokidar": "^4.0.3",
+		"cli-progress": "3.12.0",
+		"clone": "2.1.2",
+		"dotenv": "^16.4.7",
+		"easy-ocsp": "1.2.2",
+		"fast-glob": "3.3.3",
+		"fastify": "~4.29.0",
+		"fastify-plugin": "~4.5.1",
+		"fs-extra": "11.3.0",
+		"graphql": "^16.10.0",
+		"gunzip-maybe": "1.4.2",
+		"human-readable-ids": "1.0.4",
+		"inquirer": "8.2.6",
+		"is-number": "7.0.0",
+		"joi": "17.13.3",
+		"json-bigint-fixes": "1.1.0",
+		"json2csv": "5.0.7",
+		"jsonata": "1.8.7",
+		"jsonwebtoken": "9.0.2",
+		"lmdb": "3.4.3",
+		"lodash": "4.17.21",
+		"mathjs": "11.12.0",
+		"micromatch": "^4.0.8",
+		"minimist": "1.2.8",
+		"moment": "2.30.1",
+		"mqtt-packet": "~9.0.1",
+		"msgpackr": "1.11.4",
+		"needle": "3.3.1",
+		"node-forge": "^1.3.1",
+		"node-stream-zip": "1.15.0",
+		"node-unix-socket": "0.2.7",
+		"normalize-path": "^3.0.0",
+		"ora": "8.2.0",
+		"ordered-binary": "1.5.3",
+		"papaparse": "5.5.3",
+		"passport": "0.7.0",
+		"passport-http": "0.3.0",
+		"passport-local": "1.0.0",
+		"pino": "8.16.0",
+		"pkijs": "3.2.5",
+		"prompt": "1.3.0",
+		"properties-reader": "2.3.0",
+		"recursive-iterator": "3.3.0",
+		"semver": "7.7.2",
+		"send": "^1.2.0",
+		"ses": "1.13.0",
+		"stream-chain": "2.2.5",
+		"stream-json": "1.9.1",
+		"systeminformation": "5.27.1",
+		"tar-fs": "3.0.9",
+		"ulidx": "0.5.0",
+		"uuid": "11.1.0",
+		"validate.js": "0.13.1",
+		"ws": "8.18.2",
+		"yaml": "2.8.0"
 	}
 }

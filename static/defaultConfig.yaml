@@ -1,0 +1,71 @@
+# HarperDB configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
+---
+http:
+  compressionThreshold: 0
+  cors: false
+  corsAccessList:
+    - null
+  keepAliveTimeout: 30000
+  port: null
+  securePort: 9926
+  mtls: false
+  http2: false
+  timeout: 120000
+threads:
+  count: null
+  debug: false
+authentication:
+  authorizeLocal: false
+  cacheTTL: 30000
+  enableSessions: true
+  operationTokenTimeout: 1d
+  refreshTokenTimeout: 30d
+analytics:
+  aggregatePeriod: 60
+  replicate: false
+componentsRoot: null
+localStudio:
+  enabled: true
+logging:
+  auditAuthEvents:
+    logFailed: false
+    logSuccessful: false
+  auditLog: true
+  auditRetention: 3d
+  file: true
+  level: warn
+  root: null
+  rotation:
+    enabled: true
+    compress: false
+    interval: null
+    maxSize: 64M
+    path: null
+  stdStreams: false
+mqtt:
+  network:
+    port: 1883
+    securePort: 8883
+    mtls: false
+  webSocket: true
+  requireAuthentication: true
+operationsApi:
+  network:
+    cors: true
+    corsAccessList:
+      - '*'
+    domainSocket: hdb/operations-server
+    port: null
+    securePort: 9925
+rootPath: null
+storage:
+  writeAsync: false
+  caching: true
+  compression: true
+  noReadAhead: false
+  path: null
+  prefetchWrites: true
+tls:
+  privateKey: null
+node:
+  hostname: null

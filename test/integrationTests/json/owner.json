@@ -1,0 +1,24 @@
+{
+	"records": [
+		{
+			"id": 1,
+			"name": "Sam",
+			"best_friend": "Charlie"
+		},
+		{
+			"id": 2,
+			"name": "Kyle",
+			"best_friend": "Stephen"
+		},
+		{
+			"id": 3,
+			"name": "David",
+			"best_friend": "Sam"
+		},
+		{
+			"id": 4,
+			"name": "Kaylan",
+			"best_friend": "Stephen"
+		}
+	]
+}

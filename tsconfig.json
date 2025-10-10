@@ -1,0 +1,43 @@
+{
+	"include": [
+		"bin/**/*",
+		"components/**/*",
+		"config/**/*",
+		"dataLayer/**/*",
+		"json/**/*",
+		"launchServiceSCripts/**/*",
+		"resources/**/*",
+		"security/**/*",
+		"server/**/*",
+		"sqlTranslator/**/*",
+		"upgrade/**/*",
+		"utility/**/*",
+		"validation/**/*",
+		"globals.js",
+		"index.d.ts",
+		"index.js"
+	],
+	"compilerOptions": {
+		// Allow JS files for mixed codebase
+		"allowJs": true,
+
+		// Type checking only - no emit (esbuild handles transpilation)
+		"noEmit": true,
+
+		// Target Node 20+ with ES2022 features
+		"target": "ES2022",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+
+		// Interop and module resolution
+		"esModuleInterop": true,
+		"resolveJsonModule": true,
+		"allowSyntheticDefaultImports": true,
+
+		// Allow .ts extensions in imports (will be transpiled to .js by esbuild)
+		"allowImportingTsExtensions": true,
+
+		// Enforce erasable syntax only so we can use Node.js type-stripping
+		"erasableSyntaxOnly": true
+	}
+}

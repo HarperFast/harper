@@ -1,0 +1,10 @@
+employeeid,lastname,firstname,title,titleofcourtesy,birthdate,hireDate,address,city,region,postalCode,country,homephone,extension,notes,reportsto,photopath
+1,Davolio,Nancy,Sales Representative,Ms.,1948-12-08 00:00:00,1992-05-01 00:00:00,507 - 20th Ave. E.Apt. 2A,Seattle,WA,98122,USA,(206) 555-9857,5467,2,http://accweb/emmployees/davolio.bmp,http://accweb/emmployees/davolio.bmp
+2,Fuller,Andrew,Vice President Sales,Dr.,1952-02-19 00:00:00,1992-08-14 00:00:00,908 W. Capital Way,Tacoma,WA,98401,USA,(206) 555-9482,3457,,http://accweb/emmployees/fuller.bmp,http://accweb/emmployees/fuller.bmp
+3,Leverling,Janet,Sales Representative,Ms.,1963-08-30 00:00:00,1992-04-01 00:00:00,722 Moss Bay Blvd.,Kirkland,WA,98033,USA,(206) 555-3412,3355,2,http://accweb/emmployees/leverling.bmp,http://accweb/emmployees/leverling.bmp
+4,Peacock,Margaret,Sales Representative,Mrs.,1937-09-19 00:00:00,1993-05-03 00:00:00,4110 Old Redmond Rd.,Redmond,WA,98052,USA,(206) 555-8122,5176,2,http://accweb/emmployees/peacock.bmp,http://accweb/emmployees/peacock.bmp
+5,Buchanan,Steven,Sales Manager,Mr.,1955-03-04 00:00:00,1993-10-17 00:00:00,14 Garrett Hill,London,,SW1 8JR,UK,(71) 555-4848,3453,2,http://accweb/emmployees/buchanan.bmp,http://accweb/emmployees/buchanan.bmp
+6,Suyama,Michael,Sales Representative,Mr.,1963-07-02 00:00:00,1993-10-17 00:00:00,Coventry House Miner Rd.,London,,EC2 7JR,UK,(71) 555-7773,428,5,http://accweb/emmployees/davolio.bmp,http://accweb/emmployees/davolio.bmp
+7,King,Robert,Sales Representative,Mr.,1960-05-29 00:00:00,1994-01-02 00:00:00,Edgeham Hollow Winchester Way,London,,RG1 9SP,UK,(71) 555-5598,465,5,http://accweb/emmployees/davolio.bmp,http://accweb/emmployees/davolio.bmp
+8,Callahan,Laura,Inside Sales Coordinator,Ms.,1958-01-09 00:00:00,1994-03-05 00:00:00,4726 - 11th Ave. N.E.,Seattle,WA,98105,USA,(206) 555-1189,2344,2,http://accweb/emmployees/davolio.bmp,http://accweb/emmployees/davolio.bmp
+9,Dodsworth,Anne,Sales Representative,Ms.,1966-01-27 00:00:00,1994-11-15 00:00:00,7 Houndstooth Rd.,London,,WG2 7LT,UK,(71) 555-4444,452,5,http://accweb/emmployees/davolio.bmp,http://accweb/emmployees/davolio.bmp

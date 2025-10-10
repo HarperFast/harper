@@ -1,0 +1,2454 @@
+{
+	"records": [
+		{
+			"id": 1,
+			"name": "ENGLISH POINTER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/001g07.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "British and Irish Pointers and Setters"
+		},
+		{
+			"id": 2,
+			"name": "ENGLISH SETTER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/002g07.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "British and Irish Pointers and Setters"
+		},
+		{
+			"id": 3,
+			"name": "KERRY BLUE TERRIER",
+			"image": null,
+			"country": "IRELAND",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 4,
+			"name": "CAIRN TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/004g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 5,
+			"name": "ENGLISH COCKER SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/005g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 6,
+			"name": "GORDON SETTER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/006g07.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "British and Irish Pointers and Setters"
+		},
+		{
+			"id": 7,
+			"name": "AIREDALE TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/007g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 8,
+			"name": "AUSTRALIAN TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/008g03.jpg",
+			"country": "AUSTRALIA",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 9,
+			"name": "BEDLINGTON TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/009g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 10,
+			"name": "BORDER TERRIER",
+			"image": null,
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 11,
+			"name": "BULL TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/011g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Bull type Terriers"
+		},
+		{
+			"id": 12,
+			"name": "FOX TERRIER (SMOOTH)",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/012g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 13,
+			"name": "ENGLISH TOY TERRIER (BLACK &TAN)",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/013g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Toy Terriers"
+		},
+		{
+			"id": 14,
+			"name": "SWEDISH VALLHUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/014g05.jpg",
+			"country": "SWEDEN",
+			"section": "Nordic Watchdogs and Herders"
+		},
+		{
+			"id": 15,
+			"name": "BELGIAN SHEPHERD DOG",
+			"image": null,
+			"country": "BELGIUM",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 16,
+			"name": "OLD ENGLISH SHEEPDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/016g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 17,
+			"name": "GRIFFON NIVERNAIS",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/017g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 18,
+			"name": "BRIQUET GRIFFON VENDEEN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/019g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 19,
+			"name": "ARIEGEOIS",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/020g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 20,
+			"name": "GASCON SAINTONGEOIS",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 21,
+			"name": "GREAT GASCONY BLUE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/022g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 22,
+			"name": "POITEVIN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/024g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 23,
+			"name": "BILLY",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/025g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 24,
+			"name": "ARTOIS HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/028g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 25,
+			"name": "PORCELAINE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/030g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 26,
+			"name": "SMALL BLUE GASCONY BLUE",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 27,
+			"name": "BLUE GASCONY GRIFFON",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 28,
+			"name": "GRAND BASSET GRIFFON VENDEEN",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 29,
+			"name": "NORMAN ARTESIEN BASSET",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 30,
+			"name": "BLUE GASCONY BASSET",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 31,
+			"name": "BASSET FAUVE DE BRETAGNE",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 32,
+			"name": "PORTUGUESE WATER DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/037g08.jpg",
+			"country": "PORTUGAL",
+			"section": "Water Dogs"
+		},
+		{
+			"id": 33,
+			"name": "WELSH CORGI CARDIGAN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/038g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 34,
+			"name": "WELSH CORGI PEMBROKE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/039g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 35,
+			"name": "IRISH SOFT COATED WHEATEN TERRIER",
+			"image": null,
+			"country": "IRELAND",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 36,
+			"name": "YUGOSLAVIAN SHEPHERD DOG - SHARPLANINA",
+			"image": " SERBIA",
+			"country": "MACEDONIA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 37,
+			"name": "JÄMTHUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/042g05.jpg",
+			"country": "SWEDEN",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 38,
+			"name": "BASENJI",
+			"image": null,
+			"country": "CENTRAL AFRICA",
+			"section": "Primitive type"
+		},
+		{
+			"id": 39,
+			"name": "BERGER DE BEAUCE",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 40,
+			"name": "BERNESE MOUNTAIN DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/045g02.jpg",
+			"country": "SWITZERLAND",
+			"section": "Swiss Mountain- and Cattledogs"
+		},
+		{
+			"id": 41,
+			"name": "APPENZELL CATTLE DOG",
+			"image": null,
+			"country": "SWITZERLAND",
+			"section": "Swiss Mountain- and Cattledogs"
+		},
+		{
+			"id": 42,
+			"name": "ENTLEBUCH CATTLE DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/047g02.jpg",
+			"country": "SWITZERLAND",
+			"section": "Swiss Mountain- and Cattledogs"
+		},
+		{
+			"id": 43,
+			"name": "KARELIAN BEAR DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/048g05-1.jpg",
+			"country": "FINLAND",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 44,
+			"name": "FINNISH SPITZ",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/049g05-1.jpg",
+			"country": "FINLAND",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 45,
+			"name": "NEWFOUNDLAND",
+			"image": null,
+			"country": "CANADA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 46,
+			"name": "FINNISH HOUND",
+			"image": null,
+			"country": "FINLAND",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 47,
+			"name": "POLISH HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/052g06.jpg",
+			"country": "POLAND",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 48,
+			"name": "KOMONDOR",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/053g01.jpg",
+			"country": "HUNGARY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 49,
+			"name": "KUVASZ",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/054g01.jpg",
+			"country": "HUNGARY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 50,
+			"name": "PULI",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/055g01.jpg",
+			"country": "HUNGARY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 51,
+			"name": "PUMI",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/056g01.jpg",
+			"country": "HUNGARY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 52,
+			"name": "HUNGARIAN SHORT-HAIRED POINTER (VIZSLA)",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/057g07.jpg",
+			"country": "HUNGARY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 53,
+			"name": "GREAT SWISS MOUNTAIN DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/058g02.jpg",
+			"country": "SWITZERLAND",
+			"section": "Swiss Mountain- and Cattledogs"
+		},
+		{
+			"id": 54,
+			"name": "SWISS HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/059g06-1.jpg",
+			"country": "SWITZERLAND",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 55,
+			"name": "SMALL SWISS HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/060g06-1.jpg",
+			"country": "SWITZERLAND",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 56,
+			"name": "ST. BERNARD",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/061g02-1.jpg",
+			"country": "SWITZERLAND",
+			"section": "Molossian type"
+		},
+		{
+			"id": 57,
+			"name": "COARSE-HAIRED STYRIAN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/062g06.jpg",
+			"country": "AUSTRIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 58,
+			"name": "AUSTRIAN BLACK AND TAN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/063g06.jpg",
+			"country": "AUSTRIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 59,
+			"name": "AUSTRIAN  PINSCHER",
+			"image": null,
+			"country": "AUSTRIA",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 60,
+			"name": "MALTESE",
+			"image": null,
+			"country": "CENTRAL MEDITERRANEAN BASIN",
+			"section": "Bichons and related breeds"
+		},
+		{
+			"id": 61,
+			"name": "FAWN BRITTANY GRIFFON",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/066g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 62,
+			"name": "PETIT BASSET GRIFFON VENDEEN",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 63,
+			"name": "TYROLEAN HOUND",
+			"image": null,
+			"country": "AUSTRIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 64,
+			"name": "LAKELAND TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/070g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 65,
+			"name": "MANCHESTER TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/071g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 66,
+			"name": "NORWICH TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/072g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 67,
+			"name": "SCOTTISH TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/073g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 68,
+			"name": "SEALYHAM TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/074g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 69,
+			"name": "SKYE TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/075g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 70,
+			"name": "STAFFORDSHIRE BULL TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/076g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Bull type Terriers"
+		},
+		{
+			"id": 71,
+			"name": "CONTINENTAL TOY SPANIEL",
+			"image": " FRANCE",
+			"country": "BELGIUM",
+			"section": "Continental Toy Spaniel and Russian Toy"
+		},
+		{
+			"id": 72,
+			"name": "WELSH TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/078g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 73,
+			"name": "GRIFFON BRUXELLOIS",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/080g09-1.jpg",
+			"country": "BELGIUM",
+			"section": "Small Belgian Dogs"
+		},
+		{
+			"id": 74,
+			"name": "GRIFFON BELGE",
+			"image": null,
+			"country": "BELGIUM",
+			"section": "Small Belgian Dogs"
+		},
+		{
+			"id": 75,
+			"name": "PETIT BRABANÇON",
+			"image": null,
+			"country": "BELGIUM",
+			"section": "Small Belgian Dogs"
+		},
+		{
+			"id": 76,
+			"name": "SCHIPPERKE",
+			"image": null,
+			"country": "BELGIUM",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 77,
+			"name": "BLOODHOUND",
+			"image": null,
+			"country": "BELGIUM",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 78,
+			"name": "WEST HIGHLAND WHITE TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/085g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 79,
+			"name": "YORKSHIRE TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/086g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Toy Terriers"
+		},
+		{
+			"id": 80,
+			"name": "CATALAN SHEEPDOG",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 81,
+			"name": "SHETLAND SHEEPDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/088g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 82,
+			"name": "IBIZAN PODENCO",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Primitive type - Hunting Dogs"
+		},
+		{
+			"id": 83,
+			"name": "BURGOS POINTING DOG",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 84,
+			"name": "SPANISH MASTIFF",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 85,
+			"name": "PYRENEAN MASTIFF",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 86,
+			"name": "PORTUGUESE SHEEPDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/093g01.jpg",
+			"country": "PORTUGAL",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 87,
+			"name": "PORTUGUESE WARREN HOUND-PORTUGUESE PODENGO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/094g05-1.jpg",
+			"country": "PORTUGAL",
+			"section": "Primitive type - Hunting Dogs"
+		},
+		{
+			"id": 88,
+			"name": "BRITTANY SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/095g07.jpg",
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 89,
+			"name": "RAFEIRO OF ALENTEJO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/096g02.jpg",
+			"country": "PORTUGAL",
+			"section": "Molossian type"
+		},
+		{
+			"id": 90,
+			"name": "GERMAN SPITZ",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/097g05-1.jpg",
+			"country": "GERMANY",
+			"section": "European Spitz"
+		},
+		{
+			"id": 91,
+			"name": "GERMAN WIRE- HAIRED POINTING DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/098g07.jpg",
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 92,
+			"name": "WEIMARANER",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 93,
+			"name": "WESTPHALIAN DACHSBRACKE",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 94,
+			"name": "FRENCH BULLDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/101g09.jpg",
+			"country": "FRANCE",
+			"section": "Small Molossian type Dogs"
+		},
+		{
+			"id": 95,
+			"name": "KLEINER MÜNSTERLÄNDER",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 96,
+			"name": "GERMAN HUNTING TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/103g03-1.jpg",
+			"country": "GERMANY",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 97,
+			"name": "GERMAN SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/104g08.jpg",
+			"country": "GERMANY",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 98,
+			"name": "FRENCH WATER DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/105g08.jpg",
+			"country": "FRANCE",
+			"section": "Water Dogs"
+		},
+		{
+			"id": 99,
+			"name": "BLUE PICARDY SPANIEL",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 100,
+			"name": "WIRE-HAIRED POINTING GRIFFON KORTHALS",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 101,
+			"name": "PICARDY SPANIEL",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 102,
+			"name": "CLUMBER SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/109g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 103,
+			"name": "CURLY COATED RETRIEVER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/110g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Retrievers"
+		},
+		{
+			"id": 104,
+			"name": "GOLDEN RETRIEVER",
+			"image": null,
+			"country": "GREAT BRITAIN",
+			"section": "Retrievers"
+		},
+		{
+			"id": 105,
+			"name": "BRIARD",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/113g01.jpg",
+			"country": "FRANCE",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 106,
+			"name": "PONT-AUDEMER SPANIEL",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 107,
+			"name": "SAINT GERMAIN POINTER",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 108,
+			"name": "DOGUE DE BORDEAUX",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/116g02.jpg",
+			"country": "FRANCE",
+			"section": "Molossian type"
+		},
+		{
+			"id": 109,
+			"name": "DEUTSCH LANGHAAR",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/117g07.jpg",
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 110,
+			"name": "LARGE MUNSTERLANDER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/118g07.jpg",
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 111,
+			"name": "GERMAN SHORT- HAIRED POINTING DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/119g07.jpg",
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 112,
+			"name": "IRISH RED SETTER",
+			"image": null,
+			"country": "IRELAND",
+			"section": "British and Irish Pointers and Setters"
+		},
+		{
+			"id": 113,
+			"name": "FLAT COATED RETRIEVER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/121g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Retrievers"
+		},
+		{
+			"id": 114,
+			"name": "LABRADOR RETRIEVER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/122g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Retrievers"
+		},
+		{
+			"id": 115,
+			"name": "FIELD SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/123g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 116,
+			"name": "IRISH WATER SPANIEL",
+			"image": null,
+			"country": "IRELAND",
+			"section": "Water Dogs"
+		},
+		{
+			"id": 117,
+			"name": "ENGLISH SPRINGER SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/125g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 118,
+			"name": "WELSH SPRINGER SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/126g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 119,
+			"name": "SUSSEX SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/127g08.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 120,
+			"name": "KING CHARLES SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/128g09.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "English Toy Spaniels"
+		},
+		{
+			"id": 121,
+			"name": "SMÅLANDSSTÖVARE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/129g06.jpg",
+			"country": "SWEDEN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 122,
+			"name": "DREVER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/130g06.jpg",
+			"country": "SWEDEN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 123,
+			"name": "SCHILLERSTÖVARE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/131g06.jpg",
+			"country": "SWEDEN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 124,
+			"name": "HAMILTONSTÖVARE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/132g06.jpg",
+			"country": "SWEDEN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 125,
+			"name": "FRENCH POINTING DOG - GASCOGNE TYPE",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 126,
+			"name": "FRENCH POINTING DOG - PYRENEAN TYPE",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 127,
+			"name": "SWEDISH LAPPHUND",
+			"image": null,
+			"country": "SWEDEN",
+			"section": "Nordic Watchdogs and Herders"
+		},
+		{
+			"id": 128,
+			"name": "CAVALIER KING CHARLES SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/136g09.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "English Toy Spaniels"
+		},
+		{
+			"id": 129,
+			"name": "PYRENEAN MOUNTAIN DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/137g02.jpg",
+			"country": "FRANCE",
+			"section": "Molossian type"
+		},
+		{
+			"id": 130,
+			"name": "PYRENEAN SHEEPDOG - SMOOTH FACED",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/138g01.jpg",
+			"country": "FRANCE",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 131,
+			"name": "IRISH TERRIER",
+			"image": null,
+			"country": "IRELAND",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 132,
+			"name": "BOSTON TERRIER",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Small Molossian type Dogs"
+		},
+		{
+			"id": 133,
+			"name": "LONG-HAIRED PYRENEAN SHEEPDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/141g01.jpg",
+			"country": "FRANCE",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 134,
+			"name": "SLOVAKIAN CHUVACH",
+			"image": null,
+			"country": "SLOVAKIA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 135,
+			"name": "DOBERMANN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/143g02.jpg",
+			"country": "GERMANY",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 136,
+			"name": "BOXER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/144g02.jpg",
+			"country": "GERMANY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 137,
+			"name": "LEONBERGER",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 138,
+			"name": "RHODESIAN RIDGEBACK",
+			"image": null,
+			"country": "SOUTH AFRICA",
+			"section": "Related breeds"
+		},
+		{
+			"id": 139,
+			"name": "ROTTWEILER",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 140,
+			"name": "DACHSHUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/148g04-1.jpg",
+			"country": "GERMANY",
+			"section": "None"
+		},
+		{
+			"id": 141,
+			"name": "BULLDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/149g02.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 142,
+			"name": "SERBIAN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/150g06.jpg",
+			"country": "SERBIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 143,
+			"name": "ISTRIAN SHORT-HAIRED HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/151g06.jpg",
+			"country": "CROATIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 144,
+			"name": "ISTRIAN WIRE-HAIRED HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/152g06.jpg",
+			"country": "CROATIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 145,
+			"name": "DALMATIAN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/153g06.jpg",
+			"country": "CROATIA",
+			"section": "Related breeds"
+		},
+		{
+			"id": 146,
+			"name": "POSAVATZ HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/154g06.jpg",
+			"country": "CROATIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 147,
+			"name": "BOSNIAN BROKEN-HAIRED HOUND - CALLED BARAK",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/155g06.jpg",
+			"country": "BOSNIA AND HERZEGOVINA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 148,
+			"name": "COLLIE ROUGH",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/156g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 149,
+			"name": "BULLMASTIFF",
+			"image": null,
+			"country": "GREAT BRITAIN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 150,
+			"name": "GREYHOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/158g10.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 151,
+			"name": "ENGLISH FOXHOUND",
+			"image": null,
+			"country": "GREAT BRITAIN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 152,
+			"name": "IRISH WOLFHOUND",
+			"image": null,
+			"country": "IRELAND",
+			"section": "Rough-haired Sighthounds"
+		},
+		{
+			"id": 153,
+			"name": "BEAGLE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/161g06.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 154,
+			"name": "WHIPPET",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/162g10.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 155,
+			"name": "BASSET HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/163g06.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 156,
+			"name": "DEERHOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/164g10.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Rough-haired Sighthounds"
+		},
+		{
+			"id": 157,
+			"name": "ITALIAN SPINONE",
+			"image": null,
+			"country": "ITALY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 158,
+			"name": "GERMAN SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/166g01-1.jpg",
+			"country": "GERMANY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 159,
+			"name": "AMERICAN COCKER SPANIEL",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 160,
+			"name": "DANDIE DINMONT TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/168g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 161,
+			"name": "FOX TERRIER (WIRE)",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/169g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 162,
+			"name": "CASTRO LABOREIRO DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/170g02.jpg",
+			"country": "PORTUGAL",
+			"section": "Molossian type"
+		},
+		{
+			"id": 163,
+			"name": "BOUVIER DES ARDENNES",
+			"image": null,
+			"country": "BELGIUM",
+			"section": "Cattledogs (except Swiss Cattledogs)"
+		},
+		{
+			"id": 164,
+			"name": "POODLE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/172g09.jpg",
+			"country": "FRANCE",
+			"section": "Poodle"
+		},
+		{
+			"id": 165,
+			"name": "ESTRELA MOUNTAIN DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/173g02.jpg",
+			"country": "PORTUGAL",
+			"section": "Molossian type"
+		},
+		{
+			"id": 166,
+			"name": "FRENCH SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/175g07.jpg",
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 167,
+			"name": "PICARDY SHEEPDOG",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 168,
+			"name": "ARIEGE POINTING DOG",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 169,
+			"name": "BOURBONNAIS POINTING DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/179g07.jpg",
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 170,
+			"name": "AUVERGNE POINTER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/180g07.jpg",
+			"country": "FRANCE",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 171,
+			"name": "GIANT SCHNAUZER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/181g02.jpg",
+			"country": "GERMANY",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 172,
+			"name": "SCHNAUZER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/182g02.jpg",
+			"country": "GERMANY",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 173,
+			"name": "MINIATURE SCHNAUZER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/183g02.jpg",
+			"country": "GERMANY",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 174,
+			"name": "GERMAN PINSCHER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/184g02.jpg",
+			"country": "GERMANY",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 175,
+			"name": "MINIATURE PINSCHER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/185g02.jpg",
+			"country": "GERMANY",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 176,
+			"name": "AFFENPINSCHER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/186g02.jpg",
+			"country": "GERMANY",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 177,
+			"name": "PORTUGUESE POINTING DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/187g07.jpg",
+			"country": "PORTUGAL",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 178,
+			"name": "SLOUGHI",
+			"image": null,
+			"country": "MOROCCO",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 179,
+			"name": "FINNISH LAPPHUND",
+			"image": null,
+			"country": "FINLAND",
+			"section": "Nordic Watchdogs and Herders"
+		},
+		{
+			"id": 180,
+			"name": "HOVAWART",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 181,
+			"name": "BOUVIER DES FLANDRES",
+			"image": " FRANCE",
+			"country": "BELGIUM",
+			"section": "Cattledogs (except Swiss Cattledogs)"
+		},
+		{
+			"id": 182,
+			"name": "KROMFOHRLÄNDER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/192g09.jpg",
+			"country": "GERMANY",
+			"section": "Kromfohrländer"
+		},
+		{
+			"id": 183,
+			"name": "BORZOI - RUSSIAN HUNTING SIGHTHOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/193g10.jpg",
+			"country": "RUSSIA",
+			"section": "Long-haired or fringed Sighthounds"
+		},
+		{
+			"id": 184,
+			"name": "BERGAMASCO SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/194g01-1.jpg",
+			"country": "ITALY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 185,
+			"name": "ITALIAN VOLPINO",
+			"image": null,
+			"country": "ITALY",
+			"section": "European Spitz"
+		},
+		{
+			"id": 186,
+			"name": "BOLOGNESE",
+			"image": null,
+			"country": "ITALY",
+			"section": "Bichons and related breeds"
+		},
+		{
+			"id": 187,
+			"name": "NEAPOLITAN MASTIFF",
+			"image": null,
+			"country": "ITALY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 188,
+			"name": "ITALIAN ROUGH-HAIRED SEGUGIO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/198g06.jpg",
+			"country": "ITALY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 189,
+			"name": "CIRNECO DELL'ETNA",
+			"image": null,
+			"country": "ITALY",
+			"section": "Primitive type - Hunting Dogs"
+		},
+		{
+			"id": 190,
+			"name": "ITALIAN GREYHOUND",
+			"image": null,
+			"country": "ITALY",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 191,
+			"name": "MAREMMA AND THE ABRUZZES SHEEPDOG",
+			"image": null,
+			"country": "ITALY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 192,
+			"name": "ITALIAN POINTING DOG",
+			"image": null,
+			"country": "ITALY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 193,
+			"name": "NORWEGIAN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/203g06.jpg",
+			"country": "NORWAY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 194,
+			"name": "SPANISH HOUND",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 195,
+			"name": "CHOW CHOW",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/205g05.jpg",
+			"country": "CHINA",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 196,
+			"name": "JAPANESE CHIN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/206g09.jpg",
+			"country": "JAPAN",
+			"section": "Japan Chin and Pekingese"
+		},
+		{
+			"id": 197,
+			"name": "PEKINGESE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/207g09.jpg",
+			"country": "CHINA",
+			"section": "Japan Chin and Pekingese"
+		},
+		{
+			"id": 198,
+			"name": "SHIH TZU",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/208g09.jpg",
+			"country": "Tibet (China)",
+			"section": "Tibetan breeds"
+		},
+		{
+			"id": 199,
+			"name": "TIBETAN TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/209g09.jpg",
+			"country": "Tibet (China)",
+			"section": "Tibetan breeds"
+		},
+		{
+			"id": 200,
+			"name": "SAMOYED",
+			"image": " SIBERIA",
+			"country": "NORTHERN RUSSIA",
+			"section": "Nordic Sledge Dogs"
+		},
+		{
+			"id": 201,
+			"name": "HANOVERIAN SCENTHOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/213g06-1.jpg",
+			"country": "GERMANY",
+			"section": "Leash (scent) Hounds"
+		},
+		{
+			"id": 202,
+			"name": "HELLENIC HOUND",
+			"image": null,
+			"country": "GREECE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 203,
+			"name": "BICHON FRISE",
+			"image": " FRANCE",
+			"country": "BELGIUM",
+			"section": "Bichons and related breeds"
+		},
+		{
+			"id": 204,
+			"name": "PUDELPOINTER",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 205,
+			"name": "BAVARIAN MOUNTAIN SCENT HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/217g06.jpg",
+			"country": "GERMANY",
+			"section": "Leash (scent) Hounds"
+		},
+		{
+			"id": 206,
+			"name": "CHIHUAHUA",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/218g09-1.jpg",
+			"country": "MEXICO",
+			"section": "Chihuahueno"
+		},
+		{
+			"id": 207,
+			"name": "FRENCH TRICOLOUR HOUND",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 208,
+			"name": "FRENCH WHITE & BLACK HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/220g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 209,
+			"name": "FRISIAN WATER DOG",
+			"image": null,
+			"country": "THE NETHERLANDS",
+			"section": "Water Dogs"
+		},
+		{
+			"id": 210,
+			"name": "STABIJHOUN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/222g07-1.jpg",
+			"country": "THE NETHERLANDS",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 211,
+			"name": "DUTCH SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/223g01-1.jpg",
+			"country": "THE NETHERLANDS",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 212,
+			"name": "DRENTSCHE PARTRIDGE DOG",
+			"image": null,
+			"country": "THE NETHERLANDS",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 213,
+			"name": "FILA BRASILEIRO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/225g02.jpg",
+			"country": "BRAZIL",
+			"section": "Molossian type"
+		},
+		{
+			"id": 214,
+			"name": "LANDSEER (EUROPEAN CONTINENTAL TYPE)",
+			"image": " SWITZERLAND",
+			"country": "GERMANY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 215,
+			"name": "LHASA APSO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/227g09.jpg",
+			"country": "Tibet (China)",
+			"section": "Tibetan breeds"
+		},
+		{
+			"id": 216,
+			"name": "AFGHAN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/228g10.jpg",
+			"country": "AFGHANISTAN",
+			"section": "Long-haired or fringed Sighthounds"
+		},
+		{
+			"id": 217,
+			"name": "SERBIAN TRICOLOUR HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/229g06.jpg",
+			"country": "SERBIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 218,
+			"name": "TIBETAN MASTIFF",
+			"image": null,
+			"country": "Tibet (China)",
+			"section": "Molossian type"
+		},
+		{
+			"id": 219,
+			"name": "TIBETAN SPANIEL",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/231g09.jpg",
+			"country": "Tibet (China)",
+			"section": "Tibetan breeds"
+		},
+		{
+			"id": 220,
+			"name": "DEUTSCH STICHELHAAR",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/232g07.jpg",
+			"country": "GERMANY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 221,
+			"name": "LITTLE LION DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/233g09.jpg",
+			"country": "FRANCE",
+			"section": "Bichons and related breeds"
+		},
+		{
+			"id": 222,
+			"name": "XOLOITZCUINTLE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/234g05-1.jpg",
+			"country": "MEXICO",
+			"section": "Primitive type"
+		},
+		{
+			"id": 223,
+			"name": "GREAT DANE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/235g02.jpg",
+			"country": "GERMANY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 224,
+			"name": "AUSTRALIAN SILKY TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/236g03.jpg",
+			"country": "AUSTRALIA",
+			"section": "Toy Terriers"
+		},
+		{
+			"id": 225,
+			"name": "NORWEGIAN BUHUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/237g05.jpg",
+			"country": "NORWAY",
+			"section": "Nordic Watchdogs and Herders"
+		},
+		{
+			"id": 226,
+			"name": "MUDI",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/238g01.jpg",
+			"country": "HUNGARY",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 227,
+			"name": "HUNGARIAN WIRE-HAIRED POINTER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/239g07.jpg",
+			"country": "HUNGARY",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 228,
+			"name": "HUNGARIAN GREYHOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/240g10.jpg",
+			"country": "HUNGARY",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 229,
+			"name": "HUNGARIAN HOUND - TRANSYLVANIAN SCENT HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/241g06.jpg",
+			"country": "HUNGARY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 230,
+			"name": "NORWEGIAN ELKHOUND GREY",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/242g05.jpg",
+			"country": "NORWAY",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 231,
+			"name": "ALASKAN MALAMUTE",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Nordic Sledge Dogs"
+		},
+		{
+			"id": 232,
+			"name": "SLOVAKIAN HOUND",
+			"image": null,
+			"country": "SLOVAKIA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 233,
+			"name": "BOHEMIAN WIRE-HAIRED POINTING GRIFFON",
+			"image": null,
+			"country": "CZECH REPUBLIC",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 234,
+			"name": "CESKY TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/246g03.jpg",
+			"country": "CZECH REPUBLIC",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 235,
+			"name": "ATLAS MOUNTAIN DOG (AIDI)",
+			"image": null,
+			"country": "MOROCCO",
+			"section": "Molossian type"
+		},
+		{
+			"id": 236,
+			"name": "PHARAOH HOUND",
+			"image": null,
+			"country": "MALTA",
+			"section": "Primitive type"
+		},
+		{
+			"id": 237,
+			"name": "MAJORCA MASTIFF",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 238,
+			"name": "HAVANESE",
+			"image": null,
+			"country": "WESTERN MEDITERRANEAN BASIN",
+			"section": "Bichons and related breeds"
+		},
+		{
+			"id": 239,
+			"name": "POLISH LOWLAND SHEEPDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/251g01.jpg",
+			"country": "POLAND",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 240,
+			"name": "TATRA SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/252g01.jpg",
+			"country": "POLAND",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 241,
+			"name": "PUG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/253g09.jpg",
+			"country": "CHINA",
+			"section": "Small Molossian type Dogs"
+		},
+		{
+			"id": 242,
+			"name": "ALPINE DACHSBRACKE",
+			"image": null,
+			"country": "AUSTRIA",
+			"section": "Leash (scent) Hounds"
+		},
+		{
+			"id": 243,
+			"name": "AKITA",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/255g05.jpg",
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 244,
+			"name": "SHIBA",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/257g05.jpg",
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 245,
+			"name": "JAPANESE TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/259g03.jpg",
+			"country": "JAPAN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 246,
+			"name": "TOSA",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/260g02.jpg",
+			"country": "JAPAN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 247,
+			"name": "HOKKAIDO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/261g05.jpg",
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 248,
+			"name": "JAPANESE SPITZ",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/262g05.jpg",
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 249,
+			"name": "CHESAPEAKE BAY RETRIEVER",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Retrievers"
+		},
+		{
+			"id": 250,
+			"name": "MASTIFF",
+			"image": null,
+			"country": "GREAT BRITAIN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 251,
+			"name": "NORWEGIAN LUNDEHUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/265g05.jpg",
+			"country": "NORWAY",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 252,
+			"name": "HYGEN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/266g06.jpg",
+			"country": "NORWAY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 253,
+			"name": "HALDEN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/267g06.jpg",
+			"country": "NORWAY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 254,
+			"name": "NORWEGIAN ELKHOUND BLACK",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/268g05.jpg",
+			"country": "NORWAY",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 255,
+			"name": "SALUKI",
+			"image": null,
+			"country": "MIDDLE EAST",
+			"section": "Long-haired or fringed Sighthounds"
+		},
+		{
+			"id": 256,
+			"name": "SIBERIAN HUSKY",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Nordic Sledge Dogs"
+		},
+		{
+			"id": 257,
+			"name": "BEARDED COLLIE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/271g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 258,
+			"name": "NORFOLK TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/272g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 259,
+			"name": "CANAAN DOG",
+			"image": null,
+			"country": "ISRAEL",
+			"section": "Primitive type"
+		},
+		{
+			"id": 260,
+			"name": "GREENLAND DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/274g05.jpg",
+			"country": "GREENLAND",
+			"section": "Nordic Sledge Dogs"
+		},
+		{
+			"id": 261,
+			"name": "NORRBOTTENSPITZ",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/276g05.jpg",
+			"country": "SWEDEN",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 262,
+			"name": "CROATIAN SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/277g01.jpg",
+			"country": "CROATIA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 263,
+			"name": "KARST SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/278g02.jpg",
+			"country": "SLOVENIA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 264,
+			"name": "MONTENEGRIN MOUNTAIN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/279g06.jpg",
+			"country": "MONTENEGRO",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 265,
+			"name": "OLD DANISH POINTING DOG",
+			"image": null,
+			"country": "DENMARK",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 266,
+			"name": "GRAND GRIFFON VENDEEN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/282g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 267,
+			"name": "COTON DE TULEAR",
+			"image": null,
+			"country": "MADAGASCAR",
+			"section": "Bichons and related breeds"
+		},
+		{
+			"id": 268,
+			"name": "LAPPONIAN HERDER",
+			"image": null,
+			"country": "FINLAND",
+			"section": "Nordic Watchdogs and Herders"
+		},
+		{
+			"id": 269,
+			"name": "SPANISH GREYHOUND",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 270,
+			"name": "AMERICAN STAFFORDSHIRE TERRIER",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Bull type Terriers"
+		},
+		{
+			"id": 271,
+			"name": "AUSTRALIAN CATTLE DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/287g01.jpg",
+			"country": "AUSTRALIA",
+			"section": "Cattledogs (except Swiss Cattledogs)"
+		},
+		{
+			"id": 272,
+			"name": "CHINESE CRESTED DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/288g09.jpg",
+			"country": "CHINA",
+			"section": "Hairless Dogs"
+		},
+		{
+			"id": 273,
+			"name": "ICELANDIC SHEEPDOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/289g05.jpg",
+			"country": "ICELAND",
+			"section": "Nordic Watchdogs and Herders"
+		},
+		{
+			"id": 274,
+			"name": "BEAGLE HARRIER",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 275,
+			"name": "EURASIAN",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/291g05.jpg",
+			"country": "GERMANY",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 276,
+			"name": "DOGO ARGENTINO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/292g02.jpg",
+			"country": "ARGENTINA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 277,
+			"name": "AUSTRALIAN KELPIE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/293g01.jpg",
+			"country": "AUSTRALIA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 278,
+			"name": "OTTERHOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/294g06.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 279,
+			"name": "HARRIER",
+			"image": null,
+			"country": "GREAT BRITAIN",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 280,
+			"name": "COLLIE SMOOTH",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/296g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 281,
+			"name": "BORDER COLLIE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/297g01.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 282,
+			"name": "ROMAGNA WATER DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/298g08-01.jpg",
+			"country": "ITALY",
+			"section": "Water Dogs"
+		},
+		{
+			"id": 283,
+			"name": "GERMAN HOUND",
+			"image": null,
+			"country": "GERMANY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 284,
+			"name": "BLACK AND TAN COONHOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/300g06.jpg",
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 285,
+			"name": "AMERICAN WATER SPANIEL",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Water Dogs"
+		},
+		{
+			"id": 286,
+			"name": "IRISH GLEN OF IMAAL TERRIER",
+			"image": null,
+			"country": "IRELAND",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 287,
+			"name": "AMERICAN FOXHOUND",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 288,
+			"name": "RUSSIAN-EUROPEAN LAIKA",
+			"image": null,
+			"country": "RUSSIA",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 289,
+			"name": "EAST SIBERIAN LAIKA",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/305g05-1.jpg",
+			"country": "RUSSIA",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 290,
+			"name": "WEST SIBERIAN LAIKA",
+			"image": null,
+			"country": "RUSSIA",
+			"section": "Nordic Hunting Dogs"
+		},
+		{
+			"id": 291,
+			"name": "AZAWAKH",
+			"image": null,
+			"country": "MALI",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 292,
+			"name": "DUTCH SMOUSHOND",
+			"image": null,
+			"country": "THE NETHERLANDS",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 293,
+			"name": "SHAR PEI",
+			"image": null,
+			"country": "CHINA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 294,
+			"name": "PERUVIAN HAIRLESS DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/310g05.jpg",
+			"country": "PERU",
+			"section": "Primitive type"
+		},
+		{
+			"id": 295,
+			"name": "SAARLOOS WOLFHOND",
+			"image": null,
+			"country": "THE NETHERLANDS",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 296,
+			"name": "NOVA SCOTIA DUCK TOLLING RETRIEVER",
+			"image": null,
+			"country": "CANADA",
+			"section": "Retrievers"
+		},
+		{
+			"id": 297,
+			"name": "DUTCH SCHAPENDOES",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/313g01.jpg",
+			"country": "THE NETHERLANDS",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 298,
+			"name": "NEDERLANDSE KOOIKERHONDJE",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/314g08-1.jpg",
+			"country": "THE NETHERLANDS",
+			"section": "Flushing Dogs"
+		},
+		{
+			"id": 299,
+			"name": "BROHOLMER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/315g02.jpg",
+			"country": "DENMARK",
+			"section": "Molossian type"
+		},
+		{
+			"id": 300,
+			"name": "FRENCH WHITE AND ORANGE HOUND",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 301,
+			"name": "KAI",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/317g05.jpg",
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 302,
+			"name": "KISHU",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/318g05.jpg",
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 303,
+			"name": "SHIKOKU",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/319g05.jpg",
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 304,
+			"name": "WIREHAIRED SLOVAKIAN POINTER",
+			"image": null,
+			"country": "SLOVAKIA",
+			"section": "Continental Pointing Dogs"
+		},
+		{
+			"id": 305,
+			"name": "MAJORCA SHEPHERD DOG",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 306,
+			"name": "GREAT ANGLO-FRENCH TRICOLOUR HOUND",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 307,
+			"name": "GREAT ANGLO-FRENCH WHITE AND BLACK HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/323g06.jpg",
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 308,
+			"name": "GREAT ANGLO-FRENCH WHITE & ORANGE HOUND",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 309,
+			"name": "MEDIUM-SIZED ANGLO-FRENCH HOUND",
+			"image": null,
+			"country": "FRANCE",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 310,
+			"name": "SOUTH RUSSIAN SHEPHERD DOG",
+			"image": null,
+			"country": "RUSSIA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 311,
+			"name": "RUSSIAN BLACK TERRIER",
+			"image": null,
+			"country": "RUSSIA",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 312,
+			"name": "CAUCASIAN SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/328g02.jpg",
+			"country": "RUSSIA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 313,
+			"name": "CANARIAN WARREN HOUND",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/329g05.jpg",
+			"country": "SPAIN",
+			"section": "Primitive type - Hunting Dogs"
+		},
+		{
+			"id": 314,
+			"name": "IRISH RED AND WHITE SETTER",
+			"image": null,
+			"country": "IRELAND",
+			"section": "British and Irish Pointers and Setters"
+		},
+		{
+			"id": 315,
+			"name": "ANATOLIAN SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/331g02.jpg",
+			"country": "ANATOLIA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 316,
+			"name": "CZECHOSLOVAKIAN WOLFDOG",
+			"image": null,
+			"country": "SLOVAKIA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 317,
+			"name": "POLISH GREYHOUND",
+			"image": null,
+			"country": "POLAND",
+			"section": "Short-haired Sighthounds"
+		},
+		{
+			"id": 318,
+			"name": "KOREA JINDO DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/334g05.jpg",
+			"country": "REPUBLIC OF KOREA",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 319,
+			"name": "CENTRAL ASIA SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/335g02-1.jpg",
+			"country": "RUSSIA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 320,
+			"name": "SPANISH WATER DOG",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Water Dogs"
+		},
+		{
+			"id": 321,
+			"name": "ITALIAN SHORT-HAIRED SEGUGIO",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/337g06.jpg",
+			"country": "ITALY",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 322,
+			"name": "THAI RIDGEBACK DOG",
+			"image": null,
+			"country": "THAILAND",
+			"section": "Primitive type - Hunting Dogs"
+		},
+		{
+			"id": 323,
+			"name": "PARSON RUSSELL TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/339g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 324,
+			"name": "SAINT MIGUEL CATTLE DOG",
+			"image": null,
+			"country": "PORTUGAL",
+			"section": "Molossian type"
+		},
+		{
+			"id": 325,
+			"name": "BRAZILIAN TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/341g03.jpg",
+			"country": "BRAZIL",
+			"section": "Large and medium sized Terriers"
+		},
+		{
+			"id": 326,
+			"name": "AUSTRALIAN SHEPHERD",
+			"image": null,
+			"country": "UNITED STATES OF AMERICA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 327,
+			"name": "ITALIAN CORSO DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/343g02.jpg",
+			"country": "ITALY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 328,
+			"name": "AMERICAN AKITA",
+			"image": null,
+			"country": "JAPAN",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 329,
+			"name": "JACK RUSSELL TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/345g03-2.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Small sized Terriers"
+		},
+		{
+			"id": 330,
+			"name": "DOGO CANARIO",
+			"image": null,
+			"country": "SPAIN",
+			"section": "Molossian type"
+		},
+		{
+			"id": 331,
+			"name": "WHITE SWISS SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/347g01-1.jpg",
+			"country": "SWITZERLAND",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 332,
+			"name": "TAIWAN DOG",
+			"image": null,
+			"country": "TAIWAN",
+			"section": "Primitive type - Hunting Dogs"
+		},
+		{
+			"id": 333,
+			"name": "ROMANIAN MIORITIC SHEPHERD DOG",
+			"image": null,
+			"country": "ROMANIA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 334,
+			"name": "ROMANIAN CARPATHIAN SHEPHERD DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/350g01.jpg",
+			"country": "ROMANIA",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 335,
+			"name": "AUSTRALIAN STUMPY TAIL CATTLE DOG",
+			"image": null,
+			"country": "AUSTRALIA",
+			"section": "Cattledogs (except Swiss Cattledogs)"
+		},
+		{
+			"id": 336,
+			"name": "RUSSIAN TOY",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/352g09-1.jpg",
+			"country": "RUSSIA",
+			"section": "Continental Toy Spaniel and Russian Toy"
+		},
+		{
+			"id": 337,
+			"name": "CIMARRÓN URUGUAYO",
+			"image": null,
+			"country": "URUGUAY",
+			"section": "Molossian type"
+		},
+		{
+			"id": 338,
+			"name": "POLISH HUNTING DOG",
+			"image": null,
+			"country": "POLAND",
+			"section": "Scent hounds"
+		},
+		{
+			"id": 339,
+			"name": "BOSNIAN AND HERZEGOVINIAN - CROATIAN SHEPHERD DOG",
+			"image": " CROATIA",
+			"country": "BOSNIA AND HERZEGOVINA",
+			"section": "Molossian type"
+		},
+		{
+			"id": 340,
+			"name": "DANISH-SWEDISH FARMDOG",
+			"image": " SWEDEN",
+			"country": "DENMARK",
+			"section": "Pinscher and Schnauzer type"
+		},
+		{
+			"id": 341,
+			"name": "SOUTHEASTERN EUROPEAN SHEPHERD",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/357g02.jpg",
+			"country": "SOUTH-EASTERN EUROPE",
+			"section": "Molossian type"
+		},
+		{
+			"id": 342,
+			"name": "THAI BANGKAEW DOG",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/358g05.jpg",
+			"country": "THAILAND",
+			"section": "Asian Spitz and related breeds"
+		},
+		{
+			"id": 343,
+			"name": "MINIATURE BULL TERRIER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/359g03.jpg",
+			"country": "GREAT BRITAIN",
+			"section": "Bull type Terriers"
+		},
+		{
+			"id": 344,
+			"name": "LANCASHIRE HEELER",
+			"image": "http://www.fci.be/Nomenclature/Illustrations/360g01.jpg",
+			"country": "ENGLAND",
+			"section": "Sheepdogs"
+		},
+		{
+			"id": 345,
+			"name": "LABRADOR RETRIEVER MIX",
+			"image": null,
+			"country": "NA",
+			"section": "Mutt"
+		},
+		{
+			"id": 346,
+			"name": "HUSKY MIX",
+			"image": null,
+			"country": "NA",
+			"section": "Mutt"
+		},
+		{
+			"id": 347,
+			"name": "LABRADOR / GREAT DANE MIX",
+			"image": null,
+			"country": "NA",
+			"section": "Mutt"
+		},
+		{
+			"id": 348,
+			"name": "TERRIER MIX",
+			"image": null,
+			"country": "NA",
+			"section": "Mutt"
+		},
+		{
+			"id": 349,
+			"name": "BEAGLE MIX",
+			"image": null,
+			"country": "NA",
+			"section": "Mutt"
+		},
+		{
+			"id": 350,
+			"name": "SHORT HAIRED SETTER MIX",
+			"image": null,
+			"country": "NA",
+			"section": "Mutt"
+		}
+	]
+}

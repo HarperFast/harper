@@ -1,0 +1,587 @@
+import { ClientError } from '../utility/errors/hdbError.js';
+import * as crdtOperations from './crdt.ts';
+import { Blob } from './blob.ts';
+
+// perhaps we want these in the global registry, not sure:
+const recordClassCache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
+
+function getChanges(target) {
+	let changes = target.getChanges();
+	if (!changes) {
+		changes = Object.create(null);
+		target._setChanges(changes);
+	}
+	return changes;
+}
+/**
+ *	A tracked class cacheable, (potentially) frozen read-only record, designed to facilitate record updates,
+ *	and tracks property (and sub-object/array) changes so that on commit, any property changes can be written as part of
+ *	the commit. This will also track specific updates so can record information in CRDTs.
+ */
+/**
+ * assignObjectAccessors add methods to the prototype of the provided Target class to make
+ * it a tracked object.
+ * @param Target Class to add accessors to
+ * @param typeDef Type definition for determining property
+ */
+export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
+	const prototype = Target.prototype;
+	const descriptors = {};
+	const attributes = typeDef.attributes || typeDef.properties || [];
+	for (const attribute of attributes) {
+		const name = attribute.name;
+		let set;
+		let descriptor;
+		if (attribute.resolve) {
+			descriptor = {
+				get() {
+					return attribute.resolve(this, this.getContext?.());
+				},
+				set(related) {
+					return attribute.set(this, related);
+				},
+				configurable: true,
+			};
+		} else {
+			switch (attribute.type) {
+				case 'String':
+					set = function (value) {
+						if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'ID':
+					set = function (value) {
+						if (
+							!(
+								typeof value === 'string' ||
+								(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
+								(value == null && attribute.nullable !== false)
+							)
+						)
+							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Float':
+				case 'Number':
+					set = function (value) {
+						const scalarValue = value?.__op__ ? value.value : value;
+						if (!(typeof scalarValue === 'number' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a number, attempt to assign ${scalarValue}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Int':
+					set = function (value) {
+						let scalarValue = value?.__op__ ? value.value : value;
+						if (!(scalarValue >> 0 === scalarValue || (value == null && attribute.nullable !== false))) {
+							if (typeof scalarValue === 'number' && Math.abs((scalarValue >> 0) - scalarValue) <= 1) {
+								// if it just needs to be rounded, do the conversion without complaining
+								scalarValue = Math.round(scalarValue);
+								if (value?.__op__) value.value = scalarValue;
+								else value = scalarValue;
+							} else
+								throw new ClientError(
+									`${name} must be an integer between -2147483648 and 2147483647, attempt to assign ${value}`
+								);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Long':
+					set = function (value) {
+						let scalarValue = value?.__op__ ? value.value : value;
+						if (
+							!(
+								(Math.round(scalarValue) === value && Math.abs(scalarValue) <= 9007199254740992) ||
+								(value == null && attribute.nullable !== false)
+							)
+						) {
+							if (typeof scalarValue === 'number' && Math.abs(scalarValue) <= 9007199254740992) {
+								// if it just needs to be rounded, do the conversion without complaining
+								scalarValue = Math.round(scalarValue);
+								if (value?.__op__) value.value = scalarValue;
+								else value = scalarValue;
+							} else
+								throw new ClientError(
+									`${name} must be an integer between -9007199254740992 and 9007199254740992, attempt to assign ${value}`
+								);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'BigInt':
+					set = function (value) {
+						let scalarValue = value?.__op__ ? value.value : value;
+						if (!(typeof scalarValue === 'bigint' || (value == null && attribute.nullable !== false))) {
+							if (typeof scalarValue === 'string' || typeof scalarValue === 'number') {
+								scalarValue = BigInt(scalarValue);
+								if (value?.__op__) value.value = scalarValue;
+								else value = scalarValue;
+							} else throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Boolean':
+					set = function (value) {
+						if (!(typeof value === 'boolean' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a boolean, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Date':
+					set = function (value) {
+						if (!(value instanceof Date || (value == null && attribute.nullable !== false))) {
+							if (typeof value === 'string' || typeof value === 'number') value = new Date(value);
+							else throw new ClientError(`${name} must be a Date, attempt to assign ${value}`);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Bytes':
+					set = function (value) {
+						if (!(value instanceof Uint8Array || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a Buffer or Uint8Array, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Blob':
+					set = function (value) {
+						if (!(value instanceof Blob || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a Blob, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Any':
+				case undefined:
+					set = function (value) {
+						getChanges(this)[name] = value;
+					};
+					break;
+				default: // for all user defined types, they must at least be an object
+					set = function (value) {
+						if (!(typeof value === 'object' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be an object, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+			}
+			descriptor = {
+				get() {
+					let changes = this.getChanges?.();
+					if (changes && name in changes) {
+						const value = changes[name];
+						if (value?.__op__) {
+							const sourceValue = this.getRecord()?.[name];
+							return value.update(sourceValue);
+						}
+						return value;
+					}
+					const sourceValue = this.getRecord()?.[name];
+					if (sourceValue && typeof sourceValue === 'object') {
+						const updatedValue = trackObject(sourceValue, attribute);
+						if (updatedValue) {
+							if (!changes) {
+								this._setChanges((changes = Object.create(null)));
+							}
+							return (changes[name] = updatedValue);
+						}
+					}
+					return sourceValue;
+				},
+				set,
+				enumerable: true,
+				configurable: true, // we need to be able to reconfigure these as schemas change (attributes can be added/removed at runtime)
+			};
+		}
+		descriptor.get.isAttribute = true;
+		descriptors[name] = descriptor;
+		if (
+			!(name in prototype) ||
+			// this means that we are re-defining an attribute accessor (which is fine)
+			Object.getOwnPropertyDescriptor(prototype, name)?.get?.isAttribute
+		) {
+			Object.defineProperty(prototype, name, descriptor);
+		}
+	}
+	setMethod('getProperty', function (name) {
+		const descriptor = descriptors[name];
+		if (descriptor) {
+			return descriptor.get.call(this);
+		}
+		const changes = this.getChanges();
+		if (changes?.[name] !== undefined) return changes[name];
+		return this.getRecord()?.[name];
+	});
+	setMethod('set', function (name, value) {
+		const descriptor = descriptors[name];
+		if (descriptor) return descriptor.set.call(this, value);
+		if (typeDef.sealed) throw new ClientError('Can not add a property to a sealed table schema');
+		getChanges(this)[name] = value;
+	});
+	setMethod('deleteProperty', function (name) {
+		getChanges(this)[name] = undefined;
+	});
+	setMethod('toJSON', function () {
+		const changes = this.getChanges?.();
+		let copiedSource;
+		for (const key in changes) {
+			// copy the source first so we have properties in the right order and can override them
+			if (!copiedSource) copiedSource = { ...this.getRecord() };
+			let value = changes[key];
+			if (value?.__op__) {
+				const sourceValue = copiedSource[key];
+				value = value.update(sourceValue);
+			}
+			copiedSource[key] = value; // let recursive calls to toJSON handle sub-objects
+		}
+		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
+		if (keys.length > 0) {
+			if (!copiedSource) copiedSource = { ...this.getRecord() };
+			Object.assign(copiedSource, this);
+		}
+		return copiedSource || this.getRecord();
+	});
+	if (!prototype.get) setMethod('get', prototype.getProperty);
+	if (!prototype.delete) setMethod('delete', prototype.deleteProperty);
+	if (!prototype.then) setMethod('then', null); // this is a shortcut to avoid the proxy for then, which is called frequently to determine if an object is a promise
+	function setMethod(name, method) {
+		Object.defineProperty(prototype, name, {
+			value: method,
+			configurable: true,
+		});
+	}
+	// walk the prototype chain and set the prototype of the last object to the proxy that forwards to get
+	let lastPrototype = prototype;
+	do {
+		const nextPrototype = Object.getPrototypeOf(lastPrototype);
+		if (nextPrototype === Object.prototype) {
+			Object.setPrototypeOf(lastPrototype, useFullPropertyProxy ? fullPropertyProxy : getOnMissingProperty);
+			break;
+		}
+		lastPrototype = nextPrototype;
+	} while (lastPrototype && lastPrototype !== getOnMissingProperty && lastPrototype !== fullPropertyProxy);
+}
+const ObjectPrototype = Object.prototype;
+// Here we define a proxy that will handle any missing property access as a getter, that will attempt
+// get the property value from the tracked object's changes or record. This is set as a prototype of
+// any tracked objects (including Table/Resource instances), so that any property access will be
+// intercepted by the proxy and the value will be returned from the changes or record.
+const getOnMissingProperty = new Proxy({}, { get: getProxiedProperty });
+const fullPropertyProxy = new Proxy({}, { get: getProxiedProperty, set: setProxiedProperty });
+function getProxiedProperty(target, name, receiver) {
+	if (typeof name === 'string') {
+		if (name === 'then' || name === 'getRecord' || name === 'getChanges') return undefined; // shortcut
+		if (ObjectPrototype[name]) return ObjectPrototype[name];
+		let changes = receiver.getChanges?.();
+		if (changes && name in changes) {
+			return changes[name];
+		}
+		const sourceValue = receiver.getRecord?.()?.[name];
+		if (sourceValue && typeof sourceValue === 'object') {
+			const updatedValue = trackObject(sourceValue);
+			if (updatedValue) {
+				if (!changes) {
+					changes = Object.create(null);
+					receiver._setChanges(changes);
+				}
+				changes[name] = updatedValue;
+				return updatedValue;
+			}
+		}
+		return sourceValue;
+	}
+}
+function setProxiedProperty(target: any, name: string | symbol, value, receiver) {
+	if (typeof name === 'string') {
+		let changes = receiver.getChanges?.();
+		if (!changes) {
+			changes = {};
+			receiver._setChanges(changes);
+		}
+		changes[name] = value;
+	} else {
+		Object.defineProperty(receiver, name, { value, configurable: true, writable: true });
+	}
+	return true;
+}
+
+function trackObject(sourceObject: any, typeDef?: any) {
+	// lazily instantiate in case of recursive structures
+	let TrackedObject;
+	switch (sourceObject.constructor) {
+		case Object:
+			if (typeDef) {
+				TrackedObject = typeDef.TrackedObject;
+				if (!TrackedObject) {
+					typeDef.TrackedObject = TrackedObject = class extends GenericTrackedObject {};
+					assignTrackedAccessors(TrackedObject, typeDef);
+				}
+				return new TrackedObject(sourceObject);
+			} else {
+				return new GenericTrackedObject(sourceObject);
+			}
+		case Array:
+			const trackedArray = new TrackedArray(sourceObject.length, sourceObject);
+			for (let i = 0, l = sourceObject.length; i < l; i++) {
+				let element = sourceObject[i];
+				if (element && typeof element === 'object') element = trackObject(element, typeDef?.elements);
+				trackedArray[i] = element;
+			}
+			return trackedArray;
+		// any other objects (like Date) are left unchanged
+		default:
+			return sourceObject;
+	}
+}
+export class GenericTrackedObject {
+	#record: any;
+	#changes: any;
+	constructor(sourceObject) {
+		if (sourceObject?.getRecord)
+			throw new Error('Can not track an already tracked object, check for circular references');
+		this.#record = sourceObject;
+	}
+	getRecord() {
+		return this.#record;
+	}
+	setRecord(record) {
+		this.#record = record;
+	}
+	getChanges() {
+		return this.#changes;
+	}
+	_setChanges(changes) {
+		this.#changes = changes;
+	}
+}
+assignTrackedAccessors(GenericTrackedObject, {}, true);
+/**
+ * Collapse the changed and transitive and source/record data into single object that
+ * can be directly serialized. Performed recursively
+ * @param target
+ * @returns
+ */
+export function collapseData(target) {
+	const changes = target.getChanges?.();
+	let copiedSource;
+	for (const key in changes) {
+		// copy the source first so we have properties in the right order and can override them
+		if (!copiedSource) copiedSource = target.getRecord ? { ...target.getRecord() } : {};
+		let value = changes[key];
+		if (value && typeof value === 'object') {
+			if (value.__op__) {
+				const sourceValue = copiedSource[key];
+				value = value.update(sourceValue);
+			} else value = collapseData(value);
+		}
+		copiedSource[key] = value;
+	}
+	const keys = Object.keys(target); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
+	if (keys.length > 0) {
+		if (!copiedSource) copiedSource = target.getRecord ? { ...target.getRecord() } : {};
+		Object.assign(copiedSource, target);
+	}
+	return copiedSource || target.getRecord?.() || target;
+}
+const hasOwnProperty = Object.prototype.hasOwnProperty;
+/**
+ * Collapse the changed data and source/record data into single object
+ * that is frozen and suitable for storage and caching
+ * @param target
+ * @returns
+ */
+export function updateAndFreeze(target, changes = target.getChanges?.()) {
+	let mergedUpdatedObject: any;
+	if (!target) return changes;
+	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
+		// a tracked array, by default we can freeze the tracked array itself
+		mergedUpdatedObject = target;
+		for (let i = 0, l = target.length; i < l; i++) {
+			let value = target[i];
+			if (value && typeof value === 'object') {
+				const newValue = updateAndFreeze(value);
+				if (newValue !== value && mergedUpdatedObject === target) {
+					// if we need to make any changes to the user's array, we make a copy so we don't modify
+					// an array that the user may be using with transient properties
+					mergedUpdatedObject = target.slice(0);
+				}
+				value = newValue;
+			}
+			mergedUpdatedObject[i] = value;
+		}
+		return Object.freeze(mergedUpdatedObject);
+	}
+	// copy the changes into the merged updated object
+	for (const key in changes) {
+		// copy the source first so we have properties in the right order and can override them
+		if (!mergedUpdatedObject) mergedUpdatedObject = { ...(target.getRecord ? target.getRecord() : target) };
+		let value = changes[key];
+		if (value && typeof value === 'object') {
+			if (value.__op__) {
+				const operation = crdtOperations[value?.__op__];
+				if (!operation) throw new Error('Invalid CRDT operation ' + value.__op__);
+				else operation(mergedUpdatedObject, key, value);
+				continue;
+			} else value = updateAndFreeze(value);
+		}
+		mergedUpdatedObject[key] = value;
+	}
+	// now copy any properties on the instances itself to the merged updated object
+	if (!Array.isArray(target) && target.getRecord) {
+		for (const key in target) {
+			if (hasOwnProperty.call(target, key)) {
+				if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord() };
+				mergedUpdatedObject[key] = target[key];
+			}
+		}
+	}
+	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : target.getRecord ? target.getRecord() : target;
+}
+/**
+ * Determine if any changes have been made to this tracked object
+ * @param target
+ * @returns
+ */
+export function hasChanges(target) {
+	const source = target.getRecord?.();
+	if (source === undefined) return true; // if no original source then it is always a change
+	if (target.constructor === Array) {
+		if (!source) return true;
+		if (target[HAS_ARRAY_CHANGES]) return true;
+		if (target.length !== source.length) return true;
+		for (let i = 0, l = target.length; i < l; i++) {
+			const sourceValue = source[i];
+			const targetValue = target[i];
+			if (sourceValue && targetValue?.getRecord?.() === sourceValue) {
+				if (hasChanges(targetValue)) return true;
+			} else return true;
+		}
+	} else {
+		const changes = target.getChanges?.();
+		if (changes && !source) return true;
+		for (const key in changes) {
+			const value = changes[key];
+			if (value && typeof value === 'object') {
+				const sourceValue = source[key];
+				// could just be a copy, need to check
+				if (sourceValue && value.getRecord?.() === sourceValue) {
+					if (hasChanges(value)) return true;
+				} else return true;
+			} else return true;
+		}
+	}
+	return false;
+}
+
+const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
+class TrackedArray extends Array {
+	#record: any;
+	[HAS_ARRAY_CHANGES]: boolean;
+	constructor(length, record) {
+		super(length);
+		this.#record = record;
+	}
+	getRecord() {
+		return this.#record;
+	}
+	splice(...args) {
+		this[HAS_ARRAY_CHANGES] = true;
+		return super.splice(...args);
+	}
+	push(...args) {
+		this[HAS_ARRAY_CHANGES] = true;
+		return super.push(...args);
+	}
+	pop() {
+		this[HAS_ARRAY_CHANGES] = true;
+		return super.pop();
+	}
+	unshift(...args) {
+		this[HAS_ARRAY_CHANGES] = true;
+		return super.unshift(...args);
+	}
+	shift() {
+		this[HAS_ARRAY_CHANGES] = true;
+		return super.shift();
+	}
+}
+TrackedArray.prototype.constructor = Array; // this makes type checks easier/faster (and we want it to be Array like too)
+
+// Copy a record into a resource, using copy-on-write for nested objects/arrays
+export function copyRecord(record, targetResource, attributes) {
+	targetResource.setRecord(record);
+	for (const attribute of attributes) {
+		// do not override existing methods
+		if (targetResource[key] === undefined) {
+			const value = record[key];
+			// use copy-on-write for sub-objects
+			if (typeof value === 'object' && value) setSubObject(targetResource, key, value);
+			// primitives can be directly copied
+			else targetResource[key] = value;
+		}
+	}
+}
+export const NOT_COPIED_YET = {};
+let copyEnabled = true;
+function setSubObject(targetResource, key, storedValue) {
+	let value = NOT_COPIED_YET;
+	Object.defineProperty(targetResource, key, {
+		get() {
+			if (value === NOT_COPIED_YET && copyEnabled) {
+				switch (storedValue.constructor) {
+					case Object:
+						copyRecord(storedValue, (value = new UpdatableObject()));
+						break;
+					case Array:
+						copyArray(storedValue, (value = new UpdatableArray()));
+						break;
+					default:
+						value = storedValue;
+				}
+			}
+			return value;
+		},
+		set(newValue) {
+			value = newValue;
+		},
+		enumerable: true,
+		configurable: true,
+	});
+}
+export function withoutCopying(callback) {
+	copyEnabled = false;
+	const result = callback();
+	copyEnabled = true;
+	return result;
+}
+class UpdatableObject {
+	// eventually provide CRDT functions here like add, subtract
+}
+class UpdatableArray extends Array {
+	// eventually provide CRDT tracking for push, unshift, pop, etc.
+}
+function copyArray(storedArray, targetArray) {
+	for (let i = 0, l = storedArray.length; i < l; i++) {
+		let value = storedArray[i];
+		// copy sub-objects (it assumed we don't really need to lazily access entries in an array,
+		// if an array is accessed, probably all elements in array will be accessed
+		if (typeof value === 'object' && value) {
+			if (value.constructor === Object) copyRecord(value, (value = new UpdatableObject()));
+			else if (value.constructor === Array) copyArray(value, (value = new UpdatableArray()));
+		}
+		targetArray[i] = value;
+	}
+}
+export class Addition {
+	__op__ = 'add';
+	value: any;
+	constructor(value) {
+		this.value = value;
+	}
+	update(previousValue) {
+		return (+previousValue || 0) + this.value;
+	}
+}

@@ -1,3 +1,31 @@
+## New GitIgnore Rules
+## Keeping old ones for now so we don't accidentally start tracking something we were previously ignoring
+
+# OS Files
+.DS_Store
+
+# IDE Files
+.vscode/
+.idea/
+
+# Dependencies
 node_modules/
 
-.DS_Store
+# Test Outputs
+coverage
+*.lcov
+.nyc_output/
+
+# TypeScript
+*.tsbuildinfo
+
+# Build Output
+dist/
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# something is generating this file :shrug:
+integration-test.json
