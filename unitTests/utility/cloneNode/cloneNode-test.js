@@ -64,6 +64,33 @@ describe('cloneNode', () => {
 		});
 	});
 
+	describe('isSystemDatabaseOnlySync', () => {
+		let isSystemDatabaseOnlySync;
+
+		beforeEach(() => {
+			isSystemDatabaseOnlySync = cloneNode.__get__('isSystemDatabaseOnlySync');
+		});
+
+		afterEach(() => {
+			delete process.env.CLONE_NODE_SYSTEM_DB_ONLY;
+		});
+
+		it('should return true when CLONE_NODE_SYSTEM_DB_ONLY is true', () => {
+			process.env.CLONE_NODE_SYSTEM_DB_ONLY = 'true';
+			assert.strictEqual(isSystemDatabaseOnlySync(), true);
+		});
+
+		it('should return false when CLONE_NODE_SYSTEM_DB_ONLY is not true', () => {
+			process.env.CLONE_NODE_SYSTEM_DB_ONLY = 'false';
+			assert.strictEqual(isSystemDatabaseOnlySync(), false);
+		});
+
+		it('should return false when CLONE_NODE_SYSTEM_DB_ONLY is not set', () => {
+			delete process.env.CLONE_NODE_SYSTEM_DB_ONLY;
+			assert.strictEqual(isSystemDatabaseOnlySync(), false);
+		});
+	});
+
 	describe('monitorSyncAndUpdateStatus', () => {
 		let monitorSyncAndUpdateStatus;
 		let clock;
@@ -416,6 +443,7 @@ describe('cloneNode', () => {
 
 			const result = await checkSyncStatus(targetTimestamps);
 			assert.strictEqual(result, true);
+			assert(consoleLogStub.calledWith('Database db2: No target timestamp, skipping sync check'));
 		});
 
 		it('should handle sub-millisecond precision correctly (precision loss test)', async () => {
@@ -551,6 +579,7 @@ describe('cloneNode', () => {
 
 			// Should return true since no database_sockets to check
 			assert.strictEqual(result, true);
+			assert(consoleLogStub.calledWith('Connection remote-node: No database_sockets, skipping'));
 		});
 
 		it('should handle cluster status with backPressurePercent and status info', async () => {
@@ -576,6 +605,133 @@ describe('cloneNode', () => {
 			// Should be synchronized
 			assert.strictEqual(result, true);
 			assert(consoleLogStub.calledWith('Database testdb: Synchronized'));
+		});
+	});
+
+	describe('checkSyncStatus with systemDatabaseOnly parameter', () => {
+		let checkSyncStatus;
+		let SYSTEM_SCHEMA_NAME;
+
+		beforeEach(() => {
+			checkSyncStatus = cloneNode.__get__('checkSyncStatus');
+			// Get the SYSTEM_SCHEMA_NAME constant from the module
+			const hdbTerms = cloneNode.__get__('hdbTerms');
+			SYSTEM_SCHEMA_NAME = hdbTerms.SYSTEM_SCHEMA_NAME;
+		});
+
+		it('should check all databases when systemDatabaseOnly is false', async () => {
+			clusterStatusStub.resolves({
+				connections: [{
+					database_sockets: [
+						{
+							database: SYSTEM_SCHEMA_NAME,
+							lastReceivedVersion: 1234567891000.0
+						},
+						{
+							database: 'userdb',
+							lastReceivedVersion: 1234567891000.0
+						}
+					]
+				}]
+			});
+
+			const targetTimestamps = {
+				[SYSTEM_SCHEMA_NAME]: 1234567890000.0,
+				userdb: 1234567890000.0
+			};
+
+			const result = await checkSyncStatus(targetTimestamps, false);
+
+			// Should check both databases and return true (both synced)
+			assert.strictEqual(result, true);
+			assert(consoleLogStub.calledWith(`Database ${SYSTEM_SCHEMA_NAME}: Synchronized`));
+			assert(consoleLogStub.calledWith('Database userdb: Synchronized'));
+		});
+
+		it('should only check system database when systemDatabaseOnly is true', async () => {
+			clusterStatusStub.resolves({
+				connections: [{
+					database_sockets: [
+						{
+							database: SYSTEM_SCHEMA_NAME,
+							lastReceivedVersion: 1234567891000.0
+						},
+						{
+							database: 'userdb',
+							lastReceivedVersion: 1234567889000.0 // Behind, but should be skipped
+						}
+					]
+				}]
+			});
+
+			const targetTimestamps = {
+				[SYSTEM_SCHEMA_NAME]: 1234567890000.0,
+				userdb: 1234567890000.0
+			};
+
+			const result = await checkSyncStatus(targetTimestamps, true);
+
+			// Should only check system database and return true (system synced, userdb skipped)
+			assert.strictEqual(result, true);
+			assert(consoleLogStub.calledWith(`Database ${SYSTEM_SCHEMA_NAME}: Synchronized`));
+			assert(consoleLogStub.calledWith('Database userdb: Skipping (waiting for system database only)'));
+			assert(consoleLogStub.neverCalledWith('Database userdb: Synchronized'));
+		});
+
+		it('should return false if system database is not synced when systemDatabaseOnly is true', async () => {
+			clusterStatusStub.resolves({
+				connections: [{
+					database_sockets: [
+						{
+							database: SYSTEM_SCHEMA_NAME,
+							lastReceivedVersion: 1234567889000.0 // Behind
+						},
+						{
+							database: 'userdb',
+							lastReceivedVersion: 1234567891000.0 // Synced but should be skipped
+						}
+					]
+				}]
+			});
+
+			const targetTimestamps = {
+				[SYSTEM_SCHEMA_NAME]: 1234567890000.0,
+				userdb: 1234567890000.0
+			};
+
+			const result = await checkSyncStatus(targetTimestamps, true);
+
+			// Should return false because system database is not synced
+			assert.strictEqual(result, false);
+			assert(consoleLogStub.calledWithMatch(`Database ${SYSTEM_SCHEMA_NAME}: Not yet synchronized`));
+		});
+
+		it('should return false if user database is not synced when systemDatabaseOnly is false', async () => {
+			clusterStatusStub.resolves({
+				connections: [{
+					database_sockets: [
+						{
+							database: SYSTEM_SCHEMA_NAME,
+							lastReceivedVersion: 1234567891000.0 // Synced
+						},
+						{
+							database: 'userdb',
+							lastReceivedVersion: 1234567889000.0 // Behind
+						}
+					]
+				}]
+			});
+
+			const targetTimestamps = {
+				[SYSTEM_SCHEMA_NAME]: 1234567890000.0,
+				userdb: 1234567890000.0
+			};
+
+			const result = await checkSyncStatus(targetTimestamps, false);
+
+			// Should return false because userdb is not synced
+			assert.strictEqual(result, false);
+			assert(consoleLogStub.calledWithMatch('Database userdb: Not yet synchronized'));
 		});
 	});
 });
