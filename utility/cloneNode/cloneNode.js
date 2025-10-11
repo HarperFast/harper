@@ -404,7 +404,9 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 					try {
 						await setStatus({ id: 'availability', status: 'Available' });
 						if (systemDatabaseOnly) {
-							console.log('Successfully updated availability status to Available (system database ready, user databases may still be syncing)');
+							console.log(
+								'Successfully updated availability status to Available (system database ready, user databases may still be syncing)'
+							);
 						} else {
 							console.log('Successfully updated availability status to Available');
 						}
@@ -441,9 +443,13 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 
 	// There should always be a response with at least an empty connections []
 	for (const connection of clusterResponse.connections) {
+		// Connection object may have 'name' (replication path) or 'node_name' (clustering path)
+		const connectionName = connection.name || connection.node_name || 'unknown';
+		console.log(`Checking connection: ${connectionName}`);
+
 		// ...but not always database_sockets
 		if (!connection.database_sockets) {
-			console.log(`Connection ${connection.name || 'unknown'}: No database_sockets, skipping`);
+			console.log(`Connection ${connectionName}: No database_sockets, skipping`);
 			continue;
 		}
 
@@ -453,13 +459,13 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 
 			// Skip if no target time for this database
 			if (!targetTime) {
-				console.log(`Database ${dbName}: No target timestamp, skipping sync check`);
+				console.log(`Connection ${connectionName}, Database ${dbName}: No target timestamp, skipping sync check`);
 				continue;
 			}
 
 			// Skip non-system databases if only checking system database
 			if (systemDatabaseOnly && dbName !== SYSTEM_SCHEMA_NAME) {
-				console.log(`Database ${dbName}: Skipping (waiting for system database only)`);
+				console.log(`Connection ${connectionName}, Database ${dbName}: Skipping (waiting for system database only)`);
 				continue;
 			}
 
@@ -469,18 +475,18 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 
 			// Check if we have received data and if it's up to date
 			if (!receivedVersion) {
-				console.log(`Database ${dbName}: No data received yet`);
+				console.log(`Connection ${connectionName}, Database ${dbName}: No data received yet`);
 				return false;
 			}
 
 			if (receivedVersion < targetTime) {
 				console.log(
-					`Database ${dbName}: Not yet synchronized (received: ${receivedVersion}, target: ${targetTime}, gap: ${targetTime - receivedVersion}ms)`
+					`Connection ${connectionName}, Database ${dbName}: Not yet synchronized (received: ${receivedVersion}, target: ${targetTime}, gap: ${targetTime - receivedVersion}ms)`
 				);
 				return false;
 			}
 
-			console.log(`Database ${dbName}: Synchronized`);
+			console.log(`Connection ${connectionName}, Database ${dbName}: Synchronized`);
 		}
 	}
 
