@@ -17,6 +17,8 @@ const { packageJson } = require('../../utility/packageUtils');
 const role_ops = require('../../security/role');
 const user_ops = require('../../security/user');
 const installer = rewire(installer_mod_path);
+const YAML = require('yaml');
+const os = require('node:os');
 
 describe('Test installer module', () => {
 	const sandbox = sinon.createSandbox();
@@ -350,11 +352,12 @@ describe('Test installer module', () => {
 	});
 
 	it('Test insertHdbVersionInfo calls insert with correct param', async () => {
-		const version_stub = sandbox.stub(packageJson, 'version').get(() => '100.1.1');
+		const version_getter = sandbox.stub().returns('100.1.1');
+		sandbox.stub(packageJson, 'version').get(version_getter);
 		const insert_hdb_stub = sandbox.stub(hdb_info_controller, 'insertHdbInstallInfo');
 		const insertHdbVersionInfo = installer.__get__('insertHdbVersionInfo');
 		await insertHdbVersionInfo();
-		expect(version_stub.called).to.be.true;
+		expect(version_getter.called).to.be.true;
 		expect(insert_hdb_stub.args[0][0]).to.equal('100.1.1');
 	});
 
@@ -392,5 +395,129 @@ describe('Test installer module', () => {
 		const checkForEmptyValue = installer.__get__('checkForEmptyValue');
 		const result = checkForEmptyValue('dev dog');
 		expect(result).to.be.undefined;
+	});
+
+	describe('HARPER_DEFAULT_CONFIG integration', () => {
+		let testRoot;
+		let originalEnv;
+
+		beforeEach(() => {
+			// Save original env var
+			originalEnv = process.env.HARPER_DEFAULT_CONFIG;
+			// Create unique test directory
+			testRoot = path.join(os.tmpdir(), 'hdb-config-test-' + Date.now());
+			fs.mkdirpSync(testRoot);
+		});
+
+		afterEach(() => {
+			// Restore original env var
+			if (originalEnv !== undefined) {
+				process.env.HARPER_DEFAULT_CONFIG = originalEnv;
+			} else {
+				delete process.env.HARPER_DEFAULT_CONFIG;
+			}
+			// Cleanup test directory
+			try {
+				fs.removeSync(testRoot);
+				// eslint-disable-next-line sonarjs/no-ignored-exceptions
+			} catch (err) {
+				// Ignore cleanup errors
+			}
+		});
+
+		it('applies HARPER_DEFAULT_CONFIG during config file creation', () => {
+			// Set env var with test config
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+				http: { port: 9999 },
+				logging: { level: 'debug' },
+			});
+
+			// Create config file (this calls our new code)
+			const args = {
+				ROOTPATH: testRoot,
+			};
+
+			config_utils.createConfigFile(args, true); // skipFsValidation=true
+
+			// Read generated config file
+			const configPath = path.join(testRoot, 'harperdb-config.yaml');
+			expect(fs.existsSync(configPath)).to.be.true;
+
+			const configContent = fs.readFileSync(configPath, 'utf8');
+			const configDoc = YAML.parse(configContent);
+
+			// Verify env var values were applied
+			expect(configDoc.http.port).to.equal(9999);
+			expect(configDoc.logging.level).to.equal('debug');
+		});
+
+		it('merges HARPER_DEFAULT_CONFIG with OOTB defaults', () => {
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+				http: { port: 9999 },
+			});
+
+			const args = {
+				ROOTPATH: testRoot,
+			};
+
+			config_utils.createConfigFile(args, true);
+
+			const configPath = path.join(testRoot, 'harperdb-config.yaml');
+			const configContent = fs.readFileSync(configPath, 'utf8');
+			const configDoc = YAML.parse(configContent);
+
+			// Verify env var value applied
+			expect(configDoc.http.port).to.equal(9999);
+
+			// Verify OOTB defaults still present
+			expect(configDoc.logging).to.exist;
+			expect(configDoc.rootPath).to.equal(testRoot);
+		});
+
+		it('replaces arrays from HARPER_DEFAULT_CONFIG', () => {
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+				http: {
+					corsAccessList: ['*.custom.com'],
+				},
+			});
+
+			const args = {
+				ROOTPATH: testRoot,
+			};
+
+			config_utils.createConfigFile(args, true);
+
+			const configPath = path.join(testRoot, 'harperdb-config.yaml');
+			const configContent = fs.readFileSync(configPath, 'utf8');
+			const configDoc = YAML.parse(configContent);
+
+			// Array should be replaced, not merged
+			expect(configDoc.http.corsAccessList).to.deep.equal(['*.custom.com']);
+		});
+
+		it('throws error on invalid JSON in HARPER_DEFAULT_CONFIG', () => {
+			process.env.HARPER_DEFAULT_CONFIG = '{invalid json}';
+
+			const args = {
+				ROOTPATH: testRoot,
+			};
+
+			expect(() => config_utils.createConfigFile(args, true)).to.throw(/Invalid JSON syntax/);
+		});
+
+		it('works without HARPER_DEFAULT_CONFIG set', () => {
+			// Ensure env var is not set
+			delete process.env.HARPER_DEFAULT_CONFIG;
+
+			const args = {
+				ROOTPATH: testRoot,
+			};
+
+			// Should not throw
+			config_utils.createConfigFile(args, true);
+
+			const configPath = path.join(testRoot, 'harperdb-config.yaml');
+			expect(fs.existsSync(configPath)).to.be.true;
+		});
 	});
 });

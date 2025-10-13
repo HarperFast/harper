@@ -169,6 +169,8 @@ export const DATABASES_DIR_NAME = 'database';
 export const LEGACY_DATABASES_DIR_NAME = 'schema';
 /** Transaction directory */
 export const TRANSACTIONS_DIR_NAME = 'transactions';
+/** Backup directory */
+export const BACKUP_DIR_NAME = 'backup';
 
 /** Key for specifying process specific environment variables */
 export const PROCESS_NAME_ENV_PROP = 'PROCESS_NAME';
