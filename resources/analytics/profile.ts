@@ -30,11 +30,11 @@ session.connect();
 	await session.post('Profiler.start');
 	const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
 	setTimeout(() => {
-		captureProfile();
+		captureProfile(PROFILE_PERIOD);
 	}, PROFILE_PERIOD).unref();
 })();
 
-export async function captureProfile() {
+export async function captureProfile(delayToNextCapture?: number): Promise<void> {
 	const HARPER_URL = pathToFileURL(PACKAGE_ROOT).toString();
 	const nodeById = new Map();
 	const hitCountThreshold = 100;
@@ -56,10 +56,12 @@ export async function captureProfile() {
 	} finally {
 		// and start the profiler again
 		await session.post('Profiler.start');
-		const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
-		setTimeout(() => {
-			captureProfile();
-		}, PROFILE_PERIOD).unref();
+		if (delayToNextCapture) {
+			setTimeout(() => {
+				const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
+				captureProfile(PROFILE_PERIOD);
+			}, delayToNextCapture).unref();
+		}
 	}
 	// this traverses the nodes and returns the number of sampling hits for the descendants that has been attributed
 	// to harper or user code (execution of things like node internal modules or native code)
