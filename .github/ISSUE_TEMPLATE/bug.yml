@@ -12,9 +12,16 @@ body:
     attributes:
       label: Bug Summary
       description: Brief summary of the issue
-      placeholder: "Search doesn't work on mobile, navigation menu broken, etc."
+      placeholder: 'JSON is not returned when querying a table'
     validations:
       required: true
+
+  - type: input
+    id: reproduction-repository
+    attributes:
+      label: Reproduction Repository (if applicable)
+      description: Link to a minimal repo that reproduces the issue, if available
+      placeholder: 'https://github.com/your/repo'
 
   - type: textarea
     id: steps-to-reproduce
@@ -22,10 +29,9 @@ body:
       label: Steps to Reproduce
       description: How can we reproduce this issue?
       placeholder: |
-        1. Go to '...'
-        2. Click on '...'
-        3. Scroll down to '...'
-        4. See error
+        1. Run repo with `harper run .`
+        2. Query with `curl http://localhost:9926/Dog/1`
+        3. See error
     validations:
       required: true
 
@@ -48,11 +54,11 @@ body:
       required: true
 
   - type: input
-    id: device
+    id: platform
     attributes:
-      label: Device/OS
-      description: What device and operating system?
-      placeholder: 'Windows 11, macOS 14, iPhone 15, etc.'
+      label: Platform
+      description: What platform information is relevant?
+      placeholder: 'Harper v5.x, Node v22.x, Docker on Ubuntu 22.04'
 
   - type: textarea
     id: console-errors
