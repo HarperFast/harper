@@ -276,7 +276,7 @@ describe('12. Configuration', () => {
 			.expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
 				assert.ok(r.text.includes('<!doctype html>'), r.text);
-				assert.ok(r.text.includes('Harper Studio'), r.text);
+				assert.ok(r.text.includes('<title>Harper'), r.text);
 			})
 			.expect(200);
 	});
