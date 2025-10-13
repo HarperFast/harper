@@ -1,0 +1,100 @@
+name: ⚡️ Feature Request
+description: Suggest new functionality or improvements for Harper
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Use this template to request new functionality or improvements for Harper.
+
+  - type: textarea
+    id: feature-summary
+    attributes:
+      label: Feature Summary
+      description: Brief summary of the requested feature or improvement
+      placeholder: 'What functionality would you like to see added or improved?'
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem-solved
+    attributes:
+      label: Problem This Solves
+      description: What problem would this feature solve?
+      placeholder: 'Describe the current pain point or limitation this would address'
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like this to work?
+      placeholder: 'Describe your ideal implementation of this feature'
+    validations:
+      required: true
+
+  - type: textarea
+    id: user-stories
+    attributes:
+      label: User Stories
+      description: How would different users benefit from this feature?
+      placeholder: |
+        As a [type of user], I want [goal] so that [benefit]
+
+        Example: "As a developer, I want to be able to efficiently query using GraphQL so that I can integrate with modern front-end frameworks."
+
+  - type: textarea
+    id: alternatives-considered
+    attributes:
+      label: Alternatives Considered
+      description: Are there other ways to solve this problem?
+      placeholder: 'What other solutions have you considered?'
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority/Impact
+      description: How important is this feature?
+      options:
+        - 'High - critical for user success'
+        - 'Medium - important but not urgent'
+        - 'Low - nice to have'
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples or References
+      description: Are there examples of this feature done well elsewhere?
+      placeholder: 'Links to other implementations or examples that demonstrate this feature'
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other relevant information
+      placeholder: 'Technical considerations, constraints, related requests, etc.'
+
+  - type: dropdown
+    id: contribution-intent
+    attributes:
+      label: Are you planning to fix this issue?
+      description: Let us know if you'd like to contribute the fix!
+      options:
+        - 'No, just reporting the issue'
+        - 'Maybe, depending on complexity'
+        - "Yes, I'll submit a PR to fix this"
+        - "Yes, but I'm a first-time contributor and could use guidance"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: first-time-contributor
+    attributes:
+      label: First-time contributor support
+      description: Check any that apply (only if you're planning to contribute)
+      options:
+        - label: I'm new to contributing and would appreciate guidance on the process
+        - label: I'd like help understanding the project structure
+        - label: I need assistance with setting up the development environment
+        - label: I'm comfortable contributing, but new to this project specifically
