@@ -13,6 +13,7 @@ const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError.js');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors.js');
 const { server } = require('../server/Server.ts');
+const { getBackupDirPath } = require('./configHelpers.ts');
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -121,6 +122,11 @@ function createConfigFile(args, skipFsValidation = false) {
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
+
+	// Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variables
+	// Must be called AFTER rootPath is set in configDoc
+	// Mutates configDoc in place
+	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true });
 	const configObj = configDoc.toJSON();
 	flatConfigObj = flattenConfig(configObj);
 
@@ -269,6 +275,9 @@ function initConfig(force = false) {
 		}
 
 		checkForUpdatedConfig(configDoc, configFilePath);
+
+		// Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variables
+		applyRuntimeEnvVarConfig(configDoc, configFilePath);
 
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(configDoc);
@@ -545,8 +554,7 @@ function updateConfigValue(
 function backupConfigFile(configPath, hdbRoot) {
 	try {
 		const backupFolderPath = path.join(
-			hdbRoot,
-			'backup',
+			getBackupDirPath(hdbRoot),
 			`${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${hdbTerms.HDB_CONFIG_FILE}.bak`
 		);
 		fs.copySync(configPath, backupFolderPath);
@@ -704,6 +712,70 @@ function readConfigFile() {
 
 function parseYamlDoc(filePath) {
 	return YAML.parseDocument(fs.readFileSync(filePath, 'utf8'), { simpleKeys: true });
+}
+
+/**
+ * Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variables at runtime
+ *
+ * This function performs the following:
+ * 1. Loads configuration state to track sources
+ * 2. Detects user edits (drift) to protect them from HARPER_DEFAULT_CONFIG
+ * 3. Applies HARPER_DEFAULT_CONFIG (respects user edits)
+ * 4. Applies HARPER_SET_CONFIG (overrides everything)
+ * 5. Handles deletions when keys removed from env vars
+ * 6. Saves updated state and persists changes to config file (if configFilePath provided)
+ *
+ * NOTE: This function performs multiple conversions (YAML → JSON → YAML) which is not
+ * efficient but provides clear separation of concerns. The conversions are necessary
+ * to handle YAML structure conflicts (e.g., when a boolean like 'threads: true' needs
+ * to become an object like 'threads: {count: 4}').
+ *
+ * @param {Document} configDoc - YAML document to modify (mutated in place)
+ * @param {string} [configFilePath] - Path to config file (optional, skips file write if not provided)
+ * @param {Object} [options] - Options to pass to applyRuntimeEnvConfig (e.g., {isInstall: true})
+ */
+function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
+	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
+	const setEnvValue = process.env.HARPER_SET_CONFIG;
+
+	// No env vars set, skip entirely (zero overhead)
+	if (!defaultEnvValue && !setEnvValue) return;
+
+	const { applyRuntimeEnvConfig } = require('./harperConfigEnvVars.ts');
+
+	// Get rootPath for state file location
+	const rootPath = configDoc.getIn(['rootPath']);
+	if (!rootPath) {
+		logger.warn('Cannot apply runtime env config: rootPath not found in config');
+		return;
+	}
+
+	// Convert to JSON for processing
+	const configObj = configDoc.toJSON();
+
+	// Apply env vars with source tracking and drift detection
+	applyRuntimeEnvConfig(configObj, rootPath, options);
+
+	// Convert back to YAML document and write to file
+	const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true });
+	Object.assign(configDoc, mergedDoc);
+
+	// We're done here if no config file to write to
+	if (!configFilePath) {
+		return;
+	}
+
+	// Persist changes to file
+	try {
+		if (configDoc.errors?.length > 0) {
+			throw new Error(`Error parsing harperdb-config.yaml: ${configDoc.errors}`);
+		}
+		fs.writeFileSync(configFilePath, String(configDoc));
+		logger.debug('Config file updated with runtime env var values');
+	} catch (error) {
+		logger.error(`Failed to write config file after applying runtime env vars: ${error.message}`);
+		throw error;
+	}
 }
 
 /**
