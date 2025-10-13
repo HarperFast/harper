@@ -13,7 +13,7 @@ const path = require('path');
 const checkJwtTokens = require('../utility/install/checkJWTTokensExist.js');
 const { install } = require('../utility/install/installer.js');
 const chalk = require('chalk');
-const { packageJson } = require('../utility/packageUtils.js');
+const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils.js');
 const hdbUtils = require('../utility/common_utils.js');
 const installation = require('../utility/installation.ts');
 const configUtils = require('../config/configUtils.js');
@@ -77,7 +77,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	addUnhandleRejectionListener();
 
 	hdbLogger.suppressLogging?.(() => {
-		console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, '../../static/ascii_logo.txt'))));
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
 	});
 	hdbLogger.debug('Checking to make sure hdb is installed');
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {

@@ -130,7 +130,7 @@ async function runJob(runnerMessage, operation) {
 async function launchJobThread(job_id) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
-		threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+		threadsStart.startWorker(join(PACKAGE_ROOT, './jobProcess.js'), {
 			autoRestart: false,
 			name: 'job',
 			env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
