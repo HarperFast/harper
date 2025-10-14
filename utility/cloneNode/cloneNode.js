@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 const PropertiesReader = require('properties-reader');
 const envMgr = require('../environment/environmentManager.js');
 const sysInfo = require('../environment/systemInformation.js');
-const hdbLog = require('../logging/harper_logger.js');
+const harperLogger = require('../logging/harper_logger.js');
 const configUtils = require('../../config/configUtils.js');
 const { restart } = require('../../bin/restart.js');
 const hdbUtils = require('../common_utils.js');
@@ -124,6 +124,7 @@ let freshClone = false;
 let sysDbExist = false;
 let startTime;
 let leaderReplicationUrl;
+let logger;
 
 /**
  * This module will run when HarperDB is started with the required env/cli vars.
@@ -132,7 +133,7 @@ let leaderReplicationUrl;
  * @returns {Promise<void>}
  */
 module.exports = async function cloneNode(background = false, run = false) {
-	console.info(`Starting clone node from leader node: ${leaderUrl}`);
+	logger.info?.(`Starting clone node from leader node: ${leaderUrl}`);
 
 	rootPath = hdbUtils.getEnvCliRootPath();
 	if (!rootPath) {
@@ -150,20 +151,20 @@ module.exports = async function cloneNode(background = false, run = false) {
 	}
 
 	if (!rootPath) {
-		console.log(`No HarperDB install found, starting fresh clone`);
+		logger.debug?.(`No HarperDB install found, starting fresh clone`);
 		freshClone = true;
 	} else if (await fs.pathExists(rootPath)) {
-		console.log(
+		logger.debug?.(
 			`Existing HarperDB install found at ${rootPath}. Clone node will only clone items that do not already exist on clone.`
 		);
 	} else {
-		console.log(`No HarperDB install found at ${rootPath} starting fresh clone`);
+		logger.debug?.(`No HarperDB install found at ${rootPath} starting fresh clone`);
 		freshClone = true;
 	}
 
 	if (!rootPath) {
 		rootPath = join(os.homedir(), hdbTerms.HDB_ROOT_DIR_NAME);
-		console.log('Using default root path', rootPath);
+		logger.debug?.('Using default root path', rootPath);
 	}
 
 	// Set the root path in environment manager immediately after determining it
@@ -174,7 +175,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 	try {
 		cloneConfigPath = join(rootPath, CLONE_CONFIG_FILE);
 		cloneNodeConfig = YAML.parseDocument(await fs.readFile(cloneConfigPath, 'utf8'), { simpleKeys: true }).toJSON();
-		console.log('Clone config file found');
+		logger.debug?.('Clone config file found');
 	} catch (err) {}
 
 	const hdbConfigPath = join(rootPath, hdbTerms.HDB_CONFIG_FILE);
@@ -184,7 +185,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 			hdbConfigJson = YAML.parseDocument(await fs.readFile(hdbConfigPath, 'utf8'), { simpleKeys: true }).toJSON();
 			hdbConfig = configUtils.flattenConfig(hdbConfigJson);
 		} catch (err) {
-			console.error('Error reading existing harperdb-config.yaml on clone', err);
+			logger.error?.('Error reading existing harperdb-config.yaml on clone', err);
 		}
 	}
 
@@ -199,7 +200,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 	}
 
 	if (hdbConfig?.cloned && clonedVar !== 'false') {
-		console.log('Instance marked as cloned, clone will not run');
+		logger.debug?.('Instance marked as cloned, clone will not run');
 		envMgr.initSync();
 		return main();
 	}
@@ -210,7 +211,8 @@ module.exports = async function cloneNode(background = false, run = false) {
 	await cloneConfig();
 
 	fs.ensureDir(envMgr.get(hdbTerms.CONFIG_PARAMS.LOGGING_ROOT));
-	hdbLog.initLogSettings();
+	harperLogger.initLogSettings();
+	logger = harperLogger.loggerWithTag('cloneNode');
 
 	await cloneDatabases();
 
@@ -224,7 +226,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 		await cloneKeys();
 	}
 
-	console.info('\nSuccessfully cloned node: ' + leaderUrl);
+	logger.info?.('\nSuccessfully cloned node: ' + leaderUrl);
 	if (background || noStart) process.exit();
 };
 
@@ -234,19 +236,19 @@ module.exports = async function cloneNode(background = false, run = false) {
  */
 async function cloneUsingWS() {
 	if (hdbConfig?.cloned && clonedVar !== 'false') {
-		console.log('Instance marked as cloned, clone will not run');
+		logger.debug?.('Instance marked as cloned, clone will not run');
 		envMgr.initSync();
 		// Start HDB
 		return main();
 	}
 
-	console.log('Cloning using WebSockets');
+	logger.debug?.('Cloning using WebSockets');
 
 	const systemDbDir = getDBPath('system');
 	const sysDbFileDir = join(systemDbDir, 'system.mdb');
 	const sysDbExists = fs.existsSync(sysDbFileDir);
 	if (freshClone || !sysDbExists || cloneOvertop) {
-		console.info('Clone node installing HarperDB');
+		logger.info?.('Clone node installing HarperDB');
 		process.env.TC_AGREEMENT = 'yes';
 		process.env.ROOTPATH = rootPath;
 		process.env.HDB_ADMIN_USERNAME = 'clone-temp-admin';
@@ -279,13 +281,13 @@ async function cloneUsingWS() {
 	const lastUpdatedTimestamps = await getLastUpdatedRecord();
 
 	// When cloning with WS we utilize addNode to clone all the DB and setup replication
-	console.log('Adding node to the cluster');
+	logger.debug?.('Adding node to the cluster');
 	const addNode = require('../clustering/addNode.js');
 	const addNodeResponse = await addNode({
 		operation: OPERATIONS_ENUM.ADD_NODE,
 		url: leaderReplicationUrl,
 	});
-	console.log('Add node response: ', addNodeResponse);
+	logger.debug?.('Add node response: ', addNodeResponse);
 
 	await cloneKeys();
 
@@ -293,13 +295,13 @@ async function cloneUsingWS() {
 	try {
 		await monitorSyncAndUpdateStatus(lastUpdatedTimestamps);
 	} catch (error) {
-		console.error('Sync monitoring failed:', error.message);
+		logger.error?.('Sync monitoring failed:', error.message);
 
 		// Optionally set availability status to Unavailable if status updates are enabled
 		// TODO: (maybe) update availability status to Unavailable if sync fails
 	}
 
-	console.log(`Successfully cloned node: ${leaderUrl} using WebSockets`);
+	logger.debug?.(`Successfully cloned node: ${leaderUrl} using WebSockets`);
 	configUtils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
 
 	if (noStart) process.exit();
@@ -325,7 +327,7 @@ async function getLastUpdatedRecord() {
 		return mostRecent;
 	};
 
-	console.log('Getting last updated record timestamp for all database');
+	logger.debug?.('Getting last updated record timestamp for all database');
 	const lastUpdated = {};
 	const systemDb = await leaderReq({ operation: 'describe_database', database: 'system' });
 	lastUpdated['system'] = findMostRecentTimestamp(systemDb);
@@ -338,7 +340,7 @@ async function getLastUpdatedRecord() {
 	}
 
 	const lastUpdatedFilePath = join(rootPath, 'tmp', 'lastUpdated.json');
-	console.log('Writing last updated database timestamps to:', lastUpdatedFilePath);
+	logger.debug?.('Writing last updated database timestamps to:', lastUpdatedFilePath);
 	await fs.outputJson(lastUpdatedFilePath, lastUpdated);
 
 	return lastUpdated;
@@ -378,10 +380,10 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	const shouldUpdateStatus = isStatusUpdateEnabled();
 	const systemDatabaseOnly = isSystemDatabaseOnlySync();
 
-	console.log('Starting sync monitoring');
-	console.log(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
+	logger.debug?.('Starting sync monitoring');
+	logger.debug?.(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
 	if (systemDatabaseOnly) {
-		console.log('Only waiting for system database to sync (CLONE_NODE_SYSTEM_DB_ONLY=true)');
+		logger.debug?.('Only waiting for system database to sync (CLONE_NODE_SYSTEM_DB_ONLY=true)');
 	}
 
 	const timeoutAt = Date.now() + maxWaitTime;
@@ -394,9 +396,9 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 
 			if (syncComplete) {
 				if (systemDatabaseOnly) {
-					console.log('System database synchronized (user databases may still be syncing)');
+					logger.debug?.('System database synchronized (user databases may still be syncing)');
 				} else {
-					console.log('All databases synchronized');
+					logger.debug?.('All databases synchronized');
 				}
 
 				// Only update status if enabled
@@ -404,23 +406,23 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 					try {
 						await setStatus({ id: 'availability', status: 'Available' });
 						if (systemDatabaseOnly) {
-							console.log(
+							logger.debug?.(
 								'Successfully updated availability status to Available (system database ready, user databases may still be syncing)'
 							);
 						} else {
-							console.log('Successfully updated availability status to Available');
+							logger.debug?.('Successfully updated availability status to Available');
 						}
 					} catch (error) {
-						console.error('Error updating status:', error);
+						logger.error?.('Error updating status:', error);
 						// Don't fail the sync monitoring due to status update failure
 					}
 				}
 			} else {
-				console.log(`Sync not complete, waiting ${checkInterval}ms before next check`);
+				logger.debug?.(`Sync not complete, waiting ${checkInterval}ms before next check`);
 				await hdbUtils.asyncSetTimeout(checkInterval);
 			}
 		} catch (error) {
-			console.error('Error checking cluster status:', error);
+			logger.error?.('Error checking cluster status:', error);
 			// Continue monitoring on error
 			await hdbUtils.asyncSetTimeout(checkInterval);
 		}
@@ -445,11 +447,11 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 	for (const connection of clusterResponse.connections) {
 		// Connection object may have 'name' (replication path) or 'node_name' (clustering path)
 		const connectionName = connection.name || connection.node_name || 'unknown';
-		console.log(`Checking connection: ${connectionName}`);
+		logger.debug?.(`Checking connection: ${connectionName}`);
 
 		// ...but not always database_sockets
 		if (!connection.database_sockets) {
-			console.log(`Connection ${connectionName}: No database_sockets, skipping`);
+			logger.debug?.(`Connection ${connectionName}: No database_sockets, skipping`);
 			continue;
 		}
 
@@ -459,13 +461,13 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 
 			// Skip if no target time for this database
 			if (!targetTime) {
-				console.log(`Connection ${connectionName}, Database ${dbName}: No target timestamp, skipping sync check`);
+				logger.debug?.(`Connection ${connectionName}, Database ${dbName}: No target timestamp, skipping sync check`);
 				continue;
 			}
 
 			// Skip non-system databases if only checking system database
 			if (systemDatabaseOnly && dbName !== SYSTEM_SCHEMA_NAME) {
-				console.log(`Connection ${connectionName}, Database ${dbName}: Skipping (waiting for system database only)`);
+				logger.debug?.(`Connection ${connectionName}, Database ${dbName}: Skipping (waiting for system database only)`);
 				continue;
 			}
 
@@ -475,18 +477,18 @@ async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
 
 			// Check if we have received data and if it's up to date
 			if (!receivedVersion) {
-				console.log(`Connection ${connectionName}, Database ${dbName}: No data received yet`);
+				logger.debug?.(`Connection ${connectionName}, Database ${dbName}: No data received yet`);
 				return false;
 			}
 
 			if (receivedVersion < targetTime) {
-				console.log(
+				logger.debug?.(
 					`Connection ${connectionName}, Database ${dbName}: Not yet synchronized (received: ${receivedVersion}, target: ${targetTime}, gap: ${targetTime - receivedVersion}ms)`
 				);
 				return false;
 			}
 
-			console.log(`Connection ${connectionName}, Database ${dbName}: Synchronized`);
+			logger.debug?.(`Connection ${connectionName}, Database ${dbName}: Synchronized`);
 		}
 	}
 
@@ -510,7 +512,7 @@ async function leaderReq(req) {
 async function cloneKeys() {
 	try {
 		if (clone_keys !== false) {
-			console.log('Cloning JWT keys');
+			logger.debug?.('Cloning JWT keys');
 			const keysDir = path.join(rootPath, hdbTerms.LICENSE_KEY_DIR_NAME);
 			// sendOperationToNode is used for extra security, it uses mtls when connecting to leader node.
 			const jwtPublic = await sendOperationToNode(
@@ -534,7 +536,7 @@ async function cloneKeys() {
 			writeFileSync(path.join(keysDir, hdbTerms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), jwtPrivate.message);
 		}
 	} catch (err) {
-		console.error('Error cloning JWT keys', err);
+		logger.error?.('Error cloning JWT keys', err);
 	}
 }
 
@@ -544,7 +546,7 @@ async function cloneKeys() {
  * @returns {Promise<void>}
  */
 async function cloneConfig(withWs = false) {
-	console.info('Cloning configuration');
+	logger.info?.('Cloning configuration');
 	leaderConfig = await leaderReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leaderConfigFlat = configUtils.flattenConfig(leaderConfig);
 	const excludeComps = cloneNodeConfig?.componentConfig?.exclude;
@@ -640,7 +642,7 @@ async function cloneDatabases() {
  * @returns {Promise<void>}
  */
 async function installHDB() {
-	console.info('Clone node installing HarperDB.');
+	logger.info?.('Clone node installing HarperDB.');
 	process.env.TC_AGREEMENT = 'yes';
 	process.env.ROOTPATH = rootPath;
 	if (!username) throw new Error('HDB_LEADER_USERNAME is undefined.');
@@ -667,7 +669,7 @@ async function cloneTablesHttp() {
 	await ensureDir(systemDbDir);
 	if (freshClone || !(await fs.exists(sysDbFileDir)) || cloneOvertop) {
 		if (!replicationHost) {
-			console.info('Cloning system database');
+			logger.info?.('Cloning system database');
 			await ensureDir(systemDbDir);
 			const fileStream = createWriteStream(sysDbFileDir, { overwrite: true });
 			const req = {
@@ -690,7 +692,7 @@ async function cloneTablesHttp() {
 		}
 	} else {
 		sysDbExist = true;
-		console.log(`Not cloning system database due to it already existing on clone`);
+		logger.debug?.(`Not cloning system database due to it already existing on clone`);
 	}
 
 	// Create object where excluded db name is key
@@ -704,7 +706,7 @@ async function cloneTablesHttp() {
 	// Check to see if DB already on clone, if it is we dont clone it
 	for (const db in leaderDbs) {
 		if (await fs.exists(path.join(getDBPath(db), db + '.mdb'))) {
-			console.log(`Not cloning database ${db} due to it already existing on clone`);
+			logger.debug?.(`Not cloning database ${db} due to it already existing on clone`);
 			excludeDb[db] = true;
 		}
 	}
@@ -754,10 +756,10 @@ async function cloneTablesHttp() {
 
 		let backupReq;
 		if (excludedTables) {
-			console.info(`Cloning database: ${db} tables: ${tablesToClone}`);
+			logger.info?.(`Cloning database: ${db} tables: ${tablesToClone}`);
 			backupReq = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tablesToClone };
 		} else {
-			console.info(`Cloning database: ${db}`);
+			logger.info?.(`Cloning database: ${db}`);
 			backupReq = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db };
 		}
 
@@ -780,7 +782,7 @@ async function cloneTablesFetch() {
 	const sysDbFileDir = join(systemDbDir, 'system.mdb');
 	if (freshClone || !(await fs.exists(sysDbFileDir)) || cloneOvertop) {
 		if (!replicationHost) {
-			console.info('Cloning system database using fetch');
+			logger.info?.('Cloning system database using fetch');
 			const req = {
 				operation: OPERATIONS_ENUM.GET_BACKUP,
 				database: 'system',
@@ -806,7 +808,7 @@ async function cloneTablesFetch() {
 		}
 	} else {
 		sysDbExist = true;
-		console.log(`Not cloning system database due to it already existing on clone`);
+		logger.debug?.(`Not cloning system database due to it already existing on clone`);
 	}
 	if (replicationHost) {
 		hdbLog.info('Replication hostname set, not using backup to clone databases, replication will clone');
@@ -824,7 +826,7 @@ async function cloneTablesFetch() {
 	// Check to see if DB already on clone, if it is we dont clone it
 	for (const db in leaderDbs) {
 		if (await fs.exists(path.join(getDBPath(db), db + '.mdb'))) {
-			console.log(`Not cloning database ${db} due to it already existing on clone`);
+			logger.debug?.(`Not cloning database ${db} due to it already existing on clone`);
 			excludeDb[db] = true;
 		}
 	}
@@ -858,13 +860,13 @@ async function cloneTablesFetch() {
 
 		let backup;
 		if (excludedTables) {
-			console.info(`Cloning database: ${db} tables: ${tablesToClone}`);
+			logger.info?.(`Cloning database: ${db} tables: ${tablesToClone}`);
 			backup = await leaderHttpReqFetch(
 				{ operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tablesToClone },
 				true
 			);
 		} else {
-			console.info(`Cloning database: ${db}`);
+			logger.info?.(`Cloning database: ${db}`);
 			backup = await leaderHttpReqFetch({ operation: OPERATIONS_ENUM.GET_BACKUP, database: db }, true);
 		}
 
@@ -910,7 +912,7 @@ async function leaderHttpReqFetch(req, getBackup = false) {
 	});
 
 	if (response.ok) return response;
-	console.error(`HTTP Error Response: ${response.status} ${response.statusText}`);
+	logger.error?.(`HTTP Error Response: ${response.status} ${response.statusText}`);
 	throw new Error(await response.text());
 }
 
@@ -924,7 +926,7 @@ async function startHDB(background, run = false) {
 			await main();
 		}
 	} else {
-		console.info(await restart({ operation: OPERATIONS_ENUM.RESTART }));
+		logger.info?.(await restart({ operation: OPERATIONS_ENUM.RESTART }));
 		await hdbUtils.asyncSetTimeout(WAIT_FOR_RESTART_TIME);
 	}
 	if (background) await hdbUtils.asyncSetTimeout(2000);
@@ -935,10 +937,10 @@ async function setAppPath() {
 	let appFolder = process.argv[3];
 	if (appFolder && appFolder[0] !== '-') {
 		if (!(await fs.exists(appFolder))) {
-			console.error(`The folder ${appFolder} does not exist`);
+			logger.error?.(`The folder ${appFolder} does not exist`);
 		}
 		if (!fs.statSync(appFolder).isDirectory()) {
-			console.error(`The path ${appFolder} is not a folder`);
+			logger.error?.(`The path ${appFolder} is not a folder`);
 		}
 		appFolder = await fs.realpath(appFolder);
 		if (await fs.exists(path.join(appFolder, hdbTerms.HDB_CONFIG_FILE))) {
@@ -956,7 +958,7 @@ async function setAppPath() {
  * @returns {Promise<void>}
  */
 async function setupReplication() {
-	console.info('Setting up replication');
+	logger.info?.('Setting up replication');
 
 	await globalSchema.setSchemaDataToGlobalAsync();
 	const addNode = require('../clustering/addNode.js');
@@ -974,7 +976,7 @@ async function setupReplication() {
 		true
 	);
 
-	console.log('Add node response: ', addNodeResponse);
+	logger.debug?.('Add node response: ', addNodeResponse);
 }
 
 async function leaderHttpReq(req) {
