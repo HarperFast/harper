@@ -8,16 +8,20 @@ describe('cloneNode', () => {
 	let cloneNode;
 	let clusterStatusStub;
 	let setStatusStub;
-	let consoleLogStub;
-	let consoleErrorStub;
+	let loggerStub;
 
 	beforeEach(() => {
-		// Stub console methods
-		consoleLogStub = sinon.stub(console, 'log');
-		consoleErrorStub = sinon.stub(console, 'error');
-
 		// Rewire the module to access private functions
 		cloneNode = rewire('../../../utility/cloneNode/cloneNode.js');
+
+		// Stub the logger with all logger methods
+		loggerStub = {
+			info: sinon.stub(),
+			debug: sinon.stub(),
+			notify: sinon.stub(),
+			error: sinon.stub(),
+			warn: sinon.stub(),
+		};
 
 		// Stub the external dependencies
 		clusterStatusStub = sinon.stub().resolves({
@@ -31,6 +35,7 @@ describe('cloneNode', () => {
 		// Replace the imported functions with our stubs
 		cloneNode.__set__('clusterStatus', clusterStatusStub);
 		cloneNode.__set__('setStatus', setStatusStub);
+		cloneNode.__set__('logger', loggerStub);
 	});
 
 	afterEach(() => {
@@ -132,7 +137,7 @@ describe('cloneNode', () => {
 
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.notCalled); // Should not update status
-			assert(consoleLogStub.calledWith('All databases synchronized'));
+			assert(loggerStub.notify.calledWith('All databases synchronized'));
 		});
 
 		it('should update status when sync is complete', async () => {
@@ -160,7 +165,7 @@ describe('cloneNode', () => {
 
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.calledOnceWith({ id: 'availability', status: 'Available' }));
-			assert(consoleLogStub.calledWith('All databases synchronized'));
+			assert(loggerStub.notify.calledWith('All databases synchronized'));
 		});
 
 		it('should throw error when sync times out', async () => {
@@ -232,7 +237,7 @@ describe('cloneNode', () => {
 
 			assert(clusterStatusStub.calledTwice);
 			assert(setStatusStub.calledOnce);
-			assert(consoleErrorStub.calledWith('Error checking cluster status:', sinon.match.instanceOf(Error)));
+			assert(loggerStub.error.calledWith('Error checking cluster status:', sinon.match.instanceOf(Error)));
 		});
 
 		it('should throw CloneSyncError when no target timestamps available', async () => {
@@ -443,7 +448,7 @@ describe('cloneNode', () => {
 
 			const result = await checkSyncStatus(targetTimestamps);
 			assert.strictEqual(result, true);
-			assert(consoleLogStub.calledWith('Database db2: No target timestamp, skipping sync check'));
+			assert(loggerStub.debug.calledWithMatch('Database db2: No target timestamp, skipping sync check'));
 		});
 
 		it('should handle sub-millisecond precision correctly (precision loss test)', async () => {
@@ -531,7 +536,7 @@ describe('cloneNode', () => {
 
 			// Should return false since no lastReceivedVersion means no data received yet
 			assert.strictEqual(result, false);
-			assert(consoleLogStub.calledWith('Database testdb: No data received yet'));
+			assert(loggerStub.debug.calledWithMatch('Database testdb: No data received yet'));
 		});
 
 		it('should handle multiple databases with mixed sync status', async () => {
@@ -579,7 +584,7 @@ describe('cloneNode', () => {
 
 			// Should return true since no database_sockets to check
 			assert.strictEqual(result, true);
-			assert(consoleLogStub.calledWith('Connection remote-node: No database_sockets, skipping'));
+			assert(loggerStub.debug.calledWithMatch('Connection remote-node: No database_sockets, skipping'));
 		});
 
 		it('should handle cluster status with backPressurePercent and status info', async () => {
@@ -604,7 +609,7 @@ describe('cloneNode', () => {
 
 			// Should be synchronized
 			assert.strictEqual(result, true);
-			assert(consoleLogStub.calledWith('Database testdb: Synchronized'));
+			assert(loggerStub.debug.calledWithMatch('Database testdb: Synchronized'));
 		});
 	});
 
@@ -644,8 +649,8 @@ describe('cloneNode', () => {
 
 			// Should check both databases and return true (both synced)
 			assert.strictEqual(result, true);
-			assert(consoleLogStub.calledWith(`Database ${SYSTEM_SCHEMA_NAME}: Synchronized`));
-			assert(consoleLogStub.calledWith('Database userdb: Synchronized'));
+			assert(loggerStub.debug.calledWithMatch(`Database ${SYSTEM_SCHEMA_NAME}: Synchronized`));
+			assert(loggerStub.debug.calledWithMatch('Database userdb: Synchronized'));
 		});
 
 		it('should only check system database when systemDatabaseOnly is true', async () => {
@@ -673,9 +678,9 @@ describe('cloneNode', () => {
 
 			// Should only check system database and return true (system synced, userdb skipped)
 			assert.strictEqual(result, true);
-			assert(consoleLogStub.calledWith(`Database ${SYSTEM_SCHEMA_NAME}: Synchronized`));
-			assert(consoleLogStub.calledWith('Database userdb: Skipping (waiting for system database only)'));
-			assert(consoleLogStub.neverCalledWith('Database userdb: Synchronized'));
+			assert(loggerStub.debug.calledWithMatch(`Database ${SYSTEM_SCHEMA_NAME}: Synchronized`));
+			assert(loggerStub.debug.calledWithMatch('Database userdb: Skipping (waiting for system database only)'));
+			assert(loggerStub.debug.neverCalledWith('Database userdb: Synchronized'));
 		});
 
 		it('should return false if system database is not synced when systemDatabaseOnly is true', async () => {
@@ -703,7 +708,7 @@ describe('cloneNode', () => {
 
 			// Should return false because system database is not synced
 			assert.strictEqual(result, false);
-			assert(consoleLogStub.calledWithMatch(`Database ${SYSTEM_SCHEMA_NAME}: Not yet synchronized`));
+			assert(loggerStub.debug.calledWithMatch(`Database ${SYSTEM_SCHEMA_NAME}: Not yet synchronized`));
 		});
 
 		it('should return false if user database is not synced when systemDatabaseOnly is false', async () => {
@@ -731,7 +736,7 @@ describe('cloneNode', () => {
 
 			// Should return false because userdb is not synced
 			assert.strictEqual(result, false);
-			assert(consoleLogStub.calledWithMatch('Database userdb: Not yet synchronized'));
+			assert(loggerStub.debug.calledWithMatch('Database userdb: Not yet synchronized'));
 		});
 	});
 });
