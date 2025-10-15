@@ -1,7 +1,7 @@
 import { assert } from 'chai';
 import axios from 'axios';
 import { setupTestApp } from './setupTestApp.mjs';
-import { profile, userCodeFolders } from '../../ts-build/resources/analytics/profile.js';
+import { captureProfile, userCodeFolders } from '../../ts-build/resources/analytics/profile.js';
 import analytics from '../../ts-build/resources/analytics/write.js';
 
 describe('Analytics profiling user code', () => {
@@ -13,13 +13,13 @@ describe('Analytics profiling user code', () => {
 	});
 
 	it('can sample user code and record it', async () => {
-		await profile(); // restart the profile
+		await captureProfile(); // restart the profile
 		const start = Date.now();
 		let response = await axios.post('http://localhost:9926/SimpleCache/3', {
 			doExpensiveComputation: true,
 		});
 		assert.equal(response.status, 204);
-		await profile();
+		await captureProfile();
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		const analyticsResults = await databases.system.hdb_raw_analytics.search({
 			conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],

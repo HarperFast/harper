@@ -320,7 +320,7 @@ describe('Test serverHandlers.js module ', () => {
 				assert.ok(err.statusCode === 401, 'Method should return an error with 401 status code');
 				assert.ok(err.http_resp_msg.error === TEST_ERR.message, 'Method should return correct error message');
 
-				assert.ok(warn_log_stub.calledTwice === true, 'Warning logged twice');
+				assert.ok(warn_log_stub.calledThrice === true, 'Warning logged thrice');
 				assert.ok(warn_log_stub.firstCall.args[0] === TEST_ERR, 'Warning logged error');
 				assert.ok(
 					warn_log_stub.secondCall.args[0].includes(test_req.socket.remoteAddress) === true,
@@ -387,7 +387,7 @@ describe('Test serverHandlers.js module ', () => {
 				assert.ok(err.statusCode === 401, 'Method should return an error with 401 status code');
 				assert.ok(err.http_resp_msg.error === TEST_ERR.message, 'Method should return correct error message');
 
-				assert.ok(warn_log_stub.calledTwice === true, 'Warning logged twice');
+				assert.ok(warn_log_stub.calledThrice === true, 'Warning logged thrice');
 				assert.ok(warn_log_stub.firstCall.args[0] === TEST_ERR, 'Warning logged error');
 				assert.ok(
 					warn_log_stub.secondCall.args[0].includes(test_req.socket.remoteAddress) === true,
