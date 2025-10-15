@@ -301,7 +301,7 @@ async function cloneUsingWS() {
 		// TODO: (maybe) update availability status to Unavailable if sync fails
 	}
 
-	logger.debug?.(`Successfully cloned node: ${leaderUrl} using WebSockets`);
+	logger.notify?.(`Successfully cloned node: ${leaderUrl} using WebSockets`);
 	configUtils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
 
 	if (noStart) process.exit();
@@ -380,7 +380,7 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	const shouldUpdateStatus = isStatusUpdateEnabled();
 	const systemDatabaseOnly = isSystemDatabaseOnlySync();
 
-	logger.debug?.('Starting sync monitoring');
+	logger.notify?.('Starting sync monitoring');
 	logger.debug?.(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
 	if (systemDatabaseOnly) {
 		logger.debug?.('Only waiting for system database to sync (CLONE_NODE_SYSTEM_DB_ONLY=true)');
@@ -396,9 +396,9 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 
 			if (syncComplete) {
 				if (systemDatabaseOnly) {
-					logger.debug?.('System database synchronized (user databases may still be syncing)');
+					logger.notify?.('System database synchronized (user databases may still be syncing)');
 				} else {
-					logger.debug?.('All databases synchronized');
+					logger.notify?.('All databases synchronized');
 				}
 
 				// Only update status if enabled
@@ -406,11 +406,11 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 					try {
 						await setStatus({ id: 'availability', status: 'Available' });
 						if (systemDatabaseOnly) {
-							logger.debug?.(
+							logger.notify?.(
 								'Successfully updated availability status to Available (system database ready, user databases may still be syncing)'
 							);
 						} else {
-							logger.debug?.('Successfully updated availability status to Available');
+							logger.notify?.('Successfully updated availability status to Available');
 						}
 					} catch (error) {
 						logger.error?.('Error updating status:', error);
@@ -418,7 +418,7 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 					}
 				}
 			} else {
-				logger.debug?.(`Sync not complete, waiting ${checkInterval}ms before next check`);
+				logger.notify?.(`Sync not complete, waiting ${checkInterval}ms before next check`);
 				await hdbUtils.asyncSetTimeout(checkInterval);
 			}
 		} catch (error) {

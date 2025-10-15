@@ -18,6 +18,7 @@ describe('cloneNode', () => {
 		loggerStub = {
 			info: sinon.stub(),
 			debug: sinon.stub(),
+			notify: sinon.stub(),
 			error: sinon.stub(),
 			warn: sinon.stub(),
 		};
@@ -136,7 +137,7 @@ describe('cloneNode', () => {
 
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.notCalled); // Should not update status
-			assert(loggerStub.debug.calledWith('All databases synchronized'));
+			assert(loggerStub.notify.calledWith('All databases synchronized'));
 		});
 
 		it('should update status when sync is complete', async () => {
@@ -164,7 +165,7 @@ describe('cloneNode', () => {
 
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.calledOnceWith({ id: 'availability', status: 'Available' }));
-			assert(loggerStub.debug.calledWith('All databases synchronized'));
+			assert(loggerStub.notify.calledWith('All databases synchronized'));
 		});
 
 		it('should throw error when sync times out', async () => {
