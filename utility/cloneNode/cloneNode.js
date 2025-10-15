@@ -33,7 +33,6 @@ const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
 const { set: setStatus } = require('../../server/status/index.ts');
 const { HTTP_STATUS_CODES } = require('../errors/commonErrors.js');
-const { clusterStatus } = require('../clustering/clusterStatus.js');
 
 // Custom error class for clone node operations
 class CloneNodeError extends Error {
@@ -308,25 +307,30 @@ async function cloneUsingWS() {
 }
 
 /**
+ * Find the most recent last_updated_record timestamp across all tables in a database
+ * @param {Object} dbObj - Database object or describe response containing tables
+ * @returns {number} - Most recent timestamp, or 0 if none found
+ */
+function findMostRecentTimestamp(dbObj) {
+	let mostRecent = 0;
+	for (const table in dbObj) {
+		const tableObj = dbObj[table];
+		// requestId is part of the describe response so we ignore it
+		if (typeof tableObj !== 'object') continue;
+		if (tableObj.last_updated_record > mostRecent) {
+			mostRecent = tableObj.last_updated_record;
+		}
+	}
+
+	return mostRecent;
+}
+
+/**
  * Will loop through a system describe and a describeAll to compare the last updated record for each table
  * and record the most recent timestamp for each database in a JSON file.
  * @returns {Promise<void>}
  */
 async function getLastUpdatedRecord() {
-	const findMostRecentTimestamp = (describeObj) => {
-		let mostRecent = 0;
-		for (const table in describeObj) {
-			const tableObj = describeObj[table];
-			// requestId is part of the describe response so we ignore it
-			if (typeof tableObj !== 'object') continue;
-			if (tableObj.last_updated_record > mostRecent) {
-				mostRecent = tableObj.last_updated_record;
-			}
-		}
-
-		return mostRecent;
-	};
-
 	logger.debug?.('Getting last updated record timestamp for all database');
 	const lastUpdated = {};
 	const systemDb = await leaderReq({ operation: 'describe_database', database: 'system' });
@@ -435,61 +439,55 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 
 /**
  * Check if all databases are synchronized by comparing timestamps
+ * Compares the most recent timestamp in each local database against the target timestamps from the leader
  * @param {Object} targetTimestamps - Target timestamps to check against
  * @param {boolean} systemDatabaseOnly - If true, only check system database synchronization
  * @returns {Promise<boolean>} - True if all databases are synchronized
  */
 async function checkSyncStatus(targetTimestamps, systemDatabaseOnly = false) {
-	// Get cluster status
-	const clusterResponse = await clusterStatus();
+	logger.debug?.('Checking sync status against target timestamps');
 
-	// There should always be a response with at least an empty connections []
-	for (const connection of clusterResponse.connections) {
-		// Connection object may have 'name' (replication path) or 'node_name' (clustering path)
-		const connectionName = connection.name || connection.node_name || 'unknown';
-		logger.debug?.(`Checking connection: ${connectionName}`);
+	// Check each database that has a target timestamp
+	for (const dbName in targetTimestamps) {
+		const targetTime = targetTimestamps[dbName];
 
-		// ...but not always database_sockets
-		if (!connection.database_sockets) {
-			logger.debug?.(`Connection ${connectionName}: No database_sockets, skipping`);
+		// Skip if no target time for this database. Would be a real edge case, if even possible
+		if (!targetTime) {
+			logger.debug?.(`Database ${dbName}: No target timestamp, skipping sync check`);
 			continue;
 		}
 
-		for (const socket of connection.database_sockets) {
-			const dbName = socket.database;
-			const targetTime = targetTimestamps[dbName];
-
-			// Skip if no target time for this database
-			if (!targetTime) {
-				logger.debug?.(`Connection ${connectionName}, Database ${dbName}: No target timestamp, skipping sync check`);
-				continue;
-			}
-
-			// Skip non-system databases if only checking system database
-			if (systemDatabaseOnly && dbName !== SYSTEM_SCHEMA_NAME) {
-				logger.debug?.(`Connection ${connectionName}, Database ${dbName}: Skipping (waiting for system database only)`);
-				continue;
-			}
-
-			// Raw version timestamp from RECEIVED_VERSION_POSITION (high-precision float64)
-			// This preserves sub-millisecond precision needed for accurate sync comparison
-			const receivedVersion = socket.lastReceivedVersion;
-
-			// Check if we have received data and if it's up to date
-			if (!receivedVersion) {
-				logger.debug?.(`Connection ${connectionName}, Database ${dbName}: No data received yet`);
-				return false;
-			}
-
-			if (receivedVersion < targetTime) {
-				logger.debug?.(
-					`Connection ${connectionName}, Database ${dbName}: Not yet synchronized (received: ${receivedVersion}, target: ${targetTime}, gap: ${targetTime - receivedVersion}ms)`
-				);
-				return false;
-			}
-
-			logger.debug?.(`Connection ${connectionName}, Database ${dbName}: Synchronized`);
+		// Skip non-system databases if only checking system database
+		if (systemDatabaseOnly && dbName !== SYSTEM_SCHEMA_NAME) {
+			logger.debug?.(`Database ${dbName}: Skipping (waiting for system database only)`);
+			continue;
 		}
+
+		// Get the local database
+		const db = databases[dbName];
+		if (!db) {
+			logger.debug?.(`Database ${dbName}: Not found locally yet`);
+			return false;
+		}
+
+		// Find the most recent timestamp across all tables in this database
+		const mostRecentTimestamp = findMostRecentTimestamp(db);
+
+		// Check if we have received any data
+		if (!mostRecentTimestamp) {
+			logger.debug?.(`Database ${dbName}: No data received yet`);
+			return false;
+		}
+
+		// Compare against target timestamp
+		if (mostRecentTimestamp < targetTime) {
+			logger.debug?.(
+				`Database ${dbName}: Not yet synchronized (received: ${mostRecentTimestamp}, target: ${targetTime}, gap: ${targetTime - mostRecentTimestamp}ms)`
+			);
+			return false;
+		}
+
+		logger.debug?.(`Database ${dbName}: Synchronized (received: ${mostRecentTimestamp}, target: ${targetTime})`);
 	}
 
 	return true;
