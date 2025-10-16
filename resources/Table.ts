@@ -41,7 +41,7 @@ import { transaction } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore.ts';
-import { autoCast, convertToMS } from '../utility/common_utils.js';
+import { autoCast, convertToMS, autoCastBooleanStrict } from '../utility/common_utils.js';
 import {
 	recordUpdater,
 	removeEntry,
@@ -4248,7 +4248,7 @@ export function coerceType(value: any, attribute: any): any {
 			case 'BigInt':
 				return value === 'null' ? null : BigInt(value);
 			case 'Boolean':
-				return value === 'true' ? true : value === 'false' ? false : value;
+				return autoCastBooleanStrict(value);
 			case 'Date':
 				if (isNaN(value)) {
 					if (value === 'null') return null;
