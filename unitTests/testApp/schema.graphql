@@ -13,7 +13,7 @@ type FourProp @table(audit: "1d", replicated: false) @export {
 	name: String @indexed
 	age: Int @indexed
 	title: String
-	birthday: Date @indexed
+	birthday: Date @indexed @testingUnknownDirective
 	ageInMonths: Int @computed @indexed
 	nameTitle: Int @computed(from: "name + ' ' + title") @enumerable
 }
