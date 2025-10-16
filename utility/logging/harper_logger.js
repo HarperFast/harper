@@ -780,15 +780,6 @@ function setLogLevel(level) {
 }
 
 /**
- * Takes a boolean string/value and casts it to a boolean
- * @param boolean
- * @returns {boolean}
- */
-function autoCastBoolean(boolean) {
-	return boolean === true || (typeof boolean === 'string' && boolean.toLowerCase() === 'true');
-}
-
-/**
  * Reads the harperdb-config.yaml file for log settings.
  * @param hdbConfigPath
  * @returns {{configLogPath: any, rotate: any, level: any, toFile: any, root: any, toStream: any}}

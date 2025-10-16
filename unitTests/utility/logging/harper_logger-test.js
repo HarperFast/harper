@@ -813,35 +813,7 @@ describe('Test harper_logger module', () => {
 			});
 		});
 	});
-
-	describe('Test autoCastBoolean function', () => {
-		let harper_logger;
-		let autoCastBoolean;
-
-		it('Test boolean returned as boolean', () => {
-			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			autoCastBoolean = harper_logger.__get__('autoCastBoolean');
-			const result = autoCastBoolean(false);
-
-			expect(result).to.be.false;
-		});
-
-		it('Test "TRUE" string returned as boolean', () => {
-			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			autoCastBoolean = harper_logger.__get__('autoCastBoolean');
-			const result = autoCastBoolean('TRUE');
-
-			expect(result).to.be.true;
-		});
-
-		it('Test "FalSe" string returned as boolean', () => {
-			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			autoCastBoolean = harper_logger.__get__('autoCastBoolean');
-			const result = autoCastBoolean('FalSe');
-
-			expect(result).to.be.false;
-		});
-	});
+	
 	describe('Test global logger', () => {
 		let originalHttpOptions, originalHttpLogOptions, httpLogPath, httpLogger;
 		before(() => {
