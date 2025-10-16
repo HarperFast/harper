@@ -76,6 +76,7 @@ exports.backtickASTSchemaItems = backtickASTSchemaItems;
 exports.isPortTaken = isPortTaken;
 exports.createForkArgs = createForkArgs;
 exports.autoCastBoolean = autoCastBoolean;
+exports.autoCastBooleanStrict = autoCastBooleanStrict;
 exports.asyncSetTimeout = asyncSetTimeout;
 exports.getTableHashAttribute = getTableHashAttribute;
 exports.doesSchemaExist = doesSchemaExist;
@@ -734,6 +735,26 @@ function createForkArgs(modulePath) {
  */
 function autoCastBoolean(boolean) {
 	return boolean === true || (typeof boolean === 'string' && boolean.toLowerCase() === 'true');
+}
+
+/**
+ * Takes a boolean string/value and casts it to a boolean iff it is a case-insensitive
+ * string matching 'true' or 'false'. Returns the argument unmodified otherwise.
+ * @param value boolean|string
+ * @returns any
+ *
+ */
+function autoCastBooleanStrict(value) {
+	if (typeof value === 'string') {
+		const lcValue = value.toLowerCase();
+		if (lcValue === 'true') {
+			return true;
+		}
+		if (lcValue === 'false') {
+			return false;
+		}
+	}
+	return value;
 }
 
 /**

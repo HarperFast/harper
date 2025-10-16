@@ -383,6 +383,42 @@ describe('Test common_utils module', () => {
 		});
 	});
 
+	describe('autoCastBooleanStrict', () => {
+		it('should cast "true" to true', () => {
+			assert.equal(cu.autoCastBooleanStrict('true'), true);
+		});
+		it('should cast "false" to false', () => {
+			assert.equal(cu.autoCastBooleanStrict('false'), false);
+		});
+		it('should cast "TRUE" to true', () => {
+			assert.equal(cu.autoCastBooleanStrict('TRUE'), true);
+		});
+		it('should cast "FALSE" to false', () => {
+			assert.equal(cu.autoCastBooleanStrict('FALSE'), false);
+		});
+		it('should cast "True" to true', () => {
+			assert.equal(cu.autoCastBooleanStrict('True'), true);
+		});
+		it('should cast "False" to false', () => {
+			assert.equal(cu.autoCastBooleanStrict('False'), false);
+		});
+		it('should cast "TrUe" to true', () => {
+			assert.equal(cu.autoCastBooleanStrict('TrUe'), true);
+		});
+		it('should cast "FaLsE" to false', () => {
+			assert.equal(cu.autoCastBooleanStrict('FaLsE'), false);
+		});
+		it('should leave "foo" intact', () => {
+			assert.equal(cu.autoCastBooleanStrict('foo'), 'foo');
+		});
+		it('should leave 42 intact', () => {
+			assert.equal(cu.autoCastBooleanStrict(42), 42);
+		});
+		it('should leave an object intact', () => {
+			assert.deepEqual(cu.autoCastBooleanStrict({foo: 42}), {foo: 42});
+		});
+	});
+
 	describe('Test escapeRawValue', function () {
 		it('Pass in null, expect null', function () {
 			assert.equal(cu.escapeRawValue(null), null);
