@@ -132,6 +132,9 @@ let logger;
  * @returns {Promise<void>}
  */
 module.exports = async function cloneNode(background = false, run = false) {
+	harperLogger.initLogSettings();
+	logger = harperLogger.loggerWithTag('cloneNode');
+
 	logger.info?.(`Starting clone node from leader node: ${leaderUrl}`);
 
 	rootPath = hdbUtils.getEnvCliRootPath();
@@ -210,8 +213,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 	await cloneConfig();
 
 	fs.ensureDir(envMgr.get(hdbTerms.CONFIG_PARAMS.LOGGING_ROOT));
-	harperLogger.initLogSettings();
-	logger = harperLogger.loggerWithTag('cloneNode');
 
 	await cloneDatabases();
 
@@ -736,7 +737,7 @@ async function cloneTablesHttp() {
 
 		if (tablesToClone.length === 0) continue;
 		if (replicationHost) {
-			hdbLog.debug('Setting up tables for #{db}');
+			logger.debug?.('Setting up tables for #{db}');
 			const ensureTable = require('../../resources/databases.ts').table;
 			for (let table of tablesToClone) {
 				for (let attribute of table.attributes) {
@@ -809,7 +810,7 @@ async function cloneTablesFetch() {
 		logger.debug?.(`Not cloning system database due to it already existing on clone`);
 	}
 	if (replicationHost) {
-		hdbLog.info('Replication hostname set, not using backup to clone databases, replication will clone');
+		logger.info?.('Replication hostname set, not using backup to clone databases, replication will clone');
 		return;
 	}
 
