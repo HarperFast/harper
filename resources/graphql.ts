@@ -6,22 +6,23 @@ import { Resources } from './Resources.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
-if (server.knownGraphQLDirectives) {
-	server.knownGraphQLDirectives = [
-		'table',
-		'sealed',
-		'export',
-		'primaryKey',
-		'indexed',
-		'computed',
-		'relationship',
-		'createdTime',
-		'updatedTime',
-		'expiresAt',
-		'allow',
-		'enumerable',
-	];
+if (!server.knownGraphQLDirectives) {
+	server.knownGraphQLDirectives = [];
 }
+server.knownGraphQLDirectives.push(
+	'table',
+	'sealed',
+	'export',
+	'primaryKey',
+	'indexed',
+	'computed',
+	'relationship',
+	'createdTime',
+	'updatedTime',
+	'expiresAt',
+	'allow',
+	'enumerable'
+);
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
  * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their
