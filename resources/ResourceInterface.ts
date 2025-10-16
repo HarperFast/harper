@@ -8,6 +8,7 @@ export interface ResourceInterface<Key = any, Record = any> {
 	get?(query: RequestTargetOrId): Promise<AsyncIterable<Record>>;
 	put?(target: RequestTargetOrId, record: any): void;
 	post?(target: RequestTargetOrId, record: any): void;
+	create?(target: RequestTargetOrId, record: any): void;
 	patch?(target: RequestTargetOrId, record: any): void;
 	publish?(target: RequestTargetOrId, record: any): void;
 	update?(updates: any, fullUpdate?: boolean): Promise<UpdatableRecord<Record>>;
