@@ -270,10 +270,17 @@ export class Resource implements ResourceInterface {
 		{ hasContent: true, type: 'delete' }
 	);
 
-	async post(newRecord) {
-		if (this.#isCollection) {
-			const resource = await this.constructor.create(this.#id, newRecord, this.#context);
-			return resource.#id;
+	async post(target: RequestTarget, newRecord: any) {
+		if (this.constructor.loadAsInstance === false) {
+			if (target.isCollection && this.create) {
+				newRecord = await this.create(target, newRecord);
+				return newRecord?.[this.constructor.primaryKey];
+			}
+		} else {
+			if (this.#isCollection) {
+				const resource = await this.constructor.create(this.#id, target, this.#context);
+				return resource.#id;
+			}
 		}
 		missingMethod(this, 'post');
 	}
