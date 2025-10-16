@@ -20,6 +20,7 @@ module.exports = function (object) {
 const readLogSchema = Joi.object({
 	from: Joi.custom(validateDatetime),
 	until: Joi.custom(validateDatetime),
+	to: Joi.custom(validateDatetime),
 	level: Joi.valid(
 		LOG_LEVELS.NOTIFY,
 		LOG_LEVELS.FATAL,

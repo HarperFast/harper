@@ -46,18 +46,23 @@ async function readLog(request) {
 			? path.join(INSTALL_LOG_LOCATION, hdbTerms.LOG_NAMES.INSTALL)
 			: path.join(logPath, logName);
 
+	// support 'until' attribute for backwards compatibility
+	if (request.to === undefined && request.until !== undefined) {
+		request.to = request.until;
+	}
+
 	const levelDefined = request.level !== undefined;
 	const level = levelDefined ? request.level : undefined;
 	const fromDefined = request.from !== undefined;
 	const from = fromDefined ? new Date(request.from) : undefined;
-	const untilDefined = request.until !== undefined;
-	const until = untilDefined ? new Date(request.until) : undefined;
+	const toDefined = request.to !== undefined;
+	const to = toDefined ? new Date(request.to) : undefined;
 	const limit = request.limit === undefined ? DEFAULT_READ_LOG_LIMIT : request.limit;
 	const order = request.order === undefined ? undefined : request.order;
 	const start = request.start === undefined ? 0 : request.start;
 	const max = start + limit;
 	let fileStart = 0;
-	if (order === 'desc' && !from && !until) {
+	if (order === 'desc' && !from && !to) {
 		fileStart = Math.max(fs.statSync(readLogPath).size - (max + 5) * ESTIMATED_AVERAGE_ENTRY_SIZE, 0);
 	}
 	const readLogInputStream = fs.createReadStream(readLogPath, { start: fileStart });
@@ -70,7 +75,7 @@ async function readLog(request) {
 	let remaining = '';
 	let pendingLogEntry;
 	readLogInputStream.on('data', (logData) => {
-		let reader = /(?:^|\n)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[\d\.]+Z) \[(.+?)]: /g;
+		let reader = /(?:^|\n)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[\d.]+Z) \[(.+?)]: /g;
 		logData = remaining + logData;
 		let lastPosition = 0;
 		let parsed;
@@ -106,19 +111,19 @@ async function readLog(request) {
 	readLogInputStream.resume();
 	function onLogMessage(line) {
 		let logDate;
-		let from_date;
-		let untilDate;
+		let fromDate;
+		let toDate;
 		switch (true) {
-			case levelDefined && fromDefined && untilDefined:
+			case levelDefined && fromDefined && toDefined:
 				logDate = new Date(line.timestamp);
-				from_date = new Date(from);
-				untilDate = new Date(until);
+				fromDate = new Date(from);
+				toDate = new Date(to);
 
-				// If the line matches the log level and timestamp falls between the from & until dates but the result count is less that the start,
+				// If the line matches the log level and timestamp falls between the from & to dates but the result count is less that the start,
 				// increment count and go to next line.
-				if (line.level === level && logDate >= from_date && logDate <= untilDate && count < start) count++;
+				if (line.level === level && logDate >= fromDate && logDate <= toDate && count < start) count++;
 				// Else if all the criteria match and the count is equal/above the start, push line to result array.
-				else if (line.level === level && logDate >= from_date && logDate <= untilDate) {
+				else if (line.level === level && logDate >= fromDate && logDate <= toDate) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
@@ -129,13 +134,13 @@ async function readLog(request) {
 				break;
 			case levelDefined && fromDefined:
 				logDate = new Date(line.timestamp);
-				from_date = new Date(from);
+				fromDate = new Date(from);
 
-				// If the line matches the log level and timestamp is equal/above the from_date but the result count is less that the start,
+				// If the line matches the log level and timestamp is equal/above the fromDate but the result count is less that the start,
 				// increment count and go to next line.
-				if (line.level === level && logDate >= from_date && count < start) count++;
+				if (line.level === level && logDate >= fromDate && count < start) count++;
 				// Else if the level and from date criteria match and the count is equal/above the start, push line to result array.
-				else if (line.level === level && logDate >= from_date) {
+				else if (line.level === level && logDate >= fromDate) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
@@ -144,15 +149,15 @@ async function readLog(request) {
 
 				// If criteria do not match, ignore the line and go to the next.
 				break;
-			case levelDefined && untilDefined:
+			case levelDefined && toDefined:
 				logDate = new Date(line.timestamp);
-				untilDate = new Date(until);
+				toDate = new Date(to);
 
-				// If the line matches the log level and timestamp is equal/below the untilDate but the result count is less that the start,
+				// If the line matches the log level and timestamp is equal/below the toDate but the result count is less that the start,
 				// increment count and go to next line.
-				if (line.level === level && logDate <= untilDate && count < start) count++;
-				// Else if the level and until date criteria match and the count is equal/above the start, push line to result array.
-				else if (line.level === level && logDate <= untilDate) {
+				if (line.level === level && logDate <= toDate && count < start) count++;
+				// Else if the level and to date criteria match and the count is equal/above the start, push line to result array.
+				else if (line.level === level && logDate <= toDate) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
@@ -161,16 +166,16 @@ async function readLog(request) {
 
 				// If criteria do not match, ignore the line and go to the next.
 				break;
-			case fromDefined && untilDefined:
+			case fromDefined && toDefined:
 				logDate = new Date(line.timestamp);
-				from_date = new Date(from);
-				untilDate = new Date(until);
+				fromDate = new Date(from);
+				toDate = new Date(to);
 
-				// If timestamp falls between the from & until dates but the result count is less that the start,
+				// If timestamp falls between the from & to dates but the result count is less that the start,
 				// increment count and go to next line.
-				if (logDate >= from_date && logDate <= untilDate && count < start) count++;
+				if (logDate >= fromDate && logDate <= toDate && count < start) count++;
 				// Else if all the criteria match and the count is equal/above the start, push line to result array.
-				else if (logDate >= from_date && logDate <= untilDate) {
+				else if (logDate >= fromDate && logDate <= toDate) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
@@ -194,13 +199,13 @@ async function readLog(request) {
 				break;
 			case fromDefined:
 				logDate = new Date(line.timestamp);
-				from_date = new Date(from);
+				fromDate = new Date(from);
 
-				// If timestamp is equal/above the from_date but the result count is less that the start,
+				// If timestamp is equal/above the fromDate but the result count is less that the start,
 				// increment count and go to next line.
-				if (logDate >= from_date && count < start) count++;
+				if (logDate >= fromDate && count < start) count++;
 				// Else if from date criteria match and the count is equal/above the start, push line to result array.
-				else if (logDate >= from_date && count >= start) {
+				else if (logDate >= fromDate && count >= start) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
@@ -209,15 +214,15 @@ async function readLog(request) {
 
 				// If criteria do not match, ignore the line and go to the next.
 				break;
-			case untilDefined:
+			case toDefined:
 				logDate = new Date(line.timestamp);
-				untilDate = new Date(until);
+				toDate = new Date(to);
 
-				// If timestamp is equal/below the untilDate but the result count is less that the start,
+				// If timestamp is equal/below the toDate but the result count is less that the start,
 				// increment count and go to next line.
-				if (logDate <= untilDate && count < start) count++;
-				// Else if until date criteria match and the count is equal/above the start, push line to result array.
-				else if (logDate <= untilDate && count >= start) {
+				if (logDate <= toDate && count < start) count++;
+				// Else if to date criteria match and the count is equal/above the start, push line to result array.
+				else if (logDate <= toDate && count >= start) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
