@@ -147,8 +147,10 @@ export async function copyDb(source_database: string, target_database_path: stri
 			index.put = noop;
 			index.remove = noop;
 		}
-		table.auditStore.put = noop;
-		table.auditStore.remove = noop;
+		if (table.auditStore) {
+			table.auditStore.put = noop;
+			table.auditStore.remove = noop;
+		}
 		root_store = table.primaryStore.rootStore;
 	}
 	if (!root_store) throw new Error(`Source database does not have any tables: ${source_database}`);
