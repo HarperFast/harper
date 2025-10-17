@@ -238,7 +238,7 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 									bytesCopied,
 									'bytes'
 								);
-								outstanding_writes = 0;
+								outstandingWrites = 0;
 							}
 						} catch (error) {
 							console.error(
