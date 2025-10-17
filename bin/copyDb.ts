@@ -203,6 +203,7 @@ export async function copyDb(source_database: string, target_database_path: stri
 		async function copyDbi(source_dbi, target_dbi, is_primary, transaction) {
 			let records_copied = 0;
 			let bytes_copied = 0;
+			let skippedRecord = 0;
 			let retries = 10000000;
 			let start = null;
 			while (retries-- > 0) {
@@ -211,13 +212,26 @@ export async function copyDb(source_database: string, target_database_path: stri
 						try {
 							start = key;
 							const { value, version } = source_dbi.getEntry(key, { transaction });
+							// deleted entries should be 13 bytes long (8 for timestamp, 4 bytes for flags, 1 byte of the encoding of null)
+							if (value?.length < 14 && is_primary) {
+								skippedRecord++;
+								continue;
+							}
 							written = target_dbi.put(key, value, is_primary ? version : undefined);
 							records_copied++;
 							if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
 							bytes_copied += (key?.length || 10) + value.length;
 							if (outstanding_writes++ > 5000) {
 								await written;
-								console.log('copied', records_copied, 'entries', bytes_copied, 'bytes');
+								console.log(
+									'copied',
+									records_copied,
+									'entries, skipped',
+									skippedRecord,
+									'delete records,',
+									bytes_copied,
+									'bytes'
+								);
 								outstanding_writes = 0;
 							}
 						} catch (error) {
@@ -232,7 +246,15 @@ export async function copyDb(source_database: string, target_database_path: stri
 							);
 						}
 					}
-					console.log('finish copying, copied', records_copied, 'entries', bytes_copied, 'bytes');
+					console.log(
+						'finish copying, copied',
+						records_copied,
+						'entries, skipped',
+						skippedRecord,
+						'delete records,',
+						bytes_copied,
+						'bytes'
+					);
 					return;
 				} catch (error) {
 					// try to resume with a bigger key
