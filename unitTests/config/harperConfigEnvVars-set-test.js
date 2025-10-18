@@ -189,7 +189,7 @@ describe('HARPER_SET_CONFIG', function () {
 			assert.strictEqual(fileConfig.http.port, 8888, 'SET_CONFIG should override user edits');
 		});
 
-		it('should delete values when key removed from HARPER_SET_CONFIG', function () {
+		it('should delete NEW values when key removed from HARPER_SET_CONFIG', function () {
 			// First run - add new key
 			process.env.HARPER_SET_CONFIG = JSON.stringify({
 				http: {
@@ -210,7 +210,32 @@ describe('HARPER_SET_CONFIG', function () {
 			process.env.HARPER_SET_CONFIG = JSON.stringify({});
 
 			applyRuntimeEnvConfig(fileConfig, testRoot);
-			assert.strictEqual(fileConfig.http.newKey, undefined, 'Should delete key');
+			assert.strictEqual(fileConfig.http.newKey, undefined, 'Should delete key that had no original');
+		});
+
+		it('should RESTORE original values when key removed from HARPER_SET_CONFIG', function () {
+			// Start with original file config
+			const fileConfig = {
+				http: {
+					port: 9925, // Original value
+				},
+			};
+
+			// First run - SET_CONFIG overrides it
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				http: {
+					port: 9999,
+				},
+			});
+
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.http.port, 9999, 'SET_CONFIG should override to 9999');
+
+			// Second run - SET_CONFIG removed, should restore original
+			delete process.env.HARPER_SET_CONFIG;
+
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.http.port, 9925, 'Should restore original value when SET_CONFIG removed');
 		});
 
 		it('should update values when HARPER_SET_CONFIG changes', function () {
