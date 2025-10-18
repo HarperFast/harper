@@ -387,9 +387,10 @@ function processEnvVar(
 
 	// Apply the configuration
 	if (sourceName === 'HARPER_SET_CONFIG') {
-		// SET_CONFIG always overrides everything
+		// SET_CONFIG always overrides everything, but store originals for restoration
 		applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
 			respectSources: [],
+			storeOriginals: true,
 		});
 	} else if (sourceName === 'HARPER_DEFAULT_CONFIG') {
 		// DEFAULT_CONFIG behavior depends on install vs runtime
@@ -458,8 +459,8 @@ function cleanupRemovedEnvVar(
 
 	const logger = require('../utility/logging/harper_logger.js');
 
-	// For HARPER_DEFAULT_CONFIG, restore original values instead of just deleting
-	if (sourceName === 'HARPER_DEFAULT_CONFIG') {
+	// For both HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG, restore original values
+	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
 		const pathsToCleanup = Object.keys(state.sources).filter((path) => state.sources[path] === sourceName);
 		for (const path of pathsToCleanup) {
 			if (path in state.originalValues) {
