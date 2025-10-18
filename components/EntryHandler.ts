@@ -164,7 +164,12 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				cwd: this.#component.directory,
 				persistent: false,
 				ignored: (path) => {
-					return path !== this.#component.directory && allowedBases.every((base) => !path.startsWith(base));
+					const normalizedPath = path.replace(/\\/g, '/');
+					const normalizedBases = allowedBases.map(base => base.replace(/\\/g, '/'));
+					return (
+						normalizedPath !== this.#component.directory.replace(/\\/g, '/') &&
+						normalizedBases.every((base) => !normalizedPath.startsWith(base))
+					);
 				},
 			})
 			.on('all', this.#handleAll.bind(this))
