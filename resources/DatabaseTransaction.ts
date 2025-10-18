@@ -11,6 +11,7 @@ import { convertToMS } from '../utility/common_utils.js';
 const MAX_OPTIMISTIC_SIZE = 100;
 const trackedTxns = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN: 1, // the transaction is open and can be used for reads and writes
@@ -21,6 +22,8 @@ let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
 }
+
+class StartedTransaction extends Error {}
 
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
@@ -47,6 +50,9 @@ export class DatabaseTransaction implements Transaction {
 		// Get a read transaction from lmdb-js; make sure we do this first, as it can fail, we don't want to leave the transaction in a bad state with readTxnsUsed > 0
 		this.readTxn = this.lmdbDb.useReadTransaction();
 		this.readTxnsUsed = 1;
+		if (DEBUG_LONG_TXNS) {
+			this.stackTraces = [new StartedTransaction()];
+		}
 		if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
 		trackedTxns.add(this);
 		return this.readTxn;
@@ -55,6 +61,9 @@ export class DatabaseTransaction implements Transaction {
 		this.getReadTxn();
 		this.readTxn?.use();
 		this.readTxnsUsed++;
+		if (DEBUG_LONG_TXNS) {
+			this.stackTraces.push(new StartedTransaction());
+		}
 		return this.readTxn;
 	}
 	doneReadTxn() {
@@ -318,7 +327,8 @@ function startMonitoringTxns() {
 				harperLogger.error(
 					`Transaction was open too long and has been aborted, from table: ${
 						txn.lmdbDb?.name + (url ? ' path: ' + url : '')
-					}`
+					}`,
+					...(DEBUG_LONG_TXNS ? ['was started from', txn.stackTraces] : [])
 				);
 				txn.abort();
 			} else txn.stale = true;
