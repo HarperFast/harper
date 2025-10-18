@@ -1,6 +1,6 @@
 import { Scope } from '../components/Scope.ts';
 import { secureImport } from '../security/jsLoader.ts';
-import { dirname, join } from 'path';
+import { dirname } from 'path';
 
 function isResource(value: unknown) {
 	return typeof value === 'function' && ('get' in value || 'put' in value || 'post' in value || 'delete' in value);
@@ -36,7 +36,7 @@ export async function handleApplication(scope: Scope) {
 
 		secureImport(entryEvent.absolutePath)
 			.then((resourceModule) => {
-				const root = dirname(entryEvent.urlPath);
+				const root = dirname(entryEvent.urlPath).replace(/\\/g, '/').replace(/^\/$/, '');
 				if (isResource(resourceModule.default)) {
 					// register the resource
 					scope.resources.set(root, resourceModule.default);
@@ -55,7 +55,7 @@ function recurseForResources(scope: Scope, resourceModule: any, prefix: string) 
 	for (const name in resourceModule) {
 		// check each of the module exports to see if it implements a Resource handler
 		const exported = resourceModule[name];
-		const resourcePath = join(prefix, name);
+		const resourcePath = `${prefix}/${name}`;
 		if (isResource(exported)) {
 			// expose as an endpoint
 			scope.resources.set(resourcePath, exported);
