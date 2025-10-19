@@ -112,7 +112,12 @@ function startServers() {
 								let timer = setInterval(() => {
 									closeAttempts++;
 									const forceClose = closeAttempts >= 100;
-									let connections = server[connectionsSymbol][forceClose ? 'all' : 'idle']();
+								if (!server[connectionsSymbol]) {
+									if (forceClose) server.closeAllConnections?.();
+									clearInterval(timer);
+									return;
+								}
+								let connections = server[connectionsSymbol]?.[forceClose ? 'all' : 'idle']?.() || [];
 									if (connections.length === 0) {
 										if (forceClose) clearInterval(timer);
 										return;
