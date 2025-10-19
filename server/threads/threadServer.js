@@ -117,7 +117,7 @@ function startServers() {
 									clearInterval(timer);
 									return;
 								}
-								const connections = server[connectionsSymbol][forceClose ? 'all' : 'idle']?.() || [];
+								let connections = server[connectionsSymbol]?.[forceClose ? 'all' : 'idle']?.() || [];
 									if (connections.length === 0) {
 										if (forceClose) clearInterval(timer);
 										return;
