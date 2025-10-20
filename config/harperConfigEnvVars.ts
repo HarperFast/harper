@@ -31,11 +31,41 @@ function getLogger() {
 type ConfigObject = Record<string, any>;
 type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'default';
 
+/**
+ * Configuration state tracking structure
+ *
+ * Stored in {rootPath}/backup/.harper-config-state.json
+ *
+ * Example:
+ * {
+ *   "version": "1.0",
+ *   "sources": {
+ *     "http.port": "HARPER_DEFAULT_CONFIG",
+ *     "http.mtls": "HARPER_SET_CONFIG",
+ *     "logging.level": "user"
+ *   },
+ *   "originalValues": {
+ *     "http.port": 9925,
+ *     "http.mtls": false
+ *   },
+ *   "snapshots": {
+ *     "HARPER_DEFAULT_CONFIG": {
+ *       "hash": "a1b2c3d4",
+ *       "config": { "http": { "port": 8080 } }
+ *     },
+ *     "HARPER_SET_CONFIG": {
+ *       "hash": "e5f6g7h8",
+ *       "config": { "http": { "mtls": true } }
+ *     }
+ *   }
+ * }
+ */
 interface ConfigState {
 	version: string;
-	sources: Record<string, ConfigSource>;
-	originalValues: Record<string, any>; // Original values before HARPER_DEFAULT_CONFIG override
+	sources: Record<string, ConfigSource>; // Maps config path to the source that set it
+	originalValues: Record<string, any>; // Original values before env var override (for restoration)
 	snapshots: {
+		// Snapshots of what each env var currently specifies (for detecting changes)
 		HARPER_DEFAULT_CONFIG?: { hash: string; config: ConfigObject };
 		HARPER_SET_CONFIG?: { hash: string; config: ConfigObject };
 	};
