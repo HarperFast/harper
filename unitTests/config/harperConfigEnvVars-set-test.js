@@ -238,6 +238,35 @@ describe('HARPER_SET_CONFIG', function () {
 			assert.strictEqual(fileConfig.http.port, 9925, 'Should restore original value when SET_CONFIG removed');
 		});
 
+		it('should RESTORE original value when key removed from HARPER_SET_CONFIG via changed env var', function () {
+			// Start with original file config
+			const fileConfig = {
+				http: {
+					port: 9925,
+					mtls: false, // Original value from template
+				},
+			};
+
+			// First run - SET_CONFIG overrides mtls to true
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				http: {
+					mtls: true,
+				},
+			});
+
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.http.mtls, true, 'SET_CONFIG should override to true');
+
+			// Second run - SET_CONFIG changed to empty http object (removed mtls key)
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				http: {},
+			});
+
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.http.mtls, false, 'Should restore original value when key removed from SET_CONFIG');
+			assert.strictEqual(fileConfig.http.port, 9925, 'Other values should remain unchanged');
+		});
+
 		it('should update values when HARPER_SET_CONFIG changes', function () {
 			// First run
 			process.env.HARPER_SET_CONFIG = JSON.stringify({
