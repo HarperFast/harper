@@ -423,7 +423,8 @@ export function recordUpdater(store, table_id, audit_store) {
 						options?.originatingOperation
 					),
 					{
-						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
+						// turn off append flag, as we are concerned this may be related to db corruption issues
+						// append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
 						instructedWrite: true,
 						ifVersion: if_version,
 					}
