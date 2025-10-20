@@ -18,6 +18,15 @@ import { getBackupDirPath } from './configHelpers';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 
+/**
+ * Get logger instance with tag - lazy loaded to avoid circular dependencies
+ * and ensure logger is initialized before use
+ */
+function getLogger() {
+	const { loggerWithTag } = require('../utility/logging/logger.js');
+	return loggerWithTag('env-config');
+}
+
 // Type definitions
 type ConfigObject = Record<string, any>;
 type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'default';
@@ -215,7 +224,7 @@ function loadConfigState(rootPath: string): ConfigState {
 		return state;
 	} catch (error) {
 		// If state file is corrupted, start fresh
-		const logger = require('../utility/logging/harper_logger.js');
+		const logger = getLogger();
 		logger.warn(`Failed to load config state file, starting fresh: ${(error as Error).message}`);
 		return {
 			version: '1.0',
@@ -321,8 +330,11 @@ function handleDeletions(
 	for (const path of deletedPaths) {
 		// Only handle if this path was set by this source
 		if (state.sources[path] === sourceName) {
-			// For HARPER_DEFAULT_CONFIG, restore original value instead of deleting
-			if (sourceName === 'HARPER_DEFAULT_CONFIG' && path in state.originalValues) {
+			// For both HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG, restore original value instead of deleting
+			if (
+				(sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_SET_CONFIG') &&
+				path in state.originalValues
+			) {
 				setNestedValue(fileConfig, path, state.originalValues[path]);
 				delete state.originalValues[path];
 			} else {
@@ -378,7 +390,7 @@ function processEnvVar(
 	const envVarValue = process.env[envVarName];
 	if (!envVarValue) return;
 
-	const logger = require('../utility/logging/harper_logger.js');
+	const logger = getLogger();
 	const parsedConfig = parseConfigEnvVar(envVarValue, envVarName);
 	if (!parsedConfig) return;
 
@@ -443,7 +455,7 @@ function processEnvVar(
 	};
 
 	const mode = options.isInstall ? 'installation' : 'runtime';
-	logger.debug(`Applied ${envVarName} at ${mode}`);
+	logger.debug?.(`Applied ${envVarName} at ${mode}`);
 }
 
 /**
@@ -457,7 +469,7 @@ function cleanupRemovedEnvVar(
 ): void {
 	if (!state.snapshots[sourceName]) return;
 
-	const logger = require('../utility/logging/harper_logger.js');
+	const logger = getLogger();
 
 	// For both HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG, restore original values
 	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
@@ -479,7 +491,7 @@ function cleanupRemovedEnvVar(
 	}
 
 	delete state.snapshots[sourceName];
-	logger.debug(`${envVarName} removed, cleaned up values`);
+	logger.debug?.(`${envVarName} removed, cleaned up values`);
 }
 
 /**
