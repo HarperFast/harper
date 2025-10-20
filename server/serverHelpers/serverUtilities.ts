@@ -484,6 +484,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_SSH_KEY, new OperationFunctionObject(customFunctionOperations.addSSHKey));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_SSH_KEY, new OperationFunctionObject(customFunctionOperations.getSSHKey));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.UPDATE_SSH_KEY,
 		new OperationFunctionObject(customFunctionOperations.updateSSHKey)

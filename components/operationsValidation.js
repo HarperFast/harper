@@ -8,6 +8,7 @@ const envMangr = require('../utility/environment/environmentManager.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const hdbLogger = require('../utility/logging/harper_logger.js');
 const { hdbErrors } = require('../utility/errors/hdbError.js');
+const { get } = require('lodash');
 const { HDB_ERROR_MSGS } = hdbErrors;
 
 // File name can only be alphanumeric, dash and underscores
@@ -27,6 +28,7 @@ module.exports = {
 	getComponentFileValidator,
 	dropComponentFileValidator,
 	addSSHKeyValidator,
+	getSSHKeyValidator,
 	updateSSHKeyValidator,
 	deleteSSHKeyValidator,
 	setSSHKnownHostsValidator,
@@ -269,6 +271,14 @@ function addSSHKeyValidator(req) {
 	});
 
 	return validator.validateBySchema(req, setSshSchema);
+}
+
+function getSSHKeyValidator(req) {
+	const getSshSchema = Joi.object({
+		name: Joi.string().required(),
+	});
+
+	return validator.validateBySchema(req, getSshSchema);
 }
 
 /**

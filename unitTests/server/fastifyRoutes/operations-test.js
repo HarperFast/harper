@@ -541,6 +541,13 @@ describe('Test custom functions operations', () => {
 			expect(result).to.eql([{ name: 'testkey1' }]);
 			result = await operations.getSSHKnownHosts({});
 			expect(result).to.eql({ known_hosts: 'gitlab.com fake1\ngitlab.com fake2' });
+			result = await operations.getSSHKey({ name: 'testkey1' });
+			expect(result).to.eql({
+				name: 'testkey1',
+				host: 'testkey1.gitlab.com',
+				hostname: 'gitlab.com',
+				key: 'random\nstring',
+			});
 
 			// Add a github.com key
 			result = await operations.addSSHKey({
@@ -579,6 +586,13 @@ describe('Test custom functions operations', () => {
 				error = err;
 			}
 			expect(error.message).to.eql('Key does not exist. Use add_ssh_key');
+
+			try {
+				await operations.getSSHKey({ name: 'nonexistant' });
+			} catch (err) {
+				error = err;
+			}
+			expect(error.message).to.eql('Key does not exist.');
 
 			try {
 				await operations.deleteSSHKey({ name: 'nonexistant' });
