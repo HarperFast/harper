@@ -1159,10 +1159,11 @@ export async function cleanupOrphans(database: any) {
 					if (pathsToCheck.size % 1_000_000 === 0)
 						logger.info?.('Finding all blobs for orphan check, paths accumulated', pathsToCheck.size);
 					pathsToCheck.add(entryPath);
-					if (pathsToCheck.size % 2 === 0) {
+					if (pathsToCheck.size % 2000 === 0) {
 						// this might be a bit expensive, so only check occasionally
 						const stats = getHeapStatistics();
-						if (stats.used_heap_size > stats.heap_size_limit * 0.8) {
+						// The maximum size of a Set is 16,777,216, so we limit the size of the set and we try to limit memory usage (starting at 80%, but gradually going down as the Set gets bigger)
+						if (stats.used_heap_size > stats.heap_size_limit * (0.8 - pathsToCheck.size / 16_000_000)) {
 							// if our array gets too big and we are running out of space, we can start the db search for references before running out of memory
 							await removePathsThatAreNotReferenced();
 						}
