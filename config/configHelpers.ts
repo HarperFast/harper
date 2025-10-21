@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import * as hdbTerms from '../utility/hdbTerms';
+import * as hdbTerms from '../utility/hdbTerms.ts';
 
 /**
  * Get the backup directory path for the given Harper root
