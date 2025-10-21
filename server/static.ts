@@ -83,7 +83,7 @@ export function handleApplication(scope: Scope) {
 
 			// If the file is not found, try matching index
 			if (!staticFile) {
-				const index = scope.options.get(['index']) ?? false;
+				const index = scope.options.get(['index']) ?? true;
 
 				if (typeof index !== 'boolean') {
 					throw new Error(`Invalid index option: ${index}. Must be a boolean.`);
