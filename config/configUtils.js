@@ -753,12 +753,17 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	// Convert to JSON for processing
 	const configObj = configDoc.toJSON();
 
-	// Apply env vars with source tracking and drift detection
-	applyRuntimeEnvConfig(configObj, rootPath, options);
+	try {
+		// Apply env vars with source tracking and drift detection
+		applyRuntimeEnvConfig(configObj, rootPath, options);
 
-	// Convert back to YAML document and write to file
-	const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true });
-	Object.assign(configDoc, mergedDoc);
+		// Convert back to YAML document and write to file
+		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true });
+		Object.assign(configDoc, mergedDoc);
+	} catch (error) {
+		logger.error(`Failed to apply runtime env config: ${error.message}`);
+		throw error;
+	}
 
 	// We're done here if no config file to write to
 	if (!configFilePath) {
