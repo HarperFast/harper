@@ -201,4 +201,54 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
+
+	describe('error handling in YAML processing', function () {
+		it('should log error and rethrow when applyRuntimeEnvConfig throws (most likely scenario)', function () {
+			// This is the most realistic failure case - invalid env var values, state file issues, etc.
+			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":"invalid"}}';
+			applyRuntimeEnvConfigStub.throws(new Error('Invalid port value'));
+
+			assert.throws(
+				() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'),
+				/Invalid port value/
+			);
+
+			assert.strictEqual(loggerStub.error.called, true);
+			assert.match(loggerStub.error.firstCall.args[0], /Failed to apply runtime env config/);
+
+			delete process.env.HARPER_DEFAULT_CONFIG;
+		});
+
+		it('should log error and rethrow when YAML.stringify() fails', function () {
+			// Could happen with circular references or objects that don't serialize well
+			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
+			YAMLStub.stringify.throws(new Error('Cannot stringify circular reference'));
+
+			assert.throws(
+				() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'),
+				/Cannot stringify circular reference/
+			);
+
+			assert.strictEqual(loggerStub.error.called, true);
+			assert.match(loggerStub.error.firstCall.args[0], /Failed to apply runtime env config/);
+
+			delete process.env.HARPER_DEFAULT_CONFIG;
+		});
+
+		it('should log error and rethrow when YAML.parseDocument() fails', function () {
+			// Could happen if stringify produces invalid YAML (unlikely but possible)
+			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
+			YAMLStub.parseDocument.throws(new Error('Invalid YAML structure'));
+
+			assert.throws(
+				() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'),
+				/Invalid YAML structure/
+			);
+
+			assert.strictEqual(loggerStub.error.called, true);
+			assert.match(loggerStub.error.firstCall.args[0], /Failed to apply runtime env config/);
+
+			delete process.env.HARPER_DEFAULT_CONFIG;
+		});
+	});
 });
