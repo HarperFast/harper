@@ -119,12 +119,12 @@ export async function extractApplication(application: Application) {
 			}
 		} else {
 			// Given a package, resolve using `npm pack` (downloads the package as a tarball and writes the path to stdout)
-			const { stdout: tarballFilePath } = await nonInteractiveSpawn(
-				application.name,
-				'npm',
-				['pack', application.packageIdentifier],
-				parentDirPath
-			);
+			const {
+				stdout: tarballFilePath,
+				code,
+				stderr,
+			} = await nonInteractiveSpawn(application.name, 'npm', ['pack', application.packageIdentifier], parentDirPath);
+			if (code !== 0) throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
 			tarballPath = join(parentDirPath, tarballFilePath.trim());
 			// Create a Readable from the tarball
 			tarball = createReadStream(tarballPath);
