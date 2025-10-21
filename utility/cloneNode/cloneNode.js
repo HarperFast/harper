@@ -546,7 +546,7 @@ async function cloneKeys() {
  * @returns {Promise<void>}
  */
 async function cloneConfig(withWs = false) {
-	logger.info?.('Cloning configuration');
+	console.log('Cloning configuration');
 	leaderConfig = await leaderReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leaderConfigFlat = configUtils.flattenConfig(leaderConfig);
 	const excludeComps = cloneNodeConfig?.componentConfig?.exclude;
