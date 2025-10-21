@@ -360,6 +360,7 @@ export const OPERATIONS_ENUM = {
 	ADD_NODE_BACK: 'add_node_back',
 	REMOVE_NODE_BACK: 'remove_node_back',
 	ADD_SSH_KEY: 'add_ssh_key',
+	GET_SSH_KEY: 'get_ssh_key',
 	UPDATE_SSH_KEY: 'update_ssh_key',
 	DELETE_SSH_KEY: 'delete_ssh_key',
 	LIST_SSH_KEYS: 'list_ssh_keys',

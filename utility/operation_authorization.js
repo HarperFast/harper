@@ -200,6 +200,7 @@ requiredPermissions.set(functionsOperations.dropCustomFunctionProject.name, new 
 requiredPermissions.set(functionsOperations.packageComponent.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.deployComponent.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.addSSHKey.name, new permission(true, []));
+requiredPermissions.set(functionsOperations.getSSHKey.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.updateSSHKey.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.deleteSSHKey.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.listSSHKeys.name, new permission(true, []));

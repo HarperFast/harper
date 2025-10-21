@@ -73,6 +73,7 @@ const SUPPORTED_OPS = [
 	'add_certificate',
 	'remove_certificate',
 	'add_ssh_key',
+	'get_ssh_key',
 	'update_ssh_key',
 	'delete_ssh_key',
 	'list_ssh_keys',

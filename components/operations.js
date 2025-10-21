@@ -701,6 +701,46 @@ Host ${host}
 	return response;
 }
 
+async function getSSHKey(req) {
+	const validation = validator.getSSHKeyValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	let { name } = req;
+	log.trace(`getting ssh key`, name);
+	const filePath = path.join(sshDir, name + '.key');
+	if (!(await fs.pathExists(filePath))) {
+		throw new Error('Key does not exist.');
+	}
+
+	const result = { name, key: await fs.readFile(filePath, 'utf8') };
+
+	// Read the config file to get Host and HostName
+	const config_file = path.join(sshDir, 'config');
+	if (await fs.pathExists(config_file)) {
+		const configContents = await fs.readFile(config_file, 'utf8');
+		// Find the config block for this key (starts with #name)
+		const configBlockRegex = new RegExp(`#${name}[\\S\\s]*?IdentitiesOnly yes`, 'g');
+		const match = configContents.match(configBlockRegex);
+
+		if (match && match[0]) {
+			const configBlock = match[0];
+			// Extract Host
+			const hostMatch = configBlock.match(/^Host\s+(.+)$/m);
+			if (hostMatch) {
+				result.host = hostMatch[1].trim();
+			}
+			// Extract HostName
+			const hostnameMatch = configBlock.match(/^\s*HostName\s+(.+)$/m);
+			if (hostnameMatch) {
+				result.hostname = hostnameMatch[1].trim();
+			}
+		}
+	}
+
+	return result;
+}
+
 async function updateSSHKey(req) {
 	const validation = validator.updateSSHKeyValidator(req);
 	if (validation) {
@@ -794,6 +834,7 @@ exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;
 exports.dropComponent = dropComponent;
 exports.addSSHKey = addSSHKey;
+exports.getSSHKey = getSSHKey;
 exports.updateSSHKey = updateSSHKey;
 exports.deleteSSHKey = deleteSSHKey;
 exports.listSSHKeys = listSSHKeys;

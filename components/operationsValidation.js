@@ -27,6 +27,7 @@ module.exports = {
 	getComponentFileValidator,
 	dropComponentFileValidator,
 	addSSHKeyValidator,
+	getSSHKeyValidator,
 	updateSSHKeyValidator,
 	deleteSSHKeyValidator,
 	setSSHKnownHostsValidator,
@@ -269,6 +270,14 @@ function addSSHKeyValidator(req) {
 	});
 
 	return validator.validateBySchema(req, setSshSchema);
+}
+
+function getSSHKeyValidator(req) {
+	const getSshSchema = Joi.object({
+		name: Joi.string().required(),
+	});
+
+	return validator.validateBySchema(req, getSshSchema);
 }
 
 /**
