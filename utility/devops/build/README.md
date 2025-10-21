@@ -225,7 +225,7 @@ They `pyxis` key can be found in LastPass under the redhat.com harperdb account 
 preflight check container registry.hub.docker.com/harperdb/harperdb-openshift:[version] \
   --submit \
   --pyxis-api-token=${PYXIS_API_TOKEN} \
-  --certification-project-id=64652bdb6c16c68a7fdbe93b \
+  --certification-component-id=64652bdb6c16c68a7fdbe93b \
   --docker-config ./temp-auth.json
 ```
 
