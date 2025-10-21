@@ -95,6 +95,7 @@ const CLONE_VARS = {
 	CLONE_KEYS: 'CLONE_KEYS',
 	CLONE_USING_WS: 'CLONE_USING_WS',
 	NO_START: 'NO_START',
+	CLONE_SSH_KEYS: 'CLONE_SSH_KEYS',
 };
 
 const cliArgs = minimist(process.argv);
@@ -110,6 +111,7 @@ const clonedVar = cliArgs[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CON
 const clone_keys = cliArgs[CLONE_VARS.CLONE_KEYS] !== 'false' && process.env[CLONE_VARS.CLONE_KEYS] !== 'false';
 const cloneUsingWs = (cliArgs[CLONE_VARS.CLONE_USING_WS] ?? process.env[CLONE_VARS.CLONE_USING_WS]) === 'true';
 const noStart = (cliArgs[CLONE_VARS.NO_START] ?? process.env[CLONE_VARS.NO_START]) === 'true';
+const cloneSSHKeys = (cliArgs[CLONE_VARS.CLONE_SSH_KEYS] ?? process.env[CLONE_VARS.CLONE_SSH_KEYS]) !== 'false';
 
 let cloneNodeConfig;
 let hdbConfig = {};
@@ -133,7 +135,7 @@ let logger;
  * @returns {Promise<void>}
  */
 module.exports = async function cloneNode(background = false, run = false) {
-	// Harper might not be installed yet so we log to console
+	// Harper might not be installed yet so we log to console until after install
 	console.log(`Starting clone node from leader node: ${leaderUrl}`);
 
 	rootPath = hdbUtils.getEnvCliRootPath();
@@ -151,7 +153,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 		}
 	}
 
-	let existingInstall = false;
 	if (!rootPath) {
 		console.log(`No HarperDB install found, starting fresh clone`);
 		freshClone = true;
@@ -159,7 +160,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 		console.log(
 			`Existing HarperDB install found at ${rootPath}. Clone node will only clone items that do not already exist on clone.`
 		);
-		existingInstall = true;
 	} else {
 		console.log(`No HarperDB install found at ${rootPath} starting fresh clone`);
 		freshClone = true;
@@ -188,13 +188,13 @@ module.exports = async function cloneNode(background = false, run = false) {
 			hdbConfigJson = YAML.parseDocument(await fs.readFile(hdbConfigPath, 'utf8'), { simpleKeys: true }).toJSON();
 			hdbConfig = configUtils.flattenConfig(hdbConfigJson);
 		} catch (err) {
-			console.log(`Error reading existing harperdb-config.yaml on clone: ${err}`);
+			console.error(`Error reading existing harperdb-config.yaml on clone: ${err}`);
 		}
 	}
 
 	if (replicationHost) {
 		const leaderUrlInst = new URL(leaderUrl);
-		leaderReplicationUrl = `${leaderUrlInst.protocol === 'https:' ? 'wss://' : 'ws://'}${leaderUrlInst.hostname}:${replicationPort || 9925}`;
+		leaderReplicationUrl = `${leaderUrlInst.protocol === 'https:' ? 'wss://' : 'ws://'}${leaderUrlInst.hostname}:${replicationPort || 9933}`;
 	}
 
 	if (cloneUsingWs) {
@@ -228,6 +228,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 	if (replicationHost) {
 		await setupReplication();
 		await cloneKeys();
+		await cloneSSH();
 	}
 
 	logger.info?.('\nSuccessfully cloned node: ' + leaderUrl);
@@ -292,11 +293,11 @@ async function cloneUsingWS() {
 	const addNodeResponse = await addNode({
 		operation: OPERATIONS_ENUM.ADD_NODE,
 		url: leaderReplicationUrl,
-		verify_tls: false, // TODO: remove this
 	});
 	logger.debug?.('Add node response: ', addNodeResponse);
 
-	//await cloneKeys(); // TODO: UNCOMMENT THIS
+	await cloneKeys();
+	await cloneSSH();
 
 	// Monitor sync and update status when complete
 	try {
@@ -381,7 +382,7 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 
 	// Configuration from environment variables
 	const maxWaitTime = Math.max(1, parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT) || 300000); // 5 minutes default, min 1ms
-	const checkInterval = Math.max(1, parseInt(process.env.HDB_CLONE_CHECK_INTERVAL) || 5000);
+	const checkInterval = Math.max(1, parseInt(process.env.HDB_CLONE_CHECK_INTERVAL) || 3000);
 	const shouldUpdateStatus = isStatusUpdateEnabled();
 
 	logger.notify?.('Starting sync monitoring');
@@ -487,6 +488,7 @@ async function checkSyncStatus(targetTimestamps) {
 			}
 
 			logger.notify?.(`Database ${dbName}: Synchronized`);
+			break;
 		}
 	}
 
@@ -1046,5 +1048,31 @@ async function insertHdbVersionInfo() {
 		await hdbInfoController.insertHdbInstallInfo(vers);
 	} else {
 		throw new Error('The version is missing/removed from HarperDB package.json');
+	}
+}
+
+async function cloneSSH() {
+	// Requiring here because it needs a Harper env to be set up
+	const { addSSHKey } = require('../../components/operations.js');
+	try {
+		if (cloneSSHKeys) {
+			const keys = await leaderReq({ operation: OPERATIONS_ENUM.LIST_SSH_KEYS });
+			if (!keys?.results?.length || keys.results.length === 0) {
+				logger.info?.('No SSH keys found on leader node to clone');
+				return;
+			}
+
+			for (const keyName of keys.results) {
+				logger.info?.('Cloning SSH key:', keyName.name);
+				const keyData = await leaderReq({
+					operation: OPERATIONS_ENUM.GET_SSH_KEY,
+					name: keyName.name,
+				});
+
+				await addSSHKey(keyData);
+			}
+		}
+	} catch (err) {
+		logger.error?.('Error cloning SSH keys', err);
 	}
 }
