@@ -61,7 +61,7 @@ module.exports.whenThreadsStarted = new Promise((resolve) => {
 
 // make sure this is set on all threads, including the main thread (this is no-op
 // if it was already with the execArgv below)
-setHeapSnapshotNearHeapLimit(1);
+if (envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT)) setHeapSnapshotNearHeapLimit(1);
 
 let isMainWorker;
 function setTerminateTimeout(newTimeout) {
@@ -137,17 +137,19 @@ function startWorker(path, options = {}) {
 
 	if (!extname(path)) path += '.js';
 
-	const worker = new Worker(path, {
+	const execArgv = [
+		'--enable-source-maps',
+		'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
+	];
+	if (envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
+		execArgv.push('--heapsnapshot-near-heap-limit=1');
+
+	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
 			maxYoungGenerationSizeMb: maxYoungMemory,
 		},
-		execArgv: [
-			'--enable-source-maps',
-			'--heapsnapshot-near-heap-limit=1',
-			// expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
-			'--expose-internals',
-		],
+		execArgv,
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
