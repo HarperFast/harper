@@ -14,7 +14,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { getBackupDirPath } from './configHelpers';
+import { getBackupDirPath } from './configHelpers.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 
