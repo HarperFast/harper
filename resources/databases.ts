@@ -903,7 +903,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 								index.customIndex.index(key, value);
 								continue;
 							}
-							const values = getIndexedValues(value);
+							const values = getIndexedValues(value, index.indexNulls);
 							if (values) {
 								/*					if (LMDB_PREFETCH_WRITES)
 														index.prefetch(
