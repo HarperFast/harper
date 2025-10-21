@@ -642,7 +642,7 @@ async function cloneDatabases() {
  * @returns {Promise<void>}
  */
 async function installHDB() {
-	logger.info?.('Clone node installing HarperDB.');
+	console.log('Clone node installing HarperDB.');
 	process.env.TC_AGREEMENT = 'yes';
 	process.env.ROOTPATH = rootPath;
 	if (!username) throw new Error('HDB_LEADER_USERNAME is undefined.');
@@ -738,7 +738,7 @@ async function cloneTablesHttp() {
 
 		if (tablesToClone.length === 0) continue;
 		if (replicationHost) {
-			console.log('Setting up tables for #{db}');
+			console.log(`Setting up tables for ${db}`);
 			const ensureTable = require('../../resources/databases.ts').table;
 			for (let table of tablesToClone) {
 				for (let attribute of table.attributes) {
