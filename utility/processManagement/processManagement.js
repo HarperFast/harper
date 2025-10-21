@@ -7,7 +7,6 @@ const hdbLogger = require('../../utility/logging/harper_logger.js');
 const { onMessageFromWorkers } = require('../../server/threads/manageThreads.js');
 const fs = require('fs');
 const path = require('node:path');
-const terms = require('../hdbTerms');
 const { setTimeout: delay } = require('node:timers/promises');
 const { execFile, fork } = require('node:child_process');
 
@@ -123,7 +122,7 @@ function restartHdb() {
 function getHdbPid() {
 	const harperPath = envMangr.getHdbBasePath();
 	if (!harperPath) return;
-	const pidFile = path.join(harperPath, terms.HDB_PID_FILE);
+	const pidFile = path.join(harperPath, hdbTerms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
 	// If the pid file doesn't exist or the pid is the same as the current process, return.
 	// In a Docker container, the pid is usually 1, and so if a previous process crashed, there will still

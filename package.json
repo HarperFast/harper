@@ -2,7 +2,6 @@
 	"name": "harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
 	"version": "5.0.0-unreleased",
-	"type": "commonjs",
 	"private": true,
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
