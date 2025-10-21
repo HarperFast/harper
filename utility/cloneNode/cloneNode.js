@@ -397,7 +397,7 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 			syncComplete = await checkSyncStatus(targetTimestamps);
 
 			if (syncComplete) {
-				logger.info?.('All databases synchronized');
+				logger.notify?.('All databases synchronized');
 
 				// Only update status if enabled
 				if (shouldUpdateStatus) {
