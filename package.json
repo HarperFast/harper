@@ -36,7 +36,7 @@
 		"lint": "eslint .",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
-		"test:integration": "node --test test/integrationTests/tests/testSuite.mjs"
+		"test:integration": "node --test integrationTests/apiTests/tests/testSuite.mjs"
 	},
 	"engines": {
 		"node": ">=20",
