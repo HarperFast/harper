@@ -7,12 +7,13 @@ import { recordAction } from './write.ts';
 import { get as envGet, getHdbBasePath } from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.js';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { time as timeProfiler, type Sample } from '@datadog/pprof';
 import * as log from '../../utility/logging/harper_logger.js';
 
 const basePath = getHdbBasePath();
-export const userCodeFolders = basePath ? [pathToFileURL(basePath).toString()] : [];
-if (process.env.RUN_HDB_APP) userCodeFolders.push(pathToFileURL(process.env.RUN_HDB_APP).toString());
+export const userCodeFolders = basePath ? [basePath] : [];
+if (process.env.RUN_HDB_APP) userCodeFolders.push(realpathSync(process.env.RUN_HDB_APP));
 
 const SAMPLING_INTERVAL_IN_MICROSECONDS = 1000;
 const session = new Session();
@@ -25,9 +26,7 @@ session.connect();
 (async () => {
 	if (userCodeFolders.length === 0) return;
 	// start the profiler
-	await session.post('Profiler.enable');
-	await session.post('Profiler.setSamplingInterval', { interval: SAMPLING_INTERVAL_IN_MICROSECONDS });
-	await session.post('Profiler.start');
+	timeProfiler.start({ intervalMicros: SAMPLING_INTERVAL_IN_MICROSECONDS });
 	const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
 	setTimeout(() => {
 		captureProfile(PROFILE_PERIOD);
@@ -35,27 +34,39 @@ session.connect();
 })();
 
 export async function captureProfile(delayToNextCapture?: number): Promise<void> {
-	const HARPER_URL = pathToFileURL(PACKAGE_ROOT).toString();
-	const nodeById = new Map();
 	const hitCountThreshold = 100;
 	const secondsPerHit = SAMPLING_INTERVAL_IN_MICROSECONDS / 1_000_000;
+	const locationById = new Map<number, any>();
+	const fileNameById = new Map<number, any>();
+	const samplesByLocationId = new Map<number, number>();
 	let totalUserCount = 0;
 	let totalHarperCount = 0;
 	try {
-		const { profile } = await session.post('Profiler.stop');
-		for (const node of profile.nodes) {
-			nodeById.set(node.id, node);
+		const profile = timeProfiler.stop(true);
+		const strings = profile.stringTable.strings;
+		for (let func of profile.function) {
+			fileNameById.set(func.id as number, strings[func.filename as number]);
 		}
-		for (const node of profile.nodes) {
-			getUserHitCount(node);
+		for (let location of profile.location) {
+			locationById.set(location.id as number, location.line[0]);
+		}
+
+		for (const sample of profile.sample) {
+			getUserHitCount(sample);
 		}
 		recordAction(totalHarperCount * secondsPerHit, 'cpu-usage', 'harper');
 		recordAction(totalUserCount * secondsPerHit, 'cpu-usage', 'user');
+		for (let [locationId, sampleCount] of samplesByLocationId) {
+			if (sampleCount > hitCountThreshold) {
+				const location = locationById.get(locationId);
+				const locationName = fileNameById.get(location.functionId) + ':' + location.line;
+				recordAction(sampleCount * secondsPerHit, 'cpu-usage', locationName);
+			}
+		}
 	} catch (error) {
 		log.error?.('analytics profiler error:', error);
 	} finally {
 		// and start the profiler again
-		await session.post('Profiler.start');
 		if (delayToNextCapture) {
 			setTimeout(() => {
 				const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
@@ -63,42 +74,29 @@ export async function captureProfile(delayToNextCapture?: number): Promise<void>
 			}, delayToNextCapture).unref();
 		}
 	}
-	// this traverses the nodes and returns the number of sampling hits for the descendants that has been attributed
-	// to harper or user code (execution of things like node internal modules or native code)
-	function getUserHitCount(node: any): number {
-		if (node.unassignedCount !== undefined) return node.unassignedCount; // already visited
-		let unassignedCount = node.hitCount as number;
-		if (node.children) {
-			for (const child of node.children) {
-				unassignedCount += getUserHitCount(nodeById.get(child));
-			}
-		}
+	// this traverses the nodes and returns the number of sampling hits for the sample and attributes it
+	// to harper or user code (as opposed to execution of things like node internal modules or native code)
+	function getUserHitCount(sample: Sample) {
 		// if we can assign to user code or harper code, do so
-		if (isUserCode(node)) {
-			totalUserCount += unassignedCount;
-			if (unassignedCount > hitCountThreshold) {
-				recordAction(unassignedCount * secondsPerHit, 'cpu-usage', node.callFrame.url);
+		let recordedTopSample = false;
+		for (let locationId of sample.locationId) {
+			let fileName = fileNameById.get(locationById.get(locationId).functionId);
+			if (userCodeFolders.some((userCodeFolder) => fileName.startsWith(userCodeFolder))) {
+				// the call frame location is in user code
+				const sampleCount = sample.value[0];
+				totalUserCount += sampleCount;
+				if (!recordedTopSample)
+					samplesByLocationId.set(locationId, (samplesByLocationId.get(locationId) ?? 0) + sampleCount);
+				return; // if the highest point in the call stack is in user code, we don't need to check the rest of the call stack, this "counts" as user execution
 			}
-			// assigned/attributed counts, nothing to return
-			node.unassignedCount = 0;
-			return 0;
-		}
-		if (isHarperCode(node)) {
-			totalHarperCount += unassignedCount;
-			if (unassignedCount > hitCountThreshold) {
-				recordAction(unassignedCount * secondsPerHit, 'cpu-usage', node.callFrame.url);
+			if (fileName.startsWith(PACKAGE_ROOT)) {
+				const sampleCount = sample.value[0];
+				totalHarperCount += sampleCount;
+				if (!recordedTopSample) {
+					samplesByLocationId.set(locationId, (samplesByLocationId.get(locationId) ?? 0) + sampleCount);
+					recordedTopSample = true;
+				}
 			}
-			// assigned/attributed counts, nothing to return
-			node.unassignedCount = 0;
-			return 0;
 		}
-		node.unassignedCount = unassignedCount;
-		return unassignedCount;
-	}
-	function isHarperCode(node: any) {
-		return node.callFrame?.url.startsWith(HARPER_URL);
-	}
-	function isUserCode(node: any) {
-		if (userCodeFolders.some((userCodeFolder) => node.callFrame?.url.startsWith(userCodeFolder))) return true;
 	}
 }
