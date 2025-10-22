@@ -158,11 +158,13 @@ export class Scope extends EventEmitter {
 		};
 	}
 
-	#getFilesOption(): FilesOption | FileAndURLPathConfig | undefined {
+	#getFilesOption(): FileAndURLPathConfig | undefined {
 		const config = this.options.getAll();
-		if (config && typeof config === 'object' && config !== null && !Array.isArray(config) && 'files' in config) {
-			// TODO maybe some validation here?
-			return config.files as FilesOption | FileAndURLPathConfig;
+		if (config && typeof config === 'object' && config !== null && !Array.isArray(config) && 'files' in config /*&& validate config.files*/) {
+			return {
+				files: config.files as FilesOption,
+				urlPath: config.urlPath as string | undefined,
+			};
 		}
 		return undefined;
 	}
