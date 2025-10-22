@@ -1,4 +1,3 @@
-import { Scope, MissingDefaultFilesOptionError } from '@/components/Scope';
 import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import { join, basename } from 'node:path';
