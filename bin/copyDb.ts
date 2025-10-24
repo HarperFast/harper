@@ -111,8 +111,8 @@ export async function compactOnStart() {
 		if (recordCount !== compactRecordCount) {
 			removeBackup = false;
 			const errMsg = `There is a discrepancy between pre and post compact record count for database ${db}.\nTotal record count before compaction: ${recordCount}, total after: ${compactRecordCount}.\nDatabase backup has not been removed and can be found here: ${backupDest}`;
-			hdbLogger.error(errMsg);
-			console.error(errMsg);
+			hdbLogger.warn(errMsg);
+			console.warn(errMsg);
 		}
 
 		if (get(CONFIG_PARAMS.STORAGE_COMPACTONSTARTKEEPBACKUP) === true || removeBackup === false) continue;
