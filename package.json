@@ -37,7 +37,7 @@
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
 		"test:integration": "node --test integrationTests/apiTests/tests/testSuite.mjs",
-		"test:unit": "npm run build; npx mocha unitTests --config unitTests/.mocharc.json"
+		"test:unit": "npm run build || true; npx mocha unitTests --config unitTests/.mocharc.json"
 	},
 	"engines": {
 		"node": ">=20",
