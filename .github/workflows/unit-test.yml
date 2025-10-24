@@ -1,0 +1,45 @@
+name: Unit Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      node-version:
+        description: 'Node.js version'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - '20'
+          - '22'
+          - '24'
+
+jobs:
+  unit-test:
+    name: Unit Test (Node.js v${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('[20, 22, 24]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: |
+          npm run test:unit
