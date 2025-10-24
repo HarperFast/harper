@@ -1,5 +1,6 @@
-const assert = require('node:assert/strict');
-const { statusForComponent, reset, STATUS, internal } = require('../../../components/status/index.ts');
+import assert from 'node:assert/strict';
+import { statusForComponent, reset, STATUS, internal } from '@/components/status/index';
+
 const { ComponentStatus } = internal;
 
 describe('Component Status API', function() {

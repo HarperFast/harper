@@ -1,46 +1,47 @@
-const assert = require('node:assert/strict');
-const sinon = require('sinon');
-const { CrossThreadStatusCollector, StatusAggregator } = require('../../../components/status/crossThread.ts');
-const { ComponentStatusRegistry } = require('../../../components/status/ComponentStatusRegistry.ts');
-const { COMPONENT_STATUS_LEVELS } = require('../../../components/status/types.ts');
-const itcModule = require('../../../server/threads/itc.js');
-const manageThreadsModule = require('../../../server/threads/manageThreads.js');
+import assert from 'node:assert/strict';
+import sinon from 'sinon';
+import { CrossThreadStatusCollector, StatusAggregator } from '@/components/status/crossThread';
+import { ComponentStatusRegistry } from '@/components/status/ComponentStatusRegistry';
 
-describe('CrossThread Module', function() {
+describe('CrossThread Module', function () {
 	let sendItcEventStub;
 	let onMessageByTypeStub;
 	let getWorkerIndexStub;
+	let itcModule;
+	let manageThreadsModule;
 
-	beforeEach(function() {
+	beforeEach(function () {
 		// Stub ITC functions
+		itcModule = require('@/server/threads/itc');
+		manageThreadsModule = require('@/server/threads/manageThreads');
 		sendItcEventStub = sinon.stub(itcModule, 'sendItcEvent').resolves();
 		onMessageByTypeStub = sinon.stub(manageThreadsModule, 'onMessageByType');
 		getWorkerIndexStub = sinon.stub(manageThreadsModule, 'getWorkerIndex').returns(0);
 	});
 
-	afterEach(function() {
+	afterEach(function () {
 		sinon.restore();
 	});
 
-	describe('CrossThreadStatusCollector', function() {
+	describe('CrossThreadStatusCollector', function () {
 		let collector;
 		let registry;
 
-		beforeEach(function() {
+		beforeEach(function () {
 			collector = new CrossThreadStatusCollector(1000); // 1 second timeout
 			registry = new ComponentStatusRegistry();
 		});
 
-		afterEach(function() {
+		afterEach(function () {
 			collector.cleanup();
 			registry.reset();
 		});
 
-		it('should collect status from local thread only when no responses', async function() {
+		it('should collect status from local thread only when no responses', async function () {
 			registry.setStatus('localComp', 'healthy', 'All good');
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
-			
+
 			// Mock getWorkerCount
 			const getWorkerCountStub = sinon.stub(manageThreadsModule, 'getWorkerCount').returns(2);
 
@@ -52,12 +53,12 @@ describe('CrossThread Module', function() {
 			assert.equal(collected.size, 1);
 			assert.ok(collected.has('localComp@main'));
 			assert.equal(collected.get('localComp@main').status, 'healthy');
-			
+
 			// Cleanup
 			getWorkerCountStub.restore();
 		});
 
-		it('should collect status from multiple threads', async function() {
+		it('should collect status from multiple threads', async function () {
 			this.timeout(5000); // Allow enough time for async operations
 			registry.setStatus('sharedComp', 'healthy', 'Local is healthy');
 			// Test with main thread (undefined)
@@ -75,24 +76,34 @@ describe('CrossThread Module', function() {
 							requestId: 1,
 							workerIndex: 1,
 							isMainThread: false,
-							statuses: [['sharedComp', {
-								status: 'warning',
-								message: 'Worker 1 warning',
-								lastChecked: new Date()
-							}]]
-						}
+							statuses: [
+								[
+									'sharedComp',
+									{
+										status: 'warning',
+										message: 'Worker 1 warning',
+										lastChecked: new Date(),
+									},
+								],
+							],
+						},
 					});
 					handler({
 						message: {
 							requestId: 1,
 							workerIndex: 2,
 							isMainThread: false,
-							statuses: [['sharedComp', {
-								status: 'healthy',
-								message: 'Worker 2 healthy',
-								lastChecked: new Date()
-							}]]
-						}
+							statuses: [
+								[
+									'sharedComp',
+									{
+										status: 'healthy',
+										message: 'Worker 2 healthy',
+										lastChecked: new Date(),
+									},
+								],
+							],
+						},
 					});
 				}, 100);
 			});
@@ -110,7 +121,7 @@ describe('CrossThread Module', function() {
 			getWorkerCountStub.restore();
 		});
 
-		it('should handle ITC send failure', async function() {
+		it('should handle ITC send failure', async function () {
 			registry.setStatus('fallbackComp', 'error', 'Local error');
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
@@ -128,21 +139,21 @@ describe('CrossThread Module', function() {
 			// In test environment with undefined workerIndex, we get main thread
 			assert.ok(collected.has('fallbackComp@main'));
 			assert.equal(collected.get('fallbackComp@main').status, 'error');
-			
+
 			// Cleanup
 			getWorkerCountStub.restore();
 		});
 
-		it('should handle collection timeout', async function() {
+		it('should handle collection timeout', async function () {
 			this.timeout(5000);
 			const shortTimeoutCollector = new CrossThreadStatusCollector(50); // Very short timeout
 			registry.setStatus('timeoutComp', 'loading', 'Loading...');
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
-			
+
 			// Mock getWorkerCount
 			const getWorkerCountStub = sinon.stub(manageThreadsModule, 'getWorkerCount').returns(2);
-			
+
 			// Never send responses
 			onMessageByTypeStub.callsFake(() => {});
 
@@ -151,18 +162,18 @@ describe('CrossThread Module', function() {
 			// Should only have local status due to timeout
 			assert.equal(collected.size, 1);
 			assert.ok(collected.has('timeoutComp@main'));
-			
+
 			shortTimeoutCollector.cleanup();
 			getWorkerCountStub.restore();
 		});
 
-		it('should complete early when all threads respond', async function() {
+		it('should complete early when all threads respond', async function () {
 			this.timeout(5000);
 			registry.setStatus('fastComp', 'healthy', 'Main thread');
 			getWorkerIndexStub.returns(0);
-			
+
 			// Mock getWorkerCount to return 2 (expecting 2 worker responses)
-			const manageThreadsModule = require('../../../server/threads/manageThreads.js');
+			const manageThreadsModule = require('@/server/threads/manageThreads');
 			const getWorkerCountStub = sinon.stub(manageThreadsModule, 'getWorkerCount').returns(2);
 
 			// Track when collection completes
@@ -180,8 +191,8 @@ describe('CrossThread Module', function() {
 							requestId: 1,
 							workerIndex: 1,
 							isMainThread: false,
-							statuses: [['fastComp', { status: 'healthy' }]]
-						}
+							statuses: [['fastComp', { status: 'healthy' }]],
+						},
 					});
 					// Second response completes the set
 					handler({
@@ -189,8 +200,8 @@ describe('CrossThread Module', function() {
 							requestId: 1,
 							workerIndex: 2,
 							isMainThread: false,
-							statuses: [['fastComp', { status: 'healthy' }]]
-						}
+							statuses: [['fastComp', { status: 'healthy' }]],
+						},
 					});
 				}, 50);
 			});
@@ -201,12 +212,12 @@ describe('CrossThread Module', function() {
 			// Should complete much faster than timeout
 			assert.ok(resolveTime < 1000, `Collection took ${resolveTime}ms, should be < 1000ms`);
 			assert.equal(collected.size, 3); // local + 2 workers
-			
+
 			// Cleanup the stub
 			getWorkerCountStub.restore();
 		});
 
-		it('should reuse listener across multiple collections', async function() {
+		it('should reuse listener across multiple collections', async function () {
 			// First collection
 			await collector.collect(registry);
 			assert.equal(onMessageByTypeStub.callCount, 1);
@@ -216,41 +227,44 @@ describe('CrossThread Module', function() {
 			assert.equal(onMessageByTypeStub.callCount, 1);
 		});
 
-		it('should properly clean up resources', function() {
+		it('should properly clean up resources', function () {
 			// Set up some pending requests
 			collector['awaitingResponses'].set(1, []);
 			collector['awaitingResponses'].set(2, []);
-			
+
 			// Set a cleanup timer
 			collector['cleanupTimer'] = setTimeout(() => {}, 10000);
-			
+
 			// Call cleanup
 			collector.cleanup();
-			
+
 			// Verify everything is cleaned up
 			assert.equal(collector['awaitingResponses'].size, 0);
 			assert.equal(collector['cleanupTimer'], null);
 		});
 	});
 
-	describe('StatusAggregator', function() {
+	describe('StatusAggregator', function () {
 		let clock;
 
-		beforeEach(function() {
+		beforeEach(function () {
 			clock = sinon.useFakeTimers();
 		});
 
-		afterEach(function() {
+		afterEach(function () {
 			clock.restore();
 		});
 
-		it('should aggregate single component from single thread', function() {
+		it('should aggregate single component from single thread', function () {
 			const allStatuses = new Map([
-				['database@worker-0', {
-					status: 'healthy',
-					lastChecked: new Date(1000),
-					message: 'Database running'
-				}]
+				[
+					'database@worker-0',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1000),
+						message: 'Database running',
+					},
+				],
 			]);
 
 			const aggregated = StatusAggregator.aggregate(allStatuses);
@@ -265,24 +279,33 @@ describe('CrossThread Module', function() {
 			assert.equal(aggStatus.abnormalities, undefined);
 		});
 
-		it('should detect abnormalities when statuses differ', function() {
+		it('should detect abnormalities when statuses differ', function () {
 			const allStatuses = new Map([
-				['api@worker-0', {
-					status: 'healthy',
-					lastChecked: new Date(1000),
-					message: 'Worker 0 healthy'
-				}],
-				['api@worker-1', {
-					status: 'error',
-					lastChecked: new Date(2000),
-					message: 'Connection failed',
-					error: 'Timeout'
-				}],
-				['api@worker-2', {
-					status: 'healthy',
-					lastChecked: new Date(3000),
-					message: 'Worker 2 healthy'
-				}]
+				[
+					'api@worker-0',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1000),
+						message: 'Worker 0 healthy',
+					},
+				],
+				[
+					'api@worker-1',
+					{
+						status: 'error',
+						lastChecked: new Date(2000),
+						message: 'Connection failed',
+						error: 'Timeout',
+					},
+				],
+				[
+					'api@worker-2',
+					{
+						status: 'healthy',
+						lastChecked: new Date(3000),
+						message: 'Worker 2 healthy',
+					},
+				],
 			]);
 
 			const aggregated = StatusAggregator.aggregate(allStatuses);
@@ -299,23 +322,32 @@ describe('CrossThread Module', function() {
 			assert.equal(worker0Abnormality.workerIndex, -1); // No workerIndex in input
 		});
 
-		it('should prioritize non-healthy messages', function() {
+		it('should prioritize non-healthy messages', function () {
 			const allStatuses = new Map([
-				['service@worker-0', {
-					status: 'healthy',
-					lastChecked: new Date(3000), // Most recent
-					message: 'All systems operational'
-				}],
-				['service@worker-1', {
-					status: 'warning',
-					lastChecked: new Date(2000),
-					message: 'High latency detected'
-				}],
-				['service@worker-2', {
-					status: 'healthy',
-					lastChecked: new Date(1000),
-					message: 'Running normally'
-				}]
+				[
+					'service@worker-0',
+					{
+						status: 'healthy',
+						lastChecked: new Date(3000), // Most recent
+						message: 'All systems operational',
+					},
+				],
+				[
+					'service@worker-1',
+					{
+						status: 'warning',
+						lastChecked: new Date(2000),
+						message: 'High latency detected',
+					},
+				],
+				[
+					'service@worker-2',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1000),
+						message: 'Running normally',
+					},
+				],
 			]);
 
 			const aggregated = StatusAggregator.aggregate(allStatuses);
@@ -325,7 +357,7 @@ describe('CrossThread Module', function() {
 			assert.equal(aggStatus.latestMessage, 'High latency detected'); // Non-healthy message preferred
 		});
 
-		it('should handle status priority correctly', function() {
+		it('should handle status priority correctly', function () {
 			const testCases = [
 				{ statuses: ['healthy', 'healthy', 'healthy'], expected: 'healthy' },
 				{ statuses: ['healthy', 'unknown', 'healthy'], expected: 'unknown' },
@@ -339,7 +371,7 @@ describe('CrossThread Module', function() {
 				testCase.statuses.forEach((status, i) => {
 					statuses.set(`comp@worker-${i}`, {
 						status,
-						lastChecked: new Date(i * 1000)
+						lastChecked: new Date(i * 1000),
 					});
 				});
 
@@ -349,18 +381,24 @@ describe('CrossThread Module', function() {
 			}
 		});
 
-		it('should handle main thread correctly', function() {
+		it('should handle main thread correctly', function () {
 			const allStatuses = new Map([
-				['logger@main', {
-					status: 'healthy',
-					lastChecked: new Date(1000),
-					message: 'Main thread logger'
-				}],
-				['logger@worker-1', {
-					status: 'healthy',
-					lastChecked: new Date(2000),
-					message: 'Worker 1 logger'
-				}]
+				[
+					'logger@main',
+					{
+						status: 'healthy',
+						lastChecked: new Date(1000),
+						message: 'Main thread logger',
+					},
+				],
+				[
+					'logger@worker-1',
+					{
+						status: 'healthy',
+						lastChecked: new Date(2000),
+						message: 'Worker 1 logger',
+					},
+				],
 			]);
 
 			const aggregated = StatusAggregator.aggregate(allStatuses);
@@ -370,20 +408,26 @@ describe('CrossThread Module', function() {
 			assert.equal(aggStatus.lastChecked.workers[1], 2000);
 		});
 
-		it('should handle worker index in status data', function() {
+		it('should handle worker index in status data', function () {
 			const allStatuses = new Map([
-				['cache@worker-1', {
-					status: 'error',
-					lastChecked: new Date(1000),
-					message: 'Failed',
-					workerIndex: 1
-				}],
-				['cache@worker-2', {
-					status: 'healthy',
-					lastChecked: new Date(2000),
-					message: 'OK',
-					workerIndex: 2
-				}]
+				[
+					'cache@worker-1',
+					{
+						status: 'error',
+						lastChecked: new Date(1000),
+						message: 'Failed',
+						workerIndex: 1,
+					},
+				],
+				[
+					'cache@worker-2',
+					{
+						status: 'healthy',
+						lastChecked: new Date(2000),
+						message: 'OK',
+						workerIndex: 2,
+					},
+				],
 			]);
 
 			const aggregated = StatusAggregator.aggregate(allStatuses);

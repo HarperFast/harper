@@ -1,6 +1,6 @@
-const assert = require('node:assert/strict');
-const { statusForComponent, lifecycle, reset, STATUS } = require('../../../components/status/index.ts');
-const { internal } = require('../../../components/status/index.ts');
+import assert from 'node:assert/strict';
+import { statusForComponent, lifecycle, reset, STATUS, internal } from '@/../components/status';
+import { describe, it, afterEach } from 'mocha';
 
 describe('Component Status Public API', function() {
 	afterEach(function() {

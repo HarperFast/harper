@@ -1,9 +1,16 @@
-const assert = require('node:assert/strict');
-const { ComponentStatusRegistry } = require('../../../components/status/ComponentStatusRegistry.ts');
-const { componentStatusRegistry } = require('../../../components/status/registry.ts');
+import assert from 'node:assert/strict';
+import { ComponentStatusRegistry } from '@/components/status/ComponentStatusRegistry';
+import { describe, it, before, after } from 'mocha';
 
 describe('componentStatusRegistry singleton', function() {
-	after(function() {
+	let componentStatusRegistry;
+
+	before(() => {
+		const registry = require('@/components/status/registry');
+		componentStatusRegistry = registry.componentStatusRegistry;
+	});
+
+	after(() => {
 		// Clean up the global singleton after tests
 		componentStatusRegistry.reset();
 	});
@@ -13,7 +20,7 @@ describe('componentStatusRegistry singleton', function() {
 	});
 
 	it('should be a singleton instance', function() {
-		const { componentStatusRegistry: registry2 } = require('../../../components/status/registry.ts');
+		const { componentStatusRegistry: registry2 } = require('@/components/status/registry');
 		assert.strictEqual(componentStatusRegistry, registry2);
 	});
 

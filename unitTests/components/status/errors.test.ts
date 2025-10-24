@@ -1,13 +1,14 @@
-const assert = require('node:assert/strict');
-const { 
+import assert from 'node:assert/strict';
+import {
 	ComponentStatusError,
 	CrossThreadTimeoutError,
 	ITCError,
 	AggregationError,
 	ComponentStatusOperationError,
 	CrossThreadCollectionError
-} = require('../../../components/status/errors.ts');
-const { HTTP_STATUS_CODES } = require('../../../utility/errors/commonErrors.js');
+} from '@/components/status/errors';
+import { HTTP_STATUS_CODES } from '@/utility/errors/commonErrors';
+import { describe, it } from 'mocha';
 
 describe('Component Status Errors', function() {
 	describe('ComponentStatusError', function() {
