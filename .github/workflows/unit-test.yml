@@ -40,5 +40,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+        run: node --enable-source-maps ./dist/bin/harperdb.js install
+
       - name: Run tests
         run: npm run test:unit
