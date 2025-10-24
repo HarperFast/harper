@@ -38,6 +38,13 @@
 		"allowImportingTsExtensions": true,
 
 		// Enforce erasable syntax only so we can use Node.js type-stripping
-		"erasableSyntaxOnly": true
+		"erasableSyntaxOnly": true,
+
+		// Provide convenient path alias for compiled output
+		// Change this to ./* once we're fully in TypeStrip land
+	    "baseUrl": ".",
+		"paths": {
+		  "@/*": ["./dist/*"]
+		}
 	}
 }

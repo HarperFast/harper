@@ -2,8 +2,8 @@
 	"name": "harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
 	"version": "5.0.0-unreleased",
-	"type": "commonjs",
 	"private": true,
+    "type": "commonjs",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -36,7 +36,8 @@
 		"lint": "eslint .",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
-		"test:integration": "node --test integrationTests/apiTests/tests/testSuite.mjs"
+		"test:integration": "node --test integrationTests/apiTests/tests/testSuite.mjs",
+		"test:unit": "npm run build; npx mocha unitTests --config unitTests/.mocharc.json"
 	},
 	"engines": {
 		"node": ">=20",
@@ -55,12 +56,20 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.5",
+		"@types/micromatch": "^4.0.9",
+		"@types/mocha": "^10.0.10",
+		"@types/sinon": "^17.0.4",
+		"axios": "^1.12.2",
+		"chai": "^6.2.0",
 		"eslint": "^9.36.0",
 		"fast-glob": "^3.3.3",
 		"fs-extra": "^11.3.2",
 		"globals": "^16.4.0",
+		"mocha": "^11.7.4",
 		"prettier": "^3.6.2",
+		"sinon": "^21.0.0",
 		"supertest": "^7.1.4",
+		"tsx": "^4.20.6",
 		"typescript": "^5.7.3",
 		"typescript-eslint": "^8.45.0"
 	},
