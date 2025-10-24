@@ -52,7 +52,10 @@ export function handleApplication(scope: Scope) {
 				staticFiles.set(entry.urlPath, entry.absolutePath);
 				// If the file is an index.html, also store it in the index entries
 				if (entry.urlPath.endsWith('index.html')) {
-					indexEntries.set(dirname(entry.urlPath), entry.absolutePath);
+					// Without trailing slash; null -> 301 redirect to trailing slash
+					indexEntries.set(dirname(entry.urlPath), null);
+					// With trailing slash; serves the index.html file
+					indexEntries.set(join(dirname(entry.urlPath), '/'), entry.absolutePath);
 				}
 				break;
 			case 'unlink':
@@ -90,7 +93,18 @@ export function handleApplication(scope: Scope) {
 				}
 
 				if (index) {
+					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
+
+					// If `null`, redirect to trailing slash
+					if (staticFile === null) {
+						return {
+							status: 301,
+							headers: {
+								Location: join(req.pathname, '/'),
+							},
+						}
+					}
 				}
 			}
 
