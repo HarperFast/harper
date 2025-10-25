@@ -15,7 +15,7 @@ Install dependencies using `npm install`
 
 Build the project using `npm run build` or `npm run build:watch` to automatically rebuild on file changes.
 
-Run tests using `npm run test:integration`. Make sure to read the [integration test instructions](./test/integrationTests/README.md) for setup.
+Run tests using `npm run test:integration`. Make sure to read the [integration test instructions](./integrationTests/apiTests/README.md) for setup.
 
 ## Repository Structure
 
