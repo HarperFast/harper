@@ -29,3 +29,5 @@ dist/
 
 # something is generating this file :shrug:
 integration-test.json
+
+package-lock.json
