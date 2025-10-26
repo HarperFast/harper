@@ -106,6 +106,15 @@ const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
 server.operation = operation;
 
+/**
+ * Register an operation function with the server.
+ * @param operationName
+ * @param operationFunction
+ */
+server.registerOperation = (operationName: string, operationFunction: Function) => {
+	OPERATION_FUNCTION_MAP.set(operationName, new OperationFunctionObject(operationFunction));
+};
+
 export function chooseOperation(json: OperationRequestBody) {
 	let getOpResult: OperationFunctionObject;
 	try {
