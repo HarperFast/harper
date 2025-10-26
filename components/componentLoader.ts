@@ -36,6 +36,7 @@ import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { PluginModule } from './PluginModule.ts';
+import { platform } from 'node:os';
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loadedComponents = new Map<any, any>();
@@ -72,7 +73,7 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 	});
 }
 
-export const TRUSTED_RESOURCE_LOADERS = {
+const TRUSTED_RESOURCE_LOADERS = {
 	REST, // for backwards compatibility with older configs
 	rest: REST,
 	graphql: graphqlQueryHandler,
@@ -95,6 +96,15 @@ export const TRUSTED_RESOURCE_LOADERS = {
 	login: ...
 	 */
 };
+
+if (process.env.HARPER_BUILTIN_COMPONENTS) {
+	const separator = platform() === 'win32' ? ';' : ':';
+	for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(separator)) {
+		const [componentName, moduleId] = componentDefinition.trim().split('=');
+		if (!componentDefinition) continue;
+		TRUSTED_RESOURCE_LOADERS[componentName] = require(moduleId);
+	}
+}
 
 const portsStarted = [];
 const loadedPaths = new Map();
