@@ -404,12 +404,6 @@ export async function installApplications() {
 			continue;
 		}
 
-		// Lock check: only install if not already installed with matching configuration
-		if (harperApplicationLock.applications[name] && JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)) {
-			logger.info(`Application ${name} is already installed with matching configuration; skipping installation`);
-			continue;
-		}
-
 		// Then do proper error-based validation with TypeScript `asserts` to provide type safety
 		// This will throw if the config is invalid
 		assertApplicationConfig(name, applicationConfig);
@@ -419,6 +413,12 @@ export async function installApplications() {
 			packageIdentifier: applicationConfig.package,
 			install: applicationConfig.install,
 		});
+
+		// Lock check: only install if not already installed with matching configuration
+		if (existsSync(application.dirPath) && harperApplicationLock.applications[name] && JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)) {
+			logger.info(`Application ${name} is already installed with matching configuration; skipping installation`);
+			continue;
+		}
 
 		applicationInstallationPromises.push(prepareApplication(application));
 
