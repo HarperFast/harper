@@ -3,7 +3,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 import logger from '../utility/logging/harper_logger.js';
 
 import { dirname, extname, join } from 'node:path';
-import { access, constants, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink } from 'node:fs/promises';
+import { access, constants, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -184,8 +184,9 @@ export async function extractApplication(application: Application) {
  * This method should only be called from the main thread
  */
 export async function installApplication(application: Application) {
+	let packageJSON: any;
 	try {
-		await access(join(application.dirPath, 'package.json'), constants.F_OK);
+		packageJSON = JSON.parse(await readFile(join(application.dirPath, 'package.json'), 'utf8'));
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
 		// If no package.json, nothing to install
@@ -225,8 +226,6 @@ export async function installApplication(application: Application) {
 	}
 
 	// Next, try package.json devEngines field
-	const packageJSON = JSON.parse(await readFile(join(application.dirPath, 'package.json'), 'utf8'));
-
 	const { packageManager } = packageJSON.devEngines || {};
 
 	// Custom package manager specified
@@ -384,12 +383,30 @@ export async function installApplications() {
 	// Ensure component directory exists
 	await mkdir(componentsRootDirPath, { recursive: true });
 
+	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
+
+	let harperApplicationLock: any = { "application": {} };
+	try {
+		harperApplicationLock = JSON.parse(await readFile(harperApplicationLockPath, 'utf8'));
+	} catch (error) {
+		// Ignore file not found error; will create new lock file after installations
+		if (error.code !== 'ENOENT') {
+			throw error;
+		}
+	}
+
 	const applicationInstallationPromises: Promise<void>[] = [];
 
 	for (const [name, applicationConfig] of Object.entries(config)) {
 		// Pre-validation check if the configuration is actually for an application
 		// Don't want to throw an error here as the config may contain non-application entries
 		if (typeof applicationConfig !== 'object' || applicationConfig === null || !('package' in applicationConfig)) {
+			continue;
+		}
+
+		// Lock check: only install if not already installed with matching configuration
+		if (harperApplicationLock.applications[name] && JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)) {
+			logger.info(`Application ${name} is already installed with matching configuration; skipping installation`);
 			continue;
 		}
 
@@ -404,11 +421,16 @@ export async function installApplications() {
 		});
 
 		applicationInstallationPromises.push(prepareApplication(application));
+
+		harperApplicationLock.applications[name] = applicationConfig;
 	}
 
 	const applicationInstallationStatuses = await Promise.allSettled(applicationInstallationPromises);
 	logger.debug(applicationInstallationStatuses);
 	logger.info('All root applications loaded');
+
+	// Finally, write the lock file
+	await writeFile(harperApplicationLockPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
 }
 
 function getGitSSHCommand() {
