@@ -15,7 +15,11 @@ Install dependencies using `npm install`
 
 Build the project using `npm run build` or `npm run build:watch` to automatically rebuild on file changes.
 
-Run tests using `npm run test:integration`. Make sure to read the [integration test instructions](./integrationTests/apiTests/README.md) for setup.
+Run integration tests using `npm run test:integration`. Make sure to read the [integration test instructions](./integrationTests/apiTests/README.md) for setup.
+
+Run unit tests using `npm run test:unit <unit-test-file>` or `npm run test:unit:all`.
+
+> Unit tests currently use [Mocha](https://mochajs.org/) as the test runner, but since they are implemented in TypeScript and are sometimes executing TypeScript source code, it also uses [TSX](https://tsx.is/) for compilation and execution. The npm script `test:unit` sets the appropriate env vars and mocha configuration file. Make sure that the `TSX_TSCONFIG_PATH` environment variable points to the correct `tsconfig.json` file for the unit tests (i.e. `./unitTests/tsconfig.json`) and not the root-level `tsconfig.json`.
 
 ## Repository Structure
 

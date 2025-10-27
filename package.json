@@ -3,7 +3,6 @@
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
 	"version": "5.0.0-unreleased",
 	"private": true,
-    "type": "commonjs",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -37,7 +36,8 @@
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
 		"test:integration": "node --test integrationTests/apiTests/tests/testSuite.mjs",
-		"test:unit": "npm run build || true; npx mocha unitTests --config unitTests/.mocharc.json"
+		"test:unit": "TSX_TSCONFIG_PATH=./unitTests/tsconfig.json npx mocha --config unitTests/.mocharc.json",
+		"test:unit:all": "npm run test:unit unitTests"
 	},
 	"engines": {
 		"node": ">=20",
@@ -56,9 +56,11 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.5",
+		"@types/gunzip-maybe": "^1.4.3",
 		"@types/micromatch": "^4.0.9",
 		"@types/mocha": "^10.0.10",
 		"@types/sinon": "^17.0.4",
+		"@types/tar-fs": "^2.0.4",
 		"axios": "^1.12.2",
 		"chai": "^6.2.0",
 		"eslint": "^9.36.0",
@@ -150,5 +152,16 @@
 		"validate.js": "0.13.1",
 		"ws": "8.18.2",
 		"yaml": "2.8.0"
+	},
+	"overrides": {
+		"alasql": {
+			"xlsx": "0.18.5"
+		}
+	},
+	"optionalDependencies": {
+		"bufferutil": "^4.0.9",
+		"hdd-space": "^1.2.0",
+		"segfault-handler": "^1.3.0",
+		"utf-8-validate": "^5.0.10"
 	}
 }

@@ -53,4 +53,4 @@ jobs:
         run: node --enable-source-maps ./dist/bin/harperdb.js install
 
       - name: Run tests
-        run: npm run test:unit
+        run: npm run test:unit:all

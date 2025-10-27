@@ -1,0 +1,15 @@
+{
+	"extends": "../tsconfig.json",
+	"include": [
+		"./**/*"
+	],
+	"compilerOptions": {
+		// Provide convenient path alias for compiled output so its relative to root
+		// Meaning imports like "@/components/Component" will just work!
+		// Change this to ../* once we're fully in TypeStrip land
+		"baseUrl": "..",
+		"paths": {
+			"@/*": ["./dist/*"]
+		}
+	}
+}
