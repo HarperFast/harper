@@ -59,7 +59,7 @@ describe('Application', () => {
 					package: 'my-package',
 					foo: 'bar',
 					baz: 42,
-					fuzz: { buzz: true }
+					fuzz: { buzz: true },
 				});
 			});
 		});
@@ -77,7 +77,8 @@ describe('Application', () => {
 					(error: Error) => {
 						return (
 							error instanceof InvalidPackageIdentifierError &&
-							error.message === `Invalid 'package' property for application ${applicationName}: expected string, got ${typeof invalidValue}`
+							error.message ===
+								`Invalid 'package' property for application ${applicationName}: expected string, got ${typeof invalidValue}`
 						);
 					}
 				);
@@ -98,7 +99,8 @@ describe('Application', () => {
 					(error: Error) => {
 						return (
 							error instanceof InvalidInstallPropertyError &&
-							error.message === `Invalid 'install' property for application ${applicationName}: expected object, got ${typeof invalidValue}`
+							error.message ===
+								`Invalid 'install' property for application ${applicationName}: expected object, got ${typeof invalidValue}`
 						);
 					}
 				);
@@ -119,7 +121,8 @@ describe('Application', () => {
 					(error: Error) => {
 						return (
 							error instanceof InvalidInstallCommandError &&
-							error.message === `Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof invalidValue}`
+							error.message ===
+								`Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof invalidValue}`
 						);
 					}
 				);
@@ -140,7 +143,8 @@ describe('Application', () => {
 					(error: Error) => {
 						return (
 							error instanceof InvalidInstallTimeoutError &&
-							error.message === `Invalid 'install.timeout' property for application ${applicationName}: expected non-negative number, got ${typeof invalidValue}`
+							error.message ===
+								`Invalid 'install.timeout' property for application ${applicationName}: expected non-negative number, got ${typeof invalidValue}`
 						);
 					}
 				);

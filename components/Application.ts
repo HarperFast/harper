@@ -3,7 +3,19 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 import logger from '../utility/logging/harper_logger.js';
 
 import { dirname, extname, join } from 'node:path';
-import { access, constants, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+	access,
+	constants,
+	cp,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -25,25 +37,33 @@ interface ApplicationConfig {
 
 export class InvalidPackageIdentifierError extends TypeError {
 	constructor(applicationName: string, packageIdentifier: unknown) {
-		super(`Invalid 'package' property for application ${applicationName}: expected string, got ${typeof packageIdentifier}`)
+		super(
+			`Invalid 'package' property for application ${applicationName}: expected string, got ${typeof packageIdentifier}`
+		);
 	}
 }
 
 export class InvalidInstallPropertyError extends TypeError {
 	constructor(applicationName: string, installProperty: unknown) {
-		super(`Invalid 'install' property for application ${applicationName}: expected object, got ${typeof installProperty}`)
+		super(
+			`Invalid 'install' property for application ${applicationName}: expected object, got ${typeof installProperty}`
+		);
 	}
 }
 
 export class InvalidInstallCommandError extends TypeError {
 	constructor(applicationName: string, command: unknown) {
-		super(`Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof command}`)
+		super(
+			`Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof command}`
+		);
 	}
 }
 
 export class InvalidInstallTimeoutError extends TypeError {
 	constructor(applicationName: string, timeout: unknown) {
-		super(`Invalid 'install.timeout' property for application ${applicationName}: expected non-negative number, got ${typeof timeout}`)
+		super(
+			`Invalid 'install.timeout' property for application ${applicationName}: expected non-negative number, got ${typeof timeout}`
+		);
 	}
 }
 
@@ -56,7 +76,11 @@ export function assertApplicationConfig(
 	}
 
 	if ('install' in applicationConfig) {
-		if (typeof applicationConfig.install !== 'object' || applicationConfig.install === null || Array.isArray(applicationConfig.install)) {
+		if (
+			typeof applicationConfig.install !== 'object' ||
+			applicationConfig.install === null ||
+			Array.isArray(applicationConfig.install)
+		) {
 			throw new InvalidInstallPropertyError(applicationName, applicationConfig.install);
 		}
 
@@ -404,7 +428,7 @@ export async function installApplications() {
 
 	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
 
-	let harperApplicationLock: any = { "application": {} };
+	let harperApplicationLock: any = { application: {} };
 	try {
 		harperApplicationLock = JSON.parse(await readFile(harperApplicationLockPath, 'utf8'));
 	} catch (error) {
@@ -434,7 +458,11 @@ export async function installApplications() {
 		});
 
 		// Lock check: only install if not already installed with matching configuration
-		if (existsSync(application.dirPath) && harperApplicationLock.applications[name] && JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)) {
+		if (
+			existsSync(application.dirPath) &&
+			harperApplicationLock.applications[name] &&
+			JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)
+		) {
 			logger.info(`Application ${name} is already installed with matching configuration; skipping installation`);
 			continue;
 		}
