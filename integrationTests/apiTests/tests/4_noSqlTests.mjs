@@ -7,7 +7,7 @@ import { timestamp } from '../utils/timestamp.mjs';
 
 describe('4. NoSQL Tests', () => {
 	beforeEach(timestamp);
-	
+
 	//NoSQL Tests Folder
 
 	//Invalid Attribute Check

@@ -1,8 +1,6 @@
 {
 	"extends": "../tsconfig.json",
-	"include": [
-		"./**/*"
-	],
+	"include": ["./**/*"],
 	"compilerOptions": {
 		// Provide convenient path alias for compiled output so its relative to root
 		// Meaning imports like "@/components/Component" will just work!

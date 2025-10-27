@@ -160,7 +160,13 @@ export class Scope extends EventEmitter {
 
 	#getFilesOption(): FileAndURLPathConfig | undefined {
 		const config = this.options.getAll();
-		if (config && typeof config === 'object' && config !== null && !Array.isArray(config) && 'files' in config /*&& validate config.files*/) {
+		if (
+			config &&
+			typeof config === 'object' &&
+			config !== null &&
+			!Array.isArray(config) &&
+			'files' in config /*&& validate config.files*/
+		) {
 			return {
 				files: config.files as FilesOption,
 				urlPath: config.urlPath as string | undefined,

@@ -38,6 +38,6 @@
 		"allowImportingTsExtensions": true,
 
 		// Enforce erasable syntax only so we can use Node.js type-stripping
-		"erasableSyntaxOnly": true,
+		"erasableSyntaxOnly": true
 	}
 }

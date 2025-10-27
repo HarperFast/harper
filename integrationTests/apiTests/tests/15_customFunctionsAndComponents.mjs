@@ -6,7 +6,7 @@ import { timestamp } from '../utils/timestamp.mjs';
 
 describe('15. Custom Functions & components', () => {
 	beforeEach(timestamp);
-	
+
 	//Custom Functions & components Folder
 
 	it('deploy_component github package', async () => {

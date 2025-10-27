@@ -49,8 +49,7 @@ function getVersionsForUpgrade(upgradeObj) {
 
 	return [...versions.keys()].sort(hdbUtils.compareVersions).filter(function (thisVersion) {
 		return (
-			hdbUtils.compareVersions(thisVersion, currVersion) > 0 &&
-			hdbUtils.compareVersions(thisVersion, newVersion) <= 0
+			hdbUtils.compareVersions(thisVersion, currVersion) > 0 && hdbUtils.compareVersions(thisVersion, newVersion) <= 0
 		);
 	});
 }

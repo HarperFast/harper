@@ -170,7 +170,6 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 		app.get('/', (req, res) => res.sendFile('running.html'));
 	}
 
-
 	// Describe the APIs.
 	app.get('/api/openapi/rest', { preValidation: [authAndEnsureUserOnRequest] }, restOpenAPIHandler(resources));
 

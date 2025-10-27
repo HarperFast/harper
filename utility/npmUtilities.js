@@ -37,7 +37,7 @@ async function installModules(req) {
 	const componentsRootDirPath = getConfigValue(CONFIG_PARAMS.COMPONENTSROOT);
 
 	const responseObject = {};
-	
+
 	const args = ['install', '--force', '--omit=dev', '--json'];
 	if (dryRun) args.push('--dry-run');
 
@@ -45,12 +45,7 @@ async function installModules(req) {
 		responseObject[project] = { npm_output: null, npm_error: null };
 		const projectPath = path.join(componentsRootDirPath, project);
 		try {
-			let { stdout, stderr } = nonInteractiveSpawn(
-				project,
-				'npm',
-				args,
-				projectPath
-			);
+			let { stdout, stderr } = nonInteractiveSpawn(project, 'npm', args, projectPath);
 			stdout = stdout ? stdout.replace('\n', '') : null;
 			stderr = stderr ? stderr.replace('\n', '') : null;
 
@@ -65,7 +60,6 @@ async function installModules(req) {
 			} catch {
 				responseObject[project].npm_error = stderr;
 			}
-
 		} catch (error) {
 			if (error.stderr) {
 				responseObject[project].npm_error = parseNPMStdErr(error.stderr);

@@ -165,7 +165,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				persistent: false,
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
-					const normalizedBases = allowedBases.map(base => base.replace(/\\/g, '/'));
+					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
 					return (
 						normalizedPath !== this.#component.directory.replace(/\\/g, '/') &&
 						normalizedBases.every((base) => !normalizedPath.startsWith(base))

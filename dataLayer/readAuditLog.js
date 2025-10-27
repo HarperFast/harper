@@ -39,10 +39,7 @@ async function readAuditLog(readAuditLogObject) {
 		);
 	}
 
-	const invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(
-		readAuditLogObject.schema,
-		readAuditLogObject.table
-	);
+	const invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(readAuditLogObject.schema, readAuditLogObject.table);
 	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
@@ -54,10 +51,7 @@ async function readAuditLog(readAuditLogObject) {
 		);
 	}
 
-	if (
-		!hdbUtils.isEmpty(readAuditLogObject.search_type) &&
-		SEARCH_TYPES.indexOf(readAuditLogObject.search_type) < 0
-	) {
+	if (!hdbUtils.isEmpty(readAuditLogObject.search_type) && SEARCH_TYPES.indexOf(readAuditLogObject.search_type) < 0) {
 		throw new Error(`Invalid searchType '${read_audit_log_object.search_type}'`);
 	}
 
