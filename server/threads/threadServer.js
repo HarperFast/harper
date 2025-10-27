@@ -136,12 +136,6 @@ function startServers() {
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {
-								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET) && getWorkerIndex() == 0) {
-									try {
-										unlinkSync(resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)));
-									} catch (err) {}
-								}
-
 								clearInterval(closeAllTimer);
 								// We hope for a graceful exit once all connections have been closed, and no
 								// more incoming connections are accepted, but if we need to, we eventually will exit
