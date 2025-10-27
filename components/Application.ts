@@ -13,43 +13,62 @@ import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
 
 interface ApplicationConfig {
+	// define known config properties
 	package: string;
 	install?: {
 		command?: string;
 		timeout?: number;
 	};
+	// an application config can have other arbitrary properties
+	[key: string]: unknown;
+}
+
+export class InvalidPackageIdentifierError extends TypeError {
+	constructor(applicationName: string, packageIdentifier: unknown) {
+		super(`Invalid 'package' property for application ${applicationName}: expected string, got ${typeof packageIdentifier}`)
+	}
+}
+
+export class InvalidInstallPropertyError extends TypeError {
+	constructor(applicationName: string, installProperty: unknown) {
+		super(`Invalid 'install' property for application ${applicationName}: expected object, got ${typeof installProperty}`)
+	}
+}
+
+export class InvalidInstallCommandError extends TypeError {
+	constructor(applicationName: string, command: unknown) {
+		super(`Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof command}`)
+	}
+}
+
+export class InvalidInstallTimeoutError extends TypeError {
+	constructor(applicationName: string, timeout: unknown) {
+		super(`Invalid 'install.timeout' property for application ${applicationName}: expected non-negative number, got ${typeof timeout}`)
+	}
 }
 
 export function assertApplicationConfig(
 	applicationName: string,
-	applicationConfig: object & Record<'package', unknown>
+	applicationConfig: Record<'package', unknown> & Record<string, unknown>
 ): asserts applicationConfig is ApplicationConfig {
 	if (typeof applicationConfig.package !== 'string') {
-		throw new TypeError(
-			`Invalid 'package' property for application ${applicationName}: expected string, got ${typeof applicationConfig.package}`
-		);
+		throw new InvalidPackageIdentifierError(applicationName, applicationConfig.package);
 	}
 
 	if ('install' in applicationConfig) {
-		if (typeof applicationConfig.install !== 'object' || applicationConfig.install === null) {
-			throw new TypeError(
-				`Invalid 'install' property for application ${applicationName}: expected object, got ${typeof applicationConfig.install}`
-			);
+		if (typeof applicationConfig.install !== 'object' || applicationConfig.install === null || Array.isArray(applicationConfig.install)) {
+			throw new InvalidInstallPropertyError(applicationName, applicationConfig.install);
 		}
 
 		if ('command' in applicationConfig.install && typeof applicationConfig.install.command !== 'string') {
-			throw new TypeError(
-				`Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof applicationConfig.install.command}`
-			);
+			throw new InvalidInstallCommandError(applicationName, applicationConfig.install.command);
 		}
 
 		if (
 			'timeout' in applicationConfig.install &&
 			(typeof applicationConfig.install.timeout !== 'number' || applicationConfig.install.timeout < 0)
 		) {
-			throw new TypeError(
-				`Invalid 'install.timeout' property for application ${applicationName}: expected non-negativenumber, got ${typeof applicationConfig.install.timeout}`
-			);
+			throw new InvalidInstallTimeoutError(applicationName, applicationConfig.install.timeout);
 		}
 	}
 }
@@ -343,7 +362,7 @@ export class Application {
  * during the installation process in order to actually resolve what the user specifies for a
  * component matching some of npm's package resolution rules.
  */
-function derivePackageIdentifier(packageIdentifier: string) {
+export function derivePackageIdentifier(packageIdentifier: string) {
 	if (packageIdentifier.includes(':')) {
 		return packageIdentifier;
 	}
@@ -477,7 +496,6 @@ export function nonInteractiveSpawn(
 			env.GIT_SSH_COMMAND = gitSSHCommand;
 		}
 
-		// eslint-disable-next-line sonarjs/os-command
 		const childProcess = spawn(command, args, {
 			shell: true,
 			cwd,
