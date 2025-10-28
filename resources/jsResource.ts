@@ -8,15 +8,15 @@ function isResource(value: unknown) {
 
 /**
  * This plugin loads JavaScript files and registers their exports as resources.
- * 
+ *
  * The export can be the default export and will be assigned to the root URL path.
- * 
+ *
  * Otherwise, the name of the export will be used.
- * 
+ *
  * After loading the JavaScript code using the secure import, it adds it to the global `resources` map.
- * 
- * Once a file has been loaded it cannot be unloaded without a restart. 
- * 
+ *
+ * Once a file has been loaded it cannot be unloaded without a restart.
+ *
  * Thus, this plugin only handle files as they are added (`add` event). All other events result in a restart request.
  *
  */

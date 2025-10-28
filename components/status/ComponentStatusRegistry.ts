@@ -6,7 +6,12 @@
  */
 
 import { ComponentStatus } from './ComponentStatus.ts';
-import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS, type AggregatedComponentStatus, type ComponentApplicationStatus } from './types.ts';
+import {
+	type ComponentStatusLevel,
+	COMPONENT_STATUS_LEVELS,
+	type AggregatedComponentStatus,
+	type ComponentApplicationStatus,
+} from './types.ts';
 import { crossThreadCollector, StatusAggregator } from './crossThread.ts';
 import { ComponentStatusOperationError } from './errors.ts';
 
@@ -206,31 +211,31 @@ export class ComponentStatusRegistry {
 		}
 
 		// Aggregate all statuses
-		const hasErrors = allStatuses.some(s => s.status === COMPONENT_STATUS_LEVELS.ERROR);
-		const hasLoading = allStatuses.some(s => s.status === COMPONENT_STATUS_LEVELS.LOADING);
+		const hasErrors = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.ERROR);
+		const hasLoading = allStatuses.some((s) => s.status === COMPONENT_STATUS_LEVELS.LOADING);
 
 		const overallStatus = hasErrors
 			? COMPONENT_STATUS_LEVELS.ERROR
 			: hasLoading
-			? COMPONENT_STATUS_LEVELS.LOADING
-			: COMPONENT_STATUS_LEVELS.HEALTHY;
+				? COMPONENT_STATUS_LEVELS.LOADING
+				: COMPONENT_STATUS_LEVELS.HEALTHY;
 
 		// Show details if anything is not healthy
 		let overallMessage = 'All components loaded successfully';
 		const details: Record<string, { status: ComponentStatusLevel; message?: string }> = {};
 
 		if (hasErrors || hasLoading) {
-			const problemStatuses = allStatuses.filter(s =>
-				s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
+			const problemStatuses = allStatuses.filter(
+				(s) => s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
 			);
-			overallMessage = problemStatuses.map(s => `${s.key}: ${s.latestMessage || s.status}`).join('; ');
+			overallMessage = problemStatuses.map((s) => `${s.key}: ${s.latestMessage || s.status}`).join('; ');
 
 			// Include details for debugging
 			for (const status of allStatuses) {
 				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
 					details[status.key] = {
 						status: status.status,
-						message: status.latestMessage
+						message: status.latestMessage,
 					};
 				}
 			}

@@ -115,13 +115,13 @@ async function componentStatusRequestHandler(event) {
 		}
 
 		hdbLogger.trace(`ITC componentStatusRequestHandler received request:`, event);
-		
+
 		// Get current thread's component status
 		const { internal } = require('../../components/status/index.ts');
 		const { getWorkerIndex } = require('../threads/manageThreads.js');
 		const { sendItcEvent } = require('../threads/itc.js');
 		const componentStatuses = internal.componentStatusRegistry.getAllStatuses();
-		
+
 		// Convert Map to array for serialization
 		const statusArray = Array.from(componentStatuses.entries());
 
@@ -140,7 +140,7 @@ async function componentStatusRequestHandler(event) {
 				isMainThread: isMainThread,
 			},
 		};
-		
+
 		// Use global threads (connectedPorts) to send directly to originator
 		if (originatorThreadId !== undefined && threads.sendToThread(originatorThreadId, responseMessage)) {
 			hdbLogger.trace(`Sent component status response directly to thread ${originatorThreadId}`);

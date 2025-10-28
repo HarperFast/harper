@@ -115,9 +115,7 @@ class sqlStatementBucket {
 			let colSchema = this.table_to_schema_lookup.has(val.tableid)
 				? this.table_to_schema_lookup.get(val.tableid)
 				: fromDatabaseid;
-			let colTable = this.table_lookup.has(val.tableid)
-				? this.table_lookup.get(val.tableid)
-				: this.ast.from[0].tableid;
+			let colTable = this.table_lookup.has(val.tableid) ? this.table_lookup.get(val.tableid) : this.ast.from[0].tableid;
 
 			//We only want to do this if the table that is being SELECT *'d has READ permissions - if not, we will only
 			// want to send the table permissions error response so we can skip this step.

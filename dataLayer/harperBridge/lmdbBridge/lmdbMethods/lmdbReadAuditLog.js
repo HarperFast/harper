@@ -170,12 +170,7 @@ function loopRecords(transaction, recordsAttribute, hash_attribute, hashes, resu
 						txnObjects.push(newTxnObject);
 					}
 				} else {
-					let txnObject = new LMDBTransactionObject(
-						transaction.operation,
-						transaction.user_name,
-						timestamp,
-						undefined
-					);
+					let txnObject = new LMDBTransactionObject(transaction.operation, transaction.user_name, timestamp, undefined);
 					txnObject[recordsAttribute] = [record];
 					resultsMap.set(hashValue, [txnObject]);
 				}

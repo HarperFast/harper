@@ -21,9 +21,7 @@ export default defineConfig([
 		extends: ['js/recommended'],
 		languageOptions: { globals: globals.node },
 		// Customize rules for all files here
-		rules: {
-			
-		},
+		rules: {},
 	},
 	{
 		files: ['**/*.js'],

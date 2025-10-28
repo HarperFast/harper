@@ -112,7 +112,11 @@ describe('Scope', () => {
 		const callArgs = handleEntrySpy.getCall(0).args[0];
 		assert.equal(callArgs.eventType, 'add', 'handleEntry argument `eventType` should be `add`');
 		assert.equal(callArgs.entryType, 'file', 'handleEntry argument `entryType` should be `file`');
-		assert.equal(callArgs.absolutePath, this.testFilePath, 'handleEntry argument `absolutePath` should be the test file path');
+		assert.equal(
+			callArgs.absolutePath,
+			this.testFilePath,
+			'handleEntry argument `absolutePath` should be the test file path'
+		);
 		assert.equal(callArgs.urlPath, '/abc/test.js', 'handleEntry argument `urlPath` should be `abc/test.js`');
 		assert.ok(callArgs.stats !== undefined, 'add event argument `stats` should be defined');
 		assert.ok(callArgs.stats.isFile(), 'add event argument `stats` should be a file');

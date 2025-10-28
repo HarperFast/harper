@@ -82,8 +82,8 @@ async function getCompartment(getGlobalVars) {
 						exports: ['Resource', 'tables', 'databases'],
 						execute(exports) {
 							exports.Resource = Resource;
-exports.tables = tables;
-exports.databases = databases;
+							exports.tables = tables;
+							exports.databases = databases;
 						},
 					};
 				}

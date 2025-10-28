@@ -12,14 +12,7 @@ class TableSizeObject {
 	 * @param {Number} transactionLogSize - number of entries in the transaction log
 	 * @param {Number} transactionLogRecordCount - data size of the transaction log in bytes
 	 */
-	constructor(
-		schema,
-		table,
-		tableSize = 0,
-		recordCount = 0,
-		transactionLogSize = 0,
-		transactionLogRecordCount = 0
-	) {
+	constructor(schema, table, tableSize = 0, recordCount = 0, transactionLogSize = 0, transactionLogRecordCount = 0) {
 		this.schema = schema;
 		this.table = table;
 		this.table_size = tableSize;

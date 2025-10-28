@@ -5,7 +5,7 @@ import { req } from '../utils/request.mjs';
 import { timestamp } from '../utils/timestamp.mjs';
 
 describe('11. Alter User Tests', () => {
-	beforeEach(timestamp);	
+	beforeEach(timestamp);
 
 	//Alter User Tests Folder
 
