@@ -182,14 +182,19 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
-
+		let loadTimeout: NodeJS.Timeout;
 		return Promise.race([
 			plugin.handleApplication(scope),
-			new Promise((_, reject) =>
-				setTimeout(() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.name}`)), timeout)
+			new Promise(
+				(_, reject) =>
+					(loadTimeout = setTimeout(
+						() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.name}`)),
+						timeout
+					))
 			),
 		]).finally(() => {
 			Status.primaryStore.unlock(scope.name, 0);
+			clearTimeout(loadTimeout);
 		});
 	});
 }
