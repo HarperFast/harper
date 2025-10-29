@@ -161,8 +161,7 @@ class SelectValidator {
 	[setColumnsForTable](tableName) {
 		this.attributes.forEach((attribute) => {
 			if (
-				(!tableName ||
-					(tableName && (attribute.table.tableid === tableName || attribute.table.as === tableName))) &&
+				(!tableName || (tableName && (attribute.table.tableid === tableName || attribute.table.as === tableName))) &&
 				!attribute.relation
 			) {
 				this.statement.columns.push(

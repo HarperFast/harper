@@ -1,6 +1,6 @@
 /**
  * Component Status Registry Singleton
- * 
+ *
  * This module provides the global component status registry instance.
  */
 

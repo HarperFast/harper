@@ -71,9 +71,7 @@ function getSchemaPath(schema, table) {
 	schema = schema.toString();
 	table = table ? table.toString() : table;
 	let schemaConfig = env.get(hdbTerms.CONFIG_PARAMS.DATABASES)?.[schema];
-	return (
-		(table && schemaConfig?.tables?.[table]?.path) || schemaConfig?.path || path.join(getBaseSchemaPath(), schema)
-	);
+	return (table && schemaConfig?.tables?.[table]?.path) || schemaConfig?.path || path.join(getBaseSchemaPath(), schema);
 }
 
 /**

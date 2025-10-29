@@ -314,9 +314,7 @@ function setDefaultRoot(parent, helpers) {
 		case 'operationsApi.network.domainSocket':
 			return configParam == null ? null : path.join(hdbRoot, 'operations-server');
 		default:
-			throw new Error(
-				`Error setting default root for config parameter: ${configParam}. Unrecognized config parameter`
-			);
+			throw new Error(`Error setting default root for config parameter: ${configParam}. Unrecognized config parameter`);
 	}
 }
 

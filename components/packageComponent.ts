@@ -27,7 +27,7 @@ export function packageDirectory(
 						header.mode = 0o755;
 					}
 					return header;
-				}
+				},
 			})
 			.pipe(createGzip())
 			.on('data', (chunk: Buffer) => chunks.push(chunk))

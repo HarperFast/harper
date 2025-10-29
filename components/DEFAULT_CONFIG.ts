@@ -1,18 +1,18 @@
 export const DEFAULT_CONFIG = {
 	rest: true,
 	graphqlSchema: {
-		files: '*.graphql'
+		files: '*.graphql',
 	},
 	roles: {
-		files: 'roles.yaml'
+		files: 'roles.yaml',
 	},
 	jsResource: {
-		files: 'resources.js'
+		files: 'resources.js',
 	},
 	fastifyRoutes: {
-		files: 'routes/*.js'
+		files: 'routes/*.js',
 	},
 	static: {
-		files: 'web/**'
-	}
+		files: 'web/**',
+	},
 };

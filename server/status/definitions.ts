@@ -21,9 +21,7 @@ export type StatusId = keyof StatusDefinitions;
 
 // Status value types derived from definitions
 export type StatusValueMap = {
-	[K in StatusId]: StatusDefinitions[K]['allowedValues'] extends readonly (infer U)[]
-		? U
-		: string;
+	[K in StatusId]: StatusDefinitions[K]['allowedValues'] extends readonly (infer U)[] ? U : string;
 };
 
 // Status record structure
@@ -37,4 +35,3 @@ export interface StatusRecord<T extends StatusId = StatusId> {
 // Utility constants
 export const STATUS_IDS = Object.keys(STATUS_DEFINITIONS) as StatusId[];
 export const DEFAULT_STATUS_ID: StatusId = 'primary';
-

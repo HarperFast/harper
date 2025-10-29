@@ -7,7 +7,7 @@ import { req } from '../utils/request.mjs';
 
 describe('17a. Add components for computed props, graphQL, and open api', () => {
 	beforeEach(timestamp);
-	
+
 	it('Add component for computed properties', () => {
 		return req()
 			.send({ operation: 'add_component', project: 'computed' })

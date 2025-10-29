@@ -250,9 +250,14 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 
 		if (hasDelete) {
-			api.paths[urlById].delete = new Delete([primaryKeyParam], security, 'delete a record with the given primary key', {
-				'204': new Response204(),
-			});
+			api.paths[urlById].delete = new Delete(
+				[primaryKeyParam],
+				security,
+				'delete a record with the given primary key',
+				{
+					'204': new Response204(),
+				}
+			);
 		}
 
 		// API for path structure /my-resource/<record-id>.property

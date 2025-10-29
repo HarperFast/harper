@@ -1,6 +1,6 @@
 /**
  * Internal Component Status Exports
- * 
+ *
  * These exports are for Harper core internal use only.
  * Components should use the public API from index.ts
  */
@@ -61,5 +61,5 @@ export const query = {
 	 */
 	async allThreads() {
 		return ComponentStatusRegistry.getAggregatedFromAllThreads(componentStatusRegistry);
-	}
+	},
 };

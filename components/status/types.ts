@@ -1,6 +1,6 @@
 /**
  * Component Status Type Definitions
- * 
+ *
  * This module defines the core types, constants, and interfaces for the
  * component status tracking system.
  */
@@ -13,25 +13,25 @@ export const COMPONENT_STATUS_LEVELS = {
 	WARNING: 'warning',
 	ERROR: 'error',
 	UNKNOWN: 'unknown',
-	LOADING: 'loading'
+	LOADING: 'loading',
 } as const;
 
-export type ComponentStatusLevel = typeof COMPONENT_STATUS_LEVELS[keyof typeof COMPONENT_STATUS_LEVELS];
+export type ComponentStatusLevel = (typeof COMPONENT_STATUS_LEVELS)[keyof typeof COMPONENT_STATUS_LEVELS];
 
 /**
  * Component status information as a plain object
  */
 export interface ComponentStatusSummary {
-    /** Last time this status was checked/updated */
-    lastChecked: Date;
-    /** Current status level */
-    status: ComponentStatusLevel;
-    /** Human-readable status message */
-    message?: string;
-    /** Error information if status is 'error' */
-    error?: Error | string;
-    /** Worker index for cross-thread tracking */
-    workerIndex?: number;
+	/** Last time this status was checked/updated */
+	lastChecked: Date;
+	/** Current status level */
+	status: ComponentStatusLevel;
+	/** Human-readable status message */
+	message?: string;
+	/** Error information if status is 'error' */
+	error?: Error | string;
+	/** Worker index for cross-thread tracking */
+	workerIndex?: number;
 }
 
 /**

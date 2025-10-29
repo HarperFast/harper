@@ -11,11 +11,7 @@ const terms = require('./hdbTerms.ts');
  * @param followupAsyncFunc - The response function that will be called with the operation function response as an input.  The function is expected to be promisifed, callbacks not supported.
  * @returns {Promise<{}>}
  */
-async function callOperationFunctionAsAwait(
-	promisifiedFunction,
-	functionInput,
-	followupAsyncFunc,
-) {
+async function callOperationFunctionAsAwait(promisifiedFunction, functionInput, followupAsyncFunc) {
 	if (!promisifiedFunction || typeof promisifiedFunction !== 'function') {
 		throw new Error('Invalid function parameter');
 	}
