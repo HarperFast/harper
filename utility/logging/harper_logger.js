@@ -43,7 +43,7 @@ const OUTPUTS = {
 const INSTALL_LOG_LOCATION = join(PACKAGE_ROOT, `logs`);
 
 // Location of default config YAML.
-const DEFAULT_CONFIG_FILE = join(__dirname, '../../../static', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE = join(PACKAGE_ROOT, 'static', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
 
 const CLOSE_LOG_FD_TIMEOUT = 10000;
 
@@ -238,7 +238,6 @@ module.exports = {
 	// we can start using the RootConfigWatcher
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
-	errorToString,
 	disableStdio,
 };
 function getLogFilePath() {
@@ -847,17 +846,6 @@ function getDefaultConfig() {
 	}
 }
 
-/**
- * This converts an error to a human readable string. This follows the convention of standard console logging
- * of printing the error as "ErrorClassName: message". Strangely, this is _not_ how Error.prototype.toString
- * behaves, so this normalizes to match the bevahior of the console rather than default toString.
- * @param error
- * @return {string|string}
- */
-function errorToString(error) {
-	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
-}
-
 function setMainLogger(logger) {
 	mainLogger = logger;
 }
@@ -877,4 +865,4 @@ function AuthAuditLog(username, status, type, originatingIp, requestMethod, path
 	this.path = path;
 }
 // we have to load this at the end to avoid circular dependencies problems
-const { RootConfigWatcher } = require('../../config/RootConfigWatcher');
+const { RootConfigWatcher } = require('../../config/RootConfigWatcher.ts');

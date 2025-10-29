@@ -8,6 +8,7 @@ const log = require('../logging/harper_logger.js');
 const commonUtils = require('../common_utils.js');
 const hdbTerms = require('../hdbTerms.ts');
 const configUtils = require('../../config/configUtils.js');
+const { PACKAGE_ROOT } = require('../packageUtils');
 
 const INIT_ERR = 'Error initializing environment manager';
 const BOOT_PROPS_FILE_PATH = 'BOOT_PROPS_FILE_PATH';
@@ -147,7 +148,7 @@ function initTestEnvironment(testConfigObj = {}) {
 			cors_accesslist,
 			local_studio_on,
 		} = testConfigObj;
-		const propsPath = path.join(__dirname, '../../', 'unitTests');
+		const propsPath = path.join(PACKAGE_ROOT, 'unitTests');
 		installProps[BOOT_PROPS_FILE_PATH] = path.join(propsPath, 'hdb_boot_properties.file');
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, path.join(propsPath, 'settings.test'));
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo() ? os.userInfo().username : undefined);
@@ -172,7 +173,7 @@ function initTestEnvironment(testConfigObj = {}) {
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY, true);
 		setProperty(
 			hdbTerms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY,
-			path.resolve(__dirname, '../../unitTests/server/fastifyRoutes/custom_functions')
+			path.resolve(PACKAGE_ROOT, 'unitTests/server/fastifyRoutes/custom_functions')
 		);
 		setProperty(
 			hdbTerms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON,

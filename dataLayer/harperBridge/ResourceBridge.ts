@@ -12,11 +12,10 @@ import {
 } from '../../utility/hdbTerms.ts';
 import * as signalling from '../../utility/signalling.js';
 import { SchemaEventMsg } from '../../server/threads/itc.js';
-import { asyncSetTimeout } from '../../utility/common_utils.js';
+import { asyncSetTimeout, errorToString } from '../../utility/common_utils.js';
 import { transaction } from '../../resources/transaction.ts';
 import type { Condition, Query, Context, Select, Id, DirectCondition } from '../../resources/ResourceInterface.ts';
 import { collapseData } from '../../resources/tracked.ts';
-import { errorToString } from '../../utility/logging/harper_logger.js';
 
 const { HDB_ERROR_MSGS } = hdbErrors;
 const DEFAULT_DATABASE = 'data';

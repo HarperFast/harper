@@ -23,12 +23,6 @@ const appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
 const appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
 const operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
 const operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
-
-const sessionTable = table({
-	table: 'hdb_session',
-	database: 'system',
-	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
-});
 const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
 // check the environment for a flag to bypass authentication (for testing) since it doesn't necessarily get set on child threads
 let AUTHORIZE_LOCAL =
@@ -39,6 +33,19 @@ const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUC
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
+
+let sessionTable;
+function getSessionTable() {
+	if (sessionTable) {
+		return sessionTable;
+	}
+	sessionTable = table({
+		table: 'hdb_session',
+		database: 'system',
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
+	});
+	return sessionTable;
+}
 
 let authorizationCache = new Map();
 server.onInvalidatedUser(() => {
@@ -98,7 +105,7 @@ export async function authentication(request, nextHandler) {
 				if (cookie.startsWith(cookiePrefix)) {
 					const end = cookie.indexOf(';');
 					sessionId = cookie.slice(cookiePrefix.length, end === -1 ? cookie.length : end);
-					session = await sessionTable.get(sessionId);
+					session = await getSessionTable().get(sessionId);
 					break;
 				}
 			}
@@ -290,7 +297,7 @@ export async function authentication(request, nextHandler) {
 					}
 				}
 				updatedSession.id = sessionId;
-				return sessionTable.put(updatedSession, {
+				return getSessionTable().put(updatedSession, {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 				});
 			};

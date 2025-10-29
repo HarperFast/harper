@@ -34,13 +34,12 @@ import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { join, dirname } from 'path';
+import { join, dirname } from 'node:path';
 import logger from '../utility/logging/logger.js';
 import type { LMDBStore } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 import { HAS_BLOBS, readAuditEntry } from './auditStore.ts';
 import { getHeapStatistics } from 'node:v8';
-import * as buffer from 'node:buffer';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -93,7 +92,7 @@ let warnedSaveDeprecation = false;
  * 1. This has the built-in functionality for reading from the file-based storage
  * 2. This support for streams and asynchronous access to data that may not have a known size ahead of time
  * 3. This also avoids the Blob constructor which is expensive due to the transferred setup
- * Harper still supports saving native Blobs, but when they blobs are retrieved from storage, they always use this class.
+ * Harper still supports saving native Blobs, but when the blobs are retrieved from storage, they always use this class.
  */
 class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	type = '';
@@ -492,6 +491,7 @@ export type BlobCreationOptions = {
 	size?: number; // the size of the data, if known ahead of time
 	saveBeforeCommit?: boolean; // save the blob before the transaction is committed
 };
+
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
  * can be saved/stored.

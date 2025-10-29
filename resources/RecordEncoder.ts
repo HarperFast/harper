@@ -17,7 +17,6 @@ import {
 	ACTION_32_BIT,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.js';
-import './blob.ts';
 import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
 import { recordAction } from './analytics/write.ts';
 export type Entry = {
@@ -400,7 +399,7 @@ export function recordUpdater(store, tableId, auditStore) {
 			// we use resolveRecord outside of transaction, so must explicitly make it conditional
 			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
-				if (!auditStore.getBinaryFast(existingEntry.localTime)) {
+				if (existingEntry.localTime && !auditStore.getBinaryFast(existingEntry.localTime)) {
 					// if it used to have blobs, and it doesn't exist in the audit store, we need to delete the old blobs
 					deleteBlobsInObject(existingEntry.value);
 				}
