@@ -10,15 +10,15 @@ describe('listMetrics', () => {
 
 	beforeEach(() => {
 		mockAsyncIterable = {
-			[Symbol.asyncIterator]: async function* () {}
+			[Symbol.asyncIterator]: async function* () {},
 		};
 
 		global.databases = {
 			system: {
 				hdb_analytics: {
-					search: sinon.stub().returns(mockAsyncIterable)
-				}
-			}
+					search: sinon.stub().returns(mockAsyncIterable),
+				},
+			},
 		};
 
 		// Keep a reference to the search stub for easier manipulation in tests
@@ -71,7 +71,7 @@ describe('listMetrics', () => {
 
 		// Each condition should be a 'not_equal' to a built-in metric
 		const builtins = Object.values(METRIC);
-		searchParams.conditions.forEach(condition => {
+		searchParams.conditions.forEach((condition) => {
 			expect(condition.attribute).to.equal('metric');
 			expect(condition.comparator).to.equal('not_equal');
 			expect(builtins).to.include(condition.value);
@@ -172,7 +172,7 @@ describe('listMetrics', () => {
 			expect(searchParams.conditions[i]).to.deep.equal({
 				attribute: 'metric',
 				comparator: 'not_equal',
-				value: builtins[i]
+				value: builtins[i],
 			});
 		}
 	});
@@ -193,23 +193,23 @@ describe('describeMetric', () => {
 			method: 'GET',
 			type: 'rest',
 			value: 100,
-			count: 5
+			count: 5,
 		};
 
 		// Mock async iterable for the search results
 		mockAsyncIterable = {
 			[Symbol.asyncIterator]: async function* () {
 				yield mockSearchResults;
-			}
+			},
 		};
 
 		// Setup global databases object with stub method
 		global.databases = {
 			system: {
 				hdb_analytics: {
-					search: sinon.stub().returns(mockAsyncIterable)
-				}
-			}
+					search: sinon.stub().returns(mockAsyncIterable),
+				},
+			},
 		};
 
 		// Keep a reference to the search stub for easier manipulation in tests
@@ -238,11 +238,11 @@ describe('describeMetric', () => {
 		expect(searchParams.conditions[0]).to.deep.equal({
 			attribute: 'metric',
 			comparator: 'equals',
-			value: 'non-existent-metric'
+			value: 'non-existent-metric',
 		});
 		expect(searchParams.sort).to.deep.equal({
 			attribute: 'id',
-			descending: true
+			descending: true,
 		});
 	});
 
@@ -251,14 +251,14 @@ describe('describeMetric', () => {
 
 		expect(result).to.have.property('attributes');
 		expect(result.attributes).to.deep.include.members([
-			{name: 'node', type: 'string'},
-			{name: 'id', type: 'object'},
-			{name: 'metric', type: 'string'},
-			{name: 'path', type: 'string'},
-			{name: 'method', type: 'string'},
-			{name: 'type', type: 'string'},
-			{name: 'value', type: 'number'},
-			{name: 'count', type: 'number'},
+			{ name: 'node', type: 'string' },
+			{ name: 'id', type: 'object' },
+			{ name: 'metric', type: 'string' },
+			{ name: 'path', type: 'string' },
+			{ name: 'method', type: 'string' },
+			{ name: 'type', type: 'string' },
+			{ name: 'value', type: 'number' },
+			{ name: 'count', type: 'number' },
 		]);
 		expect(searchStub.calledOnce).to.be.true;
 	});

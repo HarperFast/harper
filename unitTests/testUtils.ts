@@ -63,7 +63,8 @@ export function createTestSandbox() {
 			operationsApi: {},
 			http: {},
 			storage: { writeAsync: false },
-		}));
+		})
+	);
 	fs.mkdirpSync(bootPropsPath);
 	fs.writeFileSync(
 		path.join(bootPropsPath, terms.BOOT_PROPS_FILE_NAME),

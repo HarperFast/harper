@@ -1792,7 +1792,7 @@ describe('Querying through Resource API', () => {
 				id: 'zzz-10002',
 				name: 'yet-another-one',
 				dynamic: 'baz',
-			}
+			},
 		];
 
 		before(async () => {
@@ -1831,9 +1831,7 @@ describe('Querying through Resource API', () => {
 			let results = [];
 			for await (let record of QueryTable.search({
 				allowConditionsOnDynamicAttributes: true,
-				conditions: [
-					{ attribute: 'dynamic', comparator: 'starts_with', value: 'ba' },
-				],
+				conditions: [{ attribute: 'dynamic', comparator: 'starts_with', value: 'ba' }],
 			})) {
 				results.push(record);
 			}

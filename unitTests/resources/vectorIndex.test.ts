@@ -7,7 +7,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 	let HNSWTest;
 	let testInstance = new HierarchicalNavigableSmallWorld(null, null);
 	let all = [];
-	
+
 	before(() => {
 		HNSWTest = table({
 			table: 'HNSWTest',
@@ -19,7 +19,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			],
 		});
 	});
-	
+
 	it('can index and search with vector index', async () => {
 		for (let i = 0; i < 200; i++) {
 			let vector = [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
@@ -32,7 +32,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		await verifySearch();
 		verifyIntegrity();
 	});
-	
+
 	it('can delete and update and search with vector index with one dimension', async () => {
 		let connectivity = HNSWTest.indices.vector.customIndex.validateConnectivity();
 		assert(connectivity.isFullyConnected);

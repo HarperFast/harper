@@ -11,7 +11,7 @@ describe('stableNodeId', () => {
 		const randIPv4 = () => {
 			const octets = [randOctet(), randOctet(), randOctet(), randOctet()];
 			return octets.join('.');
-		}
+		};
 		for (let i = 0; i < 10000; i++) {
 			const ipv4 = randIPv4();
 			const id = stableNodeId(ipv4);
@@ -42,7 +42,7 @@ describe('stableNodeId', () => {
 		// just testing one hostname for now; this the default fallthrough in
 		// much of the code so not sure how valuable the generative testing
 		// approach is
-		const hostname = "harper1.example.com";
+		const hostname = 'harper1.example.com';
 		const id = stableNodeId(hostname);
 		expect(id).to.be.within(MIN_32BIT_INT, MAX_32BIT_INT);
 	});
@@ -51,29 +51,29 @@ describe('stableNodeId', () => {
 describe('normalizeIPv6', () => {
 	it('converts embedded IPv4 addresses to hex', () => {
 		// eslint-disable-next-line sonarjs/no-hardcoded-ip
-		const ipv6 = "::ffff:127.0.0.1";
+		const ipv6 = '::ffff:127.0.0.1';
 		const normalized = normalizeIPv6(ipv6);
 		// eslint-disable-next-line sonarjs/no-hardcoded-ip
-		expect(normalized).to.equal("0000:0000:0000:0000:0000:ffff:7f00:0001");
+		expect(normalized).to.equal('0000:0000:0000:0000:0000:ffff:7f00:0001');
 	});
 	it('converts :: to the needed number of 0000 segments', () => {
-		const ipv6 = "::1";
+		const ipv6 = '::1';
 		const normalized = normalizeIPv6(ipv6);
 		// eslint-disable-next-line sonarjs/no-hardcoded-ip
-		expect(normalized).to.equal("0000:0000:0000:0000:0000:0000:0000:0001");
+		expect(normalized).to.equal('0000:0000:0000:0000:0000:0000:0000:0001');
 	});
 	it('left pads short segments with zeroes', () => {
 		// eslint-disable-next-line sonarjs/no-hardcoded-ip
-		const ipv6 = "2602:1:2:dead:beef:3:4:5";
+		const ipv6 = '2602:1:2:dead:beef:3:4:5';
 		const normalized = normalizeIPv6(ipv6);
 		// eslint-disable-next-line sonarjs/no-hardcoded-ip
-		expect(normalized).to.equal("2602:0001:0002:dead:beef:0003:0004:0005");
+		expect(normalized).to.equal('2602:0001:0002:dead:beef:0003:0004:0005');
 	});
 	it('lowercases hex letters A-F', () => {
 		// eslint-disable-next-line sonarjs/no-hardcoded-ip
-		const ipv6 = "2602:1:2:DEAD:BEEF:3:4:5";
+		const ipv6 = '2602:1:2:DEAD:BEEF:3:4:5';
 		const normalized = normalizeIPv6(ipv6);
 		// eslint-disable-next-line sonarjs/no-hardcoded-ip
-		expect(normalized).to.equal("2602:0001:0002:dead:beef:0003:0004:0005");
+		expect(normalized).to.equal('2602:0001:0002:dead:beef:0003:0004:0005');
 	});
 });
