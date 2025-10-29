@@ -1,5 +1,5 @@
 const { parentPort } = require('node:worker_threads');
-const { table } = require('../../resources/databases.ts');
+const { table } = require('../../dist/resources/databases');
 
 let CreateTest = table({
 	table: 'CreateTest',
