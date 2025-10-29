@@ -29,3 +29,6 @@ dist/
 
 # something is generating this file :shrug:
 integration-test.json
+
+# test sandboxes
+unitTests/testEnv/

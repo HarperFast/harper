@@ -4,6 +4,8 @@ import sinon from 'sinon';
 import path from 'path';
 import { tmpdir } from 'os';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { cleanupTestSandbox, createTestSandbox } from '../testUtils';
+import { setMainIsWorker } from '@/server/threads/manageThreads';
 
 describe('ComponentLoader Status Integration', function () {
 	let componentStatusRegistry;
@@ -12,6 +14,9 @@ describe('ComponentLoader Status Integration', function () {
 	let lifecycle;
 
 	before(() => {
+		createTestSandbox();
+		setMainIsWorker(true);
+
 		// Create a temporary directory for test components
 		tempDir = mkdtempSync(path.join(tmpdir(), 'harper-test-components-'));
 
@@ -69,6 +74,8 @@ describe('ComponentLoader Status Integration', function () {
 
 		// Clear the component status registry
 		componentStatusRegistry.reset();
+
+		cleanupTestSandbox();
 	});
 
 	beforeEach(function () {
@@ -94,7 +101,10 @@ describe('ComponentLoader Status Integration', function () {
 			mkdirSync(componentDir);
 
 			// Use dataLoader which is a trusted loader
-			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), 'dataLoader: { path: "data" }');
+			writeFileSync(
+				path.join(componentDir, 'harperdb-config.yaml'),
+				`dataLoader: { path: "data", files: 'test-files' }`
+			);
 
 			// Create mock resources
 			const mockResources = {
@@ -128,7 +138,7 @@ describe('ComponentLoader Status Integration', function () {
 			mkdirSync(componentDir);
 
 			// Use 'logging' which is a trusted loader that won't cause side effects
-			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), 'logging: { level: "info" }');
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), 'logging: { level: "info", path: "logs" }');
 
 			// Create mock resources
 			const mockResources = {

@@ -3,11 +3,7 @@
   "require": "tsx",
   "timeout": 0,
   "ui": "bdd",
-  "extension": [
-    "js",
-    "mjs",
-    "ts"
-  ],
+  "extension": ["ts"],
   "recursive": true,
   "exit": true
 }
