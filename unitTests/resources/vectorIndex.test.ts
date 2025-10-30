@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { table } from '@/resources/databases';
 import { HierarchicalNavigableSmallWorld } from '@/resources/indexes/HierarchicalNavigableSmallWorld';
 import { describe, it, before, after } from 'mocha';
+import { createTestSandbox, cleanupTestSandbox } from '../testUtils.ts';
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	let HNSWTest;
@@ -9,6 +10,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 	let all = [];
 
 	before(() => {
+		createTestSandbox();
 		HNSWTest = table({
 			table: 'HNSWTest',
 			database: 'test',
@@ -113,8 +115,9 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		);
 	});
 
-	after(() => {
+	after(async () => {
 		HNSWTest.dropTable();
+		await cleanupTestSandbox();
 	});
 
 	async function verifySearch(testVector = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
