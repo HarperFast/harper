@@ -377,14 +377,28 @@ export function prepareApplication(application: Application) {
  * operations may conflict with each other (such as writing to the same directory).
  */
 export async function installApplications() {
+	const applicationInstallationPromises: Promise<void>[] = [];
+
+	// first install any built-in components specified from env vars
+	for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
+		if (packageIdentifier.startsWith('@/')) {
+			// this is a package relative module id, so later we will resolve it, but we don't need to install anything
+			continue;
+		}
+		const application = new Application({
+			name,
+			packageIdentifier,
+		});
+
+		applicationInstallationPromises.push(prepareApplication(application));
+	}
+
 	const config = getConfigObj();
 
 	const componentsRootDirPath = getConfigValue(CONFIG_PARAMS.COMPONENTSROOT);
 
 	// Ensure component directory exists
 	await mkdir(componentsRootDirPath, { recursive: true });
-
-	const applicationInstallationPromises: Promise<void>[] = [];
 
 	for (const [name, applicationConfig] of Object.entries(config)) {
 		// Pre-validation check if the configuration is actually for an application
@@ -506,6 +520,18 @@ export function nonInteractiveSpawn(
 			});
 		});
 	});
+}
+
+export function getEnvBuiltInComponents() {
+	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
+	if (process.env.HARPER_BUILTIN_COMPONENTS) {
+		for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(',')) {
+			const [name, packageIdentifier] = componentDefinition.trim().split('=');
+			if (!componentDefinition) continue;
+			builtInComponents.push({ name, packageIdentifier });
+		}
+	}
+	return builtInComponents;
 }
 
 function printStderr(

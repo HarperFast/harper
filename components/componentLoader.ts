@@ -37,6 +37,7 @@ import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { PluginModule } from './PluginModule.ts';
 import { platform } from 'node:os';
+import { getEnvBuiltInComponents } from './Application.ts';
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loadedComponents = new Map<any, any>();
@@ -73,7 +74,7 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 	});
 }
 
-const TRUSTED_RESOURCE_LOADERS = {
+const TRUSTED_RESOURCE_PLUGINS = {
 	REST, // for backwards compatibility with older configs
 	rest: REST,
 	graphql: graphqlQueryHandler,
@@ -97,13 +98,8 @@ const TRUSTED_RESOURCE_LOADERS = {
 	 */
 };
 
-if (process.env.HARPER_BUILTIN_COMPONENTS) {
-	const separator = platform() === 'win32' ? ';' : ':';
-	for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(separator)) {
-		const [componentName, moduleId] = componentDefinition.trim().split('=');
-		if (!componentDefinition) continue;
-		TRUSTED_RESOURCE_LOADERS[componentName] = require(moduleId);
-	}
+for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
+	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
 }
 
 const portsStarted = [];
@@ -290,7 +286,13 @@ export async function loadComponent(
 					} else {
 						throw new Error(`Unable to find package ${componentName}:${pkg}`);
 					}
-				} else extensionModule = TRUSTED_RESOURCE_LOADERS[componentName];
+				} else {
+					const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
+					extensionModule =
+						typeof plugin === 'string'
+							? await secureImport(plugin.startsWith('@/') ? join(PACKAGE_ROOT, plugin.slice(1)) : plugin)
+							: plugin;
+				}
 
 				if (!extensionModule) {
 					// This is an application-only component (no extension module)
