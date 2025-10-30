@@ -20,7 +20,7 @@ import { transaction } from '@/resources/transaction';
 describe('Blob test', () => {
 	let BlobTest;
 
-	before(async function () {
+	before(() => {
 		createTestSandbox();
 		setMainIsWorker(true);
 		BlobTest = table({
@@ -437,14 +437,14 @@ describe('Blob test', () => {
 		assert.equal(orphansDeleted, 0);
 	});
 
-	afterEach(function () {
+	afterEach(() => {
 		setAuditRetention(60000);
 		setDeletionDelay(50); // restore shorter, but need to have it happen for the last test
 	});
 
-	after(function () {
+	after(async () => {
 		setDeletionDelay(500); // restore original
-		cleanupTestSandbox();
+		await cleanupTestSandbox();
 	});
 });
 

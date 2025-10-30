@@ -8,7 +8,7 @@ import { table } from '@/resources/databases';
 describe('Txn Expiration', () => {
 	let SlowResource;
 
-	before(async function () {
+	before(() => {
 		createTestSandbox();
 		setMainIsWorker(true); // TODO: Should be default until changed
 		let BasicTable = table({
@@ -32,8 +32,8 @@ describe('Txn Expiration', () => {
 		assert.equal(tracked_txns.size, 0);
 	});
 
-	after(function () {
+	after(async () => {
 		setTxnExpiration(30000);
-		cleanupTestSandbox();
+		await cleanupTestSandbox();
 	});
 });

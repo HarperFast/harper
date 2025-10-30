@@ -271,8 +271,8 @@ describe('CRUD operations with the Resource API', () => {
 		});
 	}
 
-	after(() => {
+	after(async () => {
 		analytics.setAnalyticsEnabled(false); // restore to normal unit test behavior
-		cleanupTestSandbox();
+		await cleanupTestSandbox();
 	});
 });

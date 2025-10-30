@@ -63,7 +63,7 @@ describe('ComponentLoader Status Integration', function () {
 		componentLoader = require('@/components/componentLoader');
 	});
 
-	after(function () {
+	after(async () => {
 		// Restore all spies
 		sinon.restore();
 
@@ -75,7 +75,7 @@ describe('ComponentLoader Status Integration', function () {
 		// Clear the component status registry
 		componentStatusRegistry.reset();
 
-		cleanupTestSandbox();
+		await cleanupTestSandbox();
 	});
 
 	beforeEach(function () {

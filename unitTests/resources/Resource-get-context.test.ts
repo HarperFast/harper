@@ -14,7 +14,7 @@ describe('Resource.get context passing', function () {
 	let TestTable;
 	let sourceGetStub;
 
-	before(function () {
+	before(() => {
 		createTestSandbox();
 		setMainIsWorker(true);
 
@@ -34,16 +34,16 @@ describe('Resource.get context passing', function () {
 		});
 	});
 
-	after(async function () {
+	after(async () => {
 		sinon.restore();
 
 		// Clean up the test table
 		await TestTable?.dropTable();
 
-		cleanupTestSandbox();
+		await cleanupTestSandbox();
 	});
 
-	beforeEach(function () {
+	beforeEach(() => {
 		sourceGetStub.reset();
 	});
 
