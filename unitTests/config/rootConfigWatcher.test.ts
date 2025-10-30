@@ -62,48 +62,4 @@ describe('RootConfigWatcher', () => {
 			'RootConfigWatcher should not have a config property after close() is called'
 		);
 	});
-
-	// Maybe the behavior below isn't what we want after all...
-
-	// it('should emit ready even if watched file does not exit', async () => {
-	// 	const configWatcher = new RootConfigWatcher();
-	// 	try {
-	// 		await Promise.race([
-	// 			once(configWatcher, 'ready'),
-	// 			new Promise((_, reject) => setTimeout(reject, 1000)),
-	// 		]);
-	// 		assert.ok(true);
-	// 	} catch (err) {
-	// 		assert.fail('config file watcher should have emitted ready event before timeout');
-	// 	}
-	// });
-	//
-	// it('should emit ready even if watched file is empty', async () => {
-	// 	writeFileSync(configFilePath, '');
-	// 	const configWatcher = new RootConfigWatcher();
-	// 	try {
-	// 		await Promise.race([
-	// 			once(configWatcher, 'ready'),
-	// 			new Promise((_, reject) => setTimeout(reject, 1000)),
-	// 		]);
-	// 		assert.ok(true);
-	// 	} catch (err) {
-	// 		assert.fail('config file watcher should have emitted ready event before timeout');
-	// 	}
-	// });
-	//
-	// it('should emit change if previously non-existent file gets created', (done) => {
-	// 	const configWatcher = new RootConfigWatcher();
-	// 	configWatcher.on('change', (config) => {
-	// 		assert.deepEqual(config, { foo: 'bar' }, 'change event should have the new config');
-	// 		done();
-	// 	});
-	// 	setTimeout(() => {
-	// 		assert.fail('change event should have been emitted before timeout');
-	// 	}, 2000);
-	// 	// don't race the file watcher
-	// 	setTimeout(() => {
-	// 		writeFileSync(configFilePath, stringify({ foo: 'bar' }));
-	// 	}, 5);
-	// });
 });
