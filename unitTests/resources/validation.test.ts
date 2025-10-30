@@ -7,7 +7,7 @@ import { setMainIsWorker } from '@/server/threads/manageThreads';
 describe('Types Validation', () => {
 	let ValidationTest;
 
-	before(async function () {
+	before(() => {
 		createTestSandbox();
 		setMainIsWorker(true);
 		ValidationTest = table({
@@ -37,7 +37,7 @@ describe('Types Validation', () => {
 
 	after(cleanupTestSandbox);
 
-	it('Accepts correct types', async function () {
+	it('Accepts correct types', async () => {
 		await ValidationTest.put(42, {
 			str: 'hello',
 			num: 3.14,
@@ -62,7 +62,7 @@ describe('Types Validation', () => {
 		});
 	});
 
-	it('Rejects without primary key', async function () {
+	it('Rejects without primary key', () => {
 		assert.throws(() =>
 			ValidationTest.put({
 				str: 'hello',
@@ -79,7 +79,7 @@ describe('Types Validation', () => {
 		);
 	});
 
-	it('Rejects incorrect types', async function () {
+	it('Rejects incorrect types', () => {
 		assert.throws(() =>
 			ValidationTest.put(42, {
 				str: 444,
