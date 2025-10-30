@@ -41,8 +41,6 @@ describe('CRUD operations with the Resource API', () => {
 		createTestSandbox();
 		setMainIsWorker(true);
 
-		analytics.recordAction(1, 'crud-test'); // kick the analytics system a little
-
 		let relationship_attribute = {
 			name: 'related',
 			type: 'CRUDRelatedTable',
