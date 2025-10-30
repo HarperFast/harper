@@ -75,7 +75,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 		) {
 			// Need to remove auth variables, but we don't want to create an object unless
 			// the logging is actually going to happen.
-			// eslint-disable-next-line no-unused-vars,@typescript-eslint/no-unused-vars
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
 			const { hdb_user, hdbAuthHeader, password, payload, ...cleanBody } = req.body;
 			operationLog.info(cleanBody);
 		}
@@ -106,13 +106,22 @@ const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
 server.operation = operation;
 
+export type OperationDefinition = {
+	name: string;
+	httpMethod: string;
+	execute: (operation: any) => Promise<any>;
+	inputSchema?: any;
+	responseSchema?: any;
+	isJob?: boolean;
+};
+
 /**
  * Register an operation function with the server.
  * @param operationName
  * @param operationFunction
  */
-server.registerOperation = (operationName: string, operationFunction: Function) => {
-	OPERATION_FUNCTION_MAP.set(operationName, new OperationFunctionObject(operationFunction));
+server.registerOperation = (operationDefinition: OperationDefinition) => {
+	OPERATION_FUNCTION_MAP.set(operationDefinition.name, new OperationFunctionObject(operationDefinition.execute));
 };
 
 export function chooseOperation(json: OperationRequestBody) {
@@ -189,7 +198,7 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 	operationLog.trace(`getOperationFunction with operation: ${json.operation}`);
 
 	if (OPERATION_FUNCTION_MAP.has(json.operation)) {
-		return OPERATION_FUNCTION_MAP.get(json.operation)!;
+		return OPERATION_FUNCTION_MAP.get(json.operation);
 	}
 
 	throw handleHDBError(
