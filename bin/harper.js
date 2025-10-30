@@ -34,7 +34,7 @@ upgrade                         - Upgrade harperdb
 version                         - Print the version
 `;
 
-async function harperdb() {
+async function harper() {
 	let nodeResults = checkNode();
 
 	if (nodeResults) {
@@ -123,21 +123,23 @@ async function harperdb() {
 			return HELP;
 	}
 }
-
-harperdb()
-	.then((message) => {
-		if (message) {
-			console.log(message);
-			logger.notify(message);
-		}
-		// Intentionally not calling `process.exit(0);` so if a CLI
-		// command resulted in a long running process (aka `run`),
-		// it continues to run.
-	})
-	.catch((error) => {
-		if (error) {
-			console.error(error);
-			logger.error(error);
-		}
-		process.exit(1);
-	});
+exports.harper = harper;
+if (require.main === module) {
+	harper()
+		.then((message) => {
+			if (message) {
+				console.log(message);
+				logger.notify(message);
+			}
+			// Intentionally not calling `process.exit(0);` so if a CLI
+			// command resulted in a long running process (aka `run`),
+			// it continues to run.
+		})
+		.catch((error) => {
+			if (error) {
+				console.error(error);
+				logger.error(error);
+			}
+			process.exit(1);
+		});
+}

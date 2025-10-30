@@ -77,7 +77,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	addUnhandleRejectionListener();
 
 	hdbLogger.suppressLogging?.(() => {
-		console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, '../../static/ascii_logo.txt'))));
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, '../static/ascii_logo.txt'))));
 	});
 	hdbLogger.debug('Checking to make sure hdb is installed');
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {

@@ -22,6 +22,7 @@ export interface Server {
 	getUser(username: string, password: string | null, request: Request): any;
 	authenticateUser(username: string, password: string, request: Request): any;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
+	registerOperation(operationName: string, operationFunction: Function): void;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
 	nodes: Node[];
 	shards: Map<number, string[]>;
