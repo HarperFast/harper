@@ -7,6 +7,7 @@ Object.defineProperty(server, 'hostname', {
 	get() {
 		return getThisNodeName();
 	},
+	configurable: true, // allow component to override this
 });
 
 let commonNameFromCert: string | undefined;
