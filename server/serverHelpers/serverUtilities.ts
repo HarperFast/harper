@@ -108,10 +108,10 @@ server.operation = operation;
 
 export type OperationDefinition = {
 	name: string;
-	httpMethod: string;
-	execute: (operation: any) => Promise<any>;
-	inputSchema?: any;
-	responseSchema?: any;
+	execute: (operation: any) => any | Promise<any>;
+	httpMethod?: string; // method to use for REST
+	parameters?: { name: string; in: string; schema: any }; // parameters that can be provided
+	response?: any; // schema for the response
 	isJob?: boolean;
 };
 
