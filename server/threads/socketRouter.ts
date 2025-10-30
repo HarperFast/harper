@@ -67,7 +67,7 @@ function startHTTPWorker(index, threadCount = 1, shutdownWhenIdle?) {
 			// note that this can be called multiple times, once when started, and again when threads are restarted
 			const ready = new Promise((resolve, reject) => {
 				function onMessage(message) {
-					if (message.type === 'child-started') {
+					if (message.type === 'child_started') {
 						worker.removeListener('message', onMessage);
 						resolve(worker);
 					}
