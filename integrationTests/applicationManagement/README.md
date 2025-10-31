@@ -10,6 +10,8 @@ For now, we will start with a more straightforward approach. We will create a si
 
 Furthermore, there may be a solution where we can parallelize execution via multiple GitHub runners since we've had decent success running Harper directly within GitHub actions. One drawback is managing multiple runners and collecting all of their results is non-trivial.
 
+Finally, these application tests may also be a great way to test plugin behavior. If we can figure out the right abstractions, and its easy to deploy, modify, and reload applications utilizing a specific plugin, the test assertions themselves could validate plugin behavior as well!
+
 ## Scenarios
 
 ### Basic Application Deployment
