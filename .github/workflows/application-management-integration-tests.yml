@@ -80,8 +80,19 @@ jobs:
           THREADS_COUNT: 1
           THREADS_DEBUG: false
           NODE_HOSTNAME: 'localhost'
-        run: node --enable-source-maps ./dist/bin/harperdb.js install
+        run: |
+          node --enable-source-maps ./dist/bin/harperdb.js install
+          sleep 10
+          node --enable-source-maps ./dist/bin/harperdb.js start
 
       - name: Run tests for ${{ matrix.test-dir }}
         run: |
           node --test integrationTests/applicationManagement/tests/${{ matrix.test-dir }}/${{ matrix.test-dir }}.test.mts
+
+      - name: Upload HarperDB logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harper-application-management-integration-test-logs-${{ matrix.test-dir }}
+          path: /tmp/hdb/log/hdb.log
+          retention-days: 7
