@@ -84,6 +84,7 @@ jobs:
           node --enable-source-maps ./dist/bin/harperdb.js install
           sleep 10
           node --enable-source-maps ./dist/bin/harperdb.js start
+          sleep 10
 
       - name: Run tests for ${{ matrix.test-dir }}
         run: |
