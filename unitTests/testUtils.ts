@@ -13,12 +13,7 @@ const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 	try {
 		if (envs !== undefined) {
-			for (const Table of envs) {
-				try {
-					await Table.delete();
-					// eslint-disable-next-line no-empty
-				} catch (err) {}
-			}
+			await Promise.all(envs.map((table) => table.delete())).catch();
 		}
 
 		delete global.hdb_schema;
