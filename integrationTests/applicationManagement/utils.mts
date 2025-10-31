@@ -2,6 +2,7 @@ import { pack } from 'tar-fs';
 import { createGzip } from 'node:zlib';
 import { request } from 'undici';
 import assert from 'node:assert/strict';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 export async function packFixture(fixturePath: string): Promise<string> {
 	const chunks: Buffer[] = [];
@@ -28,7 +29,7 @@ export async function dropApplication(applicationName: string) {
 	assert.equal(statusCode, 200, `Failed to remove application: ${await body.text()}`);
 }
 
-export async function deployApplication(applicationName: string, applicationFixturePath: string) {
+export async function deployApplication(applicationName: string, applicationFixturePath: string, sleepMs = 2000) {
 	const payload = await packFixture(applicationFixturePath);
 	const { statusCode, body } = await request('http://localhost:9925', {
 		method: 'POST',
@@ -41,4 +42,5 @@ export async function deployApplication(applicationName: string, applicationFixt
 		})
 	});
 	assert.equal(statusCode, 200, `Failed to deploy application: ${await body.text()}`);
+	await sleep(sleepMs);
 }
