@@ -36,7 +36,7 @@
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
 		"test:integration": "node --test integrationTests/apiTests/tests/testSuite.mjs",
-		"test:unit": "TSX_TSCONFIG_PATH=./unitTests/tsconfig.json npx mocha --config unitTests/.mocharc.json unitTests",
+		"test:unit": "TSX_TSCONFIG_PATH=./unitTests/tsconfig.json npx mocha --config unitTests/.mocharc.json",
 		"test:unit:all": "npm run test:unit unitTests"
 	},
 	"engines": {
