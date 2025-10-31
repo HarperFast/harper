@@ -1,7 +1,6 @@
-'use strict';
-const envMngr = require('../environment/environmentManager.js');
-const terms = require('../../utility/hdbTerms.ts');
-const { RecordEncoder } = require('../../resources/RecordEncoder.ts');
+import envMngr from '../environment/environmentManager.js';
+import * as terms from '../../utility/hdbTerms.ts';
+import { RecordEncoder } from '../../resources/RecordEncoder.ts';
 envMngr.initSync();
 
 const LMDB_CACHING = envMngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
@@ -9,11 +8,16 @@ const LMDB_CACHING = envMngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
 /**
  * Defines how a DBI will be created/opened
  */
-class OpenDBIObject {
-	/**
-	 * @param {Boolean} dupSort - if the dbi allows duplicate keys
-	 * @param {Boolean} useVersions - if the dbi uses versions
-	 */
+export class OpenDBIObject {
+	dupSort: boolean;
+	encoding: 'msgpack' | 'ordered-binary';
+	useVersions: boolean;
+	sharedStructuresKey: symbol;
+	cache?: { validated: boolean };
+	randomAccessStructure?: boolean;
+	freezeData?: boolean;
+	encoder?: { Encoder: typeof RecordEncoder };
+
 	constructor(dupSort, isPrimary = false) {
 		this.dupSort = dupSort === true;
 		this.encoding = dupSort ? 'ordered-binary' : 'msgpack';
@@ -27,5 +31,3 @@ class OpenDBIObject {
 		}
 	}
 }
-
-exports.OpenDBIObject = OpenDBIObject;

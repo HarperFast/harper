@@ -1,8 +1,8 @@
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
 import { open, compareKeys, type Database } from 'lmdb';
-import { join, extname, basename } from 'path';
-import { existsSync, readdirSync } from 'fs';
+import { join, extname, basename } from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
@@ -15,7 +15,7 @@ import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { workerData } from 'worker_threads';
+import { workerData } from 'node:worker_threads';
 import harperLogger from '../utility/logging/harper_logger.js';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
@@ -23,12 +23,8 @@ import { openAuditStore } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
-import * as OpenDBIObjectModule from '../utility/lmdb/OpenDBIObject.js';
-function OpenDBIObject(dupSort, isPrimary) {
-	// what is going on with esbuild, it suddenly is randomly flip-flopping the module record for OpenDBIObject, sometimes return the correct exports object and sometimes returning the exports as the `default`.
-	let OpenDBIObject = OpenDBIObjectModule.OpenDBIObject ?? OpenDBIObjectModule.default.OpenDBIObject;
-	return new OpenDBIObject(dupSort, isPrimary);
-}
+import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
+
 const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';

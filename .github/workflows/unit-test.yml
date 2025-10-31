@@ -43,14 +43,5 @@ jobs:
       - name: Build
         run: npm run build || true # we currently have type errors so just ignore that
 
-      - name: Setup Harper
-        env:
-          DEFAULTS_MODE: 'dev'
-          HDB_ADMIN_USERNAME: 'admin'
-          HDB_ADMIN_PASSWORD: 'password'
-          ROOTPATH: '/tmp/hdb'
-          NODE_HOSTNAME: 'localhost'
-        run: node --enable-source-maps ./dist/bin/harperdb.js install
-
       - name: Run tests
         run: npm run test:unit:all

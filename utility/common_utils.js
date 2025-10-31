@@ -85,6 +85,7 @@ exports.httpRequest = httpRequest;
 exports.transformReq = transformReq;
 exports.convertToMS = convertToMS;
 exports.PACKAGE_ROOT = PACKAGE_ROOT;
+exports.errorToString = errorToString;
 
 /**
  * Converts a message to an error containing the error as a message. Will always return an error if the passed in error is
@@ -431,7 +432,11 @@ function stringifyProps(propReaderObject, comments) {
 }
 
 function getHomeDir() {
-	let homeDir = undefined;
+	// for hermetic tests
+	if (process.env.OVERRIDE_HOME_DIR) {
+		return process.env.OVERRIDE_HOME_DIR;
+	}
+	let homeDir;
 	try {
 		homeDir = os.homedir();
 	} catch {
@@ -861,4 +866,16 @@ function convertToMS(interval) {
 	}
 	return seconds * 1000;
 }
+
+/**
+ * This converts an error to a human readable string. This follows the convention of standard console logging
+ * of printing the error as "ErrorClassName: message". Strangely, this is _not_ how Error.prototype.toString
+ * behaves, so this normalizes to match the bevahior of the console rather than default toString.
+ * @param error
+ * @return {string|string}
+ */
+function errorToString(error) {
+	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+}
+
 const hdbErrors = require('./errors/commonErrors.js');

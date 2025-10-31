@@ -24,8 +24,8 @@ import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { WebSocketServer } from 'ws';
+import { errorToString } from '../utility/common_utils.js';
 
-const { errorToString } = harperLogger;
 server.http = httpServer;
 server.request = onRequest;
 server.ws = onWebSocket;
@@ -212,18 +212,27 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 		const keepAliveTimeout = env.get(serverPrefix + '_keepAliveTimeout');
 		const requestTimeout = env.get(serverPrefix + '_timeout');
 		const headersTimeout = env.get(serverPrefix + '_headersTimeout');
+		const maxHeaderSize = env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE);
 		const options = {
-			keepAliveTimeout,
-			headersTimeout,
-			requestTimeout,
 			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
 			// performance
 			highWaterMark: 128 * 1024,
 			noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 			keepAlive: true,
 			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
-			maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 		};
+		if (keepAliveTimeout) {
+			options['keepAliveTimeout'] = Number(keepAliveTimeout);
+		}
+		if (headersTimeout) {
+			options['headersTimeout'] = Number(headersTimeout);
+		}
+		if (requestTimeout) {
+			options['requestTimeout'] = Number(requestTimeout);
+		}
+		if (maxHeaderSize) {
+			options['maxHeaderSize'] = Number(maxHeaderSize);
+		}
 		const mtls = env.get(serverPrefix + '_mtls');
 		const mtlsRequired = env.get(serverPrefix + '_mtls_required');
 		let http2;

@@ -1,3 +1,4 @@
+import { describe, it, before, after, beforeEach, afterEach } from 'mocha';
 import { Scope, MissingDefaultFilesOptionError } from '@/components/Scope';
 import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
@@ -12,8 +13,12 @@ import { EntryHandler } from '@/components/EntryHandler';
 import { restartNeeded, resetRestartNeeded } from '@/components/requestRestart';
 import { writeFile } from 'node:fs/promises';
 import { waitFor } from './waitFor';
+import { cleanupTestSandbox, createTestSandbox } from '../testUtils';
 
 describe('Scope', () => {
+	before(createTestSandbox);
+	after(cleanupTestSandbox);
+
 	beforeEach(() => {
 		this.resources = new Resources();
 		this.server = {};
