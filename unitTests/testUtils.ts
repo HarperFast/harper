@@ -45,10 +45,10 @@ export function getMockLMDBPath() {
 export function createTestSandbox() {
 	const lmdbPath = getMockLMDBPath();
 	process.env.OVERRIDE_HOME_DIR = lmdbPath;
+	const storagePath = path.join(lmdbPath, 'database');
+	process.env.STORAGE_PATH = storagePath;
 	const bootPropsPath = path.join(lmdbPath, terms.HDB_HOME_DIR_NAME);
-	// TODO: Figure out what needs the 'database' subdir to exist
-	// unitTests/resources/create.test.ts triggers it
-	fs.mkdirpSync(path.join(lmdbPath, 'database'));
+	fs.mkdirpSync(storagePath);
 	fs.writeFileSync(
 		path.join(lmdbPath, 'harperdb-config.yaml'),
 		stringify({
