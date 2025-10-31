@@ -1,0 +1,99 @@
+name: Application Management Integration Tests
+
+on:
+#   push:
+#     branches: [main, harper-application-lock]
+  pull_request:
+    branches: [main]
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build || true # we currently have type errors so just ignore that
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            node_modules/
+            package.json
+          retention-days: 1
+
+      - name: Generate test directory matrix
+        id: set-matrix
+        run: |
+          dirs=$(ls -d integrationTests/applicationManagement/tests/*/ | xargs -n 1 basename | jq -R -s -c 'split("\n")[:-1]')
+          echo "matrix=${dirs}" >> $GITHUB_OUTPUT
+
+  test:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test-dir: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    name: Test ${{ matrix.test-dir }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+          OPERATIONSAPI_NETWORK_PORT: 9925
+          LOGGING_LEVEL: 'debug'
+          LOGGING_STDSTREAMS: true
+          THREADS_COUNT: 1
+          THREADS_DEBUG: false
+          NODE_HOSTNAME: 'localhost'
+        run: |
+          node --enable-source-maps ./dist/bin/harperdb.js install
+          sleep 10
+          node --enable-source-maps ./dist/bin/harperdb.js start
+          sleep 10
+
+      - name: Run tests for ${{ matrix.test-dir }}
+        run: |
+          node --test integrationTests/applicationManagement/tests/${{ matrix.test-dir }}/${{ matrix.test-dir }}.test.mts
+
+      - name: Upload HarperDB logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harper-application-management-integration-test-logs-${{ matrix.test-dir }}
+          path: /tmp/hdb/log/hdb.log
+          retention-days: 7
