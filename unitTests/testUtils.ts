@@ -35,9 +35,7 @@ export function getMockLMDBPath() {
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, { data: { path: lmdbPath }, dev: { path: lmdbPath } });
 	resetDatabases();
 	if (isMainThread) {
-		process.on('exit', async function () {
-			await tearDownMockDB();
-		});
+		process.on('exit', () => tearDownMockDB());
 	}
 	return lmdbPath;
 }

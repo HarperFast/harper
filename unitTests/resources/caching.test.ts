@@ -17,7 +17,7 @@ describe('Caching', () => {
 	let returnValue = true;
 	let returnError;
 
-	before(async function () {
+	before(async () => {
 		createTestSandbox();
 		setMainIsWorker(true); // TODO: Should be default until changed
 		CachingTable = table({
