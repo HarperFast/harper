@@ -79,13 +79,7 @@ describe('Application', () => {
 							package: invalidValue,
 						});
 					},
-					(error: Error) => {
-						return (
-							error instanceof InvalidPackageIdentifierError &&
-							error.message ===
-								`Invalid 'package' property for application ${applicationName}: expected string, got ${typeof invalidValue}`
-						);
-					}
+					new InvalidPackageIdentifierError(applicationName, invalidValue)
 				);
 			}
 		});
@@ -101,13 +95,7 @@ describe('Application', () => {
 							install: invalidValue,
 						});
 					},
-					(error: Error) => {
-						return (
-							error instanceof InvalidInstallPropertyError &&
-							error.message ===
-								`Invalid 'install' property for application ${applicationName}: expected object, got ${typeof invalidValue}`
-						);
-					}
+					new InvalidInstallPropertyError(applicationName, invalidValue)
 				);
 			}
 		});
@@ -123,13 +111,7 @@ describe('Application', () => {
 							install: { command: invalidValue },
 						});
 					},
-					(error: Error) => {
-						return (
-							error instanceof InvalidInstallCommandError &&
-							error.message ===
-								`Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof invalidValue}`
-						);
-					}
+					new InvalidInstallCommandError(applicationName, invalidValue)
 				);
 			}
 		});
@@ -145,13 +127,7 @@ describe('Application', () => {
 							install: { timeout: invalidValue },
 						});
 					},
-					(error: Error) => {
-						return (
-							error instanceof InvalidInstallTimeoutError &&
-							error.message ===
-								`Invalid 'install.timeout' property for application ${applicationName}: expected non-negative number, got ${typeof invalidValue}`
-						);
-					}
+					new InvalidInstallTimeoutError(applicationName, invalidValue)
 				);
 			}
 		});

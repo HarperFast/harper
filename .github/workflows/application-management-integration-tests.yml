@@ -1,0 +1,42 @@
+name: Application Management Integration Tests
+
+on:
+  push:
+    branches: [main, harper-application-lock]
+  pull_request:
+    branches: [main]
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate test directory matrix
+        id: set-matrix
+        run: |
+          dirs=$(ls -d integrationTests/applicationManagement/tests/*/ | xargs -n 1 basename | jq -R -s -c 'split("\n")[:-1]')
+          echo "matrix=${dirs}" >> $GITHUB_OUTPUT
+
+  test:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test-dir: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    name: Test ${{ matrix.test-dir }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # TODO: Add actual test execution steps here
+      - name: Run tests for ${{ matrix.test-dir }}
+        run: |
+          echo "Running tests for ${{ matrix.test-dir }}"
+          # Test execution steps will go here

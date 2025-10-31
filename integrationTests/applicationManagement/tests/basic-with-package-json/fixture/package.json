@@ -1,0 +1,5 @@
+{
+	"name": "basic-with-package-json",
+	"version": "1.0.0",
+	"private": true
+}

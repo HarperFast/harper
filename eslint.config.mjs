@@ -45,6 +45,18 @@ export default defineConfig([
 		rules: {},
 	},
 
+	{
+		files: ['**/*.test.{ts,mts}'],
+		rules: {
+			// Allow floating promises in test files for async test functions
+			'@typescript-eslint/no-floating-promises': {
+				allowForKnownSafePromises: [
+					{ from: "node:test", names: ['describe', 'it'] }
+				]
+			}
+		},
+	},
+
 	// Disable conflicting ESLint formatting rules
 	// Prettier formatting is only enforced via `npm run format:check` and editor integrations
 	// More information here: https://prettier.io/docs/integrating-with-linters.html
