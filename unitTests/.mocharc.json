@@ -4,7 +4,6 @@
 	"timeout": 0,
 	"ui": "bdd",
 	"extension": ["ts"],
-	"spec": "unitTests/**/*.test.ts",
 	"recursive": true,
 	"exit": true
 }
