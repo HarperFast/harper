@@ -3819,7 +3819,15 @@ export function makeTable(options) {
 					let updatedRecord;
 					let hasChanges, invalidated;
 					try {
-						updatedRecord = await throttledCallToSource(id, sourceContext, existingEntry);
+						// find the first data source that will fulfill our request for data
+						for (const source of TableResource.sources) {
+							if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+								if (source.available?.(existingEntry) === false) continue;
+								sourceContext.source = source;
+								updatedRecord = await source.get(id, sourceContext);
+								if (updatedRecord) break;
+							}
+						}
 						invalidated = metadataFlags & INVALIDATED;
 						let version = sourceContext.lastModified || (invalidated && existingVersion);
 						hasChanges = invalidated || version > existingVersion || !existingRecord;
