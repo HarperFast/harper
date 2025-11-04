@@ -42,7 +42,6 @@ const PROCESS_HOME = os.homedir();
 const DEFAULT_HDB_ROOT = path.join(PROCESS_HOME, hdbTerms.HDB_ROOT_DIR_NAME);
 const DEFAULT_ADMIN_USERNAME = 'HDB_ADMIN';
 const DEFAULT_NODE_HOSTNAME = 'localhost';
-
 const DEFAULT_CONFIG_MODE = 'dev';
 
 const DEV_MODE_CONFIG = {

@@ -43,7 +43,7 @@ const OUTPUTS = {
 const INSTALL_LOG_LOCATION = join(PACKAGE_ROOT, `logs`);
 
 // Location of default config YAML.
-const DEFAULT_CONFIG_FILE = join(__dirname, '../../../static', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE = join(PACKAGE_ROOT, 'static', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
 
 const CLOSE_LOG_FD_TIMEOUT = 10000;
 

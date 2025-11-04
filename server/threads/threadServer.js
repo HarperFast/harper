@@ -220,7 +220,7 @@ function listenOnPorts() {
 			else if (createReuseportFd) listen_on = { fd: createReuseportFd(+port, '::') };
 			else listen_on = { port };
 		} catch (error) {
-			console.error(`Unable to bind to port ${port}`, error);
+			harperLogger.error(`Unable to bind to port ${port}`, error);
 			continue;
 		}
 		listening.push(

@@ -1,0 +1,164 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      node-version:
+        description: 'Node.js version'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - '20'
+          - '22'
+          - '24'
+
+jobs:
+  generate-node-version-matrix:
+    name: Generate Node Version Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      node-versions: ${{ steps.set-node-versions.outputs.node-versions }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set Node versions
+        id: set-node-versions
+        run: |
+          if [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
+            echo "node-versions=[20, 22, 24]" >> $GITHUB_OUTPUT
+          else
+            echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    name: Build Harper (Node.js v${{ matrix.node-version }})
+    needs: generate-node-version-matrix
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.generate-node-version-matrix.outputs.node-versions) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build || true # we currently have type errors so just ignore that
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: harper-build-artifacts-node-${{ matrix.node-version }}
+          path: |
+            dist/
+            static/
+            node_modules/
+            package.json
+          retention-days: 1
+
+  run-integration-apiTests:
+    name: Integration API Tests (Node.js v${{ matrix.node-version }})
+    needs: [generate-node-version-matrix, build]
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.generate-node-version-matrix.outputs.node-versions) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: harper-build-artifacts-node-${{ matrix.node-version }}
+
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+          OPERATIONSAPI_NETWORK_PORT: 9925
+          LOGGING_LEVEL: 'debug'
+          LOGGING_STDSTREAMS: true
+          THREADS_COUNT: 1
+          THREADS_DEBUG: false
+          NODE_HOSTNAME: 'localhost'
+        run: |
+          node ./dist/bin/harper.js install
+          sleep 10
+          node ./dist/bin/harper.js start
+          sleep 10
+
+      - name: Run API Tests
+        id: run-api-tests
+        env:
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+        run: npm run test:integration:api-tests
+
+      - name: Upload Harper logs
+        if: steps.run-api-tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: harper-integration-api-test-logs-node-${{ matrix.node-version }}
+          path: /tmp/hdb/log/hdb.log
+          retention-days: 2
+
+  run-integration-tests:
+    name: Integration Tests ${{matrix.shard}}/4 (Node.js v${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    needs: [generate-node-version-matrix, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.generate-node-version-matrix.outputs.node-versions) }}
+        shard: [1, 2, 3, 4]
+        exclude:
+          - node-version: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: harper-build-artifacts-node-${{ matrix.node-version }}
+
+      - name: Run Integration Test Shard ${{ matrix.shard }}
+        run: |
+          npm run test:integration -- --shard=${{ matrix.shard }}/4

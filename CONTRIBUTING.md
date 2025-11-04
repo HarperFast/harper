@@ -15,7 +15,7 @@ Install dependencies using `npm install`
 
 Build the project using `npm run build` or `npm run build:watch` to automatically rebuild on file changes.
 
-Run integration tests using `npm run test:integration`. Make sure to read the [integration test instructions](./integrationTests/apiTests/README.md) for setup.
+Run integration tests using `npm run test:integration`. Make sure to read the [integration test instructions](./integrationTests/README.md) for setup requirements (particularly the loopback address configuration).
 
 Run unit tests using `npm run test:unit <unit-test-file>` or `npm run test:unit:all`, but make sure to build the project first since unit tests depend on the built source files.
 
