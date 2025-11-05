@@ -79,6 +79,7 @@ function authHandler(req, resp, done) {
 				done();
 			})
 			.catch((err) => {
+				err.statusCode = 401;
 				harperLogger.debug('Login failed', err);
 				done(err, null);
 			});
