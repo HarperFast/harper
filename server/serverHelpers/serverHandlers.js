@@ -79,10 +79,8 @@ function authHandler(req, resp, done) {
 				done();
 			})
 			.catch((err) => {
-				harperLogger.warn(err);
-				harperLogger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
-				let errMsg = typeof err === 'string' ? { error: err } : { error: err.message };
-				done(handleHDBError(err, errMsg, hdbErrors.HTTP_STATUS_CODES.UNAUTHORIZED), null);
+				harperLogger.debug('Login failed', err);
+				done(err, null);
 			});
 	} else {
 		req.body.hdb_user = null;
