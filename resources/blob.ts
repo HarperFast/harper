@@ -1132,7 +1132,7 @@ function polyfillBlob() {
  * from the database, and if not, deletes them
  * @param database
  */
-export async function cleanupOrphans(database: any) {
+export async function cleanupOrphans(database: any, databaseName?: string) {
 	let store: LMDBStore;
 	let auditStore: LMDBStore;
 	let orphansDeleted = 0;
@@ -1152,6 +1152,7 @@ export async function cleanupOrphans(database: any) {
 	}
 	// remove all remaining paths are not referenced
 	await removePathsThatAreNotReferenced();
+	logger.warn?.(`Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansDeleted} blobs)`);
 	return orphansDeleted;
 	async function searchPath(path: string) {
 		try {
