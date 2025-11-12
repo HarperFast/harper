@@ -268,13 +268,7 @@ async function downloadCSVFile(req, csvFileName) {
 		response = await needle('get', req.csv_url, options);
 	} catch (err) {
 		const errMsg = `Error downloading CSV file from ${req.csv_url}, status code: ${err.statusCode}. Check the log for more information.`;
-		throw handleHDBError(
-			err,
-			errMsg,
-			err.statusCode,
-			hdbTerms.LOG_LEVELS.ERROR,
-			'Error downloading CSV file - ' + err
-		);
+		throw handleHDBError(err, errMsg, err.statusCode, hdbTerms.LOG_LEVELS.ERROR, 'Error downloading CSV file - ' + err);
 	}
 
 	validateURLResponse(response, req.csv_url);
@@ -514,11 +508,7 @@ async function insertChunk(jsonMessage, insertResults, reject, results, parser) 
 			action: jsonMessage.action,
 			data: resultsData,
 		};
-		let bulkLoadChunkResult = await opFuncCaller.callOperationFunctionAsAwait(
-			callBulkFileLoad,
-			convertedMsg,
-			null
-		);
+		let bulkLoadChunkResult = await opFuncCaller.callOperationFunctionAsAwait(callBulkFileLoad, convertedMsg, null);
 		insertResults.records += bulkLoadChunkResult.records;
 		insertResults.number_written += bulkLoadChunkResult.number_written;
 		if (parser) {

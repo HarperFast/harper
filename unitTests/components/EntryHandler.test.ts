@@ -320,26 +320,24 @@ describe('EntryHandler', () => {
 	it('should resolve the correct urlPath for files', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, 'foo/d');
 
-		await entryHandler.ready;
-
 		const addHandlerSpy = spy();
 		entryHandler.on('add', addHandlerSpy);
 
-		await waitFor(() => addHandlerSpy.callCount === 1);
+		await entryHandler.ready;
 
+		assert.equal(addHandlerSpy.callCount, 1, 'add event should have been triggered once');
 		assert.equal(addHandlerSpy.getCall(0).args[0].urlPath, '/d', 'urlPath resolution should account for similarities');
 	});
 
 	it('should resolve the correct urlPath for files with `./`', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, './foo/d');
 
-		await entryHandler.ready;
-
 		const addHandlerSpy = spy();
 		entryHandler.on('add', addHandlerSpy);
 
-		await waitFor(() => addHandlerSpy.callCount === 1);
+		await entryHandler.ready;
 
+		assert.equal(addHandlerSpy.callCount, 1, 'add event should have been triggered once');
 		assert.equal(addHandlerSpy.getCall(0).args[0].urlPath, '/d', 'urlPath resolution should account for similarities');
 	});
 
@@ -355,8 +353,6 @@ describe('EntryHandler', () => {
 		// the `web/*` could match the `bad/web` directory contents.
 		const entryHandler = new EntryHandler(basename(directory), directory, ['web/*', 'static/*']);
 
-		await entryHandler.ready;
-
 		const allHandlerSpy = spy();
 		entryHandler.on('all', allHandlerSpy);
 
@@ -366,7 +362,8 @@ describe('EntryHandler', () => {
 		const addDirHandlerSpy = spy();
 		entryHandler.on('addDir', addDirHandlerSpy);
 
-		await waitFor(() => allHandlerSpy.callCount === 6);
+		await entryHandler.ready;
+
 		assert.equal(allHandlerSpy.callCount, 6, 'all event should be triggered for each matching entry');
 		assert.equal(addHandlerSpy.callCount, 6, 'add event should be triggered for each matching file');
 		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should be triggered for each matching directory');
@@ -462,6 +459,36 @@ describe('EntryHandler', () => {
 
 		entryHandler.close();
 
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	it('should emit all file events before ready resolves', async () => {
+		// This test verifies the fix for the race condition where ready could fire
+		// before all file read operations completed and events were emitted
+		const { directory } = createFixture(['file1.txt', 'file2.txt', 'file3.txt', 'file4.txt', 'file5.txt']);
+
+		const eventsReceived = [];
+		const entryHandler = new EntryHandler(basename(directory), directory, '*.txt');
+
+		// Track all events as they arrive
+		entryHandler.on('add', (entry) => {
+			eventsReceived.push({
+				path: entry.absolutePath,
+				hasContents: entry.contents !== undefined && entry.contents.length > 0,
+			});
+		});
+
+		// Wait for ready
+		await entryHandler.ready;
+
+		// When ready resolves, ALL file events should have been emitted with contents
+		assert.equal(eventsReceived.length, 5, 'All 5 file events should have been emitted before ready');
+
+		for (const event of eventsReceived) {
+			assert.ok(event.hasContents, `File ${event.path} should have contents when ready resolves`);
+		}
+
+		entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 });

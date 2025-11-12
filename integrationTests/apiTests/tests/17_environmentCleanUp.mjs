@@ -6,7 +6,7 @@ import { timestamp } from '../utils/timestamp.mjs';
 
 describe('17. Environment Clean Up', () => {
 	beforeEach(timestamp);
-	
+
 	//Environment Clean Up Folder
 
 	it('drop schema northnwd', async () => {

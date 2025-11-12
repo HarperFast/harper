@@ -40,7 +40,7 @@ import type { LMDBStore } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 import { HAS_BLOBS, readAuditEntry } from './auditStore.ts';
 import { getHeapStatistics } from 'node:v8';
-import * as buffer from 'node:buffer';
+import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -1132,7 +1132,7 @@ function polyfillBlob() {
  * from the database, and if not, deletes them
  * @param database
  */
-export async function cleanupOrphans(database: any) {
+export async function cleanupOrphans(database: any, databaseName?: string) {
 	let store: LMDBStore;
 	let auditStore: LMDBStore;
 	let orphansDeleted = 0;
@@ -1152,6 +1152,7 @@ export async function cleanupOrphans(database: any) {
 	}
 	// remove all remaining paths are not referenced
 	await removePathsThatAreNotReferenced();
+	logger.warn?.(`Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansDeleted} blobs)`);
 	return orphansDeleted;
 	async function searchPath(path: string) {
 		try {
@@ -1181,6 +1182,8 @@ export async function cleanupOrphans(database: any) {
 		}
 	}
 	async function removePathsThatAreNotReferenced() {
+		let i = 0;
+		const perMS = Math.floor((envGet(CONFIG_PARAMS.STORAGE_BLOBCLEANUPSPEED) ?? 10000) / 1000 + 1);
 		// search all the tables for references
 		for (const tableName in database) {
 			logger.warn?.('Checking for references to potential orphaned blobs in table', tableName);
@@ -1190,7 +1193,10 @@ export async function cleanupOrphans(database: any) {
 					if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 						checkObjectForReferences(entry.value);
 					}
-					await new Promise(setImmediate);
+					// slow this down a bit to reduce excessive load, this runs approximately at 10k per second
+					if (i++ % perMS === 0)
+						await delay(1); // one millisecond delay to avoid overloading the system
+					else await rest();
 				} catch (error) {
 					logger.error?.(
 						'Error searching table',
@@ -1211,6 +1217,10 @@ export async function cleanupOrphans(database: any) {
 				if (!entry || entry.version !== auditRecord.version || !entry.value) {
 					checkObjectForReferences(auditRecord.getValue(primaryStore));
 				}
+				// slow this down a bit to reduce excessive load, this runs approximately at 10k per second
+				if (i++ % perMS === 0)
+					await delay(1); // one millisecond delay to avoid overloading the system
+				else await rest();
 			} catch (error) {
 				logger.error?.('Error searching audit log for references to potential orphaned blobs failed', error);
 			}

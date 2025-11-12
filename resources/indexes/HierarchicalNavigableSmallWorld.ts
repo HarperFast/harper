@@ -107,7 +107,7 @@ export class HierarchicalNavigableSmallWorld {
 		} else oldNode = {} as Node;
 		if (vector) {
 			let entryPoint = entryPointId && this.indexStore.get(entryPointId);
-			if (entryPoint === undefined) {
+			if (entryPoint == null) {
 				const level = Math.floor(-Math.log(Math.random()) * this.mL);
 				const node = {
 					vector,
@@ -175,7 +175,7 @@ export class HierarchicalNavigableSmallWorld {
 						let skipping = false;
 						const neighborNeighbors = node[l];
 						const distanceThreshold = 1 + this.optimizeRouting * (1 + (0.5 * i) / this.M);
-						for (let i2 = 0; i2 < neighborNeighbors.length; i2++) {
+						for (let i2 = 0; i2 < neighborNeighbors?.length; i2++) {
 							const { id: neighborId, distance: neighborDistance } = neighborNeighbors[i2];
 							const neighborDistanceThreshold = 1 + this.optimizeRouting * (1 + (0.5 * i2) / this.M);
 							for (let i3 = 0; i3 < connectionsAtLevel.length; i3++) {
@@ -251,7 +251,7 @@ export class HierarchicalNavigableSmallWorld {
 				// if this is the entry point, find a new entry point
 				const lastLevel = oldNode.level ?? 0;
 				for (let l = lastLevel; l >= 0; l--) {
-					entryPointId = oldNode[l][0]?.id;
+					entryPointId = oldNode[l]?.[0]?.id;
 					if (entryPointId !== undefined) break;
 				}
 				if (entryPointId === undefined) {
@@ -290,12 +290,13 @@ export class HierarchicalNavigableSmallWorld {
 				for (const { id: neighborId } of oldConnections) {
 					// get and copy the neighbor node so we can modify it
 					const neighborNode = updateNode(neighborId, this.indexStore.get(neighborId));
+					if (!neighborNode) continue;
 					for (let l2 = 0; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
 						neighborNode[l2] = neighborNode[l2]?.filter(({ id: nid }) => {
 							return nid !== nodeId;
 						});
-						if (neighborNode[l2].length === 0) {
+						if (neighborNode[l2]?.length === 0) {
 							logger.info?.('node was left orphaned, will reindex', neighborId);
 							needsReindexing.set(neighborNode.primaryKey, neighborNode.vector);
 						}
@@ -305,7 +306,7 @@ export class HierarchicalNavigableSmallWorld {
 		}
 		function updateNode(id: number, node?: Node) {
 			// keep a record of all our changes, maintaining any changes that are queued to be written
-			let updatedNode: Node = updatedNodes.get(id)!;
+			let updatedNode: Node = updatedNodes.get(id);
 			if (!updatedNode && node) {
 				// copy the node so we can modify it
 				updatedNode = { ...node };
@@ -363,7 +364,7 @@ export class HierarchicalNavigableSmallWorld {
 		while (candidates.length > 0) {
 			// Get closest unvisited element
 			candidates.sort((a, b) => a.distance - b.distance);
-			const current = candidates.shift()!;
+			const current = candidates.shift();
 
 			// Get least result distance
 			const furthestDistance = results[results.length - 1].distance;
@@ -503,7 +504,7 @@ export class HierarchicalNavigableSmallWorld {
 		if (this.optimizeRouting) maxConnections <<= 2; // bump up the max connections beyond traditional HNSW because we are naturally limiting
 		// have we exceeded the max connections (with 25% grace period)
 		if (node[level].length >= maxConnections + (maxConnections >> 2)) {
-			logger.warn?.('maxConnections reached, removing some connections', maxConnections);
+			logger.debug?.('maxConnections reached, removing some connections', maxConnections);
 			// Get all connections with their similarities
 
 			// Sort by distance but prioritize nodes that have reverse connections

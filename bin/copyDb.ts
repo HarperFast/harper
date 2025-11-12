@@ -62,18 +62,16 @@ export async function compactOnStart() {
 			} catch (error) {
 				console.log('Error moving database', dbPath, 'to', backupDest, error);
 			}
+			// Move compacted DB to back to original DB path
+			console.log('Moving copy compacted', databaseName, 'to', dbPath);
+			await move(copyDest, dbPath, { overwrite: true });
+			await remove(join(rootPath, DATABASES_DIR_NAME, `${databaseName}-copy.mdb-lock`));
 		}
 		try {
 			resetDatabases();
 		} catch (err) {
 			hdbLogger.error('Error resetting databases after backup', err);
 			console.error('Error resetting databases after backup', err);
-		}
-		// Move compacted DB to back to original DB path
-		for (const [db, { dbPath, copyDest }] of compactedDb) {
-			console.log('Moving copy compacted', db, 'to', dbPath);
-			await move(copyDest, dbPath, { overwrite: true });
-			await remove(join(rootPath, DATABASES_DIR_NAME, `${db}-copy.mdb-lock`));
 		}
 
 		try {
@@ -104,18 +102,16 @@ export async function compactOnStart() {
 
 	// Clean up backups
 	for (const [db, { backupDest, recordCount }] of compactedDb) {
-		let removeBackup = true;
 		const compactRecordCount = await getTotalDBRecordCount(db);
 		console.log('Database', db, 'after compact has a total record count of', compactRecordCount);
 
 		if (recordCount !== compactRecordCount) {
-			removeBackup = false;
 			const errMsg = `There is a discrepancy between pre and post compact record count for database ${db}.\nTotal record count before compaction: ${recordCount}, total after: ${compactRecordCount}.\nDatabase backup has not been removed and can be found here: ${backupDest}`;
-			hdbLogger.error(errMsg);
-			console.error(errMsg);
+			hdbLogger.warn(errMsg);
+			console.warn(errMsg);
 		}
 
-		if (get(CONFIG_PARAMS.STORAGE_COMPACTONSTARTKEEPBACKUP) === true || removeBackup === false) continue;
+		if (get(CONFIG_PARAMS.STORAGE_COMPACTONSTARTKEEPBACKUP) === true) continue;
 		console.log('Removing backup', backupDest);
 		await remove(backupDest);
 	}

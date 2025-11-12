@@ -12,7 +12,7 @@ import { req, reqAsNonSU } from '../utils/request.mjs';
 import { timestamp } from '../utils/timestamp.mjs';
 
 describe('10. Other Role Tests', () => {
-	beforeEach(timestamp);	
+	beforeEach(timestamp);
 
 	//Other Role Tests Folder
 

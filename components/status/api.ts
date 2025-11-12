@@ -1,6 +1,6 @@
 /**
  * Component Status Public API
- * 
+ *
  * This module provides the clean, simple public API for component status tracking.
  * All internal implementation details are hidden behind this interface.
  */
@@ -86,14 +86,14 @@ const builderCache = new Map<string, ComponentStatusBuilder>();
 /**
  * Get a status builder for a component
  * This is the primary API for reporting component status
- * 
+ *
  * @example
  * ```typescript
  * // Report status
  * statusForComponent('my-service').healthy('Service started');
  * statusForComponent('database').error('Connection failed', err);
  * statusForComponent('cache').warning('Memory usage high');
- * 
+ *
  * // Get status
  * const status = statusForComponent('my-service').get();
  * ```
@@ -131,7 +131,7 @@ export const lifecycle = {
 	 */
 	failed(componentName: string, error: Error | string, message?: string): void {
 		componentStatusRegistry.markFailed(componentName, error, message);
-	}
+	},
 };
 
 /**

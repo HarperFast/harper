@@ -1,4 +1,4 @@
-import { getSuperUser } from './user.js';
+import { getSuperUser } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.ts';

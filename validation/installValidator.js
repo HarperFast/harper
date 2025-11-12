@@ -15,8 +15,6 @@ module.exports = installValidator;
  * @returns {*}
  */
 function installValidator(param) {
-
-
 	const installSchema = Joi.object({
 		[hdbTerms.INSTALL_PROMPTS.ROOTPATH]: Joi.custom(validateRootAvailable),
 		[hdbTerms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT]: Joi.alternatives([number.min(0), string]).allow(

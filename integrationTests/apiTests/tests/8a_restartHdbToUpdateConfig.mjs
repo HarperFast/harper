@@ -7,7 +7,7 @@ import { timestamp } from '../utils/timestamp.mjs';
 
 describe('8a. Restart HDB to update config', () => {
 	beforeEach(timestamp);
-	
+
 	//Restart HDB to update config Folder
 
 	it('Get Configuration', () => {

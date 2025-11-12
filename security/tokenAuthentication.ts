@@ -14,7 +14,7 @@ import { ClientError, hdbErrors } from '../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.js';
 import * as password from '../utility/password.ts';
-import { findAndValidateUser } from './user.js';
+import { findAndValidateUser } from './user.ts';
 import { update } from '../dataLayer/insert.js';
 import UpdateObject from '../dataLayer/UpdateObject.js';
 import signalling from '../utility/signalling.js';

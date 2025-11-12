@@ -3,7 +3,6 @@
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
 	"version": "5.0.0-unreleased",
 	"private": true,
-    "type": "commonjs",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -37,7 +36,8 @@
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
 		"test:integration": "node --test integrationTests/apiTests/tests/testSuite.mjs",
-		"test:unit": "npm run build || true; npx mocha unitTests --config unitTests/.mocharc.json"
+		"test:unit": "TSX_TSCONFIG_PATH=./unitTests/tsconfig.json npx mocha --config unitTests/.mocharc.json",
+		"test:unit:all": "npm run test:unit unitTests"
 	},
 	"engines": {
 		"node": ">=20",
@@ -56,9 +56,11 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.5",
+		"@types/gunzip-maybe": "^1.4.3",
 		"@types/micromatch": "^4.0.9",
 		"@types/mocha": "^10.0.10",
 		"@types/sinon": "^17.0.4",
+		"@types/tar-fs": "^2.0.4",
 		"axios": "^1.12.2",
 		"chai": "^6.2.0",
 		"eslint": "^9.36.0",
@@ -76,6 +78,7 @@
 	"dependencies": {
 		"@aws-sdk/client-s3": "3.824.0",
 		"@aws-sdk/lib-storage": "3.824.0",
+		"@datadog/pprof": "^5.11.1",
 		"@endo/static-module-record": "^1.0.4",
 		"@fastify/autoload": "5.10.0",
 		"@fastify/compress": "~6.5.0",
@@ -114,7 +117,7 @@
 		"json2csv": "5.0.7",
 		"jsonata": "1.8.7",
 		"jsonwebtoken": "9.0.2",
-		"lmdb": "3.4.3",
+		"lmdb": "3.4.4",
 		"lodash": "4.17.21",
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",

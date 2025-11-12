@@ -32,9 +32,7 @@ async function lmdbDropTable(dropTableObj) {
 			await environmentUtility.deleteEnvironment(schemaPath, dropTableObj.table);
 		} catch (e) {
 			if (e.message === 'invalid environment') {
-				log.warn(
-					`cannot delete environment for ${dropTableObj.schema}.${dropTableObj.table}, environment not found`
-				);
+				log.warn(`cannot delete environment for ${dropTableObj.schema}.${dropTableObj.table}, environment not found`);
 			} else {
 				throw e;
 			}
@@ -45,9 +43,7 @@ async function lmdbDropTable(dropTableObj) {
 			await environmentUtility.deleteEnvironment(transactionPath, dropTableObj.table, true);
 		} catch (e) {
 			if (e.message === 'invalid environment') {
-				log.warn(
-					`cannot delete environment for ${dropTableObj.schema}.${dropTableObj.table}, environment not found`
-				);
+				log.warn(`cannot delete environment for ${dropTableObj.schema}.${dropTableObj.table}, environment not found`);
 			} else {
 				throw e;
 			}

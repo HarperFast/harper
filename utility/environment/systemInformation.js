@@ -63,8 +63,7 @@ async function getCPUInfo() {
 		cpuCurrentLoad.cpus = [];
 		cpus.forEach((cpuData) => {
 			// eslint-disable-next-line no-unused-vars
-			let { rawLoad, rawLoadIdle, rawLoadIrq, rawLoadNice, rawLoadSystem, rawLoadUser, ...cpuLoad } =
-				cpuData;
+			let { rawLoad, rawLoadIdle, rawLoadIrq, rawLoadNice, rawLoadSystem, rawLoadUser, ...cpuLoad } = cpuData;
 			cpuCurrentLoad.cpus.push(cpuLoad);
 		});
 		cpuInfo.current_load = cpuCurrentLoad;
@@ -267,13 +266,7 @@ async function getMetrics() {
 				}
 				let tableFullStats = table.primaryStore.getStats();
 				let tablePrunedStats = {};
-				for (let storeKey of [
-					'treeDepth',
-					'treeBranchPageCount',
-					'treeLeafPageCount',
-					'entryCount',
-					'overflowPages',
-				]) {
+				for (let storeKey of ['treeDepth', 'treeBranchPageCount', 'treeLeafPageCount', 'entryCount', 'overflowPages']) {
 					tablePrunedStats[storeKey] = tableFullStats[storeKey];
 				}
 				tableStats[tableName] = tablePrunedStats;

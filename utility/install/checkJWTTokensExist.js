@@ -20,11 +20,7 @@ function checkJWTTokenExist() {
 			terms.LICENSE_KEY_DIR_NAME,
 			terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME
 		);
-		let publicKeyPath = path.join(
-			env.getHdbBasePath(),
-			terms.LICENSE_KEY_DIR_NAME,
-			terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME
-		);
+		let publicKeyPath = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME);
 		let passphrasePath = path.join(
 			env.getHdbBasePath(),
 			terms.LICENSE_KEY_DIR_NAME,

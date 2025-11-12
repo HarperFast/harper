@@ -5,10 +5,11 @@ const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
 const BasicStrategy = require('passport-http').BasicStrategy;
 const util = require('util');
-const userFunctions = require('./user.js');
+const userFunctions = require('./user.ts');
 const cbFindValidateUsers = util.callbackify(userFunctions.findAndValidateUser);
 const hdbTerms = require('../utility/hdbTerms.ts');
 const tokenAuthentication = require('./tokenAuthentication.ts');
+const { AccessViolation } = require('../utility/errors/hdbError');
 
 passport.use(
 	new LocalStrategy(function (username, password, done) {
@@ -45,7 +46,7 @@ function authorize(req, res, next) {
 			return next(err);
 		}
 		if (!user) {
-			return next('Must login');
+			return next(new AccessViolation());
 		}
 		return next(null, user);
 	}

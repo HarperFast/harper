@@ -4,7 +4,7 @@ import schema from '../../dataLayer/schema.js';
 import schemaDescribe from '../../dataLayer/schemaDescribe.js';
 import delete_ from '../../dataLayer/delete.js';
 import readAuditLog from '../../dataLayer/readAuditLog.js';
-import user from '../../security/user.js';
+import * as user from '../../security/user.ts';
 import role from '../../security/role.js';
 import customFunctionOperations from '../../components/operations.js';
 import harperLogger from '../../utility/logging/harper_logger.js';

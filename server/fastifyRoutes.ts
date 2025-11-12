@@ -8,7 +8,7 @@ import * as env from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
-import * as userSchema from '../security/user.js';
+import * as userSchema from '../security/user.ts';
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';

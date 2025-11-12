@@ -53,13 +53,14 @@ export interface UnlinkDirectoryEvent extends EntryEvent {
 
 export type DirectoryEntryEvent = AddDirectoryEvent | UnlinkDirectoryEvent;
 
-export type onEntryEventHandler = (entry: FileEntryEvent | DirectoryEntryEvent) => void;
+export type onEntryEventHandler = (entry: FileEntryEvent | DirectoryEntryEvent) => void | Promise<void>;
 
 export type EntryHandlerEventMap = {
 	all: [entry: FileEntryEvent | DirectoryEntryEvent];
 	close: [];
 	error: [error: unknown];
 	ready: [];
+	initialLoadComplete: [];
 	add: [entry: AddFileEvent];
 	change: [entry: ChangeFileEvent];
 	unlink: [entry: UnlinkFileEvent];
@@ -71,6 +72,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	#component: Component;
 	#watcher?: FSWatcher;
 	#logger: any;
+	#pendingFileReads: Set<Promise<void>>;
+	#isInitialScanComplete: boolean;
 	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: any) {
@@ -78,6 +81,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 
 		this.#component = new Component(name, directory, castConfig(config));
 		this.#logger = logger || harperLogger.loggerWithTag(name);
+		this.#pendingFileReads = new Set();
+		this.#isInitialScanComplete = false;
 		this.ready = once(this, 'ready');
 		this.#watch();
 	}
@@ -101,18 +106,25 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			case 'add':
 			case 'change': {
 				const urlPath = deriveURLPath(this.#component, path, 'file');
-				readFile(absolutePath).then((contents) => {
-					const entry: AddFileEvent | ChangeFileEvent = {
-						eventType: event,
-						entryType: 'file',
-						contents,
-						stats,
-						absolutePath,
-						urlPath,
-					};
-					this.emit('all', entry);
-					this.emit(event, entry);
-				});
+				const fileReadPromise = readFile(absolutePath)
+					.then((contents) => {
+						const entry: AddFileEvent | ChangeFileEvent = {
+							eventType: event,
+							entryType: 'file' as const,
+							contents,
+							stats,
+							absolutePath,
+							urlPath,
+						};
+						this.emit('all', entry);
+						this.emit(event, entry as any);
+					})
+					.finally(() => {
+						this.#pendingFileReads.delete(fileReadPromise);
+						this.#checkIfAllComplete();
+					});
+
+				this.#pendingFileReads.add(fileReadPromise);
 				break;
 			}
 			case 'unlink': {
@@ -133,13 +145,13 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				const urlPath = deriveURLPath(this.#component, path, 'directory');
 				const entry: DirectoryEntryEvent = {
 					eventType: event,
-					entryType: 'directory',
+					entryType: 'directory' as const,
 					stats,
 					absolutePath,
 					urlPath,
 				};
 				this.emit('all', entry);
-				this.emit(event, entry);
+				this.emit(event, entry as any);
 				break;
 			}
 		}
@@ -150,7 +162,20 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	#handleReady(): void {
-		this.emit('ready');
+		this.#isInitialScanComplete = true;
+		if (this.#pendingFileReads.size > 0) {
+			this.#logger.debug?.(
+				`Initial scan complete, still waiting for ${this.#pendingFileReads.size} pending file reads`
+			);
+		}
+		this.#checkIfAllComplete();
+	}
+
+	#checkIfAllComplete(): void {
+		// Only emit 'ready' once the initial scan is complete AND all file reads are done
+		if (this.#isInitialScanComplete && this.#pendingFileReads.size === 0) {
+			this.emit('ready');
+		}
 	}
 
 	async #watch() {
@@ -165,7 +190,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				persistent: false,
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
-					const normalizedBases = allowedBases.map(base => base.replace(/\\/g, '/'));
+					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
 					return (
 						normalizedPath !== this.#component.directory.replace(/\\/g, '/') &&
 						normalizedBases.every((base) => !normalizedPath.startsWith(base))

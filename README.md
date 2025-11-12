@@ -1,6 +1,6 @@
 # Harper
 
-Harper is an open-source Node.js unified development platform that fuses database, cache, application, and messaging layers into one in-memory process. With Harper you can build ultra-high-performance services without boilerplate code and scale them horizontally. 
+Harper is an open-source Node.js unified development platform that fuses database, cache, application, and messaging layers into one in-memory process. With Harper you can build ultra-high-performance services without boilerplate code and scale them horizontally.
 
 **Key Features:**
 

@@ -22,6 +22,7 @@ let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
 }
+let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 
 class StartedTransaction extends Error {}
 
@@ -32,16 +33,22 @@ export class DatabaseTransaction implements Transaction {
 	readTxn: LMDBTransaction;
 	readTxnRefCount: number;
 	readTxnsUsed: number;
+	timeout: number;
 	validated = 0;
 	timestamp = 0;
 	declare next: DatabaseTransaction;
 	declare stale: boolean;
+	declare startedFrom?: {
+		resourceName: string;
+		method: string;
+	};
+	declare stackTraces?: StartedTransaction[];
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	getReadTxn(): LMDBTransaction | void {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
-		if (this.stale) this.stale = false;
+		this.timeout = txnExpiration; // reset the timeout
 		if (this.readTxn) {
 			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
 			return this.readTxn;
@@ -252,6 +259,7 @@ export class DatabaseTransaction implements Transaction {
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.writes = [];
 					this.next = null;
+					this.timestamp = 0; // reset the timestamp as well
 					return Promise.all(completions).then(() => {
 						return {
 							txnTime,
@@ -317,21 +325,25 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		return; // no transaction means read latest
 	}
 }
-let txnExpiration = 30000;
 let timer;
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
-			if (txn.stale) {
+			if (txn.timeout <= 0) {
 				const url = txn.getContext()?.url;
 				harperLogger.error(
-					`Transaction was open too long and has been aborted, from table: ${
+					`Transaction was open too long and has been committed, from table: ${
 						txn.lmdbDb?.name + (url ? ' path: ' + url : '')
 					}`,
-					...(DEBUG_LONG_TXNS ? ['was started from', txn.stackTraces] : [])
+					...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
+					...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
 				);
-				txn.abort();
-			} else txn.stale = true;
+				// reset the transaction
+				txn.commit();
+				txn.timeout = txnExpiration;
+			} else {
+				txn.timeout -= txnExpiration;
+			}
 		}
 	}, txnExpiration).unref();
 }

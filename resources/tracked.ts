@@ -336,24 +336,24 @@ function trackObject(sourceObject: any, typeDef?: any) {
 			return sourceObject;
 	}
 }
-export class GenericTrackedObject {
-	#record: any;
-	#changes: any;
-	constructor(sourceObject) {
-		if (sourceObject?.getRecord)
+export class GenericTrackedObject<T extends object = any> {
+	#record: T;
+	#changes: Partial<T>;
+	constructor(sourceObject?: GenericTrackedObject<T> | T) {
+		if ((sourceObject as GenericTrackedObject<T>)?.getRecord)
 			throw new Error('Can not track an already tracked object, check for circular references');
 		this.#record = sourceObject;
 	}
-	getRecord() {
+	getRecord(): T {
 		return this.#record;
 	}
-	setRecord(record) {
+	setRecord(record: T) {
 		this.#record = record;
 	}
 	getChanges() {
 		return this.#changes;
 	}
-	_setChanges(changes) {
+	_setChanges(changes: Partial<T>) {
 		this.#changes = changes;
 	}
 }

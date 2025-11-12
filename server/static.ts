@@ -103,7 +103,7 @@ export function handleApplication(scope: Scope) {
 							headers: {
 								Location: join(req.pathname, '/'),
 							},
-						}
+						};
 					}
 				}
 			}

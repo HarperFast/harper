@@ -1378,6 +1378,7 @@ export function makeTable(options) {
 		 * @param entry
 		 */
 		static _recordRelocate(existingEntry, entry): boolean {
+			if (this.getResidencyById) return false; // we don't want to relocate entries that are located by id
 			const context = {
 				previousResidency: this.getResidencyRecord(existingEntry.residencyId),
 				isRelocation: true,
@@ -1612,6 +1613,10 @@ export function makeTable(options) {
 					//  during the write transaction.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
+					const type = fullUpdate ? 'put' : 'patch';
+					let residencyId: number | undefined;
+					if (options?.residencyId != undefined) residencyId = options.residencyId;
+					const expiresAt = context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
 					if (precedesExisting <= 0) {
 						// This block is to handle the case of saving an update where the transaction timestamp is older than the
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
@@ -1646,7 +1651,7 @@ export function makeTable(options) {
 											options?.nodeId
 										);
 										if (precedesExisting === 0) {
-											return; // treat a tie as a duplicate and drop it
+											return writeCommit(false); // treat a tie as a duplicate and drop it
 										}
 										if (precedesExisting > 0) {
 											// if the existing version is older, we can skip this update
@@ -1661,7 +1666,7 @@ export function makeTable(options) {
 									} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
 										// There is newer full record update, so this incremental update is completely superseded
 										// TODO: We should still store the audit record for historical purposes
-										return;
+										return writeCommit(false);
 									}
 								}
 								localTime = auditRecord.previousLocalTime;
@@ -1689,13 +1694,12 @@ export function makeTable(options) {
 									newerUpdate,
 									fullUpdate
 								);
-								if (!incrementalUpdateToApply) return; // if all changes are overwritten, nothing left to do
+								if (!incrementalUpdateToApply) return writeCommit(false); // if all changes are overwritten, nothing left to do
 							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes
-							// TODO: We should still store the audit record for historical purposes
-							return;
+							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
 							incrementalUpdateToApply = rebuildUpdateBefore(
@@ -1720,9 +1724,7 @@ export function makeTable(options) {
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
-					let residencyId: number;
-					if (options?.residencyId != undefined) residencyId = options.residencyId;
-					else {
+					if (residencyId == undefined) {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
 						const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 						if (residency) {
@@ -1752,7 +1754,6 @@ export function makeTable(options) {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
 						auditRecordToStore = recordUpdate;
 					}
-					const expiresAt = context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
 					logger.trace?.(
 						`Saving record with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}${
 							expiresAt ? ', expires at: ' + new Date(expiresAt).toISOString() : ''
@@ -1768,29 +1769,32 @@ export function makeTable(options) {
 						})()
 					);
 					updateIndices(id, existingRecord, recordToStore);
-					const type = fullUpdate ? 'put' : 'patch';
 
-					updateRecord(
-						id,
-						recordToStore,
-						existingEntry,
-						txnTime,
-						omitLocalRecord ? INVALIDATED : 0,
-						audit,
-						{
-							omitLocalRecord,
-							user: context?.user,
-							residencyId,
-							expiresAt,
-							nodeId: options?.nodeId,
-							originatingOperation: context?.originatingOperation,
-							tableToTrack: databaseName === 'system' ? null : tableName, // don't track analytics on system tables
-						},
-						type,
-						false,
-						auditRecordToStore
-					);
+					writeCommit(true);
 					if (context.expiresAt) scheduleCleanup();
+					function writeCommit(storeRecord: boolean) {
+						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
+						updateRecord(
+							id,
+							storeRecord ? recordToStore : undefined,
+							storeRecord ? existingEntry : { ...existingEntry, value: undefined },
+							txnTime,
+							omitLocalRecord ? INVALIDATED : 0,
+							audit,
+							{
+								omitLocalRecord,
+								user: context?.user,
+								residencyId,
+								expiresAt,
+								nodeId: options?.nodeId,
+								originatingOperation: context?.originatingOperation,
+								tableToTrack: databaseName === 'system' ? null : tableName, // don't track analytics on system tables
+							},
+							type,
+							false,
+							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
+						);
+					}
 				},
 			};
 			transaction.addWrite(write);
@@ -3821,8 +3825,8 @@ export function makeTable(options) {
 						updatedRecord = await throttledCallToSource(id, sourceContext, existingEntry);
 						invalidated = metadataFlags & INVALIDATED;
 						let version = sourceContext.lastModified || (invalidated && existingVersion);
-						hasChanges = invalidated || version > existingVersion || !existingRecord;
 						if (!version) version = getNextMonotonicTime();
+						hasChanges = invalidated || version > existingVersion || !existingRecord;
 						const resolveDuration = performance.now() - start;
 						recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
 						if (responseHeaders)

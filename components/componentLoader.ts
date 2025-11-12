@@ -188,14 +188,23 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
-
+		let loadTimeout: NodeJS.Timeout;
 		return Promise.race([
-			plugin.handleApplication(scope),
-			new Promise((_, reject) =>
-				setTimeout(() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.name}`)), timeout)
+			Promise.resolve(plugin.handleApplication(scope)).then(async () => {
+				// Wait for any initial entry handler loads to complete
+				// This ensures all async operations (like secureImport) finish before the component is marked as loaded
+				await scope.waitForInitialLoads();
+			}),
+			new Promise(
+				(_, reject) =>
+					(loadTimeout = setTimeout(
+						() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.name}`)),
+						timeout
+					))
 			),
 		]).finally(() => {
 			Status.primaryStore.unlock(scope.name, 0);
+			clearTimeout(loadTimeout);
 		});
 	});
 }

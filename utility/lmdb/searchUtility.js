@@ -746,16 +746,7 @@ function between(
 		throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
 	}
 
-	return iterateRangeBetween(
-		transactionOrEnv,
-		hash_attribute,
-		attribute,
-		startValue,
-		endValue,
-		reverse,
-		limit,
-		offset
-	);
+	return iterateRangeBetween(transactionOrEnv, hash_attribute, attribute, startValue, endValue, reverse, limit, offset);
 }
 
 /**

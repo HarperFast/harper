@@ -1,20 +1,21 @@
 import { EventEmitter } from 'events';
 
-export class IterableEventQueue extends EventEmitter {
-	resolveNext: Function;
+export class IterableEventQueue<Event extends object = any> extends EventEmitter {
+	resolveNext: null | ((args: { value: Event }) => void) = null;
 	queue: any[];
 	hasDataListeners: boolean;
 	drainCloseListener: boolean;
-	currentDrainResolver: Function;
-	[Symbol.asyncIterator]() {
-		const iterator = new EventQueueIterator();
+	currentDrainResolver: null | ((draining: boolean) => void) = null;
+	[Symbol.asyncIterator](): AsyncIterator<Event> {
+		const iterator = new EventQueueIterator<Event>();
 		iterator.queue = this;
+		// @ts-expect-error The EventQueueIterator is acceptable as an AsyncIterator
 		return iterator;
 	}
-	push(message) {
+	push(message: Event) {
 		this.send(message);
 	}
-	send(message: any) {
+	send(message: Event) {
 		if (this.resolveNext) {
 			this.resolveNext({ value: message });
 			this.resolveNext = null;
@@ -49,7 +50,7 @@ export class IterableEventQueue extends EventEmitter {
 			}
 		});
 	}
-	on(eventName, listener) {
+	on(eventName: 'data' | string, listener: ((data: Event) => void) | any) {
 		if (eventName === 'data' && !this.hasDataListeners) {
 			this.hasDataListeners = true;
 			while (this.queue?.length > 0) listener(this.queue.shift());
@@ -58,12 +59,13 @@ export class IterableEventQueue extends EventEmitter {
 	}
 }
 
-class EventQueueIterator {
-	queue: IterableEventQueue;
-	push(message) {
+class EventQueueIterator<Event extends object = any> implements AsyncIterator<Event> {
+	queue: IterableEventQueue<Event>;
+	push(message: Event) {
 		this.queue.send(message);
 	}
-	next() {
+	// @ts-expect-error TypeScript is wrong, the JS engine accepts MaybePromise<...>
+	next(): { value: Event } | Promise<{ value: Event }> {
 		const message = this.queue.getNextMessage();
 		if (message) {
 			return {
@@ -73,17 +75,20 @@ class EventQueueIterator {
 			return new Promise((resolve) => (this.queue.resolveNext = resolve));
 		}
 	}
-	return(value) {
+	// @ts-expect-error TypeScript is wrong, the JS engine accepts MaybePromise<...>
+	return(value: Event): { value: Event; done: true } {
 		this.queue.emit('close');
 		return {
 			value,
 			done: true,
 		};
 	}
+	// @ts-expect-error TypeScript is wrong, the JS engine accepts MaybePromise<...>
 	throw(error) {
 		this.queue.emit('close', error);
 		return {
 			done: true,
+			value: undefined,
 		};
 	}
 }

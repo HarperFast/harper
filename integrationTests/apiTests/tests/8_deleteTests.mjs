@@ -8,7 +8,7 @@ import { timestamp } from '../utils/timestamp.mjs';
 
 describe('8. Delete Tests', () => {
 	beforeEach(timestamp);
-	
+
 	//Delete Tests Folder
 
 	//Delete Records Before Tests

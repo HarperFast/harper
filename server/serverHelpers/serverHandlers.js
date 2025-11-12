@@ -31,7 +31,7 @@ function handleServerUncaughtException(err) {
 }
 
 function serverErrorHandler(error, req, resp) {
-	harperLogger[error.logLevel || 'error'](error);
+	harperLogger[error.logLevel || 'info'](error);
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
 			return resp.code(error.statusCode).send({ error: error.http_resp_msg || error.message });
@@ -79,10 +79,9 @@ function authHandler(req, resp, done) {
 				done();
 			})
 			.catch((err) => {
-				harperLogger.warn(err);
-				harperLogger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
-				let errMsg = typeof err === 'string' ? { error: err } : { error: err.message };
-				done(handleHDBError(err, errMsg, hdbErrors.HTTP_STATUS_CODES.UNAUTHORIZED), null);
+				err.statusCode = 401;
+				harperLogger.debug('Login failed', err);
+				done(err, null);
 			});
 	} else {
 		req.body.hdb_user = null;

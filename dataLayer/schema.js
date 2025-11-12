@@ -359,6 +359,6 @@ function cleanupOrphanBlobs(request) {
 	const database = databases[request.database];
 	if (!database) throw new ClientError(`Unknown database '${request.database}'`);
 	// don't await, it will probably take hours
-	cleanupOrphans(databases[request.database]);
+	cleanupOrphans(databases[request.database], request.database);
 	return { message: 'Orphaned blobs cleanup started, check logs for progress' };
 }

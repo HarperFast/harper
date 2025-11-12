@@ -32,7 +32,7 @@ const IPv4Pattern = /(\d{1,3}\.){3}\d{1,3}$/;
 export function normalizeIPv6(ipv6: string) {
 	// for embedded IPv4 in IPv6 e.g. ::ffff:127.0.0.1
 	ipv6 = ipv6.replace(IPv4Pattern, (ipv4) => {
-		const [a, b, c, d] = ipv4.split('.').map(n => parseInt(n));
+		const [a, b, c, d] = ipv4.split('.').map((n) => parseInt(n));
 		return ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
 	});
 
@@ -42,7 +42,7 @@ export function normalizeIPv6(ipv6: string) {
 	return ipv6
 		.toLowerCase()
 		.split(':')
-		.map(v => v.padStart(4, '0'))
+		.map((v) => v.padStart(4, '0'))
 		.join(':');
 }
 
@@ -70,4 +70,3 @@ export function stableNodeId(nodeAddrOrName: string): number {
 	}
 	return nodeHashToNumber(Uint8Array.from(hasher.update(normalized).digest()));
 }
-
