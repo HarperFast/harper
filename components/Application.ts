@@ -454,8 +454,6 @@ export async function installApplications() {
 		}
 	}
 
-	const applicationInstallationPromises: Promise<void>[] = [];
-
 	for (const [name, applicationConfig] of Object.entries(config)) {
 		// Pre-validation check if the configuration is actually for an application
 		// Don't want to throw an error here as the config may contain non-application entries

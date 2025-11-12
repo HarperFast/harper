@@ -30,8 +30,8 @@
 		"CODE_OF_CONDUCT.md"
 	],
 	"scripts": {
-		"build": "cp -r static dist/static && tsc --project tsconfig.build.json",
-		"build:watch": "cp -r static dist/static && npm run build -- --watch --incremental",
+		"build": "tsc --project tsconfig.build.json",
+		"build:watch": "npm run build -- --watch --incremental",
 		"lint": "eslint .",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
