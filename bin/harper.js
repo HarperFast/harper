@@ -9,6 +9,7 @@ const { packageJson } = require('../utility/packageUtils.js');
 const checkNode = require('../launchServiceScripts/utility/checkNodeVersion.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const { SERVICE_ACTIONS_ENUM } = hdbTerms;
+process.setSourceMapsEnabled(true); // this is necessary for source maps to work, at least on the main thread.
 
 const HELP = `
 Usage: harperdb [command]
