@@ -28,6 +28,8 @@ export function getThisNodeName(): string {
 		nodeName ||
 		(nodeName =
 			env.get(CONFIG_PARAMS.NODE_HOSTNAME) ??
+			env.get('replication_hostname') ?? // for backwards compatibility
+			urlToNodeName(env.get('replication_url') as string) ??
 			getCommonNameFromCert() ??
 			getHostFromListeningPort('operationsapi_network_secureport') ??
 			getHostFromListeningPort('operationsapi_network_port') ??
