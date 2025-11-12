@@ -15,7 +15,7 @@ export const HDB_ROOT_DIR_NAME = 'hdb';
 export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
 
 /** Name of the HarperDB Process Script */
-export const HDB_PROC_NAME = 'harperdb.js';
+export const HDB_PROC_NAME = 'harper.js';
 /** Name of the HarperDB Restart Script */
 export const HDB_RESTART_SCRIPT = 'restartHdb.js';
 
@@ -79,7 +79,7 @@ export const LOG_LEVELS = {
 
 /** Launch Service script paths */
 export const LAUNCH_SERVICE_SCRIPTS = {
-	MAIN: 'dist/bin/harperdb.js',
+	MAIN: 'dist/bin/harper.js',
 } as const;
 
 /** Specifies user role types */
