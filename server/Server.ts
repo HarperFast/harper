@@ -2,6 +2,7 @@ import { Socket } from 'net';
 import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
 import type { Resources } from '../resources/Resources.ts';
+import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
@@ -22,7 +23,7 @@ export interface Server {
 	getUser(username: string, password: string | null, request: Request): any;
 	authenticateUser(username: string, password: string, request: Request): any;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
-	registerOperation(operationName: string, operationFunction: Function): void;
+	registerOperation(operationDefinition: OperationDefinition): void;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
 	nodes: Node[];
 	shards: Map<number, string[]>;

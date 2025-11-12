@@ -105,13 +105,12 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
 server.operation = operation;
-
 export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
-	httpMethod?: string; // method to use for REST
-	parameters?: { name: string; in: string; schema: any }; // parameters that can be provided
-	response?: any; // schema for the response
+	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
+	parametersSchema?: { name: string; in: 'path' | 'query' | 'body'; schema: any }[]; // parameters that can be provided
+	responseSchema?: any; // schema for the response
 	isJob?: boolean;
 };
 
