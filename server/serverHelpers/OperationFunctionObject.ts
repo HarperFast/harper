@@ -4,7 +4,7 @@
 export class OperationFunctionObject {
 	operation_function: Function;
 	job_operation_function: Function | undefined;
-	httpMethod: string;
+	httpMethod?: string;
 
 	constructor(operation_function: Function, job_operation_function: Function = undefined) {
 		this.operation_function = operation_function;

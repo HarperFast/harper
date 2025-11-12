@@ -109,8 +109,6 @@ export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
-	parametersSchema?: { name: string; in: 'path' | 'query' | 'body'; schema: any }[]; // parameters that can be provided
-	responseSchema?: any; // schema for the response
 	isJob?: boolean;
 };
 
