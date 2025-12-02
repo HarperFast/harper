@@ -6,8 +6,7 @@ import type { Entry, RecordObject } from './RecordEncoder.ts';
 import { RequestTarget } from './RequestTarget.ts';
 
 export interface ResourceInterface<Record extends object = any>
-	extends RecordObject,
-		Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
+	extends RecordObject, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
 	new (identifier: Id, source: any);
 
 	allowRead(user: User, target: RequestTarget): boolean | Promise<boolean>;
