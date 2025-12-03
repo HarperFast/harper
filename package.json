@@ -68,7 +68,7 @@
 		"fs-extra": "^11.3.2",
 		"globals": "^16.4.0",
 		"mocha": "^11.7.4",
-		"prettier": "3.7.3",
+		"prettier": "~3.7.3",
 		"sinon": "^21.0.0",
 		"supertest": "^7.1.4",
 		"tsx": "^4.20.6",
