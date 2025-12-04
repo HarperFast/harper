@@ -112,6 +112,10 @@ async function harper() {
 				} else {
 					process.env.RUN_HDB_APP = appFolder;
 				}
+			} else if (fs.existsSync(hdbTerms.HDB_COMPONENT_CONFIG_FILE) || fs.existsSync('schema.graphql')) {
+				process.env.RUN_HDB_APP = '.';
+			} else if (fs.existsSync(hdbTerms.HDB_CONFIG_FILE)) {
+				process.env.ROOTPATH = '.';
 			}
 		}
 		// fall through
