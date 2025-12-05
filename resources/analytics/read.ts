@@ -3,7 +3,8 @@ import harperLogger from '../../utility/logging/harper_logger.js';
 const { forComponent } = harperLogger;
 import { getAnalyticsHostnameTable } from './hostnames.ts';
 import type { Condition, Conditions } from '../ResourceInterface.ts';
-import { METRIC, type BuiltInMetricName } from './metadata.ts';
+import { METRIC } from './metadata.ts';
+import type { BuiltInMetricName } from './metadata.ts';
 
 // default to one week time window for finding custom metrics
 const defaultCustomMetricWindow = 1000 * 60 * 60 * 24 * 7;

@@ -5,7 +5,8 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { setupHarper, teardownHarper } from '../utils/harperLifecycle.ts';
+import type { ContextWithHarper } from '../utils/harperLifecycle.ts';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';

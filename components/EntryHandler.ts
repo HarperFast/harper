@@ -1,8 +1,10 @@
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
-import { Component, type FileAndURLPathConfig } from './Component.ts';
+import { Component } from './Component.ts';
+import type { FileAndURLPathConfig } from './Component.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
-import chokidar, { type FSWatcher, type FSWatcherEventMap } from 'chokidar';
+import chokidar from 'chokidar';
+import type { FSWatcher, FSWatcherEventMap } from 'chokidar';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { FilesOption } from './deriveGlobOptions.ts';

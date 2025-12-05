@@ -1,6 +1,7 @@
 import Joi from 'joi';
 import * as validator from './validationWrapper.js';
-import { STATUS_DEFINITIONS, STATUS_IDS, DEFAULT_STATUS_ID, type StatusId } from '../server/status/definitions.ts';
+import { STATUS_DEFINITIONS, STATUS_IDS, DEFAULT_STATUS_ID } from '../server/status/definitions.ts';
+import type { StatusId } from '../server/status/definitions.ts';
 
 // Re-export constants for backward compatibility
 export const STATUS_SCHEMAS = STATUS_DEFINITIONS;

@@ -4,13 +4,15 @@ import env from '../utility/environment/environmentManager.js';
 env.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
-import fastify, {
-	type FastifyInstance,
-	type FastifyReply,
-	type FastifyRequest,
-	type FastifyServerOptions,
+import fastify from 'fastify';
+import type {
+	FastifyInstance,
+	FastifyReply,
+	FastifyRequest,
+	FastifyServerOptions,
 } from 'fastify';
-import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
+import fastifyCors from '@fastify/cors';
+import type { FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
 import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
@@ -19,7 +21,8 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import globalSchema from '../utility/globalSchema.js';
 import commonUtils from '../utility/common_utils.js';
 import * as userSchema from '../security/user.ts';
-import { server as serverRegistration, type ServerOptions } from '../server/Server.ts';
+import { server as serverRegistration } from '../server/Server.ts';
+import type { ServerOptions } from '../server/Server.ts';
 import {
 	authHandler,
 	authAndEnsureUserOnRequest,

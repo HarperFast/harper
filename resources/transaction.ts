@@ -1,6 +1,7 @@
 import type { Request } from '../server/serverHelpers/Request.ts';
 import { _assignPackageExport } from '../globals.js';
-import { DatabaseTransaction, TRANSACTION_STATE, type Transaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import type { Transaction } from './DatabaseTransaction.ts';
 
 export function transaction<T>(context: Request, callback: (transaction: Transaction) => T, options?: any): T;
 export function transaction<T>(callback: (transaction: Transaction) => T): T;

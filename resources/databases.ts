@@ -1,6 +1,7 @@
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
-import { open, compareKeys, type Database } from 'lmdb';
+import { open, compareKeys } from 'lmdb';
+import type { Database } from 'lmdb';
 import { join, extname, basename } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import {

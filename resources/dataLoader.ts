@@ -1,7 +1,8 @@
 import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
-import { type Databases, databases, table, type Tables, tables } from './databases.ts';
+import { databases, table, tables } from './databases.ts';
+import type { Databases, Tables } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.js';
 import { ClientError } from '../utility/errors/hdbError.js';

@@ -5,7 +5,8 @@
  * component's status with methods for status management.
  */
 
-import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS } from './types.ts';
+import { COMPONENT_STATUS_LEVELS } from './types.ts';
+import type { ComponentStatusLevel } from './types.ts';
 
 /**
  * Component status information class

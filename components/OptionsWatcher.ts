@@ -1,6 +1,7 @@
 import { EventEmitter, once } from 'events';
 import yaml from 'yaml';
-import chokidar, { type FSWatcher } from 'chokidar';
+import chokidar from 'chokidar';
+import type { FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
 import harperLogger from '../utility/logging/harper_logger.js';

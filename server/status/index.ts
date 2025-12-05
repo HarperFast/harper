@@ -2,8 +2,10 @@ import { table } from '../../resources/databases.ts';
 import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.js';
 import { loggerWithTag } from '../../utility/logging/logger.js';
 import { validateStatus } from '../../validation/statusValidator.ts';
-import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
-import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
+import { DEFAULT_STATUS_ID } from './definitions.ts';
+import type { StatusId, StatusValueMap, StatusRecord } from './definitions.ts';
+import { internal as statusInternal } from '../../components/status/index.ts';
+import type { AggregatedComponentStatus } from '../../components/status/index.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
 
 export { clearStatus as clear, getStatus as get, setStatus as set };
