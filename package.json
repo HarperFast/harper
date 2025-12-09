@@ -159,7 +159,7 @@
 		"uuid": "11.1.0",
 		"validate.js": "0.13.1",
 		"ws": "8.18.3",
-		"yaml": "2.8.0"
+		"yaml": "2.8.2"
 	},
 	"overrides": {
 		"alasql": {
