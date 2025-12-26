@@ -140,6 +140,7 @@ function startWorker(path, options = {}) {
 
 	const execArgv = [
 		'--enable-source-maps',
+		'--experimental-vm-modules',
 		'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
 	];
 	if (envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))

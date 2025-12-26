@@ -1,29 +1,26 @@
 import { Resource } from '../resources/Resource.ts';
 import { tables, databases } from '../resources/databases.ts';
-import { Compartment as CompartmentClass } from 'ses';
-import { readFile } from 'fs/promises';
-import { extname } from 'path';
-import { pathToFileURL } from 'url';
-
-// TODO: Make this configurable
-const SECURE_JS = false;
+import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { extname, dirname } from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { SourceTextModule, SyntheticModule, createContext, runInContext } from 'node:vm';
+import { Scope } from '../components/Scope.ts';
+import logger from '../utility/logging/harper_logger.js';
+import { createRequire } from 'node:module';
 
 let compartment;
 
 /**
- * This is the main entry point for loading plugin and application modules that may be sandboxed/constrained to a
- * secure JavaScript compartment. The configuration defines if these are loaded in a secure compartment or if they
- * are just loaded with a standard import.
+ * This is the main entry point for loading plugin and application modules that may be executed in a
+ * separate top level scope. The scope indicates if we use a different top level scope or a standard import.
  * @param moduleUrl
+ * @param scope
  */
-export async function secureImport(filePath) {
+export async function secureImport(filePath: string, scope?: Scope) {
 	const moduleUrl = pathToFileURL(filePath).toString();
-	if (SECURE_JS) {
-		// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
-		// loading if necessary (since it is actually very heavy)
-		if (!compartment) compartment = getCompartment(getGlobalVars);
-		const result = await (await compartment).import(moduleUrl);
-		return result.namespace;
+	if (scope) {
+		return await loadModuleWithVM(moduleUrl, scope);
 	} else {
 		try {
 			// important! we need to await the import, otherwise the error will not be caught
@@ -44,10 +41,239 @@ export async function secureImport(filePath) {
 	}
 }
 
+/**
+ * Load a module using Node's vm.Module API with secure sandboxing
+ */
+async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
+	const moduleCache = new Map<string, SourceTextModule | SyntheticModule>();
+
+	// Create a secure context with limited globals
+	const contextObject = {
+		console,
+		Math,
+		setTimeout,
+		setInterval,
+		Date,
+		fetch: secureOnlyFetch,
+		...getGlobalVars(),
+		server: scope?.server ?? server,
+		logger: scope?.logger ?? logger,
+		config: scope?.options.getRoot() ?? {},
+		process,
+		global,
+		Request,
+		Headers,
+		TextEncoder,
+		performance,
+		Buffer,
+		URLSearchParams,
+		URL,
+		AbortController,
+		ReadableStream,
+		TextDecoder,
+		FormData,
+		WritableStream,
+	};
+	const context = createContext(contextObject);
+
+	/**
+	 * Resolve module specifier to absolute URL
+	 */
+	function resolveModule(specifier: string, referrer: string): string {
+		if (specifier === 'harperdb') return 'harperdb';
+		if (specifier.startsWith('file://')) {
+			return specifier;
+		}
+		const resolved = createRequire(referrer).resolve(specifier);
+		return resolved;
+	}
+
+	/**
+	 * Load a CommonJS module in our private context
+	 */
+	function loadCJS(url: string, source: string): { exports: any } {
+		const cjsModule = { exports: {} };
+		if (url.endsWith('.json')) {
+			cjsModule.exports = JSON.parse(source);
+			return cjsModule;
+		}
+		const require = createRequire(url);
+
+		const cjsRequire = (spec: string) => {
+			const resolvedPath = require.resolve(spec);
+			if (spec.startsWith('.')) {
+				const source = readFileSync(resolvedPath, { encoding: 'utf-8' });
+				return loadCJS(resolvedPath, source).exports;
+			} else {
+				return require(spec);
+			}
+		};
+		cjsRequire.resolve = require.resolve;
+
+		const cjsWrapper = `
+			(function(module, exports, require, __filename, __dirname) {
+				${source}
+			})
+		`;
+
+		const wrappedFn = runInContext(cjsWrapper, contextObject, {
+			filename: url,
+		});
+		wrappedFn(
+			cjsModule,
+			cjsModule.exports,
+			cjsRequire,
+			url,
+			dirname(url.startsWith('file://') ? fileURLToPath(url) : url)
+		);
+
+		return cjsModule;
+	}
+	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
+		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
+		const exportNames = Object.keys(cjsModule.exports);
+		return new SyntheticModule(
+			exportNames.length > 0 ? exportNames : ['default'],
+			function () {
+				if (exportNames.length > 0) {
+					for (const key of exportNames) {
+						this.setExport(key, cjsModule.exports[key]);
+					}
+				} else {
+					this.setExport('default', cjsModule.exports);
+				}
+			},
+			{ identifier: url, context }
+		);
+	}
+
+	/**
+	 * Linker function for module resolution during instantiation
+	 */
+	async function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
+		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
+
+		// Check cache first
+		if (moduleCache.has(resolvedUrl)) {
+			return moduleCache.get(resolvedUrl)!;
+		}
+
+		// Load the module
+		return await loadModule(resolvedUrl, specifier.startsWith('.'));
+	}
+
+	/**
+	 * Load a module from URL and create appropriate vm.Module
+	 */
+	async function loadModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
+		// Check cache
+		if (moduleCache.has(url)) {
+			return moduleCache.get(url)!;
+		}
+
+		let module: SourceTextModule | SyntheticModule;
+
+		// Handle special built-in modules
+		if (url === 'harperdb') {
+			module = new SyntheticModule(
+				['Resource', 'tables', 'databases'],
+				function () {
+					this.setExport('Resource', Resource);
+					this.setExport('tables', tables);
+					this.setExport('databases', databases);
+				},
+				{ identifier: url, context }
+			);
+		} else if (usePrivateGlobal && url.startsWith('file://')) {
+			// Load source text from file
+			const source = await readFile(new URL(url), { encoding: 'utf-8' });
+
+			// Try to parse as ESM first
+			try {
+				module = new SourceTextModule(source, {
+					identifier: url,
+					context,
+					initializeImportMeta(meta) {
+						meta.url = url;
+					},
+					async importModuleDynamically(specifier: string, script) {
+						const resolvedUrl = resolveModule(specifier, url);
+						try {
+							const dynamicModule = await loadModule(resolvedUrl, specifier.startsWith('.'));
+							await dynamicModule.link(linker);
+							await dynamicModule.evaluate();
+							return dynamicModule;
+						} catch (err) {
+							// If loading as ESM fails, try CJS
+							// If ESM parsing fails, try to load as CommonJS
+							if (
+								err.message?.includes('Cannot use import statement') ||
+								err.message?.includes('Unexpected token') ||
+								source.includes('module.exports') ||
+								source.includes('exports.')
+							) {
+								const cjsSource = await readFile(new URL(resolvedUrl), { encoding: 'utf-8' });
+								const cjsModule = loadCJSModule(resolvedUrl, cjsSource, specifier.startsWith('.'));
+								await cjsModule.link(linker);
+								await cjsModule.evaluate();
+								return cjsModule;
+							}
+							throw err;
+						}
+					},
+				});
+			} catch (err) {
+				// If ESM parsing fails, try to load as CommonJS
+				if (
+					err.message?.includes('Cannot use import statement') ||
+					err.message?.includes('Unexpected token') ||
+					source.includes('module.exports') ||
+					source.includes('exports.')
+				) {
+					module = loadCJSModule(url, source, usePrivateGlobal);
+				} else {
+					throw err;
+				}
+			}
+		} else {
+			// For Node.js built-in modules (node:) and npm packages, use dynamic import
+			const importedModule = await import(url);
+			const exportNames = Object.keys(importedModule);
+
+			module = new SyntheticModule(
+				exportNames,
+				function () {
+					for (const key of exportNames) {
+						this.setExport(key, importedModule[key]);
+					}
+				},
+				{ identifier: url, context }
+			);
+		}
+
+		// Cache the module
+		moduleCache.set(url, module);
+
+		return module;
+	}
+
+	// Load the entry module
+	const entryModule = await loadModule(moduleUrl, true);
+
+	// Link the module (resolve all imports)
+	await entryModule.link(linker);
+
+	// Evaluate the module
+	await entryModule.evaluate();
+
+	// Return the module namespace (exports)
+	return entryModule.namespace;
+}
+
 declare class Compartment extends CompartmentClass {}
 async function getCompartment(getGlobalVars) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
-	await import('ses');
+	require('ses');
 	lockdown({
 		domainTaming: 'unsafe',
 		consoleTaming: 'unsafe',

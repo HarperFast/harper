@@ -50,7 +50,7 @@ export async function handleApplication(scope: Scope) {
 		}
 
 		try {
-			const resourceModule = await secureImport(entryEvent.absolutePath);
+			const resourceModule = await secureImport(entryEvent.absolutePath, scope);
 			const root = dirname(entryEvent.urlPath).replace(/\\/g, '/').replace(/^\/$/, '');
 			if (isResource(resourceModule.default)) {
 				// register the resource
