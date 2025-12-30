@@ -17,7 +17,7 @@ import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
 import * as dataLoader from '../resources/dataLoader.ts';
 import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
-import { secureImport } from '../security/jsLoader.ts';
+import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
 import { table } from '../resources/databases.ts';
@@ -303,7 +303,7 @@ export async function loadComponent(
 					const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
 					extensionModule =
 						typeof plugin === 'string'
-							? await secureImport(plugin.startsWith('@/') ? join(PACKAGE_ROOT, plugin.slice(1)) : plugin)
+							? await scopedImport(plugin.startsWith('@/') ? join(PACKAGE_ROOT, plugin.slice(1)) : plugin)
 							: plugin;
 				}
 
@@ -439,7 +439,7 @@ export async function loadComponent(
 			});
 		}
 		if (config.extensionModule || config.pluginModule) {
-			const extensionModule = await secureImport(
+			const extensionModule = await scopedImport(
 				join(componentDirectory, config.extensionModule || config.pluginModule)
 			);
 			loadedPaths.set(resolvedFolder, extensionModule);

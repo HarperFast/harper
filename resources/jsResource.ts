@@ -1,5 +1,5 @@
 import { Scope } from '../components/Scope.ts';
-import { secureImport } from '../security/jsLoader.ts';
+import { scopedImport } from '../security/jsLoader.ts';
 import { dirname } from 'path';
 
 function isResource(value: unknown) {
@@ -50,7 +50,7 @@ export async function handleApplication(scope: Scope) {
 		}
 
 		try {
-			const resourceModule = await secureImport(entryEvent.absolutePath, scope);
+			const resourceModule = await scopedImport(entryEvent.absolutePath, scope);
 			const root = dirname(entryEvent.urlPath).replace(/\\/g, '/').replace(/^\/$/, '');
 			if (isResource(resourceModule.default)) {
 				// register the resource

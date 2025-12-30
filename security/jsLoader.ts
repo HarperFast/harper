@@ -17,27 +17,27 @@ let compartment;
  * @param moduleUrl
  * @param scope
  */
-export async function secureImport(filePath: string, scope?: Scope) {
+export async function scopedImport(filePath: string, scope?: Scope) {
 	const moduleUrl = pathToFileURL(filePath).toString();
-	if (scope) {
-		return await loadModuleWithVM(moduleUrl, scope);
-	} else {
-		try {
-			// important! we need to await the import, otherwise the error will not be caught
+	try {
+		// important! we need to await the import, otherwise the error will not be caught
+		if (scope) {
+			return await loadModuleWithVM(moduleUrl, scope);
+		} else {
 			return await import(moduleUrl);
-		} catch (err) {
-			try {
-				// the actual parse error (internally known as the "arrow message")
-				// is hidden behind a private symbol (arrowMessagePrivateSymbol)
-				// on the error object and the only way to access it is to use the
-				// internal util.decorateErrorStack() function
-				const util = await import('internal/util');
-				util.default.decorateErrorStack(err);
-			} catch {
-				// maybe --expose-internals was not set?
-			}
-			throw err;
 		}
+	} catch (err) {
+		try {
+			// the actual parse error (internally known as the "arrow message")
+			// is hidden behind a private symbol (arrowMessagePrivateSymbol)
+			// on the error object and the only way to access it is to use the
+			// internal util.decorateErrorStack() function
+			const util = await import('internal/util');
+			util.default.decorateErrorStack(err);
+		} catch {
+			// maybe --expose-internals was not set?
+		}
+		throw err;
 	}
 }
 
