@@ -430,6 +430,7 @@ export const CONFIG_PARAMS = {
 	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',
 	AUTHENTICATION_HASHFUNCTION: 'authentication_hashFunction',
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
+	COMPONENTS_SECUREJS: 'components_secureJS',
 	THREADS: 'threads',
 	THREADS_COUNT: 'threads_count',
 	THREADS_DEBUG: 'threads_debug',

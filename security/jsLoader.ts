@@ -2,15 +2,17 @@ import { Resource } from '../resources/Resource.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { extname, dirname } from 'node:path';
+import { extname, dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext } from 'node:vm';
 import { Scope } from '../components/Scope.ts';
 import logger from '../utility/logging/harper_logger.js';
 import { createRequire } from 'node:module';
+import * as env from '../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 let compartment;
-
+const SECURE_JS = env.get(CONFIG_PARAMS.COMPONENTS_SECUREJS);
 /**
  * This is the main entry point for loading plugin and application modules that may be executed in a
  * separate top level scope. The scope indicates if we use a different top level scope or a standard import.
@@ -20,10 +22,25 @@ let compartment;
 export async function scopedImport(filePath: string, scope?: Scope) {
 	const moduleUrl = pathToFileURL(filePath).toString();
 	try {
-		// important! we need to await the import, otherwise the error will not be caught
 		if (scope) {
+			if (SECURE_JS) {
+				// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
+				// loading if necessary (since it is actually very heavy)
+				if (!compartment)
+					compartment = getCompartment(() => {
+						return {
+							server: scope?.server ?? server,
+							logger: scope?.logger ?? logger,
+							config: scope?.options.getRoot() ?? {},
+							...getGlobalVars(),
+						};
+					});
+				const result = await (await compartment).import(moduleUrl);
+				return result.namespace;
+			}
 			return await loadModuleWithVM(moduleUrl, scope);
 		} else {
+			// important! we need to await the import, otherwise the error will not be caught
 			return await import(moduleUrl);
 		}
 	} catch (err) {
@@ -49,30 +66,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 
 	// Create a secure context with limited globals
 	const contextObject = {
-		console,
-		Math,
-		setTimeout,
-		setInterval,
-		Date,
-		fetch: secureOnlyFetch,
-		...getGlobalVars(),
 		server: scope?.server ?? server,
 		logger: scope?.logger ?? logger,
 		config: scope?.options.getRoot() ?? {},
-		process,
-		global,
-		Request,
-		Headers,
-		TextEncoder,
-		performance,
-		Buffer,
-		URLSearchParams,
-		URL,
-		AbortController,
-		ReadableStream,
-		TextDecoder,
-		FormData,
-		WritableStream,
+		...getGlobalVars(),
 	};
 	const context = createContext(contextObject);
 
@@ -294,14 +291,18 @@ async function getCompartment(getGlobalVars) {
 			//harperdb: { Resource, tables, databases }
 		},
 		{
-			name: 'h-dapp',
+			name: 'harper-app',
 			resolveHook(moduleSpecifier, moduleReferrer) {
 				if (moduleSpecifier === 'harperdb') return 'harperdb';
-				moduleSpecifier = new URL(moduleSpecifier, moduleReferrer).toString();
-				if (!extname(moduleSpecifier)) moduleSpecifier += '.js';
+				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
+				if (isAbsolute(resolved)) {
+					const resolvedURL = pathToFileURL(resolved).toString();
+					return resolvedURL;
+				}
 				return moduleSpecifier;
 			},
 			importHook: async (moduleSpecifier) => {
+				console.log('importHook', moduleSpecifier);
 				if (moduleSpecifier === 'harperdb') {
 					return {
 						imports: [],
@@ -312,9 +313,21 @@ async function getCompartment(getGlobalVars) {
 							exports.databases = databases;
 						},
 					};
+				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
+					const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
+					return new StaticModuleRecord(moduleText, moduleSpecifier);
+				} else {
+					const moduleExports = await import(moduleSpecifier);
+					return {
+						imports: [],
+						exports: Object.keys(moduleExports),
+						execute(exports) {
+							for (const key of Object.keys(moduleExports)) {
+								exports[key] = moduleExports[key];
+							}
+						},
+					};
 				}
-				const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
-				return new StaticModuleRecord(moduleText, moduleSpecifier);
 			},
 		}
 	);
@@ -342,5 +355,25 @@ function getGlobalVars() {
 	return {
 		Resource,
 		tables,
+		process,
+		global,
+		Request,
+		Headers,
+		TextEncoder,
+		performance,
+		Buffer,
+		URLSearchParams,
+		URL,
+		AbortController,
+		ReadableStream,
+		TextDecoder,
+		FormData,
+		WritableStream,
+		console,
+		Math,
+		setTimeout,
+		setInterval,
+		Date,
+		fetch: secureOnlyFetch,
 	};
 }

@@ -23,6 +23,8 @@ authentication:
 analytics:
   aggregatePeriod: 60
   replicate: false
+components:
+  secureJS: true
 componentsRoot: null
 localStudio:
   enabled: true
