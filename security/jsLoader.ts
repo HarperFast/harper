@@ -2,7 +2,7 @@ import { Resource } from '../resources/Resource.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { extname, dirname, isAbsolute } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext } from 'node:vm';
 import { Scope } from '../components/Scope.ts';
@@ -12,7 +12,9 @@ import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import type { CompartmentOptions } from 'ses';
 
-const SECURE_JS = env.get(CONFIG_PARAMS.COMPONENTS_SECUREJS);
+type ContainmentMode = 'none' | 'vm' | 'compartment' | 'lockdown';
+const APPLICATIONS_CONTAINMENT: ContainmentMode = env.get(CONFIG_PARAMS.APPLICATIONS_CONTAINMENT);
+
 /**
  * This is the main entry point for loading plugin and application modules that may be executed in a
  * separate top level scope. The scope indicates if we use a different top level scope or a standard import.
@@ -22,24 +24,16 @@ const SECURE_JS = env.get(CONFIG_PARAMS.COMPONENTS_SECUREJS);
 export async function scopedImport(filePath: string, scope?: Scope) {
 	const moduleUrl = pathToFileURL(filePath).toString();
 	try {
-		if (scope) {
-			if (SECURE_JS) {
-				// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
-				// loading if necessary (since it is actually very heavy)
-				if (!scope.compartment)
-					scope.compartment = getCompartment(() => {
-						return {
-							server: scope.server ?? server,
-							logger: scope.logger ?? logger,
-							resources: scope.resources,
-							config: scope.options.getRoot() ?? {},
-							...getGlobalVars(),
-						};
-					});
-				const result = await (await scope.compartment).import(moduleUrl);
-				return result.namespace;
-			}
-			return await loadModuleWithVM(moduleUrl, scope);
+		if (scope && APPLICATIONS_CONTAINMENT && APPLICATIONS_CONTAINMENT !== 'none') {
+			const globals = getGlobalVars(scope);
+			if (APPLICATIONS_CONTAINMENT === 'vm') {
+				return await loadModuleWithVM(moduleUrl, scope);
+			} // else use SES Compartments
+			// note that we use a single compartment per scope and we load it on-demand, only
+			// loading if necessary (since it is actually very heavy)
+			if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
+			const result = await (await scope.compartment).import(moduleUrl);
+			return result.namespace;
 		} else {
 			// important! we need to await the import, otherwise the error will not be caught
 			return await import(moduleUrl);
@@ -66,12 +60,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 	const moduleCache = new Map<string, SourceTextModule | SyntheticModule>();
 
 	// Create a secure context with limited globals
-	const contextObject = {
-		server: scope?.server ?? server,
-		logger: scope?.logger ?? logger,
-		config: scope?.options.getRoot() ?? {},
-		...getGlobalVars(),
-	};
+	const contextObject = getGlobalVars(scope);
 	const context = createContext(contextObject);
 
 	/**
@@ -83,6 +72,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			return specifier;
 		}
 		const resolved = createRequire(referrer).resolve(specifier);
+		if (isAbsolute(resolved)) {
+			return pathToFileURL(resolved).toString();
+		}
 		return resolved;
 	}
 
@@ -234,6 +226,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 				}
 			}
 		} else {
+			checkAllowedHostModule(url, scope.directory);
 			// For Node.js built-in modules (node:) and npm packages, use dynamic import
 			const importedModule = await import(url);
 			const exportNames = Object.keys(importedModule);
@@ -269,25 +262,20 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 }
 
 declare class Compartment extends CompartmentClass {}
-async function getCompartment(getGlobalVars) {
+async function getCompartment(scope: Scope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
 	require('ses');
-	lockdown({
-		domainTaming: 'unsafe',
-		consoleTaming: 'unsafe',
-		errorTaming: 'unsafe',
-		errorTrapping: 'none',
-		stackFiltering: 'verbose',
-	});
-
+	if (APPLICATIONS_CONTAINMENT === 'lockdown') {
+		lockdown({
+			domainTaming: 'unsafe',
+			consoleTaming: 'unsafe',
+			errorTaming: 'unsafe',
+			errorTrapping: 'none',
+			stackFiltering: 'verbose',
+		});
+	}
 	const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
-		{
-			console,
-			Math,
-			Date,
-			fetch: secureOnlyFetch,
-			...getGlobalVars(),
-		},
+		globals,
 		{
 			//harperdb: { Resource, tables, databases }
 		},
@@ -318,6 +306,7 @@ async function getCompartment(getGlobalVars) {
 					const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
+					checkAllowedHostModule(moduleSpecifier, scope.directory);
 					const moduleExports = await import(moduleSpecifier);
 					return {
 						imports: [],
@@ -345,15 +334,19 @@ function secureOnlyFetch(resource, options) {
 	// TODO: or maybe we should constrain by doing a DNS lookup and having disallow list of IP addresses that includes
 	// this server
 	const url = typeof resource === 'string' || resource.url;
-	if (new URL(url).protocol != 'https') throw new Error('Only https is allowed in fetch');
+	if (new URL(url).protocol != 'https') throw new Error(`Only https is allowed in fetch`);
 	return fetch(resource, options);
 }
 
 /**
- * Get the set of global variables that should be available to the h-dapp modules
+ * Get the set of global variables that should be available to modules that run in scoped compartments/contexts.
  */
-function getGlobalVars() {
+function getGlobalVars(scope: Scope) {
 	return {
+		server: scope.server ?? server,
+		logger: scope.logger ?? logger,
+		resources: scope.resources,
+		config: scope.options.getRoot() ?? {},
 		Resource,
 		tables,
 		process,
@@ -377,4 +370,38 @@ function getGlobalVars() {
 		Date,
 		fetch: secureOnlyFetch,
 	};
+}
+const ALLOWED_NODE_BUILTIN_MODULES = new Set([
+	'assert',
+	'http',
+	'https',
+	'path',
+	'url',
+	'util',
+	'stream',
+	'crypto',
+	'buffer',
+	'string_decoder',
+	'querystring',
+	'punycode',
+	'zlib',
+	'events',
+	'timers',
+	'async_hooks',
+	'console',
+	'perf_hooks',
+	'diagnostics_channel',
+]);
+function checkAllowedHostModule(moduleUrl: string, containingFolder: string): boolean {
+	if (moduleUrl.startsWith('file:')) {
+		const path = moduleUrl.slice(7);
+		if (path.startsWith(containingFolder)) {
+			return true;
+		}
+		throw new Error(`Can not load module outside of application folder`);
+	}
+	let simpleName = moduleUrl.startsWith('node:') ? moduleUrl.slice(5) : moduleUrl;
+	simpleName = simpleName.split('/')[0];
+	if (ALLOWED_NODE_BUILTIN_MODULES.has(simpleName)) return true;
+	throw new Error(`Module ${moduleUrl} is not allowed to be imported`);
 }
