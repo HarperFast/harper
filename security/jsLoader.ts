@@ -10,8 +10,8 @@ import logger from '../utility/logging/harper_logger.js';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import type { CompartmentOptions } from 'ses';
 
-let compartment;
 const SECURE_JS = env.get(CONFIG_PARAMS.COMPONENTS_SECUREJS);
 /**
  * This is the main entry point for loading plugin and application modules that may be executed in a
@@ -26,16 +26,17 @@ export async function scopedImport(filePath: string, scope?: Scope) {
 			if (SECURE_JS) {
 				// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
 				// loading if necessary (since it is actually very heavy)
-				if (!compartment)
-					compartment = getCompartment(() => {
+				if (!scope.compartment)
+					scope.compartment = getCompartment(() => {
 						return {
-							server: scope?.server ?? server,
-							logger: scope?.logger ?? logger,
-							config: scope?.options.getRoot() ?? {},
+							server: scope.server ?? server,
+							logger: scope.logger ?? logger,
+							resources: scope.resources,
+							config: scope.options.getRoot() ?? {},
 							...getGlobalVars(),
 						};
 					});
-				const result = await (await compartment).import(moduleUrl);
+				const result = await (await scope.compartment).import(moduleUrl);
 				return result.namespace;
 			}
 			return await loadModuleWithVM(moduleUrl, scope);
@@ -59,7 +60,7 @@ export async function scopedImport(filePath: string, scope?: Scope) {
 }
 
 /**
- * Load a module using Node's vm.Module API with secure sandboxing
+ * Load a module using Node's vm.Module API with (not really secure) sandboxing
  */
 async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 	const moduleCache = new Map<string, SourceTextModule | SyntheticModule>();
@@ -279,7 +280,7 @@ async function getCompartment(getGlobalVars) {
 		stackFiltering: 'verbose',
 	});
 
-	compartment = new (Compartment as typeof CompartmentClass)(
+	const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
 		{
 			console,
 			Math,

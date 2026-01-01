@@ -7,6 +7,7 @@ import type { Resources } from '../resources/Resources.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
+import { scopedImport } from '../security/jsLoader.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -289,5 +290,18 @@ export class Scope extends EventEmitter {
 		if (this.#pendingInitialLoads.size > 0) {
 			await Promise.all(this.#pendingInitialLoads);
 		}
+	}
+
+	/**
+	 * The compartment that is used for this scope and any imports that it makes
+	 */
+	compartment: Promise<any>;
+	/**
+	 * Import a file into the scope's sandbox.
+	 * @param filePath - The path of the file to import.
+	 * @returns A promise that resolves with the imported module or value.
+	 */
+	async import(filePath: string): Promise<unknown> {
+		return scopedImport(filePath, this);
 	}
 }
