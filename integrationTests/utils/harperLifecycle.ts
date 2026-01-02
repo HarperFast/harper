@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { spawn, ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { type SuiteContext, type TestContext } from 'node:test';
-import { once } from 'node:events';
 import { getNextAvailableLoopbackAddress, releaseLoopbackAddress } from './loopbackAddressPool.ts';
 
 // Constants
@@ -64,9 +62,10 @@ export interface ContextWithHarper extends SuiteContext, TestContext {
  * @throws {AssertionError} If the script does not exist at the expected location
  */
 function getHarperScript(): string {
+	// import.meta.dirname doesn't seem to reliably work when running this across projects, if somehow compilation takes place, so fallback to module.path if necessary
 	const harperScript =
 		process.env.HARPER_INTEGRATION_TEST_INSTALL_SCRIPT ||
-		join(import.meta.dirname, '..', '..', 'dist', 'bin', 'harper.js');
+		join(import.meta.dirname ?? module.path, '..', '..', 'dist', 'bin', 'harper.js');
 	assert.ok(
 		existsSync(harperScript),
 		`Harper installation script not found at ${harperScript}. Don't forget to build the project (\`npm run build\`) before running integration tests.`
@@ -82,16 +81,19 @@ function getHarperScript(): string {
  */
 function runHarperCommand(args: string[], completionMessage?: string): Promise<ChildProcess> {
 	const harperScript = getHarperScript();
-	console.error('running harper command: ', harperScript, args);
 	const proc = spawn('node', [harperScript, ...args]);
-
 	return new Promise((resolve, reject) => {
 		let stdout = '';
 		let stderr = '';
+		let timer = setTimeout(() => {
+			reject(`Harper process timed out after ${DEFAULT_STARTUP_TIMEOUT_MS}ms`);
+			proc.kill();
+		}, DEFAULT_STARTUP_TIMEOUT_MS);
 
 		proc.stdout?.on('data', (data: Buffer) => {
 			const dataString = data.toString();
 			if (completionMessage && dataString.includes(completionMessage)) {
+				clearTimeout(timer);
 				resolve(proc);
 			}
 			stdout += dataString;
@@ -100,7 +102,11 @@ function runHarperCommand(args: string[], completionMessage?: string): Promise<C
 		proc.stderr?.on('data', (data: Buffer) => {
 			stderr += data.toString();
 		});
+		proc.on('error', (error) => {
+			reject(error);
+		});
 		proc.on('exit', (statusCode) => {
+			clearTimeout(timer);
 			if (statusCode === 0) {
 				resolve(proc);
 			} else {
@@ -167,7 +173,6 @@ async function startHarper(ctx: ContextWithHarper): Promise<ContextWithHarper> {
 	const installDir = await mkdtemp(installDirPrefix);
 
 	const loopbackAddress = await getNextAvailableLoopbackAddress();
-
 	const harperProcess = await runHarperCommand(
 		[
 			`--ROOTPATH=${installDir}`,
@@ -225,5 +230,6 @@ export async function teardownHarper(ctx: ContextWithHarper): Promise<void> {
 
 	await releaseLoopbackAddress(ctx.harper.hostname);
 
-	await rm(ctx.harper.installDir, { recursive: true, force: true });
+	// a few retries are typically necessary, might take a sec for a process to finish, especially since rocksdb may be flushing
+	await rm(ctx.harper.installDir, { recursive: true, force: true, maxRetries: 4 });
 }
