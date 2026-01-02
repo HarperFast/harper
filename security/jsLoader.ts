@@ -14,15 +14,30 @@ import type { CompartmentOptions } from 'ses';
 
 type ContainmentMode = 'none' | 'vm' | 'compartment' | 'lockdown';
 const APPLICATIONS_CONTAINMENT: ContainmentMode = env.get(CONFIG_PARAMS.APPLICATIONS_CONTAINMENT);
+const APPLICATIONS_DEPENDENCYCONTAINMENT: boolean = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYCONTAINMENT);
+const APPLICATIONS_LOCKDOWN: boolean = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
 
+let lockedDown = false;
 /**
  * This is the main entry point for loading plugin and application modules that may be executed in a
  * separate top level scope. The scope indicates if we use a different top level scope or a standard import.
  * @param moduleUrl
  * @param scope
  */
-export async function scopedImport(filePath: string, scope?: Scope) {
-	const moduleUrl = pathToFileURL(filePath).toString();
+global.scopedImport = scopedImport; // for testing
+export async function scopedImport(filePath: string | URL, scope?: Scope) {
+	require('ses');
+	if (APPLICATIONS_LOCKDOWN && !lockedDown) {
+		lockedDown = true;
+		lockdown({
+			domainTaming: 'unsafe',
+			consoleTaming: 'unsafe',
+			errorTaming: 'unsafe',
+			errorTrapping: 'none',
+			stackFiltering: 'verbose',
+		});
+	}
+	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
 		if (scope && APPLICATIONS_CONTAINMENT && APPLICATIONS_CONTAINMENT !== 'none') {
 			const globals = getGlobalVars(scope);
@@ -91,7 +106,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 
 		const cjsRequire = (spec: string) => {
 			const resolvedPath = require.resolve(spec);
-			if (spec.startsWith('.')) {
+			if (isAbsolute(resolvedPath)) {
 				const source = readFileSync(resolvedPath, { encoding: 'utf-8' });
 				return loadCJS(resolvedPath, source).exports;
 			} else {
@@ -108,6 +123,12 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 
 		const wrappedFn = runInContext(cjsWrapper, contextObject, {
 			filename: url,
+			async importModuleDynamically(specifier: string, script) {
+				const resolvedUrl = resolveModule(specifier, script.sourceURL);
+				const useContainment = specifier.startsWith('.') || APPLICATIONS_DEPENDENCYCONTAINMENT;
+				const dynamicModule = await loadModule(resolvedUrl, useContainment);
+				return dynamicModule;
+			},
 		});
 		wrappedFn(
 			cjsModule,
@@ -148,8 +169,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			return moduleCache.get(resolvedUrl)!;
 		}
 
+		const useContainment = specifier.startsWith('.') || APPLICATIONS_DEPENDENCYCONTAINMENT;
 		// Load the module
-		return await loadModule(resolvedUrl, specifier.startsWith('.'));
+		return await loadModule(resolvedUrl, useContainment);
 	}
 
 	/**
@@ -188,30 +210,18 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 					},
 					async importModuleDynamically(specifier: string, script) {
 						const resolvedUrl = resolveModule(specifier, url);
-						try {
-							const dynamicModule = await loadModule(resolvedUrl, specifier.startsWith('.'));
-							await dynamicModule.link(linker);
-							await dynamicModule.evaluate();
-							return dynamicModule;
-						} catch (err) {
-							// If loading as ESM fails, try CJS
-							// If ESM parsing fails, try to load as CommonJS
-							if (
-								err.message?.includes('Cannot use import statement') ||
-								err.message?.includes('Unexpected token') ||
-								source.includes('module.exports') ||
-								source.includes('exports.')
-							) {
-								const cjsSource = await readFile(new URL(resolvedUrl), { encoding: 'utf-8' });
-								const cjsModule = loadCJSModule(resolvedUrl, cjsSource, specifier.startsWith('.'));
-								await cjsModule.link(linker);
-								await cjsModule.evaluate();
-								return cjsModule;
-							}
-							throw err;
-						}
+						const dynamicModule = await loadModule(resolvedUrl, true);
+						return dynamicModule;
 					},
 				});
+				// Cache the module
+				moduleCache.set(url, module);
+				// Link the module (resolve all imports)
+				await module.link(linker);
+
+				// Evaluate the module
+				await module.evaluate();
+				return module;
 			} catch (err) {
 				// If ESM parsing fails, try to load as CommonJS
 				if (
@@ -220,6 +230,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 					source.includes('module.exports') ||
 					source.includes('exports.')
 				) {
+					moduleCache.delete(url); // uncache if it failed and go through CJS
 					module = loadCJSModule(url, source, usePrivateGlobal);
 				} else {
 					throw err;
@@ -244,18 +255,17 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 
 		// Cache the module
 		moduleCache.set(url, module);
+		// Link the module (resolve all imports)
+		await module.link(linker);
+
+		// Evaluate the module
+		await module.evaluate();
 
 		return module;
 	}
 
 	// Load the entry module
 	const entryModule = await loadModule(moduleUrl, true);
-
-	// Link the module (resolve all imports)
-	await entryModule.link(linker);
-
-	// Evaluate the module
-	await entryModule.evaluate();
 
 	// Return the module namespace (exports)
 	return entryModule.namespace;
@@ -264,16 +274,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 declare class Compartment extends CompartmentClass {}
 async function getCompartment(scope: Scope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
-	require('ses');
-	if (APPLICATIONS_CONTAINMENT === 'lockdown') {
-		lockdown({
-			domainTaming: 'unsafe',
-			consoleTaming: 'unsafe',
-			errorTaming: 'unsafe',
-			errorTrapping: 'none',
-			stackFiltering: 'verbose',
-		});
-	}
 	const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
 		globals,
 		{

@@ -431,6 +431,8 @@ export const CONFIG_PARAMS = {
 	AUTHENTICATION_HASHFUNCTION: 'authentication_hashFunction',
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
 	APPLICATIONS_CONTAINMENT: 'applications_containment',
+	APPLICATIONS_LOCKDOWN: 'applications_lockdown',
+	APPLICATIONS_DEPENDENCYCONTAINMENT: 'applications_dependencyContainment',
 	THREADS: 'threads',
 	THREADS_COUNT: 'threads_count',
 	THREADS_DEBUG: 'threads_debug',

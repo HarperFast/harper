@@ -439,9 +439,7 @@ export async function loadComponent(
 			});
 		}
 		if (config.extensionModule || config.pluginModule) {
-			const extensionModule = await scopedImport(
-				join(componentDirectory, config.extensionModule || config.pluginModule)
-			);
+			const extensionModule = await import(join(componentDirectory, config.extensionModule || config.pluginModule));
 			loadedPaths.set(resolvedFolder, extensionModule);
 			return extensionModule;
 		}

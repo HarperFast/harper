@@ -24,7 +24,9 @@ analytics:
   aggregatePeriod: 60
   replicate: false
 applications:
-  containment: 'compartment'
+  lockdown: true
+  containment: 'vm'
+  dependencyContainment: true
 componentsRoot: null
 localStudio:
   enabled: true
