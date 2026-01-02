@@ -32,5 +32,8 @@ dist/
 integration-test.json
 
 package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
 # Repo synchronization temp file
 commits-to-pick.txt

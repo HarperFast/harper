@@ -33,10 +33,9 @@ This method should be used in the `before()` lifecycle hook for a test suite. It
 
 1. Creates a Harper instance in a temporary directory
 2. Assigns a unique loopback address from the loopback address pool
-3. Installs Harper with test configuration
-4. Starts the Harper instance
-5. Waits for Harper to be fully started (default: 5 seconds, configurable via `options.startupDelayMs`)
-6. Populates the `context.harper` object with connection details
+3. Starts Harper with test configuration (which self-installs)
+4. Waits for Harper to be fully started (default: 5 seconds, configurable via `options.startupDelayMs`)
+5. Populates the `context.harper` object with connection details
 
 **Important:** Always call `teardownHarper(ctx)` in the `after()` hook to properly clean up resources, or you will have phantom Harper processes after tests complete.
 
@@ -46,7 +45,7 @@ This method should be used in the `before()` lifecycle hook for a test suite. It
 import { suite, test, before, after } from 'node:test';
 import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.mts';
 
-// Default setup (5 second startup delay)
+// Default setup
 suite('My test suite', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await setupHarper(ctx);
@@ -61,19 +60,6 @@ suite('My test suite', (ctx: ContextWithHarper) => {
 		// ... assertions
 	});
 });
-
-// Custom startup delay
-suite('Fast startup test', (ctx: ContextWithHarper) => {
-	before(async () => {
-		await setupHarper(ctx, { startupDelayMs: 2000 }); // 2 second delay
-	});
-
-	after(async () => {
-		await teardownHarper(ctx);
-	});
-
-	// ... tests
-});
 ```
 
 ---
@@ -85,12 +71,12 @@ Configuration options for `setupHarper()`.
 **Interface Definition:**
 
 ```typescript
-interface SetupHarperOptions {
+export interface SetupHarperOptions {
 	/**
-	 * Time in milliseconds to wait for Harper to be fully started after the start command completes.
-	 * @default 5000
+	 * Timeout in milliseconds to wait for Harper to start.
+	 * @default 30000
 	 */
-	startupDelayMs?: number;
+	startupTimeoutMs?: number;
 }
 ```
 
@@ -170,7 +156,7 @@ interface ContextWithHarper extends SuiteContext, TestContext {
     - **`password`** - `string` - The Harper Admin Password (default: `'abc123'`)
   - **`httpURL`** - `string` - The HTTP URL for the Harper instance (e.g., `'http://127.0.0.2:9926'`)
   - **`operationsAPIURL`** - `string` - The Operations API URL (e.g., `'http://127.0.0.2:9925'`)
-  - **`loopbackAddress`** - `string` - The assigned loopback IP address (e.g., `'127.0.0.2'`)
+  - **`hostname`** - `string` - The assigned loopback IP address (e.g., `'127.0.0.2'`)
 
 **Example Usage:**
 
