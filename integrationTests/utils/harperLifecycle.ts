@@ -23,6 +23,14 @@ export interface SetupHarperOptions {
 	 * @default 30000
 	 */
 	startupTimeoutMs?: number;
+	/**
+	 * Additional configuration options to pass to the Harper CLI.
+	 */
+	config: any;
+	/**
+	 * Environment variables to set when running Harper.
+	 */
+	env: any;
 }
 
 export interface HarperContext {
@@ -79,9 +87,11 @@ function getHarperScript(): string {
  * @param args - Additional arguments to pass to the command
  * @throws {AssertionError} If the command exits with a non-zero status code
  */
-function runHarperCommand(args: string[], completionMessage?: string): Promise<ChildProcess> {
+function runHarperCommand(args: string[], env: any, completionMessage?: string): Promise<ChildProcess> {
 	const harperScript = getHarperScript();
-	const proc = spawn('node', [harperScript, ...args]);
+	const proc = spawn('node', [harperScript, ...args], {
+		env: { ...process.env, ...env },
+	});
 	return new Promise((resolve, reject) => {
 		let stdout = '';
 		let stderr = '';
@@ -152,7 +162,7 @@ function runHarperCommand(args: string[], completionMessage?: string): Promise<C
  * ```
  */
 export async function setupHarper(ctx: ContextWithHarper, options?: SetupHarperOptions): Promise<ContextWithHarper> {
-	return startHarper(ctx);
+	return startHarper(ctx, options);
 }
 
 /**
@@ -163,7 +173,7 @@ export async function setupHarper(ctx: ContextWithHarper, options?: SetupHarperO
  *
  * @param ctx - The test context with Harper installation details
  */
-async function startHarper(ctx: ContextWithHarper): Promise<ContextWithHarper> {
+async function startHarper(ctx: ContextWithHarper, options?: SetupHarperOptions): Promise<ContextWithHarper> {
 	// Create a directory for this Harper installation
 	// Use the system temp directory by default, or a custom parent directory if specified
 	const installDirPrefix = join(
@@ -185,7 +195,9 @@ async function startHarper(ctx: ContextWithHarper): Promise<ContextWithHarper> {
 			`--HTTP_PORT=${loopbackAddress}:${HTTP_PORT}`,
 			`--OPERATIONSAPI_NETWORK_PORT=${loopbackAddress}:${OPERATIONS_API_PORT}`,
 			'--LOGGING_LEVEL=debug',
+			'--HARPER_SET_CONFIG=' + JSON.stringify(options?.config || {}),
 		],
+		options?.env || {},
 		'successfully started'
 	);
 
