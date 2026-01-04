@@ -11,7 +11,7 @@ import { getNextAvailableLoopbackAddress, releaseLoopbackAddress } from './loopb
 const HTTP_PORT = 9926;
 const OPERATIONS_API_PORT = 9925;
 const DEFAULT_ADMIN_USERNAME = 'admin';
-const DEFAULT_ADMIN_PASSWORD = 'abc123';
+const DEFAULT_ADMIN_PASSWORD = 'Abc1234!';
 const DEFAULT_STARTUP_TIMEOUT_MS = parseInt(process.env.HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS, 10) || 30000;
 
 /**
@@ -40,7 +40,7 @@ export interface HarperContext {
 	admin: {
 		/** Admin username (default: 'admin') */
 		username: string;
-		/** Admin password (default: 'abc123') */
+		/** Admin password (default: 'Abc1234!') */
 		password: string;
 	};
 	/** HTTP URL for the Harper instance (e.g., 'http://127.0.0.2:9926') */
