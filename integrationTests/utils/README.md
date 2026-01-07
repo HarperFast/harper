@@ -34,7 +34,7 @@ This method should be used in the `before()` lifecycle hook for a test suite. It
 1. Creates a Harper instance in a temporary directory
 2. Assigns a unique loopback address from the loopback address pool
 3. Starts Harper with test configuration (which self-installs)
-4. Waits for Harper to be fully started (default: 5 seconds, configurable via `options.startupDelayMs`)
+4. Waits for Harper to be fully started, waiting for the startup message to appear in stdout
 5. Populates the `context.harper` object with connection details
 
 **Important:** Always call `teardownHarper(ctx)` in the `after()` hook to properly clean up resources, or you will have phantom Harper processes after tests complete.
@@ -77,16 +77,28 @@ export interface SetupHarperOptions {
 	 * @default 30000
 	 */
 	startupTimeoutMs?: number;
+	/**
+	 * Additional configuration options to pass to the Harper CLI.
+	 */
+	config: any;
+	/**
+	 * Environment variables to set when running Harper.
+	 */
+	env: any;
 }
 ```
 
 **Properties:**
 
-- **`startupDelayMs`** - `number` (optional) - Time in milliseconds to wait after starting Harper before considering it ready. Defaults to 5000 (5 seconds), or the value of the `HARPER_INTEGRATION_TEST_STARTUP_DELAY_MS` environment variable if set.
+30000 (5 seconds), or the value of the `HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS` environment variable if set.
+
+- **`config`** - `object` (optional) - Additional configuration options to pass to the Harper CLI.
+- **`env`** - `object` (optional) - Additional environment variables to set when starting Harper.
+- **`startupTimeoutMs`** - `number` (optional) - Timeout in milliseconds to wait for Harper to start. Defaults to
 
 **Environment Variables:**
 
-- `HARPER_INTEGRATION_TEST_STARTUP_DELAY_MS` - Sets the default startup delay for all tests when `startupDelayMs` is not explicitly provided
+- `HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS` - Sets the default startup delay for all tests when `startupTimeoutMs` is not explicitly provided
 
 ---
 
