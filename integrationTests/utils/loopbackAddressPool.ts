@@ -289,12 +289,15 @@ export async function getNextAvailableLoopbackAddress(): Promise<string> {
 			// Find the first available index
 			const index = findAvailableIndex(loopbackPool);
 
-			if (index !== null) {
+			if (index === null) {
+				// No available addresses - remove any dead processes from the pool and wait for one to become available
+				removeDeadProcessesFromPool(loopbackPool);
+			} else {
 				// Assign the process PID to that index to mark it as used
 				loopbackPool[index] = process.pid;
-				// Write the updated pool back to the file
-				await writePoolFile(loopbackPool);
 			}
+			// Write the updated pool back to the file
+			await writePoolFile(loopbackPool);
 
 			return index;
 		});
@@ -314,6 +317,21 @@ export async function getNextAvailableLoopbackAddress(): Promise<string> {
 		// No available addresses; wait and retry
 		await sleep(RETRY_DELAY_MS);
 	}
+}
+
+/**
+ * Removes any dead processes from the loopback pool.
+ * @param loopbackPool
+ */
+function removeDeadProcessesFromPool(loopbackPool: LoopbackPool) {
+	loopbackPool.forEach((pid, index) => {
+		if (pid === null) return;
+		try {
+			process.kill(pid, 0);
+		} catch {
+			loopbackPool[index] = null;
+		}
+	});
 }
 
 /**
