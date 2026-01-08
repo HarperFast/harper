@@ -99,7 +99,7 @@
 		"@turf/helpers": "6.5.0",
 		"@turf/length": "6.5.0",
 		"alasql": "4.6.6",
-		"argon2": "0.43.0",
+		"argon2": "0.44.0",
 		"asn1js": "3.0.6",
 		"cbor-x": "1.6.0",
 		"chalk": "4.1.2",
