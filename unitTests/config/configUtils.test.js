@@ -620,7 +620,9 @@ describe('Test configUtils module', () => {
 				error = err;
 			}
 
-			expect(error.message).to.equal('Harper config file validation error: operationsApi.root config parameter is undefined');
+			expect(error.message).to.equal(
+				'Harper config file validation error: operationsApi.root config parameter is undefined'
+			);
 			expect(config_validator_stub.calledOnce).to.be.true;
 			expect(config_validator_stub.firstCall.args[0]).to.eql(test_config_json);
 

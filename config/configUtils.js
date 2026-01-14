@@ -368,9 +368,11 @@ function validateConfig(configDoc, skipFsValidation = false) {
 		configJson.operationsApi?.network?.port &&
 		configJson.operationsApi?.network?.port === configJson.operationsApi?.network?.securePort
 	) {
-		throw new Error(HDB_ERROR_MSGS.CONFIG_VALIDATION(
-			'operationsApi.network.port and operationsApi.network.securePort cannot be the same value'
-		));
+		throw new Error(
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(
+				'operationsApi.network.port and operationsApi.network.securePort cannot be the same value'
+			)
+		);
 	}
 
 	const validation = configValidator(configJson, skipFsValidation);
