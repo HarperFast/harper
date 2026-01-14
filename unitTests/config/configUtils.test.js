@@ -17,27 +17,8 @@ const hdb_terms = require('#src/utility/hdbTerms');
 const DIRNAME = __dirname;
 const HDB_ROOT = path.join(DIRNAME, 'yaml');
 const TEST_CERT = path.join(DIRNAME, '../../../hdb/keys/certificate.pem');
-const TEST_CERT_AUTH = path.join(DIRNAME, '../../../hdb/keys/privatekey.pem');
 const TEST_PRIVATE_KEY = path.join(DIRNAME, '../../../hdb/keys/ca.pem');
 const TEST_ARGS = {
-	CLUSTERING_USER: 'test_user',
-	CLUSTERING_ENABLED: true,
-	CLUSTERING_HUBSERVER_CLUSTER_NAME: 'testHarperDB',
-	CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT: '9933',
-	CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES: '[]',
-	CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT: '9911',
-	CLUSTERING_HUBSERVER_NETWORK_PORT: '9900',
-	CLUSTERING_LEAFSERVER_NETWORK_PORT: '9944',
-	CLUSTERING_LEAFSERVER_NETWORK_ROUTES: '[]',
-	CLUSTERING_REPLY_SERVICE_PROCESSES: '1',
-	CLUSTERING_TLS_CERTIFICATE: TEST_CERT,
-	CLUSTERING_TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
-	CLUSTERING_TLS_CERT_AUTH: TEST_CERT_AUTH,
-	CLUSTERING_NETWORK_PORT: '54321',
-	CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS: true,
-	CLUSTERING_NODENAME: 'test_node_name',
-	CLUSTERING_REPUBLISHMESSAGES: true,
-	CLUSTERING_DATABASELEVEL: false,
 	HTTP_PORT: '9936',
 	HTTP_CORS: false,
 	HTTP_CORSACCESSLIST: '["test1", "test2"]',
@@ -81,31 +62,13 @@ const TEST_ARGS = {
 	STORAGE_PATH: 'users/unit_test/path',
 };
 const TEST_ARGS_2 = {
-	CLUSTERING_ENABLED: true,
+	LOGGING_LEVEL: 'error',
 	ROOTPATH: HDB_ROOT,
 };
 let TEST_ARGS_3 = {
 	ROOTPATH: HDB_ROOT,
 };
 const FLAT_CONFIG_OBJ = {
-	clustering_enabled: false,
-	clustering_hubserver_cluster_name: 'harperdb',
-	clustering_hubserver_cluster_network_port: 9932,
-	clustering_hubserver_cluster_network_routes: [
-		{
-			ip: null,
-			port: null,
-		},
-	],
-	clustering_hubserver_leafnodes_network_port: 9931,
-	clustering_hubserver_network_port: 9930,
-	clustering_leafserver_network_port: 9940,
-	clustering_nodename: null,
-	clustering_replyservice_processes: 1,
-	clustering_tls_certificate: null,
-	clustering_tls_certificateauthority: null,
-	clustering_tls_privatekey: null,
-	clustering_user: null,
 	http_cors: true,
 	http_corsaccesslist: [null],
 	http_headerstimeout: 60000,
@@ -148,24 +111,6 @@ const FLAT_CONFIG_OBJ = {
 	storage_overlappingsync: false,
 };
 const CONFIG_DOC_VALUE = {
-	clustering: {
-		enabled: false,
-		tls: {
-			certificate: 'test_cert',
-			certificateAuthority: 'test_ca',
-			privateKey: 'test_key',
-		},
-	},
-	customFunctions: {
-		enabled: false,
-		processes: null,
-		root: null,
-		tls: {
-			certificate: null,
-			certificateAuthority: null,
-			privateKey: null,
-		},
-	},
 	logging: {
 		root: null,
 	},
@@ -179,24 +124,6 @@ const CONFIG_DOC_VALUE = {
 	},
 };
 const FAKE_JSON_1 = {
-	clustering: {
-		enabled: false,
-		tls: {
-			certificate: 'test_cert',
-			certificateAuthority: 'test_ca',
-			privateKey: 'test_key',
-		},
-	},
-	customFunctions: {
-		enabled: false,
-		processes: null,
-		root: null,
-		tls: {
-			certificate: null,
-			certificateAuthority: null,
-			privateKey: null,
-		},
-	},
 	logging: {
 		root: {
 			'null compress': false,
@@ -212,42 +139,28 @@ const FAKE_JSON_1 = {
 	},
 };
 
-const CA_PEM = '/yaml/keys/ca.pem';
-const CERT_PEM = '/yaml/keys/certificate.pem';
-const KEY_PEM = '/yaml/keys/privateKey.pem';
-const CF_ROOT = '/yaml/custom_functions';
 const LOG_ROOT = '/yaml/log';
 
-const TEST_DIR = HDB_ROOT;
 const CONFIG_FILE_PATH = path.join(DIRNAME, 'yaml', 'harperdb-config.yaml');
 const OLD_CONFIG_PATH = 'test-config/settings.js';
 const BAD_CONFIG_FILE_PATH = path.join(DIRNAME, 'yaml', 'harperdb.doesntexist');
-const BACKUP_FILE_PATH = path.join(DIRNAME, 'yaml/backup', 'harperdb-config.yaml.bak');
+
 const BACKUP_FOLDER_PATH = path.join(DIRNAME, 'yaml/backup');
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
-const UNDFND_CONFIG_FILE_PATH_MSG = `HarperDB config file not found at ${BAD_CONFIG_FILE_PATH}. 
+const UNDFND_CONFIG_FILE_PATH_MSG = `Harper config file not found at ${BAD_CONFIG_FILE_PATH}. 
 				This can occur during early stages of install where the config file has not yet been created`;
 const UNDEFINED_OPS_API = 'operationsApi.root config parameter is undefined';
 const CONFIGURE_SUCCESS_RESPONSE =
-	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
-const STRING_ERROR = 'HarperDB config file validation error: "logging.rotation.maxSize" must be a string';
+	'Configuration successfully set. You must restart Harper for new config settings to take effect.';
+const STRING_ERROR = 'Harper config file validation error: "logging.rotation.maxSize" must be a string';
 
 describe('Test configUtils module', () => {
 	const sandbox = sinon.createSandbox();
 
-	before(() => {
-		fs.mkdirsSync(TEST_DIR);
-	});
-
 	after(() => {
 		sandbox.restore();
-		try {
-			fs.rmdirSync(TEST_DIR);
-		} catch (err) {
-			console.log('Error cleaning up after test:', err);
-		}
 	});
 
 	describe('Test createConfigFile function', () => {
@@ -280,59 +193,6 @@ describe('Test configUtils module', () => {
 					aggregatePeriod: 60,
 					replicate: false,
 				},
-				clustering: {
-					enabled: true,
-					hubServer: {
-						cluster: {
-							name: 'testHarperDB',
-							network: {
-								port: 9933,
-								routes: [],
-							},
-						},
-						leafNodes: {
-							network: {
-								port: 9911,
-							},
-						},
-						network: {
-							port: 9900,
-						},
-					},
-					leafServer: {
-						network: {
-							port: 9944,
-							routes: [],
-						},
-						streams: {
-							maxAge: null,
-							maxBytes: null,
-							maxMsgs: null,
-							maxConsumeMsgs: 100,
-							maxIngestThreads: 2,
-							path: null,
-						},
-					},
-					logLevel: 'info',
-					nodeName: 'test_node_name',
-					republishMessages: true,
-					databaseLevel: false,
-					tls: {
-						certificate: TEST_CERT,
-						certificateAuthority: null,
-						privateKey: TEST_PRIVATE_KEY,
-						insecure: true,
-						verify: true,
-					},
-					user: 'test_user',
-				},
-				replication: {
-					securePort: 9933,
-					databases: '*',
-					hostname: null,
-					routes: null,
-					enableRootCAs: true,
-				},
 				componentsRoot: path.join(DIRNAME, '/test_custom_functions'),
 				localStudio: {
 					enabled: true,
@@ -364,6 +224,9 @@ describe('Test configUtils module', () => {
 					},
 					webSocket: true,
 					requireAuthentication: true,
+				},
+				node: {
+					hostname: null,
 				},
 				operationsApi: {
 					network: {
@@ -426,30 +289,6 @@ describe('Test configUtils module', () => {
 				authentication_refreshtokentimeout: '31d',
 				analytics_aggregateperiod: 60,
 				analytics_replicate: false,
-				clustering_enabled: true,
-				clustering_hubserver_cluster_name: 'testHarperDB',
-				clustering_hubserver_cluster_network_port: 9933,
-				clustering_hubserver_cluster_network_routes: [],
-				clustering_hubserver_leafnodes_network_port: 9911,
-				clustering_hubserver_network_port: 9900,
-				clustering_leafserver_network_port: 9944,
-				clustering_leafserver_network_routes: [],
-				clustering_leafserver_streams_maxage: null,
-				clustering_leafserver_streams_maxbytes: null,
-				clustering_leafserver_streams_maxmsgs: null,
-				clustering_leafserver_streams_maxconsumemsgs: 100,
-				clustering_leafserver_streams_maxingestthreads: 2,
-				clustering_leafserver_streams_path: null,
-				clustering_loglevel: 'info',
-				clustering_nodename: 'test_node_name',
-				clustering_republishmessages: true,
-				clustering_databaselevel: false,
-				clustering_tls_certificate: TEST_CERT,
-				clustering_tls_certificateauthority: null,
-				clustering_tls_privatekey: TEST_PRIVATE_KEY,
-				clustering_tls_insecure: true,
-				clustering_tls_verify: true,
-				clustering_user: 'test_user',
 				componentsroot: path.join(DIRNAME, '/test_custom_functions'),
 				localstudio_enabled: true,
 				logging_auditauthevents_logfailed: false,
@@ -470,6 +309,7 @@ describe('Test configUtils module', () => {
 				mqtt_network_secureport: 8883,
 				mqtt_websocket: true,
 				mqtt_requireauthentication: true,
+				node_hostname: null,
 				operationsapi_network_compressionthreshold: 0,
 				operationsapi_network_cors: false,
 				operationsapi_network_corsaccesslist: ['test1', 'test2'],
@@ -493,11 +333,6 @@ describe('Test configUtils module', () => {
 				threads_debug: false,
 				http_timeout: 119999,
 				http_headerstimeout: 59999,
-				replication_databases: '*',
-				replication_hostname: null,
-				replication_routes: null,
-				replication_enablerootcas: true,
-				replication_secureport: 9933,
 				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
 				storage_caching: false,
@@ -577,6 +412,7 @@ describe('Test configUtils module', () => {
 			mqtt_network_secureport: 8883,
 			mqtt_requireauthentication: true,
 			mqtt_websocket: true,
+			node_hostname: null,
 			operationsapi_network_cors: true,
 			operationsapi_network_corsaccesslist: ['*'],
 			operationsapi_network_domainsocket: 'hdb/operations-server',
@@ -588,11 +424,6 @@ describe('Test configUtils module', () => {
 			operationsapi_network_mtls: false,
 			operationsapi_tls_privatekey: null,
 			operationsapi_network_compressionthreshold: 0,
-			replication_databases: '*',
-			replication_hostname: null,
-			replication_routes: null,
-			replication_enablerootcas: true,
-			replication_secureport: 9933,
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
@@ -610,7 +441,7 @@ describe('Test configUtils module', () => {
 		it('Test if in-memory object is undefined, the default config obj is instantiated and default value is returned', () => {
 			flat_default_config_obj_rw = config_utils_rw.__set__('flatDefaultConfigObj', undefined);
 
-			config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+			config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.NODE_HOSTNAME);
 			const flat_default_config_obj = config_utils_rw.__get__('flatDefaultConfigObj');
 			const non_object_flat_default_config_obj = { ...flat_default_config_obj };
 			for (let key in non_object_flat_default_config_obj) {
@@ -652,9 +483,9 @@ describe('Test configUtils module', () => {
 		it('Test if param is defined in instantiated default config, returns in-memory value', () => {
 			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', FLAT_CONFIG_OBJ);
 
-			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME);
+			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.LOGGING_LEVEL);
 
-			expect(value).to.equal('harperdb');
+			expect(value).to.equal('error');
 		});
 
 		it('Test if param isnt defined in instantiated default config, returns undefined', () => {
@@ -670,7 +501,7 @@ describe('Test configUtils module', () => {
 		it('Test if in-memory obj doesnt exist, returns undefined', () => {
 			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', undefined);
 
-			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME);
+			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.LOGGING_LEVEL);
 
 			expect(logger_trace_stub.firstCall.args[0]).to.equal(UNINIT_GET_CONFIG_ERR);
 			expect(value).to.be.undefined;
@@ -789,7 +620,7 @@ describe('Test configUtils module', () => {
 				error = err;
 			}
 
-			expect(error).to.equal('HarperDB config file validation error: operationsApi.root config parameter is undefined');
+			expect(error.message).to.equal('Harper config file validation error: operationsApi.root config parameter is undefined');
 			expect(config_validator_stub.calledOnce).to.be.true;
 			expect(config_validator_stub.firstCall.args[0]).to.eql(test_config_json);
 
@@ -1065,22 +896,6 @@ describe('Test configUtils module', () => {
 	describe('Test castConfigValue function', () => {
 		const cast_config_value_rw = config_utils_rw.__get__('castConfigValue');
 
-		it('Test nodeName and user as number value returns string', () => {
-			const result = cast_config_value_rw(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 44);
-			expect(result).to.equal('44');
-
-			const result_2 = cast_config_value_rw(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, 10014);
-			expect(result_2).to.equal('10014');
-		});
-
-		it('Test nodeName and user as true/false strings returns the value as strings', () => {
-			const result = cast_config_value_rw(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'TrUe');
-			expect(result).to.equal('TrUe');
-
-			const result_2 = cast_config_value_rw(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, 'FALSE');
-			expect(result_2).to.equal('FALSE');
-		});
-
 		it('Test number value returns number', () => {
 			const result = cast_config_value_rw(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS, 15.33);
 			expect(result).to.equal(15.33);
@@ -1247,7 +1062,7 @@ describe('Test configUtils module', () => {
 				error = err;
 			}
 
-			expect(error.message).to.equal(`HarperDB properties file at path ${BAD_CONFIG_FILE_PATH} does not exist`);
+			expect(error.message).to.equal(`Harper properties file at path ${BAD_CONFIG_FILE_PATH} does not exist`);
 			expect(logger_error_stub.firstCall.args[0].message).to.equal(
 				`ENOENT: no such file or directory, access '${BAD_CONFIG_FILE_PATH}'`
 			);
@@ -1287,7 +1102,7 @@ describe('Test configUtils module', () => {
 			'LOG_TO_FILE': true,
 			'LOG_TO_STDSTREAMS': false,
 			'RUN_IN_FOREGROUND': false,
-			';Settings for the HarperDB process.': '',
+			';Settings for the Harper process.': '',
 		};
 		const EXPECTED_CONFIG_OBJ = {
 			authentication_operationtokentimeout: '1d',
@@ -1382,7 +1197,7 @@ describe('Test configUtils module', () => {
 
 			// Reset parseYamlDoc in case previous tests stubbed it
 			// Re-require the module to get a fresh copy
-			delete require.cache[require.resolve('../../config/configUtils.js')];
+			delete require.cache[require.resolve('#js/config/configUtils')];
 			require('#js/config/configUtils');
 			const freshRewire = rewire('#js/config/configUtils');
 			// Copy the fresh parseYamlDoc to our rewired module
