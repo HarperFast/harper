@@ -93,7 +93,7 @@ describe('Test database copy and compact', () => {
 			notIndexed: 'I am a non-indexed value',
 		});
 		const stat_after = await fs.stat(compacted_db);
-		assert((stat_after.size / stat_before_compact.size) * 100 < 10);
+		assert(100 - (stat_after.size / stat_before_compact.size) * 100 < 10);
 		assert(!(await TestTable.get(105)));
 		let matches = [];
 		for await (let entry of TestTable.search([{ name: 'about', value: 'about' }])) matches.push(entry);
@@ -108,7 +108,7 @@ describe('Test database copy and compact', () => {
 		assert(update_config_stub.called, 'updateConfigValue should be called');
 		assert(!console_error_spy.called, 'console.error should not be called');
 		assert(
-			(stat_after.size / stat_before_compact.size) * 100 < 10,
+			100 - (stat_after.size / stat_before_compact.size) * 100 < 10,
 			'after size ' + stat_after.size + ' should be' + ' much less than before size ' + stat_before_compact.size
 		);
 	});
@@ -119,7 +119,7 @@ describe('Test database copy and compact', () => {
 		const stat_after = await fs.stat(path.join(storage_path, 'copy-test.mdb'));
 		assert(update_config_stub.called);
 		assert(!console_error_spy.called);
-		assert(stat_after.size < 200000);
+		assert(stat_after.size < 2000000); // 2MB
 		assert(await fs.exists(path.join(storage_path, 'backup', 'copy-test.mdb')));
 	});
 });

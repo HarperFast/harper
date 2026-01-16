@@ -8,9 +8,7 @@ const fs = require('fs-extra');
 const env_mgr = require('#js/utility/environment/environmentManager');
 const sys_info = require('#js/utility/environment/systemInformation');
 const hdb_terms = require('#src/utility/hdbTerms');
-const user = require('#src/security/user');
 const installation = require('#src/utility/installation');
-const hdb_utils = require('#js/utility/common_utils');
 const status = rewire('#js/bin/status');
 
 describe('Test status module', () => {
@@ -18,77 +16,7 @@ describe('Test status module', () => {
 	let console_log_stub;
 	let read_file_stub;
 	let get_hdb_process_info_stub;
-	let get_server_config_stub;
-	const fake_network = {
-		nodes: [
-			{
-				name: 'local',
-				response_time: 8,
-				connected_nodes: ['ec2-3-14-144-240'],
-				routes: [
-					{
-						host: '3.14.144.240',
-						port: 12345,
-					},
-				],
-			},
-			{
-				name: 'ec2-3-14-144-240',
-				response_time: 43,
-				connected_nodes: ['local', 'ec2-18-216-178-34', 'ec2-3-133-121-113'],
-				routes: [],
-			},
-		],
-	};
 
-	const fake_cluster_status = {
-		node_name: 'local',
-		is_enabled: true,
-		connections: [
-			{
-				node_name: 'ec2-18-216-178-34',
-				status: 'NoResponders',
-				ports: {},
-				subscriptions: [
-					{
-						schema: 'four',
-						table: 'frog',
-						publish: true,
-						subscribe: true,
-					},
-				],
-			},
-			{
-				node_name: 'ec2-3-14-144-240',
-				status: 'open',
-				ports: {
-					clustering: 12345,
-					operations_api: 9925,
-				},
-				latency_ms: 108,
-				uptime: '18h 18m 3s',
-				subscriptions: [
-					{
-						schema: 'four',
-						table: 'frog',
-						publish: true,
-						subscribe: true,
-					},
-					{
-						schema: 'four',
-						table: 'bird',
-						publish: true,
-						subscribe: true,
-					},
-				],
-				system_info: {
-					hdb_version: '4.1.1',
-					node_version: '18.15.0',
-					platform: 'linux',
-				},
-			},
-		],
-	};
 	const fake_hdb_process_info = {
 		core: [
 			{
@@ -98,58 +26,14 @@ describe('Test status module', () => {
 				pid: 55297,
 			},
 		],
-		clustering: [
-			{
-				pid: 55319,
-			},
-			{
-				pid: 55318,
-			},
-		],
 	};
-	const network_stub = sandbox.stub().resolves(fake_network);
-
-	const fake_replication_status = {
-		type: 'cluster-status',
-		connections: [
-			{
-				url: 'wss://127.0.0.1:9925',
-				subscriptions: [
-					{
-						database: 'data',
-						table: 'fish',
-						publish: true,
-						subscribe: true,
-					},
-				],
-				name: 'node-1',
-				database_sockets: [
-					{
-						database: 'data',
-						connected: true,
-						latency: 0.49228906631469727,
-						catching_up_from: 'up-to-date',
-						thread_id: 1,
-						nodes: ['node-1'],
-					},
-				],
-			},
-		],
-		node_name: 'node-2',
-		is_enabled: true,
-	};
-	let http_request_stub;
 
 	before(() => {
 		console_log_stub = sandbox.stub(console, 'log');
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, 'unit-test');
-		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME, 'unit-test');
 		read_file_stub = sandbox.stub(fs, 'readFile').resolves('62076');
 		get_hdb_process_info_stub = sandbox.stub(sys_info, 'getHDBProcessInfo').resolves(fake_hdb_process_info);
 		sandbox.stub(installation, 'isHdbInstalled').returns(true);
-		http_request_stub = sandbox
-			.stub(hdb_utils, 'httpRequest')
-			.resolves({ body: JSON.stringify(fake_replication_status) });
 	});
 
 	after(() => {
@@ -164,20 +48,17 @@ describe('Test status module', () => {
 		const process_exit_stub = sandbox.stub(process, 'exit');
 		await status();
 		process_exit_stub.restore();
-		expect(console_log_stub.args[0][0]).to.eql(
-			'harperdb:\n  status: running\n  pid: 62076\nreplication:\n  node name: node-2\n  is enabled: true\n  connections:\n    - node name: node-1\n      url: wss://127.0.0.1:9925\n      subscriptions:\n        - database: data\n          table: fish\n          publish: true\n          subscribe: true\n      database sockets:\n        - database: data\n          connected: true\n          latency: 0.49228906631469727\n          catching up from: up-to-date\n          thread id: 1\n          nodes:\n            - node-1\nclustering:\n  hub server:\n    status: running\n    pid: 62076\n  leaf server:\n    status: running\n    pid: 62076\n  network:\n    - name: local\n      response time: 8\n      connected nodes:\n        - ec2-3-14-144-240\n      routes:\n        - host: 3.14.144.240\n          port: 12345\n    - name: ec2-3-14-144-240\n      response time: 43\n      connected nodes:\n        - local\n        - ec2-18-216-178-34\n        - ec2-3-133-121-113\n      routes: []\n  replication:\n    node name: local\n    is enabled: true\n    connections:\n      - node name: ec2-18-216-178-34\n        status: NoResponders\n        ports: {}\n        subscriptions:\n          - schema: four\n            table: frog\n            publish: true\n            subscribe: true\n        system info: {}\n      - node name: ec2-3-14-144-240\n        status: open\n        ports:\n          clustering: 12345\n          operations api: 9925\n        latency ms: 108\n        uptime: 18h 18m 3s\n        subscriptions:\n          - schema: four\n            table: frog\n            publish: true\n            subscribe: true\n          - schema: four\n            table: bird\n            publish: true\n            subscribe: true\n        system info:\n          hdb version: 4.1.1\n          node version: 18.15.0\n          platform: linux\n'
-		);
+		expect(console_log_stub.args[0][0]).to.eql('harperdb:\n  status: running\n  pid: 62076\n');
 	});
 
 	it('Test status when nothing is running', async () => {
-		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME, undefined);
-		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.REPLICATION_URL, undefined);
 		const process_exit_stub = sandbox.stub(process, 'exit');
+		get_hdb_process_info_stub.resolves({ core: [] });
 
 		await status();
 		process_exit_stub.restore();
 		expect(console_log_stub.args[0][0]).to.eql(
-			'harperdb:\n  status: stopped\nclustering:\n  hub server:\n    status: stopped\n  leaf server:\n    status: stopped\n'
+			'harperdb:\n  status: stopped\n'
 		);
 	});
 });

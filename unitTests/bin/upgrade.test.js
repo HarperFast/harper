@@ -13,7 +13,6 @@ let upgrade_rw;
 const hdbInfoController = require('#js/dataLayer/hdbInfoController');
 const updatePrompt = require('#js/upgrade/upgradePrompt');
 const directivesManager = require('#js/upgrade/directivesManager');
-const chalk = require('chalk');
 const { packageJson } = require('#js/utility/packageUtils');
 const { UpgradeObject } = require('#js/upgrade/UpgradeObjects');
 const fs = require('fs-extra');
@@ -41,7 +40,7 @@ describe('Test upgrade.js', () => {
 	let log_rw;
 
 	before(() => {
-		upgrade_rw = rewire(`../../bin/upgrade`);
+		upgrade_rw = rewire('#js/bin/upgrade');
 		log_rw = upgrade_rw.__set__('hdbLogger', logger_fake);
 		consoleLog_stub = sandbox.stub(console, 'log').returns();
 		printToLogAndConsole_stub = sandbox.stub().returns();
@@ -56,7 +55,7 @@ describe('Test upgrade.js', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire(`../../bin/upgrade`);
+		rewire(`#js/bin/upgrade`);
 	});
 
 	describe.skip('upgrade()', async () => {
@@ -315,7 +314,7 @@ describe('Test upgrade.js', () => {
 		let printToLogAndConsole;
 
 		before(() => {
-			let upgrade_rw = rewire(`../../bin/upgrade`);
+			let upgrade_rw = rewire(`#js/bin/upgrade`);
 			printToLogAndConsole = upgrade_rw.__get__('printToLogAndConsole');
 		});
 
