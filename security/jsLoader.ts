@@ -12,7 +12,7 @@ import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import type { CompartmentOptions } from 'ses';
 
-type ContainmentMode = 'none' | 'vm' | 'compartment' | 'lockdown';
+type ContainmentMode = 'none' | 'vm' | 'compartment';
 const APPLICATIONS_CONTAINMENT: ContainmentMode = env.get(CONFIG_PARAMS.APPLICATIONS_CONTAINMENT);
 const APPLICATIONS_DEPENDENCYCONTAINMENT: boolean = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYCONTAINMENT);
 const APPLICATIONS_LOCKDOWN: boolean = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
@@ -39,7 +39,7 @@ export async function scopedImport(filePath: string | URL, scope?: Scope) {
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
-		if (scope && APPLICATIONS_CONTAINMENT && APPLICATIONS_CONTAINMENT !== 'none') {
+		if (scope && (scope.applicationContainment ?? APPLICATIONS_CONTAINMENT) !== 'none') {
 			const globals = getGlobalVars(scope);
 			if (APPLICATIONS_CONTAINMENT === 'vm') {
 				return await loadModuleWithVM(moduleUrl, scope);

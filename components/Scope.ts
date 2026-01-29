@@ -36,6 +36,7 @@ export class Scope extends EventEmitter {
 	resources: Resources;
 	server: Server;
 	ready: Promise<any[]>;
+	declare applicationContainment?: 'none' | 'vm' | 'sandbox'; // option to set this from the scope
 
 	constructor(name: string, directory: string, configFilePath: string, resources: Resources, server: Server) {
 		super();

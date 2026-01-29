@@ -1,0 +1,3 @@
+# Loads JavaScript modules such that their exports are exported as resources
+jsResource:
+  files: 'resources.js'
