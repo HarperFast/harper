@@ -16,6 +16,12 @@ export class MissingDefaultFilesOptionError extends Error {
 	}
 }
 
+export interface ApplicationContainment {
+	mode?: 'none' | 'vm' | 'sandbox'; // option to set this from the scope
+	dependencyContainment?: boolean; // option to set this from the scope
+	verifyPath?: string;
+};
+
 /**
  * This class is what is passed to the `handleApplication` function of an extension.
  *
@@ -36,8 +42,7 @@ export class Scope extends EventEmitter {
 	resources: Resources;
 	server: Server;
 	ready: Promise<any[]>;
-	declare applicationContainment?: 'none' | 'vm' | 'sandbox'; // option to set this from the scope
-
+	declare applicationContainment?: ApplicationContainment;
 	constructor(name: string, directory: string, configFilePath: string, resources: Resources, server: Server) {
 		super();
 

@@ -26,7 +26,7 @@ analytics:
 applications:
   lockdown: true
   containment: 'vm'
-  dependencyContainment: true
+  dependencyContainment: false
 componentsRoot: null
 localStudio:
   enabled: true

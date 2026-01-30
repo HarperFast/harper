@@ -2,7 +2,10 @@ import { Scope } from '../components/Scope.ts';
 import { dirname } from 'path';
 
 function isResource(value: unknown) {
-	return typeof value === 'function' && ('get' in value || 'put' in value || 'post' in value || 'delete' in value);
+	return value && (typeof value.get === 'function' ||
+		typeof value.put === 'function' ||
+		typeof value.post === 'function' ||
+		typeof value.delete === 'function');
 }
 
 /**

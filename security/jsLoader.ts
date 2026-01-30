@@ -39,7 +39,7 @@ export async function scopedImport(filePath: string | URL, scope?: Scope) {
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
-		if (scope && (scope.applicationContainment ?? APPLICATIONS_CONTAINMENT) !== 'none') {
+		if (scope && (scope.applicationContainment?.mode ?? APPLICATIONS_CONTAINMENT) !== 'none') {
 			const globals = getGlobalVars(scope);
 			if (APPLICATIONS_CONTAINMENT === 'vm') {
 				return await loadModuleWithVM(moduleUrl, scope);
@@ -72,7 +72,7 @@ export async function scopedImport(filePath: string | URL, scope?: Scope) {
  * Load a module using Node's vm.Module API with (not really secure) sandboxing
  */
 async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
-	const moduleCache = new Map<string, SourceTextModule | SyntheticModule>();
+	const moduleCache = new Map<string, Promise<SourceTextModule | SyntheticModule>>();
 
 	// Create a secure context with limited globals
 	const contextObject = getGlobalVars(scope);
@@ -125,8 +125,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
 				const resolvedUrl = resolveModule(specifier, script.sourceURL);
-				const useContainment = specifier.startsWith('.') || APPLICATIONS_DEPENDENCYCONTAINMENT;
-				const dynamicModule = await loadModule(resolvedUrl, useContainment);
+				const useContainment =
+					specifier.startsWith('.') ||
+					(scope.applicationContainment?.dependencyContainment ?? APPLICATIONS_DEPENDENCYCONTAINMENT);
+				const dynamicModule = await loadModuleWithCache(resolvedUrl, useContainment);
 				return dynamicModule;
 			},
 		});
@@ -143,7 +145,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
 		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
 		const exportNames = Object.keys(cjsModule.exports);
-		return new SyntheticModule(
+		const synModule = new SyntheticModule(
 			exportNames.length > 0 ? exportNames : ['default'],
 			function () {
 				if (exportNames.length > 0) {
@@ -156,6 +158,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			},
 			{ identifier: url, context }
 		);
+		moduleCache.set(url, synModule);
+		return synModule;
 	}
 
 	/**
@@ -169,20 +173,26 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			return moduleCache.get(resolvedUrl)!;
 		}
 
-		const useContainment = specifier.startsWith('.') || APPLICATIONS_DEPENDENCYCONTAINMENT;
+		const useContainment =
+			specifier.startsWith('.') ||
+			(scope.applicationContainment?.dependencyContainment ?? APPLICATIONS_DEPENDENCYCONTAINMENT);
 		// Load the module
-		return await loadModule(resolvedUrl, useContainment);
+		return await loadModuleWithCache(resolvedUrl, useContainment);
 	}
 
-	/**
-	 * Load a module from URL and create appropriate vm.Module
-	 */
-	async function loadModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
+	function loadModuleWithCache(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
 		// Check cache
 		if (moduleCache.has(url)) {
 			return moduleCache.get(url)!;
 		}
-
+		const loadingModule = loadModule(url, usePrivateGlobal);
+		moduleCache.set(url, loadingModule);
+		return loadingModule;
+	}
+	/**
+	 * Load a module from URL and create appropriate vm.Module
+	 */
+	async function loadModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
 		let module: SourceTextModule | SyntheticModule;
 
 		// Handle special built-in modules
@@ -197,6 +207,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 				{ identifier: url, context }
 			);
 		} else if (usePrivateGlobal && url.startsWith('file://')) {
+			checkAllowedModulePath(url, scope.applicationContainment?.verifyPath ?? scope.directory);
 			// Load source text from file
 			const source = await readFile(new URL(url), { encoding: 'utf-8' });
 
@@ -210,7 +221,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 					},
 					async importModuleDynamically(specifier: string, script) {
 						const resolvedUrl = resolveModule(specifier, url);
-						const dynamicModule = await loadModule(resolvedUrl, true);
+						const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
 						return dynamicModule;
 					},
 				});
@@ -224,20 +235,19 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 				return module;
 			} catch (err) {
 				// If ESM parsing fails, try to load as CommonJS
+				// but first try the cache again
 				if (
-					err.message?.includes('Cannot use import statement') ||
-					err.message?.includes('Unexpected token') ||
+					err.message?.includes('require is not defined') ||
 					source.includes('module.exports') ||
 					source.includes('exports.')
 				) {
-					moduleCache.delete(url); // uncache if it failed and go through CJS
 					module = loadCJSModule(url, source, usePrivateGlobal);
 				} else {
 					throw err;
 				}
 			}
 		} else {
-			checkAllowedHostModule(url, scope.directory);
+			checkAllowedModulePath(url, scope.applicationContainment?.verifyPath ?? scope.directory);
 			// For Node.js built-in modules (node:) and npm packages, use dynamic import
 			const importedModule = await import(url);
 			const exportNames = Object.keys(importedModule);
@@ -253,8 +263,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			);
 		}
 
-		// Cache the module
-		moduleCache.set(url, module);
 		// Link the module (resolve all imports)
 		await module.link(linker);
 
@@ -265,7 +273,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 	}
 
 	// Load the entry module
-	const entryModule = await loadModule(moduleUrl, true);
+	const entryModule = await loadModuleWithCache(moduleUrl, true);
 
 	// Return the module namespace (exports)
 	return entryModule.namespace;
@@ -306,7 +314,7 @@ async function getCompartment(scope: Scope, globals) {
 					const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedHostModule(moduleSpecifier, scope.directory);
+					checkAllowedModulePath(moduleSpecifier, scope.applicationContainment?.verifyPath ?? scope.directory);
 					const moduleExports = await import(moduleSpecifier);
 					return {
 						imports: [],
@@ -342,7 +350,7 @@ function secureOnlyFetch(resource, options) {
  * Get the set of global variables that should be available to modules that run in scoped compartments/contexts.
  */
 function getGlobalVars(scope: Scope) {
-	return {
+	const appGlobal = {
 		server: scope.server ?? server,
 		logger: scope.logger ?? logger,
 		resources: scope.resources,
@@ -350,7 +358,7 @@ function getGlobalVars(scope: Scope) {
 		Resource,
 		tables,
 		process,
-		global,
+		global: undefined,
 		Request,
 		Headers,
 		TextEncoder,
@@ -370,6 +378,8 @@ function getGlobalVars(scope: Scope) {
 		Date,
 		fetch: secureOnlyFetch,
 	};
+	appGlobal.global = appGlobal;
+	return appGlobal;
 }
 const ALLOWED_NODE_BUILTIN_MODULES = new Set([
 	'assert',
@@ -392,7 +402,7 @@ const ALLOWED_NODE_BUILTIN_MODULES = new Set([
 	'perf_hooks',
 	'diagnostics_channel',
 ]);
-function checkAllowedHostModule(moduleUrl: string, containingFolder: string): boolean {
+function checkAllowedModulePath(moduleUrl: string, containingFolder: string): boolean {
 	if (moduleUrl.startsWith('file:')) {
 		const path = moduleUrl.slice(7);
 		if (path.startsWith(containingFolder)) {

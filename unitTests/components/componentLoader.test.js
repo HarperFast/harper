@@ -102,7 +102,7 @@ describe('ComponentLoader Status Integration', function () {
 			};
 
 			// Load the component
-			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin', false);
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
 
 			// Check lifecycle.loading calls
 			const expectedStatusName = `${componentDirName}.dataLoader`;
@@ -136,7 +136,7 @@ describe('ComponentLoader Status Integration', function () {
 			};
 
 			// Load the component
-			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin', false);
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
 
 			// Should initialize the logging component
 			const expectedStatusName = `${componentDirName}.logging`;
@@ -167,7 +167,7 @@ describe('ComponentLoader Status Integration', function () {
 			};
 
 			// Load the component - no config means DEFAULT_CONFIG is used
-			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin', false);
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
 
 			// Should initialize first
 			assert.ok(componentStatusRegistry.initializeLoading.called);
@@ -202,7 +202,7 @@ describe('ComponentLoader Status Integration', function () {
 			};
 
 			// Load the component
-			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin', false);
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
 
 			// Get the actual status from registry using the correct name
 			const expectedStatusName = `${componentDirName}.logging`;
@@ -233,7 +233,7 @@ describe('ComponentLoader Status Integration', function () {
 			};
 
 			// Load the component - won't throw, but will handle the error internally
-			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin', false);
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
 
 			// Should have initialized the component
 			const expectedStatusName = `${componentDirName}.dataLoader`;
