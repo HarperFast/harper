@@ -357,6 +357,7 @@ function getGlobalVars(scope: Scope) {
 		tables,
 		databases,
 		process,
+		createBlob,
 		global: undefined,
 		Request,
 		Headers,
@@ -390,6 +391,7 @@ function getHarperExports(scope: Scope) {
 		Resource,
 		tables,
 		databases,
+		createBlob,
 		getContext,
 	};
 }
