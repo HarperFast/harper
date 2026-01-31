@@ -1183,7 +1183,7 @@ describe('test MQTT connections and commands', () => {
 	it('subscribe sub-topic with history', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
 		const { FourPropWithHistory } = await import('../testApp/resources.js');
-		FourPropWithHistory.acknowledgements = 0;
+		tables.FourProp.acknowledgements = 0; // reset
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',

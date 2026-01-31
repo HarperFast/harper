@@ -78,7 +78,7 @@ export const api = {
 
 class SubObject extends tables.SubObject {
 	get(query) {
-		global.headersTest = this.getContext().headers;
+		tables.SubObject.headersTest = this.getContext().headers;
 		this.addedProperty = true;
 		return super.get(query);
 	}
@@ -160,24 +160,24 @@ tables.CacheOfResource.sourcedFrom({
 });
 
 export class FourPropWithHistory extends tables.FourProp {
-	static acknowledgements = 0;
 	async subscribe(options) {
 		let context = this.getContext();
 		assert(context.session?.subscriptions);
 		assert(context.user);
 		assert(context.socket);
 		options.previousCount = 10;
+		tables.FourProp.acknowledgements = 0;
 		const subscription = await super.subscribe(options);
 		for (let update of subscription.queue) {
 			update.acknowledge = () => {
-				FourPropWithHistory.acknowledgements++;
+				tables.FourProp.acknowledgements++;
 			};
 		}
 
 		const super_send = subscription.send;
 		subscription.send = (event) => {
 			event.acknowledge = () => {
-				FourPropWithHistory.acknowledgements++;
+				tables.FourProp.acknowledgements++;
 			};
 			return super_send.call(subscription, event);
 		};

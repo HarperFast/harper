@@ -146,6 +146,7 @@ describe('test REST with property updates', function (options) {
 				'Custom-Header': 'custom-value',
 			},
 		});
+		const headersTest = tables.SubObject.headersTest;
 		assert.equal(headersTest.get('Custom-Header'), 'custom-value');
 		assert.equal(headersTest.get('CUSTOM-HEADER'), 'custom-value'); // shouldn't be case sensitive
 		let entries = [];
