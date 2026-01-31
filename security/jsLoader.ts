@@ -1,4 +1,4 @@
-import { Resource } from '../resources/Resource.ts';
+import { Resource, contextStorage } from '../resources/Resource.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -24,7 +24,6 @@ let lockedDown = false;
  * @param moduleUrl
  * @param scope
  */
-global.scopedImport = scopedImport; // for testing
 export async function scopedImport(filePath: string | URL, scope?: Scope) {
 	require('ses');
 	if (APPLICATIONS_LOCKDOWN && !lockedDown) {
@@ -82,7 +81,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 	 * Resolve module specifier to absolute URL
 	 */
 	function resolveModule(specifier: string, referrer: string): string {
-		if (specifier === 'harperdb') return 'harperdb';
+		if (specifier === 'harperdb' || specifier === 'harper') return 'harper';
 		if (specifier.startsWith('file://')) {
 			return specifier;
 		}
@@ -196,13 +195,14 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 		let module: SourceTextModule | SyntheticModule;
 
 		// Handle special built-in modules
-		if (url === 'harperdb') {
+		if (url === 'harper') {
+			let harperExports = getHarperExports(scope);
 			module = new SyntheticModule(
-				['Resource', 'tables', 'databases'],
+				Object.keys(harperExports),
 				function () {
-					this.setExport('Resource', Resource);
-					this.setExport('tables', tables);
-					this.setExport('databases', databases);
+					for (let key in harperExports) {
+						this.setExport(key, harperExports[key]);
+					}
 				},
 				{ identifier: url, context }
 			);
@@ -290,7 +290,7 @@ async function getCompartment(scope: Scope, globals) {
 		{
 			name: 'harper-app',
 			resolveHook(moduleSpecifier, moduleReferrer) {
-				if (moduleSpecifier === 'harperdb') return 'harperdb';
+				if (moduleSpecifier === 'harperdb' || moduleSpecifier === 'harper') return 'harper';
 				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
 				if (isAbsolute(resolved)) {
 					const resolvedURL = pathToFileURL(resolved).toString();
@@ -299,15 +299,13 @@ async function getCompartment(scope: Scope, globals) {
 				return moduleSpecifier;
 			},
 			importHook: async (moduleSpecifier) => {
-				console.log('importHook', moduleSpecifier);
-				if (moduleSpecifier === 'harperdb') {
+				if (moduleSpecifier === 'harper') {
+					const harperExports = getHarperExports(scope);
 					return {
 						imports: [],
-						exports: ['Resource', 'tables', 'databases'],
+						exports: Object.keys(harperExports),
 						execute(exports) {
-							exports.Resource = Resource;
-							exports.tables = tables;
-							exports.databases = databases;
+							Object.assign(exports, harperExports);
 						},
 					};
 				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
@@ -357,6 +355,7 @@ function getGlobalVars(scope: Scope) {
 		config: scope.options.getRoot() ?? {},
 		Resource,
 		tables,
+		databases,
 		process,
 		global: undefined,
 		Request,
@@ -377,9 +376,22 @@ function getGlobalVars(scope: Scope) {
 		setInterval,
 		Date,
 		fetch: secureOnlyFetch,
+		getContext,
 	};
 	appGlobal.global = appGlobal;
 	return appGlobal;
+}
+function getHarperExports(scope: Scope) {
+	return {
+		server: scope.server ?? server,
+		logger: scope.logger ?? logger,
+		resources: scope.resources,
+		config: scope.options.getRoot() ?? {},
+		Resource,
+		tables,
+		databases,
+		getContext,
+	};
 }
 const ALLOWED_NODE_BUILTIN_MODULES = new Set([
 	'assert',
@@ -414,4 +426,8 @@ function checkAllowedModulePath(moduleUrl: string, containingFolder: string): bo
 	simpleName = simpleName.split('/')[0];
 	if (ALLOWED_NODE_BUILTIN_MODULES.has(simpleName)) return true;
 	throw new Error(`Module ${moduleUrl} is not allowed to be imported`);
+}
+
+function getContext() {
+	return contextStorage.getStore() ?? {};
 }

@@ -1,18 +1,18 @@
 'use strict';
 
 const { join } = require('node:path');
-const { secureImport } = require('#src/security/jsLoader');
+const { scopedImport } = require('#src/security/jsLoader');
 const { expect } = require('chai');
 
-describe('secureImport', () => {
+describe('scopedImport', () => {
 	it('should import a module', async () => {
-		const result = await secureImport(join(__dirname, 'fixtures', 'good.cjs'));
+		const result = await scopedImport(join(__dirname, 'fixtures', 'good.cjs'));
 		expect(result.foo).to.equal('bar');
 	});
 
 	it('should throw an error importing an invalid CommonJS module', async () => {
 		try {
-			await secureImport(join(__dirname, 'fixtures', 'invalid1.cjs'));
+			await scopedImport(join(__dirname, 'fixtures', 'invalid1.cjs'));
 		} catch (e) {
 			expect(e).to.be.instanceOf(SyntaxError);
 			expect(e.toString()).to.match(/SyntaxError: Unexpected identifier( 'is')?/);
@@ -25,7 +25,7 @@ describe('secureImport', () => {
 
 	it('should throw an error importing a CommonJS module with invalid dependency', async () => {
 		try {
-			await secureImport(join(__dirname, 'fixtures', 'invalid2.cjs'));
+			await scopedImport(join(__dirname, 'fixtures', 'invalid2.cjs'));
 		} catch (e) {
 			expect(e).to.be.instanceOf(SyntaxError);
 			expect(e.toString()).to.equal("SyntaxError: Unexpected token '='");
@@ -38,7 +38,7 @@ describe('secureImport', () => {
 
 	it('should throw an error importing an invalid ESM module', async () => {
 		try {
-			await secureImport(join(__dirname, 'fixtures', 'invalid3.mjs'));
+			await scopedImport(join(__dirname, 'fixtures', 'invalid3.mjs'));
 		} catch (e) {
 			expect(e).to.be.instanceOf(SyntaxError);
 			expect(e.toString()).to.match(/SyntaxError: Unexpected identifier( 'is')?/);
@@ -50,7 +50,7 @@ describe('secureImport', () => {
 
 	it('should throw an error importing an ESM module with invalid dependency', async () => {
 		try {
-			await secureImport(join(__dirname, 'fixtures', 'invalid4.mjs'));
+			await scopedImport(join(__dirname, 'fixtures', 'invalid4.mjs'));
 		} catch (e) {
 			expect(e).to.be.instanceOf(SyntaxError);
 			expect(e.toString()).to.equal('SyntaxError: Missing initializer in const declaration');
