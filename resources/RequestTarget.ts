@@ -2,6 +2,7 @@ import type { UserRoleDatabasePermissions } from '../security/user.ts';
 import type { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
 import { _assignPackageExport } from '../globals.js';
 import { Resource } from './Resource.ts';
+import { parseQuery } from './search.ts';
 
 export class RequestTarget extends URLSearchParams {
 	#target?: string;
@@ -61,6 +62,7 @@ export class RequestTarget extends URLSearchParams {
 			const search = (target as string).slice((searchIndex as number) + 1);
 			super(search);
 			this.search = search;
+			parseQuery(search, this);
 		} else {
 			super();
 			path = target;

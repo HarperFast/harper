@@ -606,7 +606,8 @@ function transactional(action, options) {
 						// handle queries in local URLs like /path/?name=value
 						const searchIndex = id.indexOf('?');
 						if (searchIndex > -1) {
-							query = this.parseQuery(id.slice(searchIndex + 1), idOrQuery);
+							if (!(idOrQuery instanceof URLSearchParams))
+								query = this.parseQuery(id.slice(searchIndex + 1), idOrQuery);
 							id = id.slice(0, searchIndex);
 							if (id === '') isCollection = true;
 						}

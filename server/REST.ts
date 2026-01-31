@@ -31,7 +31,6 @@ async function http(request: Context & Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
 	const method = isSse ? 'CONNECT' : request.method;
-	if (request.search) parseQuery(request);
 	const headers = new Headers();
 	try {
 		request.responseHeaders = headers;

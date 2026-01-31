@@ -1,6 +1,7 @@
 require('../test_utils');
 const assert = require('assert');
 const { parseQuery } = require('#src/resources/search');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Parsing queries', () => {
 	let QueryTable, RelatedTable;
@@ -201,5 +202,36 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('(name=(value))'), /no attribute/);
 		assert.throws(() => parseQuery('name=value|test=3&foo=bar'), /mix operators/);
 		assert.throws(() => parseQuery('name=value&[test=3&foo=bar|test=4]'), /mix operators/);
+	});
+});
+describe('Parsing queries with RequestTarget', function () {
+	it('Basic AND query', function () {
+		const query = new RequestTarget('?id=1&name=2');
+		const conditions = Array.from(query);
+		assert.equal(conditions.length, 2);
+		assert.equal(conditions[0][0], 'id');
+		assert.equal(conditions[0][1], '1');
+		assert.equal(conditions[1][0], 'name');
+		assert.equal(conditions[1][1], '2');
+	});
+	it('Basic OR query', function () {
+		let query = new RequestTarget('/somepath/?id=1|name=2');
+		assert.equal(query.operator, 'or');
+		assert.equal(query.conditions.length, 2);
+		assert.equal(query.conditions[0].attribute, 'id');
+		assert.equal(query.conditions[0].value, '1');
+		assert.equal(query.conditions[1].attribute, 'name');
+		assert.equal(query.conditions[1].value, '2');
+	});
+	it('Basic AND and nested OR query', function () {
+		let query = new RequestTarget('something?id=1&(value=gt=4|name=2)');
+		assert.equal(query.conditions.length, 2);
+		assert.equal(query.conditions[0].attribute, 'id');
+		assert.equal(query.conditions[0].value, '1');
+		assert.equal(query.conditions[1].operator, 'or');
+		assert.equal(query.conditions[1].conditions[0].attribute, 'value');
+		assert.equal(query.conditions[1].conditions[0].comparator, 'gt');
+		assert.equal(query.conditions[1].conditions[1].comparator, 'equals');
+		assert.equal(query.conditions[1].conditions[1].value, '2');
 	});
 });
