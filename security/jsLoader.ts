@@ -39,12 +39,12 @@ export async function scopedImport(filePath: string | URL, scope?: Scope) {
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
 		if (scope && (scope.applicationContainment?.mode ?? APPLICATIONS_CONTAINMENT) !== 'none') {
-			const globals = getGlobalVars(scope);
 			if (APPLICATIONS_CONTAINMENT === 'vm') {
 				return await loadModuleWithVM(moduleUrl, scope);
 			} // else use SES Compartments
 			// note that we use a single compartment per scope and we load it on-demand, only
 			// loading if necessary (since it is actually very heavy)
+			const globals = getGlobalObject(scope);
 			if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
 			const result = await (await scope.compartment).import(moduleUrl);
 			return result.namespace;
@@ -74,7 +74,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 	const moduleCache = new Map<string, Promise<SourceTextModule | SyntheticModule>>();
 
 	// Create a secure context with limited globals
-	const contextObject = getGlobalVars(scope);
+	const contextObject = getGlobalObject(scope);
 	const context = createContext(contextObject);
 
 	/**
@@ -344,42 +344,38 @@ function secureOnlyFetch(resource, options) {
 	return fetch(resource, options);
 }
 
+let defaultJSGlobalNames: string[];
+// get the global variable names that are intrinsically present in a VM context (so we don't override them)
+function getDefaultJSGlobalNames() {
+	if (!defaultJSGlobalNames) {
+		defaultJSGlobalNames = runInContext(
+			'Object.getOwnPropertyNames((function() { return this })())',
+			createContext({})
+		);
+	}
+	return defaultJSGlobalNames;
+}
+
 /**
  * Get the set of global variables that should be available to modules that run in scoped compartments/contexts.
  */
-function getGlobalVars(scope: Scope) {
-	const appGlobal = {
+function getGlobalObject(scope: Scope) {
+	const appGlobal = {};
+	// create the new global object, assigning all the global variables from this global
+	// except those that will be natural intrinsics of the new VM
+	for (let name of Object.getOwnPropertyNames(global)) {
+		if (getDefaultJSGlobalNames().includes(name)) continue;
+		appGlobal[name] = global[name];
+	}
+	// now assign Harper scope-specific variables
+	Object.assign(appGlobal, {
 		server: scope.server ?? server,
 		logger: scope.logger ?? logger,
 		resources: scope.resources,
 		config: scope.options.getRoot() ?? {},
-		Resource,
-		tables,
-		databases,
-		process,
-		createBlob,
-		global: undefined,
-		Request,
-		Headers,
-		TextEncoder,
-		performance,
-		Buffer,
-		URLSearchParams,
-		URL,
-		AbortController,
-		ReadableStream,
-		TextDecoder,
-		FormData,
-		WritableStream,
-		console,
-		Math,
-		setTimeout,
-		setInterval,
-		Date,
 		fetch: secureOnlyFetch,
-		getContext,
-	};
-	appGlobal.global = appGlobal;
+		global: appGlobal,
+	});
 	return appGlobal;
 }
 function getHarperExports(scope: Scope) {

@@ -9,6 +9,9 @@ assert(typeof globalVariableFromParent, 'undefined', 'Global variable from paren
 
 assert(connectFromChild === connect);
 global.globalVariableFromComponent = 'test';
+
+assert({} instanceof Object);
+assert([] instanceof Array);
 export const testExport = {
 	get() {
 		let a = MyComponent;
