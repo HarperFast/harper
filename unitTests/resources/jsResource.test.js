@@ -23,7 +23,7 @@ describe('jsResource', () => {
 
 	// Note: Tests for successful resource loading are covered by integration tests
 	// (see integrationTests/apiTests/tests/17a_addComponents.mjs)
-	// since they require secureImport and the full Harper runtime environment.
+	// since they require scopedImport and the full Harper runtime environment.
 	// These unit tests focus on error handling and edge cases that don't require actual imports.
 
 	it('should warn on non-file entry type', async () => {
@@ -93,42 +93,36 @@ describe('jsResource', () => {
 			resources: new Map(),
 			logger: { warn: spy(), debug: spy(), error: spy() },
 			requestRestart: spy(),
+			import() {
+				throw testError;
+			},
 		};
 
-		// Mock secureImport to throw an error
+		// Mock scopedImport to throw an error
 		const jsLoader = require('#src/security/jsLoader');
-		const originalImport = jsLoader.secureImport;
-		jsLoader.secureImport = async () => {
-			throw testError;
-		};
 
-		try {
-			// handleApplication registers the handler
-			await handleApplication(mockScope);
+		// handleApplication registers the handler
+		await handleApplication(mockScope);
 
-			// Now invoke the handler and expect it to throw
-			await assert.rejects(
-				async () =>
-					await capturedHandler({
-						entryType: 'file',
-						eventType: 'add',
-						absolutePath: testFile,
-						urlPath: '/bad-resource.js',
-					}),
-				(error) => {
-					// Should rethrow with context
-					assert.equal(error.name, 'ResourceLoadError', 'Error should be ResourceLoadError');
-					assert.ok(error.message.includes('Failed to load resource module'), 'Error should include context message');
-					assert.ok(error.message.includes(testFile), 'Error should include file path');
-					assert.ok(error.message.includes('Import failed'), 'Error should include original error');
-					assert.equal(error.filePath, testFile, 'Error should have filePath property');
-					assert.equal(error.cause, testError, 'Error should preserve original error as cause');
-					return true;
-				}
-			);
-		} finally {
-			// Restore original import
-			jsLoader.secureImport = originalImport;
-		}
+		// Now invoke the handler and expect it to throw
+		await assert.rejects(
+			async () =>
+				await capturedHandler({
+					entryType: 'file',
+					eventType: 'add',
+					absolutePath: testFile,
+					urlPath: '/bad-resource.js',
+				}),
+			(error) => {
+				// Should rethrow with context
+				assert.equal(error.name, 'ResourceLoadError', 'Error should be ResourceLoadError');
+				assert.ok(error.message.includes('Failed to load resource module'), 'Error should include context message');
+				assert.ok(error.message.includes(testFile), 'Error should include file path');
+				assert.ok(error.message.includes('Import failed'), 'Error should include original error');
+				assert.equal(error.filePath, testFile, 'Error should have filePath property');
+				assert.equal(error.cause, testError, 'Error should preserve original error as cause');
+				return true;
+			}
+		);
 	});
 });
