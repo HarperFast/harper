@@ -4,6 +4,7 @@ const { getMockLMDBPath } = require('../test_utils');
 const { parseQuery } = require('#src/resources/search');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 let x = 532532;
 function random(max) {
@@ -1368,7 +1369,7 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed query data in a table and select with special properties and star', async function () {
 		let results = [];
-		for await (let record of QueryTable.search({ url: '?id=ge=id-90&select($id,$updatedtime,*)' })) {
+		for await (let record of QueryTable.search(new RequestTarget('?id=ge=id-90&select($id,$updatedtime,*)'))) {
 			results.push(record);
 		}
 
@@ -1383,7 +1384,9 @@ describe('Querying through Resource API', () => {
 
 	it('Parsed nested query data in a table', async function () {
 		let results = [];
-		for await (let record of QueryTable.search({ url: '?(id=ge=id-90&id=le=id-93)|(name=name-95&id=ge=id-94)' })) {
+		for await (let record of QueryTable.search(
+			new RequestTarget('?(id=ge=id-90&id=le=id-93)|(name=name-95&id=ge=id-94)')
+		)) {
 			results.push(record);
 		}
 		assert.equal(results.length, 5);
@@ -1392,7 +1395,9 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed nested query data in a table with brackets', async function () {
 		let results = [];
-		for await (let record of QueryTable.search({ url: '?[id=ge=id-90&id=le=id-93]|[name=name-95&id=ge=id-94]' })) {
+		for await (let record of QueryTable.search(
+			new RequestTarget('?[id=ge=id-90&id=le=id-93]|[name=name-95&id=ge=id-94]')
+		)) {
 			results.push(record);
 		}
 		assert.equal(results.length, 5);
@@ -1401,9 +1406,9 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed nested query data in a table with joined sort', async function () {
 		let results = [];
-		for await (let record of QueryTable.search({
-			url: '?(id>id-80&id<=id-93)|(name=name-95&id>id-94)&sort(-related.name)',
-		})) {
+		for await (let record of QueryTable.search(
+			new RequestTarget('?(id>id-80&id<=id-93)|(name=name-95&id>id-94)&sort(-related.name)')
+		)) {
 			results.push(record);
 		}
 		assert.equal(results.length, 15);
@@ -1413,9 +1418,9 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed query data in a table with one-to-many joined sort that is not primary', async function () {
 		let results = [];
-		for await (let record of RelatedTable.search({
-			url: '?name=related name 3&sort(-relatedToMany.name)&select(id,relatedToMany)',
-		})) {
+		for await (let record of RelatedTable.search(
+			new RequestTarget('?name=related name 3&sort(-relatedToMany.name)&select(id,relatedToMany)')
+		)) {
 			results.push(record);
 		}
 		assert.equal(results.length, 1);
@@ -1426,9 +1431,9 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed query data in a table with many-to-many joined sort that is not primary', async function () {
 		let results = [];
-		for await (let record of QueryTable.search({
-			url: '?id=id-14&sort(-manyToMany.name)&select(id,manyToMany)',
-		})) {
+		for await (let record of QueryTable.search(
+			new RequestTarget('?id=id-14&sort(-manyToMany.name)&select(id,manyToMany)')
+		)) {
 			results.push(record);
 		}
 		assert.equal(results.length, 1);
@@ -1439,9 +1444,9 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed query data in a table with many-to-many joined sort that has missing entries and multiple sorts', async function () {
 		let results = [];
-		for await (let record of QueryTable.search({
-			url: '?id=id-12|id=id-24&sort(-id,-manyToMany.name)&select(id,manyToMany,manyToManyIds)',
-		})) {
+		for await (let record of QueryTable.search(
+			new RequestTarget('?id=id-12|id=id-24&sort(-id,-manyToMany.name)&select(id,manyToMany,manyToManyIds)')
+		)) {
 			results.push(record);
 		}
 		assert.equal(results.length, 2);
@@ -1455,9 +1460,7 @@ describe('Querying through Resource API', () => {
 
 	it('Parsed query data in a table with not equal to null', async function () {
 		let results = [];
-		for await (let record of QueryTable.search({
-			url: '?sparse!=null',
-		})) {
+		for await (let record of QueryTable.search(new RequestTarget('?sparse!=null'))) {
 			results.push(record);
 		}
 		assert.equal(results.length, 17);
@@ -1467,9 +1470,7 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed query with boolean equal to true', async function () {
 		let results = [];
-		for await (let record of RelatedTable.search({
-			url: '?aFlag==true',
-		})) {
+		for await (let record of RelatedTable.search(new RequestTarget('?aFlag==true'))) {
 			results.push(record);
 		}
 		assert.equal(results.length, 2);
@@ -1479,9 +1480,7 @@ describe('Querying through Resource API', () => {
 	});
 	it('Parsed query with boolean equal to false', async function () {
 		let results = [];
-		for await (let record of RelatedTable.search({
-			url: '?aFlag==false',
-		})) {
+		for await (let record of RelatedTable.search(new RequestTarget('?aFlag==false'))) {
 			results.push(record);
 		}
 		assert.equal(results.length, 3);
@@ -1494,12 +1493,7 @@ describe('Querying through Resource API', () => {
 		let context = {};
 		await RelatedTable.get(1, context); // This will set the lastModified on the context
 		assert(isFinite(context.lastModified));
-		for await (let record of RelatedTable.search(
-			{
-				url: '?aFlag==true',
-			},
-			context
-		)) {
+		for await (let record of RelatedTable.search(new RequestTarget('?aFlag==true'), context)) {
 			results.push(record);
 		}
 		assert(!isFinite(context.lastModified));

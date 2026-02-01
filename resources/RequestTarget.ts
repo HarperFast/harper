@@ -67,6 +67,12 @@ export class RequestTarget extends URLSearchParams {
 			super(search);
 			this.search = search;
 			parseQuery(search, this);
+			if (!path) {
+				// if there is a query string, but no path, treat as a collection anyway
+				this.isCollection = true;
+				this.id = null;
+				return;
+			}
 		} else {
 			super();
 			path = target;
@@ -76,19 +82,12 @@ export class RequestTarget extends URLSearchParams {
 		if (path) {
 			// parse for properties and set the id
 			if (path.startsWith('/')) path = path.substring(1);
-			const dotIndex = path.indexOf('.');
-			if (dotIndex > -1) {
-				// handle paths of the form /path/id.property
-				this.property = decodeURIComponent(path.slice(dotIndex + 1));
-				path = path.substring(0, dotIndex);
-			}
 		} else {
 			return; // leave this.id undefined
 		}
 		if (path) {
 			if (path.endsWith('/')) {
 				this.isCollection = true;
-				path = path.substring(0, -1);
 			}
 			this.id = decodeURIComponent(path);
 		} else {

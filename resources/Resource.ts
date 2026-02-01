@@ -334,18 +334,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				else {
 					return {
 						query: { property },
-						id: pathToId(path, this),
+						id: path,
 						isCollection: idWasCollection,
 					};
 				}
 			}
 		}
-		// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4] if splitSegments is enabled
-		const id = pathToId(path, this);
-		if (idWasCollection) {
-			return { id, isCollection: true };
-		}
-		return id;
+		return path;
 	}
 	/**
 	 * Gets an instance of a resource by id
@@ -594,39 +589,31 @@ function transactional(action, options) {
 			if (typeof idOrQuery === 'object' && idOrQuery) {
 				// it is a query
 				query = idOrQuery;
-				id = idOrQuery instanceof URLSearchParams ? idOrQuery.toString() : idOrQuery.url; // get the request target (check .url for back-compat), and try to parse
-				if (idOrQuery.conditions) {
-					// it is already parsed, nothing more to do other than coerce and assign the id
+				if (idOrQuery instanceof URLSearchParams) {
+					// already RequestTarget (or URLSearchParams), consider it already parsed,
+					// nothing more to do other than coerce and assign the id
 					id = idOrQuery.id;
 					if (typeof id === 'string') {
-						id = idOrQuery.id = this.coerceId(id);
-					}
-				} else if (typeof id === 'string') {
-					if (this.directURLMapping) {
-						id = id.slice(1); // remove the leading slash
-						query.id = id;
-					} else {
-						// handle queries in local URLs like /path/?name=value
-						const searchIndex = id.indexOf('?');
-						if (searchIndex > -1) {
-							if (!(idOrQuery instanceof URLSearchParams))
-								query = this.parseQuery(id.slice(searchIndex + 1), idOrQuery);
-							id = id.slice(0, searchIndex);
-							if (id === '') isCollection = true;
-						}
-						// handle paths of the form /path/id.property
-						const parsedId = this.parsePath(id, context, query);
-						if (parsedId?.id !== undefined) {
-							if (parsedId.query) {
-								if (query) query = Object.assign(parsedId.query, query);
-								else query = parsedId.query;
-							}
-							isCollection = parsedId.isCollection;
-							id = parsedId.id;
+						if (this.directURLMapping) {
+							id = idOrQuery.toString().slice(1); // remove the leading slash
+							query.id = id;
 						} else {
-							id = parsedId;
+							// handle paths of the form /path/id.property
+							const parsedId = this.parsePath(id, context, query);
+							if (parsedId?.id !== undefined) {
+								if (parsedId.query) {
+									if (query) query = Object.assign(parsedId.query, query);
+									else query = parsedId.query;
+								}
+								isCollection = parsedId.isCollection;
+								id = parsedId.id;
+							} else {
+								id = parsedId;
+							}
+							if (id) {
+								query.id = id = this.coerceId(id);
+							}
 						}
-						if (id) query.id = id;
 					}
 				} else if (idOrQuery[Symbol.iterator]) {
 					// get the id part from an iterable query
@@ -672,7 +659,7 @@ function transactional(action, options) {
 			query = new RequestTarget();
 			query.id = id;
 		}
-		if (isCollection) query.isCollection = true;
+		isCollection = query.isCollection;
 		let resourceOptions;
 		if (!context) {
 			// try to get the context from the async context if possible
