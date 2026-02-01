@@ -43,6 +43,7 @@ async function http(request: Context & Request, nextHandler) {
 			if (!entry) return nextHandler(request); // no resource handler found
 			request.handlerPath = entry.path;
 			resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+
 			resourceRequest.async = true;
 			resource = entry.Resource;
 		}

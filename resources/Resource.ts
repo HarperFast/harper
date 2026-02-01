@@ -597,7 +597,7 @@ function transactional(action, options) {
 				id = idOrQuery instanceof URLSearchParams ? idOrQuery.toString() : idOrQuery.url; // get the request target (check .url for back-compat), and try to parse
 				if (idOrQuery.conditions) {
 					// it is already parsed, nothing more to do other than assign the id
-					id = idOrQuery.id;
+					id = this.coerceId(idOrQuery.id);
 				} else if (typeof id === 'string') {
 					if (this.directURLMapping) {
 						id = id.slice(1); // remove the leading slash
