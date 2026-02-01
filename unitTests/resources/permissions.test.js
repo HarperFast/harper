@@ -2,6 +2,7 @@ require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
 const { table } = require('#src/resources/databases');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Permissions through Resource API', () => {
@@ -174,10 +175,10 @@ describe('Permissions through Resource API', () => {
 		const request = {
 			user: attribute_authorized_role,
 			authorize: true,
-			url: '?id=id-2&select(name,related)',
 		};
+		const target = new RequestTarget('?id=id-2&select(name,related)');
 		let results = [];
-		for await (let result of TestTable.get(request, request)) {
+		for await (let result of TestTable.get(target, request)) {
 			results.push(result);
 		}
 		assert.equal(results[0].name, 'name-2');
@@ -189,10 +190,10 @@ describe('Permissions through Resource API', () => {
 		const request = {
 			user: attribute_authorized_role,
 			authorize: true,
-			url: '?id=id-2&select(name,prop1,related{name})',
 		};
+		const target = new RequestTarget('?id=id-2&select(name,prop1,related{name})');
 		let results = [];
-		for await (let result of TestTable.get(request, request)) {
+		for await (let result of TestTable.get(target, request)) {
 			results.push(result);
 		}
 		assert.equal(results[0].name, 'name-2');
