@@ -635,10 +635,9 @@ function transactional(action, options) {
 							}
 						}
 					}
-				}
-				if (id === undefined) {
+				} else if (id === undefined) {
 					id = idOrQuery.id ?? null;
-					if (id == null) isCollection = true;
+					if (id == null) query.isCollection = true;
 				}
 			} else {
 				id = idOrQuery;
