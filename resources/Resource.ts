@@ -333,9 +333,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				if (query) query.property = property;
 				else {
 					return {
-						query: { property },
+						property,
 						id: path,
-						isCollection: idWasCollection,
 					};
 				}
 			}
@@ -591,28 +590,22 @@ function transactional(action, options) {
 				query = idOrQuery;
 				if (idOrQuery instanceof URLSearchParams) {
 					// already RequestTarget (or URLSearchParams), consider it already parsed,
-					// nothing more to do other than coerce and assign the id
+					// we can just do property parsing, coerce, and assign the id
 					id = idOrQuery.id;
-					if (typeof id === 'string') {
-						if (this.directURLMapping) {
-							id = idOrQuery.toString().slice(1); // remove the leading slash
-							query.id = id;
+					if (this.directURLMapping) {
+						id = idOrQuery.toString().slice(1); // remove the leading slash
+						query.id = id;
+					} else if (typeof id === 'string') {
+						// handle paths of the form /path/id.property
+						const parsedId = this.parsePath(id, context, query);
+						if (parsedId?.id !== undefined) {
+							query.property = parsedId.property;
+							id = parsedId.id;
 						} else {
-							// handle paths of the form /path/id.property
-							const parsedId = this.parsePath(id, context, query);
-							if (parsedId?.id !== undefined) {
-								if (parsedId.query) {
-									if (query) query = Object.assign(parsedId.query, query);
-									else query = parsedId.query;
-								}
-								isCollection = parsedId.isCollection;
-								id = parsedId.id;
-							} else {
-								id = parsedId;
-							}
-							if (id) {
-								query.id = id = this.coerceId(id);
-							}
+							id = parsedId;
+						}
+						if (id) {
+							query.id = id = this.coerceId(id);
 						}
 					}
 				} else if (idOrQuery[Symbol.iterator]) {
@@ -631,7 +624,6 @@ function transactional(action, options) {
 							if (query.length === 0) {
 								query = new RequestTarget();
 								query.id = id;
-								isCollection = false;
 							}
 						}
 					}
@@ -645,10 +637,7 @@ function transactional(action, options) {
 				query.id = id;
 				if (id == null) {
 					if (options.method === 'get') {
-						logger.warn?.(
-							`Using an argument with a value of ${id} for ${options.method}, is deprecated`,
-							new Error('Invalid id')
-						);
+						throw new Error(`Using an argument with a value of ${id} for ${options.method}, is not allowed`);
 					}
 					query.isCollection = true;
 				}
