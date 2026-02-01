@@ -61,6 +61,7 @@ export class RequestTarget extends URLSearchParams {
 		let searchIndex: number | undefined;
 		let path: string | undefined;
 		if (target && (searchIndex = target.indexOf('?')) > -1) {
+			// we have query parameters that need to be parsed
 			path = (target as string).slice(0, searchIndex);
 			const search = (target as string).slice((searchIndex as number) + 1);
 			super(search);
