@@ -168,15 +168,6 @@ class SubscriptionsSession {
 		} else {
 			omitCurrent = retainHandling === 2;
 		}
-		let request = {
-			search,
-			async: true,
-			user: this.user,
-			startTime,
-			omitCurrent,
-			target: '',
-			checkPermission: this.user?.role?.permission ?? {},
-		};
 		if (startTime) trace('Resuming subscription from', topic, 'from', startTime);
 		const entry = resources.getMatch(path, 'mqtt');
 		if (!entry) {
@@ -242,7 +233,7 @@ class SubscriptionsSession {
 				url = '/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
 		} else isCollection = false; // must explicitly turn this off so topics that end in a slash are not treated as collections
-		request = new RequestTarget(url);
+		const request = new RequestTarget(url);
 		Object.assign(request, {
 			isCollection,
 			onlyChildren,
