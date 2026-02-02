@@ -25,8 +25,9 @@ let lockedDown = false;
  * @param scope
  */
 export async function scopedImport(filePath: string | URL, scope?: Scope) {
-	require('ses');
+	preventFunctionConstructor();
 	if (APPLICATIONS_LOCKDOWN && !lockedDown) {
+		require('ses');
 		lockedDown = true;
 		lockdown({
 			domainTaming: 'unsafe',
@@ -39,15 +40,16 @@ export async function scopedImport(filePath: string | URL, scope?: Scope) {
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
 		if (scope && (scope.applicationContainment?.mode ?? APPLICATIONS_CONTAINMENT) !== 'none') {
-			if (APPLICATIONS_CONTAINMENT === 'vm') {
-				return await loadModuleWithVM(moduleUrl, scope);
-			} // else use SES Compartments
-			// note that we use a single compartment per scope and we load it on-demand, only
-			// loading if necessary (since it is actually very heavy)
-			const globals = getGlobalObject(scope);
-			if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
-			const result = await (await scope.compartment).import(moduleUrl);
-			return result.namespace;
+			if (APPLICATIONS_CONTAINMENT === 'compartment') {
+				// use SES Compartments
+				// note that we use a single compartment per scope and we load it on-demand, only
+				// loading if necessary (since it is actually very heavy)
+				const globals = getGlobalObject(scope);
+				if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
+				const result = await (await scope.compartment).import(moduleUrl);
+				return result.namespace;
+			} // else use standard node:vm module to do containment
+			return await loadModuleWithVM(moduleUrl, scope);
 		} else {
 			// important! we need to await the import, otherwise the error will not be caught
 			return await import(moduleUrl);
@@ -428,4 +430,8 @@ function checkAllowedModulePath(moduleUrl: string, containingFolder: string): bo
 
 function getContext() {
 	return contextStorage.getStore() ?? {};
+}
+
+export function preventFunctionConstructor() {
+	Function.prototype.constructor = function () {}; // prevent this from being used to eval data in a parent context
 }
