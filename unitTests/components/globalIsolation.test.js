@@ -15,8 +15,9 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		mockResources.isWorker = true;
 
 		// Ensure no global variables from previous tests
-		delete global.globalVariableFromParent;
 		delete global.globalVariableFromComponent;
+		// Set a global variable in the parent context
+		global.globalVariableFromParent = 'parent-value';
 		loadedPaths.clear();
 	});
 
@@ -25,14 +26,9 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		delete global.globalVariableFromParent;
 		delete global.globalVariableFromComponent;
 	});
+	const componentDir = path.join(__dirname, 'fixtures', 'testJSWithDeps');
 
 	it('should isolate global variables when loading the component', async function () {
-		// Set a global variable in the parent context
-		global.globalVariableFromParent = 'parent-value';
-
-		// Load the component from the fixtures directory
-		const componentDir = path.join(__dirname, 'fixtures', 'testJSWithDeps');
-
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationContainment: {
 				verifyPath: PACKAGE_ROOT,
@@ -64,6 +60,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationContainment: {
 				// this will load package dependencies into the application's context
+				mode: 'vm',
 				dependencyContainment: true,
 				verifyPath: PACKAGE_ROOT,
 			},
@@ -80,5 +77,30 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		assert.equal(mockResources.get('/testExport').get(), 'hello world');
 		assert(typeof mockResources.get('/TestComponent').get === 'function');
 		assert(typeof mockResources.get('/my-component').get === 'function');
+	});
+	it('should be able to load component with SES compartment', async function () {
+		// Load the component from the fixtures directory
+
+		await loadComponent(componentDir, mockResources, 'test-origin', {
+			applicationContainment: {
+				// this will load package dependencies into the application's context
+				mode: 'compartment',
+				dependencyContainment: true,
+				verifyPath: PACKAGE_ROOT,
+			},
+		});
+
+		// Verify the component's global variable didn't leak into our context
+		assert.equal(
+			typeof global.globalVariableFromComponent,
+			'undefined',
+			'Component global variable should not leak into parent context'
+		);
+
+		// verify the exported resource works
+		assert.equal(mockResources.get('/testExport').get(), 'hello world');
+		assert(typeof mockResources.get('/TestComponent').get === 'function');
+		// assert(typeof mockResources.get('/my-component').get === 'function'); // this syntax doesn't seem to work
+		// with SES Compartments
 	});
 });

@@ -17,10 +17,10 @@ export class MissingDefaultFilesOptionError extends Error {
 }
 
 export interface ApplicationContainment {
-	mode?: 'none' | 'vm' | 'sandbox'; // option to set this from the scope
+	mode?: 'none' | 'vm' | 'compartment'; // option to set this from the scope
 	dependencyContainment?: boolean; // option to set this from the scope
 	verifyPath?: string;
-};
+}
 
 /**
  * This class is what is passed to the `handleApplication` function of an extension.

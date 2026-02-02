@@ -39,8 +39,9 @@ export async function scopedImport(filePath: string | URL, scope?: Scope) {
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
-		if (scope && (scope.applicationContainment?.mode ?? APPLICATIONS_CONTAINMENT) !== 'none') {
-			if (APPLICATIONS_CONTAINMENT === 'compartment') {
+		const containmentMode = scope?.applicationContainment?.mode ?? APPLICATIONS_CONTAINMENT;
+		if (scope && containmentMode !== 'none') {
+			if (containmentMode === 'compartment') {
 				// use SES Compartments
 				// note that we use a single compartment per scope and we load it on-demand, only
 				// loading if necessary (since it is actually very heavy)
@@ -284,6 +285,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 declare class Compartment extends CompartmentClass {}
 async function getCompartment(scope: Scope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
+	require('ses');
 	const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
 		globals,
 		{
@@ -376,6 +378,7 @@ function getGlobalObject(scope: Scope) {
 		resources: scope.resources,
 		config: scope.options.getRoot() ?? {},
 		fetch: secureOnlyFetch,
+		console,
 		global: appGlobal,
 	});
 	return appGlobal;
