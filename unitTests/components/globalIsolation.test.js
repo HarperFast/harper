@@ -50,8 +50,8 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 
 		// verify the exported resource works
 		assert.equal(mockResources.get('/testExport').get(), 'hello world');
-		assert(typeof mockResources.get('/TestComponent').get === 'function');
-		assert(typeof mockResources.get('/my-component').get === 'function');
+		assert.equal(typeof mockResources.get('/TestComponent').get, 'function');
+		assert.equal(typeof mockResources.get('/my-component').get, 'function');
 	});
 	it('should be able to load component with package dependency containment', async function () {
 		// Load the component from the fixtures directory
