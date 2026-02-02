@@ -301,7 +301,7 @@ export class Scope extends EventEmitter {
 	/**
 	 * The compartment that is used for this scope and any imports that it makes
 	 */
-	compartment: Promise<any>;
+	compartment?: Promise<any>;
 	/**
 	 * Import a file into the scope's sandbox.
 	 * @param filePath - The path of the file to import.
