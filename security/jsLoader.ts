@@ -1,4 +1,5 @@
 import { Resource, contextStorage } from '../resources/Resource.ts';
+import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -393,6 +394,7 @@ function getHarperExports(scope: Scope) {
 		tables,
 		databases,
 		createBlob,
+		RequestTarget,
 		getContext,
 	};
 }
