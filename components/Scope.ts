@@ -8,6 +8,8 @@ import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { scopedImport } from '../security/jsLoader.ts';
+import * as env from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -42,7 +44,7 @@ export class Scope extends EventEmitter {
 	resources: Resources;
 	server: Server;
 	ready: Promise<any[]>;
-	declare applicationContainment?: ApplicationContainment;
+	applicationContainment?: ApplicationContainment;
 	constructor(name: string, directory: string, configFilePath: string, resources: Resources, server: Server) {
 		super();
 
@@ -64,6 +66,12 @@ export class Scope extends EventEmitter {
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));
+
+		this.applicationContainment = {
+			mode: env.get(CONFIG_PARAMS.APPLICATIONS_CONTAINMENT) ?? 'vm',
+			dependencyContainment: Boolean(env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYCONTAINMENT)),
+			verifyPath: directory,
+		};
 	}
 
 	get logger(): any {

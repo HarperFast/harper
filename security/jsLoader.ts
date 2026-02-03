@@ -40,7 +40,7 @@ export async function scopedImport(filePath: string | URL, scope?: Scope) {
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
-		const containmentMode = scope?.applicationContainment?.mode ?? APPLICATIONS_CONTAINMENT;
+		const containmentMode = scope?.applicationContainment.mode;
 		if (scope && containmentMode !== 'none') {
 			if (containmentMode === 'compartment') {
 				// use SES Compartments
@@ -128,9 +128,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
 				const resolvedUrl = resolveModule(specifier, script.sourceURL);
-				const useContainment =
-					specifier.startsWith('.') ||
-					(scope.applicationContainment?.dependencyContainment ?? APPLICATIONS_DEPENDENCYCONTAINMENT);
+				const useContainment = specifier.startsWith('.') || scope.applicationContainment.dependencyContainment;
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useContainment);
 				return dynamicModule;
 			},
@@ -176,9 +174,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 			return moduleCache.get(resolvedUrl)!;
 		}
 
-		const useContainment =
-			specifier.startsWith('.') ||
-			(scope.applicationContainment?.dependencyContainment ?? APPLICATIONS_DEPENDENCYCONTAINMENT);
+		const useContainment = specifier.startsWith('.') || scope.applicationContainment.dependencyContainment;
 		// Load the module
 		return await loadModuleWithCache(resolvedUrl, useContainment);
 	}
@@ -211,7 +207,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 				{ identifier: url, context }
 			);
 		} else if (usePrivateGlobal && url.startsWith('file://')) {
-			checkAllowedModulePath(url, scope.applicationContainment?.verifyPath ?? scope.directory);
+			checkAllowedModulePath(url, scope.applicationContainment.verifyPath);
 			// Load source text from file
 			const source = await readFile(new URL(url), { encoding: 'utf-8' });
 
@@ -251,7 +247,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 				}
 			}
 		} else {
-			checkAllowedModulePath(url, scope.applicationContainment?.verifyPath ?? scope.directory);
+			checkAllowedModulePath(url, scope.applicationContainment.verifyPath);
 			// For Node.js built-in modules (node:) and npm packages, use dynamic import
 			const importedModule = await import(url);
 			const exportNames = Object.keys(importedModule);
@@ -317,7 +313,7 @@ async function getCompartment(scope: Scope, globals) {
 					const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedModulePath(moduleSpecifier, scope.applicationContainment?.verifyPath ?? scope.directory);
+					checkAllowedModulePath(moduleSpecifier, scope.applicationContainment.verifyPath);
 					const moduleExports = await import(moduleSpecifier);
 					return {
 						imports: [],

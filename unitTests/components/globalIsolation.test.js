@@ -31,6 +31,8 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 	it('should isolate global variables when loading the component', async function () {
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationContainment: {
+				mode: 'vm',
+				dependencyContainment: false,
 				verifyPath: PACKAGE_ROOT,
 			},
 		});
