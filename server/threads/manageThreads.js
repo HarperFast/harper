@@ -168,7 +168,7 @@ function startWorker(path, options = {}) {
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
-	for (let { port1, existingPort: existingPort } of channelsToConnect) {
+	for (let { port1, existingPort } of channelsToConnect) {
 		existingPort.postMessage(
 			{
 				type: ADDED_PORT,

@@ -159,7 +159,7 @@ function loadCertificates() {
 
 	const rootPath = path.dirname(configUtils.getConfigFilePath());
 	let promise;
-	for (let { configKey: configKey } of CERTIFICATE_CONFIGS) {
+	for (let { configKey } of CERTIFICATE_CONFIGS) {
 		let configs = configUtils.getConfigFromFile(configKey);
 		if (configs) {
 			// the configs can be an array, so normalize to an array

@@ -149,7 +149,7 @@ class SubscriptionsSession {
 		this.user = user;
 	}
 	async addSubscription(subscriptionRequest, needsAck, filter?) {
-		const { topic, rh: retainHandling, startTime: startTime } = subscriptionRequest;
+		const { topic, rh: retainHandling, startTime } = subscriptionRequest;
 		const searchIndex = topic.indexOf('?');
 		let search, path;
 		if (searchIndex > -1) {
@@ -479,7 +479,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 
 	async addSubscription(subscription, needsAck) {
 		await this.resumeSubscription(subscription, needsAck);
-		const { qos, startTime: startTime } = subscription;
+		const { qos, startTime } = subscription;
 		if (qos > 0 && !startTime) this.saveSubscriptions();
 		return subscription.qos;
 	}

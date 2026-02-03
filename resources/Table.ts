@@ -139,7 +139,7 @@ export function makeTable(options) {
 		splitSegments,
 		replicate,
 	} = options;
-	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes: trackDeletes } = options;
+	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
