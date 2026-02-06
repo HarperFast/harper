@@ -23,6 +23,7 @@ import { pipeline } from 'node:stream/promises';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
+import type { Logger } from './Logger.ts';
 
 interface ApplicationConfig {
 	// define known config properties
@@ -392,7 +393,7 @@ export class Application {
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number };
 	dirPath: string;
-	logger: any;
+	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
 
 	constructor({ name, payload, packageIdentifier, install }: ApplicationOptions) {

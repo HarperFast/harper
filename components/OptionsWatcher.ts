@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'util';
 import harperLogger from '../utility/logging/harper_logger.js';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.js';
 import { cloneDeep } from 'lodash';
+import type { Logger } from './Logger.ts';
 
 export interface Config {
 	[key: string]: ConfigValue;
@@ -85,10 +86,10 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
 	#name: string;
-	#logger: any;
+	#logger: Logger;
 	ready: Promise<any[]>;
 
-	constructor(name: string, filePath: string, logger?: any) {
+	constructor(name: string, filePath: string, logger?: Logger) {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;

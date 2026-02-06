@@ -1,6 +1,7 @@
 import { EventEmitter, once } from 'node:events';
 import { type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
+import type { Logger } from './Logger.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import type { Resources } from '../resources/Resources.ts';
@@ -37,7 +38,7 @@ export class Scope extends EventEmitter {
 	#name: string;
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
-	#logger: any;
+	#logger: Logger;
 	#pendingInitialLoads: Set<Promise<void>>;
 
 	options: OptionsWatcher;
@@ -74,7 +75,7 @@ export class Scope extends EventEmitter {
 		};
 	}
 
-	get logger(): any {
+	get logger() {
 		return this.#logger;
 	}
 

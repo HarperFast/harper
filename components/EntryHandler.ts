@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.js';
 import { deriveURLPath } from './deriveURLPath.js';
 import { isMatch } from 'micromatch';
+import type { Logger } from './Logger.ts';
 
 export interface BaseEntry {
 	stats?: Stats;
@@ -71,12 +72,12 @@ export type EntryHandlerEventMap = {
 export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	#component: Component;
 	#watcher?: FSWatcher;
-	#logger: any;
+	#logger: Logger;
 	#pendingFileReads: Set<Promise<void>>;
 	#isInitialScanComplete: boolean;
 	ready: Promise<any[]>;
 
-	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: any) {
+	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: Logger) {
 		super();
 
 		this.#component = new Component(name, directory, castConfig(config));
