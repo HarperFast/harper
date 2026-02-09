@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
@@ -97,6 +98,14 @@ interface RocksRootDatabase extends RocksDatabaseEx {
 
 export type RootDatabaseKind = LMDBRootDatabase | RocksRootDatabase;
 
+export type DatabaseWatcherEventMap = {
+	updateTable: [table: Table, originIsNotCluster?: boolean];
+	dropTable: [tableName: string, databaseName: string];
+	dropDatabase: [databaseName: string];
+};
+
+export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>();
+
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
@@ -126,8 +135,6 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-const tableListeners = [];
-const dbRemovalListeners = [];
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -576,9 +583,7 @@ function initStores(
 				})
 			);
 			table.schemaVersion = 1;
-			for (const listener of tableListeners) {
-				listener(table);
-			}
+			databaseEventsEmitter.emit('updateTable', table);
 		}
 	}
 	return rootStore;
@@ -599,7 +604,7 @@ export function resetDatabases() {
 				const table = db[tableName];
 				if (table.primaryStore.path === path) {
 					delete databases[store.databaseName];
-					dbRemovalListeners.forEach((listener) => listener(store.databaseName));
+					databaseEventsEmitter.emit('dropDatabase', store.databaseName);
 					break;
 				}
 			}
@@ -740,6 +745,7 @@ export async function dropDatabase(databaseName) {
 				await unlink(rootStore.path);
 			}
 		}
+		databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 	}
 	if (!rootStore) {
 		rootStore = database({ database: databaseName, table: null });
@@ -757,7 +763,7 @@ export async function dropDatabase(databaseName) {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[databaseName];
-	dbRemovalListeners.forEach((listener) => listener(databaseName));
+	databaseEventsEmitter.emit('dropDatabase', databaseName);
 	await deleteRootBlobPathsForDB(rootStore);
 }
 // opens an index, consulting with custom indexes that may use alternate store configuration
@@ -1085,9 +1091,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 	Table.origin = origin;
 	if (hasChanges) {
-		for (const listener of tableListeners) {
-			listener(Table, origin !== 'cluster');
-		}
+		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
 	if (expiration || eviction || scanInterval)
 		Table.setTTLExpiration({
@@ -1230,24 +1234,31 @@ export function dropTableMeta({ table: tableName, database: databaseName }) {
 	for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 		removals.push(dbisDb.remove(key));
 	}
+	databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 	return Promise.all(removals);
 }
 
-export function onUpdatedTable(listener) {
-	tableListeners.push(listener);
+export function onUpdatedTable(listener: (table: Table) => void) {
+	databaseEventsEmitter.on('updateTable', listener);
 	return {
 		remove() {
-			const index = tableListeners.indexOf(listener);
-			if (index > -1) tableListeners.splice(index, 1);
+			databaseEventsEmitter.off('updateTable', listener);
 		},
 	};
 }
-export function onRemovedDB(listener) {
-	dbRemovalListeners.push(listener);
+export function onRemovedTable(listener: (tableName: string, databaseName: string) => void) {
+	databaseEventsEmitter.on('dropTable', listener);
 	return {
 		remove() {
-			const index = dbRemovalListeners.indexOf(listener);
-			if (index > -1) dbRemovalListeners.splice(index, 1);
+			databaseEventsEmitter.off('dropTable', listener);
+		},
+	};
+}
+export function onRemovedDB(listener: (databaseName: string) => void) {
+	databaseEventsEmitter.on('dropDatabase', listener);
+	return {
+		remove() {
+			databaseEventsEmitter.off('dropDatabase', listener);
 		},
 	};
 }

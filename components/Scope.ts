@@ -1,4 +1,5 @@
 import { EventEmitter, once } from 'node:events';
+import { databaseEventsEmitter, onRemovedDB, onUpdatedTable, Table } from '../resources/databases.ts';
 import { type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import type { Logger } from './Logger.ts';
@@ -46,6 +47,8 @@ export class Scope extends EventEmitter {
 	server: Server;
 	ready: Promise<any[]>;
 	applicationContainment?: ApplicationContainment;
+	databaseEvents: typeof databaseEventsEmitter;
+
 	constructor(name: string, directory: string, configFilePath: string, resources: Resources, server: Server) {
 		super();
 
@@ -53,6 +56,8 @@ export class Scope extends EventEmitter {
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#name);
+
+		this.databaseEvents = databaseEventsEmitter;
 
 		this.resources = resources;
 		this.server = server;
