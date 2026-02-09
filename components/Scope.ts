@@ -1,5 +1,5 @@
 import { EventEmitter, once } from 'node:events';
-import { databaseEventsEmitter, onRemovedDB, onUpdatedTable, Table } from '../resources/databases.ts';
+import { databaseEventsEmitter } from '../resources/databases.ts';
 import { type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import type { Logger } from './Logger.ts';
@@ -26,14 +26,22 @@ export interface ApplicationContainment {
 	verifyPath?: string;
 }
 
+export type ScopeEventsMap = {
+	all: [...args: unknown[]];
+	close: [];
+	error: [error: unknown];
+	ready: [];
+	[record: string]: [...args: unknown[]];
+};
+
 /**
  * This class is what is passed to the `handleApplication` function of an extension.
  *
- * It is imperative that the instance is "ready" before its passed to the `handleApplication` function
+ * It is imperative that the instance is "ready" before it's passed to the `handleApplication` function
  * so that the developer can immediately start using `scope.options`, etc.
  *
  */
-export class Scope extends EventEmitter {
+export class Scope extends EventEmitter<ScopeEventsMap> {
 	#configFilePath: string;
 	#directory: string;
 	#name: string;
