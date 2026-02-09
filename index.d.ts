@@ -1,11 +1,17 @@
-export { Resource } from './resources/Resource.ts';
+import type { Logger } from './components/Logger.ts';
+import { BlobCreationOptions } from './resources/blob.ts';
+import { databases as dbDatabases, tables as dbTables } from './resources/databases.ts';
 import { Resource as ResourceImport } from './resources/Resource.ts';
+import { server as serverImport } from './server/Server.ts';
+
+export { Resource } from './resources/Resource.ts';
 export type {
-	Query,
 	Context,
+	Query,
+	RequestTargetOrId,
+	Session,
 	SourceContext,
 	SubscriptionRequest,
-	RequestTargetOrId,
 } from './resources/ResourceInterface.ts';
 export { ResourceInterface } from './resources/ResourceInterface.ts';
 export type { User } from './security/user.ts';
@@ -13,12 +19,9 @@ export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { server } from './server/Server';
-import { server as serverImport } from './server/Server.ts';
-export { tables, databases } from './resources/databases.ts';
-import { tables as dbTables, databases as dbDatabases } from './resources/databases.ts';
-import { BlobCreationOptions } from './resources/blob.ts';
+export { tables, databases, type Table } from './resources/databases.ts';
+export type { Attribute } from './resources/Table.ts';
 
-import type { Logger } from './components/Logger.ts';
 declare const logger: Logger;
 export { type Logger, logger };
 

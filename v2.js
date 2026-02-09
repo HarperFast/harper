@@ -7,6 +7,7 @@ if (!workerThreads.isMainThread) {
 const { globals } = require('./server/threads/threadServer.js');
 
 // exported types are needed for parsing as well
+exports.Attribute = undefined;
 exports.Config = undefined;
 exports.ConfigValue = undefined;
 exports.Context = undefined;
@@ -25,6 +26,7 @@ exports.Scope = undefined;
 exports.Session = undefined;
 exports.SourceContext = undefined;
 exports.SubscriptionRequest = undefined;
+exports.Table = undefined;
 exports.User = undefined;
 
 // these are all overwritten by the globals, but need to be here so that Node's static

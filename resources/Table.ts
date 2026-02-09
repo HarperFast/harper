@@ -70,11 +70,17 @@ const { validateAttribute } = lmdbProcessRows;
 
 export type Attribute = {
 	name: string;
-	type: string;
+	type: 'ID' | 'Int' | 'Float' | 'Long' | 'String' | 'Boolean' | 'Date' | 'Bytes' | 'Any' | 'BigInt' | 'Blob' | string;
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
+	nullable?: boolean;
 	expiresAt?: boolean;
 	isPrimaryKey?: boolean;
+	indexed?: unknown;
+	relationship?: unknown;
+	computed?: unknown;
+	properties?: Array<Attribute>;
+	elements?: Attribute;
 };
 
 type MaybePromise<T> = T | Promise<T>;
@@ -105,7 +111,7 @@ export interface Table {
 	databasePath: string;
 	tableName: string;
 	databaseName: string;
-	attributes: any[];
+	attributes: Attribute[];
 	primaryKey: string;
 	splitSegments?: boolean;
 	replicate?: boolean;
@@ -140,7 +146,7 @@ export function makeTable(options) {
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
-	let { attributes } = options;
+	let { attributes }: { attributes: Attribute[] } = options;
 	if (!attributes) attributes = [];
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
@@ -2873,7 +2879,7 @@ export function makeTable(options) {
 		}
 		validate(record: any, patch?: boolean) {
 			let validationErrors;
-			const validateValue = (value, attribute, name) => {
+			const validateValue = (value, attribute: Attribute, name) => {
 				if (attribute.type && value != null) {
 					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
@@ -3043,7 +3049,7 @@ export function makeTable(options) {
 		getUpdatedTime() {
 			return this.#version;
 		}
-		static async addAttributes(attributesToAdd) {
+		static async addAttributes(attributesToAdd: Attribute[]) {
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributesToAdd) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');

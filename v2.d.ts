@@ -13,7 +13,8 @@ export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { server } from './server/Server';
-export { tables, databases } from './resources/databases.ts';
+export { tables, databases, type Table } from './resources/databases.ts';
+export type { Attribute } from './resources/Table.ts';
 
 import type { Logger } from './components/Logger.ts';
 declare const logger: Logger;
