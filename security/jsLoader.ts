@@ -279,7 +279,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: Scope) {
 	return entryModule.namespace;
 }
 
-declare class Compartment extends CompartmentClass {}
 async function getCompartment(scope: Scope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
 	require('ses');

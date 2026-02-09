@@ -29,6 +29,7 @@
 		"es2024": true
 	},
 	"globals": {
+		"Compartment": "readonly",
 		"server": "readonly",
 		"databases": "readonly",
 		"tables": "readonly",
