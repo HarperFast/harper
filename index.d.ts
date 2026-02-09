@@ -22,7 +22,7 @@ import type { Logger } from './components/Logger.ts';
 declare const logger: Logger;
 export { type Logger, logger };
 
-export { Scope } from './components/Scope.ts';
+export type { Scope } from './components/Scope.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export { OptionsWatcher, type Config, type ConfigValue } from './components/OptionsWatcher.ts';
