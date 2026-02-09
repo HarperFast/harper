@@ -13,7 +13,7 @@ const harperBridge = require('./harperBridge/harperBridge.js');
 const { handleHDBError, hdbErrors, ClientError } = require('../utility/errors/hdbError.js');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const { SchemaEventMsg } = require('../server/threads/itc.js');
-const { getDatabases } = require('../resources/databases.ts');
+const { getDatabases, dropTableMeta } = require('../resources/databases.ts');
 const { transformReq } = require('../utility/common_utils.js');
 const { server } = require('../server/Server.ts');
 const { cleanupOrphans } = require('../resources/blob.ts');
@@ -218,6 +218,8 @@ async function dropTable(dropTableObject) {
 	}
 
 	await harperBridge.dropTable(dropTableObject);
+
+	await dropTableMeta({ table: dropTableObject.table, database: dropTableObject.schema });
 
 	let response = await server.replication.replicateOperation(dropTableObject);
 	response.message = `successfully deleted table '${dropTableObject.schema}.${dropTableObject.table}'`;
