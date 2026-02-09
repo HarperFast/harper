@@ -55,28 +55,20 @@ These are the steps @Ethan-Arrowood has been following to synchronize the reposi
 >
 > # Only fetch `main` branch
 > git config remote.old.fetch '+refs/heads/main:refs/remotes/old/main'
->
-> git fetch old
 > ```
 
-1. Ensure we have the latest commits from the old repository with `git fetch old`
-2. Make sure local `main` branch is up to date `git pull origin main`
-3. Create a new branch for the synchronization `git checkout -b sync-mmddyyyy`
-4. Create list of commits using `git rev-list --reverse --first-parent $(start-commit)..old/main > commits-to-pick.txt`
-   - The start-commit will be excluded so always include the last commit from `old/main` that was synchronized previously.
-   - The hash for that commit is recorded at the end of this section and should be updated after each synchronization
-5. Go through commits one-by-one, from the top to the bottom of the `commits-to-pick.txt` file, following these steps:
-   1. If `git rev-parse $(commit)^2 &>/dev/null 2>&1` exits with 0 then it's a merge commit
-      1. Execute `git cherry-pick -m 1 $(commit)`
-   2. Else it's a regular commit
-      1. Execute `git cherry-pick $(commit)`
-   3. If either cherry-pick command results in a non-zero exit code that means there is a merge conflict
-      1. If the conflict is a content, resolve it manually and `git add` the file
-         - Example: `CONFLICT (content): Merge conflict in package.json`
-      2. Else if the conflict is a modify/delete then likely `git rm` the file
-         - Example: `CONFLICT (modify/delete): unitTests/bin/copyDB-test.js deleted in HEAD and modified in f75d9170b`
-      3. Then check `git status`, if there is nothing you can `git cherry-pick --skip`
-         - Note: in this circumstance, running `git cherry-pick --continue` results in a non-zero exit code with the message `The previous cherry-pick is now empty, possibly due to conflict resolution.` Maybe we use this to then run `--skip`? Or maybe there is a way to parse the output of previous `git status` step?
+1. Make sure local `main` branch is checked out and clean `git checkout main && git status`.
+2. Copy the [latest previously-synced commit hash from this file](#last-synchronized-commit).
+3. Run the sync-commits helper script: `dev/sync-commits.js <previously-synced-commit-hash>`
+4. For each commit the script lists, run the `git cherry-pick ...` command it suggests.
+   - NB: Some of these may have `-m 1` params to handle merge commits correctly.
+5. If either cherry-pick command results in a non-zero exit code that means there is a merge conflict.
+   1. If the conflict is a content, resolve it manually and `git add` the file
+      - Example: `CONFLICT (content): Merge conflict in package.json`
+   2. Else if the conflict is a modify/delete then likely `git rm` the file
+      - Example: `CONFLICT (modify/delete): unitTests/bin/copyDB-test.js deleted in HEAD and modified in f75d9170b`
+   3. Then check `git status`, if there is nothing you can `git cherry-pick --skip`
+      - Note: in this circumstance, running `git cherry-pick --continue` results in a non-zero exit code with the message `The previous cherry-pick is now empty, possibly due to conflict resolution.` Maybe we use this to then run `--skip`? Or maybe there is a way to parse the output of previous `git status` step?
 6. After all commits have been picked, manually check that everything brought over was supposed to be. Look out for any source code we do not want open-sourced or things like unit tests which we are actively migrating separately (and will eventually include as part of the synchronization process)
    - The GitHub PR UI is useful for this step; but make sure to leave the PR as a draft until all synchronization steps are complete
 7. Once everything looks good, run `npm run format:write` to ensure formatting is correct
@@ -87,7 +79,9 @@ These are the steps @Ethan-Arrowood has been following to synchronize the reposi
 12. Push all changes and open the PR for review
 13. Merge using a Merge Commit so that all relative history is retained and things like the formatting change hash stays the same as recorded.
 
-Last Synchronized Commit: `e1ea920d74e919140ae89d5ca4d75614c10c2925`
+### Last Synchronized Commit
+
+`e1ea920d74e919140ae89d5ca4d75614c10c2925`
 
 ## Code of Conduct
 
