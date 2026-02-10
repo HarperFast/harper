@@ -340,7 +340,7 @@ function secureOnlyFetch(resource, options) {
 	// TODO: or maybe we should constrain by doing a DNS lookup and having disallow list of IP addresses that includes
 	// this server
 	const url = typeof resource === 'string' || resource.url;
-	if (new URL(url).protocol != 'https') throw new Error(`Only https is allowed in fetch`);
+	if (new URL(url).protocol != 'https') throw new Error('Only https is allowed in fetch');
 	return fetch(resource, options);
 }
 
