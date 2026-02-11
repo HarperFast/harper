@@ -18,7 +18,11 @@ import { server as serverImport } from './server/Server.ts';
 export { tables, databases } from './resources/databases.ts';
 import { tables as dbTables, databases as dbDatabases } from './resources/databases.ts';
 import { BlobCreationOptions } from './resources/blob.ts';
-export type { Logger } from './components/Logger.ts';
+
+import type { Logger } from './components/Logger.ts';
+declare const logger: Logger;
+export { type Logger, logger };
+
 export { Scope } from './components/Scope.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
