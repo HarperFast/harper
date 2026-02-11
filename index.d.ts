@@ -35,8 +35,10 @@ export {
 	type UnlinkDirectoryEvent,
 	type DirectoryEntryEvent,
 } from './components/EntryHandler.ts';
+import type { Logger } from './components/Logger.ts';
 declare global {
 	const tables: typeof dbTables;
+	const logger: Logger;
 	const databases: typeof dbDatabases;
 	const server: typeof serverImport;
 	const Resource: typeof ResourceImport;
