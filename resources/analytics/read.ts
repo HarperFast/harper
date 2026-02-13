@@ -133,8 +133,8 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 	});
 
 	if (opts?.coalesceTime) {
-		// coalescing window is the aggregate period plus 10% & converted to milliseconds
-		const window = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1.1 * 1000;
+		// coalescing window is the aggregate period converted to milliseconds
+		const window = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 		results = await coalesceResults(results, window);
 	}
 
