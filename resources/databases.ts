@@ -1,4 +1,4 @@
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
