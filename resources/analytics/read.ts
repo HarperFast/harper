@@ -60,17 +60,15 @@ function conformCondition(condition: Condition): Condition {
 async function coalesceResults(results: Metric[], window: number): Promise<Metric[]> {
 	const coalescedResults: Metric[] = [];
 	let coalesceId;
-	let lastCoalescedId = new Map<string, number>();
 	for await (const result of results) {
 		const id = result.id;
 		if (!coalesceId) {
 			coalesceId = id;
 		}
 		const delta = Math.abs(id - coalesceId);
-		if (delta < window && lastCoalescedId.get(result.node) !== id) {
+		if (delta < window) {
 			coalescedResults.push({ ...result, id: coalesceId });
-			lastCoalescedId.set(result.node, id);
-		} else if (lastCoalescedId.get(result.node) !== id) {
+		} else {
 			coalescedResults.push(result);
 			coalesceId = id;
 		}
