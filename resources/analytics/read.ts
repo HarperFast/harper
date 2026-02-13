@@ -69,8 +69,8 @@ async function coalesceResults(results: Metric[], window: number): Promise<Metri
 		const delta = Math.abs(id - coalesceId);
 		if (delta < window && lastCoalescedId.get(result.node) !== id) {
 			coalescedResults.push({ ...result, id: coalesceId });
-			lastCoalescedId[result.node] = id;
-		} else {
+			lastCoalescedId.set(result.node, id);
+		} else if (lastCoalescedId.get(result.node) !== id) {
 			coalescedResults.push(result);
 			coalesceId = id;
 		}
