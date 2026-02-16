@@ -302,7 +302,7 @@ export async function installApplication(application: Application) {
 
 		const { stderr, code } = await nonInteractiveSpawn(
 			application.name,
-			packageManager.name,
+			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
 			['install'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
 			application.dirPath,
 			application.install?.timeout
@@ -339,7 +339,7 @@ export async function installApplication(application: Application) {
 	// Finally, default to running `npm install`
 	const { stderr, code } = await nonInteractiveSpawn(
 		application.name,
-		'npm',
+		(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + 'npm',
 		['install', '--force'],
 		application.dirPath
 	);
@@ -370,6 +370,7 @@ export class Application {
 	install?: { command?: string; timeout?: number };
 	dirPath: string;
 	logger: any;
+	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
 
 	constructor({ name, payload, packageIdentifier, install }: ApplicationOptions) {
 		this.name = name;
@@ -378,6 +379,7 @@ export class Application {
 		this.install = install;
 		this.dirPath = join(getConfigValue(CONFIG_PARAMS.COMPONENTSROOT), name);
 		this.logger = logger.loggerWithTag(name);
+		this.packageManagerPrefix = getConfigValue(CONFIG_PARAMS.APPLICATIONS_PACKAGEMANAGERPREFIX);
 	}
 }
 
