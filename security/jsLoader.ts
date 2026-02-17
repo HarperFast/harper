@@ -391,6 +391,11 @@ function getHarperExports(scope: Scope) {
 		createBlob,
 		RequestTarget,
 		getContext,
+		transaction,
+		getUser,
+		authenticateUser,
+		contentTypes,
+		operation,
 	};
 }
 const ALLOWED_NODE_BUILTIN_MODULES = new Set([
