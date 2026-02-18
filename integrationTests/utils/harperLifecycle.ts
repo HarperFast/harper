@@ -244,7 +244,12 @@ export async function teardownHarper(ctx: ContextWithHarper): Promise<void> {
 		});
 		ctx.harper.process.kill();
 		timer = setTimeout(() => {
-			ctx.harper.process.kill('SIGKILL');
+			try {
+				ctx.harper.process.kill('SIGKILL');
+			} catch {
+				// possible that the process terminated but the exit event hasn't reached us yet
+			}
+			resolve();
 		}, 200);
 	});
 
