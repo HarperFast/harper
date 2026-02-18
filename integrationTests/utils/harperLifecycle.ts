@@ -177,7 +177,7 @@ export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperO
 		process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(),
 		`harper-integration-test-`
 	);
-	const installDir = await mkdtemp(installDirPrefix);
+	const installDir = ctx.harper?.installDir ?? (await mkdtemp(installDirPrefix));
 
 	const loopbackAddress = ctx.hostname ?? (await getNextAvailableLoopbackAddress());
 	const harperProcess = await runHarperCommand(

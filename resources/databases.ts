@@ -696,8 +696,9 @@ export function database({ database: databaseName, table: tableName }) {
 		const path = join(databasePath, tablePath ? tableName : databaseName);
 		rootStore = rocksdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
-			const envInit = new OpenEnvironmentObject(path, false);
-			rootStore = openRocksDatabase(path, envInit);
+			rootStore = openRocksDatabase(path, {
+				disableWAL: false,
+			});
 			rocksdbDatabaseEnvs.set(path, rootStore);
 		}
 	} else {
