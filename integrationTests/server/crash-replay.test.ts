@@ -3,8 +3,6 @@
  * database, so replay needs to work for harper to startup.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual } from 'node:assert/strict';
-
 import { setupHarper, teardownHarper, type ContextWithHarper, startHarper } from '../utils/harperLifecycle.ts';
 import { equal } from 'node:assert';
 
