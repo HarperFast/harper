@@ -26,9 +26,11 @@ const SAMPLING_INTERVAL_IN_MICROSECONDS = 50000;
 	// start the profiler
 	timeProfiler.start({ intervalMicros: SAMPLING_INTERVAL_IN_MICROSECONDS });
 	const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
-	setTimeout(() => {
-		captureProfile(PROFILE_PERIOD);
-	}, PROFILE_PERIOD).unref();
+	if (PROFILE_PERIOD > 0) {
+		setTimeout(() => {
+			captureProfile(PROFILE_PERIOD);
+		}, PROFILE_PERIOD).unref();
+	}
 })();
 
 export async function captureProfile(delayToNextCapture?: number): Promise<void> {

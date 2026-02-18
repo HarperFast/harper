@@ -90,7 +90,7 @@ function getHarperScript(): string {
  */
 function runHarperCommand(args: string[], env: any, completionMessage?: string): Promise<ChildProcess> {
 	const harperScript = getHarperScript();
-	const proc = spawn('node', [harperScript, ...args], {
+	const proc = spawn('node', ['--trace-warnings', harperScript, ...args], {
 		env: { ...process.env, ...env },
 	});
 	return new Promise((resolve, reject) => {
