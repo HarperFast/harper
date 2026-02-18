@@ -171,7 +171,7 @@ export async function setupHarper(ctx: ContextWithHarper, options?: SetupHarperO
  *
  * @param ctx - The test context with Harper installation details
  */
-async function startHarper(ctx: ContextWithHarper, options?: SetupHarperOptions): Promise<ContextWithHarper> {
+export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperOptions): Promise<ContextWithHarper> {
 	// Create a directory for this Harper installation
 	// Use the system temp directory by default, or a custom parent directory if specified
 	const installDirPrefix = join(
@@ -236,7 +236,17 @@ async function startHarper(ctx: ContextWithHarper, options?: SetupHarperOptions)
  * ```
  */
 export async function teardownHarper(ctx: ContextWithHarper): Promise<void> {
-	ctx.harper.process.kill();
+	await new Promise((resolve) => {
+		let timer: NodeJS.Timeout;
+		ctx.harper.process.on('exit', () => {
+			resolve();
+			clearTimeout(timer);
+		});
+		ctx.harper.process.kill();
+		timer = setTimeout(() => {
+			ctx.harper.process.kill('SIGKILL');
+		}, 200);
+	});
 
 	await releaseLoopbackAddress(ctx.harper.hostname);
 
