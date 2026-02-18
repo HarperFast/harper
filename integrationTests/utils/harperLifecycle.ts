@@ -122,9 +122,6 @@ function runHarperCommand(args: string[], env: any, completionMessage?: string):
 				resolve(proc);
 			} else {
 				let errorMessage = `Harper process failed with exit code ${statusCode}`;
-				if (stdout) {
-					errorMessage += `\n\nstdout:\n${stdout}`;
-				}
 				if (stderr) {
 					errorMessage += `\n\nstderr:\n${stderr}`;
 				}
@@ -183,7 +180,7 @@ async function startHarper(ctx: ContextWithHarper, options?: SetupHarperOptions)
 	);
 	const installDir = await mkdtemp(installDirPrefix);
 
-	const loopbackAddress = await getNextAvailableLoopbackAddress();
+	const loopbackAddress = ctx.hostname ?? (await getNextAvailableLoopbackAddress());
 	const harperProcess = await runHarperCommand(
 		[
 			`--ROOTPATH=${installDir}`,
@@ -195,7 +192,6 @@ async function startHarper(ctx: ContextWithHarper, options?: SetupHarperOptions)
 			`--NODE_HOSTNAME=${loopbackAddress}`,
 			`--HTTP_PORT=${loopbackAddress}:${HTTP_PORT}`,
 			`--OPERATIONSAPI_NETWORK_PORT=${loopbackAddress}:${OPERATIONS_API_PORT}`,
-			`--REPLICATION_PORT=${loopbackAddress}:${REPLICATION_PORT}`,
 			'--LOGGING_LEVEL=debug',
 			'--HARPER_SET_CONFIG=' + JSON.stringify(options?.config || {}),
 		],
