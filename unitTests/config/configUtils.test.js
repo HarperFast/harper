@@ -1205,7 +1205,7 @@ describe('Test configUtils module', () => {
 	});
 
 	describe('Test port conflict resolution with environment variables', () => {
-		const CONFIG_FILE_PATH = path.join(HDB_ROOT, hdbTerms.HDB_CONFIG_FILE);
+		const CONFIG_FILE_PATH = path.join(HDB_ROOT, hdbTerms.HARPER_CONFIG_FILE);
 
 		beforeEach(() => {
 			// Clean up any existing env vars

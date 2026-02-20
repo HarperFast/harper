@@ -184,7 +184,10 @@ async function main(calledByInstall = false) {
 	try {
 		cmdArgs = minimist(process.argv);
 		if (cmdArgs.ROOTPATH) {
-			configUtils.updateConfigObject('settings_path', path.join(cmdArgs.ROOTPATH, terms.HDB_CONFIG_FILE));
+			let harperConfigPath = path.join(cmdArgs.ROOTPATH, hdbTerms.HARPER_CONFIG_FILE);
+			if (!fs.existsSync(harperConfigPath) && fs.existsSync(path.join(cmdArgs.ROOTPATH, hdbTerms.HARPER_CONFIG_FILE)))
+				harperConfigPath = path.join(cmdArgs.ROOTPATH, hdbTerms.HDB_CONFIG_FILE);
+			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
 

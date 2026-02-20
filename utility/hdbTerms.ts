@@ -5,12 +5,14 @@
  * All variables should use a JSDoc comment to explain what it is, and any objects should be marked as `as const` for better type checking.
  */
 
-/** Harper Root Config File */
+/** Old Harper Root Config File */
 export const HDB_CONFIG_FILE = 'harperdb-config.yaml';
+/** Harper Root Config File */
+export const HARPER_CONFIG_FILE = 'harper-config.yaml';
 /** Harper Default Config File */
 export const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 /** Harper Root Directory Name */
-export const HDB_ROOT_DIR_NAME = 'hdb';
+export const HDB_ROOT_DIR_NAME = 'harper';
 /** Harper Component Config File */
 export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
 

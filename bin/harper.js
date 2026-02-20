@@ -107,7 +107,11 @@ async function harper() {
 					throw new Error(`The path ${appFolder} is not a folder`);
 				}
 				appFolder = fs.realpathSync(appFolder);
-				if (fs.existsSync(path.join(appFolder, hdbTerms.HDB_CONFIG_FILE))) {
+				if (
+					fs.existsSync(path.join(appFolder, hdbTerms.HARPER_CONFIG_FILE)) ||
+					(fs.existsSync(path.join(appFolder, hdbTerms.HDB_CONFIG_FILE)) &&
+						fs.existsSync(path.join(appFolder, 'database')))
+				) {
 					// This can be used to run HDB without a boot file
 					process.env.ROOTPATH = appFolder;
 				} else {
@@ -115,7 +119,7 @@ async function harper() {
 				}
 			} else if (fs.existsSync(hdbTerms.HDB_COMPONENT_CONFIG_FILE) || fs.existsSync('schema.graphql')) {
 				process.env.RUN_HDB_APP = '.';
-			} else if (fs.existsSync(hdbTerms.HDB_CONFIG_FILE)) {
+			} else if (fs.existsSync(hdbTerms.HARPER_CONFIG_FILE) || fs.existsSync(hdbTerms.HDB_CONFIG_FILE)) {
 				process.env.ROOTPATH = '.';
 			}
 		}

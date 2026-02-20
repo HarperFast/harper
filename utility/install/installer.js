@@ -140,7 +140,7 @@ async function install() {
 	if (
 		!ignoreExisting &&
 		!cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] &&
-		(await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE)))
+		(await fs.pathExists(path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE) || await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE)))
 	) {
 		console.error(HDB_EXISTS_MSG);
 		process.exit();
@@ -414,7 +414,7 @@ async function checkForExistingInstall() {
 }
 
 async function createBootPropertiesFile() {
-	const configFilePath = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
+	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 
 	let install_user;
 	try {
