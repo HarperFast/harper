@@ -269,6 +269,7 @@ export class DatabaseTransaction implements Transaction {
 			};
 			if (this.next) {
 				// now run any other transactions
+				options.timestamp = this.timestamp;
 				const nextResolution = this.next?.commit(options);
 				if (nextResolution?.then)
 					return nextResolution?.then((nextResolution) => ({

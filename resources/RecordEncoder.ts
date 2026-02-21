@@ -475,8 +475,9 @@ export function recordUpdater(store, tableId, auditStore) {
 		resolveRecord?: boolean, // indicates that we are resolving (from source) record that was previously invalidated
 		auditRecord?: any
 	) {
+		const isRocksDB = store instanceof RocksDatabase;
 		// determine if and how we apply the local timestamp
-		if (store instanceof RocksDatabase) {
+		if (isRocksDB) {
 			// with rocksdb, we simplify to just storing the singular version/timestamp
 			timestampNextEncoding = newVersion;
 		} else if (audit == null)
@@ -535,7 +536,11 @@ export function recordUpdater(store, tableId, auditStore) {
 			}
 			let result: Promise<void>;
 			if (record !== undefined) {
-				result = encodeBlobsWithFilePath(() => store.put(id, record, putOptions), id, store.rootStore);
+				result = encodeBlobsWithFilePath(
+					() => (isRocksDB ? store.putSync(id, record) : store.put(id, record, putOptions)),
+					id,
+					store.rootStore
+				);
 				if (blobsWereEncoded) {
 					extendedType |= HAS_BLOBS;
 				}
@@ -558,7 +563,7 @@ export function recordUpdater(store, tableId, auditStore) {
 					const replacingEntry = auditStore.get(replacingId, tableId, id);
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
-						result = auditStore.put(
+						result = auditStore[isRocksDB ? 'putSync' : 'put'](
 							replacingId,
 							{
 								version: newVersion,
@@ -580,7 +585,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						return result;
 					}
 				}
-				result = auditStore.put(
+				result = auditStore[isRocksDB ? 'putSync' : 'put'](
 					record === undefined ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
 					{
 						version: newVersion,
