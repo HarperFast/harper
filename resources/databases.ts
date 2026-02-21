@@ -132,7 +132,7 @@ let loadedDatabases; // indicates if we have loaded databases from the file syst
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
-let definedDatabases;
+let definedDatabases: Map<string, Set<string>>;
 
 /**
  * This gets the set of tables from the default database ("data").
@@ -306,7 +306,6 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
-	definedDatabases = null;
 	return databases;
 }
 
@@ -417,6 +416,7 @@ function initStores(
 
 	const tables = ensureDB(databaseName);
 	const definedTables = tables[DEFINED_TABLES];
+	definedTables.rootStore = rootStore;
 	const tablesToLoad = new Map<string, any>();
 
 	for (const result of dbisStore.getRange({ start: false })) {
@@ -672,7 +672,10 @@ export function database({ database: databaseName, table: tableName }) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	ensureDB(databaseName);
-
+	const definedDatabase = definedDatabases.get(databaseName);
+	if (definedDatabase?.rootStore) {
+		return definedDatabase.rootStore;
+	}
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
 	if (process.env.SCHEMAS_DATA_PATH) {
 		databaseConfig.data = { path: process.env.SCHEMAS_DATA_PATH };
@@ -691,7 +694,7 @@ export function database({ database: databaseName, table: tableName }) {
 			: join(hdbBasePath, LEGACY_DATABASES_DIR_NAME));
 
 	let rootStore: RootDatabaseKind;
-	const useRocksdb = envGet(CONFIG_PARAMS.STORAGE_ENGINE) !== 'lmdb';
+	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
 	if (useRocksdb) {
 		const path = join(databasePath, tablePath ? tableName : databaseName);
 		rootStore = rocksdbDatabaseEnvs.get(path);
@@ -714,6 +717,7 @@ export function database({ database: databaseName, table: tableName }) {
 	if (!rootStore.auditStore) {
 		rootStore.auditStore = openAuditStore(rootStore);
 	}
+	if (definedDatabase) definedDatabase.rootStore = rootStore;
 	return rootStore;
 }
 /**

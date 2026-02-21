@@ -535,7 +535,7 @@ export function recordUpdater(store, tableId, auditStore) {
 			}
 			let result: Promise<void>;
 			if (record !== undefined) {
-				result = encodeBlobsWithFilePath(() => store.putSync(id, record, putOptions), id, store.rootStore);
+				result = encodeBlobsWithFilePath(() => store.put(id, record, putOptions), id, store.rootStore);
 				if (blobsWereEncoded) {
 					extendedType |= HAS_BLOBS;
 				}
@@ -558,7 +558,7 @@ export function recordUpdater(store, tableId, auditStore) {
 					const replacingEntry = auditStore.get(replacingId, tableId, id);
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
-						result = auditStore.putSync(
+						result = auditStore.put(
 							replacingId,
 							{
 								version: newVersion,
@@ -580,7 +580,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						return result;
 					}
 				}
-				result = auditStore.putSync(
+				result = auditStore.put(
 					record === undefined ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
 					{
 						version: newVersion,

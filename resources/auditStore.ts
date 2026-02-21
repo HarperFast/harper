@@ -109,6 +109,13 @@ export function openAuditStore(rootStore) {
 			auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
 			updateLastRemoved(auditStore, 1);
 		}
+		const superGetRange = auditStore.getRange.bind(auditStore);
+		auditStore.getRange = function (options) {
+			return superGetRange(options).map(({ key, value }) => {
+				value.key = key;
+				return value;
+			});
+		};
 	}
 	rootStore.auditStore = auditStore;
 	auditStore.rootStore = rootStore;
@@ -149,13 +156,13 @@ export function openAuditStore(rootStore) {
 				let committed: Promise<void>;
 				let lastKey: any;
 				try {
-					for (const { key, value } of auditStore.getRange({
+					for (const auditRecord of auditStore.getRange({
 						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 						snapshot: false,
 						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
 					})) {
 						try {
-							committed = removeAuditEntry(auditStore, key, value);
+							committed = removeAuditEntry(auditStore, auditRecord);
 						} catch (error) {
 							harperLogger.warn('Error removing audit entry', error);
 						}
@@ -204,7 +211,7 @@ export function openAuditStore(rootStore) {
 	return auditStore;
 }
 
-export function removeAuditEntry(auditStore: any, key: number, auditRecord: AuditRecord): Promise<void> {
+export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
 		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
@@ -213,7 +220,7 @@ export function removeAuditEntry(auditStore: any, key: number, auditRecord: Audi
 		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
 			auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
 	}
-	return auditStore.remove(key);
+	return auditStore.remove(auditRecord.key);
 }
 
 function updateLastRemoved(auditStore, lastKey) {
@@ -399,7 +406,7 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): AuditRecord {
 	try {
 		const decoder =
-			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+			buffer.decoder || (buffer.decoder = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		decoder.position = start;
 		let previousVersion;
 		if (buffer[decoder.position] == 66) {

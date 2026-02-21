@@ -576,7 +576,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		function finished(error?: Error) {
 			const fd = writeStream.fd;
 			if (error) {
-				store.unlock(lockKey, 0);
+				store.unlock(lockKey);
 				if (fd) {
 					close(fd);
 					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
@@ -611,7 +611,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 					write(fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
 					return; // not finished yet, wait for this write and then we are finished
 				}
-				store.unlock(lockKey, 0);
+				store.unlock(lockKey);
 				if (flush) {
 					// we just use fdatasync because we really aren't that concerned with flushing file metadata
 					fdatasync(fd, (error) => {
