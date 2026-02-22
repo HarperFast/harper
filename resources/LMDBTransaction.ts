@@ -254,6 +254,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.writes = [];
+					this.timestamp = 0;
 					this.next = null;
 					return Promise.all(completions).then(() => {
 						return {

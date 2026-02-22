@@ -79,8 +79,8 @@ export const transactionKeyEncoder = {
 	},
 };
 export const AUDIT_STORE_OPTIONS = {
-	needsStableBuffer: true,
 	encoder: {
+		needsStableBuffer: true,
 		encode: (auditRecord: AuditRecord) =>
 			auditRecord && (auditRecord instanceof Uint8Array ? auditRecord : createAuditEntry(auditRecord)),
 		decode: (encoding: Buffer) => readAuditEntry(encoding),
@@ -166,7 +166,7 @@ export function openAuditStore(rootStore) {
 						} catch (error) {
 							harperLogger.warn('Error removing audit entry', error);
 						}
-						lastKey = key;
+						lastKey = auditRecord.key;
 						await new Promise(setImmediate);
 						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
