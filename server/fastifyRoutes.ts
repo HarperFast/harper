@@ -179,6 +179,7 @@ async function buildServer(isHttps) {
 
 	app.register(function (instance, options, done) {
 		instance.setNotFoundHandler(function (request, reply) {
+			if (reply.sent || reply.raw.headersSent || reply.raw.writableEnded) return;
 			app.server.emit('unhandled', request.raw, reply.raw);
 		});
 		done();

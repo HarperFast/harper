@@ -597,9 +597,10 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 }
 
 function defaultNotFound(request, response) {
-	response.writeHead(404);
-	response.end('Not found\n');
-	logRequest(request, 404, 0, request.requestId);
+    if (response.headersSent || response.writableEnded) return;
+    response.writeHead(404);
+    response.end('Not found\n');
+    logRequest(request, 404, 0, request.requestId);
 }
 let httpLogger: any;
 
