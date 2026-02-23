@@ -302,8 +302,7 @@ function initLogSettings(forceInit = false) {
 				// This is here for situations where HDB isn't using a boot file
 				if (
 					!properties.ROOTPATH ||
-					(properties.ROOTPATH &&
-						!fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HARPER_CONFIG_FILE)) &&
+					(!fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HARPER_CONFIG_FILE)) &&
 						!fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)))
 				)
 					throw err;
