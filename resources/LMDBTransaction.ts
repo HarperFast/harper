@@ -93,7 +93,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 		if (this.open === TRANSACTION_STATE.LINGERING) {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
-			const immediateTxn = new DatabaseTransaction();
+			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
 			return immediateTxn.commit({});
 		}
