@@ -140,7 +140,10 @@ async function install() {
 	if (
 		!ignoreExisting &&
 		!cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] &&
-		(await fs.pathExists(path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE) || await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE)))
+		(await fs.pathExists(
+			path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE) ||
+				(await fs.pathExists(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE)))
+		))
 	) {
 		console.error(HDB_EXISTS_MSG);
 		process.exit();

@@ -486,7 +486,7 @@ function updateConfigValue(
 	const oldHdbRoot = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
 	let oldConfigPath = path.join(oldHdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	if (!fs.existsSync(oldConfigPath) && fs.existsSync(path.join(oldHdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
-		oldConfigPath = path.join(oldHdbRoot, hdbTerms.HDB_CONFIG_FILE));
+		oldConfigPath = path.join(oldHdbRoot, hdbTerms.HDB_CONFIG_FILE);
 	}
 
 	const configDoc = parseYamlDoc(oldConfigPath);
@@ -602,7 +602,7 @@ function updateConfigValue(
 	const hdbRoot = configDoc.getIn(['rootPath']);
 	let configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	if (!fs.existsSync(configFileLocation) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
-		configFileLocation = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE));
+		configFileLocation = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
 	}
 
 	if (createBackup === true) {
