@@ -139,7 +139,7 @@ function startWorker(path, options = {}) {
 
 	const execArgv = [
 		'--enable-source-maps',
-		'--experimental-vm-modules', // used for giving applications their top level scope
+		'--experimental-vm-modules', // used for giving applications their own top level scope
 		'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
 		'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
 	];
