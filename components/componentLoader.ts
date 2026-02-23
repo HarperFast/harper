@@ -243,7 +243,10 @@ export async function loadComponent(
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {
 		let config;
-		let configPath = join(componentDirectory, 'harperdb-config.yaml'); // look for the specific harperdb-config.yaml first
+		let configPath = join(componentDirectory, 'harper-config.yaml'); // look for the specific harperdb-config.yaml first
+		if (!existsSync(configPath) && join(componentDirectory, 'harperdb-config.yaml')) {
+			configPath = join(componentDirectory, 'harperdb-config.yaml');
+		}
 		if (existsSync(configPath)) {
 			config = isRoot ? getConfigObj() : parseDocument(readFileSync(configPath, 'utf8')).toJSON();
 			// if not found, look for the generic config.yaml, the config filename we have historically used, but only if not the root
