@@ -1,5 +1,5 @@
 import { Resource } from '../resources/Resource.ts';
-import { contextStorage } from '../resources/transaction.ts';
+import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
@@ -12,6 +12,7 @@ import logger from '../utility/logging/harper_logger.js';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type { CompartmentOptions } from 'ses';
 
 type Lockdown = 'none' | 'freeze' | 'ses';
@@ -414,6 +415,7 @@ function getGlobalObject(scope: Scope) {
 		fetch: secureOnlyFetch,
 		console,
 		global: appGlobal,
+		harper: getHarperExports(scope),
 	});
 	return appGlobal;
 }
@@ -430,10 +432,10 @@ function getHarperExports(scope: Scope) {
 		RequestTarget,
 		getContext,
 		transaction,
-		getUser,
-		authenticateUser,
+		getUser: server.getUser,
+		authenticateUser: server.authenticateUser,
+		operation: server.operation,
 		contentTypes,
-		operation,
 	};
 }
 const ALLOWED_NODE_BUILTIN_MODULES = new Set([
@@ -457,6 +459,7 @@ const ALLOWED_NODE_BUILTIN_MODULES = new Set([
 	'console',
 	'perf_hooks',
 	'diagnostics_channel',
+	'fs',
 ]);
 function checkAllowedModulePath(moduleUrl: string, containingFolder: string): boolean {
 	if (moduleUrl.startsWith('file:')) {

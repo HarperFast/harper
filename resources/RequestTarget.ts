@@ -134,4 +134,3 @@ export class RequestTarget extends URLSearchParams {
 	}
 }
 export type RequestTargetOrId = RequestTarget | Id;
-_assignPackageExport('Resource', Resource);
