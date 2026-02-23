@@ -28,6 +28,7 @@ async function loadRootComponents(isWorkerThread = false) {
 	await loadComponent(dirname(configUtils.getConfigFilePath()), resources, 'hdb', {
 		isRoot: true,
 		providedLoadedComponents: loadedComponents,
+		autoReload: false
 	});
 	if (!process.env.HARPER_SAFE_MODE) {
 		// once the global plugins are loaded, we now load all the CF and run applications (and their components)
