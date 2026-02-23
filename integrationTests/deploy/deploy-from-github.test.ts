@@ -54,7 +54,7 @@ suite('GitHub application deployment', (ctx: ContextWithHarper) => {
 		// 	}
 		// });
 
-		const harperConfig = await readFile(join(ctx.harper.installDir, 'harperdb-config.yaml'), 'utf-8');
+		const harperConfig = await readFile(join(ctx.harper.installDir, 'harper-config.yaml'), 'utf-8');
 		const harperConfigObj = parse(harperConfig);
 		deepStrictEqual(harperConfigObj[project], { package: githubURL });
 	});
