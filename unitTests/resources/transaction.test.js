@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#js/resources/IterableEventQueue');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 
 describe('Transactions', () => {
 	let TxnTest, TxnTest2, TxnTest3;
@@ -289,7 +290,10 @@ describe('Transactions', () => {
 			const context = {};
 			await transaction(context, async () => {
 				await TxnTest.put({ id: 8, name: 'eight' }, context);
-				assert.equal((await TxnTest.get(8, context)).name, 'eight');
+				if (TxnTest.primaryStore instanceof RocksDatabase) {
+					// lmdb does guarantee read after write
+					assert.equal((await TxnTest.get(8, context)).name, 'eight');
+				}
 				await context.transaction.commit();
 				await TxnTest.put({ id: 8, name: 'eight changed' }); // no context
 				await context.transaction.commit();

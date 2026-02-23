@@ -537,7 +537,7 @@ export function recordUpdater(store, tableId, auditStore) {
 			let result: Promise<void>;
 			if (record !== undefined) {
 				result = encodeBlobsWithFilePath(
-					() => (isRocksDB ? store.putSync(id, record) : store.put(id, record, putOptions)),
+					() => (isRocksDB ? store.putSync(id, record, putOptions) : store.put(id, record, putOptions)),
 					id,
 					store.rootStore
 				);

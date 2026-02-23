@@ -111,8 +111,9 @@ export function openAuditStore(rootStore) {
 		}
 		const superGetRange = auditStore.getRange.bind(auditStore);
 		auditStore.getRange = function (options) {
+			if (options.values === false) return superGetRange(options); // getKeys shouldn't be modified
 			return superGetRange(options).map(({ key, value }) => {
-				value.key = key;
+				value.key = value.localTime = key;
 				return value;
 			});
 		};
