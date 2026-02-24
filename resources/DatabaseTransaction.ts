@@ -213,7 +213,7 @@ export class DatabaseTransaction implements Transaction {
 				if (!outstandingCommit) {
 					outstandingCommit = commitResolution;
 					outstandingCommitStart = performance.now();
-					outstandingCommit.then(() => {
+					outstandingCommit.finally(() => {
 						outstandingCommit = null;
 					});
 				}
