@@ -41,7 +41,7 @@
 		"test:integration": "node integrationTests/utils/scripts/run.ts",
 		"test:unit": "mocha",
 		"test:unit:main": "mocha 'unitTests/**/*test.*js' --exclude 'unitTests/apiTests/**/*' --exclude 'unitTests/dataLayer/harperBridge/**/*' --exclude 'unitTests/resources/**/*'",
-		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources",
+		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
 		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests",
 		"test:unit:components": "mocha 'unitTests/components/**/*.js'",
 		"test:unit:resources": "mocha 'unitTests/resources/**/*.js'",
