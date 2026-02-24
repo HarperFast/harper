@@ -42,6 +42,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	getReadTxn(): ReadTransaction {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+		this.timeout = txnExpiration; // reset the timeout
 		if (this.stale) this.stale = false;
 		if (this.readTxn) {
 			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
@@ -321,15 +322,19 @@ let timer;
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
-			if (txn.stale) {
+			if (txn.timeout <= 0) {
 				const url = txn.getContext()?.url;
 				harperLogger.error(
-					`Transaction was open too long and has been aborted, from table: ${
+					`Transaction was open too long and has been committed, from table: ${
 						txn.db?.name + (url ? ' path: ' + url : '')
 					}`
 				);
-				txn.abort();
-			} else txn.stale = true;
+				// reset the transaction
+				txn.commit();
+				txn.timeout = txnExpiration;
+			} else {
+				txn.timeout -= txnExpiration;
+			}
 		}
 	}, txnExpiration).unref();
 }
