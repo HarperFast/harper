@@ -115,6 +115,7 @@ export class RocksTransactionLogStore {
 		exactStart?: boolean;
 		end?: number;
 		log?: string | number;
+		excludeLogs?: string[];
 		onlyKeys?: boolean;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
@@ -137,7 +138,8 @@ export class RocksTransactionLogStore {
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
-			const iterators = (this.nodeLogs || this.loadLogs()).map((log) => log.query(options)[Symbol.iterator]());
+			const logs = (this.nodeLogs || this.loadLogs()).filter((log) => !options.excludeLogs?.includes(log.name));
+			const iterators = logs.map((log) => log.query(options)[Symbol.iterator]());
 			// holds the queue of next entries from each iterator
 			let nextEntries = [];
 			const aggregateIterator = {
