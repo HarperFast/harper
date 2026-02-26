@@ -112,7 +112,7 @@ export interface Table {
 	subscriptions: Map<any, Function[]>;
 	expirationMS: number;
 	indexingOperations?: Promise<void>;
-	sources: (new () => ResourceInterface)[];
+	source?: new () => ResourceInterface;
 	Transaction: ReturnType<typeof makeTable>;
 }
 type ResidencyDefinition = number | string[] | void;
@@ -159,8 +159,6 @@ export function makeTable(options) {
 	let prefetchCallbacks = [];
 	let untilNextPrefetch = 1;
 	let nonPrefetchSequence = 2;
-	let applyToSources: any = {};
-	let applyToSourcesIntermediate: any = {};
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
@@ -233,7 +231,7 @@ export function makeTable(options) {
 		static updatedTimeProperty = updatedTimeProperty;
 		static propertyResolvers;
 		static userResolvers = {};
-		static sources: (typeof TableResource)[] = [];
+		static source?: typeof TableResource;
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
@@ -258,81 +256,20 @@ export function makeTable(options) {
 			}
 			if (options?.intermediateSource) {
 				source.intermediateSource = true;
-				this.sources.unshift(source);
+				// intermediateSource should register sourceLoad and setup subscription but not assign to this.source
 			} else {
-				if (this.sources.some((source) => !source.intermediateSource)) {
-					if (this.sources.some((existingSource) => existingSource.name === source.name)) {
-						// if we are adding a source that is already in the list, we don't add it again
+				if (this.source) {
+					if (this.source.name === source.name) {
+						// if we are adding a source that is already set, we don't add it again
 						return;
 					}
-					throw new Error('Can not have multiple canonical (non-intermediate) sources');
+					throw new Error('Can not have multiple sources');
 				}
-				this.sources.push(source);
+				this.source = source;
 			}
 			hasSourceGet = hasSourceGet || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
 			sourceLoad = sourceLoad || source.load;
-			// These functions define how write operations are propagate to the sources.
-			// We define the last source in the array as the "canonical" source, the one that can authoritatively
-			// reject or accept a write. The other sources are "intermediate" sources that can also be
-			// notified of writes and/or fulfill gets.
-			const getApplyToIntermediateSource = (method) => {
-				let sources = this.sources;
-				sources = sources.filter(
-					(source) =>
-						source.intermediateSource &&
-						source[method] &&
-						(!source[method].reliesOnPrototype || source.prototype[method])
-				);
-				if (sources.length > 0) {
-					if (sources.length === 1) {
-						// the simple case, can directly call it
-						const intermediateSource = sources[0];
-						return (context, id, data) => {
-							if (context?.source !== intermediateSource) return intermediateSource[method](id, data, context);
-						};
-					} else {
-						return (context, id, data) => {
-							// if multiple intermediate sources, call them in parallel
-							const results: Promise<any>[] = [];
-							for (const source of sources) {
-								if (context?.source === source) break;
-								results.push(source[method](id, data, context));
-							}
-							return Promise.all(results);
-						};
-					}
-				}
-			};
-			let canonicalSource = this.sources[this.sources.length - 1];
-			if (canonicalSource.intermediateSource) canonicalSource = {} as typeof TableResource; // don't treat intermediate sources as canonical
-			const getApplyToCanonicalSource = (method) => {
-				if (
-					canonicalSource[method] &&
-					(!canonicalSource[method].reliesOnPrototype || canonicalSource.prototype[method])
-				) {
-					return (context, id, data) => {
-						if (!context?.source) return canonicalSource[method](id, data, context);
-					};
-				}
-			};
-			// define a set of methods for each operation so we can apply these in each write as part
-			// of the commit
-			applyToSources = {
-				put: getApplyToCanonicalSource('put'),
-				patch: getApplyToCanonicalSource('patch'),
-				delete: getApplyToCanonicalSource('delete'),
-				publish: getApplyToCanonicalSource('publish'),
-				// note that invalidate event does not go to the canonical source, invalidate means that
-				// caches are invalidated, which specifically excludes the canonical source from being affected.
-			};
-			applyToSourcesIntermediate = {
-				put: getApplyToIntermediateSource('put'),
-				patch: getApplyToIntermediateSource('patch'),
-				delete: getApplyToIntermediateSource('delete'),
-				publish: getApplyToIntermediateSource('publish'),
-				invalidate: getApplyToIntermediateSource('invalidate'),
-			};
-			const shouldRevalidateEvents = canonicalSource.shouldRevalidateEvents;
+			const shouldRevalidateEvents = this.source?.shouldRevalidateEvents;
 
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
@@ -634,7 +571,7 @@ export function makeTable(options) {
 							// dictates not to go to source
 							if (!this.doesExist()) throw new ServerError('Entry is not cached', 504);
 						} else if (resourceOptions?.ensureLoaded) {
-							const loadingFromSource = ensureLoadedFromSource(id, entry, request, this);
+							const loadingFromSource = ensureLoadedFromSource(this.constructor.source, id, entry, request, this);
 							if (loadingFromSource) {
 								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 								target.loadedFromSource = true;
@@ -663,7 +600,12 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		ensureLoaded() {
-			const loadedFromSource = ensureLoadedFromSource(this.getId(), this.#entry, this.getContext());
+			const loadedFromSource = ensureLoadedFromSource(
+				this.constructor.source,
+				this.getId(),
+				this.#entry,
+				this.getContext()
+			);
 			if (loadedFromSource) {
 				return when(loadedFromSource, (entry) => {
 					this.#entry = entry;
@@ -1037,7 +979,7 @@ export function makeTable(options) {
 									// dictates not to go to source
 									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 								} else if (ensureLoaded) {
-									const loadingFromSource = ensureLoadedFromSource(id, entry, context, this);
+									const loadingFromSource = ensureLoadedFromSource(constructor.source, id, entry, context, this);
 									if (loadingFromSource) {
 										txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 										target.loadedFromSource = true;
@@ -1335,11 +1277,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				before: applyToSources.invalidate?.bind(this, context, id),
-				beforeIntermediate: preCommitBlobsForRecordBefore(
-					partialRecord,
-					applyToSourcesIntermediate.invalidate?.bind(this, context, id)
-				),
+				beforeIntermediate: preCommitBlobsForRecordBefore(partialRecord),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					partialRecord ??= null;
@@ -1380,8 +1318,10 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				before: applyToSources.relocate?.bind(this, context, id),
-				beforeIntermediate: applyToSourcesIntermediate.relocate?.bind(this, context, id),
+				before:
+					this.constructor.source?.relocate && !context?.source
+						? this.constructor.source.relocate.bind(this.constructor.source, id, undefined, context)
+						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
@@ -1608,16 +1548,22 @@ export function makeTable(options) {
 
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
-			const writeToSources = (sources) => {
-				return fullUpdate
-					? sources.put // full update is a put, so we can use the put method if available
-						? () => sources.put(context, id, recordUpdate)
-						: null
-					: sources.patch // otherwise, we need to use the patch method if available
-						? () => sources.patch(context, id, recordUpdate)
-						: sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-							? () => sources.put(context, id, updateAndFreeze(this))
-							: null;
+			const writeToSource = () => {
+				if (!this.constructor.source || context?.source) return;
+				if (fullUpdate) {
+					// full update is a put
+					if (this.constructor.source.put) {
+						return () => this.constructor.source.put(id, recordUpdate, context);
+					}
+				} else {
+					// incremental update
+					if (this.constructor.source.patch) {
+						return () => this.constructor.source.patch(id, recordUpdate, context);
+					} else if (this.constructor.source.put) {
+						// if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+						return () => this.constructor.source.put(id, updateAndFreeze(this), context);
+					}
+				}
 			};
 
 			const write = {
@@ -1671,8 +1617,8 @@ export function makeTable(options) {
 						return false;
 					}
 				},
-				before: writeToSources(applyToSources),
-				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate, writeToSources(applyToSourcesIntermediate)),
+				before: writeToSource(),
+				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -1923,8 +1869,10 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry,
 				nodeName: context?.nodeName,
-				before: applyToSources.delete?.bind(this, context, id),
-				beforeIntermediate: applyToSourcesIntermediate.delete?.bind(this, context, id),
+				before:
+					this.constructor.source?.delete && !context?.source
+						? this.constructor.source.delete.bind(this.constructor.source, id, undefined, context)
+						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					const existingRecord = existingEntry?.value;
 					if (retry) {
@@ -2385,6 +2333,8 @@ export function makeTable(options) {
 				checkLoaded = true;
 			}
 			let transformCache;
+			const source = this.source;
+			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
@@ -2421,7 +2371,7 @@ export function makeTable(options) {
 								message: 'This entry has expired',
 							};
 						}
-						const loadingFromSource = ensureLoadedFromSource(entry.key ?? entry, entry, context);
+						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform);
 						}
@@ -2832,10 +2782,13 @@ export function makeTable(options) {
 						this.validate(message);
 					}
 				},
-				before: applyToSources.publish?.bind(this, context, id, message),
+				before:
+					this.constructor.source?.publish && !context?.source
+						? this.constructor.source.publish.bind(this.constructor.source, id, message, context)
+						: undefined,
 				beforeIntermediate: preCommitBlobsForRecordBefore(
 					message,
-					applyToSourcesIntermediate.publish?.bind(this, context, id, message),
+					undefined,
 					true // because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 				),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
@@ -3431,11 +3384,10 @@ export function makeTable(options) {
 		}
 	}
 	const throttledCallToSource = throttle(
-		async (id, sourceContext, existingEntry) => {
-			// find the first data source that will fulfill our request for data
-			for (const source of TableResource.sources) {
-				if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-					if (source.available?.(existingEntry) === false) continue;
+		async (source, id, sourceContext, existingEntry) => {
+			// call the data source if it exists and will fulfill our request for data
+			if (source && source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+				if (source.available?.(existingEntry) !== false) {
 					sourceContext.source = source;
 					const resolvedData = await source.get(id, sourceContext);
 					if (resolvedData) return resolvedData;
@@ -3703,7 +3655,7 @@ export function makeTable(options) {
 		}
 	}
 
-	function ensureLoadedFromSource(id, entry, context, resource?) {
+	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?) {
 		if (hasSourceGet) {
 			let needsSourceData = false;
 			if (context.noCache) needsSourceData = true;
@@ -3722,7 +3674,7 @@ export function makeTable(options) {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				const loadingFromSource = getFromSource(id, entry, context).then((entry) => {
+				const loadingFromSource = getFromSource(source, id, entry, context).then((entry) => {
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
@@ -3889,7 +3841,12 @@ export function makeTable(options) {
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
-	async function getFromSource(id: Id, existingEntry: Entry, context: Context): Promise<Entry> {
+	async function getFromSource(
+		source: typeof TableResource,
+		id: Id,
+		existingEntry: Entry,
+		context: Context
+	): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
@@ -3906,7 +3863,7 @@ export function makeTable(options) {
 			const entry = primaryStore.getEntry(id);
 			if (!entry || !entry.value || entry.metadataFlags & (INVALIDATED | EVICTED))
 				// try again
-				whenResolved(getFromSource(id, primaryStore.getEntry(id), context));
+				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context));
 			else whenResolved(entry);
 		};
 		const lockAcquired = primaryStore.tryLock(id, callback);
@@ -3952,7 +3909,7 @@ export function makeTable(options) {
 					let updatedRecord;
 					let hasChanges, invalidated;
 					try {
-						updatedRecord = await throttledCallToSource(id, sourceContext, existingEntry);
+						updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
 						invalidated = metadataFlags & INVALIDATED;
 						let version = sourceContext.lastModified || (invalidated && existingVersion);
 						hasChanges = invalidated || version > existingVersion || !existingRecord;
@@ -4034,7 +3991,6 @@ export function makeTable(options) {
 							}
 							updateIndices(id, existingRecord, updatedRecord);
 							if (updatedRecord) {
-								applyToSourcesIntermediate.put?.(sourceContext, id, updatedRecord);
 								if (existingEntry) {
 									context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 								}
@@ -4087,7 +4043,6 @@ export function makeTable(options) {
 									auditRecord
 								);
 							} else if (existingEntry) {
-								applyToSourcesIntermediate.delete?.(sourceContext, id);
 								logger.trace?.(
 									`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
 								);
