@@ -96,12 +96,17 @@ export class RocksTransactionLogStore {
 	getEntry() {
 		throw new Error('Not implemented');
 	}
+	addLogToMaps(logName: string, log: TransactionLog) {
+		const nodeId = ((globalThis as any).server?.replication?.exportIdMapping?.(this)?.[logName] ?? 0) as number;
+		this.nodeLogs![nodeId] ??= log;
+		this.logByName.set(logName, log);
+	}
+
 	loadLogs() {
 		this.nodeLogs ??= [];
 		for (const logName of this.rootStore.listLogs()) {
-			const nodeId = ((globalThis as any).server?.replication?.exportIdMapping?.(this)?.[logName] ?? 0) as number;
-			this.nodeLogs[nodeId] ??= this.rootStore.useLog(logName);
-			this.logByName.set(logName, this.nodeLogs[nodeId]);
+			const log = this.rootStore.useLog(logName);
+			this.addLogToMaps(logName, log);
 		}
 		return this.nodeLogs;
 	}
@@ -142,39 +147,78 @@ export class RocksTransactionLogStore {
 			const iterators = logs.map((log) => log.query(options)[Symbol.iterator]());
 			// holds the queue of next entries from each iterator
 			let nextEntries = [];
+
+			// Listen for new transaction logs and add them to the iterator
+			const onNewLog = (logName: string) => {
+				if (options.excludeLogs?.includes(logName)) {
+					return;
+				}
+				// Check if we already have this log
+				const existingLog = this.logByName.get(logName);
+				if (existingLog && iterators.some((_, i) => logs[i] === existingLog)) {
+					return;
+				}
+				// Add the new log
+				const newLog = this.rootStore.useLog(logName);
+				this.addLogToMaps(logName, newLog);
+
+				logs.push(newLog);
+				const newIterator = newLog.query(options)[Symbol.iterator]();
+				iterators.push(newIterator);
+				// Add the first entry from the new iterator to nextEntries if we're actively iterating
+				if (nextEntries.length > 0) {
+					nextEntries.push(newIterator.next());
+				}
+			};
+			this.rootStore.on('new-transaction-log', onNewLog);
+
 			const aggregateIterator = {
 				next() {
-					if (nextEntries.length === 0) {
-						// on the first iteration and any time we finished all the iterators, we re-retrieve all
-						// the next entries (in case we are resuming after being done)
-						nextEntries = iterators.map((iterator) => iterator.next());
-					}
-					let earliest: TransactionEntry;
-					let earliestIndex = -1;
-					for (let i = 0; i < nextEntries.length; i++) {
-						const result = nextEntries[i];
-						// skip any that are done
-						if (result.done) {
-							// remove the entry from the list, so we don't keep hitting it
-							nextEntries.splice(i--, 1);
-							continue;
+					try {
+						if (nextEntries.length === 0) {
+							// on the first iteration and any time we finished all the iterators, we re-retrieve all
+							// the next entries (in case we are resuming after being done)
+							nextEntries = iterators.map((iterator) => iterator.next());
 						}
-						// find the earliest one that is not done
-						const next = result.value;
-						if (!earliest || earliest.timestamp < next.timestamp) {
-							earliest = next;
-							earliestIndex = i;
+						let earliest: TransactionEntry;
+						let earliestIndex = -1;
+						for (let i = 0; i < nextEntries.length; i++) {
+							const result = nextEntries[i];
+							// skip any that are done
+							if (result.done) {
+								// remove the entry from the list, so we don't keep hitting it
+								nextEntries.splice(i--, 1);
+								continue;
+							}
+							// find the earliest one that is not done
+							const next = result.value;
+							if (!earliest || earliest.timestamp < next.timestamp) {
+								earliest = next;
+								earliestIndex = i;
+							}
 						}
+						if (earliestIndex >= 0) {
+							// replace the entry with the next one from the iterator we pulled from
+							nextEntries[earliestIndex] = iterators[earliestIndex].next();
+							return {
+								value: onlyKeys ? earliest.timestamp : earliest,
+								done: false,
+							};
+						} // else we are done
+						this.rootStore.off('new-transaction-log', onNewLog);
+						return { value: undefined, done: true };
+					} catch (error) {
+						this.rootStore.off('new-transaction-log', onNewLog);
+						throw error;
 					}
-					if (earliestIndex >= 0) {
-						// replace the entry with the next one from the iterator we pulled from
-						nextEntries[earliestIndex] = iterators[earliestIndex].next();
-						return {
-							value: onlyKeys ? earliest.timestamp : earliest,
-							done: false,
-						};
-					} // else we are done
-					return { value: undefined, done: true };
+				},
+				return(value?: any) {
+					this.rootStore.off('new-transaction-log', onNewLog);
+					return { value, done: true };
+				},
+				throw(error?: any) {
+					this.rootStore.off('new-transaction-log', onNewLog);
+					throw error;
 				},
 			};
 			iterable.iterate = () => aggregateIterator;
