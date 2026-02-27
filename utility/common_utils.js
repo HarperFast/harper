@@ -788,16 +788,16 @@ function getEnvCliRootPath() {
  * Will check to see if there is a rootpath cli/env var pointing to a harperdb-config.yaml file
  * This is used for running HDB without a boot file
  */
-let no_boot_file;
+let noBootFileChecked;
 function noBootFile() {
-	if (no_boot_file) return no_boot_file;
+	if (noBootFileChecked) return noBootFileChecked;
 	const cliEnvRoot = getEnvCliRootPath();
 	if (
 		getEnvCliRootPath() &&
 		(fs.pathExistsSync(path.join(cliEnvRoot, terms.HARPER_CONFIG_FILE)) ||
 			fs.pathExistsSync(path.join(cliEnvRoot, terms.HDB_CONFIG_FILE)))
 	) {
-		no_boot_file = true;
+		noBootFileChecked = true;
 		return true;
 	}
 }
