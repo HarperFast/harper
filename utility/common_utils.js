@@ -792,7 +792,11 @@ let no_boot_file;
 function noBootFile() {
 	if (no_boot_file) return no_boot_file;
 	const cliEnvRoot = getEnvCliRootPath();
-	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cliEnvRoot, terms.HDB_CONFIG_FILE))) {
+	if (
+		getEnvCliRootPath() &&
+		(fs.pathExistsSync(path.join(cliEnvRoot, terms.HDB_CONFIG_FILE)) ||
+			fs.pathExistsSync(path.join(cliEnvRoot, terms.HARPER_CONFIG_FILE)))
+	) {
 		no_boot_file = true;
 		return true;
 	}
