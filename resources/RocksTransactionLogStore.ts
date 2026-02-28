@@ -170,7 +170,8 @@ export class RocksTransactionLogStore {
 					nextEntries.push(newIterator.next());
 				}
 			};
-			this.rootStore.on('new-transaction-log', onNewLog);
+			const rootStore = this.rootStore;
+			rootStore.on('new-transaction-log', onNewLog);
 
 			const aggregateIterator = {
 				next() {
@@ -205,19 +206,19 @@ export class RocksTransactionLogStore {
 								done: false,
 							};
 						} // else we are done
-						this.rootStore.off('new-transaction-log', onNewLog);
+						rootStore.off('new-transaction-log', onNewLog);
 						return { value: undefined, done: true };
 					} catch (error) {
-						this.rootStore.off('new-transaction-log', onNewLog);
+						rootStore.off('new-transaction-log', onNewLog);
 						throw error;
 					}
 				},
 				return(value?: any) {
-					this.rootStore.off('new-transaction-log', onNewLog);
+					rootStore.off('new-transaction-log', onNewLog);
 					return { value, done: true };
 				},
 				throw(error?: any) {
-					this.rootStore.off('new-transaction-log', onNewLog);
+					rootStore.off('new-transaction-log', onNewLog);
 					throw error;
 				},
 			};
