@@ -1,4 +1,4 @@
-import { info } from '../utility/logging/harper_logger.js';
+import { warn } from '../utility/logging/harper_logger.js';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
@@ -27,9 +27,10 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		listenToCommits(table.primaryStore, table.auditStore);
 	} else {
 		baseSubscriptions = allSubscriptions;
-		if (!table.primaryStore.env.hasSubscriptionCommitListener) {
-			table.primaryStore.env.hasSubscriptionCommitListener = true;
-			table.primaryStore.on('committed', () => {
+		const rootStore = table.primaryStore.rootStore;
+		if (!rootStore.hasSubscriptionCommitListener) {
+			rootStore.hasSubscriptionCommitListener = true;
+			rootStore.on('committed', () => {
 				notifyFromTransactionData(allSubscriptions[path]);
 			});
 		}
@@ -111,18 +112,21 @@ function notifyFromTransactionData(subscriptions) {
 	auditStore.resetReadTxn?.();
 	nextTransaction(subscriptions.auditStore);
 	let subscribersWithTxns;
-	const getIterator = () =>
-		auditStore.getRange({
+	let auditLogIterator;
+	if (auditStore.reusableIterable) {
+		// rocksdb branch
+		auditLogIterator = subscriptions.auditLogIterator;
+		if (!auditLogIterator) {
+			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
+			// and still match older version numbers that may commit in the future
+			auditLogIterator = subscriptions.auditLogIterator = auditStore.getRange({});
+		}
+	} else {
+		auditLogIterator = auditStore.getRange({
 			start: subscriptions.lastTxnTime,
 			exclusiveStart: true,
 		});
-	let auditLogIterator;
-	if (auditStore.reusableIterable) {
-		auditLogIterator = subscriptions.auditLogIterator;
-		if (!auditLogIterator) {
-			auditLogIterator = subscriptions.auditLogIterator = getIterator();
-		}
-	} else auditLogIterator = getIterator();
+	}
 	for (const auditRecord of auditLogIterator) {
 		const timestamp: number = auditRecord.localTime ?? auditRecord.version;
 		subscriptions.lastTxnTime = timestamp;
@@ -146,7 +150,6 @@ function notifyFromTransactionData(subscriptions) {
 					)
 						continue;
 					if (subscription.startTime >= timestamp) {
-						info('omitting', recordId, subscription.startTime, timestamp);
 						continue;
 					}
 					try {
@@ -168,8 +171,7 @@ function notifyFromTransactionData(subscriptions) {
 						}
 						subscription.listener(recordId, auditRecord, timestamp, beginTxn);
 					} catch (error) {
-						console.error(error);
-						info(error);
+						warn(error);
 					}
 				}
 			}
@@ -192,7 +194,7 @@ function notifyFromTransactionData(subscriptions) {
 	}
 }
 /**
- * Interface with lmdb-js to listen for commits and traverse the audit log.
+ * Interface with database to listen for commits and traverse the audit log only on the same thread.
  * @param primaryStore
  * @param auditStore
  */
