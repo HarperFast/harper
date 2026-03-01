@@ -20,22 +20,27 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	const tableId = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
-	let baseSubscriptions;
+	let databaseSubscriptions;
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
-		baseSubscriptions = allSameThreadSubscriptions;
+		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);
 		listenToCommits(table.primaryStore, table.auditStore);
 	} else {
-		baseSubscriptions = allSubscriptions;
-		const rootStore = table.primaryStore.rootStore;
-		if (!rootStore.hasSubscriptionCommitListener) {
-			rootStore.hasSubscriptionCommitListener = true;
-			rootStore.on('committed', () => {
-				notifyFromTransactionData(allSubscriptions[path]);
+		databaseSubscriptions = allSubscriptions[path] || (allSubscriptions[path] = []);
+		const auditStore = table.auditStore;
+		if (!auditStore.hasSubscriptionCommitListener) {
+			if (auditStore.reusableIterable) {
+				// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
+				// and still match older version numbers that may commit in the future. But we have to start
+				// immediately so we are at the right position
+				databaseSubscriptions.auditLogIterator = auditStore.getRange({});
+			}
+			auditStore.hasSubscriptionCommitListener = true;
+			auditStore.on('committed', () => {
+				notifyFromTransactionData(databaseSubscriptions);
 			});
 		}
 	}
-	const databaseSubscriptions = baseSubscriptions[path] || (baseSubscriptions[path] = []);
 	databaseSubscriptions.auditStore = table.auditStore;
 	if (databaseSubscriptions.lastTxnTime == null) {
 		databaseSubscriptions.lastTxnTime = Date.now();
@@ -116,11 +121,6 @@ function notifyFromTransactionData(subscriptions) {
 	if (auditStore.reusableIterable) {
 		// rocksdb branch
 		auditLogIterator = subscriptions.auditLogIterator;
-		if (!auditLogIterator) {
-			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
-			// and still match older version numbers that may commit in the future
-			auditLogIterator = subscriptions.auditLogIterator = auditStore.getRange({});
-		}
 	} else {
 		auditLogIterator = auditStore.getRange({
 			start: subscriptions.lastTxnTime,
@@ -129,6 +129,7 @@ function notifyFromTransactionData(subscriptions) {
 	}
 	for (const auditRecord of auditLogIterator) {
 		const timestamp: number = auditRecord.localTime ?? auditRecord.version;
+		console.log('transactionBroadcast', auditRecord.recordId, auditRecord.type, timestamp);
 		subscriptions.lastTxnTime = timestamp;
 		if (!ACTIONS_OF_INTEREST.includes(auditRecord.type)) continue;
 		const tableSubscriptions = subscriptions[auditRecord.tableId];
