@@ -220,6 +220,7 @@ export class DatabaseTransaction implements Transaction {
 				const completions = [];
 				return commitResolution.then(
 					() => {
+						this.transaction.onCommit?.();
 						this.transaction = null; // the native transaction is done (reset if needed)
 						if (this.next) {
 							completions.push(this.next.commit(options));

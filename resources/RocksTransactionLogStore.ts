@@ -2,6 +2,7 @@ import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { isMainThread } from 'node:worker_threads';
+import { EventEmitter } from 'node:events';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
 	// we want to be able to test log replay
@@ -19,13 +20,14 @@ const HAS_PREVIOUS_VERSION = 0x20000000;
  * to manage and interact with transaction logs, including querying logs,
  * adding entries, and loading logs for multiple nodes or purposes.
  */
-export class RocksTransactionLogStore {
+export class RocksTransactionLogStore extends EventEmitter {
 	log: TransactionLog;
 	nodeLogs?: TransactionLog[]; // whatever the type of the read logger
 	logByName: Map<string, TransactionLog> = new Map();
 	rootStore: RocksDatabase;
 	reusableIterable = true; // flag indicating that iterable can be reused to resume iterating through audit log
 	constructor(rootDatabase: RocksDatabase) {
+		super();
 		this.log = rootDatabase.useLog('local');
 		this.rootStore = rootDatabase;
 	}
@@ -61,6 +63,15 @@ export class RocksTransactionLogStore {
 				position += 4;
 			}
 			entryBinary = createAuditEntry(auditRecord, position);
+		}
+		if (this.listenerCount('aftercommit')) {
+			if (!options.transaction.logEntries) {
+				options.transaction.logEntries = [];
+				options.transaction.onCommit = () => {
+					this.emit('aftercommit', options.transaction.logEntries);
+				};
+			}
+			options.transaction.logEntries.push(auditRecord);
 		}
 		log.addEntry(entryBinary, options.transaction.id);
 	}
@@ -304,7 +315,11 @@ export class RocksTransactionLogStore {
 		return this.rootStore.getUserSharedBuffer(key, defaultBuffer, options);
 	}
 	on(eventName: string, listener: any) {
-		return this.rootStore.on(eventName, listener);
+		if (eventName === 'aftercommit') {
+			return super.on('aftercommit', listener);
+		} else {
+			return this.rootStore.on(eventName, listener);
+		}
 	}
 	tryLock(key: any, onUnlocked?: () => void): boolean {
 		return this.rootStore.tryLock(key, onUnlocked);
