@@ -558,6 +558,7 @@ export function recordUpdater(store, tableId, auditStore) {
 					store.encoder.structureUpdate = null;
 				}
 				const structureVersion = store.encoder.structures.length + (store.encoder.typedStructs?.length ?? 0);
+				const nodeId = options?.nodeId ?? server.replication?.getThisNodeId(auditStore) ?? 0;
 				if (resolveRecord && existingEntry?.localTime) {
 					const replacingId = existingEntry?.localTime;
 					const replacingEntry = auditStore.get(replacingId, tableId, id);
@@ -570,7 +571,7 @@ export function recordUpdater(store, tableId, auditStore) {
 								tableId,
 								recordId: id,
 								previousVersion,
-								nodeId: options?.nodeId ?? server.replication.getThisNodeId(auditStore) ?? 0,
+								nodeId,
 								user: username,
 								type,
 								encodedRecord: lastValueEncoding,
@@ -580,7 +581,7 @@ export function recordUpdater(store, tableId, auditStore) {
 								expiresAt,
 								structureVersion,
 							},
-							{ ifVersion: ifVersion, transaction: options.transaction }
+							{ ifVersion: ifVersion, transaction: options.transaction, nodeId }
 						);
 						return result;
 					}
@@ -592,7 +593,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						tableId,
 						recordId: id,
 						previousVersion: store instanceof RocksDatabase ? existingEntry?.version : existingEntry?.localTime ? 1 : 0,
-						nodeId: options?.nodeId ?? server.replication?.getThisNodeId(auditStore) ?? 0,
+						nodeId,
 						user: username,
 						type,
 						encodedRecord: lastValueEncoding,
@@ -609,6 +610,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						instructedWrite: true,
 						ifVersion,
 						transaction: options.transaction,
+						nodeId,
 					}
 				);
 			}

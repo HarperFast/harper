@@ -32,6 +32,7 @@ export interface Server {
 	replication: {
 		getThisNodeId(auditStore: any): number;
 		exportIdMapping(auditStore: any): any;
+		getIdOfRemoteNode(remoteNodeName: string, auditStore: any): number;
 		replicateOperation(operation: {
 			replicated: boolean;
 			[key: string]: any;
