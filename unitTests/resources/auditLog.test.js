@@ -97,18 +97,18 @@ describe('Audit log', () => {
 		await AuditedTable.put(11, { name: 'initial2' });
 
 		const results = [];
-		const iterator = AuditedTable.getHistory()[Symbol.iterator]();
+		const iterator = AuditedTable.getHistory()[Symbol.asyncIterator]();
 
 		// Get first entry
-		let result = iterator.next();
+		let result = await iterator.next();
 		results.push(result.value);
 
 		// Emit a new transaction log event
 		const newLogName = 'test-log-' + Date.now();
-		AuditedTable.auditStore.rootStore.emit('new-transaction-log', newLogName);
-
+		AuditedTable.auditStore.rootStore.useLog('new-transaction-log');
+		await delay(20);
 		// Continue iterating - should include entries from new log if it has any
-		while (!(result = iterator.next()).done) {
+		while (!(result = await iterator.next()).done) {
 			results.push(result.value);
 		}
 
@@ -120,23 +120,37 @@ describe('Audit log', () => {
 
 		await AuditedTable.put(20, { name: 'test' });
 
-		// Iterate through all entries
-		const results = [];
-		for (const entry of AuditedTable.getHistory()) {
-			results.push(entry);
-		}
+		// Track whether listener was called after completion
+		let listenerCalledAfterCompletion = false;
+		const originalOn = AuditedTable.auditStore.rootStore.on.bind(AuditedTable.auditStore.rootStore);
+		const originalOff = AuditedTable.auditStore.rootStore.off.bind(AuditedTable.auditStore.rootStore);
+		let activeListener = null;
 
-		// Get listener count before
-		const listenersBefore = AuditedTable.auditStore.rootStore.listenerCount('new-transaction-log');
+		AuditedTable.auditStore.rootStore.on = function (event, listener) {
+			if (event === 'new-transaction-log') {
+				activeListener = listener;
+			}
+			return originalOn(event, listener);
+		};
 
-		// Create another iterator and let it complete
-		for (const entry of AuditedTable.getHistory()) {
+		AuditedTable.auditStore.rootStore.off = function (event, listener) {
+			if (event === 'new-transaction-log' && listener === activeListener) {
+				activeListener = null;
+			}
+			return originalOff(event, listener);
+		};
+
+		// Create iterator and let it complete
+		for await (const entry of AuditedTable.getHistory()) {
 			// iterate through all
 		}
 
-		// Listener count should not increase (cleanup happened)
-		const listenersAfter = AuditedTable.auditStore.rootStore.listenerCount('new-transaction-log');
-		assert.equal(listenersAfter, listenersBefore, 'Listener should be cleaned up after completion');
+		// Restore original methods
+		AuditedTable.auditStore.rootStore.on = originalOn;
+		AuditedTable.auditStore.rootStore.off = originalOff;
+
+		// Verify listener was cleaned up
+		assert.equal(activeListener, null, 'Listener should be cleaned up after completion');
 	});
 	it('cleanup listener when breaking from iteration', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
@@ -145,17 +159,37 @@ describe('Audit log', () => {
 		await AuditedTable.put(31, { name: 'test2' });
 		await AuditedTable.put(32, { name: 'test3' });
 
-		const listenersBefore = AuditedTable.auditStore.rootStore.listenerCount('new-transaction-log');
+		// Track listener cleanup
+		const originalOn = AuditedTable.auditStore.rootStore.on.bind(AuditedTable.auditStore.rootStore);
+		const originalOff = AuditedTable.auditStore.rootStore.off.bind(AuditedTable.auditStore.rootStore);
+		let activeListener = null;
+
+		AuditedTable.auditStore.rootStore.on = function (event, listener) {
+			if (event === 'new-transaction-log') {
+				activeListener = listener;
+			}
+			return originalOn(event, listener);
+		};
+
+		AuditedTable.auditStore.rootStore.off = function (event, listener) {
+			if (event === 'new-transaction-log' && listener === activeListener) {
+				activeListener = null;
+			}
+			return originalOff(event, listener);
+		};
 
 		// Break early from iteration
 		let count = 0;
-		for (const entry of AuditedTable.getHistory()) {
+		for await (const entry of AuditedTable.getHistory()) {
 			if (++count >= 2) break;
 		}
 
+		// Restore original methods
+		AuditedTable.auditStore.rootStore.on = originalOn;
+		AuditedTable.auditStore.rootStore.off = originalOff;
+
 		// Listener should be cleaned up after break
-		const listenersAfter = AuditedTable.auditStore.rootStore.listenerCount('new-transaction-log');
-		assert.equal(listenersAfter, listenersBefore, 'Listener should be cleaned up after break');
+		assert.equal(activeListener, null, 'Listener should be cleaned up after break');
 	});
 	it('exclude logs from new transaction log events', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
@@ -163,23 +197,52 @@ describe('Audit log', () => {
 		await AuditedTable.put(40, { name: 'test' });
 
 		const excludedLog = 'excluded-log-' + Date.now();
-		const iterator = AuditedTable.getHistory({ excludeLogs: [excludedLog] })[Symbol.iterator]();
+		const iterator = AuditedTable.auditStore.getRange({ excludeLogs: [excludedLog], start: 0 })[Symbol.asyncIterator]();
 
 		// Start iteration
-		iterator.next();
+		await iterator.next();
 
 		// Emit excluded log - should be ignored
-		AuditedTable.auditStore.rootStore.emit('new-transaction-log', excludedLog);
+		AuditedTable.auditStore.rootStore.useLog('new-transaction-log');
 
 		// Verify the excluded log is not in the logByName map or was not added to iteration
 		// (hard to verify directly, but if it causes issues the test would fail)
 
 		// Finish iteration
 		let result;
-		while (!(result = iterator.next()).done) {
+		while (!(result = await iterator.next()).done) {
 			// continue
 		}
 
 		assert(true, 'Should complete without including excluded log');
+	});
+	it('add and remove logs dynamically using iterator methods', async function () {
+		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
+
+		await AuditedTable.put(50, { name: 'test' });
+
+		const iterable = AuditedTable.auditStore.getRange({});
+		const iterator = iterable[Symbol.iterator]();
+
+		// Start iteration
+		iterator.next();
+
+		// Add a new log using the addLog method on the iterable
+		const newLogName = 'manual-log-' + Date.now();
+		iterable.addLog(newLogName);
+
+		// Verify the log was added to logByName
+		assert(AuditedTable.auditStore.logByName.has(newLogName), 'Log should be added to logByName');
+
+		// Remove the log using the removeLog method on the iterable
+		iterable.removeLog(newLogName);
+
+		// Continue iterating to completion
+		let result;
+		while (!(result = await iterator.next()).done) {
+			// continue
+		}
+
+		assert(true, 'Should complete successfully after adding and removing logs');
 	});
 });

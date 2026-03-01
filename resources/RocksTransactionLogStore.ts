@@ -97,7 +97,7 @@ export class RocksTransactionLogStore {
 		throw new Error('Not implemented');
 	}
 	addLogToMaps(logName: string, log: TransactionLog) {
-		const nodeId = ((globalThis as any).server?.replication?.exportIdMapping?.(this)?.[logName] ?? 0) as number;
+		const nodeId = ((globalThis as any).server?.replication?.getIdOfRemoteNode?.(logName, this) ?? 0) as number;
 		this.nodeLogs![nodeId] ??= log;
 		this.logByName.set(logName, log);
 	}
@@ -109,6 +109,12 @@ export class RocksTransactionLogStore {
 			this.addLogToMaps(logName, log);
 		}
 		return this.nodeLogs;
+	}
+
+	ensureLogExists(logName: string) {
+		if (this.logByName.has(logName)) return;
+		const log = this.rootStore.useLog(logName);
+		this.addLogToMaps(logName, log);
 	}
 
 	/**
@@ -126,6 +132,7 @@ export class RocksTransactionLogStore {
 		readUncommitted?: boolean;
 	}): Iterable<AuditRecord> {
 		let iterable = new ExtendedIterable<TransactionEntry>();
+		let aggregateIterator: Iterator<TransactionEntry>;
 		if (options.log !== undefined) {
 			let log = typeof options.log === 'number' ? this.nodeLogs?.[options.log] : this.logByName.get(options.log);
 			if (!log) {
@@ -144,19 +151,17 @@ export class RocksTransactionLogStore {
 		} else {
 			const onlyKeys = options.onlyKeys;
 			const logs = (this.nodeLogs || this.loadLogs()).filter((log) => !options.excludeLogs?.includes(log.name));
-			const iterators = logs.map((log) => log.query(options)[Symbol.iterator]());
+			const iterators = logs.map((log) => log.query(options));
 			// holds the queue of next entries from each iterator
 			let nextEntries = [];
 
-			// Listen for new transaction logs and add them to the iterator
-			const onNewLog = (logName: string) => {
-				if (options.excludeLogs?.includes(logName)) {
-					return;
-				}
+			// Helper to add a log to the iterator
+			const addLogToIterator = (logName: string) => {
 				// Check if we already have this log
 				const existingLog = this.logByName.get(logName);
-				if (existingLog && iterators.some((_, i) => logs[i] === existingLog)) {
-					return;
+				const existingIndex = logs.findIndex((log) => log === existingLog);
+				if (existingIndex >= 0) {
+					return; // already added
 				}
 				// Add the new log
 				const newLog = this.rootStore.useLog(logName);
@@ -170,10 +175,18 @@ export class RocksTransactionLogStore {
 					nextEntries.push(newIterator.next());
 				}
 			};
+
+			// Listen for new transaction logs and add them to the iterator
+			const onNewLog = (logName: string) => {
+				if (options.excludeLogs?.includes(logName)) {
+					return;
+				}
+				addLogToIterator(logName);
+			};
 			const rootStore = this.rootStore;
 			rootStore.on('new-transaction-log', onNewLog);
 
-			const aggregateIterator = {
+			aggregateIterator = {
 				next() {
 					try {
 						if (nextEntries.length === 0) {
@@ -221,11 +234,22 @@ export class RocksTransactionLogStore {
 					rootStore.off('new-transaction-log', onNewLog);
 					throw error;
 				},
+				addLog: addLogToIterator,
+				removeLog: (logName: string) => {
+					const log = this.logByName.get(logName);
+					if (!log) return; // not found
+
+					const index = logs.findIndex((l) => l === log);
+					if (index >= 0) {
+						logs.splice(index, 1);
+						iterators.splice(index, 1);
+					}
+				},
 			};
 			iterable.iterate = () => aggregateIterator;
 		}
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-return
-		return iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
+		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
 			const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
 			data.dataView = decoder;
 			// This represents the data that shouldn't be transferred for replication
@@ -250,6 +274,12 @@ export class RocksTransactionLogStore {
 			auditRecord.structureVersion = structureVersion & 0x00ffffff;
 			return auditRecord;
 		});
+		// Add methods to the mapped iterable if we have an aggregate iterator
+		if (aggregateIterator?.addLog) {
+			mappedAggregateIterable.addLog = aggregateIterator.addLog;
+			mappedAggregateIterable.removeLog = aggregateIterator.removeLog;
+		}
+		return mappedAggregateIterable;
 	}
 	getKeys(options: any) {
 		return []; // TODO: implement this
