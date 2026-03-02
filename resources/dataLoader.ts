@@ -108,7 +108,6 @@ async function storeHash(
 /**
  * Set up file handlers for data files and loads them into the appropriate tables
  */
-export const suppressHandleApplicationWarning = true;
 export function handleApplication(scope) {
 	// Early return if this isn't worker zero
 	// Currently using getWorkerIndex() over server.workerIndex to appease ts. The latter defined in manageThreads.js.

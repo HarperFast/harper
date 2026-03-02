@@ -99,6 +99,8 @@ for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
 }
 
+const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
+
 const portsStarted = [];
 export const loadedPaths = new Map();
 let errorReporter;
@@ -356,10 +358,6 @@ export async function loadComponent(
 
 				// New Plugin API (`handleApplication`)
 				if (resources.isWorker && extensionModule.handleApplication) {
-					if (extensionModule.suppressHandleApplicationWarning !== true) {
-						harperLogger.warn(`Plugin ${componentName} is using the experimental handleApplication API`);
-					}
-
 					const scope = new Scope(componentName, componentDirectory, configPath, resources, server);
 					if (options.applicationContainment) scope.applicationContainment = options.applicationContainment;
 
@@ -372,6 +370,17 @@ export async function loadComponent(
 				}
 
 				// Old Extension API (`start` or `startOnMainThread`)
+				if ( BUILT_INS.includes(componentName) &&
+					('startOnMainThread' in extensionModule ||
+					'start' in extensionModule ||
+					'handleFile' in extensionModule ||
+					'handleDirectory' in extensionModule ||
+					'setupFile' in extensionModule ||
+					'setupDirectory' in extensionModule)
+				) {
+					harperLogger.warn?.(`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API `)
+				}
+
 				if (isMainThread) {
 					extensionModule =
 						(await extensionModule.startOnMainThread?.({

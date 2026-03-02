@@ -84,5 +84,3 @@ function recurseForResources(scope: Scope, resourceModule: any, prefix: string) 
 		}
 	}
 }
-
-export const suppressHandleApplicationWarning = true;

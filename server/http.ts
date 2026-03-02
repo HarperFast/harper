@@ -35,7 +35,7 @@ const httpServers = {},
 	httpChain = {},
 	httpResponders = [];
 let httpOptions: HttpOptions = {};
-export const suppressHandleApplicationWarning = true;
+
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
 	scope.options.on('change', (_key) => {
