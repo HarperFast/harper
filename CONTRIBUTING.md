@@ -55,6 +55,8 @@ These are the steps @Ethan-Arrowood has been following to synchronize the reposi
 >
 > # Only fetch `main` branch
 > git config remote.old.fetch '+refs/heads/main:refs/remotes/old/main'
+> # Don't fetch tags
+> git config remote.old.tagOpt '--no-tags'
 > ```
 
 1. Make sure local `main` branch is checked out and clean `git checkout main && git status`.

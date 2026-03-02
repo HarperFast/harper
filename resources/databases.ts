@@ -100,7 +100,7 @@ export type RootDatabaseKind = LMDBRootDatabase | RocksRootDatabase;
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
-const MEMORY_FOR_ROCKS_DB = (process.constrainedMemory?.() || totalmem()) * 0.25; // 25% of available memory
+const MEMORY_FOR_ROCKS_DB = Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25; // 25% of available memory
 
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;

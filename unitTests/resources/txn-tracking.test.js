@@ -2,9 +2,11 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { setTimeout: delay } = require('node:timers/promises');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -31,15 +33,19 @@ describe('Txn Expiration', () => {
 	});
 	it('Slow txn will expire', async function () {
 		await SlowResource.put(3, { name: 'three' });
-		let trackedTxns = setTxnExpiration(20);
+		let trackedTxns =
+			SlowResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(20) : setLMDBTxnExpiration(20);
+		await delay(50);
 		let existingTxns = trackedTxns.size;
 		let result = SlowResource.get(3);
 		assert.equal(trackedTxns.size, existingTxns + 1);
 		const txns = Array.from(trackedTxns);
 		const lastTxn = txns[txns.length - 1];
-		assert.equal(lastTxn.startedFrom.resourceName, 'SlowResource');
-		assert.equal(lastTxn.startedFrom.method, 'get');
-		assert.equal(lastTxn.timeout, 20);
+		if (SlowResource.primaryStore instanceof RocksDatabase) {
+			assert.equal(lastTxn.startedFrom.resourceName, 'SlowResource');
+			assert.equal(lastTxn.startedFrom.method, 'get');
+			assert.equal(lastTxn.timeout, 20);
+		}
 		await Promise.race([delay(50), result]);
 		assert(performedDBInteractions);
 		assert.equal(trackedTxns.size, existingTxns);

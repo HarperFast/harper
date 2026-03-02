@@ -30,8 +30,13 @@ describe('Permissions through Resource API', () => {
 			],
 		});
 		for (let i = 0; i < 10; i++) {
-			RelatedTable.put({ id: 'related-id-' + i, name: 'related name-' + i });
-			TestTable.put({ id: 'id-' + i, name: i > 0 ? 'name-' + i : null, prop1: 'test', relatedId: 'related-id-' + i });
+			await RelatedTable.put({ id: 'related-id-' + i, name: 'related name-' + i });
+			await TestTable.put({
+				id: 'id-' + i,
+				name: i > 0 ? 'name-' + i : null,
+				prop1: 'test',
+				relatedId: 'related-id-' + i,
+			});
 		}
 		restricted_user = {
 			role: {
