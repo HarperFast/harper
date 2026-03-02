@@ -148,7 +148,7 @@ describe('Audit log', () => {
 		};
 
 		// Create iterator and let it complete
-		for await (const entry of AuditedTable.getHistory()) {
+		for await (const _entry of AuditedTable.getHistory()) {
 			// iterate through all
 		}
 
@@ -250,8 +250,7 @@ describe('Audit log', () => {
 		iterable.removeLog(newLogName);
 
 		// Continue iterating to completion
-		let result;
-		while (!(result = await iterator.next()).done) {
+		while (!(await iterator.next()).done) {
 			// continue
 		}
 

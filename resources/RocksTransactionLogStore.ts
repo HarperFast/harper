@@ -127,7 +127,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 		this.rootStore.on('new-transaction-log', (logName) => {
 			if (this.logByName.has(logName)) return; // already added
 			// Add this to our logs
-			logger.warn('new-transaction-log', logName);
 			const log = this.rootStore.useLog(logName);
 			this.addLogToMaps(logName, log);
 		});
@@ -136,7 +135,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 
 	ensureLogExists(logName: string) {
 		if (this.logByName.has(logName)) return;
-		logger.warn('ensureLogExists, call useLog', logName);
 		const log = this.rootStore.useLog(logName);
 		return this.addLogToMaps(logName, log);
 	}
@@ -193,7 +191,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 							if (options.startByLog) {
 								queryOptions = { ...options, start: options.startByLog.get(log.name) ?? 0 };
 							}
-							logger.warn('Adding log to iterator', log.path);
 							iterators.push(log.query(queryOptions));
 						}
 					}
@@ -203,7 +200,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 							if (!latestLogs.includes(log)) {
 								logs.splice(i, 1);
 								iterators.splice(i--, 1);
-								logger.warn('Removing log to iterator', log.path);
 							}
 						}
 					}
