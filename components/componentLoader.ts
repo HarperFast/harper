@@ -371,7 +371,7 @@ export async function loadComponent(
 
 				// Old Extension API (`start` or `startOnMainThread`)
 				if (
-					BUILT_INS.includes(componentName) &&
+					!BUILT_INS.includes(componentName) &&
 					('startOnMainThread' in extensionModule ||
 						'start' in extensionModule ||
 						'handleFile' in extensionModule ||
