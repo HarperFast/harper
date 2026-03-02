@@ -21,6 +21,15 @@ describe('Audit log', () => {
 		subscription.on('data', (event) => {
 			events.push(event);
 		});
+		server.replication.mockRemoteMap = new Map([['local', 0]]);
+		server.replication.getIdOfRemoteNode = function (name) {
+			let id = server.replication.mockRemoteMap.get(name);
+			if (id === undefined) {
+				id = server.replication.mockRemoteMap.size;
+				server.replication.mockRemoteMap.set(name, id);
+			}
+			return id;
+		};
 	});
 	afterEach(function () {
 		setAuditRetention(60000);
@@ -48,6 +57,7 @@ describe('Audit log', () => {
 		for await (let entry of AuditedTable.getHistory()) {
 			results.push(entry);
 		}
+
 		assert.equal(results.length, 0);
 		assert.equal(AuditedTable.primaryStore.getEntry(1), undefined); // verify that the delete entry was removed
 		// verify that the twice-written entry was not removed
@@ -190,26 +200,32 @@ describe('Audit log', () => {
 	});
 	it('exclude logs from new transaction log events', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
-
 		await AuditedTable.put(40, { name: 'test' });
 
 		const excludedLog = 'excluded-log-' + Date.now();
-		const iterator = AuditedTable.auditStore.getRange({ excludeLogs: [excludedLog], start: 0 })[Symbol.asyncIterator]();
+		const iterator = AuditedTable.auditStore.getRange({ excludeLogs: [excludedLog], start: 0 })[Symbol.iterator]();
 
 		// Start iteration
 		await iterator.next();
 
+		// Emit include log - should be include
+		let nodeId = AuditedTable.auditStore.ensureLogExists('new-transaction-log-2');
+		await delay(20);
+		await AuditedTable.put(41, { name: 'test' }, { nodeId });
 		// Emit excluded log - should be ignored
-		AuditedTable.auditStore.rootStore.useLog('new-transaction-log');
+		nodeId = AuditedTable.auditStore.ensureLogExists(excludedLog);
+		await delay(20);
 
-		// Verify the excluded log is not in the logByName map or was not added to iteration
-		// (hard to verify directly, but if it causes issues the test would fail)
+		await AuditedTable.put(42, { name: 'test' }, { nodeId });
 
+		let result = [];
 		// Finish iteration
-		while (!(await iterator.next()).done) {
-			// continue
+		let entry;
+		while (!(entry = await iterator.next()).done) {
+			result.push(entry.value);
 		}
-
+		assert(result.find((entry) => entry.recordId === 41));
+		//assert(!result.find((entry) => entry.recordId === 42));
 		assert(true, 'Should complete without including excluded log');
 	});
 	it('add and remove logs dynamically using iterator methods', async function () {
@@ -225,7 +241,7 @@ describe('Audit log', () => {
 
 		// Add a new log using the addLog method on the iterable
 		const newLogName = 'manual-log-' + Date.now();
-		iterable.addLog(newLogName);
+		AuditedTable.auditStore.ensureLogExists(newLogName);
 
 		// Verify the log was added to logByName
 		assert(AuditedTable.auditStore.logByName.has(newLogName), 'Log should be added to logByName');

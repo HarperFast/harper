@@ -24,6 +24,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	log: TransactionLog;
 	nodeLogs?: TransactionLog[]; // whatever the type of the read logger
 	logByName: Map<string, TransactionLog> = new Map();
+	updates = 0; // the number of updates to the list of logs that have occurred
 	rootStore: RocksDatabase;
 	reusableIterable = true; // flag indicating that iterable can be reused to resume iterating through audit log
 	constructor(rootDatabase: RocksDatabase) {
@@ -109,8 +110,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 	}
 	addLogToMaps(logName: string, log: TransactionLog) {
 		const nodeId = ((globalThis as any).server?.replication?.getIdOfRemoteNode?.(logName, this) ?? 0) as number;
-		this.nodeLogs![nodeId] ??= log;
+		if (this.nodeLogs) {
+			this.nodeLogs![nodeId] ??= log;
+		}
+		this.updates++;
 		this.logByName.set(logName, log);
+		return nodeId;
 	}
 
 	loadLogs() {
@@ -119,13 +124,21 @@ export class RocksTransactionLogStore extends EventEmitter {
 			const log = this.rootStore.useLog(logName);
 			this.addLogToMaps(logName, log);
 		}
+		this.rootStore.on('new-transaction-log', (logName) => {
+			if (this.logByName.has(logName)) return; // already added
+			// Add this to our logs
+			logger.warn('new-transaction-log', logName);
+			const log = this.rootStore.useLog(logName);
+			this.addLogToMaps(logName, log);
+		});
 		return this.nodeLogs;
 	}
 
 	ensureLogExists(logName: string) {
 		if (this.logByName.has(logName)) return;
+		logger.warn('ensureLogExists, call useLog', logName);
 		const log = this.rootStore.useLog(logName);
-		this.addLogToMaps(logName, log);
+		return this.addLogToMaps(logName, log);
 	}
 
 	/**
@@ -139,6 +152,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log?: string | number;
 		excludeLogs?: string[];
 		onlyKeys?: boolean;
+		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
 	}): Iterable<AuditRecord> {
@@ -161,91 +175,82 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
-			const logs = (this.nodeLogs || this.loadLogs()).filter((log) => !options.excludeLogs?.includes(log.name));
-			const iterators = logs.map((log) => log.query(options));
+			let logs: TransactionLog[] = [];
 			// holds the queue of next entries from each iterator
-			let nextEntries = [];
-
-			// Helper to add a log to the iterator
-			const addLogToIterator = (logName: string) => {
-				// Check if we already have this log
-				const existingLog = this.logByName.get(logName);
-				const existingIndex = logs.findIndex((log) => log === existingLog);
-				if (existingIndex >= 0) {
-					return; // already added
+			let nextEntries: any[];
+			let latestUpdates: number;
+			const iterators: IterableIterator<TransactionEntry>[] = [];
+			const updateIterators = () => {
+				if (latestUpdates !== this.updates) {
+					latestUpdates = this.updates;
+					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
+						(log) => !options.excludeLogs?.includes(log.name)
+					);
+					for (let log of latestLogs) {
+						if (!logs.includes(log)) {
+							logs.push(log);
+							let queryOptions = options;
+							if (options.startByLog) {
+								queryOptions = { ...options, start: options.startByLog.get(log.name) ?? 0 };
+							}
+							logger.warn('Adding log to iterator', log.path);
+							iterators.push(log.query(queryOptions));
+						}
+					}
+					if (logs.length > latestLogs.length) {
+						for (let i = 0; i < logs.length; i++) {
+							let log = logs[i];
+							if (!latestLogs.includes(log)) {
+								logs.splice(i, 1);
+								iterators.splice(i--, 1);
+								logger.warn('Removing log to iterator', log.path);
+							}
+						}
+					}
 				}
-				// Add the new log
-				const newLog = this.rootStore.useLog(logName);
-				this.addLogToMaps(logName, newLog);
-
-				logs.push(newLog);
-				const newIterator = newLog.query(options)[Symbol.iterator]();
-				iterators.push(newIterator);
-				// Add the first entry from the new iterator to nextEntries if we're actively iterating
-				if (nextEntries.length > 0) {
-					nextEntries.push(newIterator.next());
-				}
+				nextEntries = iterators.map((iterator) => iterator.next());
 			};
-
-			// Listen for new transaction logs and add them to the iterator
-			const onNewLog = (logName: string) => {
-				if (options.excludeLogs?.includes(logName)) {
-					return;
-				}
-				addLogToIterator(logName);
-			};
-			const rootStore = this.rootStore;
-			rootStore.on('new-transaction-log', onNewLog);
+			updateIterators();
 
 			aggregateIterator = {
 				next() {
-					try {
-						if (nextEntries.length === 0) {
-							// on the first iteration and any time we finished all the iterators, we re-retrieve all
-							// the next entries (in case we are resuming after being done)
-							nextEntries = iterators.map((iterator) => iterator.next());
+					if (nextEntries.length === 0) {
+						// on the first iteration and any time we finished all the iterators, we re-retrieve all
+						// the next entries (in case we are resuming after being done)
+						updateIterators();
+					}
+					let earliest: TransactionEntry;
+					let earliestIndex = -1;
+					for (let i = 0; i < nextEntries.length; i++) {
+						const result = nextEntries[i];
+						// skip any that are done
+						if (result.done) {
+							continue;
 						}
-						let earliest: TransactionEntry;
-						let earliestIndex = -1;
-						for (let i = 0; i < nextEntries.length; i++) {
-							const result = nextEntries[i];
-							// skip any that are done
-							if (result.done) {
-								// remove the entry from the list, so we don't keep hitting it
-								nextEntries.splice(i--, 1);
-								continue;
-							}
-							// find the earliest one that is not done
-							const next = result.value;
-							if (!earliest || earliest.timestamp < next.timestamp) {
-								earliest = next;
-								earliestIndex = i;
-							}
+						// find the earliest one that is not done
+						const next = result.value;
+						if (!earliest || earliest.timestamp < next.timestamp) {
+							earliest = next;
+							earliestIndex = i;
 						}
-						if (earliestIndex >= 0) {
-							// replace the entry with the next one from the iterator we pulled from
-							nextEntries[earliestIndex] = iterators[earliestIndex].next();
-							return {
-								value: onlyKeys ? earliest.timestamp : earliest,
-								done: false,
-							};
-						} // else we are done
-						rootStore.off('new-transaction-log', onNewLog);
-						return { value: undefined, done: true };
-					} catch (error) {
-						rootStore.off('new-transaction-log', onNewLog);
-						throw error;
+					}
+					if (earliestIndex >= 0) {
+						// replace the entry with the next one from the iterator we pulled from
+						nextEntries[earliestIndex] = iterators[earliestIndex].next();
+						return {
+							value: onlyKeys ? earliest.timestamp : earliest,
+							done: false,
+						};
+					} // else we are done
+					nextEntries.length = 0; // reset so if this iterator is restarted, we can re-query
+					return { value: undefined, done: true };
+				},
+				addLog: (logName) => {
+					let index = options.excludeLogs?.indexOf(logName);
+					if (index >= 0) {
+						options.excludeLogs.splice(index, 1);
 					}
 				},
-				return(value?: any) {
-					rootStore.off('new-transaction-log', onNewLog);
-					return { value, done: true };
-				},
-				throw(error?: any) {
-					rootStore.off('new-transaction-log', onNewLog);
-					throw error;
-				},
-				addLog: addLogToIterator,
 				removeLog: (logName: string) => {
 					const log = this.logByName.get(logName);
 					if (!log) return; // not found
@@ -254,6 +259,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					if (index >= 0) {
 						logs.splice(index, 1);
 						iterators.splice(index, 1);
+						nextEntries.splice(index, 1);
 					}
 				},
 			};
