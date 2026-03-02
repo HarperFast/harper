@@ -104,7 +104,6 @@ describe('Audit log', () => {
 		results.push(result.value);
 
 		// Emit a new transaction log event
-		const newLogName = 'test-log-' + Date.now();
 		AuditedTable.auditStore.rootStore.useLog('new-transaction-log');
 		await delay(20);
 		// Continue iterating - should include entries from new log if it has any
@@ -120,8 +119,6 @@ describe('Audit log', () => {
 
 		await AuditedTable.put(20, { name: 'test' });
 
-		// Track whether listener was called after completion
-		let listenerCalledAfterCompletion = false;
 		const originalOn = AuditedTable.auditStore.rootStore.on.bind(AuditedTable.auditStore.rootStore);
 		const originalOff = AuditedTable.auditStore.rootStore.off.bind(AuditedTable.auditStore.rootStore);
 		let activeListener = null;
@@ -180,7 +177,7 @@ describe('Audit log', () => {
 
 		// Break early from iteration
 		let count = 0;
-		for await (const entry of AuditedTable.getHistory()) {
+		for await (const _entry of AuditedTable.getHistory()) {
 			if (++count >= 2) break;
 		}
 
@@ -209,8 +206,7 @@ describe('Audit log', () => {
 		// (hard to verify directly, but if it causes issues the test would fail)
 
 		// Finish iteration
-		let result;
-		while (!(result = await iterator.next()).done) {
+		while (!(await iterator.next()).done) {
 			// continue
 		}
 
