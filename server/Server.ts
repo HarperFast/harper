@@ -10,10 +10,7 @@ import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
  */
 export interface Server {
 	socket?(listener: (socket: Socket) => void, options: ServerOptions): void;
-	http?(
-		listener: (request: Request, nextLayer: (request: Request) => Response) => void,
-		options?: HttpOptions
-	): void;
+	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: HttpOptions): void;
 	request?(
 		listener: (request: Request, nextLayer: (request: Request) => Response) => void,
 		options?: HttpOptions

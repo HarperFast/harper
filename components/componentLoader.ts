@@ -370,15 +370,18 @@ export async function loadComponent(
 				}
 
 				// Old Extension API (`start` or `startOnMainThread`)
-				if ( BUILT_INS.includes(componentName) &&
+				if (
+					BUILT_INS.includes(componentName) &&
 					('startOnMainThread' in extensionModule ||
-					'start' in extensionModule ||
-					'handleFile' in extensionModule ||
-					'handleDirectory' in extensionModule ||
-					'setupFile' in extensionModule ||
-					'setupDirectory' in extensionModule)
+						'start' in extensionModule ||
+						'handleFile' in extensionModule ||
+						'handleDirectory' in extensionModule ||
+						'setupFile' in extensionModule ||
+						'setupDirectory' in extensionModule)
 				) {
-					harperLogger.warn?.(`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API `)
+					harperLogger.warn?.(
+						`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API. For more information: https://docs.harperdb.io/docs/reference/components/plugins`
+					);
 				}
 
 				if (isMainThread) {
