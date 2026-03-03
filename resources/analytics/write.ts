@@ -230,7 +230,7 @@ export async function recordHostname() {
 			hostname,
 		};
 		log.trace?.(`recordHostname storing hostname: ${JSON.stringify(hostnameRecord)}`);
-		hostnamesTable.put(hostnameRecord.id, hostnameRecord);
+		await hostnamesTable.put(hostnameRecord.id, hostnameRecord);
 	}
 }
 

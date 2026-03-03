@@ -1,7 +1,7 @@
 import type { Metric } from './write.ts';
 import harperLogger from '../../utility/logging/harper_logger.js';
 const { forComponent } = harperLogger;
-import { getAnalyticsHostnameTable } from './hostnames.ts';
+import { getAnalyticsHostnameTable, stableNodeId } from './hostnames.ts';
 import type { Condition, Conditions } from '../ResourceInterface.ts';
 import { METRIC, type BuiltInMetricName } from './metadata.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -12,9 +12,11 @@ const defaultCustomMetricWindow = 1000 * 60 * 60 * 24 * 7;
 
 const log = forComponent('analytics').conditional;
 
-async function lookupHostname(nodeId: number): Promise<string> {
+async function lookupHostname(nodeId: number): Promise<string | undefined> {
 	const result = await getAnalyticsHostnameTable().get(nodeId);
-	return result.hostname;
+	if (result?.hostname) return result.hostname;
+	if (nodeId === stableNodeId(server.hostname)) return server.hostname;
+	return undefined;
 }
 
 function isSelected(querySelect: string[], attr: string) {
@@ -124,10 +126,11 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		// add back in as 'node' attr if selected
 		const nodeId = result.id[1];
 		result['id'] = result['id'][0];
-		if (isSelected(select, 'node')) {
-			log.trace?.(`get_analytics lookup hostname for nodeId: ${nodeId}`);
-			result['node'] = await lookupHostname(nodeId);
-		}
+	if (isSelected(select, 'node')) {
+		log.trace?.(`get_analytics lookup hostname for nodeId: ${nodeId}`);
+		const hostname = await lookupHostname(nodeId);
+		result['node'] = hostname ?? nodeId;
+	}
 		log.trace?.(`get_analytics result:`, JSON.stringify(result));
 		return result;
 	});
