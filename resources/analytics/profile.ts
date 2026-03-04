@@ -67,11 +67,15 @@ export async function captureProfile(delayToNextCapture?: number): Promise<void>
 		log.error?.('analytics profiler error:', error);
 	} finally {
 		// and start the profiler again
-		if (delayToNextCapture) {
+		if (delayToNextCapture > 0) {
 			setTimeout(() => {
 				const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
 				captureProfile(PROFILE_PERIOD);
 			}, delayToNextCapture).unref();
+		} else {
+			// somehow this can later get set to a negative number which causes big problems (high-frequency restarts of the profiler)
+			log.info?.('Profiling disabled');
+			timeProfiler.stop();
 		}
 	}
 	// this traverses the nodes and returns the number of sampling hits for the sample and attributes it
