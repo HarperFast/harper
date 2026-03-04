@@ -126,11 +126,11 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		// add back in as 'node' attr if selected
 		const nodeId = result.id[1];
 		result['id'] = result['id'][0];
-	if (isSelected(select, 'node')) {
-		log.trace?.(`get_analytics lookup hostname for nodeId: ${nodeId}`);
-		const hostname = await lookupHostname(nodeId);
-		result['node'] = hostname ?? nodeId;
-	}
+		if (isSelected(select, 'node')) {
+			log.trace?.(`get_analytics lookup hostname for nodeId: ${nodeId}`);
+			const hostname = await lookupHostname(nodeId);
+			result['node'] = hostname ?? nodeId;
+		}
 		log.trace?.(`get_analytics result:`, JSON.stringify(result));
 		return result;
 	});
