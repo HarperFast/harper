@@ -78,15 +78,13 @@ describe('graphql querying', () => {
 	before(async () => {
 		await setupTestApp();
 
-		for (const record of related_records) {
-			// eslint-disable-next-line no-undef -- TODO: Remove after fixing global types
-			tables.Related.put(record);
-		}
-
-		for (const record of sub_object_records) {
-			// eslint-disable-next-line no-undef -- TODO: Remove after fixing global types
-			tables.SubObject.put(record);
-		}
+		// tables.<Table>.put(record) takes the legacy single-arg path in resources/Table.ts:
+		// this.save() → ImmediateTransaction.save() → commit() → RocksDB async commit → Promise.
+		// Must be awaited — previously fire-and-forget caused flakiness on Node 22+.
+		// eslint-disable-next-line no-undef -- TODO: Remove after fixing global types
+		await Promise.all(related_records.map((record) => tables.Related.put(record)));
+		// eslint-disable-next-line no-undef -- TODO: Remove after fixing global types
+		await Promise.all(sub_object_records.map((record) => tables.SubObject.put(record)));
 	});
 
 	// Add `skip: true` to the test case to skip it or `only: true` to only run that test case
