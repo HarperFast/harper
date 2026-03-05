@@ -16,7 +16,7 @@ const basePath = getHdbBasePath();
 export const userCodeFolders = basePath ? [basePath] : [];
 if (process.env.RUN_HDB_APP) userCodeFolders.push(realpathSync(process.env.RUN_HDB_APP));
 
-let profilerTimer: NodeJS.Timer | undefined;
+let profilerTimer: NodeJS.Timeout | undefined;
 const SAMPLING_INTERVAL_IN_MICROSECONDS = 50000;
 // TODO: Running this on the thread itself can be a problematic because the profiler snapshots are somewhat expensive
 //  (calling timeProfiler.stop and getting the large block of JSON and parsing it). This can take a 5ms or more
@@ -26,7 +26,7 @@ const SAMPLING_INTERVAL_IN_MICROSECONDS = 50000;
 	if (userCodeFolders.length === 0) return;
 	// start the profiler
 	timeProfiler.start({ intervalMicros: SAMPLING_INTERVAL_IN_MICROSECONDS });
-	const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
+	const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) ?? 60) * 1000;
 	if (PROFILE_PERIOD > 0) {
 		profilerTimer = setTimeout(() => {
 			captureProfile(PROFILE_PERIOD);
@@ -34,7 +34,9 @@ const SAMPLING_INTERVAL_IN_MICROSECONDS = 50000;
 	}
 })();
 
-export async function captureProfile(delayToNextCapture?: number): Promise<void> {
+export async function captureProfile(
+	delayToNextCapture = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) ?? 60) * 1000
+): Promise<void> {
 	clearTimeout(profilerTimer);
 	const hitCountThreshold = 100;
 	const secondsPerHit = SAMPLING_INTERVAL_IN_MICROSECONDS / 1_000_000;
@@ -71,8 +73,7 @@ export async function captureProfile(delayToNextCapture?: number): Promise<void>
 		// and start the profiler again
 		if (delayToNextCapture > 0) {
 			profilerTimer = setTimeout(() => {
-				const PROFILE_PERIOD = (envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) || 60) * 1000;
-				captureProfile(PROFILE_PERIOD);
+				captureProfile();
 			}, delayToNextCapture).unref();
 		} else {
 			// somehow this can later get set to a negative number which causes big problems (high-frequency restarts of the profiler)
