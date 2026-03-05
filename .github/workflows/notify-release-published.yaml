@@ -20,13 +20,13 @@ jobs:
           payload: |
             {
               "channel": "#development-ci",
-              "text": "Harper v${{ github.event.release.tag_name }} GitHub release published",
+              "text": "Harper ${{ github.event.release.tag_name }} GitHub release published",
               "blocks": [
                 {
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "Harper v${{ github.event.release.tag_name }} release"
+                    "text": "Harper ${{ github.event.release.tag_name }} release"
                   }
                 },
                 {

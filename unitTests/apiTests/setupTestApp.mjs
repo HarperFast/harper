@@ -1,6 +1,5 @@
 import { setupTestDBPath } from '../testUtils.js';
 import { fileURLToPath } from 'url';
-import { setProperty } from '#js/utility/environment/environmentManager';
 import hdbTerms from '#src/utility/hdbTerms';
 import { join } from 'path';
 import axios from 'axios';
@@ -10,6 +9,7 @@ import analytics from '#src/resources/analytics/write';
 import { bypassAuth } from '#src/security/auth';
 import { bypassAuth as bypassAuthMQTT } from '#src/server/mqtt';
 const require = createRequire(import.meta.url);
+const { setProperty } = require('#js/utility/environment/environmentManager');
 const config = {};
 
 const headers = {

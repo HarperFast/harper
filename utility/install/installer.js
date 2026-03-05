@@ -435,22 +435,25 @@ async function createBootPropertiesFile() {
 		const homeDir = hdbUtils.getHomeDir();
 		const homeDirPath = path.join(homeDir, hdbTerms.HDB_HOME_DIR_NAME);
 		const homeDirKeysDirPath = path.join(homeDirPath, hdbTerms.LICENSE_KEY_DIR_NAME);
-
-		try {
-			fs.mkdirpSync(homeDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
-			fs.mkdirpSync(homeDirKeysDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
-		} catch {
-			console.error(
-				`Could not make settings directory ${hdbTerms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`
-			);
-		}
-
 		const propsFilePath = path.join(homeDirPath, hdbTerms.BOOT_PROPS_FILE_NAME);
-		try {
-			await fs.writeFile(propsFilePath, bootPropsValue);
-		} catch (err) {
-			hdbLogger.error(`There was an error creating the boot file at path: ${propsFilePath}`);
-			throw err;
+		// if the properties file already exists, and we have an explicit ROOTPATH, we don't overwrite the existing
+		// properties file
+		if (!fs.existsSync(propsFilePath) || !hdbUtils.getEnvCliRootPath()) {
+			try {
+				fs.mkdirpSync(homeDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
+				fs.mkdirpSync(homeDirKeysDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
+			} catch {
+				console.error(
+					`Could not make settings directory ${hdbTerms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`
+				);
+			}
+
+			try {
+				await fs.writeFile(propsFilePath, bootPropsValue);
+			} catch (err) {
+				hdbLogger.error(`There was an error creating the boot file at path: ${propsFilePath}`);
+				throw err;
+			}
 		}
 
 		envManager.setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
