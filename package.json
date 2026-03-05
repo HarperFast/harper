@@ -189,7 +189,7 @@
 		"node-unix-socket": "0.2.7",
 		"normalize-path": "^3.0.0",
 		"ora": "8.2.0",
-		"ordered-binary": "1.5.3",
+		"ordered-binary": "1.6.1",
 		"papaparse": "5.5.3",
 		"passport": "0.7.0",
 		"passport-http": "0.3.0",
