@@ -8,7 +8,6 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 
@@ -44,7 +43,18 @@ suite('GitHub application deployment', (ctx: ContextWithHarper) => {
 		strictEqual(response.status, 200);
 		const body = await response.json();
 		deepStrictEqual(body, { message: 'Successfully deployed: test-application, restarting Harper' });
-		await sleep(5000);
+		// Poll until the application API is ready (restart is async, fixed sleep is flaky)
+		const deadline = Date.now() + 30_000;
+		while (true) {
+			try {
+				const check = await fetch(`${ctx.harper.httpURL}/Greeting`);
+				if (check.status === 200) break;
+			} catch {
+				// server not yet accepting connections
+			}
+			if (Date.now() > deadline) throw new Error('Timed out waiting for application to be ready after restart');
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
 		ok(existsSync(join(ctx.harper.installDir, 'components', project)));
 
 		// const harperAppLock = await readFile(join(ctx.harper.installDir, 'harper-application-lock.json'), 'utf-8');
