@@ -180,9 +180,9 @@ async function cliOperations(req) {
 
 		let responseLog;
 		if (req.json) {
-			responseLog = JSON.stringify(responseData, null, 2)
+			responseLog = JSON.stringify(responseData, null, 2);
 		} else {
-			responseLog = YAML.stringify(responseData).trim()
+			responseLog = YAML.stringify(responseData).trim();
 		}
 
 		const { statusCode } = response;
