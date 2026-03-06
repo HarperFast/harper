@@ -59,9 +59,8 @@ function conformCondition(condition: Condition): Condition {
 	};
 }
 
-async function coalesceResults(results: Metric[], window: number): Promise<Metric[]> {
-	const coalescedResults: Metric[] = [];
-	let coalesceId;
+async function* coalesceResults(results: Metric[], window: number): AsyncGenerator<Metric> {
+	let coalesceId: any;
 	for await (const result of results) {
 		const id = result.id;
 		if (!coalesceId) {
@@ -69,13 +68,12 @@ async function coalesceResults(results: Metric[], window: number): Promise<Metri
 		}
 		const delta = Math.abs(id - coalesceId);
 		if (delta < window) {
-			coalescedResults.push({ ...result, id: coalesceId });
+			yield { ...result, id: coalesceId };
 		} else {
-			coalescedResults.push(result);
+			yield result;
 			coalesceId = id;
 		}
 	}
-	return coalescedResults;
 }
 
 interface GetAnalyticsOpts {
@@ -138,7 +136,7 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 	if (opts?.coalesceTime) {
 		// coalescing window is the aggregate period converted to milliseconds
 		const window = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
-		results = await coalesceResults(results, window);
+		results = coalesceResults(results, window);
 	}
 
 	return results;
