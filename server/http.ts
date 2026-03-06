@@ -290,7 +290,9 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				if (!response.handlesHeaders) {
 					const headers = response.headers || new Headers();
 					if (!body) {
-						headers.set('Content-Length', '0');
+						if (method !== 'HEAD') {
+							headers.set('Content-Length', '0');
+						}
 						sentBody = true;
 					} else if (body.length >= 0) {
 						if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
