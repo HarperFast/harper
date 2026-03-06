@@ -19,7 +19,7 @@ import { appendHeader, Headers } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable } from 'node:stream';
-import { type HttpOptions, server } from './Server.ts';
+import { server, type ServerOptions, type HttpOptions } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
@@ -191,7 +191,7 @@ export function httpServer(listener, options) {
 	const servers = [];
 
 	for (const { port, secure } of getPorts(options)) {
-		servers.push(getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls));
+		servers.push(getHTTPServer(port, secure, options));
 		if (typeof listener === 'function') {
 			httpResponders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -203,8 +203,9 @@ export function httpServer(listener, options) {
 
 	return servers;
 }
-
-function getHTTPServer(port, secure, isOperationsServer, isMtls) {
+function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
+	const { mtls: isMtls, usageType } = options || {};
+	const isOperationsServer = usageType === 'operations-api';
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!httpServers[port]) {
 		// TODO: These should all come from httpOptions or operationsApiOptions
@@ -243,7 +244,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				rejectUnauthorized: Boolean(mtlsRequired),
 				requestCert: Boolean(mtls || isMtls),
 				ticketKeys: getTicketKeys(),
-				SNICallback: createTLSSelector(isOperationsServer ? 'operations-api' : 'server', mtls),
+				SNICallback: createTLSSelector(usageType ?? 'server', mtls),
 				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
 			});
 		}
@@ -519,7 +520,7 @@ type OnWebSocketOptions = {
 	port?: number;
 	securePort?: number;
 	maxPayload?: number;
-	isOperationsServer?: boolean;
+	usageType?: string;
 	mtls?: boolean;
 };
 const websocketListeners = [],
@@ -539,7 +540,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			name: getComponentName(),
 		});
 
-		const server = getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls);
+		const server = getHTTPServer(port, secure, options);
 
 		if (!websocketServers[port]) {
 			websocketServers[port] = new WebSocketServer({

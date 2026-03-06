@@ -202,7 +202,7 @@ function loadCertificates() {
 								const x509Cert = new X509Certificate(certificatePem);
 								let certCn;
 								try {
-									certCn = getPrimaryHostName(x509Cert);
+									certCn = (!ca && config.name) || getPrimaryHostName(x509Cert);
 								} catch (err) {
 									logger.error?.('error extracting host name from certificate', err);
 									return;
@@ -238,7 +238,7 @@ function loadCertificates() {
 
 								promise = certificateTable.put({
 									name: certCn,
-									uses: ['https', ...(configKey.includes('operations') ? ['operations'] : [])],
+									uses: config.uses ?? ['https', ...(configKey.includes('operations') ? ['operations'] : [])],
 									ciphers: config.ciphers,
 									certificate: certificatePem,
 									private_key_name,
@@ -750,7 +750,7 @@ function createTLSSelector(type, mtlsOptions) {
 							let isOperations = type === 'operations-api';
 							let quality = cert.is_self_signed ? 1 : 3;
 							// prefer operations certificates for operations API
-							if (isOperations && cert.uses?.includes?.('operations')) quality += 1;
+							if (cert.uses?.includes(type)) quality += 1;
 
 							const private_key = await getPrivateKeyByName(cert.private_key_name);
 
@@ -776,7 +776,7 @@ function createTLSSelector(type, mtlsOptions) {
 							let hostnames = cert.hostnames ?? hostnamesFromCert(certParsed);
 							if (!Array.isArray(hostnames)) hostnames = [hostnames];
 							for (let hostname of hostnames) {
-								if (hostname === getHost()) quality += 1; // prefer a certificate that has our hostname in the SANs
+								if (hostname === getHost()) quality += 0.1; // prefer a certificate that has our hostname in the SANs
 							}
 							let secureContext = tls.createSecureContext(secureOptions);
 							secureContext.name = cert.name;

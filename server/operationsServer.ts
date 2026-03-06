@@ -61,7 +61,7 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 		//make sure the process waits for the server to be fully instantiated before moving forward
 		await server.ready();
 		if (!options) options = {};
-		options.isOperationsServer = true;
+		options.usageType = 'operations-api';
 		// fastify can't clean up properly
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
