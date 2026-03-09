@@ -50,6 +50,8 @@ jobs:
           HDB_ADMIN_PASSWORD: 'password'
           ROOTPATH: '/tmp/hdb'
           NODE_HOSTNAME: 'localhost'
+          LOGGING_LEVEL: 'debug'
+
         run: node --enable-source-maps ./dist/bin/harper.js install
 
       - name: Run tests
