@@ -256,7 +256,7 @@ export const OPERATIONS_ENUM = {
 	GET_JOB: 'get_job',
 	DELETE_JOB: 'delete_job',
 	UPDATE_JOB: 'update_job',
-	GET_REGISTRATION_INFO: 'get_registration_info',
+	REGISTRATION_INFO: 'registration_info',
 	SET_CONFIGURATION: 'set_configuration',
 	DROP_ATTRIBUTE: 'drop_attribute',
 	RESTART: 'restart',

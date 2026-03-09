@@ -357,7 +357,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
 	opFuncMap.set(
-		terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO,
+		terms.OPERATIONS_ENUM.REGISTRATION_INFO,
 		new OperationFunctionObject(regDeprecated.getRegistrationInfo)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
