@@ -302,6 +302,7 @@ export function makeTable(options) {
 						isNotification: true,
 						ensureLoaded: false,
 						nodeId: event.nodeId,
+						viaNodeId: event.viaNodeId,
 						async: true,
 					};
 					const id = event.id;
@@ -1302,6 +1303,7 @@ export function makeTable(options) {
 							user: context?.user,
 							residencyId: options?.residencyId,
 							nodeId: options?.nodeId,
+							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
 						},
@@ -1354,6 +1356,7 @@ export function makeTable(options) {
 							user: context.user,
 							residencyId: options.residencyId,
 							nodeId: options.nodeId,
+							viaNodeId: options?.viaNodeId,
 							expiresAt: options.expiresAt,
 							transaction,
 						},
@@ -1871,6 +1874,7 @@ export function makeTable(options) {
 								residencyId,
 								expiresAt,
 								nodeId: options?.nodeId,
+								viaNodeId: options?.viaNodeId,
 								originatingOperation: context?.originatingOperation,
 								transaction,
 								tableToTrack: databaseName === 'system' ? null : options?.replay ? null : tableName, // don't track analytics on system tables
@@ -1947,7 +1951,13 @@ export function makeTable(options) {
 							txnTime,
 							0,
 							audit,
-							{ user: context?.user, nodeId: options?.nodeId, transaction, tableToTrack: tableName },
+							{
+								user: context?.user,
+								nodeId: options?.nodeId,
+								viaNodeId: options?.viaNodeId,
+								transaction,
+								tableToTrack: tableName,
+							},
 							'delete'
 						);
 						if (!audit || isRocksDB) scheduleCleanup();
@@ -2870,6 +2880,7 @@ export function makeTable(options) {
 							residencyId: options?.residencyId,
 							expiresAt: context?.expiresAt,
 							nodeId: options?.nodeId,
+							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
 						},

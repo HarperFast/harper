@@ -44,8 +44,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// do not record transaction entries on retry
 			return;
 		}
-		const nodeId = options.nodeId;
-		const log = nodeId ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : this.log;
+		const log = this.logById(options.nodeId) ?? this.logById(options.viaNodeId) ?? this.log;
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -75,6 +74,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 			options.transaction.logEntries.push(auditRecord);
 		}
 		log.addEntry(entryBinary, options.transaction.id);
+	}
+
+	logById(nodeId: number) {
+		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}
 
 	putSync(suggestedKey: any, value: any, options: any) {

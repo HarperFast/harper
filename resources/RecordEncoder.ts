@@ -605,6 +605,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				}
 				const structureVersion = store.encoder.structures.length + (store.encoder.typedStructs?.length ?? 0);
 				const nodeId = options?.nodeId ?? server.replication?.getThisNodeId(auditStore) ?? 0;
+				const viaNodeId = options?.viaNodeId ?? nodeId;
 				logger.debug('recording audit entry', { id, newVersion, previousVersion: existingEntry?.version, nodeId });
 				if (resolveRecord && existingEntry?.localTime) {
 					const replacingId = existingEntry?.localTime;
@@ -629,7 +630,7 @@ export function recordUpdater(store, tableId, auditStore) {
 								structureVersion,
 								previousAdditionalAuditRefs,
 							},
-							{ ifVersion: ifVersion, transaction: options.transaction, nodeId }
+							{ ifVersion: ifVersion, transaction: options.transaction, nodeId, viaNodeId }
 						);
 						return result;
 					}
@@ -660,6 +661,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						ifVersion,
 						transaction: options.transaction,
 						nodeId,
+						viaNodeId,
 					}
 				);
 			}
