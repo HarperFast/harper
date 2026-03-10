@@ -30,7 +30,7 @@ export interface ResourceInterface<Record extends object = any>
 	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
 	put?(
 		record: Record & RecordObject,
-		target: RequestTargetOrId
+		target?: RequestTargetOrId
 	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
 	patch?(
 		record: Partial<Record & RecordObject>,
