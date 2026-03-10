@@ -122,7 +122,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 	}
 
 	loadLogs() {
-		this.nodeLogs ??= [];
+		if (this.nodeLogs) {
+			// listLogs should only be called one time, and then listen for changes to update
+			return this.nodeLogs;
+		}
+		this.nodeLogs = [];
 		for (const logName of this.rootStore.listLogs()) {
 			const log = this.rootStore.useLog(logName);
 			this.addLogToMaps(logName, log);
@@ -183,7 +187,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 			const iterators: IterableIterator<TransactionEntry>[] = [];
 			const updateIterators = () => {
 				if (latestUpdates !== this.updates) {
-					latestUpdates = this.updates;
 					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
 						(log) => !options.excludeLogs?.includes(log.name)
 					);
@@ -192,11 +195,18 @@ export class RocksTransactionLogStore extends EventEmitter {
 							logs.push(log);
 							let queryOptions = options;
 							if (options.startByLog) {
+								// if the startByLog is provided, we use that
 								queryOptions = { ...options, start: options.startByLog.get(log.name) ?? 0 };
+							} else if (latestUpdates >= 0) {
+								// if this is not the first update, that means that this is a brand new log and if start wasn't specified
+								// that means we are taking all future requests, so we need to start at zero so we don't introduce a race
+								// condition of potentially missing an initial update
+								queryOptions = { ...options, start: options.start ?? 0 };
 							}
 							iterators.push(log.query(queryOptions));
 						}
 					}
+					latestUpdates = this.updates;
 					if (logs.length > latestLogs.length) {
 						for (let i = 0; i < logs.length; i++) {
 							let log = logs[i];
