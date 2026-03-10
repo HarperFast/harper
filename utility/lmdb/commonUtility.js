@@ -58,28 +58,39 @@ function convertKeyValueToWrite(key) {
  * Return all the indexable values from an attribute, ready to be indexed
  */
 function getIndexedValues(value, indexNulls) {
-	if (value === null) return indexNulls ? [null] : undefined;
-	if (value === undefined) return;
+	if (value === null) {
+		return indexNulls ? [null] : undefined;
+	}
+	if (value === undefined) {
+		return undefined;
+	}
 	if (PRIMITIVES.includes(typeof value)) {
 		if (value.length > MAX_SEARCH_KEY_LENGTH) {
 			return [value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER];
 		}
 		return [value];
 	}
-	let values;
 	if (Array.isArray(value)) {
-		values = [];
+		const values = [];
 		for (let i = 0, l = value.length; i < l; i++) {
 			let element = value[i];
 			if (PRIMITIVES.includes(typeof element)) {
-				if (element.length > MAX_SEARCH_KEY_LENGTH)
+				if (element.length > MAX_SEARCH_KEY_LENGTH) {
 					values.push(element.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER);
-				else values.push(element);
-			} else if (element === null && indexNulls) return values.push(null);
-			else if (element instanceof Date) return values.push(element.getTime());
+				} else {
+					values.push(element);
+				}
+			} else if (element === null && indexNulls) {
+				values.push(null);
+			} else if (element instanceof Date) {
+				values.push(element.getTime());
+			}
 		}
-	} else if (value instanceof Date) return [value.getTime()];
-	return values;
+		return values;
+	} else if (value instanceof Date) {
+		return [value.getTime()];
+	}
+	return undefined;
 }
 
 let lastTime = 0; // reported time used to ensure monotonic time.
