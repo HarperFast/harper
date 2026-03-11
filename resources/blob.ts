@@ -37,7 +37,7 @@ import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
-import logger from '../utility/logging/logger.js';
+import { logger } from '../utility/logging/logger.ts';
 import type { LMDBStore } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 import { HAS_BLOBS } from './auditStore.ts';

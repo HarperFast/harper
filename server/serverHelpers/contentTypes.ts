@@ -9,7 +9,7 @@ import { _assignPackageExport } from '../../globals.js';
 import envMgr from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
-import logger from '../../utility/logging/logger.js';
+import { logger } from '../../utility/logging/logger.ts';
 import { Blob } from '../../resources/blob.ts';
 import { Transform } from 'json2csv';
 // TODO: Only load this if fastify is loaded
@@ -559,7 +559,7 @@ function deserializerUnknownType(contentType: ContentType): Deserialize {
 	if (contentType.type.startsWith('text/')) {
 		// convert the data to a string since it is text (using the provided charset if specified)
 		if (contentType.parameters?.charset && !isBufferEncoding(contentType.parameters.charset)) {
-			logger.info(`Unknown Buffer encoding ${contentType.parameters.charset} in content-type. Proceeding anyways.`);
+			logger.info?.(`Unknown Buffer encoding ${contentType.parameters.charset} in content-type. Proceeding anyways.`);
 		}
 		return (data) => ({
 			contentType: contentType.type,

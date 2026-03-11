@@ -10,7 +10,7 @@ assert(typeof globalVariableFromParent, 'undefined', 'Global variable from paren
 assert(connectFromChild === connect);
 global.globalVariableFromComponent = 'test';
 
-logger.warn('Logging from testJSWithDeps/resources.js');
+logger.warn?.('Logging from testJSWithDeps/resources.js');
 
 assert({} instanceof Object);
 assert([] instanceof Array);

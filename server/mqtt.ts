@@ -8,7 +8,7 @@ import { recordAction, addAnalyticsListener, recordActionBinary } from '../resou
 import { server } from '../server/Server.ts';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
-import { loggerWithTag } from '../utility/logging/logger.js';
+import { loggerWithTag } from '../utility/logging/logger.ts';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.js';
 import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';

@@ -1,4 +1,4 @@
-import logger from '../utility/logging/logger.js';
+import { logger } from '../utility/logging/logger.ts';
 const MAX_EVENT_DELAY_TIME = 3000;
 const DEFAULT_MAX_QUEUE_TIME = 20_000; // 20 seconds
 let lastWarning = 0;

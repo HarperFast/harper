@@ -14,6 +14,7 @@ exports.FileAndURLPathConfig = undefined;
 exports.FilesOption = undefined;
 exports.FilesOptionObject = undefined;
 exports.IterableEventQueue = undefined;
+exports.Logger = undefined;
 exports.Query = undefined;
 exports.RecordObject = undefined;
 exports.RequestTarget = undefined;

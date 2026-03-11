@@ -1,8 +1,9 @@
+import { type Logger } from '../utility/logging/logger.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import { EventEmitter, once } from 'node:events';
 import { type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import type { Resources } from '../resources/Resources.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
@@ -37,7 +38,7 @@ export class Scope extends EventEmitter {
 	#name: string;
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
-	#logger: any;
+	#logger: Logger;
 	#pendingInitialLoads: Set<Promise<void>>;
 
 	options: OptionsWatcher;
@@ -74,7 +75,7 @@ export class Scope extends EventEmitter {
 		};
 	}
 
-	get logger(): any {
+	get logger(): Logger {
 		return this.#logger;
 	}
 
@@ -174,7 +175,7 @@ export class Scope extends EventEmitter {
 				return;
 			}
 
-			scope.#logger.debug(`Options changed: ${key.join('.')}, requesting restart`);
+			scope.#logger.debug?.(`Options changed: ${key.join('.')}, requesting restart`);
 			scope.requestRestart();
 		};
 	}
@@ -291,7 +292,7 @@ export class Scope extends EventEmitter {
 	}
 
 	requestRestart() {
-		this.#logger.debug(`Restart requested from ${this.name} scope for ${this.directory}`);
+		this.#logger.debug?.(`Restart requested from ${this.name} scope for ${this.directory}`);
 		requestRestart();
 	}
 

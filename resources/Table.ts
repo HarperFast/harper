@@ -38,7 +38,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 } from './search.ts';
-import logger from '../utility/logging/logger.js';
+import { logger } from '../utility/logging/logger.ts';
 import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
@@ -2693,7 +2693,7 @@ export function makeTable(options) {
 									if (--count <= 0) break;
 								}
 							} catch (error) {
-								logger.error('Error getting history entry', auditRecord.localTime, error);
+								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
 							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
 							//await rest(); // yield for fairness
@@ -3305,7 +3305,7 @@ export function makeTable(options) {
 						const userResolver = this.userResolvers[attribute.name];
 						if (userResolver) return userResolver(value, context, entry);
 						else {
-							logger.warn(
+							logger.warn?.(
 								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
 							);
 							// silence future warnings but just returning undefined
