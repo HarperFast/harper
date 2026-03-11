@@ -1,6 +1,5 @@
 import jwt, { type Algorithm, type JwtPayload, type Secret, type SignOptions } from 'jsonwebtoken';
 import fs from 'fs-extra';
-import type { StringValue } from 'ms';
 import path from 'node:path';
 import Joi from 'joi';
 import { validateBySchema } from '../validation/validationWrapper.js';
@@ -23,6 +22,7 @@ import { UserEventMsg } from '../server/threads/itc.js';
 import env from '../utility/environment/environmentManager.js';
 env.initSync();
 
+type StringValue = SignOptions['expiresIn'];
 const OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
 const REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 const RSA_ALGORITHM: Algorithm = 'RS256';
