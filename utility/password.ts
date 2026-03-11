@@ -76,7 +76,7 @@ const validateAlgorithms = {
  * @param algorithm Hashing algorithm to use (default: SHA-256)
  */
 export function hash(
-	password: string | Promise<string>,
+	password: string,
 	algorithm: HashFunction = HASH_FUNCTION[configuredHashFunction?.toUpperCase()] ?? HASH_FUNCTION.SHA256
 ): string | Promise<string> {
 	return hashAlgorithms[algorithm](password);
@@ -89,7 +89,7 @@ export function hash(
  * @param algorithm Hashing algorithm to use (default: SHA-256)
  */
 export function validate(
-	storedHash: string | Promise<string>,
+	storedHash: string,
 	password: string,
 	algorithm: HashFunction = HASH_FUNCTION[configuredHashFunction?.toUpperCase()] ?? HASH_FUNCTION.SHA256
 ): boolean | Promise<boolean> {
