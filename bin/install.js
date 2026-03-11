@@ -6,7 +6,6 @@ module.exports = install;
 async function install() {
 	try {
 		await installer.install();
-		process.exit(0);
 	} catch (err) {
 		console.error('There was an error during the install.');
 		console.error(err);
