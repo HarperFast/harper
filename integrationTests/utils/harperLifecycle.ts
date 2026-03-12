@@ -153,11 +153,6 @@ function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCom
 			stderr += data.toString();
 		});
 
-		proc.on('exit', () => {
-			stdoutStream?.end();
-			stderrStream?.end();
-		});
-
 		proc.on('error', (error) => {
 			reject(error);
 		});
@@ -167,11 +162,14 @@ function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCom
 				resolve(proc);
 			} else {
 				let errorMessage = `Harper process failed with exit code ${statusCode}`;
+				stderrStream?.write(errorMessage);
 				if (stderr) {
 					errorMessage += `\n\nstderr:\n${stderr}`;
 				}
 				reject(errorMessage);
 			}
+			stdoutStream?.end();
+			stderrStream?.end();
 		});
 	});
 }
@@ -236,7 +234,7 @@ export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperO
 	}
 
 	// Point Harper's log directory to the suite log dir so hdb.log is preserved for upload
-	const config = { ...(options?.config || {}) };
+	const config = { ...options?.config };
 	if (logDir) {
 		config.logging = { ...config.logging, root: logDir };
 
@@ -253,7 +251,7 @@ export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperO
 	const harperProcess = await runHarperCommand({
 		args: [
 			`--ROOTPATH=${installDir}`,
-			'--DEFAULTS_MODE=dev',
+			'--DEFAULTS_MODE=prod',
 			`--HDB_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME}`,
 			`--HDB_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}`,
 			'--THREADS_COUNT=1',
