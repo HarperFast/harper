@@ -21,41 +21,6 @@ const MDB_LEGACY_LOCK_FILE_NAME = 'lock.mdb';
 const MDB_FILE_EXTENSION = '.mdb';
 const MDB_LOCK_FILE_SUFFIX = '-lock';
 
-/**
- * This class is used to create the transaction & cursor objects needed to perform search on a dbi as well as a function to close both objects after use
- */
-class TransactionCursor {
-	/**
-	 * create the TransactionCursor object
-	 * @param {lmdb.RootDatabase} env - environment object to create the transaction & cursor from
-	 * @param {String} attribute - name of the attribute to create the cursor against
-	 * @param {Boolean} [writeCursor] - optional, dictates if the cursor created will be a readOnly cursor or not
-	 */
-	constructor(env, attribute, writeCursor = false) {
-		this.dbi = openDBI(env, attribute);
-		this.key_type = this.dbi[lmdbTerms.DBI_DEFINITION_NAME].key_type;
-		this.isPrimaryKey = this.dbi[lmdbTerms.DBI_DEFINITION_NAME].isPrimaryKey;
-		this.txn = env.beginTxn({ readOnly: writeCursor === false });
-		this.cursor = new lmdb.Cursor(this.txn, this.dbi);
-	}
-
-	/**
-	 * function to close the read cursor & abort the transaction
-	 */
-	close() {
-		this.cursor.close();
-		this.txn.abort();
-	}
-
-	/**
-	 * function to close the read cursor & abort the transaction
-	 */
-	commit() {
-		this.cursor.close();
-		this.txn.commit();
-	}
-}
-
 /***  VALIDATION FUNCTIONS ***/
 
 /**
@@ -170,18 +135,6 @@ async function createEnvironment(basePath, envName, isTxn = false, isV3 = false)
 		}
 		throw e;
 	}
-}
-
-async function copyEnvironment(basePath, envName, _destinationPath, _compactEnvironment = true) {
-	pathEnvNameValidation(basePath, envName);
-	envName = envName.toString();
-	let environmentPath = path.join(basePath, envName);
-	return table({
-		table: envName,
-		database: path.parse(basePath).name,
-		path: environmentPath,
-		attributes: [{ name: 'id', isPrimaryKey: true }],
-	});
 }
 
 /**
@@ -457,22 +410,6 @@ function statDBI(env, dbiName) {
 }
 
 /**
- * gets the byte size of an environment file
- * @param {String} environmentBasePath
- * @param {String} tableName
- * @returns {Promise<number>}
- */
-async function environmentDataSize(environmentBasePath, tableName) {
-	try {
-		let environmentPath = path.join(environmentBasePath, tableName + MDB_FILE_EXTENSION);
-		let statResult = await fs.stat(environmentPath);
-		return statResult['size'];
-	} catch {
-		throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
-	}
-}
-
-/**
  * removes a named database from an environment
  * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} dbiName - name of the dbi (KV store)
@@ -536,8 +473,5 @@ module.exports = {
 	statDBI,
 	deleteEnvironment,
 	initializeDBIs,
-	TransactionCursor,
-	environmentDataSize,
-	copyEnvironment,
 	closeEnvironment,
 };
