@@ -16,7 +16,7 @@ jobs:
         uses: slackapi/slack-github-action@v2
         with:
           method: chat.postMessage
-          token: ${{ secrets.SLACK_BOT_KEY }}
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
               "channel": "#development-ci",
