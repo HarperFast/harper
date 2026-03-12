@@ -117,14 +117,23 @@ export class RecordEncoder extends Encoder {
 					if (expiresAt >= 0) {
 						valueStart += 8; // make room for expiration timestamp
 						expiresAtNextEncoding = -1; // reset indicator to mean no expiration
+						if (!(metadata & HAS_EXPIRATION)) {
+							throw new Error('Expiration included, but not in metadata flags');
+						}
 					}
 					if (residencyId) {
 						valueStart += 4; // make room for residency id
 						residencyIdAtNextEncoding = 0; // reset indicator to mean no residency id
+						if (!(metadata & HAS_RESIDENCY_ID)) {
+							throw new Error('Residency id included, but not in metadata flags');
+						}
 					}
 					if (nodeId >= 0) {
 						valueStart += 4; // make room for node id
 						nodeIdAtNextEncoding = -1; // reset indicator to mean no node id
+						if (!(metadata & HAS_NODE_ID)) {
+							throw new Error('Node id included, but not in metadata flags');
+						}
 					}
 					if (additionalAuditRefs && additionalAuditRefs.length > 0) {
 						valueStart += 1 + additionalAuditRefs.length * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
@@ -554,17 +563,17 @@ export function recordUpdater(store, tableId, auditStore) {
 				residencyIdAtNextEncoding = residencyId;
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
 				extendedType |= HAS_CURRENT_RESIDENCY_ID;
-			} // else residencyIdAtNextEncoding = 0;
+			} else residencyIdAtNextEncoding = 0;
 			const nodeId = options?.nodeId;
 			if (nodeId >= 0) {
 				nodeIdAtNextEncoding = nodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;
-			} // else nodeIdAtNextEncoding = -1;
+			} else nodeIdAtNextEncoding = -1;
 			const additionalAuditRefs = options?.additionalAuditRefs;
 			if (additionalAuditRefs && additionalAuditRefs.length > 0) {
 				additionalAuditRefsNextEncoding = additionalAuditRefs;
 				metadataInNextEncoding |= HAS_ADDITIONAL_AUDIT_REFS;
-			} // else additionalAuditRefsNextEncoding = undefined;
+			} else additionalAuditRefsNextEncoding = undefined;
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
 				extendedType |= HAS_ADDITIONAL_AUDIT_REFS_AUDIT;
@@ -607,7 +616,6 @@ export function recordUpdater(store, tableId, auditStore) {
 				const structureVersion = store.encoder.structures.length + (store.encoder.typedStructs?.length ?? 0);
 				const nodeId = options?.nodeId ?? server.replication?.getThisNodeId(auditStore) ?? 0;
 				const viaNodeId = options?.viaNodeId ?? nodeId;
-				logger.debug('recording audit entry', { id, newVersion, previousVersion: existingEntry?.version, nodeId });
 				if (resolveRecord && existingEntry?.localTime) {
 					const replacingId = existingEntry?.localTime;
 					const replacingEntry = auditStore.get(replacingId, tableId, id);
