@@ -317,6 +317,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		let totalSize = 0;
 		const logs = [];
 		for (const log of this.loadLogs()) {
+			if (!log) continue;
 			const size = log.getLogFileSize();
 			totalSize += size;
 			logs.push({ name: log.name, size });
