@@ -1,9 +1,10 @@
+import { type Logger } from '../utility/logging/logger.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import { EventEmitter, once } from 'events';
 import yaml from 'yaml';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
-import harperLogger from '../utility/logging/harper_logger.js';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.js';
 import { cloneDeep } from 'lodash';
 
@@ -85,14 +86,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
 	#name: string;
-	#logger: any;
+	#logger: Logger;
 	ready: Promise<any[]>;
 
-	constructor(name: string, filePath: string, logger?: any) {
+	constructor(name: string, filePath: string, logger?: Logger) {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
-		this.#logger = logger || harperLogger.loggerWithTag(name);
+		this.#logger = logger || loggerWithTag(name);
 		this.ready = once(this, 'ready');
 		this.#watcher = chokidar
 			.watch(filePath, { persistent: false })
@@ -153,7 +154,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	#handleUnlink(path: string) {
-		this.#logger.warn(
+		this.#logger.warn?.(
 			`Configuration file ${path} was deleted. Reverting to default configuration. Recreate it to restore the options watcher.`
 		);
 		this.#resetConfig();

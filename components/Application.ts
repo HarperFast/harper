@@ -1,3 +1,4 @@
+import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue } from '../config/configUtils.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 import logger from '../utility/logging/harper_logger.js';
@@ -392,7 +393,7 @@ export class Application {
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number };
 	dirPath: string;
-	logger: any;
+	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
 
 	constructor({ name, payload, packageIdentifier, install }: ApplicationOptions) {
@@ -503,7 +504,7 @@ export async function installApplications() {
 				harperApplicationLock.applications[name] &&
 				JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)
 			) {
-				logger.info(`Application ${name} is already installed with matching configuration; skipping installation`);
+				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
 				continue;
 			}
 
@@ -511,13 +512,13 @@ export async function installApplications() {
 
 			harperApplicationLock.applications[name] = applicationConfig;
 		} catch (error) {
-			logger.error(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
+			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
 		}
 	}
 
 	const applicationInstallationStatuses = await Promise.allSettled(applicationInstallationPromises);
-	logger.debug(applicationInstallationStatuses);
-	logger.info('All root applications loaded');
+	logger.debug?.(applicationInstallationStatuses);
+	logger.info?.('All root applications loaded');
 
 	// Finally, write the lock file
 	await writeFile(harperApplicationLockPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
@@ -558,7 +559,7 @@ export function nonInteractiveSpawn(
 	return new Promise((resolve, reject) => {
 		logger
 			.loggerWithTag(`${applicationName}:spawn:${command}`)
-			.debug(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`);
+			.debug?.(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`);
 
 		const env = { ...process.env };
 
@@ -586,7 +587,7 @@ export function nonInteractiveSpawn(
 			// log stdout lines immediately
 			// TODO: Technically nothing guarantees that a chunk will be a complete line so need to implement
 			// something here to buffer until a newline character, then log the complete line
-			logger.loggerWithTag(`${applicationName}:spawn:${command}:stdout`).debug(chunk.toString());
+			logger.loggerWithTag(`${applicationName}:spawn:${command}:stdout`).debug?.(chunk.toString());
 		});
 
 		// buffer stderr
@@ -609,7 +610,7 @@ export function nonInteractiveSpawn(
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
-			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug(`Process exited with code ${code}`);
+			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug?.(`Process exited with code ${code}`);
 			resolve({
 				stdout,
 				stderr,
@@ -640,6 +641,6 @@ function printStd(
 ) {
 	const stdLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}:${stdStreamLabel}`);
 	for (const line of stdString.split('\n')) {
-		stdLogger[level](line);
+		stdLogger[level]?.(line);
 	}
 }

@@ -1,4 +1,4 @@
-import jwt from 'jsonwebtoken';
+import jwt, { type Algorithm, type JwtPayload, type Secret, type SignOptions } from 'jsonwebtoken';
 import fs from 'fs-extra';
 import path from 'node:path';
 import Joi from 'joi';
@@ -14,7 +14,7 @@ import { ClientError, hdbErrors } from '../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.js';
 import * as password from '../utility/password.ts';
-import { findAndValidateUser } from './user.ts';
+import { findAndValidateUser, type User } from './user.ts';
 import { update } from '../dataLayer/insert.js';
 import UpdateObject from '../dataLayer/UpdateObject.js';
 import signalling from '../utility/signalling.js';
@@ -22,9 +22,10 @@ import { UserEventMsg } from '../server/threads/itc.js';
 import env from '../utility/environment/environmentManager.js';
 env.initSync();
 
-const OPERATION_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
-const REFRESH_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
-const RSA_ALGORITHM: string = 'RS256';
+type StringValue = SignOptions['expiresIn'];
+const OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
+const REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
+const RSA_ALGORITHM: Algorithm = 'RS256';
 
 const TOKEN_TYPE = {
 	OPERATION: 'operation',
@@ -42,6 +43,8 @@ interface AuthObject {
 	password?: string;
 	role?: string;
 	expires_in?: string | number;
+	bypass_auth?: boolean;
+	hdb_user?: User;
 }
 
 interface TokenObject {
@@ -122,20 +125,24 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	if (authObj.role) payload.role = authObj.role;
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
-	const operationToken = await jwt.sign(
+	const operationToken = jwt.sign(
 		payload,
-		{ key: keys.privateKey, passphrase: keys.passphrase },
+		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
-			expiresIn: authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT,
+			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.OPERATION,
-		}
+		} satisfies SignOptions
 	);
 
-	const refreshToken = await jwt.sign(
+	const refreshToken = jwt.sign(
 		payload,
-		{ key: keys.privateKey, passphrase: keys.passphrase },
-		{ expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE.REFRESH }
+		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+		{
+			expiresIn: REFRESH_TOKEN_TIMEOUT,
+			algorithm: RSA_ALGORITHM,
+			subject: TOKEN_TYPE.REFRESH,
+		} satisfies SignOptions
 	);
 
 	// update the user refresh token
@@ -168,11 +175,15 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 	await validateRefreshToken(refresh_token);
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
-	const decodedJWT = await jwt.decode(refresh_token);
-	const operationToken = await jwt.sign(
+	const decodedJWT = jwt.decode(refresh_token, { json: true });
+	const operationToken = jwt.sign(
 		{ username: decodedJWT.username, super_user: decodedJWT.super_user },
-		{ key: keys.privateKey, passphrase: keys.passphrase },
-		{ expiresIn: OPERATION_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE.OPERATION }
+		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+		{
+			expiresIn: OPERATION_TOKEN_TIMEOUT as StringValue,
+			algorithm: RSA_ALGORITHM,
+			subject: TOKEN_TYPE.OPERATION,
+		} satisfies SignOptions
 	);
 
 	return { operation_token: operationToken };
@@ -189,10 +200,10 @@ export async function validateRefreshToken(token: string): Promise<any> {
 async function validateToken(token: string, tokenType: string): Promise<any> {
 	try {
 		const keys: JWTRSAKeys = await getJWTRSAKeys();
-		const tokenVerified: any = await jwt.verify(token, keys.publicKey, {
-			algorithms: RSA_ALGORITHM,
+		const tokenVerified = jwt.verify(token, keys.publicKey, {
+			algorithms: [RSA_ALGORITHM],
 			subject: tokenType,
-		});
+		}) as JwtPayload;
 
 		// If a role is present, it means the token is not an operation token. The validation of
 		// the token will happen in the respective function/component that uses the token.

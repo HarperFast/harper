@@ -1,6 +1,6 @@
 import { cosineDistance, euclideanDistance } from './vector.ts';
 import { FLOAT32_OPTIONS } from 'msgpackr';
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.js';
 import type { Id } from '../../resources/ResourceInterface.ts';
 

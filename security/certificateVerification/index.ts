@@ -22,7 +22,7 @@
  * - Failure mode: fail-closed (rejects connections if verification fails)
  */
 
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { extractCertificateChain, extractRevocationUrls, bufferToPem } from './verificationUtils.ts';
 import { getCachedCertificateVerificationConfig } from './verificationConfig.ts';
 import { verifyOCSP } from './ocspVerification.ts';

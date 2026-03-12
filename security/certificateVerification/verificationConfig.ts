@@ -2,7 +2,7 @@
  * Configuration parsing and default values for certificate verification
  */
 
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { packageJson } from '../../utility/packageUtils.js';
 import type { CertificateVerificationConfig } from './types.ts';
 import { validateAndParseCertificateVerificationConfig } from './configValidation.ts';

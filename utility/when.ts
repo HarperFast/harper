@@ -1,3 +1,5 @@
+import type { RequestTarget, RequestTargetOrId } from '../resources/RequestTarget.ts';
+
 // wait for a promise or plain object to resolve
 export function when<T, R>(
 	value: T | Promise<T>,
@@ -11,7 +13,7 @@ export function when<T, R>(
 }
 
 export function promiseNormalize<T>(returnValue: T | Promise<T>, target: RequestTargetOrId): T | Promise<T> {
-	if (!returnValue?.then && !target?.syncAllowed) {
+	if (!(returnValue as Promise<T>)?.then && !(target as RequestTarget)?.syncAllowed) {
 		return Promise.resolve(returnValue);
 	}
 	return returnValue;

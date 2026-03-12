@@ -3,7 +3,7 @@
  */
 
 import * as pkijs from 'pkijs';
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { table } from '../../resources/databases.ts';
 import { Resource } from '../../resources/Resource.ts';
 import type { SourceContext } from '../../resources/ResourceInterface.ts';
