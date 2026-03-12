@@ -38,7 +38,7 @@ jobs:
           fi
       - name: Publish package to NPM registry
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_KEY }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access=public --tag=${{ steps.package-tag.outputs.packageTag }} harper-*.tgz
 
   publish-harperfast-npm-package:
@@ -78,7 +78,7 @@ jobs:
           fi
       - name: Publish package to NPM registry
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_KEY }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access=public --tag=${{ steps.package-tag.outputs.packageTag }} harperfast-harper-*.tgz
 
   send-slack-message-on-success:
