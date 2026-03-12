@@ -462,7 +462,7 @@ const ALLOWED_NODE_BUILTIN_MODULES = new Set([
 	'diagnostics_channel',
 	'fs',
 ]);
-function checkAllowedModulePath(moduleUrl: string, containingFolder: string): boolean {
+function checkAllowedModulePath(moduleUrl: string, containingFolder?: string): boolean {
 	if (moduleUrl.startsWith('file:')) {
 		const path = moduleUrl.slice(7);
 		if (!containingFolder || path.startsWith(containingFolder)) {
