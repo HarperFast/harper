@@ -113,6 +113,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		db = RocksDatabase.open(new RocksIndexStore(path, options)) as RocksDatabaseEx;
 	} else {
 		db = RocksDatabase.open(path, options) as RocksDatabaseEx;
+		db.encoder.name = options.name;
 	}
 	db.env = {};
 	return db;

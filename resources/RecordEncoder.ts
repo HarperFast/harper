@@ -75,6 +75,7 @@ export let lastMetadata: Entry | null = null;
 export class RecordEncoder extends Encoder {
 	structureUpdate?: any;
 	isRocksDB: boolean;
+	name: string;
 	constructor(options) {
 		options.useBigIntExtension = true;
 		/**
