@@ -251,7 +251,7 @@ export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperO
 	const harperProcess = await runHarperCommand({
 		args: [
 			`--ROOTPATH=${installDir}`,
-			'--DEFAULTS_MODE=prod',
+			'--DEFAULTS_MODE=dev',
 			`--HDB_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME}`,
 			`--HDB_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}`,
 			'--THREADS_COUNT=1',
@@ -260,6 +260,7 @@ export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperO
 			`--HTTP_PORT=${loopbackAddress}:${HTTP_PORT}`,
 			`--OPERATIONSAPI_NETWORK_PORT=${loopbackAddress}:${OPERATIONS_API_PORT}`,
 			'--LOGGING_LEVEL=debug',
+			'--LOGGING_STDSTREAMS=false',
 			'--HARPER_SET_CONFIG=' + JSON.stringify(config),
 		],
 		env: options?.env || {},
