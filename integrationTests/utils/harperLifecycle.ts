@@ -285,6 +285,29 @@ export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperO
 }
 
 /**
+ * Kill harper process (can be used for teardown, or killing it before a restart)
+ * @param ctx
+ */
+export async function killHarper(ctx: ContextWithHarper): Promise<void> {
+	await new Promise<void>((resolve) => {
+		let timer: NodeJS.Timeout;
+		ctx.harper.process.on('exit', () => {
+			resolve();
+			clearTimeout(timer);
+		});
+		ctx.harper.process.kill();
+		timer = setTimeout(() => {
+			try {
+				ctx.harper.process.kill('SIGKILL');
+			} catch {
+				// possible that the process terminated but the exit event hasn't fired yet
+			}
+			resolve();
+		}, 200);
+	});
+}
+
+/**
  * Tears down a Harper instance and cleans up all resources.
  *
  * This function stops the Harper instance, releases the loopback address,
@@ -305,22 +328,7 @@ export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperO
  * ```
  */
 export async function teardownHarper(ctx: ContextWithHarper): Promise<void> {
-	await new Promise<void>((resolve) => {
-		let timer: NodeJS.Timeout;
-		ctx.harper.process.on('exit', () => {
-			resolve();
-			clearTimeout(timer);
-		});
-		ctx.harper.process.kill();
-		timer = setTimeout(() => {
-			try {
-				ctx.harper.process.kill('SIGKILL');
-			} catch {
-				// possible that the process terminated but the exit event hasn't fired yet
-			}
-			resolve();
-		}, 200);
-	});
+	await killHarper(ctx);
 
 	await releaseLoopbackAddress(ctx.harper.hostname);
 
