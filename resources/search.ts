@@ -338,10 +338,18 @@ export function searchByIndex(
 						);
 					}
 				: (entry) => {
-						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
-						Object.freeze(entry.value);
-						recordRead(entry);
-						return entry;
+						return new Promise((resolve, reject) =>
+							setImmediate(() => {
+								try {
+									if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return resolve(SKIP);
+									if (context?._freezeRecords) Object.freeze(entry.value);
+									recordRead(entry);
+									return resolve(entry);
+								} catch (error) {
+									reject(error);
+								}
+							})
+						);
 					}
 		);
 		results.hasEntries = true;
