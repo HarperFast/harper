@@ -97,19 +97,27 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		select.push('id');
 	}
 
-	if (startTime) {
+	if (startTime && endTime) {
 		conditions.push({
 			attribute: 'id',
-			comparator: 'greater_than_equal',
-			value: startTime,
+			comparator: 'between',
+			value: [startTime, endTime],
 		});
-	}
-	if (endTime) {
-		conditions.push({
-			attribute: 'id',
-			comparator: 'less_than',
-			value: endTime,
-		});
+	} else {
+		if (startTime) {
+			conditions.push({
+				attribute: 'id',
+				comparator: 'greater_than_equal',
+				value: startTime,
+			});
+		}
+		if (endTime) {
+			conditions.push({
+				attribute: 'id',
+				comparator: 'less_than',
+				value: endTime,
+			});
+		}
 	}
 
 	const request = { conditions, allowConditionsOnDynamicAttributes: true };
