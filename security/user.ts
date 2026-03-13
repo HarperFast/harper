@@ -165,7 +165,7 @@ async function addUser(user: User | any): Promise<string> {
 		throw new ClientError(HDB_ERROR_MSGS.USER_ALREADY_EXISTS(cleanUser.username), HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	signalling.signalUserChange(new UserEventMsg(process.pid));
+	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${cleanUser.username} successfully added`;
 }
 
@@ -228,7 +228,7 @@ async function alterUser(jsonMessage) {
 	});
 
 	await setUsersWithRolesCache();
-	signalling.signalUserChange(new UserEventMsg(process.pid));
+	await signalling.signalUserChange(new UserEventMsg(process.pid));
 
 	return updateResponse;
 }
@@ -248,7 +248,7 @@ async function dropUser(user: User | any): Promise<string> {
 
 	logger.debug(deleteResponse);
 	await setUsersWithRolesCache();
-	signalling.signalUserChange(new UserEventMsg(process.pid));
+	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${user.username} successfully deleted`;
 }
 
