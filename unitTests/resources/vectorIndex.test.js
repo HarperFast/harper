@@ -110,7 +110,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		);
 	});
 	it('can remove and add and search with vector index', async () => {
-		for (let record of HNSWTest.search([])) {
+		for await (let record of HNSWTest.search([])) {
 			await HNSWTest.delete(record.id);
 		}
 		const records = [
