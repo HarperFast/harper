@@ -47,6 +47,7 @@ export type AuditRecord = {
 	user?: string;
 	nodeId?: number;
 	previousNodeId?: number;
+	previousAdditionalAuditRefs?: Array<{ version: number; nodeId: number }>;
 	endTxn?: boolean;
 	structureVersion?: number;
 };
@@ -79,8 +80,8 @@ export const transactionKeyEncoder = {
 	},
 };
 export const AUDIT_STORE_OPTIONS = {
-	needsStableBuffer: true,
 	encoder: {
+		needsStableBuffer: true,
 		encode: (auditRecord: AuditRecord) =>
 			auditRecord && (auditRecord instanceof Uint8Array ? auditRecord : createAuditEntry(auditRecord)),
 		decode: (encoding: Buffer) => readAuditEntry(encoding),
@@ -109,6 +110,14 @@ export function openAuditStore(rootStore) {
 			auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
 			updateLastRemoved(auditStore, 1);
 		}
+		const superGetRange = auditStore.getRange.bind(auditStore);
+		auditStore.getRange = function (options) {
+			if (options.values === false) return superGetRange(options); // getKeys shouldn't be modified
+			return superGetRange(options).map(({ key, value }) => {
+				value.key = value.localTime = key;
+				return value;
+			});
+		};
 	}
 	rootStore.auditStore = auditStore;
 	auditStore.rootStore = rootStore;
@@ -149,17 +158,17 @@ export function openAuditStore(rootStore) {
 				let committed: Promise<void>;
 				let lastKey: any;
 				try {
-					for (const { key, value } of auditStore.getRange({
+					for (const auditRecord of auditStore.getRange({
 						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 						snapshot: false,
 						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
 					})) {
 						try {
-							committed = removeAuditEntry(auditStore, key, value);
+							committed = removeAuditEntry(auditStore, auditRecord);
 						} catch (error) {
 							harperLogger.warn('Error removing audit entry', error);
 						}
-						lastKey = key;
+						lastKey = auditRecord.key;
 						await new Promise(setImmediate);
 						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
@@ -204,7 +213,7 @@ export function openAuditStore(rootStore) {
 	return auditStore;
 }
 
-export function removeAuditEntry(auditStore: any, key: number, auditRecord: AuditRecord): Promise<void> {
+export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
 		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
@@ -213,7 +222,7 @@ export function removeAuditEntry(auditStore: any, key: number, auditRecord: Audi
 		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
 			auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
 	}
-	return auditStore.remove(key);
+	return auditStore.remove(auditRecord.key);
 }
 
 function updateLastRemoved(auditStore, lastKey) {
@@ -251,6 +260,7 @@ export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
 export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
 export const HAS_BLOBS = 0x2000;
+export const HAS_ADDITIONAL_AUDIT_REFS = 0x4000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -307,6 +317,7 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		previousResidencyId,
 		expiresAt,
 		originatingOperation,
+		previousAdditionalAuditRefs,
 	} = auditRecord;
 	const action = EVENT_TYPES[type];
 	if (!action) {
@@ -340,6 +351,18 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	}
 	if (extendedType & HAS_ORIGINATING_OPERATION) {
 		writeInt(ORIGINATING_OPERATIONS[originatingOperation]);
+	}
+	if (extendedType & HAS_ADDITIONAL_AUDIT_REFS) {
+		if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
+			ENTRY_HEADER[position++] = previousAdditionalAuditRefs.length;
+			for (const ref of previousAdditionalAuditRefs) {
+				ENTRY_DATAVIEW.setFloat64(position, ref.version);
+				position += 8;
+				writeInt(ref.nodeId);
+			}
+		} else {
+			ENTRY_HEADER[position++] = 0;
+		}
 	}
 
 	if (user) writeValue(user);
@@ -399,7 +422,7 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): AuditRecord {
 	try {
 		const decoder =
-			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+			buffer.decoder || (buffer.decoder = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		decoder.position = start;
 		let previousVersion;
 		if (buffer[decoder.position] == 66) {
@@ -414,7 +437,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const recordIdEnd = (decoder.position += length);
 		// TODO: Once we support multiple format versions, we can conditionally read the version (and the previousResidencyId)
 		const version = decoder.readFloat64();
-		let residencyId, previousResidencyId, expiresAt, originatingOperation;
+		let residencyId, previousResidencyId, expiresAt, originatingOperation, previousAdditionalAuditRefs;
 		if (action & HAS_CURRENT_RESIDENCY_ID) {
 			residencyId = decoder.readInt();
 		}
@@ -427,6 +450,17 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		if (action & HAS_ORIGINATING_OPERATION) {
 			const operationId = decoder.readInt();
 			originatingOperation = ORIGINATING_OPERATIONS[operationId];
+		}
+		if (action & HAS_ADDITIONAL_AUDIT_REFS) {
+			const count = buffer[decoder.position++];
+			if (count > 0) {
+				previousAdditionalAuditRefs = [];
+				for (let i = 0; i < count; i++) {
+					const refVersion = decoder.readFloat64();
+					const refNodeId = decoder.readInt();
+					previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
+				}
+			}
 		}
 		length = decoder.readInt();
 		const usernameStart = decoder.position;
@@ -479,6 +513,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			previousResidencyId,
 			expiresAt,
 			originatingOperation,
+			previousAdditionalAuditRefs,
 		};
 	} catch (error) {
 		harperLogger.error('Reading audit entry error', error, buffer);

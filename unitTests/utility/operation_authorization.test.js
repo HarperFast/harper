@@ -16,8 +16,11 @@ const write = require('#js/dataLayer/insert');
 const user = require('#src/security/user');
 const alasql = require('alasql');
 const search = require('#js/dataLayer/search');
+const restart = require('#js/bin/restart');
+const configUtils = require('#js/config/configUtils');
 const jobs = require('#js/server/jobs/jobs');
 const terms = require('#src/utility/hdbTerms');
+
 const schema = require('#js/dataLayer/schema');
 const PermissionResponseObject = require('#js/security/data_objects/PermissionResponseObject');
 const PermissionTableResponseObject = require('#js/security/data_objects/PermissionTableResponseObject');
@@ -1487,6 +1490,133 @@ describe('Test operation_authorization', function () {
 			assert.deepEqual(unauthed_table.required_table_permissions, ['insert', 'update']);
 			assert.equal(unauthed_table.table, TEST_TABLE);
 			assert.equal(unauthed_table.required_attribute_permissions.length, 0);
+		});
+	});
+});
+
+describe('Test operations permissions', function () {
+	before(() => {
+		global.hdb_schema = global.hdb_schema || {};
+		testUtils.setGlobalSchema('id', TEST_SCHEMA, TEST_TABLE, TEST_ATTRIBUTES);
+	});
+
+	after(() => {
+		global.hdb_schema = undefined;
+	});
+
+	// Helper: build a verifyPerms request JSON with operations set
+	function makeOpUserRequest(operations, tablePerms = {}) {
+		const req = getRequestJson(TEST_JSON);
+		req.hdb_user.role.permission = {
+			super_user: false,
+			operations: operations,
+			[TEST_SCHEMA]: {
+				describe: true,
+				tables: {
+					[TEST_TABLE]: {
+						describe: true,
+						read: true,
+						insert: false,
+						update: false,
+						delete: false,
+						attribute_permissions: [],
+						...tablePerms,
+					},
+				},
+			},
+		};
+		return req;
+	}
+
+	// Helper: build a request for a schema-less SU-only operation
+	function makeOpUserSystemRequest(operations) {
+		return {
+			operation: 'restart',
+			hdb_user: {
+				active: true,
+				role: {
+					id: 'op-user-test-id',
+					permission: {
+						super_user: false,
+						operations: operations,
+					},
+					role: 'op_test_role',
+					__updatedtime__: (roleUpdatedTimeCounter += 1),
+				},
+				username: 'op_test_user',
+			},
+		};
+	}
+
+	describe('verifyPerms() — operations allowlist', function () {
+		it('(NOMINAL) op in read_only group with table READ perm — search allowed', function () {
+			const req_json = makeOpUserRequest(['read_only'], { read: true });
+			req_json.operation = terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS;
+			const result = op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			assert.equal(result, null);
+		});
+
+		it('op NOT in operations list — insert blocked even with table perms', function () {
+			const req_json = makeOpUserRequest(['read_only'], { insert: true });
+			const result = op_auth.verifyPerms(req_json, write.insert.name);
+			assert.notEqual(result, null);
+			assert.equal(result.unauthorized_access.length, 1);
+			// Error message uses the API name (terms.OPERATIONS_ENUM.INSERT = 'insert'), not the internal
+			// function name (write.insert.name = 'insertData'), because that's what users put in operations.
+			assert.ok(
+				JSON.stringify(result).includes(TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(terms.OPERATIONS_ENUM.INSERT))
+			);
+		});
+
+		it('SU-only op in operations — restart granted without super_user', function () {
+			const req_json = makeOpUserSystemRequest([terms.OPERATIONS_ENUM.RESTART]);
+			const result = op_auth.verifyPerms(req_json, restart.restart.name);
+			assert.equal(result, null);
+		});
+
+		it('SU-only op NOT in operations — restart denied', function () {
+			const req_json = makeOpUserSystemRequest(['read_only']);
+			const result = op_auth.verifyPerms(req_json, restart.restart.name);
+			assert.notEqual(result, null);
+			assert.equal(result.unauthorized_access.length, 1);
+		});
+
+		it('get_configuration granted via operations (SU-only bypass)', function () {
+			const req_json = makeOpUserSystemRequest([terms.OPERATIONS_ENUM.GET_CONFIGURATION]);
+			req_json.operation = terms.OPERATIONS_ENUM.GET_CONFIGURATION;
+			const result = op_auth.verifyPerms(req_json, configUtils.getConfiguration.name);
+			assert.equal(result, null);
+		});
+
+		it('dual gate — op in operations but table READ perm false — search denied at CRUD level', function () {
+			const req_json = makeOpUserRequest(['read_only'], { read: false });
+			req_json.operation = terms.OPERATIONS_ENUM.SEARCH;
+			const result = op_auth.verifyPerms(req_json, search.search.name);
+			assert.notEqual(result, null);
+		});
+
+		it('no operations set — SU-only op still denied for non-SU user (no regression)', function () {
+			const req_json = {
+				operation: terms.OPERATIONS_ENUM.RESTART,
+				hdb_user: {
+					active: true,
+					role: {
+						id: 'plain-role-id',
+						permission: { super_user: false },
+						role: 'plain_role',
+						__updatedtime__: (roleUpdatedTimeCounter += 1),
+					},
+					username: 'plain_user',
+				},
+			};
+			const result = op_auth.verifyPerms(req_json, restart.restart.name);
+			assert.notEqual(result, null);
+			assert.equal(result.unauthorized_access.length, 1);
+		});
+
+		it('no operations set — normal data op works as before (no regression)', function () {
+			const result = op_auth.verifyPerms(TEST_JSON, write.insert.name);
+			assert.equal(result, null);
 		});
 	});
 });

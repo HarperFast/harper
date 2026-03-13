@@ -213,13 +213,14 @@ export class DatabaseTransaction implements Transaction {
 				if (!outstandingCommit) {
 					outstandingCommit = commitResolution;
 					outstandingCommitStart = performance.now();
-					outstandingCommit.then(() => {
+					outstandingCommit.finally(() => {
 						outstandingCommit = null;
 					});
 				}
 				const completions = [];
 				return commitResolution.then(
 					() => {
+						this.transaction.onCommit?.();
 						this.transaction = null; // the native transaction is done (reset if needed)
 						if (this.next) {
 							completions.push(this.next.commit(options));
@@ -269,6 +270,7 @@ export class DatabaseTransaction implements Transaction {
 			};
 			if (this.next) {
 				// now run any other transactions
+				options.timestamp = this.timestamp;
 				const nextResolution = this.next?.commit(options);
 				if (nextResolution?.then)
 					return nextResolution?.then((nextResolution) => ({
@@ -349,7 +351,12 @@ function startMonitoringTxns() {
 				);
 				// reset the transaction
 				try {
-					txn.commit();
+					const result = txn.commit();
+					if (result?.then) {
+						result.catch((error) => {
+							harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+						});
+					}
 				} catch (error) {
 					harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
 				}

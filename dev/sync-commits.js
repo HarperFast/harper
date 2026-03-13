@@ -127,9 +127,12 @@ function generateCommitsToPick(startCommit) {
 	const commits = execSync(`git rev-list --reverse --first-parent ${startCommit}..old/main`)
 		.toString()
 		.trim()
-		.split('\n');
-	// write to file in case a human needs to take over
-	fs.writeFileSync('commits-to-pick.txt', commits.join('\n') + '\n');
+		.split('\n')
+		.filter((c) => c !== '');
+	if (commits.length > 0) {
+		// write to file in case a human needs to take over
+		fs.writeFileSync('commits-to-pick.txt', commits.join('\n') + '\n');
+	}
 	return commits;
 }
 
@@ -142,16 +145,24 @@ function isMergeCommit(commit) {
 	return true;
 }
 
-function doItRockapella(startCommit) {
-	process.stdout.write('Finding commits to sync... ');
-	fetchCommits('old');
-	pullRemoteBranch('origin', 'main');
+function createSyncBranch() {
 	const syncDate = new Date();
 	const month = String(syncDate.getMonth() + 1).padStart(2, '0');
 	const day = String(syncDate.getDate()).padStart(2, '0');
 	checkoutNewBranch(`sync-${month}${day}${syncDate.getFullYear()}`);
+}
+
+function doItRockapella(startCommit) {
+	process.stdout.write('Finding commits to sync... ');
+	fetchCommits('old');
+	pullRemoteBranch('origin', 'main');
 	const commits = generateCommitsToPick(startCommit);
 	console.log('✅');
+	if (commits.length === 0) {
+		console.log('No commits to sync. Exiting.');
+		letsBail(0);
+	}
+	createSyncBranch();
 	console.log(`\n${commits.length} commits found:`);
 	for (const commit of commits) {
 		if (isMergeCommit(commit)) {

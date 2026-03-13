@@ -829,7 +829,6 @@ function batchHashSearch(transactionOrEnv, hash_attribute, fetchAttributes, ids,
  * @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
  * @param {[]} [_notFound] -optional,  meant to be an array passed by reference so that skipped ids can be aggregated.
- * @returns {TransactionCursor}
  */
 function initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetchAttributes, ids, _notFound) {
 	common.validateEnv(transactionOrEnv);

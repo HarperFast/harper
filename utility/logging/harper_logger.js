@@ -302,13 +302,20 @@ function initLogSettings(forceInit = false) {
 				// This is here for situations where HDB isn't using a boot file
 				if (
 					!properties.ROOTPATH ||
-					(properties.ROOTPATH && !fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)))
+					(!fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HARPER_CONFIG_FILE)) &&
+						!fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)))
 				)
 					throw err;
 			}
 
 			//if root path check for config file, if it exists - all good
 			// if root path and no config file just throw err
+			let configPath;
+			if (properties.ROOTPATH) {
+				configPath = join(properties.ROOTPATH, hdbTerms.HARPER_CONFIG_FILE);
+				if (!fs.pathExistsSync(configPath) && fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)))
+					configPath = join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE);
+			} else configPath = hdbProperties.get('settings_path');
 			let rotation;
 			({
 				level: logLevel,
@@ -318,9 +325,7 @@ function initLogSettings(forceInit = false) {
 				colorMode,
 				rotation,
 				toStream: logToStdstreams,
-			} = getLogConfig(
-				properties.ROOTPATH ? join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE) : hdbProperties.get('settings_path')
-			));
+			} = getLogConfig(configPath));
 
 			logName = hdbTerms.LOG_NAMES.HDB;
 			logFilePath = join(logRoot, logName);

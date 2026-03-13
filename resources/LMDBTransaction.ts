@@ -42,6 +42,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	getReadTxn(): ReadTransaction {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+		this.timeout = txnExpiration; // reset the timeout
 		if (this.stale) this.stale = false;
 		if (this.readTxn) {
 			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
@@ -93,7 +94,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 		if (this.open === TRANSACTION_STATE.LINGERING) {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
-			const immediateTxn = new DatabaseTransaction();
+			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
 			return immediateTxn.commit({});
 		}
@@ -254,6 +255,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.writes = [];
+					this.timestamp = 0;
 					this.next = null;
 					return Promise.all(completions).then(() => {
 						return {
@@ -320,15 +322,19 @@ let timer;
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
-			if (txn.stale) {
+			if (txn.timeout <= 0) {
 				const url = txn.getContext()?.url;
 				harperLogger.error(
-					`Transaction was open too long and has been aborted, from table: ${
+					`Transaction was open too long and has been committed, from table: ${
 						txn.db?.name + (url ? ' path: ' + url : '')
 					}`
 				);
-				txn.abort();
-			} else txn.stale = true;
+				// reset the transaction
+				txn.commit();
+				txn.timeout = txnExpiration;
+			} else {
+				txn.timeout -= txnExpiration;
+			}
 		}
 	}, txnExpiration).unref();
 }

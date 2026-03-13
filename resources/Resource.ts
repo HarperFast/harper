@@ -191,7 +191,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	}
 	static invalidate = transactional(
 		function (resource: Resource, query: RequestTarget, _request: Context, _data: any) {
-			return resource.invalidate ? resource.invalidate(query) : missingMethod(resource, 'delete');
+			return resource.invalidate ? resource.invalidate(query) : missingMethod(resource, 'invalidate');
 		},
 		{ hasContent: false, type: 'update', method: 'invalidate' }
 	);

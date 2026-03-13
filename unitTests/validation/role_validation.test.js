@@ -809,5 +809,84 @@ describe('Test role_validation module ', () => {
 				TEST_ROLE_PERMS_ERROR.INVALID_ATTR_PERM_KEY(invalid_key)
 			);
 		});
+
+		describe('operations permission validation', () => {
+			it('NOMINAL - operations with group name [read_only] returns null', () => {
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission.operations = ['read_only'];
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result).to.equal(null);
+			});
+
+			it('NOMINAL - operations with individual valid op names returns null', () => {
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission.operations = ['search', 'restart', 'get_configuration'];
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result).to.equal(null);
+			});
+
+			it('NOMINAL - operations mixing group and individual ops returns null', () => {
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission.operations = ['read_only', 'restart', 'list_users'];
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result).to.equal(null);
+			});
+
+			it('NOMINAL - operations without schema perms (ops-only role) returns null', () => {
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission = { operations: ['read_only', 'get_configuration'] };
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result).to.equal(null);
+			});
+
+			it('ERROR - operations as string (not array) returns validation error', () => {
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission.operations = 'read_only';
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(TEST_ROLE_PERMS_ERROR.OPERATIONS_MUST_BE_ARRAY);
+			});
+
+			it('ERROR - operations as boolean true (not array) returns validation error', () => {
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission.operations = true;
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(TEST_ROLE_PERMS_ERROR.OPERATIONS_MUST_BE_ARRAY);
+			});
+
+			it('ERROR - operations with invalid op name returns validation error', () => {
+				const bogus_op = 'bogus_op';
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission.operations = [bogus_op];
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(
+					TEST_ROLE_PERMS_ERROR.INVALID_OPERATIONS_OP(bogus_op)
+				);
+			});
+
+			it('ERROR - operations with mix of valid and invalid ops — error for invalid only', () => {
+				const bogus_op = 'totally_fake_op';
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission.operations = ['read_only', bogus_op];
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+				expect(test_result.http_resp_msg.main_permissions).to.include(
+					TEST_ROLE_PERMS_ERROR.INVALID_OPERATIONS_OP(bogus_op)
+				);
+			});
+
+			it('ERROR - super_user role with operations rejected by SU constraint', () => {
+				const test_role = TEST_ADD_ROLE_OBJECT();
+				test_role.permission = { super_user: true, operations: ['read_only'] };
+				const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(
+					TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('super_user')
+				);
+			});
+		});
 	});
 });

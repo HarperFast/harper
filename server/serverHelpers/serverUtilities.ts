@@ -35,6 +35,7 @@ import operationFunctionCaller from '../../utility/OperationFunctionCaller.js';
 import type { OperationRequest, OperationRequestBody } from '../operationsServer.ts';
 import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
+import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -114,8 +115,7 @@ export type OperationDefinition = {
 
 /**
  * Register an operation function with the server.
- * @param operationName
- * @param operationFunction
+ * @param operationDefinition
  */
 server.registerOperation = (operationDefinition: OperationDefinition) => {
 	OPERATION_FUNCTION_MAP.set(operationDefinition.name, new OperationFunctionObject(operationDefinition.execute));
@@ -356,6 +356,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(jobs.handleGetJobsByStartDate)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.REGISTRATION_INFO,
+		new OperationFunctionObject(regDeprecated.getRegistrationInfo)
+	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));

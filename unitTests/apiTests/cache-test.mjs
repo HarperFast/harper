@@ -65,4 +65,41 @@ describe('test REST calls with cache table', () => {
 		assert(tables.CacheOfResource.sourceGetsPerformed > start_count);
 		assert.equal(response.status, 200);
 	});
+	describe('Cache sourced from HTTP responses', () => {
+		it('get resolved with fetch', async () => {
+			let source = await axios.get('http://localhost:9926/FourProp/2');
+			let response = await axios.get('http://localhost:9926/CacheOfHttp/direct-fetch');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.id, '2');
+			assert.equal(response.data.name, 'name2');
+			assert(response.headers.get('ETag'));
+			assert.equal(response.headers.get('ETag'), source.headers.get('ETag'));
+		});
+		it('get resolved with Response', async () => {
+			let response = await axios.get('http://localhost:9926/CacheOfHttp/created-response');
+			assert.equal(response.status, 200);
+			assert.equal(response.data, 'test');
+			assert.equal(response.headers.get('cache-control'), 'max-age=10, s-maxage=20');
+			assert.equal(response.headers.get('x-custom-header'), 'custom value');
+		});
+		it('get resolved with fetch body as text', async () => {
+			let response = await axios.get('http://localhost:9926/CacheOfHttp/fetch-body');
+			assert.equal(response.status, 200);
+			assert.equal(typeof response.data, 'string');
+			assert.equal(JSON.parse(response.data).name, 'name2');
+		});
+		it('get resolved as html', async () => {
+			let response = await axios.get('http://localhost:9926/CacheOfHttp/html-response');
+			assert.equal(response.status, 200);
+			assert.equal(typeof response.data, 'string');
+			assert(response.data.startsWith('<html>'));
+			assert.equal(response.headers.get('content-type'), 'text/html');
+		});
+		it('get resolved as object with headers', async () => {
+			let response = await axios.get('http://localhost:9926/CacheOfHttp/headers-in-data');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.name, 'test-sibling-to-headers');
+			assert.equal(response.headers.get('x-custom-header'), 'custom value');
+		});
+	});
 });

@@ -160,5 +160,16 @@ jobs:
           name: harper-build-artifacts-node-${{ matrix.node-version }}
 
       - name: Run Integration Test Shard ${{ matrix.shard }}
+        env:
+          HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
         run: |
           npm run test:integration -- --shard=${{ matrix.shard }}/4
+
+      - name: Upload Harper server logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harper-server-logs-node-${{ matrix.node-version }}-shard-${{ matrix.shard }}
+          path: /tmp/harper-integration-test-logs/
+          retention-days: 3
+          if-no-files-found: ignore

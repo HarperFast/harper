@@ -70,6 +70,7 @@ const TEST_OPERATION_AUTH_ERROR = {
 	OP_AUTH_PERMS_ERROR: 'This operation is not authorized due to role restrictions and/or invalid database items',
 	OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
 	OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
+	OP_NOT_IN_OPERATIONS: (op) => `Operation '${op}' is not permitted for this role's operations configuration`,
 	UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
 	USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
 };
@@ -114,6 +115,9 @@ const TEST_ROLE_PERMS_ERROR = {
 	TABLE_PERM_MISSING: (perm) => `Missing table ${perm.toUpperCase()} permission`,
 	TABLE_PERM_NOT_BOOLEAN: (perm) => `Table ${perm.toUpperCase()} permission must be a boolean`,
 	STRUCTURE_USER_ROLE_TYPE_ERROR: (role) => `Value for '${role}' permission must be a boolean or Array`,
+	OPERATIONS_MUST_BE_ARRAY: "Permission 'operations' must be an array of operation names or group names",
+	INVALID_OPERATIONS_OP: (op) =>
+		`Invalid operations value '${op}'. Must be a valid operation name or group (e.g. 'read_only').`,
 };
 
 const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;

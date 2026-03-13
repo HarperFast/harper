@@ -2,6 +2,7 @@ import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { isMainThread } from 'node:worker_threads';
+import { EventEmitter } from 'node:events';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
 	// we want to be able to test log replay
@@ -19,13 +20,15 @@ const HAS_PREVIOUS_VERSION = 0x20000000;
  * to manage and interact with transaction logs, including querying logs,
  * adding entries, and loading logs for multiple nodes or purposes.
  */
-export class RocksTransactionLogStore {
+export class RocksTransactionLogStore extends EventEmitter {
 	log: TransactionLog;
 	nodeLogs?: TransactionLog[]; // whatever the type of the read logger
 	logByName: Map<string, TransactionLog> = new Map();
+	updates = 0; // the number of updates to the list of logs that have occurred
 	rootStore: RocksDatabase;
 	reusableIterable = true; // flag indicating that iterable can be reused to resume iterating through audit log
 	constructor(rootDatabase: RocksDatabase) {
+		super();
 		this.log = rootDatabase.useLog('local');
 		this.rootStore = rootDatabase;
 	}
@@ -41,8 +44,7 @@ export class RocksTransactionLogStore {
 			// do not record transaction entries on retry
 			return;
 		}
-		const nodeId = options.nodeId;
-		const log = nodeId ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : this.log;
+		const log = this.logById(options.nodeId) ?? this.logById(options.viaNodeId) ?? this.log;
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -62,7 +64,20 @@ export class RocksTransactionLogStore {
 			}
 			entryBinary = createAuditEntry(auditRecord, position);
 		}
+		if (this.listenerCount('aftercommit')) {
+			if (!options.transaction.logEntries) {
+				options.transaction.logEntries = [];
+				options.transaction.onCommit = () => {
+					this.emit('aftercommit', options.transaction.logEntries);
+				};
+			}
+			options.transaction.logEntries.push(auditRecord);
+		}
 		log.addEntry(entryBinary, options.transaction.id);
+	}
+
+	logById(nodeId: number) {
+		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}
 
 	putSync(suggestedKey: any, value: any, options: any) {
@@ -96,14 +111,39 @@ export class RocksTransactionLogStore {
 	getEntry() {
 		throw new Error('Not implemented');
 	}
-	loadLogs() {
-		this.nodeLogs ??= [];
-		for (const logName of this.rootStore.listLogs()) {
-			const nodeId = ((globalThis as any).server?.replication?.exportIdMapping?.(this)?.[logName] ?? 0) as number;
-			this.nodeLogs[nodeId] ??= this.rootStore.useLog(logName);
-			this.logByName.set(logName, this.nodeLogs[nodeId]);
+	addLogToMaps(logName: string, log: TransactionLog) {
+		const nodeId = ((globalThis as any).server?.replication?.getIdOfRemoteNode?.(logName, this) ?? 0) as number;
+		if (this.nodeLogs) {
+			this.nodeLogs![nodeId] ??= log;
 		}
+		this.updates++;
+		this.logByName.set(logName, log);
+		return nodeId;
+	}
+
+	loadLogs() {
+		if (this.nodeLogs) {
+			// listLogs should only be called one time, and then listen for changes to update
+			return this.nodeLogs;
+		}
+		this.nodeLogs = [];
+		for (const logName of this.rootStore.listLogs()) {
+			const log = this.rootStore.useLog(logName);
+			this.addLogToMaps(logName, log);
+		}
+		this.rootStore.on('new-transaction-log', (logName) => {
+			if (this.logByName.has(logName)) return; // already added
+			// Add this to our logs
+			const log = this.rootStore.useLog(logName);
+			this.addLogToMaps(logName, log);
+		});
 		return this.nodeLogs;
+	}
+
+	ensureLogExists(logName: string) {
+		if (this.logByName.has(logName)) return;
+		const log = this.rootStore.useLog(logName);
+		return this.addLogToMaps(logName, log);
 	}
 
 	/**
@@ -115,11 +155,14 @@ export class RocksTransactionLogStore {
 		exactStart?: boolean;
 		end?: number;
 		log?: string | number;
+		excludeLogs?: string[];
 		onlyKeys?: boolean;
+		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
 	}): Iterable<AuditRecord> {
 		let iterable = new ExtendedIterable<TransactionEntry>();
+		let aggregateIterator: Iterator<TransactionEntry>;
 		if (options.log !== undefined) {
 			let log = typeof options.log === 'number' ? this.nodeLogs?.[options.log] : this.logByName.get(options.log);
 			if (!log) {
@@ -137,15 +180,53 @@ export class RocksTransactionLogStore {
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
-			const iterators = (this.nodeLogs || this.loadLogs()).map((log) => log.query(options)[Symbol.iterator]());
+			let logs: TransactionLog[] = [];
 			// holds the queue of next entries from each iterator
-			let nextEntries = [];
-			const aggregateIterator = {
+			let nextEntries: any[];
+			let latestUpdates: number;
+			const iterators: IterableIterator<TransactionEntry>[] = [];
+			const updateIterators = () => {
+				if (latestUpdates !== this.updates) {
+					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
+						(log) => !options.excludeLogs?.includes(log.name)
+					);
+					for (let log of latestLogs) {
+						if (!logs.includes(log)) {
+							logs.push(log);
+							let queryOptions = options;
+							if (options.startByLog) {
+								// if the startByLog is provided, we use that
+								queryOptions = { ...options, start: options.startByLog.get(log.name) ?? 0 };
+							} else if (latestUpdates >= 0) {
+								// if this is not the first update, that means that this is a brand new log and if start wasn't specified
+								// that means we are taking all future requests, so we need to start at zero so we don't introduce a race
+								// condition of potentially missing an initial update
+								queryOptions = { ...options, start: options.start ?? 0 };
+							}
+							iterators.push(log.query(queryOptions));
+						}
+					}
+					latestUpdates = this.updates;
+					if (logs.length > latestLogs.length) {
+						for (let i = 0; i < logs.length; i++) {
+							let log = logs[i];
+							if (!latestLogs.includes(log)) {
+								logs.splice(i, 1);
+								iterators.splice(i--, 1);
+							}
+						}
+					}
+				}
+				nextEntries = iterators.map((iterator) => iterator.next());
+			};
+			updateIterators();
+
+			aggregateIterator = {
 				next() {
 					if (nextEntries.length === 0) {
 						// on the first iteration and any time we finished all the iterators, we re-retrieve all
 						// the next entries (in case we are resuming after being done)
-						nextEntries = iterators.map((iterator) => iterator.next());
+						updateIterators();
 					}
 					let earliest: TransactionEntry;
 					let earliestIndex = -1;
@@ -153,13 +234,11 @@ export class RocksTransactionLogStore {
 						const result = nextEntries[i];
 						// skip any that are done
 						if (result.done) {
-							// remove the entry from the list, so we don't keep hitting it
-							nextEntries.splice(i--, 1);
 							continue;
 						}
 						// find the earliest one that is not done
 						const next = result.value;
-						if (!earliest || earliest.timestamp < next.timestamp) {
+						if (!earliest || earliest.timestamp > next.timestamp) {
 							earliest = next;
 							earliestIndex = i;
 						}
@@ -172,13 +251,32 @@ export class RocksTransactionLogStore {
 							done: false,
 						};
 					} // else we are done
+					nextEntries.length = 0; // reset so if this iterator is restarted, we can re-query
 					return { value: undefined, done: true };
+				},
+				addLog: (logName) => {
+					let index = options.excludeLogs?.indexOf(logName);
+					if (index >= 0) {
+						options.excludeLogs.splice(index, 1);
+					}
+				},
+				removeLog: (logName: string) => {
+					const log = this.logByName.get(logName);
+					if (!log) return; // not found
+
+					const index = logs.findIndex((l) => l === log);
+					if (index >= 0) {
+						logs.splice(index, 1);
+						iterators.splice(index, 1);
+						nextEntries.splice(index, 1);
+						options.excludeLogs.push(logName);
+					}
 				},
 			};
 			iterable.iterate = () => aggregateIterator;
 		}
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-return
-		return iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
+		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
 			const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
 			data.dataView = decoder;
 			// This represents the data that shouldn't be transferred for replication
@@ -203,6 +301,12 @@ export class RocksTransactionLogStore {
 			auditRecord.structureVersion = structureVersion & 0x00ffffff;
 			return auditRecord;
 		});
+		// Add methods to the mapped iterable if we have an aggregate iterator
+		if (aggregateIterator?.addLog) {
+			mappedAggregateIterable.addLog = aggregateIterator.addLog;
+			mappedAggregateIterable.removeLog = aggregateIterator.removeLog;
+		}
+		return mappedAggregateIterable;
 	}
 	getKeys(options: any) {
 		return []; // TODO: implement this
@@ -213,6 +317,7 @@ export class RocksTransactionLogStore {
 		let totalSize = 0;
 		const logs = [];
 		for (const log of this.loadLogs()) {
+			if (!log) continue;
 			const size = log.getLogFileSize();
 			totalSize += size;
 			logs.push({ name: log.name, size });
@@ -227,7 +332,11 @@ export class RocksTransactionLogStore {
 		return this.rootStore.getUserSharedBuffer(key, defaultBuffer, options);
 	}
 	on(eventName: string, listener: any) {
-		return this.rootStore.on(eventName, listener);
+		if (eventName === 'aftercommit') {
+			return super.on('aftercommit', listener);
+		} else {
+			return this.rootStore.on(eventName, listener);
+		}
 	}
 	tryLock(key: any, onUnlocked?: () => void): boolean {
 		return this.rootStore.tryLock(key, onUnlocked);

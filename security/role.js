@@ -8,6 +8,7 @@ const signalling = require('../utility/signalling.js');
 const util = require('util');
 const terms = require('../utility/hdbTerms.ts');
 const hdbUtils = require('../utility/common_utils.js');
+const { databases } = require('../resources/databases.ts');
 const pSearchSearchByValue = search.searchByValue;
 const pSearchSearchByHash = search.searchByHash;
 const pDeleteDelete = util.promisify(delete_.delete);
@@ -22,6 +23,7 @@ module.exports = {
 	alterRole,
 	dropRole,
 	listRoles,
+	getRoleByName,
 };
 
 function scrubRoleDetails(role) {
@@ -193,6 +195,13 @@ async function dropRole(role) {
 
 	signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${roleName[0].role} successfully deleted`;
+}
+
+async function getRoleByName(roleName) {
+	for await (const role of databases.system.hdb_role.search([{ attribute: 'role', value: roleName }])) {
+		return role;
+	}
+	return null;
 }
 
 async function listRoles() {

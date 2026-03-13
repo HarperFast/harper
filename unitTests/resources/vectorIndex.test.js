@@ -3,6 +3,7 @@ const { table } = require('#src/resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
 	let HNSWTest;
 	let testInstance = new HierarchicalNavigableSmallWorld();
 	let all = [];

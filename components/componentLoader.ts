@@ -29,7 +29,8 @@ import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, resolvePath } from '../config/configUtils.js';
 import { createReuseportFd } from '../server/serverHelpers/Request.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
-import { Scope, type ApplicationContainment } from './Scope.ts';
+import { Scope } from './Scope.ts';
+import { ApplicationScope } from './ApplicationScope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
 import { Status } from '../server/status/index.ts';
@@ -98,6 +99,8 @@ export const TRUSTED_RESOURCE_PLUGINS = {
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
 }
+
+const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
 
 const portsStarted = [];
 export const loadedPaths = new Map();
@@ -217,6 +220,7 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 
 export interface LoadComponentOptions {
 	isRoot?: boolean;
+	applicationScope?: ApplicationScope;
 	autoReload?: boolean;
 	applicationContainment?: ApplicationContainment;
 	providedLoadedComponents?: Map<any, any>;
@@ -239,11 +243,21 @@ export async function loadComponent(
 	const resolvedFolder = realpathSync(componentDirectory);
 	if (loadedPaths.has(resolvedFolder)) return loadedPaths.get(resolvedFolder);
 	loadedPaths.set(resolvedFolder, true);
-	const { providedLoadedComponents, isRoot, autoReload } = options;
+
+	const {
+		providedLoadedComponents,
+		applicationScope = new ApplicationScope(basename(componentDirectory), resources, server),
+		isRoot,
+		autoReload,
+	} = options;
+	applicationScope.verifyPath ??= componentDirectory;
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {
 		let config;
-		let configPath = join(componentDirectory, 'harperdb-config.yaml'); // look for the specific harperdb-config.yaml first
+		let configPath = join(componentDirectory, 'harper-config.yaml'); // look for the specific harperdb-config.yaml first
+		if (!existsSync(configPath) && join(componentDirectory, 'harperdb-config.yaml')) {
+			configPath = join(componentDirectory, 'harperdb-config.yaml');
+		}
 		if (existsSync(configPath)) {
 			config = isRoot ? getConfigObj() : parseDocument(readFileSync(configPath, 'utf8')).toJSON();
 			// if not found, look for the generic config.yaml, the config filename we have historically used, but only if not the root
@@ -252,6 +266,7 @@ export async function loadComponent(
 		} else {
 			config = DEFAULT_CONFIG;
 		}
+		applicationScope.config ??= config;
 
 		if (!isRoot) {
 			try {
@@ -281,6 +296,8 @@ export async function loadComponent(
 			// Initialize loading status for all components (applications and extensions)
 			componentLifecycle.loading(componentStatusName);
 
+			const subApplicationScope = isRoot ? new ApplicationScope(componentName, resources, server) : applicationScope;
+
 			let extensionModule: any;
 			const pkg = componentConfig.package;
 			try {
@@ -301,8 +318,11 @@ export async function loadComponent(
 						}
 					}
 					if (componentPath) {
+						subApplicationScope.verifyPath = componentPath;
 						if (!process.env.HARPER_SAFE_MODE) {
-							extensionModule = await loadComponent(componentPath, resources, origin);
+							extensionModule = await loadComponent(componentPath, resources, origin, {
+								applicationScope: subApplicationScope,
+							});
 							componentFunctionality[componentName] = true;
 						}
 					} else {
@@ -312,7 +332,7 @@ export async function loadComponent(
 					const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
 					extensionModule =
 						typeof plugin === 'string'
-							? await scopedImport(plugin.startsWith('@/') ? join(PACKAGE_ROOT, plugin.slice(1)) : plugin)
+							? await import(plugin.startsWith('@/') ? join(PACKAGE_ROOT, plugin.slice(1)) : plugin)
 							: plugin;
 				}
 
@@ -353,12 +373,7 @@ export async function loadComponent(
 
 				// New Plugin API (`handleApplication`)
 				if (resources.isWorker && extensionModule.handleApplication) {
-					if (extensionModule.suppressHandleApplicationWarning !== true) {
-						harperLogger.warn(`Plugin ${componentName} is using the experimental handleApplication API`);
-					}
-
-					const scope = new Scope(componentName, componentDirectory, configPath, resources, server);
-					if (options.applicationContainment) scope.applicationContainment = options.applicationContainment;
+					const scope = new Scope(componentName, componentDirectory, configPath, applicationScope);
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 
@@ -369,6 +384,20 @@ export async function loadComponent(
 				}
 
 				// Old Extension API (`start` or `startOnMainThread`)
+				if (
+					!BUILT_INS.includes(componentName) &&
+					('startOnMainThread' in extensionModule ||
+						'start' in extensionModule ||
+						'handleFile' in extensionModule ||
+						'handleDirectory' in extensionModule ||
+						'setupFile' in extensionModule ||
+						'setupDirectory' in extensionModule)
+				) {
+					harperLogger.warn?.(
+						`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API. For more information: https://docs.harperdb.io/docs/reference/components/plugins`
+					);
+				}
+
 				if (isMainThread) {
 					extensionModule =
 						(await extensionModule.startOnMainThread?.({
@@ -449,7 +478,10 @@ export async function loadComponent(
 			});
 		}
 		if (config.extensionModule || config.pluginModule) {
-			const extensionModule = await import(join(componentDirectory, config.extensionModule || config.pluginModule));
+			const extensionModule = await scopedImport(
+				join(componentDirectory, config.extensionModule || config.pluginModule),
+				applicationScope
+			);
 			loadedPaths.set(resolvedFolder, extensionModule);
 			return extensionModule;
 		}

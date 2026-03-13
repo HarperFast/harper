@@ -56,6 +56,11 @@ type SimpleCache @table {
 type CacheOfResource @table @export {
 	id: ID @primaryKey
 }
+type CacheOfHttp @table @export {
+	headers: Any
+	data: Any
+	body: Blob
+}
 
 type HasBigInt @table @export {
 	id: BigInt @primaryKey

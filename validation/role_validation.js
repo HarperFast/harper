@@ -1,6 +1,7 @@
 const validate = require('validate.js'),
 	validator = require('./validationWrapper.js'),
 	terms = require('../utility/hdbTerms.ts'),
+	{ validateOperations } = require('../utility/operationPermissions.ts'),
 	{ handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
@@ -22,6 +23,8 @@ const constraintsTemplate = () => ({
 const STRUCTURE_USER_ENUM = {
 	STRUCTURE_USER: 'structure_user',
 };
+
+const OPERATIONS_KEY = 'operations';
 
 const ROLE_TYPES = Object.values(terms.ROLE_TYPES_ENUM);
 const ATTR_PERMS_KEY = 'attribute_permissions';
@@ -122,6 +125,22 @@ function customValidate(object, constraints) {
 
 				//if we end up here then this is an invalid data type
 				addPermError(HDB_ERROR_MSGS.STRUCTURE_USER_ROLE_TYPE_ERROR(item), validationErrors);
+				continue;
+			}
+
+			// validate operations: must be an array of valid operation names and/or group names
+			if (item === OPERATIONS_KEY) {
+				const opUserPerm = object.permission[item];
+
+				if (!Array.isArray(opUserPerm)) {
+					addPermError(HDB_ERROR_MSGS.OPERATIONS_MUST_BE_ARRAY, validationErrors);
+					continue;
+				}
+
+				const invalidOp = validateOperations(opUserPerm);
+				if (invalidOp !== null) {
+					addPermError(HDB_ERROR_MSGS.INVALID_OPERATIONS_OP(invalidOp), validationErrors);
+				}
 				continue;
 			}
 

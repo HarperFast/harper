@@ -364,4 +364,83 @@ describe('Caching', () => {
 			timer = 0;
 		}
 	});
+
+	it('Extended class with sourcedFrom does not impact base class', async function () {
+		// Create a base table without a source
+		const BaseTable = table({
+			table: 'BaseTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+
+		// Create an extended class and give it a source
+		class ExtendedTable extends BaseTable {}
+
+		let extendedSourceCalls = 0;
+		ExtendedTable.sourcedFrom({
+			get(id) {
+				return new Promise((resolve) => {
+					extendedSourceCalls++;
+					resolve({
+						id,
+						value: 'extended-' + id,
+					});
+				});
+			},
+		});
+
+		// Verify the extended class has a source
+		assert(ExtendedTable.source);
+		assert.equal(typeof ExtendedTable.source.get, 'function');
+
+		// Verify the base class does NOT have a source
+		assert(!BaseTable.source);
+
+		// Test that the extended class uses its source
+		extendedSourceCalls = 0;
+		await ExtendedTable.invalidate(100);
+		const extendedResult = await ExtendedTable.get(100);
+		assert.equal(extendedResult.value, 'extended-100');
+		assert.equal(extendedSourceCalls, 1);
+
+		// Test that the base class doesn't call any source
+		await BaseTable.invalidate(101);
+		const baseResult = await BaseTable.get(101);
+		assert.equal(baseResult, undefined); // Should be undefined since there's no source
+		assert.equal(extendedSourceCalls, 1); // Should not have called extended source
+
+		// Create another extended class with a different source
+		class AnotherExtendedTable extends BaseTable {}
+
+		let anotherSourceCalls = 0;
+		AnotherExtendedTable.sourcedFrom({
+			get(id) {
+				return new Promise((resolve) => {
+					anotherSourceCalls++;
+					resolve({
+						id,
+						value: 'another-' + id,
+					});
+				});
+			},
+		});
+
+		// Verify each extended class has its own independent source
+		assert(AnotherExtendedTable.source);
+		assert(AnotherExtendedTable.source !== ExtendedTable.source);
+
+		// Test that each extended class uses its own source
+		await AnotherExtendedTable.invalidate(102);
+		const anotherResult = await AnotherExtendedTable.get(102);
+		assert.equal(anotherResult.value, 'another-102');
+		assert.equal(anotherSourceCalls, 1);
+		assert.equal(extendedSourceCalls, 1); // ExtendedTable source should not be called
+
+		// Verify ExtendedTable still uses its own source
+		await ExtendedTable.invalidate(103);
+		const extendedResult2 = await ExtendedTable.get(103);
+		assert.equal(extendedResult2.value, 'extended-103');
+		assert.equal(extendedSourceCalls, 2);
+		assert.equal(anotherSourceCalls, 1); // AnotherExtendedTable source should not be called
+	});
 });

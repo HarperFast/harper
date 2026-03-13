@@ -24,6 +24,7 @@ const readLog = require('../utility/logging/readLog.js');
 const commonUtils = require('./common_utils.js');
 const restart = require('../bin/restart.js');
 const terms = require('./hdbTerms.ts');
+const { expandOperationsPerms } = require('./operationPermissions.ts');
 const permsTranslator = require('../security/permissionsTranslator.js');
 const systemInformation = require('../utility/environment/systemInformation.js');
 const tokenAuthentication = require('../security/tokenAuthentication.ts');
@@ -37,6 +38,7 @@ const status = require('../server/status/index.ts');
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+const regDeprecated = require('../resources/registrationDeprecated.ts');
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -92,71 +94,128 @@ const DATA_EXPORT = {
 };
 
 class permission {
-	constructor(requiresSu, perms) {
+	constructor(requiresSu, perms, apiName) {
 		this.requires_su = requiresSu;
 		this.perms = perms;
+		// snake_case API operation name (from OPERATIONS_ENUM) for operations allowlist checks.
+		// Undefined for ops that aren't user-addressable (SQL sub-ops, internal-only ops).
+		this.api_name = apiName;
 	}
 }
 
-requiredPermissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
-requiredPermissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
-requiredPermissions.set(write.upsert.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-requiredPermissions.set(search.searchByConditions.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(search.search.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(schema.createSchema.name, new permission(true, []));
-requiredPermissions.set(schema.createTable.name, new permission(true, []));
-requiredPermissions.set(schema.createAttribute.name, new permission(false, [INSERT_PERM]));
-requiredPermissions.set(schema.dropSchema.name, new permission(true, []));
-requiredPermissions.set(schema.dropTable.name, new permission(true, []));
-requiredPermissions.set(schema.dropAttribute.name, new permission(true, []));
-requiredPermissions.set(schemaDescribe.describeSchema.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(schemaDescribe.describeTable.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(delete_.deleteRecord.name, new permission(false, [DELETE_PERM]));
-requiredPermissions.set(user.addUser.name, new permission(true, []));
-requiredPermissions.set(user.alterUser.name, new permission(true, []));
-requiredPermissions.set(user.dropUser.name, new permission(true, []));
-requiredPermissions.set(user.listUsersExternal.name, new permission(true, []));
-requiredPermissions.set(role.listRoles.name, new permission(true, []));
-requiredPermissions.set(role.addRole.name, new permission(true, []));
-requiredPermissions.set(role.alterRole.name, new permission(true, []));
-requiredPermissions.set(role.dropRole.name, new permission(true, []));
-requiredPermissions.set(readLog.name, new permission(true, []));
+requiredPermissions.set(write.insert.name, new permission(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
+requiredPermissions.set(write.update.name, new permission(false, [UPDATE_PERM], terms.OPERATIONS_ENUM.UPDATE));
+requiredPermissions.set(
+	write.upsert.name,
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.UPSERT)
+);
+requiredPermissions.set(
+	search.searchByConditions.name,
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS)
+);
+requiredPermissions.set(
+	search.searchByHash.name,
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_HASH)
+);
+requiredPermissions.set(
+	search.searchByValue.name,
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_VALUE)
+);
+requiredPermissions.set(search.search.name, new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH));
+requiredPermissions.set(schema.createSchema.name, new permission(true, [], terms.OPERATIONS_ENUM.CREATE_DATABASE));
+requiredPermissions.set(schema.createTable.name, new permission(true, [], terms.OPERATIONS_ENUM.CREATE_TABLE));
+requiredPermissions.set(
+	schema.createAttribute.name,
+	new permission(false, [INSERT_PERM], terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE)
+);
+requiredPermissions.set(schema.dropSchema.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_DATABASE));
+requiredPermissions.set(schema.dropTable.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_TABLE));
+requiredPermissions.set(schema.dropAttribute.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_ATTRIBUTE));
+requiredPermissions.set(
+	schemaDescribe.describeSchema.name,
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA)
+);
+requiredPermissions.set(
+	schemaDescribe.describeTable.name,
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_TABLE)
+);
+requiredPermissions.set(delete_.deleteRecord.name, new permission(false, [DELETE_PERM], terms.OPERATIONS_ENUM.DELETE));
+requiredPermissions.set(user.addUser.name, new permission(true, [], terms.OPERATIONS_ENUM.ADD_USER));
+requiredPermissions.set(user.alterUser.name, new permission(true, [], terms.OPERATIONS_ENUM.ALTER_USER));
+requiredPermissions.set(user.dropUser.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_USER));
+requiredPermissions.set(user.listUsersExternal.name, new permission(true, [], terms.OPERATIONS_ENUM.LIST_USERS));
+requiredPermissions.set(role.listRoles.name, new permission(true, [], terms.OPERATIONS_ENUM.LIST_ROLES));
+requiredPermissions.set(role.addRole.name, new permission(true, [], terms.OPERATIONS_ENUM.ADD_ROLE));
+requiredPermissions.set(role.alterRole.name, new permission(true, [], terms.OPERATIONS_ENUM.ALTER_ROLE));
+requiredPermissions.set(role.dropRole.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_ROLE));
+requiredPermissions.set(readLog.name, new permission(true, [], terms.OPERATIONS_ENUM.READ_LOG));
 requiredPermissions.set(configUtils.setConfiguration.name, new permission(true, []));
 requiredPermissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 requiredPermissions.set(delete_.deleteAuditLogsBefore.name, new permission(true, []));
-requiredPermissions.set(restart.restart.name, new permission(true, []));
+requiredPermissions.set(restart.restart.name, new permission(true, [], terms.OPERATIONS_ENUM.RESTART));
 requiredPermissions.set(restart.restartService.name, new permission(true, []));
-requiredPermissions.set(readAuditLog.name, new permission(true, []));
+requiredPermissions.set(readAuditLog.name, new permission(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
 requiredPermissions.set(getBackup.name, new permission(true, [READ_PERM]));
 requiredPermissions.set(schema.cleanupOrphanBlobs.name, new permission(true, []));
-requiredPermissions.set(systemInformation.systemInformation.name, new permission(true, []));
-requiredPermissions.set(configUtils.getConfiguration.name, new permission(true, []));
+requiredPermissions.set(
+	systemInformation.systemInformation.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SYSTEM_INFORMATION)
+);
+requiredPermissions.set(
+	configUtils.getConfiguration.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CONFIGURATION)
+);
 requiredPermissions.set(transactionLog.readTransactionLog.name, new permission(true, []));
 requiredPermissions.set(transactionLog.deleteTransactionLogsBefore.name, new permission(true, []));
 requiredPermissions.set(npmUtilities.installModules.name, new permission(true, []));
-requiredPermissions.set(analytics.getOp.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(analytics.listMetricsOp.name, new permission(false, [READ_PERM]));
-requiredPermissions.set(analytics.describeMetricOp.name, new permission(false, [READ_PERM]));
+requiredPermissions.set(analytics.getOp.name, new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.GET_ANALYTICS));
+requiredPermissions.set(
+	analytics.listMetricsOp.name,
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.LIST_METRICS)
+);
+requiredPermissions.set(
+	analytics.describeMetricOp.name,
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_METRIC)
+);
 requiredPermissions.set(status.clear.name, new permission(true, []));
 requiredPermissions.set(status.get.name, new permission(true, []));
 requiredPermissions.set(status.set.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
-requiredPermissions.set(tokenAuthentication.createTokens.name, new permission(false, []));
-requiredPermissions.set(tokenAuthentication.refreshOperationToken.name, new permission(false, []));
+requiredPermissions.set(
+	tokenAuthentication.createTokens.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)
+);
+requiredPermissions.set(
+	tokenAuthentication.refreshOperationToken.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN)
+);
 requiredPermissions.set(auth.login.name, new permission(false, []));
 requiredPermissions.set(auth.logout.name, new permission(false, []));
 
 //Operations specific to HDB Functions
-requiredPermissions.set(functionsOperations.customFunctionsStatus.name, new permission(true, []));
-requiredPermissions.set(functionsOperations.getCustomFunctions.name, new permission(true, []));
-requiredPermissions.set(functionsOperations.getComponents.name, new permission(true, []));
-requiredPermissions.set(functionsOperations.getComponentFile.name, new permission(true, []));
+requiredPermissions.set(
+	functionsOperations.customFunctionsStatus.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS)
+);
+requiredPermissions.set(
+	functionsOperations.getCustomFunctions.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS)
+);
+requiredPermissions.set(
+	functionsOperations.getComponents.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_COMPONENTS)
+);
+requiredPermissions.set(
+	functionsOperations.getComponentFile.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_COMPONENT_FILE)
+);
 requiredPermissions.set(functionsOperations.setComponentFile.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.dropComponent.name, new permission(true, []));
-requiredPermissions.set(functionsOperations.getCustomFunction.name, new permission(true, []));
+requiredPermissions.set(
+	functionsOperations.getCustomFunction.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION)
+);
 requiredPermissions.set(functionsOperations.setCustomFunction.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.dropCustomFunction.name, new permission(true, []));
 requiredPermissions.set(functionsOperations.addComponent.name, new permission(true, []));
@@ -165,20 +224,33 @@ requiredPermissions.set(functionsOperations.packageComponent.name, new permissio
 requiredPermissions.set(functionsOperations.deployComponent.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
-requiredPermissions.set(user.userInfo.name, new permission(false, []));
+requiredPermissions.set(regDeprecated.getRegistrationInfo.name, new permission(false, []));
+requiredPermissions.set(user.userInfo.name, new permission(false, [], terms.OPERATIONS_ENUM.USER_INFO));
 //DescribeAll will only return the schema values a user has permissions for
-requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, []));
+requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, [], terms.OPERATIONS_ENUM.DESCRIBE_ALL));
 
 //Below function names are hardcoded b/c of circular dependency issues
-requiredPermissions.set(HANDLE_GET_JOB, new permission(false, []));
+requiredPermissions.set(HANDLE_GET_JOB, new permission(false, [], terms.OPERATIONS_ENUM.GET_JOB));
 requiredPermissions.set(HANDLE_GET_JOB_BY_START_DATE, new permission(true, []));
 requiredPermissions.set(CATCHUP, new permission(true, []));
-requiredPermissions.set(BULK_OPS.CSV_DATA_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-requiredPermissions.set(BULK_OPS.CSV_URL_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-requiredPermissions.set(BULK_OPS.CSV_FILE_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-requiredPermissions.set(BULK_OPS.IMPORT_FROM_S3, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-requiredPermissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, []));
-requiredPermissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, []));
+requiredPermissions.set(
+	BULK_OPS.CSV_DATA_LOAD,
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_DATA_LOAD)
+);
+requiredPermissions.set(
+	BULK_OPS.CSV_URL_LOAD,
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_URL_LOAD)
+);
+requiredPermissions.set(
+	BULK_OPS.CSV_FILE_LOAD,
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_FILE_LOAD)
+);
+requiredPermissions.set(
+	BULK_OPS.IMPORT_FROM_S3,
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.IMPORT_FROM_S3)
+);
+requiredPermissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, [], terms.OPERATIONS_ENUM.EXPORT_TO_S3));
+requiredPermissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, [], terms.OPERATIONS_ENUM.EXPORT_LOCAL));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new permission(false, [DELETE_PERM]));
@@ -373,6 +445,35 @@ function verifyPerms(requestJson, operation) {
 		return permsResponse.handleUnauthorizedItem(
 			`User does not have access to perform '${requestJson.operation}' against schema '${operationSchema}'`
 		);
+	}
+
+	// operations is an optional allowlist on the role. When present, it acts as a two-gate check:
+	// Gate 1 — operation allowlist: only ops explicitly listed (or expanded from a group) are reachable.
+	//           Any unlisted op is denied here, before table CRUD checks even run.
+	// Gate 2 — SU bypass: if the op passed gate 1 and is normally restricted to super_user, the explicit
+	//           listing is treated as a deliberate admin grant and allowed immediately (return null).
+	//           Non-SU ops that pass gate 1 fall through to the normal table CRUD checks below.
+	const permission = requestJson.hdb_user?.role?.permission;
+	const operations = permission?.operations;
+	if (operations !== undefined) {
+		// _expandedOperations is pre-built at cache-load time (O(1) lookup).
+		// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
+		const allowedOps = permission._expandedOperations ?? expandOperationsPerms(operations);
+		// op is the internal camelCase function name; allowedOps contains snake_case API names.
+		// Resolve via the api_name stored on the permission entry (set at registration time).
+		const opApiName = requiredPermissions.get(op)?.api_name ?? op;
+		// Gate 1: op not in allowlist — deny regardless of table CRUD permissions.
+		if (!allowedOps.has(opApiName)) {
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
+		}
+		// Gate 2: op is SU-only but was explicitly granted via operations — allow without super_user.
+		// Without this, the SU check further below would still deny it even though it passed gate 1.
+		// TODO: ops registered with both requires_su AND non-empty CRUD perms (currently only getBackup)
+		// have their table-level CRUD check bypassed here. Should fall through for those instead of
+		// returning null unconditionally. Low risk today but worth tightening.
+		if (requiredPermissions.get(op)?.requires_su) {
+			return null;
+		}
 	}
 
 	const fullRolePerms = permsTranslator.getRolePermissions(requestJson.hdb_user?.role);

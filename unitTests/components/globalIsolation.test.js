@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { loadComponent, loadedPaths } = require('#src/components/componentLoader');
 const { PACKAGE_ROOT } = require('#js/utility/packageUtils');
+const { ApplicationScope } = require('#js/components/ApplicationScope');
 
 describe('Global Variable Isolation in testJSWithDeps', function () {
 	let mockResources;
@@ -26,12 +27,14 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 	const componentDir = path.join(__dirname, 'fixtures', 'testJSWithDeps');
 
 	it('should isolate global variables when loading the component', async function () {
+		let applicationScope = new ApplicationScope('test', mockResources, server);
+		Object.assign(applicationScope, {
+			mode: 'vm',
+			dependencyContainment: false,
+			verifyPath: PACKAGE_ROOT,
+		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
-			applicationContainment: {
-				mode: 'vm',
-				dependencyContainment: false,
-				verifyPath: PACKAGE_ROOT,
-			},
+			applicationScope,
 		});
 
 		// The component's resources.js file asserts that globalVariableFromParent is undefined
@@ -53,16 +56,14 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		assert.equal(typeof mockResources.get('/my-component').get, 'function');
 	});
 	it('should be able to load component with package dependency containment', async function () {
-		// Load the component from the fixtures directory
-		const componentDir = path.join(__dirname, 'fixtures', 'testJSWithDeps');
-
+		let applicationScope = new ApplicationScope('test', mockResources, server);
+		Object.assign(applicationScope, {
+			mode: 'vm',
+			dependencyContainment: true,
+			verifyPath: PACKAGE_ROOT,
+		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
-			applicationContainment: {
-				// this will load package dependencies into the application's context
-				mode: 'vm',
-				dependencyContainment: true,
-				verifyPath: PACKAGE_ROOT,
-			},
+			applicationScope,
 		});
 
 		// Verify the component's global variable didn't leak into our context
@@ -78,15 +79,14 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		assert.equal(typeof mockResources.get('/my-component').get, 'function');
 	});
 	it('should be able to load component with SES compartment', async function () {
-		// Load the component from the fixtures directory
-
+		let applicationScope = new ApplicationScope('test', mockResources, server);
+		Object.assign(applicationScope, {
+			mode: 'compartment',
+			dependencyContainment: true,
+			verifyPath: PACKAGE_ROOT,
+		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
-			applicationContainment: {
-				// this will load package dependencies into the application's context
-				mode: 'compartment',
-				dependencyContainment: true,
-				verifyPath: PACKAGE_ROOT,
-			},
+			applicationScope,
 		});
 
 		// Verify the component's global variable didn't leak into our context

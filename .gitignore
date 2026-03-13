@@ -11,6 +11,9 @@
 # Dependencies
 node_modules/
 package-lock.json
+yarn.lock
+pnpm-lock.yaml
+npm-shrinkwrap.json
 
 # Test Outputs
 coverage
@@ -35,9 +38,8 @@ dist/
 # something is generating this file :shrug:
 integration-test.json
 
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
-
 # Repo synchronization temp file
 commits-to-pick.txt
+
+# npm run package Outputs
+harperfast-harper-*.tgz

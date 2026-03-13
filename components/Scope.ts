@@ -1,29 +1,21 @@
+import { type Logger } from '../utility/logging/logger.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import { EventEmitter, once } from 'node:events';
 import { databaseEventsEmitter } from '../resources/databases.ts';
-import { type Server } from '../server/Server.ts';
+import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
-import type { Logger } from './Logger.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
-import type { Resources } from '../resources/Resources.ts';
+import { resources, type Resources } from '../resources/Resources.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
-import { scopedImport } from '../security/jsLoader.ts';
-import * as env from '../utility/environment/environmentManager.js';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
+import { ApplicationScope } from './ApplicationScope.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
 		super('No default files option exists. Ensure `files` is specified in config.yaml');
 		this.name = 'MissingDefaultFilesOptionError';
 	}
-}
-
-export interface ApplicationContainment {
-	mode?: 'none' | 'vm' | 'compartment'; // option to set this from the scope
-	dependencyContainment?: boolean; // option to set this from the scope
-	verifyPath?: string;
 }
 
 export type ScopeEventsMap = {
@@ -49,15 +41,15 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#entryHandlers: EntryHandler[];
 	#logger: Logger;
 	#pendingInitialLoads: Set<Promise<void>>;
+	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
-	resources: Resources;
-	server: Server;
+	resources?: Resources;
+	server?: Server;
 	ready: Promise<any[]>;
-	applicationContainment?: ApplicationContainment;
 	databaseEvents: typeof databaseEventsEmitter;
 
-	constructor(name: string, directory: string, configFilePath: string, resources: Resources, server: Server) {
+	constructor(name: string, directory: string, configFilePath: string, applicationScope: ApplicationScope) {
 		super();
 
 		this.#name = name;
@@ -66,9 +58,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#logger = loggerWithTag(this.#name);
 
 		this.databaseEvents = databaseEventsEmitter;
-
-		this.resources = resources;
-		this.server = server;
+		this.applicationScope = applicationScope;
+		this.resources = applicationScope?.resources ?? resources;
+		this.server = applicationScope?.server ?? server;
 
 		this.#entryHandlers = [];
 		this.#pendingInitialLoads = new Set();
@@ -80,15 +72,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));
-
-		this.applicationContainment = {
-			mode: env.get(CONFIG_PARAMS.APPLICATIONS_CONTAINMENT) ?? 'vm',
-			dependencyContainment: Boolean(env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYCONTAINMENT)),
-			verifyPath: directory,
-		};
 	}
 
-	get logger() {
+	get logger(): Logger {
 		return this.#logger;
 	}
 
@@ -188,7 +174,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				return;
 			}
 
-			scope.#logger.debug(`Options changed: ${key.join('.')}, requesting restart`);
+			scope.#logger.debug?.(`Options changed: ${key.join('.')}, requesting restart`);
 			scope.requestRestart();
 		};
 	}
@@ -305,7 +291,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	requestRestart() {
-		this.#logger.debug(`Restart requested from ${this.name} scope for ${this.directory}`);
+		this.#logger.debug?.(`Restart requested from ${this.name} scope for ${this.directory}`);
 		requestRestart();
 	}
 
@@ -321,15 +307,11 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	/**
-	 * The compartment that is used for this scope and any imports that it makes
-	 */
-	compartment?: Promise<any>;
-	/**
 	 * Import a file into the scope's sandbox.
 	 * @param filePath - The path of the file to import.
 	 * @returns A promise that resolves with the imported module or value.
 	 */
 	async import(filePath: string): Promise<unknown> {
-		return scopedImport(filePath, this);
+		return this.applicationScope ? this.applicationScope.import(filePath) : import(filePath);
 	}
 }

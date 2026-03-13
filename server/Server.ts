@@ -10,10 +10,10 @@ import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
  */
 export interface Server {
 	socket?(listener: (socket: Socket) => void, options: ServerOptions): void;
-	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: ServerOptions): void;
+	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: HttpOptions): void;
 	request?(
 		listener: (request: Request, nextLayer: (request: Request) => Response) => void,
-		options?: ServerOptions
+		options?: HttpOptions
 	): void;
 	ws?(
 		listener: (ws: WebSocket, request: Request, requestCompletion: Promise<any>) => any,
@@ -32,6 +32,7 @@ export interface Server {
 	replication: {
 		getThisNodeId(auditStore: any): number;
 		exportIdMapping(auditStore: any): any;
+		getIdOfRemoteNode(remoteNodeName: string, auditStore: any): number;
 		replicateOperation(operation: {
 			replicated: boolean;
 			[key: string]: any;
@@ -52,6 +53,9 @@ export interface ServerOptions {
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;
+}
+export interface HttpOptions extends ServerOptions {
+	runFirst?: boolean;
 }
 export interface ContentTypeHandler {
 	serialize(data: any): Buffer | string;

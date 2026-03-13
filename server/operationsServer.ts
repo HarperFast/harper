@@ -94,12 +94,21 @@ async function setUp() {
 	return userSchema.setUsersWithRolesCache();
 }
 
+export interface ImpersonatePayload {
+	username?: string;
+	role?: {
+		permission: Partial<userSchema.UserRoleNamedPermissions & userSchema.UserRoleDatabasePermissions>;
+	};
+	role_name?: string;
+}
+
 interface BaseOperationRequestBody {
 	operation: OperationFunctionName;
 	bypassAuth: boolean;
 	hdb_user?: userSchema.User;
 	hdbAuthHeader?: unknown;
 	bypass_auth?: boolean;
+	impersonate?: ImpersonatePayload;
 	password?: string;
 	payload?: string;
 	sql?: string;

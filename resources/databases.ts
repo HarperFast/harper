@@ -109,7 +109,7 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
-const MEMORY_FOR_ROCKS_DB = (process.constrainedMemory?.() || totalmem()) * 0.25; // 25% of available memory
+const MEMORY_FOR_ROCKS_DB = Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25; // 25% of available memory
 
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
@@ -122,6 +122,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		db = RocksDatabase.open(new RocksIndexStore(path, options)) as RocksDatabaseEx;
 	} else {
 		db = RocksDatabase.open(path, options) as RocksDatabaseEx;
+		db.encoder.name = options.name;
 	}
 	db.env = {};
 	return db;
@@ -139,7 +140,7 @@ let loadedDatabases; // indicates if we have loaded databases from the file syst
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
-let definedDatabases;
+let definedDatabases: Map<string, Set<string>>;
 
 /**
  * This gets the set of tables from the default database ("data").
@@ -313,7 +314,6 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
-	definedDatabases = null;
 	return databases;
 }
 
@@ -424,6 +424,7 @@ function initStores(
 
 	const tables = ensureDB(databaseName);
 	const definedTables = tables[DEFINED_TABLES];
+	definedTables.rootStore = rootStore;
 	const tablesToLoad = new Map<string, any>();
 
 	for (const result of dbisStore.getRange({ start: false })) {
@@ -677,7 +678,10 @@ export function database({ database: databaseName, table: tableName }) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	ensureDB(databaseName);
-
+	const definedDatabase = definedDatabases.get(databaseName);
+	if (definedDatabase?.rootStore) {
+		return definedDatabase.rootStore;
+	}
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
 	if (process.env.SCHEMAS_DATA_PATH) {
 		databaseConfig.data = { path: process.env.SCHEMAS_DATA_PATH };
@@ -696,7 +700,7 @@ export function database({ database: databaseName, table: tableName }) {
 			: join(hdbBasePath, LEGACY_DATABASES_DIR_NAME));
 
 	let rootStore: RootDatabaseKind;
-	const useRocksdb = envGet(CONFIG_PARAMS.STORAGE_ENGINE) !== 'lmdb';
+	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
 	if (useRocksdb) {
 		const path = join(databasePath, tablePath ? tableName : databaseName);
 		rootStore = rocksdbDatabaseEnvs.get(path);
@@ -719,6 +723,7 @@ export function database({ database: databaseName, table: tableName }) {
 	if (!rootStore.auditStore) {
 		rootStore.auditStore = openAuditStore(rootStore);
 	}
+	if (definedDatabase) definedDatabase.rootStore = rootStore;
 	return rootStore;
 }
 /**
@@ -849,7 +854,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
 	let hasChanges;
-	let txnCommit;
+	let releaseExclusiveLock: () => void;
 	if (Table) {
 		primaryKey = Table.primaryKey;
 		if (Table.primaryStore.rootStore.status === 'closed') {
@@ -893,10 +898,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi = rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
 		}
 
-		startTxn(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
+		exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
 		if (attributesDbi.getSync(dbiName)) {
 			// table was created while we were setting up
-			if (txnCommit) txnCommit();
+			if (releaseExclusiveLock) releaseExclusiveLock();
 			resetDatabases();
 			return table(tableDefinition);
 		}
@@ -971,7 +976,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 		const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
 		if (!attribute || removeIndex) {
-			startTxn();
+			exclusiveLock();
 			hasChanges = true;
 			if (!attribute) attributesDbi.remove(key);
 			if (removeIndex) {
@@ -1014,7 +1019,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					hasChanges = true; // send out notification of the change
-					startTxn();
+					exclusiveLock();
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
@@ -1040,7 +1045,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					attributeDescriptor.restartNumber < workerData?.restartNumber
 				) {
 					hasChanges = true;
-					startTxn();
+					exclusiveLock();
 					attributeDescriptor = attributesDbi.getSync(dbiKey);
 					if (
 						changed ||
@@ -1070,12 +1075,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				indices[attribute.name] = dbi;
 			} else if (changed) {
 				hasChanges = true;
-				startTxn();
+				exclusiveLock();
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
 	} finally {
-		if (txnCommit) txnCommit();
+		if (releaseExclusiveLock) releaseExclusiveLock();
 	}
 	if (hasChanges) {
 		Table.schemaVersion++;
@@ -1102,15 +1107,24 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;
-	function startTxn() {
-		if (txnCommit) return;
-		rootStore.transactionSync(() => {
-			return {
-				then(callback) {
-					txnCommit = callback;
-				},
+	// Acquire an exclusive lock for attribute updates
+	function exclusiveLock() {
+		if (releaseExclusiveLock) return;
+		if (rootStore instanceof RocksDatabase) {
+			while (!rootStore.tryLock('update-attributes')) {} // use a spin lock, we really need an synchronous exclusive lock here
+			releaseExclusiveLock = () => {
+				rootStore.unlock('update-attributes');
 			};
-		});
+		} else {
+			// we only need an exclusive transaction lock in lmdb
+			rootStore.transactionSync(() => {
+				return {
+					then(callback) {
+						releaseExclusiveLock = callback;
+					},
+				};
+			});
+		}
 	}
 }
 const MAX_OUTSTANDING_INDEXING = 1000;

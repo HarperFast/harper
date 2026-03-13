@@ -163,6 +163,36 @@ tables.CacheOfResource.sourcedFrom({
 	},
 });
 
+// test transparent HTTP caching straight through
+tables.CacheOfHttp.sourcedFrom({
+	async get(target) {
+		switch (target) {
+			case 'direct-fetch':
+				return fetch(`http://localhost:9926/FourProp/2`);
+			case 'fetch-body':
+				const response = await fetch(`http://localhost:9926/FourProp/2`);
+				return new Response(response.body, {
+					headers: {
+						'Content-Type': 'text/plain',
+					},
+				});
+			case 'created-response':
+				return new Response('test', {
+					headers: { 'x-custom-header': 'custom value', 'cache-control': 'max-age=10, s-maxage=20' },
+				});
+			case 'html-response':
+				return new Response('<html>test</html>', {
+					headers: { 'content-type': 'text/html' },
+				});
+			case 'headers-in-data':
+				return {
+					headers: { 'x-custom-header': 'custom value' },
+					name: 'test-sibling-to-headers',
+				};
+		}
+	},
+});
+
 export class FourPropWithHistory extends tables.FourProp {
 	async subscribe(options) {
 		let context = this.getContext();

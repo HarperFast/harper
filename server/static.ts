@@ -166,8 +166,6 @@ export function handleApplication(scope: Scope) {
 	);
 }
 
-export const suppressHandleApplicationWarning = true;
-
 function validateNotFoundOption(
 	notFound: any
 ): asserts notFound is undefined | string | { file: string; statusCode: number } {

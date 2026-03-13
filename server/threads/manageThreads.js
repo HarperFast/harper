@@ -139,7 +139,8 @@ function startWorker(path, options = {}) {
 
 	const execArgv = [
 		'--enable-source-maps',
-		'--experimental-vm-modules',
+		'--experimental-vm-modules', // used for giving applications their own top level scope
+		'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
 		'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
 	];
 	if (envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))

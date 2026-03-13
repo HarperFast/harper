@@ -1,6 +1,6 @@
 import { table } from '../../resources/databases.ts';
 import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.js';
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
 import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';

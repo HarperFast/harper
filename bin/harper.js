@@ -56,14 +56,9 @@ async function harper() {
 		service = process.argv[2].toLowerCase();
 	}
 
-	const cliApiOp = cliOperations.buildRequest();
-	if (cliApiOp.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
-
 	switch (service) {
-		case SERVICE_ACTIONS_ENUM.OPERATION:
-			logger.trace('calling cli operations with:', cliApiOp);
-			await cliOperations.cliOperations(cliApiOp);
-			return;
+		case SERVICE_ACTIONS_ENUM.HELP:
+			return HELP;
 		case SERVICE_ACTIONS_ENUM.START:
 			return require('./run.js').launch();
 		case SERVICE_ACTIONS_ENUM.INSTALL:
@@ -107,26 +102,36 @@ async function harper() {
 					throw new Error(`The path ${appFolder} is not a folder`);
 				}
 				appFolder = fs.realpathSync(appFolder);
-				if (fs.existsSync(path.join(appFolder, hdbTerms.HDB_CONFIG_FILE))) {
+				if (
+					fs.existsSync(path.join(appFolder, hdbTerms.HARPER_CONFIG_FILE)) ||
+					(fs.existsSync(path.join(appFolder, hdbTerms.HDB_CONFIG_FILE)) &&
+						fs.existsSync(path.join(appFolder, 'database')))
+				) {
 					// This can be used to run HDB without a boot file
 					process.env.ROOTPATH = appFolder;
 				} else {
 					process.env.RUN_HDB_APP = appFolder;
 				}
 			} else if (fs.existsSync(hdbTerms.HDB_COMPONENT_CONFIG_FILE) || fs.existsSync('schema.graphql')) {
-				process.env.RUN_HDB_APP = '.';
-			} else if (fs.existsSync(hdbTerms.HDB_CONFIG_FILE)) {
-				process.env.ROOTPATH = '.';
+				console.warn(
+					`It appears you are running Harper in an application directory, but did not specify the path. I'll go ahead and run the application for you since that's probably what you meant. But to avoid this warning in the future, run applications in the current directory like this: "harper ${service} ."`
+				);
+				process.env.RUN_HDB_APP = process.cwd();
+			} else if (fs.existsSync(hdbTerms.HARPER_CONFIG_FILE) || fs.existsSync(hdbTerms.HDB_CONFIG_FILE)) {
+				console.warn(
+					`It appears you are running Harper in a root data directory, but did not specify the path. I'll go ahead and run Harper with its root path set to "." for you since that's probably what you meant. But to avoid this warning in the future, run it like this: "harper ${service} ."`
+				);
+				process.env.ROOTPATH = process.cwd();
 			}
 		}
 		// fall through
 		case undefined: // run harperdb in the foreground in standard mode
 			return require('./run.js').main();
 		default:
-			console.warn(`The "${service}" command is not understood.`);
-		// fall through
-		case SERVICE_ACTIONS_ENUM.HELP:
-			return HELP;
+			const cliApiOp = cliOperations.buildRequest();
+			logger.trace('calling cli operations with:', cliApiOp);
+			await cliOperations.cliOperations(cliApiOp);
+			return;
 	}
 }
 exports.harper = harper;

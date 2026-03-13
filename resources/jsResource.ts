@@ -60,7 +60,7 @@ export async function handleApplication(scope: Scope) {
 			if (isResource(resourceModule.default)) {
 				// register the resource
 				scope.resources.set(root, resourceModule.default);
-				scope.logger.debug(`Registered root resource: ${root}`);
+				scope.logger.debug?.(`Registered root resource: ${root}`);
 			}
 			recurseForResources(scope, resourceModule, root);
 		} catch (error) {
@@ -78,11 +78,9 @@ function recurseForResources(scope: Scope, resourceModule: any, prefix: string) 
 		if (isResource(exported)) {
 			// expose as an endpoint
 			scope.resources.set(resourcePath, exported);
-			scope.logger.debug(`Registered resource: ${resourcePath}`);
+			scope.logger.debug?.(`Registered resource: ${resourcePath}`);
 		} else if (typeof exported === 'object') {
 			recurseForResources(scope, exported, resourcePath);
 		}
 	}
 }
-
-export const suppressHandleApplicationWarning = true;

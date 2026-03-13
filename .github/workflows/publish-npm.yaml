@@ -1,0 +1,173 @@
+name: Publish NPM Package
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish-harper-npm-package:
+    runs-on: ubuntu-latest
+    outputs:
+      harper-version: ${{ steps.version-components.outputs.version }}
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: latest
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/checkout@v6
+      - name: Get release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download ${{ github.event.release.tag_name }} --pattern "harper-*.tgz"
+      - name: Get version components
+        id: version-components
+        uses: matt-usurp/validate-semver@v2
+        with:
+          version: ${{ github.event.release.tag_name }}
+      - name: Set package tag
+        id: package-tag
+        run: |
+          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
+            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "packageTag=next" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish package to NPM registry
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_KEY }}
+        run: npm publish --access=public --tag=${{ steps.package-tag.outputs.packageTag }} harper-*.tgz
+
+  publish-harperfast-npm-package:
+    runs-on: ubuntu-latest
+    outputs:
+      harper-version: ${{ steps.version-components.outputs.version }}
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: latest
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/checkout@v6
+      - name: Get release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download ${{ github.event.release.tag_name }} --pattern "harper-*.tgz"
+      - name: Get version components
+        id: version-components
+        uses: matt-usurp/validate-semver@v2
+        with:
+          version: ${{ github.event.release.tag_name }}
+      - name: Rename package to '@harperfast/harper'
+        run: |
+          mkdir package
+          tar -xvf harper-${{ steps.version-components.outputs.version }}.tgz -C package --strip-components=1
+          pushd package
+          npm pkg set name=@harperfast/harper
+          popd
+          tar -czvf harperfast-harper-${{ steps.version-components.outputs.version }}.tgz package
+      - name: Set package tag
+        id: package-tag
+        run: |
+          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
+            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "packageTag=next" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish package to NPM registry
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_KEY }}
+        run: npm publish --access=public --tag=${{ steps.package-tag.outputs.packageTag }} harperfast-harper-*.tgz
+
+  send-slack-message-on-success:
+    if: success() && !cancelled()
+    needs:
+      - publish-harperfast-npm-package
+      - publish-harper-npm-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack published notification
+        uses: slackapi/slack-github-action@v2
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_KEY }}
+          payload: |
+            {
+              "channel": "#development-ci",
+              "text": "Harper v${{ needs.publish-harper-npm-package.outputs.harper-version }} has been published to NPM",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Harper v${{ needs.publish-harper-npm-package.outputs.harper-version }} release"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status*"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": ":white_check_mark: Published to :npm:"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "<https://www.npmjs.com/package/harper/v/${{ needs.publish-harper-npm-package.outputs.harper-version }}|harper@${{ needs.publish-harper-npm-package.outputs.harper-version }}>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "<https://www.npmjs.com/package/@harperfast/harperfast/v/${{ needs.publish-harperfast-npm-package.outputs.harper-version }}|@harperfast/harper@${{ needs.publish-harperfast-npm-package.outputs.harper-version }}>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+  send-slack-message-on-failure:
+    if: failure() && !cancelled()
+    needs:
+      - publish-harperfast-npm-package
+      - publish-harper-npm-package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: slackapi/slack-github-action@v2
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_KEY }}
+          payload: |
+            {
+              "channel": "#development-ci",
+              "text": "Harper v${{ needs.publish-harper-npm-package.outputs.harper-version }} NPM publish failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Harper v${{ needs.publish-harper-npm-package.outputs.harper-version }} release"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status*"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": ":x: Failed to publish to :npm:"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Workflow run ${{ github.run_id }}>"
+                    }
+                  ]
+                }
+              ]
+            }

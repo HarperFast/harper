@@ -1,17 +1,17 @@
-import type { Logger } from './components/Logger.ts';
-import { BlobCreationOptions } from './resources/blob.ts';
-import { databases as dbDatabases, tables as dbTables } from './resources/databases.ts';
 import { Resource as ResourceImport } from './resources/Resource.ts';
 import { server as serverImport } from './server/Server.ts';
+import { tables as dbTables, databases as dbDatabases } from './resources/databases.ts';
+import { BlobCreationOptions } from './resources/blob.ts';
+import { Logger } from './utility/logging/logger.ts';
 
 export { Resource } from './resources/Resource.ts';
 export type {
-	Context,
 	Query,
-	RequestTargetOrId,
+	Context,
 	Session,
 	SourceContext,
 	SubscriptionRequest,
+	RequestTargetOrId,
 } from './resources/ResourceInterface.ts';
 export { ResourceInterface } from './resources/ResourceInterface.ts';
 export type { User } from './security/user.ts';
@@ -22,14 +22,10 @@ export { server } from './server/Server';
 export { tables, databases, type Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
 
-declare const logger: Logger;
-export { type Logger, logger };
-
-export type { Scope } from './components/Scope.ts';
+export { Scope } from './components/Scope.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export { OptionsWatcher, type Config, type ConfigValue } from './components/OptionsWatcher.ts';
-
 export {
 	EntryHandler,
 	type BaseEntry,
@@ -43,6 +39,10 @@ export {
 	type UnlinkDirectoryEvent,
 	type DirectoryEntryEvent,
 } from './components/EntryHandler.ts';
+
+declare const logger: Logger;
+export { type Logger, logger };
+
 declare global {
 	const tables: typeof dbTables;
 	const logger: Logger;

@@ -1,0 +1,181 @@
+name: Create Release on Version Tag
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version; should look like v1.2.3(-[alpha|beta|rc].N])'
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      harper-version: ${{ steps.package-version.outputs.packageVersion }}
+      draft-release-url: ${{ steps.create-release.outputs.url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: latest
+          package-manager-cache: false
+      - name: Get package.json version
+        id: package-version
+        run: echo "packageVersion=$(npm pkg get version | tr -d '\"')" >> "$GITHUB_OUTPUT"
+      - name: Get tag version
+        id: tag-version
+        run: |
+          if [[ "${{ github.event.inputs.version }}" != "" ]]; then
+            echo "tagVersion=${{ github.event.inputs.version }}"
+          else
+            echo "tagVersion=${{ github.ref_name }}"
+          fi >> "$GITHUB_OUTPUT"
+      - name: Confirm tag version matches package.json version
+        run: |
+          echo "Tag version: ${{ steps.tag-version.outputs.tagVersion }}"
+          echo "Package.json version: v${{ steps.package-version.outputs.packageVersion }}"
+          test "${{ steps.tag-version.outputs.tagVersion }}" == "v${{ steps.package-version.outputs.packageVersion }}"
+      - name: Notify release in progress in Slack
+        uses: slackapi/slack-github-action@v2
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_KEY }}
+          payload: |
+            {
+              "channel": "#development-ci",
+              "text": "Harper ${{ steps.tag-version.outputs.tagVersion }} release in progress",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Harper ${{ steps.tag-version.outputs.tagVersion }} release"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status*"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": ":hourglass_flowing_sand: In progress"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Workflow run ${{ github.run_id }}>"
+                    }
+                  ]
+                }
+              ]
+            }
+      - name: Package Harper
+        run: npm run package
+      - name: Get version components
+        id: version-components
+        uses: matt-usurp/validate-semver@v2
+        with:
+          version: ${{ steps.tag-version.outputs.tagVersion }}
+      - name: Create Release
+        id: create-release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.tag-version.outputs.tagVersion }}
+          tag_name: ${{ steps.tag-version.outputs.tagVersion }}
+          files: harperfast-harper-*.tgz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ steps.version-components.outputs.prerelease != '' }}
+          draft: true
+          make_latest: ${{ github.event.inputs.draft == 'false' && steps.version-components.outputs.prerelease == '' }}
+
+  send-slack-message-on-success:
+    if: success() && !cancelled()
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: slackapi/slack-github-action@v2
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_KEY }}
+          payload: |
+            {
+              "channel": "#development-ci",
+              "text": "Harper v${{ needs.create-release.outputs.harper-version }} draft release created",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Harper v${{ needs.create-release.outputs.harper-version }} release"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status*"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": ":github: Draft release waiting for review"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ needs.create-release.outputs.draft-release-url }}|Review draft release>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+  send-slack-message-on-failure:
+    if: failure() && !cancelled()
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: slackapi/slack-github-action@v2
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_KEY }}
+          payload: |
+            {
+              "channel": "#development-ci",
+              "text": "Harper v${{ needs.create-release.outputs.harper-version }} release failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Harper v${{ needs.create-release.outputs.harper-version }} release"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status*"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": ":x: Failed"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Workflow run ${{ github.run_id }}>"
+                    }
+                  ]
+                }
+              ]
+            }

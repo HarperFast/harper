@@ -13,7 +13,7 @@ describe('Analytics profiling user code', () => {
 	});
 
 	it('can sample user code and record it', async () => {
-		await captureProfile(); // restart the profile
+		await captureProfile(10000); // restart the profile
 		const start = Date.now();
 		let response = await axios.post('http://localhost:9926/SimpleCache/3', {
 			doExpensiveComputation: true,

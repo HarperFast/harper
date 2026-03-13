@@ -12,6 +12,7 @@ const { EntryHandler } = require('#src/components/EntryHandler');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { writeFile } = require('node:fs/promises');
 const { waitFor } = require('./waitFor.js');
+const { ApplicationScope } = require('#js/components/ApplicationScope');
 
 describe('Scope', () => {
 	beforeEach(() => {
@@ -38,7 +39,12 @@ describe('Scope', () => {
 	it('should create a default entry handler', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.name]: { files: 'test.js' } }));
 
-		const scope = new Scope(this.name, this.directory, this.configFilePath, this.resources, this.server);
+		const scope = new Scope(
+			this.name,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
 
 		const readySpy = spy();
 		scope.on('ready', readySpy);
@@ -88,7 +94,12 @@ describe('Scope', () => {
 	it('should create a default entry handler with urlPath', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.name]: { files: 'test.js', urlPath: 'abc' } }));
 
-		const scope = new Scope(this.name, this.directory, this.configFilePath, this.resources, this.server);
+		const scope = new Scope(
+			this.name,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
 
 		const readySpy = spy();
 		scope.on('ready', readySpy);

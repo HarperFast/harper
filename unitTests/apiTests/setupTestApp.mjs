@@ -1,15 +1,14 @@
 import { setupTestDBPath } from '../testUtils.js';
 import { fileURLToPath } from 'url';
-import { setProperty } from '#js/utility/environment/environmentManager';
 import hdbTerms from '#src/utility/hdbTerms';
 import { join } from 'path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
-import { createRequire } from 'module';
 import analytics from '#src/resources/analytics/write';
 import { bypassAuth } from '#src/security/auth';
 import { bypassAuth as bypassAuthMQTT } from '#src/server/mqtt';
-const require = createRequire(import.meta.url);
+import environmentManager from '#js/utility/environment/environmentManager';
+const { setProperty } = environmentManager;
 const config = {};
 
 const headers = {
@@ -82,7 +81,7 @@ export async function setupTestApp() {
 		tables.Related.clear();
 		tables.SubObject.clear();
 	} else {
-		const { startHTTPThreads } = require('#src/server/threads/socketRouter');
+		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
 	}
 	try {
@@ -140,6 +139,6 @@ export async function setupTestApp() {
 }
 
 export async function addThreads() {
-	const { startHTTPThreads } = require('#src/server/threads/socketRouter');
+	const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 	await startHTTPThreads(2);
 }

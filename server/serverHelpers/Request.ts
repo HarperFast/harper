@@ -2,6 +2,7 @@ import { platform } from 'os';
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
+import type { Headers as ResponseHeaders } from './Headers.ts';
 
 // Some request compatible type-ing. We can handle both HTTP and HTTPS requests and the server is augmented.
 interface IncomingMessage extends NodeIncomingMessage {
@@ -30,6 +31,10 @@ export class Request {
 	public headers: Headers;
 	public isWebSocket?: boolean;
 	public user?: any; // User object can be attached during authentication
+	public response: {
+		status?: number;
+		headers: ResponseHeaders;
+	};
 
 	constructor(nodeRequest: IncomingMessage, nodeResponse: NodeServerResponse) {
 		this.method = nodeRequest.method;

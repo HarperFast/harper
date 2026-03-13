@@ -1,4 +1,4 @@
-import { info } from '../utility/logging/harper_logger.js';
+import { warn } from '../utility/logging/harper_logger.js';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
@@ -20,21 +20,28 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	const tableId = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
-	let baseSubscriptions;
+	let databaseSubscriptions;
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
-		baseSubscriptions = allSameThreadSubscriptions;
+		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);
 		listenToCommits(table.primaryStore, table.auditStore);
 	} else {
-		baseSubscriptions = allSubscriptions;
-		if (!table.primaryStore.env.hasSubscriptionCommitListener) {
-			table.primaryStore.env.hasSubscriptionCommitListener = true;
-			table.primaryStore.on('committed', () => {
-				notifyFromTransactionData(allSubscriptions[path]);
+		databaseSubscriptions = allSubscriptions[path] || (allSubscriptions[path] = []);
+		const auditStore = table.auditStore;
+		if (!auditStore.hasSubscriptionCommitListener) {
+			let auditLogIterator;
+			if (auditStore.reusableIterable) {
+				// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
+				// and still match older version numbers that may commit in the future. But we have to start
+				// immediately so we are at the right position
+				auditLogIterator = auditStore.getRange({});
+			}
+			auditStore.hasSubscriptionCommitListener = true;
+			auditStore.on('committed', () => {
+				notifyFromTransactionData(databaseSubscriptions, auditLogIterator);
 			});
 		}
 	}
-	const databaseSubscriptions = baseSubscriptions[path] || (baseSubscriptions[path] = []);
 	databaseSubscriptions.auditStore = table.auditStore;
 	if (databaseSubscriptions.lastTxnTime == null) {
 		databaseSubscriptions.lastTxnTime = Date.now();
@@ -105,25 +112,20 @@ class Subscription extends IterableEventQueue {
 	}
 }
 const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
-function notifyFromTransactionData(subscriptions) {
+function notifyFromTransactionData(subscriptions, auditLogIterable) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
 	const auditStore = subscriptions.auditStore;
 	auditStore.resetReadTxn?.();
 	nextTransaction(subscriptions.auditStore);
 	let subscribersWithTxns;
-	const getIterator = () =>
-		auditStore.getRange({
+	if (!auditLogIterable) {
+		// rocksdb will pass this in, but with lmdb, we have to re-create the iterable
+		auditLogIterable = auditStore.getRange({
 			start: subscriptions.lastTxnTime,
 			exclusiveStart: true,
 		});
-	let auditLogIterator;
-	if (auditStore.reusableIterable) {
-		auditLogIterator = subscriptions.auditLogIterator;
-		if (!auditLogIterator) {
-			auditLogIterator = subscriptions.auditLogIterator = getIterator();
-		}
-	} else auditLogIterator = getIterator();
-	for (const auditRecord of auditLogIterator) {
+	}
+	for (const auditRecord of auditLogIterable) {
 		const timestamp: number = auditRecord.localTime ?? auditRecord.version;
 		subscriptions.lastTxnTime = timestamp;
 		if (!ACTIONS_OF_INTEREST.includes(auditRecord.type)) continue;
@@ -146,7 +148,6 @@ function notifyFromTransactionData(subscriptions) {
 					)
 						continue;
 					if (subscription.startTime >= timestamp) {
-						info('omitting', recordId, subscription.startTime, timestamp);
 						continue;
 					}
 					try {
@@ -168,8 +169,7 @@ function notifyFromTransactionData(subscriptions) {
 						}
 						subscription.listener(recordId, auditRecord, timestamp, beginTxn);
 					} catch (error) {
-						console.error(error);
-						info(error);
+						warn(error);
 					}
 				}
 			}
@@ -192,7 +192,7 @@ function notifyFromTransactionData(subscriptions) {
 	}
 }
 /**
- * Interface with lmdb-js to listen for commits and traverse the audit log.
+ * Interface with database to listen for commits and traverse the audit log only on the same thread.
  * @param primaryStore
  * @param auditStore
  */
@@ -202,9 +202,13 @@ export function listenToCommits(primaryStore, auditStore) {
 	const lmdbEnv = store.env;
 	if (!lmdbEnv.hasAfterCommitListener) {
 		lmdbEnv.hasAfterCommitListener = true;
-		store.on('aftercommit', () => {
+		store.on('aftercommit', (logEntries) => {
 			const subscriptions = allSameThreadSubscriptions[path]; // there is a different set of subscribers for same-thread subscriptions
 			if (!subscriptions) return;
+			// With RocksTransactionLog, we actually have direct access to the list of log entries:
+			if (Array.isArray(logEntries)) {
+				return notifyFromTransactionData(subscriptions, logEntries);
+			}
 			// we want each thread to do this mutually exclusively so that we don't have multiple threads trying to process the same data (the intended purpose of crossThreads=false)
 			const acquiredLock = () => {
 				// we have the lock, so we can now read the last sequence/local write time and continue to read the audit log from there

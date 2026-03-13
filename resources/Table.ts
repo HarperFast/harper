@@ -38,7 +38,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 } from './search.ts';
-import logger from '../utility/logging/logger.js';
+import { logger } from '../utility/logging/logger.ts';
 import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
@@ -64,6 +64,7 @@ import harperLogger from '../utility/logging/harper_logger.js';
 import { throttle } from '../server/throttle.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
+import { contentTypes } from '../server/serverHelpers/contentTypes';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -118,7 +119,7 @@ export interface Table {
 	subscriptions: Map<any, Function[]>;
 	expirationMS: number;
 	indexingOperations?: Promise<void>;
-	sources: (new () => ResourceInterface)[];
+	source?: new () => ResourceInterface;
 	Transaction: ReturnType<typeof makeTable>;
 }
 type ResidencyDefinition = number | string[] | void;
@@ -165,8 +166,6 @@ export function makeTable(options) {
 	let prefetchCallbacks = [];
 	let untilNextPrefetch = 1;
 	let nonPrefetchSequence = 2;
-	let applyToSources: any = {};
-	let applyToSourcesIntermediate: any = {};
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
@@ -174,6 +173,7 @@ export function makeTable(options) {
 	let propertyResolvers: any;
 	let hasRelationships = false;
 	let runningRecordExpiration: boolean;
+	const isRocksDB = primaryStore instanceof RocksDatabase;
 	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
 	let idIncrementer: BigInt64ArrayAndMaxSafeId;
 	let replicateToCount;
@@ -239,7 +239,7 @@ export function makeTable(options) {
 		static updatedTimeProperty = updatedTimeProperty;
 		static propertyResolvers;
 		static userResolvers = {};
-		static sources: (typeof TableResource)[] = [];
+		static source?: typeof TableResource;
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
@@ -264,81 +264,20 @@ export function makeTable(options) {
 			}
 			if (options?.intermediateSource) {
 				source.intermediateSource = true;
-				this.sources.unshift(source);
+				// intermediateSource should register sourceLoad and setup subscription but not assign to this.source
 			} else {
-				if (this.sources.some((source) => !source.intermediateSource)) {
-					if (this.sources.some((existingSource) => existingSource.name === source.name)) {
-						// if we are adding a source that is already in the list, we don't add it again
+				if (this.source) {
+					if (this.source.name === source.name) {
+						// if we are adding a source that is already set, we don't add it again
 						return;
 					}
-					throw new Error('Can not have multiple canonical (non-intermediate) sources');
+					throw new Error('Can not have multiple sources');
 				}
-				this.sources.push(source);
+				this.source = source;
 			}
 			hasSourceGet = hasSourceGet || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
 			sourceLoad = sourceLoad || source.load;
-			// These functions define how write operations are propagate to the sources.
-			// We define the last source in the array as the "canonical" source, the one that can authoritatively
-			// reject or accept a write. The other sources are "intermediate" sources that can also be
-			// notified of writes and/or fulfill gets.
-			const getApplyToIntermediateSource = (method) => {
-				let sources = this.sources;
-				sources = sources.filter(
-					(source) =>
-						source.intermediateSource &&
-						source[method] &&
-						(!source[method].reliesOnPrototype || source.prototype[method])
-				);
-				if (sources.length > 0) {
-					if (sources.length === 1) {
-						// the simple case, can directly call it
-						const intermediateSource = sources[0];
-						return (context, id, data) => {
-							if (context?.source !== intermediateSource) return intermediateSource[method](id, data, context);
-						};
-					} else {
-						return (context, id, data) => {
-							// if multiple intermediate sources, call them in parallel
-							const results: Promise<any>[] = [];
-							for (const source of sources) {
-								if (context?.source === source) break;
-								results.push(source[method](id, data, context));
-							}
-							return Promise.all(results);
-						};
-					}
-				}
-			};
-			let canonicalSource = this.sources[this.sources.length - 1];
-			if (canonicalSource.intermediateSource) canonicalSource = {} as typeof TableResource; // don't treat intermediate sources as canonical
-			const getApplyToCanonicalSource = (method) => {
-				if (
-					canonicalSource[method] &&
-					(!canonicalSource[method].reliesOnPrototype || canonicalSource.prototype[method])
-				) {
-					return (context, id, data) => {
-						if (!context?.source) return canonicalSource[method](id, data, context);
-					};
-				}
-			};
-			// define a set of methods for each operation so we can apply these in each write as part
-			// of the commit
-			applyToSources = {
-				put: getApplyToCanonicalSource('put'),
-				patch: getApplyToCanonicalSource('patch'),
-				delete: getApplyToCanonicalSource('delete'),
-				publish: getApplyToCanonicalSource('publish'),
-				// note that invalidate event does not go to the canonical source, invalidate means that
-				// caches are invalidated, which specifically excludes the canonical source from being affected.
-			};
-			applyToSourcesIntermediate = {
-				put: getApplyToIntermediateSource('put'),
-				patch: getApplyToIntermediateSource('patch'),
-				delete: getApplyToIntermediateSource('delete'),
-				publish: getApplyToIntermediateSource('publish'),
-				invalidate: getApplyToIntermediateSource('invalidate'),
-			};
-			const shouldRevalidateEvents = canonicalSource.shouldRevalidateEvents;
+			const shouldRevalidateEvents = this.source?.shouldRevalidateEvents;
 
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
@@ -369,6 +308,7 @@ export function makeTable(options) {
 						isNotification: true,
 						ensureLoaded: false,
 						nodeId: event.nodeId,
+						viaNodeId: event.viaNodeId,
 						async: true,
 					};
 					const id = event.id;
@@ -640,7 +580,7 @@ export function makeTable(options) {
 							// dictates not to go to source
 							if (!this.doesExist()) throw new ServerError('Entry is not cached', 504);
 						} else if (resourceOptions?.ensureLoaded) {
-							const loadingFromSource = ensureLoadedFromSource(id, entry, request, this);
+							const loadingFromSource = ensureLoadedFromSource(this.constructor.source, id, entry, request, this);
 							if (loadingFromSource) {
 								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 								target.loadedFromSource = true;
@@ -669,7 +609,12 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		ensureLoaded() {
-			const loadedFromSource = ensureLoadedFromSource(this.getId(), this.#entry, this.getContext());
+			const loadedFromSource = ensureLoadedFromSource(
+				this.constructor.source,
+				this.getId(),
+				this.#entry,
+				this.getContext()
+			);
 			if (loadedFromSource) {
 				return when(loadedFromSource, (entry) => {
 					this.#entry = entry;
@@ -1043,7 +988,7 @@ export function makeTable(options) {
 									// dictates not to go to source
 									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 								} else if (ensureLoaded) {
-									const loadingFromSource = ensureLoadedFromSource(id, entry, context, this);
+									const loadingFromSource = ensureLoadedFromSource(constructor.source, id, entry, context, this);
 									if (loadingFromSource) {
 										txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 										target.loadedFromSource = true;
@@ -1341,11 +1286,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				before: applyToSources.invalidate?.bind(this, context, id),
-				beforeIntermediate: preCommitBlobsForRecordBefore(
-					partialRecord,
-					applyToSourcesIntermediate.invalidate?.bind(this, context, id)
-				),
+				beforeIntermediate: preCommitBlobsForRecordBefore(partialRecord),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					partialRecord ??= null;
@@ -1368,6 +1309,7 @@ export function makeTable(options) {
 							user: context?.user,
 							residencyId: options?.residencyId,
 							nodeId: options?.nodeId,
+							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
 						},
@@ -1386,8 +1328,10 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				before: applyToSources.relocate?.bind(this, context, id),
-				beforeIntermediate: applyToSourcesIntermediate.relocate?.bind(this, context, id),
+				before:
+					this.constructor.source?.relocate && !context?.source
+						? this.constructor.source.relocate.bind(this.constructor.source, id, undefined, context)
+						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
@@ -1418,6 +1362,7 @@ export function makeTable(options) {
 							user: context.user,
 							residencyId: options.residencyId,
 							nodeId: options.nodeId,
+							viaNodeId: options?.viaNodeId,
 							expiresAt: options.expiresAt,
 							transaction,
 						},
@@ -1614,16 +1559,22 @@ export function makeTable(options) {
 
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
-			const writeToSources = (sources) => {
-				return fullUpdate
-					? sources.put // full update is a put, so we can use the put method if available
-						? () => sources.put(context, id, recordUpdate)
-						: null
-					: sources.patch // otherwise, we need to use the patch method if available
-						? () => sources.patch(context, id, recordUpdate)
-						: sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-							? () => sources.put(context, id, updateAndFreeze(this))
-							: null;
+			const writeToSource = () => {
+				if (!this.constructor.source || context?.source) return;
+				if (fullUpdate) {
+					// full update is a put
+					if (this.constructor.source.put) {
+						return () => this.constructor.source.put(id, recordUpdate, context);
+					}
+				} else {
+					// incremental update
+					if (this.constructor.source.patch) {
+						return () => this.constructor.source.patch(id, recordUpdate, context);
+					} else if (this.constructor.source.put) {
+						// if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+						return () => this.constructor.source.put(id, updateAndFreeze(this), context);
+					}
+				}
 			};
 
 			const write = {
@@ -1677,8 +1628,8 @@ export function makeTable(options) {
 						return false;
 					}
 				},
-				before: writeToSources(applyToSources),
-				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate, writeToSources(applyToSourcesIntermediate)),
+				before: writeToSource(),
+				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -1704,6 +1655,8 @@ export function makeTable(options) {
 					let residencyId: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
 					const expiresAt = context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
+					let additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
+
 					if (precedesExisting <= 0) {
 						// This block is to handle the case of saving an update where the transaction timestamp is older than the
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
@@ -1713,7 +1666,7 @@ export function makeTable(options) {
 							// incremental CRDT updates are only available with audit logging on
 							let localTime = existingEntry.localTime;
 							let auditedVersion = existingEntry.version;
-							logger.trace?.(
+							logger.debug?.(
 								'Applying CRDT update to record with id: ',
 								id,
 								'txn time',
@@ -1726,38 +1679,87 @@ export function makeTable(options) {
 
 							let nodeId = existingEntry.nodeId;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
-							while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
-								const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
-								if (!auditRecord) break;
-								auditedVersion = auditRecord.version;
-								if (auditedVersion >= txnTime) {
-									if (auditedVersion === txnTime) {
-										precedesExisting = precedesExistingVersion(
-											txnTime,
-											{ version: auditedVersion, localTime: localTime, key: id },
-											options?.nodeId
-										);
-										if (precedesExisting === 0) {
-											return writeCommit(false); // treat a tie as a duplicate and drop it
-										}
-										if (precedesExisting > 0) {
-											// if the existing version is older, we can skip this update
-											localTime = auditRecord.previousVersion;
-											continue;
-										}
-									}
-									if (auditRecord.type === 'patch') {
-										// record patches so we can reply in order
-										succeedingUpdates.push(auditRecord);
-										auditRecordToStore = recordUpdate; // use the original update for the audit record
-									} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
-										// There is newer full record update, so this incremental update is completely superseded
-										return writeCommit(false);
+							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = existingEntry.additionalAuditRefs
+								? existingEntry.additionalAuditRefs.map((ref) => ({ localTime: ref.version, nodeId: ref.nodeId }))
+								: [];
+
+							// Collect any existing audit refs that should be preserved (those older than current transaction)
+							if (existingEntry.additionalAuditRefs) {
+								for (const ref of existingEntry.additionalAuditRefs) {
+									if (ref.version <= txnTime) {
+										additionalAuditRefs.push(ref);
 									}
 								}
-								localTime = auditRecord.previousVersion;
-								nodeId = auditRecord.previousNodeId;
 							}
+							let addedAuditRef = false;
+							let nextRef: { localTime: number; nodeId: number };
+							do {
+								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
+									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
+									if (!auditRecord) break;
+									auditedVersion = auditRecord.version;
+									if (auditedVersion >= txnTime) {
+										if (auditedVersion === txnTime) {
+											precedesExisting = precedesExistingVersion(
+												txnTime,
+												{ version: auditedVersion, localTime: localTime, key: id, nodeId: auditRecord.nodeId },
+												options?.nodeId
+											);
+											if (precedesExisting === 0) {
+												logger.debug?.(
+													'The transaction time is equal to the existing version, treating as duplicate',
+													id
+												);
+												return; // treat a tie as a duplicate and drop it
+											}
+											if (precedesExisting > 0) {
+												// if the existing version is older, we can skip this update
+												localTime = auditRecord.previousVersion;
+												nodeId = auditRecord.previousNodeId;
+												continue;
+											}
+										}
+										if (auditRecord.type === 'patch') {
+											logger.debug?.('out of order patch will be applied', id, auditRecord);
+											// record patches so we can reply in order
+											succeedingUpdates.push(auditRecord);
+											auditRecordToStore = recordUpdate; // use the original update for the audit record
+										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
+											// There is newer full record update, so this incremental update is completely superseded
+											return;
+										}
+									}
+									if (!addedAuditRef && isRocksDB) {
+										addedAuditRef = true;
+										// Add a reference to this older audit record if we had out-of-order writes
+										additionalAuditRefs.push({ version: txnTime, nodeId: options?.nodeId });
+										logger.debug?.('Adding additional audit ref for out-of-order write', {
+											version: txnTime,
+											nodeId: options?.nodeId,
+										});
+									}
+									// Collect any additional audit refs from this audit record to traverse other branches
+									if (auditRecord.previousAdditionalAuditRefs) {
+										for (const ref of auditRecord.previousAdditionalAuditRefs) {
+											auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
+											logger.debug?.('Adding audit ref from audit record to visit queue', {
+												version: ref.version,
+												nodeId: ref.nodeId,
+											});
+										}
+									}
+
+									localTime = auditRecord.previousVersion;
+									nodeId = auditRecord.previousNodeId;
+								}
+								// Check if we need to scan additional audit refs from this record
+								nextRef = auditRefsToVisit.shift();
+								if (nextRef) {
+									localTime = auditedVersion = nextRef.localTime;
+									nodeId = nextRef.nodeId;
+									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
+								}
+							} while (nextRef);
 							if (!localTime) {
 								// if we reached the end of the audit trail, we can just apply the update
 								logger.debug?.(
@@ -1857,7 +1859,7 @@ export function makeTable(options) {
 							}
 						})()
 					);
-					updateIndices(id, existingRecord, recordToStore, { transaction });
+					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					writeCommit(true);
 					if (context.expiresAt) scheduleCleanup();
@@ -1867,7 +1869,9 @@ export function makeTable(options) {
 							id,
 							storeRecord ? recordToStore : undefined,
 							storeRecord ? existingEntry : { ...existingEntry, value: undefined },
-							txnTime,
+							isRocksDB
+								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
+								: txnTime,
 							omitLocalRecord ? INVALIDATED : 0,
 							audit,
 							{
@@ -1876,9 +1880,11 @@ export function makeTable(options) {
 								residencyId,
 								expiresAt,
 								nodeId: options?.nodeId,
+								viaNodeId: options?.viaNodeId,
 								originatingOperation: context?.originatingOperation,
 								transaction,
 								tableToTrack: databaseName === 'system' ? null : options?.replay ? null : tableName, // don't track analytics on system tables
+								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
 							},
 							type,
 							false,
@@ -1929,8 +1935,10 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry,
 				nodeName: context?.nodeName,
-				before: applyToSources.delete?.bind(this, context, id),
-				beforeIntermediate: applyToSourcesIntermediate.delete?.bind(this, context, id),
+				before:
+					this.constructor.source?.delete && !context?.source
+						? this.constructor.source.delete.bind(this.constructor.source, id, undefined, context)
+						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					const existingRecord = existingEntry?.value;
 					if (retry) {
@@ -1949,10 +1957,16 @@ export function makeTable(options) {
 							txnTime,
 							0,
 							audit,
-							{ user: context?.user, nodeId: options?.nodeId, transaction, tableToTrack: tableName },
+							{
+								user: context?.user,
+								nodeId: options?.nodeId,
+								viaNodeId: options?.viaNodeId,
+								transaction,
+								tableToTrack: tableName,
+							},
 							'delete'
 						);
-						if (!audit || primaryStore instanceof RocksDatabase) scheduleCleanup();
+						if (!audit || isRocksDB) scheduleCleanup();
 					} else {
 						removeEntry(primaryStore, existingEntry);
 					}
@@ -2391,6 +2405,8 @@ export function makeTable(options) {
 				checkLoaded = true;
 			}
 			let transformCache;
+			const source = this.source;
+			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
@@ -2427,7 +2443,7 @@ export function makeTable(options) {
 								message: 'This entry has expired',
 							};
 						}
-						const loadingFromSource = ensureLoadedFromSource(entry.key ?? entry, entry, context);
+						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform);
 						}
@@ -2683,7 +2699,7 @@ export function makeTable(options) {
 									if (--count <= 0) break;
 								}
 							} catch (error) {
-								logger.error('Error getting history entry', auditRecord.localTime, error);
+								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
 							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
 							//await rest(); // yield for fairness
@@ -2838,10 +2854,13 @@ export function makeTable(options) {
 						this.validate(message);
 					}
 				},
-				before: applyToSources.publish?.bind(this, context, id, message),
+				before:
+					this.constructor.source?.publish && !context?.source
+						? this.constructor.source.publish.bind(this.constructor.source, id, message, context)
+						: undefined,
 				beforeIntermediate: preCommitBlobsForRecordBefore(
 					message,
-					applyToSourcesIntermediate.publish?.bind(this, context, id, message),
+					undefined,
 					true // because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 				),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
@@ -2867,6 +2886,7 @@ export function makeTable(options) {
 							residencyId: options?.residencyId,
 							expiresAt: context?.expiresAt,
 							nodeId: options?.nodeId,
+							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
 						},
@@ -3081,7 +3101,7 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		static getSize() {
-			if (primaryStore instanceof RocksDatabase) {
+			if (isRocksDB) {
 				return primaryStore.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
 			}
 			const stats = primaryStore.getStats();
@@ -3291,7 +3311,7 @@ export function makeTable(options) {
 						const userResolver = this.userResolvers[attribute.name];
 						if (userResolver) return userResolver(value, context, entry);
 						else {
-							logger.warn(
+							logger.warn?.(
 								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
 							);
 							// silence future warnings but just returning undefined
@@ -3359,7 +3379,7 @@ export function makeTable(options) {
 			})) {
 				await rest(); // yield to other async operations
 				if (auditRecord.tableId !== tableId) continue;
-				completion = removeAuditEntry(auditStore, auditRecord.localTime, auditRecord);
+				completion = removeAuditEntry(auditStore, auditRecord);
 			}
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
@@ -3437,11 +3457,10 @@ export function makeTable(options) {
 		}
 	}
 	const throttledCallToSource = throttle(
-		async (id, sourceContext, existingEntry) => {
-			// find the first data source that will fulfill our request for data
-			for (const source of TableResource.sources) {
-				if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-					if (source.available?.(existingEntry) === false) continue;
+		async (source, id, sourceContext, existingEntry) => {
+			// call the data source if it exists and will fulfill our request for data
+			if (source && source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+				if (source.available?.(existingEntry) !== false) {
 					sourceContext.source = source;
 					const resolvedData = await source.get(id, sourceContext);
 					if (resolvedData) return resolvedData;
@@ -3627,7 +3646,7 @@ export function makeTable(options) {
 		// to evaluate if prefetching is a good idea.
 		// First, the caller can tell us. If the record is in our local cache, we use that as indication
 		// that we can get the value very quickly without a page fault.
-		if (sync || primaryStore instanceof RocksDatabase) return whenPrefetched();
+		if (sync || isRocksDB) return whenPrefetched();
 		// Next, we allow for non-prefetch mode where we can execute some gets without prefetching,
 		// but we will limit the number before we do another prefetch
 		if (untilNextPrefetch > 0) {
@@ -3709,7 +3728,7 @@ export function makeTable(options) {
 		}
 	}
 
-	function ensureLoadedFromSource(id, entry, context, resource?) {
+	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?) {
 		if (hasSourceGet) {
 			let needsSourceData = false;
 			if (context.noCache) needsSourceData = true;
@@ -3728,7 +3747,7 @@ export function makeTable(options) {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				const loadingFromSource = getFromSource(id, entry, context).then((entry) => {
+				const loadingFromSource = getFromSource(source, id, entry, context).then((entry) => {
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
@@ -3762,7 +3781,7 @@ export function makeTable(options) {
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (transaction) {
-			if (!transaction.db && primaryStore instanceof RocksDatabase) {
+			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
 				transaction.db = primaryStore;
 				if (context?.timestamp) transaction.timestamp = context.timestamp;
@@ -3775,18 +3794,14 @@ export function makeTable(options) {
 				const nextTxn = transaction.next;
 				if (!nextTxn) {
 					// no next one, then add our database
-					transaction = transaction.next =
-						primaryStore instanceof RocksDatabase ? new DatabaseTransaction() : new LMDBTransaction();
+					transaction = transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
 					transaction.db = primaryStore;
 					return transaction;
 				}
 				transaction = nextTxn;
 			} while (true);
 		} else {
-			transaction =
-				primaryStore instanceof RocksDatabase
-					? new ImmediateTransaction(primaryStore)
-					: new ImmediateLMDBTransaction(primaryStore);
+			transaction = isRocksDB ? new ImmediateTransaction(primaryStore) : new ImmediateLMDBTransaction(primaryStore);
 			if (context) {
 				context.transaction = transaction;
 				if (context.timestamp) transaction.timestamp = context.timestamp;
@@ -3876,6 +3891,9 @@ export function makeTable(options) {
 				// existing entry to the node name of the update
 				const nodeNameToId = server.replication?.exportIdMapping(auditStore);
 				let existingNodeId = existingEntry.nodeId;
+				if (nodeId === existingNodeId) {
+					return 0; // early match for a tie
+				}
 				let updatedNodeName, existingNodeName;
 				for (const node_name in nodeNameToId) {
 					if (nodeNameToId[node_name] === nodeId) updatedNodeName = node_name;
@@ -3895,7 +3913,12 @@ export function makeTable(options) {
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
-	async function getFromSource(id: Id, existingEntry: Entry, context: Context): Promise<Entry> {
+	async function getFromSource(
+		source: typeof TableResource,
+		id: Id,
+		existingEntry: Entry,
+		context: Context
+	): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
@@ -3912,7 +3935,7 @@ export function makeTable(options) {
 			const entry = primaryStore.getEntry(id);
 			if (!entry || !entry.value || entry.metadataFlags & (INVALIDATED | EVICTED))
 				// try again
-				whenResolved(getFromSource(id, primaryStore.getEntry(id), context));
+				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context));
 			else whenResolved(entry);
 		};
 		const lockAcquired = primaryStore.tryLock(id, callback);
@@ -3958,7 +3981,7 @@ export function makeTable(options) {
 					let updatedRecord;
 					let hasChanges, invalidated;
 					try {
-						updatedRecord = await throttledCallToSource(id, sourceContext, existingEntry);
+						updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
 						invalidated = metadataFlags & INVALIDATED;
 						let version = sourceContext.lastModified || (invalidated && existingVersion);
 						hasChanges = invalidated || version > existingVersion || !existingRecord;
@@ -3982,7 +4005,42 @@ export function makeTable(options) {
 										throw new ServerError(updatedRecord.body || 'Error from source', updatedRecord.status);
 									} // there are definitely more status codes to handle
 								} else {
-									updatedRecord = updatedRecord.body;
+									let headers: any;
+									const sourceHeaders = updatedRecord.headers;
+									if (sourceHeaders[Symbol.iterator]) {
+										headers = {};
+										for (let [name, value] of sourceHeaders) {
+											headers[name.toLowerCase()] = value;
+										}
+									} else {
+										headers = sourceHeaders; // just a plain object
+									}
+									const contentType = sourceHeaders.get?.('Content-Type');
+									let data: any;
+									if (contentType === 'application/json' && updatedRecord.json) {
+										// use native .json() if possible
+										data = await updatedRecord.json();
+									} else {
+										const contentTypeHandler = contentType && contentTypes.get(contentType);
+										if (contentTypeHandler?.deserialize) {
+											data = contentTypeHandler.deserialize(
+												await (contentType.startsWith('text/') ? updatedRecord.text() : updatedRecord.bytes())
+											);
+										}
+									}
+									if (data !== undefined) {
+										// we have structured data that we have parsed
+										delete headers['content-type']; // don't store the content type if we have already parsed it
+										updatedRecord = {
+											headers,
+											data,
+										};
+									} else {
+										updatedRecord = {
+											headers,
+											body: createBlob(updatedRecord.body),
+										};
+									}
 								}
 							}
 							if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
@@ -4040,7 +4098,6 @@ export function makeTable(options) {
 							}
 							updateIndices(id, existingRecord, updatedRecord);
 							if (updatedRecord) {
-								applyToSourcesIntermediate.put?.(sourceContext, id, updatedRecord);
 								if (existingEntry) {
 									context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 								}
@@ -4093,7 +4150,6 @@ export function makeTable(options) {
 									auditRecord
 								);
 							} else if (existingEntry) {
-								applyToSourcesIntermediate.delete?.(sourceContext, id);
 								logger.trace?.(
 									`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
 								);
@@ -4211,7 +4267,7 @@ export function makeTable(options) {
 
 								try {
 									let count = 0;
-									let removeDeletedRecords = !audit || primaryStore instanceof RocksDatabase;
+									let removeDeletedRecords = !audit || isRocksDB;
 									// iterate through all entries to find expired records and deleted records
 									for (const entry of primaryStore.getRange({
 										start: false,

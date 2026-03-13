@@ -39,11 +39,7 @@
 		"threads": "readonly",
 		"Resource": "readonly",
 		"headersTest": "readonly",
-		"operation": "readonly",
-		"transaction": "readonly",
-		"authenticateUser": "readonly",
-		"contentTypes": "readonly",
-		"getUser": "readonly"
+		"logger": "readonly"
 	},
 	"ignorePatterns": ["unitTests/security/jsLoader/fixtures"]
 }

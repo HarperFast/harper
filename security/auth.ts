@@ -169,7 +169,15 @@ export async function authentication(request, nextHandler) {
 		if (request.user) {
 			// already authenticated
 		} else if (authorization) {
-			newUser = authorizationCache.get(authorization);
+			const cachedUser = authorizationCache.get(authorization);
+			if (cachedUser?.role) {
+				// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
+				// doesn't mutate the cache entry (defense-in-depth; operations and other
+				// meta-permission fields are now preserved through translation in permissionsTranslator).
+				newUser = { ...cachedUser, role: { ...cachedUser.role, permission: { ...cachedUser.role.permission } } };
+			} else if (cachedUser) {
+				newUser = cachedUser;
+			}
 			if (!newUser) {
 				const spaceIndex = authorization.indexOf(' ');
 				const strategy = authorization.slice(0, spaceIndex);
@@ -222,6 +230,11 @@ export async function authentication(request, nextHandler) {
 
 				authorizationCache.set(authorization, newUser);
 				if (LOG_AUTH_SUCCESSFUL) authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+				// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
+				// doesn't mutate the just-stored cache entry (defense-in-depth).
+				if (newUser?.role) {
+					newUser = { ...newUser, role: { ...newUser.role, permission: { ...newUser.role.permission } } };
+				}
 			}
 
 			request.user = newUser;

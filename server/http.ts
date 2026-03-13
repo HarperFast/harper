@@ -19,7 +19,7 @@ import { appendHeader, Headers } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable } from 'node:stream';
-import { server } from './Server.ts';
+import { type HttpOptions, server } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
@@ -34,13 +34,13 @@ const websocketServers = {};
 const httpServers = {},
 	httpChain = {},
 	httpResponders = [];
-let httpOptions: any = {};
-export const suppressHandleApplicationWarning = true;
+let httpOptions: HttpOptions = {};
+
 export function handleApplication(scope: Scope) {
-	httpOptions = scope.options.getAll();
+	httpOptions = scope.options.getAll() as HttpOptions;
 	scope.options.on('change', (_key) => {
 		// TODO: Check to see if the key is something we can or can't handle
-		httpOptions = scope.options.getAll();
+		httpOptions = scope.options.getAll() as HttpOptions;
 	});
 }
 export function getHttpOptions() {
@@ -268,8 +268,6 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-
-				response.headers.set('Server', 'Harper');
 
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request

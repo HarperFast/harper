@@ -2,8 +2,8 @@
 
 const { evaluateSQL } = require('#js/sqlTranslator/index');
 const promisify = require('util').promisify;
-const sql_testUtils = require('../sqlTestUtils');
-const { setupCSVSqlData, cleanupCSVData, sqlIntegrationData } = sql_testUtils;
+const sqlTestUtils = require('../sqlTestUtils');
+const { setupCSVSqlData, cleanupCSVData, sqlIntegrationData } = sqlTestUtils;
 const TEST_SCHEMA_NORTHWND = 'northwnd';
 const assert = require('assert');
 const executeSQL = promisify(evaluateSQL);

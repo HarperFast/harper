@@ -13,6 +13,7 @@ const util = require('util');
 const auth = require('../../security/fastifyAuth.js');
 const pAuthorize = util.promisify(auth.authorize);
 const serverUtilities = require('./serverUtilities.ts');
+const { applyImpersonation } = require('../../security/impersonation.ts');
 const { createGzip, constants } = require('zlib');
 
 const NO_AUTH_OPERATIONS = [
@@ -73,9 +74,13 @@ function authHandler(req, resp, done) {
 			!req.body.password)
 	) {
 		pAuthorize(req, resp)
-			.then((userData) => {
+			.then(async (userData) => {
 				user = userData;
 				req.body.hdb_user = user;
+				if (req.body.impersonate) {
+					req.body.hdb_user = await applyImpersonation(user, req.body.impersonate);
+					delete req.body.impersonate;
+				}
 				done();
 			})
 			.catch((err) => {

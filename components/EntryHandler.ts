@@ -1,7 +1,8 @@
+import { type Logger } from '../utility/logging/logger.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
 import { Component, FileAndURLPathConfig } from './Component.js';
-import harperLogger from '../utility/logging/harper_logger.js';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
@@ -81,7 +82,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		super();
 
 		this.#component = new Component(name, directory, castConfig(config));
-		this.#logger = logger || harperLogger.loggerWithTag(name);
+		this.#logger = logger || loggerWithTag(name);
 		this.#pendingFileReads = new Set();
 		this.#isInitialScanComplete = false;
 		this.ready = once(this, 'ready');

@@ -5,7 +5,7 @@
 // Apply PKI.js Ed25519 patch before importing easy-ocsp
 import './pkijs-ed25519-patch.ts';
 import { getCertStatus } from 'easy-ocsp';
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
 import {
 	bufferToPem,
 	createCacheKey,
