@@ -7,7 +7,6 @@ import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.js';
 import { cloneDeep } from 'lodash';
-import type { Logger } from './Logger.ts';
 
 export interface Config {
 	[key: string]: ConfigValue;

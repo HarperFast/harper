@@ -9,7 +9,6 @@ import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.js';
 import { deriveURLPath } from './deriveURLPath.js';
 import { isMatch } from 'micromatch';
-import type { Logger } from './Logger.ts';
 
 export interface BaseEntry {
 	stats?: Stats;

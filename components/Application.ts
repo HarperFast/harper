@@ -24,7 +24,6 @@ import { pipeline } from 'node:stream/promises';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
-import type { Logger } from './Logger.ts';
 
 interface ApplicationConfig {
 	// define known config properties
