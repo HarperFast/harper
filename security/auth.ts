@@ -102,7 +102,7 @@ export async function authentication(request, nextHandler) {
 					break;
 				}
 			}
-			request.session = session || (session = {});
+			request.session = session ? { ...session } : (session = {});
 		}
 
 		const authAuditLog = (username, status, strategy) => {
