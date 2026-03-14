@@ -20,6 +20,30 @@ let httpOptions = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
+function getHttpStatusTitle(status: number): string {
+	const statusTitles = {
+		400: 'Bad Request',
+		401: 'Unauthorized',
+		403: 'Forbidden',
+		404: 'Not Found',
+		405: 'Method Not Allowed',
+		406: 'Not Acceptable',
+		408: 'Request Timeout',
+		409: 'Conflict',
+		410: 'Gone',
+		415: 'Unsupported Media Type',
+		418: "I'm a teapot",
+		422: 'Unprocessable Entity',
+		429: 'Too Many Requests',
+		500: 'Internal Server Error',
+		501: 'Not Implemented',
+		502: 'Bad Gateway',
+		503: 'Service Unavailable',
+		504: 'Gateway Timeout',
+	};
+	return statusTitles[status] || 'Unknown Error';
+}
+
 async function http(request: Context & Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
@@ -232,12 +256,27 @@ async function http(request: Context & Request, nextHandler) {
 				}
 			}
 		} else harperLogger.error(error);
+
+		// RFC 7807 Problem Details
+		const status = statusCode || 500;
+		const problemDetail = {
+			type: error.type || `https://httpstatuses.com/${status}`,
+			title: error.title || getHttpStatusTitle(status),
+			status,
+			detail: error instanceof Error ? error.message : String(error),
+			instance: request.url,
+		};
+
+		// Include additional error properties if present
+		if (error.errors) problemDetail.errors = error.errors;
+		if (error.traceId) problemDetail.traceId = error.traceId;
+
 		const responseObject = {
-			status: statusCode || 500, // use specified error status, or default to generic server error
+			status,
 			headers,
 			body: undefined,
 		};
-		responseObject.body = serialize(error instanceof Error ? errorToString(error) : error, request, responseObject);
+		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
 	}
 }
