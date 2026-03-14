@@ -236,9 +236,12 @@ async function http(request: Context & Request, nextHandler) {
 
 		// RFC 9457 Problem Details
 		const status = statusCode || 500;
+		// we prefer to use error classes for error codes (constructor.name), but if there is a code, it is probably a node.js
+		// error that denotes error codes with a separate property
+		const code = error.code ?? error.constructor.name;
 		const problemDetail = {
-			type: `error:${error.constructor.name}`, // eventually we want this to be a resolvable URI to our docs
-			code: error.constructor.name,
+			type: `error:${code}`, // eventually we want this to be a resolvable URI to our docs
+			code,
 			title: error.message ?? error.toString(),
 			status,
 			detail: error.detail,
