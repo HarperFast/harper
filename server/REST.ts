@@ -20,30 +20,6 @@ let httpOptions = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
-function getHttpStatusTitle(status: number): string {
-	const statusTitles = {
-		400: 'Bad Request',
-		401: 'Unauthorized',
-		403: 'Forbidden',
-		404: 'Not Found',
-		405: 'Method Not Allowed',
-		406: 'Not Acceptable',
-		408: 'Request Timeout',
-		409: 'Conflict',
-		410: 'Gone',
-		415: 'Unsupported Media Type',
-		418: "I'm a teapot",
-		422: 'Unprocessable Entity',
-		429: 'Too Many Requests',
-		500: 'Internal Server Error',
-		501: 'Not Implemented',
-		502: 'Bad Gateway',
-		503: 'Service Unavailable',
-		504: 'Gateway Timeout',
-	};
-	return statusTitles[status] || 'Unknown Error';
-}
-
 async function http(request: Context & Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
@@ -244,6 +220,7 @@ async function http(request: Context & Request, nextHandler) {
 		}
 		return responseObject;
 	} catch (error) {
+		error ??= new Error('Unknown error occurred');
 		let statusCode = error.statusCode ?? request.response.status;
 		if (statusCode) {
 			if (statusCode === 500) harperLogger.warn(error);
@@ -257,19 +234,16 @@ async function http(request: Context & Request, nextHandler) {
 			}
 		} else harperLogger.error(error);
 
-		// RFC 7807 Problem Details
+		// RFC 9457 Problem Details
 		const status = statusCode || 500;
 		const problemDetail = {
-			type: error.type || `https://httpstatuses.com/${status}`,
-			title: error.title || getHttpStatusTitle(status),
+			type: `error:${error.constructor.name}`, // eventually we want this to be a resolvable URI to our docs
+			code: error.constructor.name,
+			title: error.message ?? error.toString(),
 			status,
-			detail: error instanceof Error ? error.message : String(error),
+			detail: error.detail,
 			instance: request.url,
 		};
-
-		// Include additional error properties if present
-		if (error.errors) problemDetail.errors = error.errors;
-		if (error.traceId) problemDetail.traceId = error.traceId;
 
 		const responseObject = {
 			status,

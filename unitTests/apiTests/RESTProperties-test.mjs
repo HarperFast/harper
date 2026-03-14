@@ -81,8 +81,8 @@ describe('test REST with property updates', function () {
 			}
 		);
 		assert.equal(response.status, 400);
-		assert(response.data.includes('property name must be a string'));
-		assert(response.data.includes('property age must be an integer'));
+		assert(response.data.title.includes('property name must be a string'));
+		assert(response.data.title.includes('property age must be an integer'));
 	});
 
 	it('put with nested path', async () => {
