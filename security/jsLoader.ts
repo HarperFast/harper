@@ -457,9 +457,6 @@ const REPLACED_BUILTIN_MODULES = {
 		execFile: createSpawn(child_process.execFile),
 		fork: createSpawn(child_process.fork, true), // this is launching node, so deemed safe
 		spawn: createSpawn(child_process.spawn),
-		execSync: createSpawnSync(child_process.execSync),
-		execFileSync: createSpawnSync(child_process.execFileSync),
-		spawnSync: createSpawnSync(child_process.spawnSync),
 	},
 };
 /**
@@ -623,24 +620,6 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		});
 
 		return childProcess;
-	};
-}
-
-function createSpawnSync(spawnSyncFunction: (...args: any) => any, alwaysAllow?: boolean) {
-	return function (command: string, args?: any, options?: any) {
-		// Handle different argument patterns - some sync functions take (command, options)
-		if (args && !Array.isArray(args)) {
-			options = args;
-			args = undefined;
-		}
-
-		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
-			throw new Error(`Command ${command} is not allowed`);
-		}
-
-		// Sync functions don't support process reuse since they block until completion
-		// Just execute directly after validation
-		return spawnSyncFunction(command, args, options);
 	};
 }
 
