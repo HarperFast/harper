@@ -26,6 +26,9 @@ const ACKNOWLEDGEMENT = 'ack';
 let getThreadInfo;
 _assignPackageExport('threads', connectedPorts);
 
+const listenersByType = new Map();
+const messagesQueuedByType = new Map();
+
 module.exports = {
 	startWorker,
 	restartWorkers,
@@ -37,7 +40,6 @@ module.exports = {
 	onMessageByType,
 	broadcast,
 	broadcastWithAcknowledgement,
-	setChildListenerByType,
 	getWorkerIndex,
 	getWorkerCount,
 	getTicketKeys,
@@ -94,14 +96,20 @@ Object.defineProperty(server, 'workerCount', {
 		return getWorkerCount();
 	},
 });
-let childListenerByType = {
-	[REQUEST_THREAD_INFO](message, worker) {
-		sendThreadInfo(worker);
-	},
-	[RESOURCE_REPORT](message, worker) {
-		recordResourceReport(worker, message);
-	},
-};
+if (!parentPort) {
+	onMessageByType(REQUEST_THREAD_INFO, (message, worker) => {
+		if (worker) sendThreadInfo(worker);
+	});
+	onMessageByType(RESOURCE_REPORT, (message, worker) => {
+		if (worker) recordResourceReport(worker, message);
+	});
+}
+// postMessage type listeners that are registered in other ways or can be registered later
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.SCHEMA, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.USER, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
+
 function startWorker(path, options = {}) {
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
@@ -199,9 +207,6 @@ function startWorker(path, options = {}) {
 				startWorker(path, options);
 			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
 		}
-	});
-	worker.on('message', (message) => {
-		childListenerByType[message.type]?.(message, worker);
 	});
 	workers.push(worker);
 	startMonitoring();
@@ -316,9 +321,6 @@ async function restartWorkers(
 		});
 	}
 }
-function setChildListenerByType(type, listener) {
-	childListenerByType[type] = listener;
-}
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }
@@ -331,11 +333,16 @@ const messageListeners = [];
 function onMessageFromWorkers(listener) {
 	messageListeners.push(listener);
 }
-const listenersByType = new Map();
 function onMessageByType(type, listener) {
 	let listeners = listenersByType.get(type);
 	if (!listeners) listenersByType.set(type, (listeners = []));
 	listeners.push(listener);
+	if (messagesQueuedByType.has(type)) {
+		for (let message of messagesQueuedByType.get(type)) {
+			listener(message);
+		}
+		messagesQueuedByType.delete(type);
+	}
 }
 
 const MAX_SYNC_BROADCAST = 10;
@@ -526,14 +533,24 @@ function notifyMessageListeners(message, port) {
 	for (let listener of messageListeners) {
 		listener(message, port);
 	}
-	let listeners = listenersByType.get(message.type);
-	if (listeners) {
-		for (let listener of listeners) {
-			try {
-				listener(message, port);
-			} catch (error) {
-				harperLogger.error(error);
+	if (message.type) {
+		let listeners = listenersByType.get(message.type);
+		if (listeners) {
+			for (let listener of listeners) {
+				try {
+					listener(message, port);
+				} catch (error) {
+					harperLogger.error(error);
+				}
 			}
+		} else if (listeners !== null) {
+			// null means it is registered for a later listener
+			harperLogger.warn?.(`No listener registered for worker message type ${message.type}, queuing message`);
+			let messages = messagesQueuedByType.get(message.type);
+			if (!messages) {
+				messagesQueuedByType.set(message.type, (messages = []));
+			}
+			messages.push(message);
 		}
 	}
 }
@@ -564,17 +581,14 @@ if (isMainThread) {
 	module.exports.watchDir = watchDir;
 	if (process.env.WATCH_DIR) watchDir(process.env.WATCH_DIR);
 } else {
-	parentPort.on('message', async (message) => {
-		const { type } = message;
-		if (type === hdbTerms.ITC_EVENT_TYPES.SHUTDOWN) {
-			module.exports.restartNumber = message.restartNumber;
-			parentPort.unref(); // remove this handle
-			setTimeout(() => {
-				harperLogger.warn('Thread did not voluntarily terminate', threadId);
-				// Note that if this occurs, you may want to use this to debug what is currently running:
-				// require('why-is-node-running')();
-				process.exit(0);
-			}, threadTerminationTimeout).unref(); // don't block the shutdown
-		}
+	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
+		module.exports.restartNumber = message.restartNumber;
+		parentPort.unref(); // remove this handle
+		setTimeout(() => {
+			harperLogger.warn('Thread did not voluntarily terminate', threadId);
+			// Note that if this occurs, you may want to use this to debug what is currently running:
+			// require('why-is-node-running')();
+			process.exit(0);
+		}, threadTerminationTimeout).unref(); // don't block the shutdown
 	});
 }
