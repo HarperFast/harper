@@ -515,15 +515,15 @@ function isProcessRunning(pid: number): boolean {
 
 /**
  * Acquires an exclusive lock using the PID file itself (synchronously with busy-wait)
- * Returns { locked: true } if lock was acquired, or { locked: false, pid: number } if process exists
+ * Returns 0 if lock was acquired (need to spawn new process), or the existing PID if process is running
  */
-function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 5): { locked: boolean; pid?: number } {
+function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 5): number {
 	for (let attempt = 0; attempt < maxRetries; attempt++) {
 		try {
 			// Try to open exclusively - 'wx' fails if file exists
 			const fd = openSync(pidFilePath, 'wx');
 			closeSync(fd);
-			return { locked: true }; // Successfully acquired lock (file created)
+			return 0; // Successfully acquired lock (file created), caller should spawn process
 		} catch (err) {
 			if (err.code === 'EEXIST') {
 				// File exists - check if it contains a valid running process
@@ -533,7 +533,7 @@ function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 
 
 					if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
 						// Valid process is running, return its PID immediately
-						return { locked: false, pid: existingPid };
+						return existingPid;
 					}
 
 					// Invalid/empty PID - check file age to determine if it's stale or being written
@@ -587,12 +587,12 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
 
-		// Try to acquire lock
-		const lockResult = acquirePidFileLock(pidFilePath);
+		// Try to acquire lock - returns 0 if acquired, or existing PID
+		const existingPid = acquirePidFileLock(pidFilePath);
 
-		if (!lockResult.locked) {
+		if (existingPid !== 0) {
 			// Existing process is running, return wrapper
-			return new ExistingProcessWrapper(lockResult.pid);
+			return new ExistingProcessWrapper(existingPid);
 		}
 
 		// We acquired the lock (file was created), spawn new process
