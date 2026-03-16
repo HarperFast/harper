@@ -246,7 +246,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 
 		// Only link/evaluate once per module
 		if (!linkingPromises.has(url)) {
-			linkingPromises.set(url, module.link(linker).then(() => module.evaluate()));
+			linkingPromises.set(
+				url,
+				module.link(linker).then(() => module.evaluate())
+			);
 		}
 
 		// Wait for linking to complete
