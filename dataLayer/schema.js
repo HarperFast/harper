@@ -96,7 +96,7 @@ async function createSchemaStructure(schemaCreateObject) {
 
 async function createTable(createTableObject) {
 	transformReq(createTableObject);
-	createTableObject.primary_key = createTableObject.primary_key ?? createTableObject.primary_key;
+	createTableObject.primary_key = createTableObject.primary_key ?? createTableObject.hash_attribute;
 	return await createTableStructure(createTableObject);
 }
 
