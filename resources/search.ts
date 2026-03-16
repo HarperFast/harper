@@ -341,7 +341,7 @@ export function searchByIndex(
 						let result: any;
 						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) result = SKIP;
 						else {
-							if (context?._freezeRecords) Object.freeze(entry.value);
+							Object.freeze(entry.value);
 							recordRead(entry);
 							result = entry;
 						}
