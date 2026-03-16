@@ -83,7 +83,7 @@ These are the steps @Ethan-Arrowood has been following to synchronize the reposi
 
 ### Last Synchronized Commit
 
-`f7d75323a11e9f65b6a838e4afe531eb3f59b593`
+`f969f21d780581fd0cb5566730028f2d13f1363e`
 
 ## Code of Conduct
 
