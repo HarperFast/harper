@@ -193,7 +193,7 @@ The most commonly used utilities are:
 
 ```ts
 import { suite, test, before, after } from 'node:test';
-import { startHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.mts';
+import { startHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.ts';
 
 suite('test suite', (ctx: ContextWithHarper) => {
 	before(async () => {
@@ -227,8 +227,8 @@ Copy and paste the following content to get started:
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual } from 'node:assert/strict';
-// Note: adjust the relative path accordingly (e.g., '../utils/harperLifecycle.mts')
-import { startHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.mts';
+// Note: adjust the relative path accordingly (e.g., '../utils/harperLifecycle.ts')
+import { startHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.ts';
 
 suite('short description of tests', (ctx: ContextWithHarper) => {
 	before(async () => {
