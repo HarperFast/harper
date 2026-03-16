@@ -747,7 +747,6 @@ function createTLSSelector(type, mtlsOptions) {
 							if (cert.is_authority) {
 								continue;
 							}
-							let isOperations = type === 'operations-api';
 							let quality = cert.is_self_signed ? 1 : 3;
 							// prefer operations certificates for operations API
 							if (cert.uses?.includes(type)) quality += 1;
