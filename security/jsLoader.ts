@@ -114,7 +114,8 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
  * Load a module using Node's vm.Module API with (not really secure) sandboxing
  */
 async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
-	const moduleCache = new Map<string, Promise<SourceTextModule | SyntheticModule>>();
+	const moduleCache = new Map<string, SourceTextModule | SyntheticModule>();
+	const linkingPromises = new Map<string, Promise<void>>();
 
 	// Create a secure context with limited globals
 	const contextObject = getGlobalObject(scope);
@@ -131,11 +132,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		if (specifier.startsWith('file://')) {
 			return specifier;
 		}
-		const resolved = createRequire(referrer).resolve(specifier);
-		if (isAbsolute(resolved)) {
-			return pathToFileURL(resolved).toString();
+		// For relative paths, resolve to absolute file URL
+		if (specifier.startsWith('.')) {
+			const resolved = createRequire(referrer).resolve(specifier);
+			if (isAbsolute(resolved)) {
+				return pathToFileURL(resolved).toString();
+			}
+			return resolved;
 		}
-		return resolved;
+		// For package names and node: specifiers, keep as-is for proper require() handling
+		return specifier;
 	}
 
 	/**
@@ -211,29 +217,47 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	async function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
 		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
 
-		// Check cache first
-		if (moduleCache.has(resolvedUrl)) {
-			return moduleCache.get(resolvedUrl)!;
-		}
-
 		const useContainment = specifier.startsWith('.') || scope.dependencyContainment;
-		// Load the module
-		return await loadModuleWithCache(resolvedUrl, useContainment);
+		// Return the module immediately (even if not yet linked) to support circular dependencies
+		return await getOrCreateModule(resolvedUrl, useContainment);
 	}
 
-	function loadModuleWithCache(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
-		// Check cache
+	async function getOrCreateModule(
+		url: string,
+		usePrivateGlobal: boolean
+	): Promise<SourceTextModule | SyntheticModule> {
+		// Check cache first - return cached module immediately (even if not linked yet)
 		if (moduleCache.has(url)) {
 			return moduleCache.get(url)!;
 		}
-		const loadingModule = loadModule(url, usePrivateGlobal);
-		moduleCache.set(url, loadingModule);
-		return loadingModule;
+
+		// Create the module and cache it immediately (before linking)
+		const module = await createModule(url, usePrivateGlobal);
+		moduleCache.set(url, module);
+
+		return module;
+	}
+
+	async function loadModuleWithCache(
+		url: string,
+		usePrivateGlobal: boolean
+	): Promise<SourceTextModule | SyntheticModule> {
+		const module = await getOrCreateModule(url, usePrivateGlobal);
+
+		// Only link/evaluate once per module
+		if (!linkingPromises.has(url)) {
+			linkingPromises.set(url, module.link(linker).then(() => module.evaluate()));
+		}
+
+		// Wait for linking to complete
+		await linkingPromises.get(url);
+
+		return module;
 	}
 	/**
-	 * Load a module from URL and create appropriate vm.Module
+	 * Create a module from URL without linking or evaluating
 	 */
-	async function loadModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
+	async function createModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
 		let module: SourceTextModule | SyntheticModule;
 
 		// Handle special built-in modules
@@ -248,7 +272,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 				},
 				{ identifier: url, context }
 			);
-		} else if (usePrivateGlobal && url.startsWith('file://')) {
+		} else if (url.startsWith('file://')) {
 			checkAllowedModulePath(url, scope.verifyPath);
 			// Load source text from file
 			const source = await readFile(new URL(url), { encoding: 'utf-8' });
@@ -267,17 +291,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 						return dynamicModule;
 					},
 				});
-				// Cache the module
-				moduleCache.set(url, module);
-				// Link the module (resolve all imports)
-				await module.link(linker);
-
-				// Evaluate the module
-				await module.evaluate();
-				return module;
 			} catch (err) {
 				// If ESM parsing fails, try to load as CommonJS
-				// but first try the cache again
 				if (
 					err.message?.includes('require is not defined') ||
 					source.includes('module.exports') ||
@@ -290,26 +305,39 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			}
 		} else {
 			const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
-			// For Node.js built-in modules (node:) and npm packages, use dynamic import
-			const importedModule = replacedModule ?? (await import(url));
-			const exportNames = Object.keys(importedModule);
-
-			module = new SyntheticModule(
-				exportNames,
-				function () {
-					for (const key of exportNames) {
-						this.setExport(key, importedModule[key]);
-					}
-				},
-				{ identifier: url, context }
-			);
+			// For Node.js built-in modules (node:) and npm packages
+			// Always try require first to properly handle CJS modules with named exports
+			try {
+				const cjsExports = replacedModule ?? require(url);
+				// It's a CJS module - expose all properties as named exports
+				const exportNames = Object.keys(cjsExports);
+				module = new SyntheticModule(
+					exportNames.length > 0 ? [...exportNames, 'default'] : ['default'],
+					function () {
+						if (exportNames.length > 0) {
+							for (const key of exportNames) {
+								this.setExport(key, cjsExports[key]);
+							}
+						}
+						this.setExport('default', cjsExports);
+					},
+					{ identifier: url, context }
+				);
+			} catch {
+				// Fall back to dynamic import for ESM packages
+				const importedModule = await import(url);
+				const exportNames = Object.keys(importedModule);
+				module = new SyntheticModule(
+					exportNames,
+					function () {
+						for (const key of exportNames) {
+							this.setExport(key, importedModule[key]);
+						}
+					},
+					{ identifier: url, context }
+				);
+			}
 		}
-
-		// Link the module (resolve all imports)
-		await module.link(linker);
-
-		// Evaluate the module
-		await module.evaluate();
 
 		return module;
 	}

@@ -1,5 +1,5 @@
 import { parentPort, threadId } from 'worker_threads';
-import { setChildListenerByType } from '../../server/threads/manageThreads.js';
+import { onMessageByType } from '../../server/threads/manageThreads.js';
 import { getDatabases, table } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.js';
@@ -654,7 +654,7 @@ function getAnalyticsTable() {
 	);
 }
 
-setChildListenerByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
+if (!parentPort) onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
 let scheduledTasksRunning;
 function startScheduledTasks() {
 	scheduledTasksRunning = true;

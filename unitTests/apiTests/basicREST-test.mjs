@@ -531,7 +531,7 @@ describe('test REST calls', () => {
 			},
 		});
 		assert.equal(response.status, 500);
-		assert(response.data.includes('Conflicting paths'));
+		assert(response.data.title.includes('Conflicting paths'));
 	});
 	it('Returns thrown plain object', async () => {
 		const response = await axios.get('http://localhost:9926/Echo/error-plain-object', {
@@ -541,7 +541,7 @@ describe('test REST calls', () => {
 			},
 		});
 		assert.equal(response.status, 500);
-		assert(response.data.message, 'Test error');
+		assert(response.data.title, 'Test error');
 	});
 	it('Returns correct error for bad body', async () => {
 		const response = await axios.get('http://localhost:9926/Echo/error-bad-body', {
