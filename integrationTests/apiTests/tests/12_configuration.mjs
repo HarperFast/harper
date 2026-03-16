@@ -12,7 +12,7 @@ describe('12. Configuration', () => {
 
 	it('Create table for tests', () => {
 		return req()
-			.send({ operation: 'create_table', schema: 'dev', table: 'create_attr_test', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'dev', table: 'create_attr_test', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});

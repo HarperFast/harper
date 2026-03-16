@@ -215,7 +215,7 @@ describe('1. Environment Setup', () => {
 				operation: 'create_table',
 				database: 1123,
 				table: 1,
-				hash_attribute: 'id',
+				primary_key: 'id',
 			})
 			.expect((r) => {
 				const body = JSON.stringify(r.body);

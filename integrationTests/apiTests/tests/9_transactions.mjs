@@ -19,7 +19,7 @@ describe('9. Transactions', () => {
 				operation: 'create_table',
 				schema: 'test_delete_before',
 				table: 'testerama',
-				hash_attribute: 'id',
+				primary_key: 'id',
 			})
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
@@ -92,7 +92,7 @@ describe('9. Transactions', () => {
 				operation: 'create_table',
 				schema: 'test_delete_before',
 				table: 'test_read',
-				hash_attribute: 'id',
+				primary_key: 'id',
 			})
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);

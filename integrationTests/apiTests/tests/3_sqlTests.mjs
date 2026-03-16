@@ -451,7 +451,7 @@ describe('3. SQL Tests', () => {
 
 	it('Create table keywords for SQL tests', () => {
 		return req()
-			.send({ operation: 'create_table', schema: 'dev', table: 'keywords', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'dev', table: 'keywords', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
@@ -596,7 +596,7 @@ describe('3. SQL Tests', () => {
 
 	it('Create table dev.cat for Update', async () => {
 		await req()
-			.send({ operation: 'create_table', schema: 'dev', table: 'cat', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'dev', table: 'cat', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'dev.cat' successfully created.", r.text))
 			.expect(200);
 		await setTimeout(200);
@@ -875,7 +875,7 @@ describe('3. SQL Tests', () => {
 
 	it('Create table "geo"', () => {
 		return req()
-			.send({ operation: 'create_table', table: 'geo', hash_attribute: 'id' })
+			.send({ operation: 'create_table', table: 'geo', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'data.geo' successfully created.", r.text))
 			.expect(200);
 	});

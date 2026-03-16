@@ -19,21 +19,21 @@ describe('16. Terminology Updates', () => {
 
 	it('create_table todo with database', () => {
 		return req()
-			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'todo', hash_attribute: 'id' })
+			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'todo', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'tuckerdoodle.todo' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('create_table done with database', () => {
 		return req()
-			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'done', hash_attribute: 'id' })
+			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'done', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'tuckerdoodle.done' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('create_table friends without database', () => {
 		return req()
-			.send({ operation: 'create_table', table: 'friends', hash_attribute: 'id' })
+			.send({ operation: 'create_table', table: 'friends', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'data.friends' successfully created.", r.text))
 			.expect(200);
 	});
@@ -341,7 +341,7 @@ describe('16. Terminology Updates', () => {
 
 	it('create_table "working" for jobs', () => {
 		return req()
-			.send({ operation: 'create_table', database: 'job_guy', table: 'working', hash_attribute: 'id' })
+			.send({ operation: 'create_table', database: 'job_guy', table: 'working', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'job_guy.working' successfully created.", r.text))
 			.expect(200);
 	});

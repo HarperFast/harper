@@ -1,10 +1,10 @@
 'use strict';
 
 class CreateTableObject {
-	constructor(schema, table, hash_attribute) {
+	constructor(schema, table, primary_key) {
 		this.schema = schema;
 		this.table = table;
-		this.hash_attribute = hash_attribute;
+		this.primary_key = primary_key;
 	}
 }
 

@@ -808,7 +808,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'search_by_value',
 				table: `${testData.supp_tb}`,
 				schema: `${testData.schema}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: `${testData.supp_id}`,
 				search_value: '*',
 				get_attributes: [`${testData.supp_id}`],
@@ -822,7 +822,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'search_by_value',
 				table: `${testData.supp_tb}`,
 				schema: `${testData.schema}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: `${testData.supp_id}`,
 				search_value: '*',
 				get_attributes: [`${testData.supp_id}`],
@@ -846,7 +846,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'search_by_value',
 				table: `${testData.regi_tb}`,
 				schema: `${testData.schema}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: 'regionid',
 				search_value: '*',
 				get_attributes: ['*'],
@@ -860,7 +860,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'search_by_value',
 				table: `${testData.regi_tb}`,
 				schema: `${testData.schema}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: 'regionid',
 				search_value: '*',
 				get_attributes: ['*'],
@@ -1087,7 +1087,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'search_by_value',
 				table: `${testData.ship_tb}`,
 				schema: `${testData.schema}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: `${testData.ship_id}`,
 				search_value: '*',
 				get_attributes: ['companyname'],
@@ -1118,7 +1118,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'search_by_value',
 				table: `${testData.ship_tb}`,
 				schema: `${testData.schema}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: `${testData.ship_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
@@ -1298,7 +1298,7 @@ describe('5. NoSQL Role Testing', () => {
 
 	it('NoSQL create_table - non-SU expect fail', () => {
 		return reqAsNonSU(headersTestUser)
-			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', primary_key: 'id' })
 			.expect((r) => {
 				assert.equal(
 					r.body.error,
@@ -1318,7 +1318,7 @@ describe('5. NoSQL Role Testing', () => {
 
 	it('NoSQL create_table - SU expect success', () => {
 		return req()
-			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', primary_key: 'id' })
 			.expect(200);
 	});
 

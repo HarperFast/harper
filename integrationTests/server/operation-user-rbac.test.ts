@@ -50,7 +50,7 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 
 		// Create database, table, and seed data
 		await op({ operation: 'create_database', database: DATABASE });
-		await op({ operation: 'create_table', schema: DATABASE, table: TABLE, hash_attribute: HASH_ATTR });
+		await op({ operation: 'create_table', schema: DATABASE, table: TABLE, primary_key: HASH_ATTR });
 		await op({
 			operation: 'insert',
 			schema: DATABASE,

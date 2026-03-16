@@ -180,7 +180,7 @@ suite('Operations Server', (ctx: ContextWithHarper) => {
 				operation: 'create_table',
 				schema: 'csv_test',
 				table: 'items',
-				hash_attribute: 'id',
+				primary_key: 'id',
 			}),
 		});
 

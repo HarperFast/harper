@@ -18,26 +18,24 @@ describe('7. Jobs & Job Role Testing', () => {
 		});
 
 		it('Create dogs table for S3 test', () => {
-			return req()
-				.send({ operation: 'create_table', schema: 'S3_DATA', table: 'dogs', hash_attribute: 'id' })
-				.expect(200);
+			return req().send({ operation: 'create_table', schema: 'S3_DATA', table: 'dogs', primary_key: 'id' }).expect(200);
 		});
 
 		it('Create breed table for S3 test', () => {
 			return req()
-				.send({ operation: 'create_table', schema: 'S3_DATA', table: 'breed', hash_attribute: 'id' })
+				.send({ operation: 'create_table', schema: 'S3_DATA', table: 'breed', primary_key: 'id' })
 				.expect(200);
 		});
 
 		it('Create owners table for S3 test', () => {
 			return req()
-				.send({ operation: 'create_table', schema: 'S3_DATA', table: 'owners', hash_attribute: 'id' })
+				.send({ operation: 'create_table', schema: 'S3_DATA', table: 'owners', primary_key: 'id' })
 				.expect(200);
 		});
 
 		it('Create sensor table for S3 test', () => {
 			return req()
-				.send({ operation: 'create_table', schema: 'S3_DATA', table: 'sensor', hash_attribute: 'id' })
+				.send({ operation: 'create_table', schema: 'S3_DATA', table: 'sensor', primary_key: 'id' })
 				.expect(200);
 		});
 
@@ -275,13 +273,13 @@ describe('7. Jobs & Job Role Testing', () => {
 
 		it('Create S3 test table', () => {
 			return req()
-				.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test', hash_attribute: 'id' })
+				.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test', primary_key: 'id' })
 				.expect(200);
 		});
 
 		it('Create S3 CSV import test table', () => {
 			return req()
-				.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test_csv_import', hash_attribute: 'id' })
+				.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test_csv_import', primary_key: 'id' })
 				.expect(200);
 		});
 
@@ -291,7 +289,7 @@ describe('7. Jobs & Job Role Testing', () => {
 					operation: 'create_table',
 					schema: 'S3_DATA',
 					table: 's3_test_json_import',
-					hash_attribute: 'id',
+					primary_key: 'id',
 				})
 				.expect(200);
 		});
@@ -616,7 +614,7 @@ describe('7. Jobs & Job Role Testing', () => {
 
 	it('Jobs - Add runner table', async () => {
 		await req()
-			.send({ operation: 'create_table', schema: 'test_job', table: 'runner', hash_attribute: 'runner_id' })
+			.send({ operation: 'create_table', schema: 'test_job', table: 'runner', primary_key: 'runner_id' })
 			.expect(200);
 		await setTimeout(500);
 	});
@@ -802,7 +800,7 @@ describe('7. Jobs & Job Role Testing', () => {
 					operation: 'search_by_hash',
 					schema: `${testData.schema}`,
 					table: `${testData.ship_tb}`,
-					hash_attribute: `${testData.ship_id}`,
+					primary_key: `${testData.ship_id}`,
 					hash_values: [1],
 					get_attributes: ['companyname'],
 				},
@@ -879,7 +877,7 @@ describe('7. Jobs & Job Role Testing', () => {
 					operation: 'search_by_hash',
 					schema: `${testData.schema}`,
 					table: `${testData.supp_tb}`,
-					hash_attribute: `${testData.supp_id}`,
+					primary_key: `${testData.supp_id}`,
 					hash_values: [1],
 					get_attributes: [testData.supp_id],
 				},
