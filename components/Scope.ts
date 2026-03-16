@@ -50,7 +50,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	ready: Promise<any[]>;
 	databaseEvents: typeof databaseEventsEmitter;
 
-	constructor(appName: string, pluginName: string, directory: string, configFilePath: string, applicationScope: ApplicationScope) {
+	constructor(
+		appName: string,
+		pluginName: string,
+		directory: string,
+		configFilePath: string,
+		applicationScope: ApplicationScope
+	) {
 		super();
 
 		this.#appName = appName;

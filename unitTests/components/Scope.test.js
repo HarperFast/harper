@@ -40,7 +40,13 @@ describe('Scope', () => {
 	it('should create a default entry handler', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
 
-		const scope = new Scope(this.appName, this.pluginName, this.directory, this.configFilePath, new ApplicationScope('test', this.resources, this.server));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
 
 		const readySpy = spy();
 		scope.on('ready', readySpy);
@@ -90,7 +96,13 @@ describe('Scope', () => {
 	it('should create a default entry handler with urlPath', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js', urlPath: 'abc' } }));
 
-		const scope = new Scope(this.appName, this.pluginName, this.directory, this.configFilePath, new ApplicationScope('test', this.resources, this.server));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
 
 		const readySpy = spy();
 		scope.on('ready', readySpy);
@@ -141,7 +153,14 @@ describe('Scope', () => {
 	it('should call requestRestart if no entry handler is provided', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: '.' } }));
 
-		const scope = new Scope(this.appName, this.pluginName, this.directory, this.configFilePath, this.resources, this.server);
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
 
 		await scope.ready;
 
@@ -158,7 +177,14 @@ describe('Scope', () => {
 	it('should call requestRestart if no options handler is provided', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: '.' } }));
 
-		const scope = new Scope(this.appName, this.pluginName, this.directory, this.configFilePath, this.resources, this.server);
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
 
 		await scope.ready;
 
@@ -178,7 +204,14 @@ describe('Scope', () => {
 	it('should emit error for missing default entry handler', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
 
-		const scope = new Scope(this.appName, this.pluginName, this.directory, this.configFilePath, this.resources, this.server);
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
 
 		await scope.ready;
 
@@ -212,7 +245,14 @@ describe('Scope', () => {
 	it('should support custom entry handlers', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
 
-		const scope = new Scope(this.appName, this.pluginName, this.directory, this.configFilePath, this.resources, this.server);
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
 
 		await scope.ready;
 
@@ -242,7 +282,14 @@ describe('Scope', () => {
 	it('should support synchronous handleEntry with event-based initial load tracking', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
 
-		const scope = new Scope(this.appName, this.pluginName, this.directory, this.configFilePath, this.resources, this.server);
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
 
 		await scope.ready;
 

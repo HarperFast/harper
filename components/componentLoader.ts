@@ -60,13 +60,19 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
-			cfsLoaded.push(loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, { isRoot: false, autoReload: false, appName }));
+			cfsLoaded.push(
+				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, { isRoot: false, autoReload: false, appName })
+			);
 		}
 	}
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
 		cfsLoaded.push(
-			loadComponent(hdbAppFolder, resources, hdbAppFolder, { isRoot: false, autoReload: Boolean(process.env.DEV_MODE), appName: hdbAppFolder })
+			loadComponent(hdbAppFolder, resources, hdbAppFolder, {
+				isRoot: false,
+				autoReload: Boolean(process.env.DEV_MODE),
+				appName: hdbAppFolder,
+			})
 		);
 	}
 	return Promise.all(cfsLoaded).then(() => {
@@ -208,7 +214,12 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				new Promise(
 					(_, reject) =>
 						(loadTimeout = setTimeout(
-							() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.pluginName} on behalf of ${scope.appName}`)),
+							() =>
+								reject(
+									new Error(
+										`handleApplication timed out after ${timeout}ms for ${scope.pluginName} on behalf of ${scope.appName}`
+									)
+								),
 							timeout
 						))
 				),
@@ -251,7 +262,7 @@ export async function loadComponent(
 		applicationScope = new ApplicationScope(basename(componentDirectory), resources, server),
 		isRoot,
 		autoReload,
-		appName
+		appName,
 	} = options;
 	applicationScope.verifyPath ??= componentDirectory;
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
@@ -327,7 +338,7 @@ export async function loadComponent(
 								isRoot: false,
 								applicationScope: subApplicationScope,
 								autoReload: false,
-								appName: appName || componentName
+								appName: appName || componentName,
 							});
 							componentFunctionality[componentName] = true;
 						}

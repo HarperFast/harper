@@ -408,7 +408,15 @@ async function deployComponent(req) {
 		const componentLoader = require('./componentLoader.ts');
 		let lastError;
 		componentLoader.setErrorReporter((error) => (lastError = error));
-		await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, false, undefined, false, req.project);
+		await componentLoader.loadComponent(
+			application.dirPath,
+			pseudoResources,
+			undefined,
+			false,
+			undefined,
+			false,
+			req.project
+		);
 
 		if (lastError) throw lastError;
 	}
