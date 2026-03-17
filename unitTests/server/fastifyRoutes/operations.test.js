@@ -168,7 +168,7 @@ describe('Test custom functions operations', () => {
 			const coolComponent = result.entries.find((e) => e.name === 'my-cool-component');
 			const otherComponent = result.entries.find((e) => e.name === 'my-other-component');
 			expect(coolComponent).to.exist;
-			expect(coolComponent.entries.length).to.equal(2);
+			expect(coolComponent.entries.length).to.equal(3);
 			expect(coolComponent.package).to.be.undefined;
 			expect(otherComponent).to.exist;
 			expect(otherComponent.entries.find((e) => e.name === 'config.yaml')).to.exist;

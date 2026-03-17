@@ -275,7 +275,7 @@ describe('2. Data Load', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.supp_tb}`,
-				hash_attribute: `${testData.supp_id}`,
+				primary_key: `${testData.supp_id}`,
 				hash_values: [10],
 				get_attributes: ['supplierid', 'companyname', 'contactname'],
 			})
@@ -344,7 +344,7 @@ describe('2. Data Load', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.supp_tb}`,
-				hash_attribute: `${testData.supp_id}`,
+				primary_key: `${testData.supp_id}`,
 				hash_values: [19],
 				get_attributes: ['supplierid', 'companyname', 'contactname'],
 			})
@@ -377,7 +377,7 @@ describe('2. Data Load', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.cust_tb}`,
-				hash_attribute: `${testData.supp_id}`,
+				primary_key: `${testData.supp_id}`,
 				hash_values: ['TEST1'],
 				get_attributes: ['postalcode', 'customerid'],
 			})
@@ -405,7 +405,7 @@ describe('2. Data Load', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.cust_tb}`,
-				hash_attribute: `${testData.supp_id}`,
+				primary_key: `${testData.supp_id}`,
 				hash_values: ['TEST2'],
 				get_attributes: ['postalcode', 'customerid'],
 			})

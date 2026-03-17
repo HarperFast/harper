@@ -60,12 +60,20 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
-			cfsLoaded.push(loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME));
+			cfsLoaded.push(
+				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, { isRoot: false, autoReload: false, appName })
+			);
 		}
 	}
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
-		cfsLoaded.push(loadComponent(hdbAppFolder, resources, hdbAppFolder, { autoReload: Boolean(process.env.DEV_MODE) }));
+		cfsLoaded.push(
+			loadComponent(hdbAppFolder, resources, hdbAppFolder, {
+				isRoot: false,
+				autoReload: Boolean(process.env.DEV_MODE),
+				appName: hdbAppFolder,
+			})
+		);
 	}
 	return Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
@@ -176,7 +184,7 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 		// Timeout priority is user config, plugin default, finally 30 seconds
 		const timeout = scope.options.get(['timeout']) || plugin.defaultTimeout || 30_000; // default 30 second timeout
 		if (typeof timeout !== 'number') {
-			throw new Error(`Invalid timeout value for ${scope.name}. Expected a number, received: ${typeof timeout}`);
+			throw new Error(`Invalid timeout value for ${scope.pluginName}. Expected a number, received: ${typeof timeout}`);
 		}
 		let whenResolved, timer;
 		const callback = () => {
@@ -184,13 +192,13 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			whenResolved(sequentiallyHandleApplication(scope, plugin));
 		};
 		const store = Status.primaryStore;
-		const lockAcquired = store.tryLock(scope.name, callback);
+		const lockAcquired = store.tryLock(scope.pluginName, callback);
 
 		if (!lockAcquired) {
 			return new Promise((resolve, reject) => {
 				whenResolved = resolve;
 				timer = setTimeout(() => {
-					reject(new Error(`Timeout waiting for lock on ${scope.name}`));
+					reject(new Error(`Timeout waiting for lock on ${scope.pluginName}`));
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
@@ -206,13 +214,18 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				new Promise(
 					(_, reject) =>
 						(loadTimeout = setTimeout(
-							() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.name}`)),
+							() =>
+								reject(
+									new Error(
+										`handleApplication timed out after ${timeout}ms for ${scope.pluginName} on behalf of ${scope.appName}`
+									)
+								),
 							timeout
 						))
 				),
 			]);
 		} finally {
-			Status.primaryStore.unlock(scope.name);
+			Status.primaryStore.unlock(scope.pluginName);
 			clearTimeout(loadTimeout);
 		}
 	});
@@ -222,8 +235,8 @@ export interface LoadComponentOptions {
 	isRoot?: boolean;
 	applicationScope?: ApplicationScope;
 	autoReload?: boolean;
-	applicationContainment?: ApplicationContainment;
 	providedLoadedComponents?: Map<any, any>;
+	appName?: string;
 }
 
 /**
@@ -249,6 +262,7 @@ export async function loadComponent(
 		applicationScope = new ApplicationScope(basename(componentDirectory), resources, server),
 		isRoot,
 		autoReload,
+		appName,
 	} = options;
 	applicationScope.verifyPath ??= componentDirectory;
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
@@ -321,7 +335,10 @@ export async function loadComponent(
 						subApplicationScope.verifyPath = componentPath;
 						if (!process.env.HARPER_SAFE_MODE) {
 							extensionModule = await loadComponent(componentPath, resources, origin, {
+								isRoot: false,
 								applicationScope: subApplicationScope,
+								autoReload: false,
+								appName: appName || componentName,
 							});
 							componentFunctionality[componentName] = true;
 						}
@@ -373,7 +390,7 @@ export async function loadComponent(
 
 				// New Plugin API (`handleApplication`)
 				if (resources.isWorker && extensionModule.handleApplication) {
-					const scope = new Scope(componentName, componentDirectory, configPath, applicationScope);
+					const scope = new Scope(appName || 'harper', componentName, componentDirectory, configPath, applicationScope);
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 

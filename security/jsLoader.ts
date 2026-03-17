@@ -14,7 +14,7 @@ import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type { CompartmentOptions } from 'ses';
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 
@@ -246,7 +246,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 
 		// Only link/evaluate once per module
 		if (!linkingPromises.has(url)) {
-			linkingPromises.set(url, module.link(linker).then(() => module.evaluate()));
+			linkingPromises.set(
+				url,
+				module.link(linker).then(() => module.evaluate())
+			);
 		}
 
 		// Wait for linking to complete
@@ -543,14 +546,15 @@ function isProcessRunning(pid: number): boolean {
 
 /**
  * Acquires an exclusive lock using the PID file itself (synchronously with busy-wait)
+ * Returns 0 if lock was acquired (need to spawn new process), or the existing PID if process is running
  */
-function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 5): number | null {
+function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 5): number {
 	for (let attempt = 0; attempt < maxRetries; attempt++) {
 		try {
 			// Try to open exclusively - 'wx' fails if file exists
 			const fd = openSync(pidFilePath, 'wx');
 			closeSync(fd);
-			return fd; // Successfully acquired lock (file created)
+			return 0; // Successfully acquired lock (file created), caller should spawn process
 		} catch (err) {
 			if (err.code === 'EEXIST') {
 				// File exists - check if it contains a valid running process
@@ -559,10 +563,19 @@ function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 
 					const existingPid = parseInt(pidContent.trim(), 10);
 
 					if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
-						// Valid process is running, return its PID
+						// Valid process is running, return its PID immediately
 						return existingPid;
+					}
+
+					// Invalid/empty PID - check file age to determine if it's stale or being written
+					const stats = statSync(pidFilePath);
+					const fileAge = Date.now() - stats.mtimeMs;
+
+					// If file is very new (less than 100ms) and empty/invalid, another thread is likely still writing to it
+					if (fileAge < 100) {
+						// Just wait and retry, don't try to remove
 					} else {
-						// Stale PID file, try to remove it
+						// Stale PID file (old and invalid), try to remove it
 						try {
 							unlinkSync(pidFilePath);
 						} catch {
@@ -570,7 +583,7 @@ function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 
 						}
 					}
 				} catch {
-					// Couldn't read file, another thread might be writing, retry
+					// Couldn't read/stat file, another thread might be modifying it, retry
 				}
 
 				// Wait a bit before retrying
@@ -605,10 +618,10 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
 
-		// Try to acquire lock - returns null if we got the lock, or PID if process exists
+		// Try to acquire lock - returns 0 if acquired, or existing PID
 		const existingPid = acquirePidFileLock(pidFilePath);
 
-		if (typeof existingPid === 'number' && existingPid > 0) {
+		if (existingPid !== 0) {
 			// Existing process is running, return wrapper
 			return new ExistingProcessWrapper(existingPid);
 		}

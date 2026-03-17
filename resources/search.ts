@@ -337,11 +337,16 @@ export function searchByIndex(
 							})
 						);
 					}
-				: (entry) => {
-						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
-						Object.freeze(entry.value);
-						recordRead(entry);
-						return entry;
+				: function (entry) {
+						let result: any;
+						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) result = SKIP;
+						else {
+							Object.freeze(entry.value);
+							recordRead(entry);
+							result = entry;
+						}
+						if (this.isSync) return result;
+						return new Promise((resolve) => setImmediate(() => resolve(result)));
 					}
 		);
 		results.hasEntries = true;

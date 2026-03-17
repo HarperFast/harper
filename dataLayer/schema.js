@@ -96,7 +96,7 @@ async function createSchemaStructure(schemaCreateObject) {
 
 async function createTable(createTableObject) {
 	transformReq(createTableObject);
-	createTableObject.hash_attribute = createTableObject.primary_key ?? createTableObject.hash_attribute;
+	createTableObject.primary_key = createTableObject.primary_key ?? createTableObject.hash_attribute;
 	return await createTableStructure(createTableObject);
 }
 
@@ -108,7 +108,7 @@ async function createTableStructure(createTableObject) {
 			schema: DB_NAME_CONSTRAINTS,
 			table: TABLE_NAME_CONSTRAINTS,
 			residence: Joi.array().items(Joi.string().min(1)).optional(),
-			hash_attribute: PRIMARY_KEY_CONSTRAINTS,
+			primary_key: PRIMARY_KEY_CONSTRAINTS,
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
@@ -132,7 +132,7 @@ async function createTableStructure(createTableObject) {
 		name: createTableObject.table,
 		schema: createTableObject.schema,
 		id: uuidV4(),
-		hash_attribute: createTableObject.hash_attribute,
+		primary_key: createTableObject.primary_key,
 	};
 
 	if (createTableObject.residence) {
@@ -262,7 +262,7 @@ async function dropAttribute(dropAttributeObject) {
 
 	if (
 		dropAttributeObject.attribute ===
-		global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table].hash_attribute
+		global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table].primary_key
 	) {
 		throw handleHDBError(
 			new Error(),

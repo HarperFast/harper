@@ -3933,7 +3933,12 @@ export function makeTable(options) {
 			// it should be resolved now and we can use the value it saved.
 			clearTimeout(timer);
 			const entry = primaryStore.getEntry(id);
-			if (!entry || !entry.value || entry.metadataFlags & (INVALIDATED | EVICTED))
+			if (
+				!entry ||
+				!entry.value ||
+				entry.metadataFlags & (INVALIDATED | EVICTED) ||
+				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
+			)
 				// try again
 				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context));
 			else whenResolved(entry);

@@ -1,7 +1,7 @@
 import type { Metric } from './write.ts';
 import harperLogger from '../../utility/logging/harper_logger.js';
 const { forComponent } = harperLogger;
-import { getAnalyticsHostnameTable } from './hostnames.ts';
+import { getAnalyticsHostnameTable, stableNodeId } from './hostnames.ts';
 import type { Condition, Conditions } from '../ResourceInterface.ts';
 import { METRIC, type BuiltInMetricName } from './metadata.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -12,9 +12,11 @@ const defaultCustomMetricWindow = 1000 * 60 * 60 * 24 * 7;
 
 const log = forComponent('analytics').conditional;
 
-async function lookupHostname(nodeId: number): Promise<string> {
+async function lookupHostname(nodeId: number): Promise<string | undefined> {
 	const result = await getAnalyticsHostnameTable().get(nodeId);
-	return result.hostname;
+	if (result?.hostname) return result.hostname;
+	if (nodeId === stableNodeId(server.hostname)) return server.hostname;
+	return undefined;
 }
 
 function isSelected(querySelect: string[], attr: string) {
@@ -57,25 +59,21 @@ function conformCondition(condition: Condition): Condition {
 	};
 }
 
-async function coalesceResults(results: Metric[], window: number): Promise<Metric[]> {
-	const coalescedResults: Metric[] = [];
-	let coalesceId;
-	let lastCoalescedId = new Map<string, number>();
+async function* coalesceResults(results: Metric[], window: number): AsyncGenerator<Metric> {
+	let coalesceId: any;
 	for await (const result of results) {
 		const id = result.id;
 		if (!coalesceId) {
 			coalesceId = id;
 		}
 		const delta = Math.abs(id - coalesceId);
-		if (delta < window && lastCoalescedId.get(result.node) !== id) {
-			coalescedResults.push({ ...result, id: coalesceId });
-			lastCoalescedId[result.node] = id;
+		if (delta < window) {
+			yield { ...result, id: coalesceId };
 		} else {
-			coalescedResults.push(result);
+			yield result;
 			coalesceId = id;
 		}
 	}
-	return coalescedResults;
 }
 
 interface GetAnalyticsOpts {
@@ -99,19 +97,27 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		select.push('id');
 	}
 
-	if (startTime) {
+	if (startTime && endTime) {
 		conditions.push({
 			attribute: 'id',
-			comparator: 'greater_than_equal',
-			value: startTime,
+			comparator: 'between',
+			value: [startTime, endTime],
 		});
-	}
-	if (endTime) {
-		conditions.push({
-			attribute: 'id',
-			comparator: 'less_than',
-			value: endTime,
-		});
+	} else {
+		if (startTime) {
+			conditions.push({
+				attribute: 'id',
+				comparator: 'greater_than_equal',
+				value: startTime,
+			});
+		}
+		if (endTime) {
+			conditions.push({
+				attribute: 'id',
+				comparator: 'less_than',
+				value: endTime,
+			});
+		}
 	}
 
 	const request = { conditions, allowConditionsOnDynamicAttributes: true };
@@ -128,16 +134,17 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		result['id'] = result['id'][0];
 		if (isSelected(select, 'node')) {
 			log.trace?.(`get_analytics lookup hostname for nodeId: ${nodeId}`);
-			result['node'] = await lookupHostname(nodeId);
+			const hostname = await lookupHostname(nodeId);
+			result['node'] = hostname ?? nodeId;
 		}
 		log.trace?.(`get_analytics result:`, JSON.stringify(result));
 		return result;
 	});
 
 	if (opts?.coalesceTime) {
-		// coalescing window is the aggregate period plus 10% & converted to milliseconds
-		const window = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1.1 * 1000;
-		results = await coalesceResults(results, window);
+		// coalescing window is the aggregate period converted to milliseconds
+		const window = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
+		results = coalesceResults(results, window);
 	}
 
 	return results;

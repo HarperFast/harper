@@ -78,7 +78,7 @@ suite('Storage reclamation', (ctx: ContextWithHarper) => {
 				operation: 'create_table',
 				schema: TEST_DATABASE,
 				table: TEST_TABLE,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				expiration: 2, // 2 second expiration (in seconds)
 				eviction: 1, // 1 second eviction (in seconds)
 				audit: true, // Enable audit logging

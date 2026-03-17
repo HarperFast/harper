@@ -190,7 +190,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [100],
 				get_attributes: ['firstname', 'lastname'],
 			})
@@ -204,7 +204,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['firstname', 'lastname'],
 			})
@@ -219,7 +219,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [1, 5],
 				get_attributes: ['firstname', 'lastname'],
 			})
@@ -237,7 +237,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_value',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				search_attribute: 'lastname',
 				search_value: 'Xyz',
 				get_attributes: ['firstname', 'lastname'],
@@ -252,7 +252,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_value',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				search_attribute: 'lastname',
 				search_value: 'King',
 				get_attributes: ['firstname', 'lastname'],
@@ -268,7 +268,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_value',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				search_attribute: 'lastname',
 				search_value: 'D*',
 				get_attributes: ['firstname', 'lastname'],
@@ -634,7 +634,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: [`${testData.emps_id}`, 'address'],
 			})
@@ -725,7 +725,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['address', 'test_record'],
 			})
@@ -825,7 +825,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [2],
 				get_attributes: ['address', 'hireDate', 'notes'],
 			})
@@ -1079,7 +1079,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: 'dev',
 				table: 'leading_zero',
-				hash_attribute: 'id',
+				primary_key: 'id',
 				hash_values: [0],
 				get_attributes: ['*'],
 			})
@@ -1099,7 +1099,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: 'dev',
 				table: 'leading_zero',
-				hash_attribute: 'id',
+				primary_key: 'id',
 				hash_values: ['011', '00011'],
 				get_attributes: ['*'],
 			})
@@ -1391,7 +1391,7 @@ describe('4. NoSQL Tests', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: [`${testData.emps_id}`, '__createdtime__'],
 			})

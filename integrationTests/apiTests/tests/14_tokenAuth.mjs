@@ -77,7 +77,7 @@ describe('14. Token Auth', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['*'],
 			})
@@ -95,7 +95,7 @@ describe('14. Token Auth', () => {
 				operation: 'search_by_hash',
 				schema: `${testData.schema}`,
 				table: `${testData.emps_tb}`,
-				hash_attribute: `${testData.emps_id}`,
+				primary_key: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['*'],
 			})

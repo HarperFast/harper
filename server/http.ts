@@ -19,7 +19,7 @@ import { appendHeader, Headers } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable } from 'node:stream';
-import { type HttpOptions, server } from './Server.ts';
+import { server, type ServerOptions, type HttpOptions } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
@@ -179,7 +179,7 @@ function getPorts(options) {
 			ports.push({ port: env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT), secure: true });
 	}
 
-	if (options?.isOperationsServer && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+	if (options?.usageType === 'operations-api' && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
 		ports.push({
 			port: resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)),
 			secure: false,
@@ -191,7 +191,7 @@ export function httpServer(listener, options) {
 	const servers = [];
 
 	for (const { port, secure } of getPorts(options)) {
-		servers.push(getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls));
+		servers.push(getHTTPServer(port, secure, options));
 		if (typeof listener === 'function') {
 			httpResponders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -203,8 +203,9 @@ export function httpServer(listener, options) {
 
 	return servers;
 }
-
-function getHTTPServer(port, secure, isOperationsServer, isMtls) {
+function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
+	const { mtls: isMtls, usageType } = options || {};
+	const isOperationsServer = usageType === 'operations-api';
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!httpServers[port]) {
 		// TODO: These should all come from httpOptions or operationsApiOptions
@@ -243,7 +244,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				rejectUnauthorized: Boolean(mtlsRequired),
 				requestCert: Boolean(mtls || isMtls),
 				ticketKeys: getTicketKeys(),
-				SNICallback: createTLSSelector(isOperationsServer ? 'operations-api' : 'server', mtls),
+				SNICallback: createTLSSelector(usageType ?? 'server', mtls),
 				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
 			});
 		}
@@ -290,7 +291,9 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				if (!response.handlesHeaders) {
 					const headers = response.headers || new Headers();
 					if (!body) {
-						headers.set('Content-Length', '0');
+						if (request.method !== 'HEAD') {
+							headers.set('Content-Length', '0');
+						}
 						sentBody = true;
 					} else if (body.length >= 0) {
 						if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
@@ -517,7 +520,7 @@ type OnWebSocketOptions = {
 	port?: number;
 	securePort?: number;
 	maxPayload?: number;
-	isOperationsServer?: boolean;
+	usageType?: string;
 	mtls?: boolean;
 };
 const websocketListeners = [],
@@ -537,7 +540,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			name: getComponentName(),
 		});
 
-		const server = getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls);
+		const server = getHTTPServer(port, secure, options);
 
 		if (!websocketServers[port]) {
 			websocketServers[port] = new WebSocketServer({
@@ -597,6 +600,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 }
 
 function defaultNotFound(request, response) {
+	if (response.headersSent || response.writableEnded) return;
 	response.writeHead(404);
 	response.end('Not found\n');
 	logRequest(request, 404, 0, request.requestId);

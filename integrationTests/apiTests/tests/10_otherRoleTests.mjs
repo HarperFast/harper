@@ -189,7 +189,7 @@ describe('10. Other Role Tests', () => {
 				assert.equal(r.body.another.breed.schema, 'another', r.text);
 				assert.equal(r.body.another.breed.name, 'breed', r.text);
 				assert.equal(r.body.another.breed.attributes.length, 0, r.text);
-				assert.equal(r.body.another.breed.hash_attribute, 'id', r.text);
+				assert.equal(r.body.another.breed.primary_key, 'id', r.text);
 				assert.equal(r.body.another.breed.record_count, 350, r.text);
 				assert.ok(r.body.another.breed.hasOwnProperty('last_updated_record'), r.text);
 				assert.ok(r.body.hasOwnProperty('northnwd'), r.text);
@@ -254,7 +254,7 @@ describe('10. Other Role Tests', () => {
 				assert.ok(r.body.hasOwnProperty('schema'), r.text);
 				assert.ok(r.body.hasOwnProperty('name'), r.text);
 				assert.ok(r.body.hasOwnProperty('attributes'), r.text);
-				assert.ok(r.body.hasOwnProperty('hash_attribute'), r.text);
+				assert.ok(r.body.hasOwnProperty('primary_key'), r.text);
 				assert.ok(r.body.hasOwnProperty('record_count'), r.text);
 				assert.ok(r.body.hasOwnProperty('last_updated_record'), r.text);
 				assert.equal(r.body.attributes.length, 2, r.text);
@@ -1622,7 +1622,7 @@ describe('10. Other Role Tests', () => {
 				operation: 'search_by_value',
 				schema: 'rick_rolled',
 				table: `${testData.regi_tb}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: 'id',
 				search_value: '*',
 				get_attributes: ['*'],
@@ -1646,7 +1646,7 @@ describe('10. Other Role Tests', () => {
 				operation: 'search_by_value',
 				schema: 'rick_rolled',
 				table: `${testData.regi_tb}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: 'id',
 				search_value: '*',
 				get_attributes: ['*'],
@@ -1661,7 +1661,7 @@ describe('10. Other Role Tests', () => {
 				operation: 'search_by_value',
 				schema: 'dev',
 				table: 'rick_rolled',
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: 'id',
 				search_value: '*',
 				get_attributes: ['*'],
@@ -1685,7 +1685,7 @@ describe('10. Other Role Tests', () => {
 				operation: 'search_by_value',
 				schema: 'dev',
 				table: 'rick_rolled',
-				hash_attribute: 'id',
+				primary_key: 'id',
 				search_attribute: 'id',
 				search_value: '*',
 				get_attributes: ['*'],

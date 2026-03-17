@@ -49,7 +49,8 @@ interface Node {
 export interface ServerOptions {
 	port?: number;
 	securePort?: number;
-	isOperationsServer?: boolean;
+	mtls?: boolean;
+	usageType?: string;
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;

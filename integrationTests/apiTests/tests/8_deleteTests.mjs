@@ -23,7 +23,7 @@ describe('8. Delete Tests', () => {
 
 	it('create test table', async () => {
 		await req()
-			.send({ operation: 'create_table', schema: 'test_delete_before', table: 'address', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'test_delete_before', table: 'address', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 		await setTimeout(500);
@@ -99,7 +99,7 @@ describe('8. Delete Tests', () => {
 				operation: 'search_by_hash',
 				schema: 'test_delete_before',
 				table: 'address',
-				hash_attribute: 'id',
+				primary_key: 'id',
 				hash_values: [1, 2, 3, 4, 5, 6, 11, 12, 13],
 				get_attributes: ['id', 'address'],
 			})
@@ -193,7 +193,7 @@ describe('8. Delete Tests', () => {
 				operation: 'search_by_hash',
 				schema: 'test_delete_before',
 				table: 'address',
-				hash_attribute: 'id',
+				primary_key: 'id',
 				hash_values: ['1a', '2a', '3a', '4a', '5a', '6a', '11a', '12a', '13a'],
 				get_attributes: ['id', 'address'],
 			})
@@ -234,7 +234,7 @@ describe('8. Delete Tests', () => {
 				operation: 'create_table',
 				schema: `${testData.drop_schema}`,
 				table: `${testData.drop_table}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 			})
 			.expect((r) => assert.equal(r.body.message, "table 'drop_schema.drop_table' successfully created.", r.text))
 			.expect(200);
@@ -288,7 +288,7 @@ describe('8. Delete Tests', () => {
 				operation: 'create_table',
 				schema: `${testData.drop_schema}`,
 				table: `${testData.drop_table}`,
-				hash_attribute: 'id',
+				primary_key: 'id',
 			})
 			.expect((r) => assert.equal(r.body.message, "table 'drop_schema.drop_table' successfully created.", r.text))
 			.expect(200);
@@ -381,7 +381,7 @@ describe('8. Delete Tests', () => {
 
 	it('create table test', async () => {
 		await req()
-			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 		await setTimeout(2000);
@@ -552,7 +552,7 @@ describe('8. Delete Tests', () => {
 
 	it('create table test', () => {
 		return req()
-			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
@@ -722,7 +722,7 @@ describe('8. Delete Tests', () => {
 
 	it('create table test', async () => {
 		await req()
-			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
+			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', primary_key: 'id' })
 			.expect(200)
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text));
 		await setTimeout(2000);

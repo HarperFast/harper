@@ -61,7 +61,7 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 		//make sure the process waits for the server to be fully instantiated before moving forward
 		await server.ready();
 		if (!options) options = {};
-		options.isOperationsServer = true;
+		options.usageType = 'operations-api';
 		// fastify can't clean up properly
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
@@ -155,6 +155,7 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 
 	app.register(function (instance, options, done) {
 		instance.setNotFoundHandler(function (request, reply) {
+			if (reply.sent || reply.raw.headersSent || reply.raw.writableEnded) return;
 			app.server.emit('unhandled', request.raw, reply.raw);
 		});
 		done();

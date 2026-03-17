@@ -7,7 +7,7 @@ export function searchByHash(schemaName, tableName, hashAttribute, hashValues, g
 			operation: 'search_by_hash',
 			schema: schemaName,
 			table: tableName,
-			hash_attribute: hashAttribute,
+			primary_key: hashAttribute,
 			hash_values: hashValues,
 			get_attributes: getAttributes,
 		})

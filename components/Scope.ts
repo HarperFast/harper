@@ -36,7 +36,8 @@ export type ScopeEventsMap = {
 export class Scope extends EventEmitter<ScopeEventsMap> {
 	#configFilePath: string;
 	#directory: string;
-	#name: string;
+	#appName: string;
+	#pluginName: string;
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
 	#logger: Logger;
@@ -49,13 +50,20 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	ready: Promise<any[]>;
 	databaseEvents: typeof databaseEventsEmitter;
 
-	constructor(name: string, directory: string, configFilePath: string, applicationScope: ApplicationScope) {
+	constructor(
+		appName: string,
+		pluginName: string,
+		directory: string,
+		configFilePath: string,
+		applicationScope: ApplicationScope
+	) {
 		super();
 
-		this.#name = name;
+		this.#appName = appName;
+		this.#pluginName = pluginName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
-		this.#logger = loggerWithTag(this.#name);
+		this.#logger = logger || loggerWithTag(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
@@ -68,7 +76,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.ready = once(this, 'ready');
 
 		// Create the options instance for the scope immediately
-		this.options = new OptionsWatcher(name, configFilePath, this.#logger)
+		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger)
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));
@@ -78,8 +86,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		return this.#logger;
 	}
 
-	get name(): string {
-		return this.#name;
+	get appName(): string {
+		return this.#appName;
+	}
+
+	get pluginName(): string {
+		return this.#pluginName;
 	}
 
 	get directory(): string {
@@ -119,7 +131,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	#createEntryHandler(config: FilesOption | FileAndURLPathConfig): EntryHandler {
-		const entryHandler = new EntryHandler(this.#name, this.#directory, config, this.#logger)
+		const entryHandler = new EntryHandler(this.#pluginName, this.#directory, config, this.#logger)
 			.on('error', this.#handleError.bind(this))
 			.on('add', this.#defaultEntryHandlerListener('add'))
 			.on('change', this.#defaultEntryHandlerListener('change'))
@@ -291,7 +303,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	requestRestart() {
-		this.#logger.debug?.(`Restart requested from ${this.name} scope for ${this.directory}`);
+		this.#logger.debug?.(`Restart requested from ${this.#pluginName} scope for ${this.#appName}`);
 		requestRestart();
 	}
 

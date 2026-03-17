@@ -7,7 +7,7 @@ export function createTable(databaseName, tableName, hashAttribute) {
 			operation: 'create_table',
 			database: databaseName,
 			table: tableName,
-			hash_attribute: hashAttribute,
+			primary_key: hashAttribute,
 		})
 		.expect((r) => {
 			const body = JSON.stringify(r.body);
