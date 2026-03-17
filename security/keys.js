@@ -150,6 +150,8 @@ async function getReplicationCertAuth() {
 
 let configuredCertsLoaded;
 const privateKeys = new Map();
+const certificateWatchers = [];
+let configWatcher;
 
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdbCertificate table.
@@ -158,6 +160,16 @@ const privateKeys = new Map();
 function loadCertificates() {
 	if (configuredCertsLoaded) return;
 	configuredCertsLoaded = true;
+
+	// Watch the config file for changes
+	if (!configWatcher && isMainThread) {
+		const configFilePath = configUtils.getConfigFilePath();
+		configWatcher = watch(configFilePath, { persistent: false }).on('change', () => {
+			logger.warn?.('Config file changed, reloading certificates');
+			reloadCertificates();
+		});
+	}
+
 	// these are the sections of the config to check
 	const CERTIFICATE_CONFIGS = [{ configKey: CONFIG_PARAMS.TLS }, { configKey: CONFIG_PARAMS.OPERATIONSAPI_TLS }];
 
@@ -177,18 +189,19 @@ function loadCertificates() {
 				// need to relativize the paths so they aren't exposed
 				let private_key_name = privateKeyPath && relative(join(rootPath, 'keys'), privateKeyPath);
 				if (private_key_name) {
-					loadAndWatch(
+					const watcher = loadAndWatch(
 						privateKeyPath,
 						(private_key) => {
 							privateKeys.set(private_key_name, private_key);
 						},
 						'private key'
 					);
+					if (watcher) certificateWatchers.push(watcher);
 				}
 				for (let ca of [false, true]) {
 					let path = config[ca ? 'certificateAuthority' : 'certificate'];
 					if (path && isMainThread) {
-						loadAndWatch(
+						const watcher = loadAndWatch(
 							path,
 							(certificate) => {
 								if (CERTIFICATE_VALUES.cert === certificate) {
@@ -257,6 +270,7 @@ function loadCertificates() {
 							},
 							ca ? 'certificate authority' : 'certificate'
 						);
+						if (watcher) certificateWatchers.push(watcher);
 					}
 				}
 			}
@@ -266,10 +280,28 @@ function loadCertificates() {
 }
 
 /**
+ * Reload certificates after config file changes
+ */
+function reloadCertificates() {
+	// Clean up all existing certificate watchers
+	for (const watcher of certificateWatchers) {
+		watcher.close();
+	}
+	certificateWatchers.length = 0;
+
+	// Reset the flag to allow reloading
+	configuredCertsLoaded = false;
+
+	// Reload certificates
+	loadCertificates();
+}
+
+/**
  * Load the certificate file and watch for changes and reload with any changes
  * @param path
  * @param loadCert
  * @param type
+ * @return {*} watcher instance
  */
 function loadAndWatch(path, loadCert, type) {
 	let lastModified;
@@ -287,7 +319,7 @@ function loadAndWatch(path, loadCert, type) {
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
-	watch(path, { persistent: false }).on('change', loadFile);
+	return watch(path, { persistent: false }).on('change', loadFile);
 }
 
 function getHost() {
