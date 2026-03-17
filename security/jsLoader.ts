@@ -119,12 +119,16 @@ let amaro: any;
 async function stripTypeScriptTypes(source: string, url: string): Promise<string> {
 	try {
 		// Use amaro - the library that Node.js uses internally for type stripping
-		// This is available when you install it: npm install amaro
+		// Try to use the internal one first, if we can, otherwise fallback to loading the external one
 		if (!amaro) {
-			amaro = await import('amaro').catch(() => null);
+			amaro = await import('internal/deps/amaro/dist/index').then(
+				(mod) => mod.default,
+				() => null
+			);
+			amaro ??= await import('amaro').catch(() => null);
 		}
 		if (amaro?.transformSync) {
-			return (await amaro.transformSync(source, { mode: 'strip-only' })).code;
+			return amaro.transformSync(source, { mode: 'strip-only' }).code;
 		}
 	} catch (err) {
 		// amaro not available, fall through to regex
