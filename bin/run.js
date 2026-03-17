@@ -80,6 +80,13 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	hdbLogger.suppressLogging?.(() => {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
 	});
+
+	// If not safe mode, components are loaded on the main thread which requires VM modules to be enabled
+	if (!process.env.HARPER_SAFE_MODE && !process.execArgv.includes('--experimental-vm-modules')) {
+		console.error('Node.js VM modules are not enabled. Please rerun with the --experimental-vm-modules flag.');
+		process.exit(1);
+	}
+
 	hdbLogger.debug('Checking to make sure hdb is installed');
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
