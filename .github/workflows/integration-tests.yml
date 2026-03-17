@@ -112,9 +112,10 @@ jobs:
           THREADS_DEBUG: false
           NODE_HOSTNAME: 'localhost'
         run: |
-          node ./dist/bin/harper.js install
+          mkdir -p /tmp/hdb/log
+          node ./dist/bin/harper.js install > /tmp/hdb/log/install-stdout.log 2> /tmp/hdb/log/install-stderr.log
           sleep 10
-          node ./dist/bin/harper.js start
+          node ./dist/bin/harper.js start > /tmp/hdb/log/start-stdout.log 2> /tmp/hdb/log/start-stderr.log &
           sleep 10
 
       - name: Run API Tests
@@ -129,8 +130,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: harper-integration-api-test-logs-node-${{ matrix.node-version }}
-          path: /tmp/hdb/log/hdb.log
-          retention-days: 2
+          path: /tmp/hdb/log/
+          retention-days: 3
+          if-no-files-found: ignore
 
   run-integration-tests:
     name: Integration Tests ${{matrix.shard}}/4 (Node.js v${{ matrix.node-version }})
