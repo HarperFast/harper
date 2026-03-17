@@ -125,7 +125,7 @@ jobs:
         run: npm run test:integration:api-tests
 
       - name: Upload Harper logs
-        if: steps.run-api-tests.outcome == 'failure'
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: harper-integration-api-test-logs-node-${{ matrix.node-version }}
