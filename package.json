@@ -168,6 +168,7 @@
 		"@turf/helpers": "6.5.0",
 		"@turf/length": "6.5.0",
 		"alasql": "4.6.6",
+		"amaro": "^1.1.8",
 		"argon2": "0.44.0",
 		"asn1js": "3.0.7",
 		"cbor-x": "1.6.4",

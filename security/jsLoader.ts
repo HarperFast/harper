@@ -111,43 +111,49 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	}
 }
 
+let amaro: any;
 /**
- * Strip TypeScript types using Node.js's built-in type stripping
- * Falls back to regex-based stripping if the internal API is not available
+ * Strip TypeScript types using the amaro library (what Node.js uses internally)
+ * Falls back to regex-based stripping if amaro is not available
  */
 async function stripTypeScriptTypes(source: string, url: string): Promise<string> {
 	try {
-		// Try to use Node.js's internal type stripping (available in Node 22.6+)
-		// This uses the same transform that --experimental-strip-types uses
-		const { transformTypeScript } = await import('node:internal/modules/esm/transform_source');
-		const transformed = await transformTypeScript(source, url);
-		return transformed.source || transformed;
+		// Use amaro - the library that Node.js uses internally for type stripping
+		// This is available when you install it: npm install amaro
+		if (!amaro) {
+			amaro = await import('amaro').catch(() => null);
+		}
+		if (amaro?.transformSync) {
+			return (await amaro.transformSync(source, { mode: 'strip-only' })).code;
+		}
 	} catch (err) {
-		// Fall back to basic regex-based stripping if internal API not available
-		// Remove type annotations from parameters and variables
-		source = source.replace(/:\s*[A-Za-z_$][\w$<>[\]|&,\s]*(?=[,)\]=;])/g, '');
-		// Remove interface declarations
-		source = source.replace(/interface\s+\w+\s*{[^}]*}/g, '');
-		// Remove type aliases
-		source = source.replace(/type\s+\w+\s*=\s*[^;]+;/g, '');
-		// Remove 'as' type assertions
-		source = source.replace(/\s+as\s+[A-Za-z_$][\w$<>[\]|&\s]*/g, '');
-		// Remove generic type parameters from function/class declarations
-		source = source.replace(/(class|function)\s+(\w+)<[^>]+>/g, '$1 $2');
-		// Remove return type annotations
-		source = source.replace(/\):\s*[A-Za-z_$][\w$<>[\]|&,\s]*(?=\s*{)/g, ')');
-		// Remove readonly/public/private/protected modifiers
-		source = source.replace(/\b(public|private|protected|readonly)\s+/g, '');
-		// Remove type imports
-		source = source.replace(/import\s+type\s+{[^}]+}\s+from\s+['"][^'"]+['"]/g, '');
-		source = source.replace(/import\s+{([^}]*\btype\s+[^}]*)}\s+from\s+['"][^'"]+['"]/g, (match, imports) => {
-			// Remove individual type imports from mixed import statements
-			const cleaned = imports.replace(/,?\s*type\s+\w+\s*,?/g, '').replace(/,\s*,/g, ',');
-			return cleaned.trim() ? `import {${cleaned}} from ` + match.split('from')[1] : '';
-		});
-
-		return source;
+		// amaro not available, fall through to regex
 	}
+
+	// Fall back to basic regex-based stripping
+	// Remove type annotations from parameters and variables
+	source = source.replace(/:\s*[A-Za-z_$][\w$<>[\]|&,\s]*(?=[,)\]=;])/g, '');
+	// Remove interface declarations
+	source = source.replace(/interface\s+\w+\s*{[^}]*}/g, '');
+	// Remove type aliases
+	source = source.replace(/type\s+\w+\s*=\s*[^;]+;/g, '');
+	// Remove 'as' type assertions
+	source = source.replace(/\s+as\s+[A-Za-z_$][\w$<>[\]|&\s]*/g, '');
+	// Remove generic type parameters from function/class declarations
+	source = source.replace(/(class|function)\s+(\w+)<[^>]+>/g, '$1 $2');
+	// Remove return type annotations
+	source = source.replace(/\):\s*[A-Za-z_$][\w$<>[\]|&,\s]*(?=\s*{)/g, ')');
+	// Remove readonly/public/private/protected modifiers
+	source = source.replace(/\b(public|private|protected|readonly)\s+/g, '');
+	// Remove type imports
+	source = source.replace(/import\s+type\s+{[^}]+}\s+from\s+['"][^'"]+['"]/g, '');
+	source = source.replace(/import\s+{([^}]*\btype\s+[^}]*)}\s+from\s+['"][^'"]+['"]/g, (match, imports) => {
+		// Remove individual type imports from mixed import statements
+		const cleaned = imports.replace(/,?\s*type\s+\w+\s*,?/g, '').replace(/,\s*,/g, ',');
+		return cleaned.trim() ? `import {${cleaned}} from ` + match.split('from')[1] : '';
+	});
+
+	return source;
 }
 
 /**
