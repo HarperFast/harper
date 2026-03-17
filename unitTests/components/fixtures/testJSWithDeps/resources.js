@@ -21,6 +21,9 @@ export const testExport = {
 		let _a = MyComponent;
 		return 'hello world';
 	},
+	async testLoadTypeScript() {
+		return await import('./child-dir/typestrip.ts');
+	},
 };
 export class TestComponent extends Resource {}
 
