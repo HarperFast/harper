@@ -89,12 +89,13 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 				if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
 				const result = await (await scope.compartment).import(moduleUrl);
 				return result.namespace;
-			} // else use standard node:vm module to do containment
-			return await loadModuleWithVM(moduleUrl, scope);
-		} else {
-			// important! we need to await the import, otherwise the error will not be caught
-			return await import(moduleUrl);
+			} else if (SourceTextModule) {
+				// else use standard node:vm module to do containment (if it is available)
+				return await loadModuleWithVM(moduleUrl, scope);
+			}
 		}
+		// important! we need to await the import, otherwise the error will not be caught
+		return await import(moduleUrl);
 	} catch (err) {
 		try {
 			// the actual parse error (internally known as the "arrow message")
