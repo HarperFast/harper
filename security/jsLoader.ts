@@ -116,7 +116,7 @@ let amaro: any;
  * Strip TypeScript types using the amaro library (what Node.js uses internally)
  * Falls back to regex-based stripping if amaro is not available
  */
-async function stripTypeScriptTypes(source: string, url: string): Promise<string> {
+async function stripTypeScriptTypes(source: string): Promise<string> {
 	try {
 		// Use amaro - the library that Node.js uses internally for type stripping
 		// Try to use the internal one first, if we can, otherwise fallback to loading the external one
@@ -130,7 +130,7 @@ async function stripTypeScriptTypes(source: string, url: string): Promise<string
 		if (amaro?.transformSync) {
 			return amaro.transformSync(source, { mode: 'strip-only' }).code;
 		}
-	} catch (err) {
+	} catch {
 		// amaro not available, fall through to regex
 	}
 
@@ -332,7 +332,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 
 			// Strip TypeScript types if this is a .ts file
 			if (url.endsWith('.ts') || url.endsWith('.tsx')) {
-				source = await stripTypeScriptTypes(source, url);
+				source = await stripTypeScriptTypes(source);
 			}
 
 			// Try to parse as ESM first
