@@ -494,7 +494,7 @@ export async function loadComponent(
 				return loadComponentDirectories(); // return the promise
 			});
 		}
-		if (config.extensionModule || config.pluginModule) {
+		if ((config.extensionModule || config.pluginModule) && (!isMainThread || config.runOnMainThread)) {
 			const extensionModule = await scopedImport(
 				join(componentDirectory, config.extensionModule || config.pluginModule),
 				applicationScope
