@@ -199,6 +199,20 @@ describe('Querying through Resource API', () => {
 		}
 		assert.equal(results.length, 1);
 	});
+	it('Ensure that we are yielding when querying data in a table', async function () {
+		let results = [];
+		let yielded = false;
+		setImmediate(() => {
+			yielded = true;
+		});
+		for await (let record of QueryTable.search({
+			conditions: [{ attribute: 'id', comparator: 'less_than_equal', value: 'id-3' }],
+		})) {
+			results.push(record);
+		}
+		assert(yielded);
+		assert.equal(results.length, 24);
+	});
 	it('Query data in a table with non-indexed property', async function () {
 		let results = [];
 		for await (let record of QueryTable.search({
@@ -342,7 +356,8 @@ describe('Querying through Resource API', () => {
 
 		it('Query relational data in a table with many-to-one', async function () {
 			let results = [];
-			for await (let record of QueryTable.search({
+			// do this test with sync iteration to verify it is possible
+			for (let record of QueryTable.search({
 				conditions: [{ attribute: 'id', value: 'id-1' }],
 				select: ['id', 'related', 'name'],
 			})) {
