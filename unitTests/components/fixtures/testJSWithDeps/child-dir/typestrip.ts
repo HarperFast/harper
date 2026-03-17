@@ -1,2 +1,2 @@
 import type { Resource } from 'harper';
-export const isTyped: Resource = {};
+export const isTyped: Resource = {}!;
