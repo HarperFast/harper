@@ -178,7 +178,7 @@ TypeScript interface that extends `SuiteContext` and `TestContext` from Node.js 
 
 ```typescript
 export interface HarperContext {
-	installDir: string;
+	dataRootDir: string;
 	admin: {
 		username: string;
 		password: string;
@@ -198,7 +198,7 @@ export interface ContextWithHarper extends SuiteContext, TestContext {
 **Properties:**
 
 - **`harper`** - `HarperContext` - The Harper instance details
-  - **`installDir`** - `string` - The absolute path to the Harper installation directory
+  - **`dataRootDir`** - `string` - The absolute path to the Harper installation directory
   - **`admin`** - `object` - Admin credentials
     - **`username`** - `string` - The Harper Admin Username (default: `'admin'`)
     - **`password`** - `string` - The Harper Admin Password (default: `'Abc1234!'`)
