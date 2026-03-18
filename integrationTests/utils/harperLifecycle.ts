@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, ChildProcess, exec } from 'node:child_process';
 import { createWriteStream, existsSync, rmSync, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -32,11 +32,15 @@ export interface StartHarperOptions {
 	 * Environment variables to set when running Harper.
 	 */
 	env: any;
+	/**
+	 * Version of Harper to install and use for this test suite.
+	 */
+	harperBinPath?: string;
 }
 
 export interface HarperContext {
 	/** Absolute path to the Harper installation directory */
-	installDir: string;
+	dataRootDir: string;
 	/** Admin credentials for the Harper instance */
 	admin: {
 		/** Admin username (default: 'admin') */
@@ -72,10 +76,10 @@ export interface ContextWithHarper extends SuiteContext, TestContext {
  * @returns The absolute path to the Harper CLI entry script
  * @throws {AssertionError} If the script does not exist at the expected location
  */
-function getHarperScript(): string {
+function getHarperScript(harperBinPath?: string): string {
 	// import.meta.dirname doesn't seem to reliably work when running this across projects, if somehow compilation takes place, so fallback to module.path if necessary
 	const harperScript =
-		process.env.HARPER_INTEGRATION_TEST_INSTALL_SCRIPT ||
+		(harperBinPath ?? process.env.HARPER_INTEGRATION_TEST_INSTALL_SCRIPT) ||
 		join(import.meta.dirname ?? module.path, '..', '..', 'dist', 'bin', 'harper.js');
 	assert.ok(
 		existsSync(harperScript),
@@ -100,6 +104,7 @@ interface RunHarperCommandOptions {
 	completionMessage?: string;
 	/** When set, stdout and stderr are written to files in this directory */
 	logDir?: string;
+	harperBinPath?: string; // an explicit location installation of a harper package's bin module
 }
 
 /**
@@ -110,8 +115,14 @@ interface RunHarperCommandOptions {
  *
  * @throws {AssertionError} If the command exits with a non-zero status code
  */
-function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCommandOptions): Promise<ChildProcess> {
-	const harperScript = getHarperScript();
+function runHarperCommand({
+	args,
+	env,
+	completionMessage,
+	logDir,
+	harperBinPath,
+}: RunHarperCommandOptions): Promise<ChildProcess> {
+	const harperScript = getHarperScript(harperBinPath);
 	const proc = spawn(
 		'node',
 		['--trace-warnings', '--force-node-api-uncaught-exceptions-policy=true', harperScript, ...args],
@@ -213,11 +224,11 @@ function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCom
 export async function startHarper(ctx: ContextWithHarper, options?: StartHarperOptions): Promise<ContextWithHarper> {
 	// Create a directory for this Harper installation
 	// Use the system temp directory by default, or a custom parent directory if specified
-	const installDirPrefix = join(
+	const dataRootDirPrefix = join(
 		process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(),
 		`harper-integration-test-`
 	);
-	const installDir = ctx.harper?.installDir ?? (await mkdtemp(installDirPrefix));
+	const dataRootDir = ctx.harper?.dataRootDir ?? (await mkdtemp(dataRootDirPrefix));
 
 	const loopbackAddress = ctx.harper?.hostname ?? (await getNextAvailableLoopbackAddress());
 
@@ -246,7 +257,7 @@ export async function startHarper(ctx: ContextWithHarper, options?: StartHarperO
 
 	const harperProcess = await runHarperCommand({
 		args: [
-			`--ROOTPATH=${installDir}`,
+			`--ROOTPATH=${dataRootDir}`,
 			'--DEFAULTS_MODE=dev',
 			`--HDB_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME}`,
 			`--HDB_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}`,
@@ -262,10 +273,11 @@ export async function startHarper(ctx: ContextWithHarper, options?: StartHarperO
 		env: options?.env || {},
 		completionMessage: 'successfully started',
 		logDir,
+		harperBinPath: options?.harperBinPath,
 	});
 
 	ctx.harper = {
-		installDir,
+		dataRootDir,
 		admin: {
 			username: DEFAULT_ADMIN_USERNAME,
 			password: DEFAULT_ADMIN_PASSWORD,
@@ -329,5 +341,5 @@ export async function teardownHarper(ctx: ContextWithHarper): Promise<void> {
 	await releaseLoopbackAddress(ctx.harper.hostname);
 
 	// a few retries are typically necessary, might take a sec for a process to finish, especially since rocksdb may be flushing
-	await rm(ctx.harper.installDir, { recursive: true, force: true, maxRetries: 4 });
+	await rm(ctx.harper.dataRootDir, { recursive: true, force: true, maxRetries: 4 });
 }
