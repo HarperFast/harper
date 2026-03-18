@@ -133,7 +133,7 @@
 		"globals": "^16.5.0",
 		"intercept-stdout": "0.1.2",
 		"mkcert": "^3.2.0",
-		"mocha": "^11.7.4",
+		"mocha": "^11.7.5",
 		"mqtt": "~4.3.8",
 		"oxlint": "^1.31.0",
 		"prettier": "~3.7.3",
