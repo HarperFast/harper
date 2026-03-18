@@ -184,7 +184,7 @@ Integration test utilities are located in the [`integrationTests/utils/`](./util
 
 The most commonly used utilities are:
 
-- **`setupHarper(context)`** - Sets up a complete Harper instance for testing. Use in `before()` hooks.
+- **`startHarper(context)`** - Sets up a complete Harper instance for testing. Use in `before()` hooks.
 - **`teardownHarper(context)`** - Tears down a Harper instance and cleans up resources. Use in `after()` hooks.
 - **`ContextWithHarper`** - TypeScript interface for test context with Harper instance details.
 - **`targz(dirPath)`** - Compresses a directory into a base64-encoded tar.gz string for application deployment.
@@ -193,11 +193,11 @@ The most commonly used utilities are:
 
 ```ts
 import { suite, test, before, after } from 'node:test';
-import { setupHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.mts';
+import { startHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.ts';
 
 suite('test suite', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx);
+		await startHarper(ctx);
 	});
 
 	after(async () => {
@@ -227,12 +227,12 @@ Copy and paste the following content to get started:
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual } from 'node:assert/strict';
-// Note: adjust the relative path accordingly (e.g., '../utils/harperLifecycle.mts')
-import { setupHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.mts';
+// Note: adjust the relative path accordingly (e.g., '../utils/harperLifecycle.ts')
+import { startHarper, teardownHarper, type ContextWithHarper } from './utils/harperLifecycle.ts';
 
 suite('short description of tests', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx);
+		await startHarper(ctx);
 	});
 
 	after(async () => {

@@ -8,11 +8,11 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual } from 'node:assert/strict';
 
-import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 
 suite('Thread Management', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx, { config: {}, env: {} });
+		await startHarper(ctx, { config: {}, env: {} });
 	});
 
 	after(async () => {

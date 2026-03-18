@@ -18,7 +18,7 @@ const LOG_DIR = process.env.HARPER_INTEGRATION_TEST_LOG_DIR;
 /**
  * Options for setting up a Harper instance.
  */
-export interface SetupHarperOptions {
+export interface StartHarperOptions {
 	/**
 	 * Timeout in milliseconds to wait for Harper to start.
 	 * @default 30000
@@ -59,8 +59,8 @@ export interface HarperContext {
 /**
  * Test context interface with Harper instance details.
  *
- * This interface is populated by `setupHarper()` and contains all necessary
- * information to interact with the test Harper instance.
+ * This interface is populated by `startHarper()` and contains
+ * all necessary information to interact with the test Harper instance.
  */
 export interface ContextWithHarper extends SuiteContext, TestContext {
 	harper: HarperContext;
@@ -184,6 +184,10 @@ function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCom
  * This function performs installation, startup, and waits for Harper to be ready.
  * Always call `teardownHarper()` in the `after()` hook to clean up resources.
  *
+ * If `ctx.harper.installDir` or `ctx.harper.hostname` are already set they are
+ * reused rather than creating new ones — making this safe to call after
+ * `killHarper()` to restart an existing instance.
+ *
  * @param ctx - The test context to populate with Harper instance details
  * @param options - Optional configuration for the setup process
  * @returns The context with the `harper` property populated
@@ -192,7 +196,7 @@ function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCom
  * ```ts
  * suite('My tests', (ctx: ContextWithHarper) => {
  *   before(async () => {
- *     await setupHarper(ctx);
+ *     await startHarper(ctx);
  *   });
  *
  *   after(async () => {
@@ -206,19 +210,7 @@ function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCom
  * });
  * ```
  */
-export async function setupHarper(ctx: ContextWithHarper, options?: SetupHarperOptions): Promise<ContextWithHarper> {
-	return startHarper(ctx, options);
-}
-
-/**
- * Starts a Harper instance that has been installed.
- *
- * This is a lower-level function called by `setupHarper()`.
- * Most tests should use `setupHarper()` instead.
- *
- * @param ctx - The test context with Harper installation details
- */
-export async function startHarper(ctx: ContextWithHarper, options?: SetupHarperOptions): Promise<ContextWithHarper> {
+export async function startHarper(ctx: ContextWithHarper, options?: StartHarperOptions): Promise<ContextWithHarper> {
 	// Create a directory for this Harper installation
 	// Use the system temp directory by default, or a custom parent directory if specified
 	const installDirPrefix = join(
@@ -322,7 +314,7 @@ export async function killHarper(ctx: ContextWithHarper): Promise<void> {
  * ```ts
  * suite('My tests', (ctx: ContextWithHarper) => {
  *   before(async () => {
- *     await setupHarper(ctx);
+ *     await startHarper(ctx);
  *   });
  *
  *   after(async () => {

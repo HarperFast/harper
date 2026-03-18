@@ -4,26 +4,41 @@ This directory contains utility functions and modules for Harper integration tes
 
 ## Table of Contents
 
-- [Harper Lifecycle Management](#harper-lifecycle-management)
-- [Loopback Address Pool](#loopback-address-pool)
-- [Compression Utilities](#compression-utilities)
+- [Integration Test Utilities](#integration-test-utilities)
+  - [Table of Contents](#table-of-contents)
+  - [Harper Lifecycle Management](#harper-lifecycle-management)
+    - [`startHarper(context, options?): Promise<ContextWithHarper>`](#startharpercontext-options-promisecontextwithharper)
+    - [`StartHarperOptions`](#startharperoptions)
+    - [`killHarper(context): Promise<void>`](#killharpercontext-promisevoid)
+    - [`teardownHarper(context): Promise<void>`](#teardownharpercontext-promisevoid)
+    - [`ContextWithHarper`](#contextwithharper)
+  - [Loopback Address Pool](#loopback-address-pool)
+    - [`validateLoopbackAddressPool(): Promise<ValidationResult>`](#validateloopbackaddresspool-promisevalidationresult)
+    - [`getNextAvailableLoopbackAddress(): Promise<string>`](#getnextavailableloopbackaddress-promisestring)
+    - [`releaseLoopbackAddress(address: string): Promise<void>`](#releaseloopbackaddressaddress-string-promisevoid)
+    - [`releaseAllLoopbackAddressesForCurrentProcess(): Promise<void>`](#releaseallloopbackaddressesforcurrentprocess-promisevoid)
+  - [Compression Utilities](#compression-utilities)
+    - [`targz(dirPath: string): Promise<string>`](#targzdirpath-string-promisestring)
+  - [Scripts](#scripts)
+    - [`scripts/setup-loopback.sh`](#scriptssetup-loopbacksh)
+    - [`scripts/run.mts`](#scriptsrunmts)
 
 ---
 
 ## Harper Lifecycle Management
 
-**Module:** [`harperLifecycle.mts`](./harperLifecycle.mts)
+**Module:** [`harperLifecycle.ts`](./harperLifecycle.ts)
 
 Provides functions for managing Harper instances during integration tests, including installation, startup, and teardown.
 
-### `setupHarper(context, options?): Promise<ContextWithHarper>`
+### `startHarper(context, options?): Promise<ContextWithHarper>`
 
 Sets up a complete Harper instance for testing.
 
 **Parameters:**
 
 - `context` - [`ContextWithHarper`](#contextwithharper) - The test context object
-- `options` - [`SetupHarperOptions`](#setupharperoptions) (optional) - Configuration options for the setup process
+- `options` - [`StartHarperOptions`](#startharperoptions) (optional) - Configuration options for the setup process
 
 **Returns:** `Promise<ContextWithHarper>` - The context with the `harper` property populated
 
@@ -31,8 +46,8 @@ Sets up a complete Harper instance for testing.
 
 This method should be used in the `before()` lifecycle hook for a test suite. It performs the following steps:
 
-1. Creates a Harper instance in a temporary directory
-2. Assigns a unique loopback address from the loopback address pool
+1. Creates a Harper instance in a temporary directory (reuses `ctx.harper.installDir` if already set)
+2. Assigns a unique loopback address from the loopback address pool (reuses `ctx.harper.hostname` if already set)
 3. Starts Harper with test configuration (which self-installs)
 4. Waits for Harper to be fully started, waiting for the startup message to appear in stdout
 5. Populates the `context.harper` object with connection details
@@ -43,12 +58,12 @@ This method should be used in the `before()` lifecycle hook for a test suite. It
 
 ```ts
 import { suite, test, before, after } from 'node:test';
-import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.mts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 
 // Default setup
 suite('My test suite', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx);
+		await startHarper(ctx);
 	});
 
 	after(async () => {
@@ -64,12 +79,12 @@ suite('My test suite', (ctx: ContextWithHarper) => {
 
 ---
 
-### `SetupHarperOptions`
+### `StartHarperOptions`
 
-Configuration options for `setupHarper()`.
+Configuration options for `startHarper()`.
 
 ```typescript
-export interface SetupHarperOptions {
+export interface StartHarperOptions {
 	startupTimeoutMs?: number;
 	config: any;
 	env: any;
@@ -78,13 +93,44 @@ export interface SetupHarperOptions {
 
 **Properties:**
 
-- **`config`** - `object` (optional) - Additional configuration options to pass to the Harper CLI.
-- **`env`** - `object` (optional) - Additional environment variables to set when starting Harper.
+- **`config`** - `object` - Additional configuration options to pass to the Harper CLI.
+- **`env`** - `object` - Additional environment variables to set when starting Harper.
 - **`startupTimeoutMs`** - `number` (optional) - Timeout in milliseconds to wait for Harper to start. Defaults to 30000, or the value of the `HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS` environment variable if set.
 
 **Environment Variables:**
 
-- `HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS` - Sets the default startup delay for all tests when `startupTimeoutMs` is not explicitly provided
+- `HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS` - Sets the default startup timeout for all tests when `startupTimeoutMs` is not explicitly provided
+- `HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR` - Override the parent directory for Harper installation directories (defaults to the OS temp directory)
+- `HARPER_INTEGRATION_TEST_INSTALL_SCRIPT` - Override the path to the Harper CLI script (defaults to `dist/bin/harper.js` relative to the repo root)
+- `HARPER_INTEGRATION_TEST_LOG_DIR` - When set, stdout/stderr logs and Harper's `hdb.log` are written to per-suite subdirectories here; logs are deleted automatically on successful exit and retained on failure
+
+---
+
+### `killHarper(context): Promise<void>`
+
+Kills the running Harper process. Does **not** release the loopback address or remove the installation directory.
+
+**Parameters:**
+
+- `context` - [`ContextWithHarper`](#contextwithharper) - The test context with a running Harper instance
+
+**Returns:** `Promise<void>`
+
+**Description:**
+
+Sends `SIGTERM` to the Harper process and waits for it to exit. If the process does not exit within 200ms, `SIGKILL` is sent.
+
+This is useful for testing Harper restart/crash scenarios. After calling `killHarper()`, call `startHarper()` to restart the instance in the same directory with the same loopback address.
+
+**Example:**
+
+```ts
+test('recovers after restart', async () => {
+	await killHarper(ctx);
+	await startHarper(ctx);
+	// Harper is running again on the same address
+});
+```
 
 ---
 
@@ -100,7 +146,7 @@ Tears down a Harper instance and cleans up all resources.
 
 **Description:**
 
-This method should be used in the `after()` lifecycle hook in conjunction with `setupHarper()` and `before()`. It performs the following cleanup steps:
+This method should be used in the `after()` lifecycle hook in conjunction with `startHarper()` and `before()`. It performs the following cleanup steps:
 
 1. Stops the Harper instance
 2. Releases the loopback address back to the pool
@@ -111,7 +157,7 @@ This method should be used in the `after()` lifecycle hook in conjunction with `
 ```ts
 suite('My test suite', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx);
+		await startHarper(ctx);
 	});
 
 	after(async () => {
@@ -131,23 +177,27 @@ TypeScript interface that extends `SuiteContext` and `TestContext` from Node.js 
 **Interface Definition:**
 
 ```typescript
-interface ContextWithHarper extends SuiteContext, TestContext {
-	harper: {
-		installDir: string;
-		admin: {
-			username: string;
-			password: string;
-		};
-		httpURL: string;
-		operationsAPIURL: string;
-		loopbackAddress: string;
+export interface HarperContext {
+	installDir: string;
+	admin: {
+		username: string;
+		password: string;
 	};
+	httpURL: string;
+	operationsAPIURL: string;
+	hostname: string;
+	process: ChildProcess;
+	logDir?: string;
+}
+
+export interface ContextWithHarper extends SuiteContext, TestContext {
+	harper: HarperContext;
 }
 ```
 
 **Properties:**
 
-- **`harper`** - `object` - The Harper instance details
+- **`harper`** - `HarperContext` - The Harper instance details
   - **`installDir`** - `string` - The absolute path to the Harper installation directory
   - **`admin`** - `object` - Admin credentials
     - **`username`** - `string` - The Harper Admin Username (default: `'admin'`)
@@ -155,6 +205,8 @@ interface ContextWithHarper extends SuiteContext, TestContext {
   - **`httpURL`** - `string` - The HTTP URL for the Harper instance (e.g., `'http://127.0.0.2:9926'`)
   - **`operationsAPIURL`** - `string` - The Operations API URL (e.g., `'http://127.0.0.2:9925'`)
   - **`hostname`** - `string` - The assigned loopback IP address (e.g., `'127.0.0.2'`)
+  - **`process`** - `ChildProcess` - The Node.js child process handle for the running Harper instance
+  - **`logDir`** - `string | undefined` - Absolute path to the per-suite log directory; only set when `HARPER_INTEGRATION_TEST_LOG_DIR` is configured
 
 **Example Usage:**
 
@@ -175,7 +227,7 @@ test('authenticate with admin credentials', async () => {
 
 ## Loopback Address Pool
 
-**Module:** [`loopbackAddressPool.mts`](./loopbackAddressPool.mts)
+**Module:** [`loopbackAddressPool.ts`](./loopbackAddressPool.ts)
 
 Manages a pool of loopback addresses for concurrent test execution. This allows multiple Harper instances to run simultaneously on different loopback addresses without port conflicts.
 
@@ -227,7 +279,7 @@ If no addresses are available, the function waits and retries until one becomes 
 **Pool file location:** `${tmpdir()}/harper-integration-test-loopback-pool.json`
 **Lock file location:** `${tmpdir()}/harper-integration-test-loopback-pool.lock`
 
-**Note:** This is automatically called by `setupHarper()`. You typically don't need to call this directly unless you're implementing custom test infrastructure.
+**Note:** This is automatically called by `startHarper()`. You typically don't need to call this directly unless you're implementing custom test infrastructure.
 
 ---
 
@@ -285,7 +337,7 @@ try {
 
 ## Compression Utilities
 
-**Module:** [`targz.mts`](./targz.mts)
+**Module:** [`targz.ts`](./targz.ts)
 
 Provides utilities for compressing directories into tar.gz archives.
 

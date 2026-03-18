@@ -11,7 +11,7 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 
-import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 
 const DATABASE = 'test_db';
 const TABLE = 'dogs';
@@ -35,7 +35,7 @@ const STANDARD_USER_PASS = 'Test1234!';
 
 suite('operations RBAC', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx, { config: {}, env: {} });
+		await startHarper(ctx, { config: {}, env: {} });
 
 		const adminAuth = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 

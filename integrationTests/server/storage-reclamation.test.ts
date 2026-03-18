@@ -20,7 +20,7 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 
 const TEST_DATABASE = 'test';
 const TEST_TABLE = 'reclaim';
@@ -29,7 +29,7 @@ suite('Storage reclamation', (ctx: ContextWithHarper) => {
 	before(async () => {
 		// Set a very high reclamation threshold (99%) so reclamation triggers immediately
 		// and a short interval (1 second) for faster test execution
-		await setupHarper(ctx, {
+		await startHarper(ctx, {
 			config: {
 				STORAGE_RECLAMATION_THRESHOLD: 0.99,
 				STORAGE_RECLAMATION_INTERVAL: '1s',

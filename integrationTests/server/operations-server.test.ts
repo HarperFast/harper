@@ -12,11 +12,11 @@ import { ok, strictEqual } from 'node:assert/strict';
 import { pack, unpack } from 'msgpackr';
 import { encode, decode } from 'cbor-x';
 
-import { setupHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 
 suite('Operations Server', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx, { config: {}, env: {} });
+		await startHarper(ctx, { config: {}, env: {} });
 	});
 
 	after(async () => {
@@ -95,6 +95,7 @@ suite('Operations Server', (ctx: ContextWithHarper) => {
 				'Accept': 'application/json',
 				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
 			},
+			// @ts-expect-error - Need to update fetch types to support `Buffer<ArrayBufferLike>`
 			body: pack({ operation: 'describe_all' }),
 		});
 		strictEqual(response.status, 200);
@@ -140,6 +141,7 @@ suite('Operations Server', (ctx: ContextWithHarper) => {
 				'Accept': 'application/json',
 				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
 			},
+			// @ts-expect-error - Need to update fetch types to support `Buffer<ArrayBufferLike>`
 			body: encode({ operation: 'describe_all' }),
 		});
 		strictEqual(response.status, 200);

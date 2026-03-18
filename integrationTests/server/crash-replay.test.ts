@@ -3,12 +3,12 @@
  * database, so replay needs to work for harper to startup.
  */
 import { suite, test, before, after } from 'node:test';
-import { setupHarper, teardownHarper, type ContextWithHarper, startHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 import { equal } from 'node:assert';
 
 suite('Transaction log replay on crash', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarper(ctx, {
+		await startHarper(ctx, {
 			config: {},
 			env: {
 				HARPER_NO_FLUSH_ON_EXIT: true, // specifically don't flush, we are testing restart/replay and simulating a crash
@@ -28,7 +28,7 @@ suite('Transaction log replay on crash', (ctx: ContextWithHarper) => {
 		await startHarper(ctx);
 		let response = await sendOperation(ctx.harper, {
 			operation: 'list_roles',
-			authorization: ctx.admin,
+			authorization: ctx.harper.admin,
 		});
 		equal(response.length, 1);
 		equal(response[0].role, 'super_user');
