@@ -112,9 +112,13 @@ interface RunHarperCommandOptions {
  */
 function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCommandOptions): Promise<ChildProcess> {
 	const harperScript = getHarperScript();
-	const proc = spawn('node', ['--trace-warnings', harperScript, ...args], {
-		env: { ...process.env, ...env },
-	});
+	const proc = spawn(
+		'node',
+		['--trace-warnings', '--force-node-api-uncaught-exceptions-policy=true', harperScript, ...args],
+		{
+			env: { ...process.env, ...env },
+		}
+	);
 
 	let stdoutStream: WriteStream | undefined;
 	let stderrStream: WriteStream | undefined;
@@ -156,12 +160,12 @@ function runHarperCommand({ args, env, completionMessage, logDir }: RunHarperCom
 		proc.on('error', (error) => {
 			reject(error);
 		});
-		proc.on('exit', (statusCode) => {
+		proc.on('exit', (statusCode, signal) => {
 			clearTimeout(timer);
 			if (statusCode === 0) {
 				resolve(proc);
 			} else {
-				let errorMessage = `Harper process failed with exit code ${statusCode}`;
+				let errorMessage = `Harper process failed with exit code/signal ${statusCode ?? signal}`;
 				stderrStream?.write(errorMessage);
 				if (stderr) {
 					errorMessage += `\n\nstderr:\n${stderr}`;
