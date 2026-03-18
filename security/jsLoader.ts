@@ -123,6 +123,18 @@ async function stripTypeScriptTypes(source: string): Promise<string> {
 }
 
 /**
+ * Parse a JSON string and return the resulting object. Wraps JSON.parse errors
+ * with the module URL for easier debugging.
+ */
+function parseJsonModule(source: string, url: string): any {
+	try {
+		return JSON.parse(source);
+	} catch (err) {
+		throw new Error(`Failed to parse JSON module ${url}: ${err.message}`);
+	}
+}
+
+/**
  * Load a module using Node's vm.Module API with (not really secure) sandboxing
  */
 async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
@@ -162,7 +174,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	function loadCJS(url: string, source: string): { exports: any } {
 		const cjsModule = { exports: {} };
 		if (url.endsWith('.json')) {
-			cjsModule.exports = JSON.parse(source);
+			cjsModule.exports = parseJsonModule(source, url);
 			return cjsModule;
 		}
 		const require = createRequire(url);
@@ -289,38 +301,50 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			);
 		} else if (url.startsWith('file://')) {
 			checkAllowedModulePath(url, scope.verifyPath);
-			// Load source text from file
 			let source = await readFile(new URL(url), { encoding: 'utf-8' });
 
-			// Strip TypeScript types if this is a .ts file
-			if (url.endsWith('.ts') || url.endsWith('.tsx')) {
-				source = await stripTypeScriptTypes(source);
-			}
+			// Handle JSON modules as a SyntheticModule with a default export.
+			// JSON imports only support default exports per the ESM spec.
+			if (url.endsWith('.json')) {
+				const jsonData = parseJsonModule(source, url);
+				module = new SyntheticModule(
+					['default'],
+					function () {
+						this.setExport('default', jsonData);
+					},
+					{ identifier: url, context }
+				);
+			} else {
+				// Strip TypeScript types if this is a .ts file
+				if (url.endsWith('.ts') || url.endsWith('.tsx')) {
+					source = await stripTypeScriptTypes(source);
+				}
 
-			// Try to parse as ESM first
-			try {
-				module = new SourceTextModule(source, {
-					identifier: url,
-					context,
-					initializeImportMeta(meta) {
-						meta.url = url;
-					},
-					async importModuleDynamically(specifier: string) {
-						const resolvedUrl = resolveModule(specifier, url);
-						const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
-						return dynamicModule;
-					},
-				});
-			} catch (err) {
-				// If ESM parsing fails, try to load as CommonJS
-				if (
-					err.message?.includes('require is not defined') ||
-					source.includes('module.exports') ||
-					source.includes('exports.')
-				) {
-					module = loadCJSModule(url, source, usePrivateGlobal);
-				} else {
-					throw err;
+				// Try to parse as ESM first
+				try {
+					module = new SourceTextModule(source, {
+						identifier: url,
+						context,
+						initializeImportMeta(meta) {
+							meta.url = url;
+						},
+						async importModuleDynamically(specifier: string) {
+							const resolvedUrl = resolveModule(specifier, url);
+							const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
+							return dynamicModule;
+						},
+					});
+				} catch (err) {
+					// If ESM parsing fails, try to load as CommonJS
+					if (
+						err.message?.includes('require is not defined') ||
+						source.includes('module.exports') ||
+						source.includes('exports.')
+					) {
+						module = loadCJSModule(url, source, usePrivateGlobal);
+					} else {
+						throw err;
+					}
 				}
 			}
 		} else {
@@ -400,6 +424,17 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					};
 				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
 					const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
+					// Handle JSON files in comparttment mode the same way as in VM mode
+					if (moduleSpecifier.endsWith('.json')) {
+						const jsonData = parseJsonModule(moduleText, moduleSpecifier);
+						return {
+							imports: [],
+							exports: ['default'],
+							execute(exports) {
+								exports.default = jsonData;
+							},
+						};
+					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
 					checkAllowedModulePath(moduleSpecifier, scope.verifyPath);
