@@ -117,47 +117,9 @@ let amaro: typeof import('amaro') | undefined;
  * Falls back to regex-based stripping if amaro is not available
  */
 async function stripTypeScriptTypes(source: string): Promise<string> {
-	try {
-		// Use amaro - the library that Node.js uses internally for type stripping
-		// Try to use the internal one first, if we can, otherwise fallback to loading the external one
-		if (!amaro) {
-			amaro = await import('internal/deps/amaro/dist/index').then(
-				(mod) => mod.default,
-				() => null
-			);
-			amaro ??= await import('amaro').catch(() => null);
-		}
-		if (amaro?.transformSync) {
-			return amaro.transformSync(source, { mode: 'strip-only' }).code;
-		}
-	} catch {
-		// amaro not available, fall through to regex
-	}
-
-	// Fall back to basic regex-based stripping
-	// Remove type annotations from parameters and variables
-	source = source.replace(/:\s*[A-Za-z_$][\w$<>[\]|&,\s]*(?=[,)\]=;])/g, '');
-	// Remove interface declarations
-	source = source.replace(/interface\s+\w+\s*{[^}]*}/g, '');
-	// Remove type aliases
-	source = source.replace(/type\s+\w+\s*=\s*[^;]+;/g, '');
-	// Remove 'as' type assertions
-	source = source.replace(/\s+as\s+[A-Za-z_$][\w$<>[\]|&\s]*/g, '');
-	// Remove generic type parameters from function/class declarations
-	source = source.replace(/(class|function)\s+(\w+)<[^>]+>/g, '$1 $2');
-	// Remove return type annotations
-	source = source.replace(/\):\s*[A-Za-z_$][\w$<>[\]|&,\s]*(?=\s*{)/g, ')');
-	// Remove readonly/public/private/protected modifiers
-	source = source.replace(/\b(public|private|protected|readonly)\s+/g, '');
-	// Remove type imports
-	source = source.replace(/import\s+type\s+{[^}]+}\s+from\s+['"][^'"]+['"]/g, '');
-	source = source.replace(/import\s+{([^}]*\btype\s+[^}]*)}\s+from\s+['"][^'"]+['"]/g, (match, imports) => {
-		// Remove individual type imports from mixed import statements
-		const cleaned = imports.replace(/,?\s*type\s+\w+\s*,?/g, '').replace(/,\s*,/g, ',');
-		return cleaned.trim() ? `import {${cleaned}} from ` + match.split('from')[1] : '';
-	});
-
-	return source;
+	// Use amaro - the library that Node.js uses internally for type stripping
+	amaro = await import('amaro').catch(() => null);
+	return amaro.transformSync(source, { mode: 'strip-only' }).code;
 }
 
 /**
