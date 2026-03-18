@@ -89,12 +89,13 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 				if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
 				const result = await (await scope.compartment).import(moduleUrl);
 				return result.namespace;
-			} // else use standard node:vm module to do containment
-			return await loadModuleWithVM(moduleUrl, scope);
-		} else {
-			// important! we need to await the import, otherwise the error will not be caught
-			return await import(moduleUrl);
+			} else if (SourceTextModule) {
+				// else use standard node:vm module to do containment (if it is available)
+				return await loadModuleWithVM(moduleUrl, scope);
+			}
 		}
+		// important! we need to await the import, otherwise the error will not be caught
+		return await import(moduleUrl);
 	} catch (err) {
 		try {
 			// the actual parse error (internally known as the "arrow message")
@@ -108,6 +109,17 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 		}
 		throw err;
 	}
+}
+
+let amaro: typeof import('amaro') | undefined;
+/**
+ * Strip TypeScript types using the amaro library (what Node.js uses internally)
+ * Falls back to regex-based stripping if amaro is not available
+ */
+async function stripTypeScriptTypes(source: string): Promise<string> {
+	// Use amaro - the library that Node.js uses internally for type stripping
+	amaro = await import('amaro');
+	return amaro.transformSync(source, { mode: 'strip-only' }).code;
 }
 
 /**
@@ -278,7 +290,12 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		} else if (url.startsWith('file://')) {
 			checkAllowedModulePath(url, scope.verifyPath);
 			// Load source text from file
-			const source = await readFile(new URL(url), { encoding: 'utf-8' });
+			let source = await readFile(new URL(url), { encoding: 'utf-8' });
+
+			// Strip TypeScript types if this is a .ts file
+			if (url.endsWith('.ts') || url.endsWith('.tsx')) {
+				source = await stripTypeScriptTypes(source);
+			}
 
 			// Try to parse as ESM first
 			try {

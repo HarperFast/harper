@@ -2239,11 +2239,12 @@ export function makeTable(options) {
 				entries = transformToEntries(entries, select, context, readTxn, null);
 				let ordered;
 				// if we are doing post-ordering, we need to get records first, then sort them
-				results.iterate = function () {
+				results.iterate = function (options: { async: boolean }) {
 					let sortedArrayIterator: IterableIterator<any>;
-					const dbIterator = entries[Symbol.asyncIterator]
-						? entries[Symbol.asyncIterator]()
-						: entries[Symbol.iterator]();
+					const dbIterator =
+						options?.async && entries[Symbol.asyncIterator]
+							? entries[Symbol.asyncIterator]()
+							: entries[Symbol.iterator]();
 					let dbDone: boolean;
 					const dbOrderedAttribute = sort.dbOrderedAttribute;
 					let enqueuedEntryForNextGroup: any;
@@ -2357,7 +2358,10 @@ export function makeTable(options) {
 				};
 				applySortingOnSelect(sort);
 			} else {
-				results.iterate = (entries[Symbol.asyncIterator] || entries[Symbol.iterator]).bind(entries);
+				results.iterate = (options: { async: boolean }) => {
+					if (options?.async && entries[Symbol.asyncIterator]) return entries[Symbol.asyncIterator]();
+					else return entries[Symbol.iterator]();
+				};
 				results = results.map(function (entry) {
 					try {
 						// because this is a part of a stream of results, we will often be continuing to iterate over the results when there are errors,
