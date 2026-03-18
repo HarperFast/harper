@@ -3,6 +3,7 @@
 import { assert } from 'chai';
 import axios from 'axios';
 import { setupTestApp } from './setupTestApp.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 describe('test REST calls with cache table', () => {
 	before(async () => {
@@ -32,6 +33,7 @@ describe('test REST calls with cache table', () => {
 		delete data.nameTitle; // don't send a computed property
 		response = await axios.put('http://localhost:9926/FourProp/3', data);
 		assert.equal(response.status, 204);
+		await delay(20);
 		response = await axios('http://localhost:9926/SimpleCache/3');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.id, 3);

@@ -232,7 +232,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				l++;
 			}
 		}
-		if (invertedSimiliarities > 4)
+		if (invertedSimiliarities > 6)
 			console.log('found', invertedSimiliarities, 'inversions of distance, which is more than desirable');
 		assert(invertedSimiliarities < 5);
 	}
