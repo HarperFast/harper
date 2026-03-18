@@ -111,7 +111,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	}
 }
 
-let amaro: any;
+let amaro: typeof import('amaro') | undefined;
 /**
  * Strip TypeScript types using the amaro library (what Node.js uses internally)
  * Falls back to regex-based stripping if amaro is not available
