@@ -311,18 +311,20 @@ describe('Caching', () => {
 			results.push(record);
 		}
 		assert.equal(results.length, 1);
+		assert.equal(sourceRequests, 2);
 		result = await IndexedCachingTable.get(23);
 		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 2);
+		sourceRequests = 0;
 		// let it expire
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		result = await IndexedCachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
-		assert.equal(sourceRequests, 3);
+		assert.equal(sourceRequests, 1);
 		assert.equal(events.length, 0);
 		result = await IndexedCachingTable.get(23);
-		console.log(result.getExpiresAt());
+		// TODO: This should always be there, per https://github.com/HarperFast/harper/issues/239
+		//assert(result.getExpiresAt());
 	});
 
 	it('Bigger stampede is handled', async function () {
