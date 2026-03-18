@@ -144,7 +144,7 @@
 		"tsx": "^4.20.6",
 		"typescript": "^5.8.2",
 		"typescript-eslint": "^8.45.0",
-		"undici": "^7.16.0",
+		"undici": "^7.24.4",
 		"why-is-node-still-running": "^1.0.0"
 	},
 	"dependencies": {
