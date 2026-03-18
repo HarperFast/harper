@@ -118,7 +118,7 @@ let amaro: typeof import('amaro') | undefined;
  */
 async function stripTypeScriptTypes(source: string): Promise<string> {
 	// Use amaro - the library that Node.js uses internally for type stripping
-	amaro = await import('amaro').catch(() => null);
+	amaro = await import('amaro');
 	return amaro.transformSync(source, { mode: 'strip-only' }).code;
 }
 
