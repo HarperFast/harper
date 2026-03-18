@@ -339,7 +339,9 @@ function onMessageByType(type, listener) {
 	listeners.push(listener);
 	if (messagesQueuedByType.has(type)) {
 		for (let message of messagesQueuedByType.get(type)) {
-			listener(message);
+			// enqueue in next event turn; messages always come as events, and trying to do this synchronously can be
+			// problematic for getting mixed up with module loading
+			setImmediate(() => listener(message));
 		}
 		messagesQueuedByType.delete(type);
 	}
