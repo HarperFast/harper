@@ -314,7 +314,8 @@ describe('Test export.js', () => {
 					EOL +
 					'1617990184839,"this record is only in one",,,"4469b900-8ccb-4d21-9581-c7ca535bfbba",1617990184839,"1 North Street",' +
 					EOL +
-					'1617990184838,,"{""dog"":""tuck"",""owner"":""david"",""foods"":[1,""chicken""]}","[""tuck"",""ball"",123]","e2e7e30c-2ec6-445c-b73d-9a1cae61c372",1617990184838,"1 North Street","[{""dog"":""tuck""},{""dog"":123,""breed"":""fur ball""}]"';
+					'1617990184838,,"{""dog"":""tuck"",""owner"":""david"",""foods"":[1,""chicken""]}","[""tuck"",""ball"",123]","e2e7e30c-2ec6-445c-b73d-9a1cae61c372",1617990184838,"1 North Street","[{""dog"":""tuck""},{""dog"":123,""breed"":""fur ball""}]"' +
+					EOL;
 				file_name = path.join(TMP_TEST_DIR, 'test_file.csv');
 				let wrote_data = await saveToLocal(file_name, 'csv', data_object);
 				assert.deepEqual(
@@ -507,7 +508,8 @@ describe('Test export.js', () => {
 				EOL +
 				',"{""name"":""object"",""number"":1,""array"":[1,""two""]}","[1,2,""three""]","Harper",1618335194930,,1618335194930,,"bc56cf62-5ad1-4519-b1c6-26742b02e9d5",' +
 				EOL +
-				',,,,1618335194930,"[{""number"":1},{""number"":""two"",""count"":2}]",1618335194930,,"dce07e2f-fa32-4ceb-b4a4-4270fefe51cf",';
+				',,,,1618335194930,"[{""number"":1},{""number"":""two"",""count"":2}]",1618335194930,,"dce07e2f-fa32-4ceb-b4a4-4270fefe51cf",' +
+				EOL;
 			await hdb_export.export_to_s3(export_obj_test);
 
 			// Get the stream passed to the S3 upload method.
