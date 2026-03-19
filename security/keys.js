@@ -665,7 +665,13 @@ function updateConfigCert() {
 			cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
 	}
 
-	configUtils.updateConfigValue(undefined, undefined, newCerts, false, true);
+	// Filter out any cert config keys already set by HARPER_SET_CONFIG so we don't overwrite them
+	// with defaults. On first boot, HARPER_SET_CONFIG values are written to the config file during
+	// createConfigFile(), but updateConfigCert() runs afterward without re-applying HARPER_SET_CONFIG.
+	const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars.ts');
+	const filteredCerts = filterArgsAgainstRuntimeConfig(newCerts);
+
+	configUtils.updateConfigValue(undefined, undefined, filteredCerts, false, true);
 }
 
 function readPEM(path) {
