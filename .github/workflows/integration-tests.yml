@@ -78,7 +78,7 @@ jobs:
     name: Integration API Tests (Node.js v${{ matrix.node-version }})
     needs: [generate-node-version-matrix, build]
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
