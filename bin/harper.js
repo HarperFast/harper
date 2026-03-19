@@ -1,4 +1,4 @@
-#!/usr/bin/env node --experimental-vm-modules
+#!/usr/bin/env -S node --experimental-vm-modules
 'use strict';
 
 const fs = require('node:fs');
