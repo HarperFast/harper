@@ -177,7 +177,7 @@
 		"cli-progress": "3.12.0",
 		"clone": "2.1.2",
 		"dotenv": "^16.4.7",
-		"easy-ocsp": "1.2.2",
+		"easy-ocsp": "1.3.1",
 		"fast-glob": "3.3.3",
 		"fastify": "^5.8.2",
 		"fastify-plugin": "^5.1.0",
