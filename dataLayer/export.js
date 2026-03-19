@@ -244,9 +244,7 @@ async function export_to_s3(exportObject) {
 
 	if (exportObject.format === CSV) {
 		s3Name = exportObject.s3.key + '.csv';
-		// Create a read stream with the data.
-
-		// Create a json2csv stream transform.
+		// Create a read stream with the data using a CSV transform stream.
 		const csvStream = toCsvStream(data, data.getColumns?.());
 		csvStream.on('error', (err) => {
 			throw err;

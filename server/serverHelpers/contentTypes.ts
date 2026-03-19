@@ -3,7 +3,7 @@ import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { ClientError } from '../../utility/errors/hdbError.js';
-import stream, { Readable } from 'stream';
+import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
 import { _assignPackageExport } from '../../globals.js';
 import envMgr from '../../utility/environment/environmentManager.js';
@@ -13,7 +13,6 @@ import { logger } from '../../utility/logging/logger.ts';
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
-import { Transform } from 'stream';
 const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -232,7 +231,6 @@ export function registerContentHandlers(app) {
 
 const registerFastifySerializers = fp(
 	function (fastify, opts, done) {
-		//
 		fastify.addHook('preSerialization', async (request, reply) => {
 			const contentType = reply.raw.getHeader('content-type');
 			if (contentType) return;
