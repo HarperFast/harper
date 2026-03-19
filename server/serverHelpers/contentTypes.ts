@@ -11,7 +11,6 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
 import { logger } from '../../utility/logging/logger.ts';
 import { Blob } from '../../resources/blob.ts';
-import { Transform } from 'json2csv';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
@@ -232,7 +231,7 @@ export function registerContentHandlers(app) {
 
 const registerFastifySerializers = fp(
 	function (fastify, opts, done) {
-		// eslint-disable-next-line require-await
+		//
 		fastify.addHook('preSerialization', async (request, reply) => {
 			const contentType = reply.raw.getHeader('content-type');
 			if (contentType) return;
@@ -623,15 +622,64 @@ function transformIterable(iterable, transform) {
 export function toCsvStream(data, columns) {
 	// ensure that we pass it an iterable
 	const readStream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
-	const options = {};
-	if (columns)
-		options.fields = columns.map((column) => ({
-			label: column,
-			value: column,
-		}));
-	const transformOptions = { objectMode: true };
-	// Create a json2csv stream transform.
-	const json2csv = new Transform(options, transformOptions);
-	// Pipe the data read stream through json2csv which converts it to CSV
-	return readStream.pipe(json2csv);
+
+	let headerWritten = false;
+	let fields = columns || null;
+
+	// Create a transform stream to convert objects to CSV
+	const csvTransform = new Transform({
+		objectMode: true,
+		transform(chunk, encoding, callback) {
+			try {
+				// Extract fields from first object if not provided
+				if (!fields && typeof chunk === 'object' && chunk !== null) {
+					fields = Object.keys(chunk);
+				}
+
+				// Write header row on first chunk
+				if (!headerWritten && fields) {
+					this.push(escapeCsvRow(fields) + '\n');
+					headerWritten = true;
+				}
+
+				// Convert object to CSV row
+				if (fields) {
+					const values = fields.map((field) => {
+						const value = chunk[field];
+						return value === null || value === undefined ? '' : String(value);
+					});
+					this.push(escapeCsvRow(values) + '\n');
+				}
+
+				callback();
+			} catch (error) {
+				callback(error);
+			}
+		},
+	});
+
+	// Pipe the data read stream through our CSV transform
+	return readStream.pipe(csvTransform);
+}
+
+/**
+ * Escapes and formats a row of CSV values
+ */
+function escapeCsvRow(values: string[]): string {
+	return values
+		.map((value) => {
+			const stringValue = String(value);
+			// Check if value needs quoting (contains comma, quote, newline, or carriage return)
+			if (
+				stringValue.includes(',') ||
+				stringValue.includes('"') ||
+				stringValue.includes('\n') ||
+				stringValue.includes('\r')
+			) {
+				// Escape quotes by doubling them and wrap in quotes
+				return '"' + stringValue.replace(/"/g, '""') + '"';
+			}
+			return stringValue;
+		})
+		.join(',');
 }
