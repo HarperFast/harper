@@ -409,3 +409,39 @@ describe('Test keys module', () => {
 		expect(extensions.length).to.equal(3);
 	});
 });
+
+describe('updateConfigCert - HARPER_SET_CONFIG interaction', () => {
+	const sandbox = sinon.createSandbox();
+	let updateConfigValueStub;
+
+	before(() => {
+		sandbox.stub(env_mgr, 'getHdbBasePath').returns('/fake/hdb/root');
+	});
+
+	afterEach(() => {
+		sandbox.resetHistory();
+		delete process.env.HARPER_SET_CONFIG;
+	});
+
+	after(() => sandbox.restore());
+
+	it('does not overwrite tls.privateKey managed by HARPER_SET_CONFIG', () => {
+		// Regression: on first boot, updateConfigCert() was called after createConfigFile() had written
+		// HARPER_SET_CONFIG TLS paths to disk. It always included tls_privateKey (default HDB path) in
+		// newCerts, overwriting the HARPER_SET_CONFIG value. On restart applyRuntimeEnvVarConfig fixed it,
+		// but on first boot the wrong key was used. Fix: filter newCerts through filterArgsAgainstRuntimeConfig.
+		process.env.HARPER_SET_CONFIG = JSON.stringify({
+			tls: {
+				certificate: '/etc/letsencrypt/fullchain.pem',
+				privateKey: '/etc/letsencrypt/privkey.pem',
+			},
+		});
+		updateConfigValueStub = sandbox.stub(config_utils, 'updateConfigValue');
+
+		keys.updateConfigCert();
+
+		// tls.privateKey is managed by HARPER_SET_CONFIG — updateConfigValue must not receive it
+		const certArgs = updateConfigValueStub.args[0]?.[2] ?? {};
+		expect(certArgs).to.not.have.property('tls_privateKey');
+	});
+});
