@@ -21,7 +21,7 @@ jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
