@@ -2,7 +2,6 @@
 
 const search = require('./search.js');
 const AWSConnector = require('../utility/AWS/AWSConnector.js');
-const { AsyncParser } = require('json2csv');
 const stream = require('stream');
 const hdbUtils = require('../utility/common_utils.js');
 const fs = require('fs-extra');
@@ -170,20 +169,11 @@ async function saveToLocal(filePath, sourceDataFormat, data) {
 	} else if (sourceDataFormat === CSV) {
 		// Create a write stream to the local export file.
 		let writeStream = fs.createWriteStream(filePath);
-		// Create a read stream with the data.
-		let readableStream = stream.Readable.from(data);
-		let options = {};
 		const columns = data.getColumns?.();
-		if (columns)
-			options.fields = columns.map((column) => ({
-				label: column,
-				value: column,
-			}));
-		let transformOptions = { objectMode: true };
-		// Initialize json2csv parser
-		let asyncParser = new AsyncParser(options, transformOptions);
-		let parsingProcessor = asyncParser.fromInput(readableStream).toOutput(writeStream);
-		await parsingProcessor.promise(false);
+		// Use the toCsvStream helper to convert data to CSV
+		toCsvStream(data, columns).pipe(writeStream);
+		// Wait until done. Throws if there are errors.
+		await streamFinished(writeStream);
 
 		return {
 			message: LOCAL_CSV_EXPORT_MSG,
