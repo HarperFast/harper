@@ -416,6 +416,7 @@ describe('updateConfigCert - HARPER_SET_CONFIG interaction', () => {
 
 	before(() => {
 		sandbox.stub(env_mgr, 'getHdbBasePath').returns('/fake/hdb/root');
+		updateConfigValueStub = sandbox.stub(config_utils, 'updateConfigValue');
 	});
 
 	afterEach(() => {
@@ -424,6 +425,17 @@ describe('updateConfigCert - HARPER_SET_CONFIG interaction', () => {
 	});
 
 	after(() => sandbox.restore());
+
+	it('still writes tls_privateKey when HARPER_SET_CONFIG does not manage it', () => {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({
+			logging: { level: 'debug' },
+		});
+
+		keys.updateConfigCert();
+
+		const certArgs = updateConfigValueStub.args[0]?.[2] ?? {};
+		expect(certArgs).to.have.property('tls_privateKey');
+	});
 
 	it('does not overwrite tls.privateKey managed by HARPER_SET_CONFIG', () => {
 		// Regression: on first boot, updateConfigCert() was called after createConfigFile() had written
@@ -436,7 +448,6 @@ describe('updateConfigCert - HARPER_SET_CONFIG interaction', () => {
 				privateKey: '/etc/letsencrypt/privkey.pem',
 			},
 		});
-		updateConfigValueStub = sandbox.stub(config_utils, 'updateConfigValue');
 
 		keys.updateConfigCert();
 
