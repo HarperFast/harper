@@ -13,6 +13,7 @@ import { logger } from '../../utility/logging/logger.ts';
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
+import { Transform } from 'stream';
 const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -638,7 +639,7 @@ export function toCsvStream(data, columns) {
 
 				// Write header row on first chunk
 				if (!headerWritten && fields) {
-					this.push(escapeCsvRow(fields) + '\n');
+					this.push(escapeCsvRow(fields, true) + '\n');
 					headerWritten = true;
 				}
 
@@ -646,9 +647,16 @@ export function toCsvStream(data, columns) {
 				if (fields) {
 					const values = fields.map((field) => {
 						const value = chunk[field];
-						return value === null || value === undefined ? '' : String(value);
+						if (value === null || value === undefined) {
+							return '';
+						}
+						// Serialize objects and arrays as JSON
+						if (typeof value === 'object') {
+							return JSON.stringify(value);
+						}
+						return value;
 					});
-					this.push(escapeCsvRow(values) + '\n');
+					this.push(escapeCsvRow(values, false) + '\n');
 				}
 
 				callback();
@@ -664,22 +672,26 @@ export function toCsvStream(data, columns) {
 
 /**
  * Escapes and formats a row of CSV values
+ * @param values - Array of values to format
+ * @param quoteAll - If true, quote all values. If false, only quote strings (not numbers)
  */
-function escapeCsvRow(values: string[]): string {
+function escapeCsvRow(values: any[], quoteAll: boolean = false): string {
 	return values
 		.map((value) => {
-			const stringValue = String(value);
-			// Check if value needs quoting (contains comma, quote, newline, or carriage return)
-			if (
-				stringValue.includes(',') ||
-				stringValue.includes('"') ||
-				stringValue.includes('\n') ||
-				stringValue.includes('\r')
-			) {
-				// Escape quotes by doubling them and wrap in quotes
-				return '"' + stringValue.replace(/"/g, '""') + '"';
+			// Handle empty/null values
+			if (value === '' || value === null || value === undefined) {
+				return '';
 			}
-			return stringValue;
+
+			// If it's a number and we're not quoting all, return it unquoted
+			if (typeof value === 'number' && !quoteAll) {
+				return String(value);
+			}
+
+			// For strings or when quoteAll is true, quote and escape
+			const stringValue = String(value);
+			// Escape quotes by doubling them and wrap in quotes
+			return '"' + stringValue.replace(/"/g, '""') + '"';
 		})
 		.join(',');
 }
