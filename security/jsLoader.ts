@@ -20,6 +20,7 @@ import { EventEmitter } from 'node:events';
 
 type Lockdown = 'none' | 'freeze' | 'ses';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+const HARPER_MODULE_IDS = new Set(['harper', 'harperdb', '@harperfast/harper', '@harperfast/harper-pro']);
 
 let lockedDown = false;
 /**
@@ -149,15 +150,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	 * Resolve module specifier to absolute URL
 	 */
 	function resolveModule(specifier: string, referrer: string): string {
-		if (specifier === 'harperdb' || specifier === 'harper') return 'harper';
-		if (specifier.startsWith('harper/') || specifier.startsWith('harperdb/')) {
-			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
+		const parts = specifier.split('/');
+		if (HARPER_MODULE_IDS.has(parts[0])) {
+			if (parts.length === 1) return 'harper';
+			else throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
 		}
-		if (specifier.startsWith('file://')) {
+		if (parts[0] === 'file:') {
 			return specifier;
 		}
 		// For relative paths, resolve to absolute file URL
-		if (specifier.startsWith('.')) {
+		if (parts[0] === '.' || parts[0] === '..') {
 			const resolved = createRequire(referrer).resolve(specifier);
 			if (isAbsolute(resolved)) {
 				return pathToFileURL(resolved).toString();
@@ -288,7 +290,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		let module: SourceTextModule | SyntheticModule;
 
 		// Handle special built-in modules
-		if (url === 'harper' || url === 'harperdb') {
+		if (url === 'harper') {
 			let harperExports = getHarperExports(scope);
 			module = new SyntheticModule(
 				Object.keys(harperExports),
