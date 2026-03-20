@@ -256,4 +256,27 @@ describe('Audit log', () => {
 
 		assert(true, 'Should complete successfully after adding and removing logs');
 	});
+	it('can handle separate subscriptions on separate dbs', async function () {
+		const DB_COUNT = 3;
+		let tables = [];
+		let events = [];
+		for (let i = 0; i < DB_COUNT; i++) {
+			tables[i] = table({
+				table: 'AuditedTable',
+				database: 'test-subscribe' + i,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			});
+			let subscription = await tables[i].subscribe({});
+			const eventsForTable = (events[i] = []);
+			subscription.on('data', (event) => {
+				eventsForTable.push(event);
+			});
+		}
+		for (let i = 0; i < DB_COUNT; i++) {
+			await tables[i].put(50, { name: 'test' });
+		}
+		for (let i = 0; i < DB_COUNT; i++) {
+			assert.equal(events[i].length, 1);
+		}
+	});
 });
