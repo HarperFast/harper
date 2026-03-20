@@ -150,13 +150,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	 * Resolve module specifier to absolute URL
 	 */
 	function resolveModule(specifier: string, referrer: string): string {
+		if (HARPER_MODULE_IDS.has(specifier)) {
+			return 'harper'; // resolve any harper package as an alias to a single synthetic module
+		}
 		const parts = specifier.split('/');
 		if (HARPER_MODULE_IDS.has(parts[0])) {
-			if (parts.length === 1) return 'harper';
-			else throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
-		}
-		if (parts[0] === 'file:') {
-			return specifier;
+			// block harper/* and harperdb/* for now (reserving for potential future use)
+			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
 		}
 		// For relative paths, resolve to absolute file URL
 		if (parts[0] === '.' || parts[0] === '..') {
@@ -166,7 +166,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			}
 			return resolved;
 		}
-		// For package names and node: specifiers, keep as-is for proper require() handling
+		// For package names, file://, and node: specifiers, keep as-is for proper require() handling
 		return specifier;
 	}
 
@@ -406,6 +406,15 @@ async function getCompartment(scope: ApplicationScope, globals) {
 		{
 			name: 'harper-app',
 			resolveHook(moduleSpecifier, moduleReferrer) {
+				if (HARPER_MODULE_IDS.has(moduleSpecifier)) {
+					return 'harper'; // resolve any harper package as an alias to a single synthetic module
+				}
+				const parts = moduleSpecifier.split('/');
+				if (HARPER_MODULE_IDS.has(parts[0])) {
+					// block harper/* and harperdb/* for now (reserving for potential future use)
+					throw new Error(`Module ${moduleSpecifier} is not allowed, may only access the 'harper' module`);
+				}
+
 				if (moduleSpecifier === 'harperdb' || moduleSpecifier === 'harper') return 'harper';
 				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
 				if (isAbsolute(resolved)) {
