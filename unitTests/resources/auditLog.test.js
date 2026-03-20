@@ -275,6 +275,7 @@ describe('Audit log', () => {
 		for (let i = 0; i < DB_COUNT; i++) {
 			await tables[i].put(50, { name: 'test' });
 		}
+		await delay(40); // let the events fire
 		for (let i = 0; i < DB_COUNT; i++) {
 			assert.equal(events[i].length, 1);
 		}
