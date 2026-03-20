@@ -1,10 +1,11 @@
+import { onMessageByType } from '../server/threads/manageThreads.js';
 import { readdirSync, readFileSync, existsSync, realpathSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.js';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
-import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import * as graphqlHandler from '../resources/graphql.ts';
 import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
 import * as roles from '../resources/roles.ts';
@@ -391,6 +392,8 @@ export async function loadComponent(
 				// New Plugin API (`handleApplication`)
 				if (resources.isWorker && extensionModule.handleApplication) {
 					const scope = new Scope(appName || 'harper', componentName, componentDirectory, configPath, applicationScope);
+
+					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => scope.close());
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 
