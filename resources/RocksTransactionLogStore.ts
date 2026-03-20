@@ -6,7 +6,6 @@ import { EventEmitter } from 'node:events';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
 	// we want to be able to test log replay
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 	process.on('exit', () => shutdown());
 }
 
@@ -275,7 +274,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 			iterable.iterate = () => aggregateIterator;
 		}
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
 			const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
 			data.dataView = decoder;
@@ -343,6 +341,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 	}
 	unlock(key: any): void {
 		this.rootStore.unlock(key);
+	}
+	get path() {
+		return this.rootStore.path;
 	}
 
 	async remove() {

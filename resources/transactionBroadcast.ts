@@ -21,6 +21,9 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
 	let databaseSubscriptions;
+	if (!path) {
+		throw new Error('No path for table primary store');
+	}
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
 		databaseSubscriptions = allSameThreadSubscriptions[path] || (allSameThreadSubscriptions[path] = []);
