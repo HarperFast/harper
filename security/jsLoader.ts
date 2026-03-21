@@ -20,7 +20,14 @@ import { EventEmitter } from 'node:events';
 
 type Lockdown = 'none' | 'freeze' | 'ses';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
-const HARPER_MODULE_IDS = new Set(['harper', 'harperdb', '@harperfast/harper', '@harperfast/harper-pro']);
+const HARPER_MODULE_IDS = new Set([
+	'harper',
+	'harperdb',
+	'harperdb/v1',
+	'harperdb/v2',
+	'@harperfast/harper',
+	'@harperfast/harper-pro',
+]);
 
 let lockedDown = false;
 /**
@@ -154,8 +161,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			return 'harper'; // resolve any harper package as an alias to a single synthetic module
 		}
 		const parts = specifier.split('/');
-		if (HARPER_MODULE_IDS.has(parts[0])) {
-			// block harper/* and harperdb/* for now (reserving for potential future use)
+		if (parts[0] === 'harper') {
+			// block harper/* for now (reserving for potential future use)
 			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
 		}
 		// For relative paths, resolve to absolute file URL
@@ -410,12 +417,11 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					return 'harper'; // resolve any harper package as an alias to a single synthetic module
 				}
 				const parts = moduleSpecifier.split('/');
-				if (HARPER_MODULE_IDS.has(parts[0])) {
-					// block harper/* and harperdb/* for now (reserving for potential future use)
+				if (parts[0] === 'harper') {
+					// block harper/* for now (reserving for potential future use)
 					throw new Error(`Module ${moduleSpecifier} is not allowed, may only access the 'harper' module`);
 				}
 
-				if (moduleSpecifier === 'harperdb' || moduleSpecifier === 'harper') return 'harper';
 				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
 				if (isAbsolute(resolved)) {
 					const resolvedURL = pathToFileURL(resolved).toString();
