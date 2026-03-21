@@ -35,6 +35,14 @@ const DEPRECATED_CONFIG = {
 	logging_rotation_workerinterval: 'logging.rotation.workerInterval',
 };
 
+const CONFIG_PATH_KEYS = [
+	'componentsroot',
+	'logging_root',
+	'storage_path',
+	'logging_rotation_path',
+	'operationsapi_network_domainsocket',
+];
+
 let flatDefaultConfigObj;
 let flatConfigObj;
 let configObj;
@@ -68,6 +76,21 @@ function resolvePath(relativePath) {
 	} catch (error) {
 		console.error('Unable to resolve path', relativePath, error);
 		return relativePath;
+	}
+}
+
+/**
+ * Resolves relative config path values to absolute in the in-memory flattened config object.
+ * Config file stores relative paths for portability, consumers of getConfigValue() get absolute paths.
+ * @param flatConfig
+ * @param rootPath
+ */
+function resolveConfigPaths(flatConfig, rootPath) {
+	if (!rootPath) return;
+	for (const key of CONFIG_PATH_KEYS) {
+		if (flatConfig[key] && typeof flatConfig[key] === 'string' && !path.isAbsolute(flatConfig[key])) {
+			flatConfig[key] = path.resolve(rootPath, flatConfig[key]);
+		}
 	}
 }
 
@@ -132,6 +155,7 @@ function createConfigFile(args, skipFsValidation = false) {
 
 	const configObj = configDoc.toJSON();
 	flatConfigObj = flattenConfig(configObj);
+	resolveConfigPaths(flatConfigObj, configObj.rootPath);
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']);
@@ -310,6 +334,7 @@ function initConfig(force = false) {
 		const configObj = configDoc.toJSON();
 		server.config = configObj;
 		flatConfigObj = flattenConfig(configObj);
+		resolveConfigPaths(flatConfigObj, configObj.rootPath);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
 		if (flatConfigObj['logging_rotation_rotate']) {
@@ -335,12 +360,12 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 	const rootPath = configDoc.getIn(['rootPath']);
 	let updateFile = false;
 	if (!configDoc.hasIn(['storage', 'path'])) {
-		configDoc.setIn(['storage', 'path'], path.join(rootPath, 'database'));
+		configDoc.setIn(['storage', 'path'], 'database');
 		updateFile = true;
 	}
 
 	if (!configDoc.hasIn(['logging', 'rotation', 'path'])) {
-		configDoc.setIn(['logging', 'rotation', 'path'], path.join(rootPath, 'log'));
+		configDoc.setIn(['logging', 'rotation', 'path'], 'log');
 		updateFile = true;
 	}
 
@@ -620,6 +645,7 @@ function updateConfigValue(
 	fs.writeFileSync(configFileLocation, String(configDoc));
 	if (update_config_obj) {
 		flatConfigObj = flattenConfig(configDoc.toJSON());
+		resolveConfigPaths(flatConfigObj, hdbRoot);
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }
