@@ -98,6 +98,14 @@ function updateConditional(logger) {
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
 }
+/**
+ * Resolve a config path value against rootPath if it is relative.
+ */
+function resolveLogPath(configPath, rootPath) {
+	if (!configPath || !rootPath) return configPath;
+	if (pathModule.isAbsolute(configPath)) return configPath;
+	return pathModule.resolve(rootPath, configPath);
+}
 async function updateLogSettings() {
 	if (!rootConfig) {
 		// set up the initial watcher
@@ -109,6 +117,14 @@ async function updateLogSettings() {
 	}
 	let rootConfigObject = rootConfig.config;
 	const logOptions = rootConfigObject.logging ?? {};
+	// Resolve relative paths against rootPath from the same config
+	const rootPath = rootConfigObject.rootPath;
+	if (logOptions.root) {
+		logOptions.root = resolveLogPath(logOptions.root, rootPath);
+	}
+	if (logOptions.rotation?.path) {
+		logOptions.rotation.path = resolveLogPath(logOptions.rotation.path, rootPath);
+	}
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
@@ -805,13 +821,18 @@ function getLogConfig(hdbConfigPath) {
 			};
 		}
 		const configDoc = YAML.parseDocument(fs.readFileSync(hdbConfigPath, 'utf8'));
+		const rootPath = configDoc.getIn(['rootPath']);
 		const level = configDoc.getIn(['logging', 'level']);
-		const configLogPath = configDoc.getIn(['logging', 'root']);
+		const configLogPath = resolveLogPath(configDoc.getIn(['logging', 'root']), rootPath);
 		const toFile = configDoc.getIn(['logging', 'file']);
 		const toStream = configDoc.getIn(['logging', 'stdStreams']);
 		const logConsole = configDoc.getIn(['logging', 'console']);
 		const colorMode = configDoc.getIn(['logging', 'colors']) ?? true; // default to true
 		const rotation = configDoc.getIn(['logging', 'rotation'])?.toJSON();
+		// Resolve rotation path if relative
+		if (rotation?.path) {
+			rotation.path = resolveLogPath(rotation.path, rootPath);
+		}
 
 		return {
 			level,
