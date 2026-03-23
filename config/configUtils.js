@@ -357,7 +357,6 @@ function initConfig(force = false) {
  * @param configFilePath
  */
 function checkForUpdatedConfig(configDoc, configFilePath) {
-	const rootPath = configDoc.getIn(['rootPath']);
 	let updateFile = false;
 	if (!configDoc.hasIn(['storage', 'path'])) {
 		configDoc.setIn(['storage', 'path'], 'database');

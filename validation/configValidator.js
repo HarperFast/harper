@@ -226,13 +226,13 @@ function doesPathExist(pathToCheck) {
 }
 
 function validatePath(value, helpers) {
-    Joi.assert(value, string.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path'));
+	Joi.assert(value, string.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path'));
 
-    const resolvedValue = path.isAbsolute(value) ? value : path.join(hdbRoot, value);
-    const doesExistMsg = doesPathExist(resolvedValue);
-    if (doesExistMsg) {
-        return helpers.message(doesExistMsg);
-    }
+	const resolvedValue = path.isAbsolute(value) ? value : path.join(hdbRoot, value);
+	const doesExistMsg = doesPathExist(resolvedValue);
+	if (doesExistMsg) {
+		return helpers.message(doesExistMsg);
+	}
 }
 
 function validateRotationMaxSize(value, helpers) {
