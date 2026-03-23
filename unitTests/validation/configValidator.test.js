@@ -326,7 +326,7 @@ describe('Test configValidator module', () => {
 			const helpers = { state: { path: ['componentsRoot'] } };
 			const result = set_default_root(parent, helpers);
 
-			expect(result).to.equal(path.join(HDB_ROOT, '/components'));
+			expect(result).to.equal('components');
 		});
 
 		it('Test that if logging.root is undefined, one is created', () => {
@@ -334,7 +334,7 @@ describe('Test configValidator module', () => {
 			const helpers = { state: { path: ['logging', 'root'] } };
 			const result = set_default_root(parent, helpers);
 
-			expect(result).to.equal(path.join(HDB_ROOT, '/log'));
+			expect(result).to.equal('log');
 		});
 	});
 
