@@ -8,7 +8,7 @@ import harperLogger from '../utility/logging/harper_logger.js';
 import { parentPort } from 'node:worker_threads';
 import env from '../utility/environment/environmentManager.js';
 import * as terms from '../utility/hdbTerms.ts';
-import { resolvePath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.js';
 import { getTicketKeys } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.js';
 import { createSecureServer } from 'node:http2';
@@ -181,7 +181,7 @@ function getPorts(options) {
 
 	if (options?.usageType === 'operations-api' && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
 		ports.push({
-			port: resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)),
+			port: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
 			secure: false,
 		});
 	}

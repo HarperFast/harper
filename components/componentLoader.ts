@@ -27,7 +27,7 @@ import { getHdbBasePath } from '../utility/environment/environmentManager.js';
 import * as operationsServer from '../server/operationsServer.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { getConfigObj, resolvePath } from '../config/configUtils.js';
+import { getConfigObj, getConfigPath } from '../config/configUtils.js';
 import { createReuseportFd } from '../server/serverHelpers/Request.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
@@ -40,7 +40,7 @@ import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { PluginModule } from './PluginModule.ts';
 import { getEnvBuiltInComponents } from './Application.ts';
 
-const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
+const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;

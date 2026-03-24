@@ -34,7 +34,7 @@ async function installModules(req) {
 
 	let { projects, dryRun } = req;
 
-	const componentsRootDirPath = getConfigValue(CONFIG_PARAMS.COMPONENTSROOT);
+	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 	const responseObject = {};
 

@@ -35,14 +35,6 @@ const DEPRECATED_CONFIG = {
 	logging_rotation_workerinterval: 'logging.rotation.workerInterval',
 };
 
-const CONFIG_PATH_KEYS = [
-	'componentsroot',
-	'logging_root',
-	'storage_path',
-	'logging_rotation_path',
-	'operationsapi_network_domainsocket',
-];
-
 let flatDefaultConfigObj;
 let flatConfigObj;
 let configObj;
@@ -65,6 +57,7 @@ exports.deleteConfigFromFile = deleteConfigFromFile;
 exports.getConfigObj = getConfigObj;
 exports.resolvePath = resolvePath;
 exports.getFlatConfigObj = getFlatConfigObj;
+exports.getConfigPath = getConfigPath;
 
 function resolvePath(relativePath) {
 	if (relativePath?.startsWith('~/')) {
@@ -78,22 +71,20 @@ function resolvePath(relativePath) {
 		return relativePath;
 	}
 }
-
 /**
- * Resolves relative config path values to absolute in the in-memory flattened config object.
- * Config file stores relative paths for portability, consumers of getConfigValue() get absolute paths.
- * @param flatConfig
- * @param rootPath
+ * Get a config value and resolve it as a path relative to rootPath.
+ * Use this for any config param that represents a file/directory path.
+ * @param param
  */
-function resolveConfigPaths(flatConfig, rootPath) {
-	if (!rootPath) return;
-	for (const key of CONFIG_PATH_KEYS) {
-		if (flatConfig[key] && typeof flatConfig[key] === 'string' && !path.isAbsolute(flatConfig[key])) {
-			flatConfig[key] = path.resolve(rootPath, flatConfig[key]);
-		}
-	}
+function getConfigPath(param) {
+	const env = require('../utility/environment/environmentManager.js');
+	const value = env.get(param);
+	if (!value || typeof value !== 'string') return value;
+	if (path.isAbsolute(value)) return value;
+	const rootPath = env.getHdbBasePath();
+	if (!rootPath) return value;
+	return path.resolve(rootPath, value);
 }
-
 /**
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
@@ -155,7 +146,6 @@ function createConfigFile(args, skipFsValidation = false) {
 
 	const configObj = configDoc.toJSON();
 	flatConfigObj = flattenConfig(configObj);
-	resolveConfigPaths(flatConfigObj, configObj.rootPath);
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']);
@@ -334,7 +324,6 @@ function initConfig(force = false) {
 		const configObj = configDoc.toJSON();
 		server.config = configObj;
 		flatConfigObj = flattenConfig(configObj);
-		resolveConfigPaths(flatConfigObj, configObj.rootPath);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
 		if (flatConfigObj['logging_rotation_rotate']) {
@@ -644,7 +633,6 @@ function updateConfigValue(
 	fs.writeFileSync(configFileLocation, String(configDoc));
 	if (update_config_obj) {
 		flatConfigObj = flattenConfig(configDoc.toJSON());
-		resolveConfigPaths(flatConfigObj, hdbRoot);
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }

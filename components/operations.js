@@ -31,7 +31,7 @@ function customFunctionsStatus() {
 	try {
 		response = {
 			port: env.get(hdbTerms.CONFIG_PARAMS.HTTP_PORT),
-			directory: env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
+			directory: configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
 			is_enabled: true,
 		};
 	} catch (err) {
@@ -54,7 +54,7 @@ function customFunctionsStatus() {
 function getCustomFunctions() {
 	log.trace(`getting custom api endpoints`);
 	let response = {};
-	const dir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const dir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 
 	try {
 		const projectFolders = fg.sync(normalize(`${dir}/*`), { onlyDirectories: true });
@@ -103,7 +103,7 @@ function getCustomFunction(req) {
 	}
 
 	log.trace(`getting custom api endpoint file content`);
-	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file } = req;
 	const fileLocation = path.join(cfDir, project, type, file + '.js');
 
@@ -141,7 +141,7 @@ async function setCustomFunction(req) {
 	}
 
 	log.trace(`setting custom function file content`);
-	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file, function_content } = req;
 
 	try {
@@ -181,7 +181,7 @@ async function dropCustomFunction(req) {
 	}
 
 	log.trace(`dropping custom function file`);
-	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file } = req;
 
 	try {
@@ -216,7 +216,7 @@ async function addComponent(req) {
 	}
 
 	log.trace(`adding component`);
-	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, install_command, install_timeout } = req;
 
 	const template = req.template || 'https://github.com/harperdb/application-template';
@@ -264,7 +264,7 @@ async function dropCustomFunctionProject(req) {
 	}
 
 	log.trace(`dropping custom function project`);
-	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 
 	let apps = env.get(hdbTerms.CONFIG_PARAMS.APPS);
@@ -318,7 +318,7 @@ async function packageComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 	log.trace(`packaging component`, project);
 
@@ -507,8 +507,8 @@ async function getComponents() {
 		}
 	};
 
-	const results = await walkDir(env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), {
-		name: env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
+	const results = await walkDir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), {
+		name: configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
 	for (let entry of results.entries) {
@@ -557,7 +557,7 @@ async function getComponentFile(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const compRoot = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const compRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
 
 	try {
@@ -588,7 +588,7 @@ async function setComponentFile(req) {
 	}
 
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
-	const pathToComp = path.join(env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file);
+	const pathToComp = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file);
 	if (req.payload !== undefined) {
 		await fs.ensureFile(pathToComp);
 		await fs.outputFile(pathToComp, req.payload, options);
@@ -613,7 +613,7 @@ async function dropComponent(req) {
 
 	const { project, file } = req;
 	const projectPath = req.file ? path.join(project, file) : project;
-	const pathToComponent = path.join(env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
+	const pathToComponent = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
 
 	const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
 	if (await fs.pathExists(componentSymlink)) {
