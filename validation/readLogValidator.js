@@ -7,6 +7,7 @@ const moment = require('moment');
 const fs = require('fs-extra');
 const path = require('path');
 const _ = require('lodash');
+const { getConfigPath } = require('../config/configUtils.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const { LOG_LEVELS } = require('../utility/hdbTerms.ts');
 
@@ -49,7 +50,7 @@ function validateReadLogPath(value, helpers) {
 		return helpers.message(`'log_name' '${value}' is invalid.`);
 	}
 
-	const logPath = envMangr.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
 	const logName = value === undefined ? hdbTerms.LOG_NAMES.HDB : value;
 	const readLogPath =
 		logName === hdbTerms.LOG_NAMES.INSTALL

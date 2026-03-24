@@ -7,6 +7,7 @@ const validator = require('../../validation/readLogValidator.js');
 const path = require('path');
 const fs = require('fs-extra');
 const { once } = require('events');
+const { getConfigPath } = require('../../config/configUtils.js');
 const { handleHDBError, hdbErrors } = require('../errors/hdbError.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { server } = require('../../server/Server.ts');
@@ -39,7 +40,7 @@ async function readLog(request) {
 	// start pulling logs from the other nodes now so it can be done in parallel
 	let whenReplicatedResponse = server.replication.replicateOperation(request);
 
-	const logPath = envMangr.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
 	const logName = request.log_name === undefined ? hdbTerms.LOG_NAMES.HDB : request.log_name;
 	const readLogPath =
 		logName === hdbTerms.LOG_NAMES.INSTALL
