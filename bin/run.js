@@ -266,7 +266,7 @@ function startupLog(portResolutions) {
 			? `, TCP: ${env.get(CONFIG_PARAMS.THREADS_DEBUG_PORT)}\n`
 			: '\n';
 	}
-	const logFilePath = path.join(env.get(CONFIG_PARAMS.LOGGING_ROOT), 'hdb.log');
+	const logFilePath = path.join(configUtils.getConfigPath(CONFIG_PARAMS.LOGGING_ROOT), 'hdb.log');
 	logMsg += `${pad('Logging:')}level: ${env.get(CONFIG_PARAMS.LOGGING_LEVEL)}, location: ${
 		logFilePath + (env.get(CONFIG_PARAMS.LOGGING_STDSTREAMS) ? ', stdout/err' : '')
 	}\n`;
@@ -292,7 +292,7 @@ function startupLog(portResolutions) {
 			? `enabled for ${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST)}`
 			: 'disabled'
 	}`;
-	logMsg += `, unix socket: ${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)}\n`;
+	logMsg += `, unix socket: ${configUtils.getConfigPath(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)}\n`;
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)) {
 		logMsg +=
 			pad('') +

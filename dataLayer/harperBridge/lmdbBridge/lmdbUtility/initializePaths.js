@@ -7,6 +7,7 @@ const path = require('path');
 const minimist = require('minimist');
 const fs = require('fs-extra');
 const _ = require('lodash');
+const { getConfigPath } = require('../../../../config/configUtils.js');
 env.initSync();
 
 const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdbTerms;
@@ -25,7 +26,7 @@ function getBaseSchemaPath() {
 
 	if (env.getHdbBasePath() !== undefined) {
 		BASE_SCHEMA_PATH =
-			env.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(env.getHdbBasePath(), hdbTerms.DATABASES_DIR_NAME);
+			getConfigPath(CONFIG_PARAMS.STORAGE_PATH) || path.join(env.getHdbBasePath(), hdbTerms.DATABASES_DIR_NAME);
 		return BASE_SCHEMA_PATH;
 	}
 }
@@ -52,7 +53,7 @@ function getTransactionAuditStoreBasePath() {
 
 	if (env.getHdbBasePath() !== undefined) {
 		TRANSACTION_STORE_PATH =
-			env.get(hdbTerms.CONFIG_PARAMS.STORAGE_AUDIT_PATH) ||
+			getConfigPath(hdbTerms.CONFIG_PARAMS.STORAGE_AUDIT_PATH) ||
 			path.join(env.getHdbBasePath(), hdbTerms.TRANSACTIONS_DIR_NAME);
 		return TRANSACTION_STORE_PATH;
 	}

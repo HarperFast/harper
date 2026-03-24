@@ -1,5 +1,5 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue } from '../config/configUtils.js';
+import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 import logger from '../utility/logging/harper_logger.js';
 
@@ -402,7 +402,9 @@ export class Application {
 		this.payload = payload;
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
-		this.dirPath = join(getConfigValue(CONFIG_PARAMS.COMPONENTSROOT), name);
+		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+		if (!componentsRoot) throw new Error('componentsRoot is not configured');
+		this.dirPath = join(componentsRoot, name);
 		this.logger = logger.loggerWithTag(name);
 		this.packageManagerPrefix = getConfigValue(CONFIG_PARAMS.APPLICATIONS_PACKAGEMANAGERPREFIX);
 	}
@@ -464,7 +466,8 @@ export async function installApplications() {
 
 	const config = getConfigObj();
 
-	const componentsRootDirPath = getConfigValue(CONFIG_PARAMS.COMPONENTSROOT);
+	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	if (!componentsRootDirPath) throw new Error('componentsRoot is not configured');
 
 	// Ensure component directory exists
 	await mkdir(componentsRootDirPath, { recursive: true });

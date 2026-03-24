@@ -12,6 +12,7 @@ import {
 import { makeTable } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
+import { getConfigPath } from '../config/configUtils.js';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
 import * as signalling from '../utility/signalling.js';
@@ -176,7 +177,7 @@ export function getDatabases(): Databases {
 	if (process.env.SCHEMAS_DATA_PATH) schemaConfigs.data = { path: process.env.SCHEMAS_DATA_PATH };
 	databasePath =
 		process.env.STORAGE_PATH ||
-		envGet(CONFIG_PARAMS.STORAGE_PATH) ||
+		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
 		(databasePath && (existsSync(databasePath) ? databasePath : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME)));
 	if (!databasePath) return;
 
@@ -694,7 +695,7 @@ export function database({ database: databaseName, table: tableName }) {
 		tablePath ||
 		databaseConfig[databaseName]?.path ||
 		process.env.STORAGE_PATH ||
-		envGet(CONFIG_PARAMS.STORAGE_PATH) ||
+		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
 		(existsSync(join(hdbBasePath, DATABASES_DIR_NAME))
 			? join(hdbBasePath, DATABASES_DIR_NAME)
 			: join(hdbBasePath, LEGACY_DATABASES_DIR_NAME));
