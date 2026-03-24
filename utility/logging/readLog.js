@@ -2,7 +2,6 @@
 
 const hdbTerms = require('../hdbTerms.ts');
 const hdbLogger = require('./harper_logger.js');
-const envMangr = require('../environment/environmentManager.js');
 const validator = require('../../validation/readLogValidator.js');
 const path = require('path');
 const fs = require('fs-extra');
