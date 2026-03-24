@@ -7,6 +7,7 @@ const validator = require('../validation/validationWrapper.js');
 const envMangr = require('../utility/environment/environmentManager.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const hdbLogger = require('../utility/logging/harper_logger.js');
+const configUtils = require('../config/configUtils.js');
 const { hdbErrors } = require('../utility/errors/hdbError.js');
 const { HDB_ERROR_MSGS } = hdbErrors;
 
@@ -34,7 +35,7 @@ module.exports = {
  */
 function checkProjectExists(checkExists, project, helpers) {
 	try {
-		const cfDir = envMangr.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+		const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 		const projectDir = path.join(cfDir, project);
 
 		if (!fs.existsSync(projectDir)) {
@@ -71,7 +72,7 @@ function checkFilePath(path, helpers) {
  */
 function checkFileExists(project, type, file, helpers) {
 	try {
-		const cfDir = envMangr.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+		const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 		const filePath = path.join(cfDir, project, type, file + '.js');
 		if (!fs.existsSync(filePath)) {
 			return helpers.message(HDB_ERROR_MSGS.NO_FILE);
