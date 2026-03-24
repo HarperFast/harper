@@ -80,6 +80,9 @@ function getConfigPath(param) {
 	const env = require('../utility/environment/environmentManager.js');
 	const value = env.get(param);
 	if (!value || typeof value !== 'string') return value;
+	if (value.startsWith('~/')) {
+		return path.join(hdbUtils.getHomeDir(), value.slice(1));
+	}
 	if (path.isAbsolute(value)) return value;
 	const rootPath = env.getHdbBasePath();
 	if (!rootPath) return value;
