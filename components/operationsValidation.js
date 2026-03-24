@@ -4,7 +4,6 @@ const Joi = require('joi');
 const fs = require('fs-extra');
 const path = require('path');
 const validator = require('../validation/validationWrapper.js');
-const envMangr = require('../utility/environment/environmentManager.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const hdbLogger = require('../utility/logging/harper_logger.js');
 const configUtils = require('../config/configUtils.js');

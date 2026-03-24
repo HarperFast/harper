@@ -84,6 +84,11 @@ describe('Test readLog module', () => {
 				},
 			};
 			envMangr_rw = read_log.__set__('envMangr', mockEnvMangr);
+			read_log.__set__('getConfigPath', (key) => {
+				if (key === hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) {
+					return TEST_LOG_DIR;
+				}
+			});
 			validator_rw = read_log.__set__('validator', validator_stub);
 		});
 

@@ -1,6 +1,5 @@
 'use strict';
 
-const envMangr = require('../utility/environment/environmentManager.js');
 const Joi = require('joi');
 const validator = require('./validationWrapper.js');
 const moment = require('moment');
