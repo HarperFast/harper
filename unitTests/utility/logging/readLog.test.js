@@ -66,25 +66,14 @@ describe('Test readLog module', () => {
 	describe('Test readLog function', () => {
 		const validator_stub = sandbox.stub().returns(null);
 		let validator_rw;
-		let envMangr_rw;
+		let getConfigPath_rw;
 
 		before(async () => {
 			await createTestLog();
 		});
 
 		beforeEach(() => {
-			// Mock envMangr.get to return TEST_LOG_DIR when LOG_PATH_KEY is requested
-			// This ensures it works even if other tests have affected the environment
-			const mockEnvMangr = {
-				get: (key) => {
-					if (key === hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) {
-						return TEST_LOG_DIR;
-					}
-					return env_mangr.get(key);
-				},
-			};
-			envMangr_rw = read_log.__set__('envMangr', mockEnvMangr);
-			read_log.__set__('getConfigPath', (key) => {
+			getConfigPath_rw = read_log.__set__('getConfigPath', (key) => {
 				if (key === hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) {
 					return TEST_LOG_DIR;
 				}
@@ -99,7 +88,7 @@ describe('Test readLog module', () => {
 		afterEach(() => {
 			sandbox.resetHistory();
 			validator_rw();
-			envMangr_rw();
+			getConfigPath_rw();
 		});
 
 		it('Test bad request throws validation error', async () => {
