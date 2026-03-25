@@ -209,7 +209,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!httpServers[port]) {
 		// TODO: These should all come from httpOptions or operationsApiOptions
-		const serverPrefix = isOperationsServer ? 'operationsApi_network' : 'http';
+		const serverPrefix = isOperationsServer ? 'operationsApi_network' : (usageType ?? 'http');
 		const keepAliveTimeout = env.get(serverPrefix + '_keepAliveTimeout');
 		const requestTimeout = env.get(serverPrefix + '_timeout');
 		const headersTimeout = env.get(serverPrefix + '_headersTimeout');
