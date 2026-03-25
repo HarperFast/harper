@@ -260,7 +260,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		}
 
 		// Create the module and cache it immediately (before linking)
-		const module = await createModule(url, usePrivateGlobal);
+		const module = createModule(url, usePrivateGlobal);
 		moduleCache.set(url, module);
 
 		return module;
@@ -324,30 +324,36 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 					source = await stripTypeScriptTypes(source);
 				}
 
-				// Try to parse as ESM first
-				try {
-					module = new SourceTextModule(source, {
-						identifier: url,
-						context,
-						initializeImportMeta(meta) {
-							meta.url = url;
-						},
-						async importModuleDynamically(specifier: string) {
-							const resolvedUrl = resolveModule(specifier, url);
-							const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
-							return dynamicModule;
-						},
-					});
-				} catch (err) {
-					// If ESM parsing fails, try to load as CommonJS
-					if (
-						err.message?.includes('require is not defined') ||
-						source.includes('module.exports') ||
-						source.includes('exports.')
-					) {
+				// Detect if this is a CJS module before trying to parse as ESM
+				// CJS modules use require, module.exports, exports, or __dirname/__filename
+				const isCJS =
+					source.includes('module.exports') ||
+					source.includes('exports.') ||
+					/\brequire\s*\(/.test(source) ||
+					source.includes('__dirname') ||
+					source.includes('__filename');
+
+				if (isCJS) {
+					// Load as CommonJS
+					module = loadCJSModule(url, source, usePrivateGlobal);
+				} else {
+					// Try to parse as ESM
+					try {
+						module = new SourceTextModule(source, {
+							identifier: url,
+							context,
+							initializeImportMeta(meta) {
+								meta.url = url;
+							},
+							async importModuleDynamically(specifier: string) {
+								const resolvedUrl = resolveModule(specifier, url);
+								const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
+								return dynamicModule;
+							},
+						});
+					} catch (err) {
+						// If ESM parsing fails, try to load as CommonJS as fallback
 						module = loadCJSModule(url, source, usePrivateGlobal);
-					} else {
-						throw err;
 					}
 				}
 			}
