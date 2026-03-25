@@ -235,7 +235,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			},
 			{ identifier: url, context }
 		);
-		moduleCache.set(url, synModule);
+		// Don't cache here - let getOrCreateModule handle caching
 		return synModule;
 	}
 
@@ -274,10 +274,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 
 		// Only link/evaluate once per module
 		if (!linkingPromises.has(url)) {
-			linkingPromises.set(
-				url,
-				module.link(linker).then(() => module.evaluate())
-			);
+			const linkingPromise = (async () => {
+				await module.link(linker);
+				await module.evaluate();
+			})();
+			linkingPromises.set(url, linkingPromise);
 		}
 
 		// Wait for linking to complete
