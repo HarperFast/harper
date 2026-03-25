@@ -165,16 +165,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			// block harper/* for now (reserving for potential future use)
 			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
 		}
-		// For relative paths, resolve to absolute file URL
-		if (parts[0] === '.' || parts[0] === '..') {
-			const resolved = createRequire(referrer).resolve(specifier);
-			if (isAbsolute(resolved)) {
-				return pathToFileURL(resolved).toString();
-			}
-			return resolved;
+		const resolved = createRequire(referrer).resolve(specifier);
+		if (isAbsolute(resolved)) {
+			return pathToFileURL(resolved).toString();
 		}
-		// For package names, file://, and node: specifiers, keep as-is for proper require() handling
-		return specifier;
+		return resolved;
 	}
 
 	/**
@@ -308,7 +303,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 				},
 				{ identifier: url, context }
 			);
-		} else if (url.startsWith('file://')) {
+		} else if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.verifyPath);
 			let source = await readFile(new URL(url), { encoding: 'utf-8' });
 
