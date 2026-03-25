@@ -734,33 +734,18 @@ export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	const dbTables = databases[databaseName];
 	let rootStore;
+
 	for (const tableName in dbTables) {
 		const table = dbTables[tableName];
 		rootStore = table.primaryStore.rootStore;
-
 		lmdbDatabaseEnvs.delete(rootStore.path);
 		rocksdbDatabaseEnvs.delete(rootStore.path);
+	}
 
-		if (rootStore.status === 'open') {
-			if (rootStore instanceof RocksDatabase) {
-				rootStore.close();
-				rootStore.destroy();
-			} else if (rootStore.status === 'open') {
-				await rootStore.close();
-				await unlink(rootStore.path);
-			}
-		}
+	for (const tableName in dbTables) {
 		databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 	}
-	if (!rootStore) {
-		rootStore = database({ database: databaseName, table: null });
-		if (rootStore instanceof RocksDatabase) {
-			rootStore.destroy();
-		} else if (rootStore.status === 'open') {
-			await rootStore.close();
-			await unlink(rootStore.path);
-		}
-	}
+
 	if (databaseName === 'data') {
 		for (const tableName in tables) {
 			delete tables[tableName];
@@ -768,7 +753,30 @@ export async function dropDatabase(databaseName) {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[databaseName];
+
 	databaseEventsEmitter.emit('dropDatabase', databaseName);
+
+	if (rootStore) {
+		if (rootStore.status === 'open') {
+			if (rootStore instanceof RocksDatabase) {
+				rootStore.close();
+				rootStore.destroy();
+			} else {
+				await rootStore.close();
+				await unlink(rootStore.path);
+			}
+		}
+	} else {
+		rootStore = database({ database: databaseName, table: null });
+		if (rootStore instanceof RocksDatabase) {
+			rootStore.close();
+			rootStore.destroy();
+		} else if (rootStore.status === 'open') {
+			await rootStore.close();
+			await unlink(rootStore.path);
+		}
+	}
+
 	await deleteRootBlobPathsForDB(rootStore);
 }
 // opens an index, consulting with custom indexes that may use alternate store configuration
