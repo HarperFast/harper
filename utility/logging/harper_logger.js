@@ -82,7 +82,7 @@ function updateLogger(logger, logOptions, name) {
 	logger.logToStdstreams = logOptions.stdStreams ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
-	logger.tag = logOptions.tag ?? name;
+	logger.tag = logOptions.tag ?? (mainLogger.path === logger.path && name);
 }
 // creates a logger where the methods are only defined if they are within the log level.
 // Using this conditional logger means that every method call must be optional like log.trace?.('message),
