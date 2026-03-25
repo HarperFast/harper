@@ -324,20 +324,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 					source = await stripTypeScriptTypes(source);
 				}
 
-				// Detect if this is a CJS module before trying to parse as ESM
-				// CJS modules use require, module.exports, exports, or __dirname/__filename
-				const isCJS =
-					source.includes('module.exports') ||
-					source.includes('exports.') ||
-					/\brequire\s*\(/.test(source) ||
-					source.includes('__dirname') ||
-					source.includes('__filename');
-
-				if (isCJS) {
-					// Load as CommonJS
+				// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
+				try {
 					module = loadCJSModule(url, source, usePrivateGlobal);
-				} else {
-					// Try to parse as ESM
+				} catch (cjsErr) {
+					// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
 					try {
 						module = new SourceTextModule(source, {
 							identifier: url,
@@ -351,9 +342,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 								return dynamicModule;
 							},
 						});
-					} catch (err) {
-						// If ESM parsing fails, try to load as CommonJS as fallback
-						module = loadCJSModule(url, source, usePrivateGlobal);
+					} catch (esmErr) {
+						// Both failed - throw the ESM error as it's likely more relevant
+						throw esmErr;
 					}
 				}
 			}
