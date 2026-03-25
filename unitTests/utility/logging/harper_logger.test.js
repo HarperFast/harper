@@ -834,7 +834,7 @@ describe('Test harper_logger module', () => {
 			expect(log).to.include('Test of the global logger');
 		});
 		it('Test using an application scoped logger', async () => {
-			const appScope = new ApplicationScope('test-component', {}, {});
+			const appScope = new ApplicationScope('test-logging-component', {}, {});
 			appScope.logger.warn('Test of an application logger going to the external log');
 
 			// Wait for the log to be written
