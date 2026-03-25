@@ -82,7 +82,7 @@ function updateLogger(logger, logOptions, name) {
 	logger.logToStdstreams = logOptions.stdStreams ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
-	logger.tag = logOptions.tag ?? (mainLogger.path === logger.path && name);
+	logger.tag = logOptions.tag ?? name;
 }
 // creates a logger where the methods are only defined if they are within the log level.
 // Using this conditional logger means that every method call must be optional like log.trace?.('message),
@@ -114,6 +114,10 @@ async function updateLogSettings() {
 	logConsole = logOptions.console ?? false;
 	if (logOptions.external) {
 		updateLogger(externalLogger, logOptions.external);
+		for (let [name, component] of mainLogger.components) {
+			if (!(rootConfigObject[name] && rootConfigObject[name].logging) && component.isExternal)
+				updateLogger(component, logOptions.external, name);
+		}
 	}
 	for (const name in rootConfigObject) {
 		// we now scan each component to see if it has logging individual configured
@@ -121,7 +125,8 @@ async function updateLogSettings() {
 		if (component.logging) {
 			updateLogger(mainLogger.forComponent(name), component.logging, name);
 		} else if (mainLogger.hasComponent(name)) {
-			updateLogger(mainLogger.forComponent(name), logOptions, name);
+			const componentLogger = mainLogger.forComponent(name);
+			updateLogger(componentLogger, (componentLogger.isExternal && logOptions.external) ?? logOptions, name);
 		}
 	}
 }
@@ -226,7 +231,7 @@ module.exports = {
 	createLogger,
 	logsAtLevel,
 	getLogFilePath: () => logFilePath,
-	forComponent: (name) => mainLogger.forComponent(name),
+	forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
 	setMainLogger,
 	setLogLevel,
 	OUTPUTS,
@@ -272,6 +277,9 @@ module.exports.externalLogger = {
 	},
 	loggerWithTag(tag) {
 		return externalLogger.withTag(tag);
+	},
+	forComponent(name) {
+		return externalLogger.forComponent(name);
 	},
 };
 _assignPackageExport('logger', module.exports.externalLogger);
@@ -467,7 +475,7 @@ function createLogger({
 	component,
 }) {
 	if (!logLevel) logLevel = 'info';
-	let level = LOG_LEVEL_HIERARCHY[logLevel];
+	let level = typeof logLevel === 'number' ? logLevel : LOG_LEVEL_HIERARCHY[logLevel];
 	let logger;
 	/**
 	 * Log to std out and/or file
@@ -549,25 +557,29 @@ function createLogger({
 	logger.logToStdstreams = logToStdstreams;
 	if (!component) {
 		let components = new Map();
-		logger.forComponent = function (name) {
+		logger.forComponent = function (name, isExternal = false) {
 			let componentLogger = components.get(name);
 			if (!componentLogger) {
+				const protoLogger = isExternal ? externalLogger : logger;
 				componentLogger = createLogger({
-					path: logFilePath,
-					level: logLevel,
-					stdStreams: logToStdstreams,
-					isExternalInstance: name === 'external',
-					rotation,
+					path: protoLogger.path,
+					level: protoLogger.level,
+					stdStreams: protoLogger.logToStdstreams,
+					isExternalInstance: isExternal || name === 'external',
+					rotation: protoLogger.rotation,
 					writeToLog,
 					component: true,
 				});
+				componentLogger.tag = name;
 				components.set(name, componentLogger);
 			}
+			if (isExternal) componentLogger.isExternal = true;
 			return componentLogger;
 		};
 		logger.hasComponent = function (name) {
 			return components.has(name);
 		};
+		logger.components = components;
 	}
 	return logger;
 }

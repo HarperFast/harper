@@ -1,6 +1,6 @@
 import type { Resources } from '../resources/Resources.ts';
 import { type Server } from '../server/Server.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { forComponent } from '../utility/logging/harper_logger.js';
 import { scopedImport } from '../security/jsLoader.ts';
 import * as env from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -23,8 +23,8 @@ export class ApplicationScope {
 	dependencyContainment?: boolean; // option to set this from the scope
 	verifyPath?: string;
 	config: any;
-	constructor(name: string, resources: Resources, server: Server, verifyPath?: string) {
-		this.logger = loggerWithTag(name);
+	constructor(name: string, resources: Resources, server: Server, isInternal = false, verifyPath?: string) {
+		this.logger = forComponent(name, !isInternal);
 
 		this.resources = resources;
 		this.server = server;
