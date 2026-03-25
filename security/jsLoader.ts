@@ -327,7 +327,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 				// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
 				try {
 					module = loadCJSModule(url, source, usePrivateGlobal);
-				} catch (cjsErr) {
+				} catch {
 					// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
 					try {
 						module = new SourceTextModule(source, {
