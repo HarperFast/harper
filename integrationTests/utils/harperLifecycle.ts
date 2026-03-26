@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { type SuiteContext, type TestContext } from 'node:test';
 import { getNextAvailableLoopbackAddress, releaseLoopbackAddress } from './loopbackAddressPool.ts';
+import { equal } from 'node:assert';
 
 // Constants
 const HTTP_PORT = 9926;
@@ -342,4 +343,15 @@ export async function teardownHarper(ctx: ContextWithHarper): Promise<void> {
 
 	// a few retries are typically necessary, might take a sec for a process to finish, especially since rocksdb may be flushing
 	await rm(ctx.harper.dataRootDir, { recursive: true, force: true, maxRetries: 4 });
+}
+
+export async function sendOperation(context: HarperContext, operation: any) {
+	const response = await fetch(context.operationsAPIURL, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(operation),
+	});
+	const responseData = await response.json();
+	equal(response.status, 200, JSON.stringify(responseData));
+	return responseData;
 }

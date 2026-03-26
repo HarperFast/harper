@@ -161,9 +161,15 @@ jobs:
         with:
           name: harper-build-artifacts-node-${{ matrix.node-version }}
 
+      - name: Install harperdb@4 for legacy tests
+        run: |
+          mkdir -p /tmp/harperdb-legacy
+          npm install --prefix /tmp/harperdb-legacy harperdb@4
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
+          HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
         run: |
           npm run test:integration -- --shard=${{ matrix.shard }}/4
 
