@@ -10,7 +10,7 @@ import {
 	type ContextWithHarper,
 	killHarper,
 } from '../utils/harperLifecycle.ts';
-import { equal, ok } from 'node:assert';
+import { ok } from 'node:assert';
 import { join } from 'node:path';
 
 suite('Start 4.x server and test upgrade', (ctx: ContextWithHarper) => {
