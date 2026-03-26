@@ -146,7 +146,7 @@ function parseJsonModule(source: string, url: string): any {
  * Load a module using Node's vm.Module API with (not really secure) sandboxing
  */
 async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
-	const moduleCache = new Map<string, SourceTextModule | SyntheticModule>();
+	const moduleCache = new Map<string, Promise<SourceTextModule | SyntheticModule>>();
 	const linkingPromises = new Map<string, Promise<void>>();
 
 	// Create a secure context with limited globals
