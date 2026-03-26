@@ -555,7 +555,7 @@ export function nonInteractiveSpawn(
 	command: string,
 	args: string[],
 	cwd: string,
-	timeoutMs: number = 5 * 60 * 1000
+	timeoutMs: number = 60 * 60 * 1000
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
