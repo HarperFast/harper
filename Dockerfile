@@ -45,6 +45,7 @@ EOF
 
 # Harper config parameters
 ENV HDB_ADMIN_USERNAME=admin
+ENV HDB_ADMIN_PASSWORD=password
 ENV ROOTPATH=/home/harperdb/harper
 ENV TC_AGREEMENT=yes
 ENV NETWORK_OPERATIONSAPI_PORT=9925
