@@ -359,7 +359,8 @@ export async function installApplication(application: Application) {
 		application.name,
 		(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + 'npm',
 		['install', '--force'],
-		application.dirPath
+		application.dirPath,
+		application.install?.timeout
 	);
 
 	// if it succeeds, return
