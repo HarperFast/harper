@@ -130,9 +130,8 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 	let results = searchResults.map(async (result: Metric) => {
 		// remove nodeId from 'id' attr and resolve it to the actual hostname and
 		// add back in as 'node' attr if selected
-		result = { ...result };
 		const nodeId = result.id[1];
-		result['id'] = result['id'][0];
+		result = { ...result, id: result.id[0] };
 		if (isSelected(select, 'node')) {
 			log.trace?.(`get_analytics lookup hostname for nodeId: ${nodeId}`);
 			const hostname = await lookupHostname(nodeId);
