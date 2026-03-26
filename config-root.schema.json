@@ -562,6 +562,10 @@
 					"type": "boolean",
 					"description": "Replicate aggregated analytics across cluster. Default: false"
 				},
+				"storageInterval": {
+					"type": "number",
+					"description": "Number of aggregation cycles between node storage measurements. 0 to disable. Default: 10"
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		}

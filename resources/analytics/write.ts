@@ -402,7 +402,12 @@ export async function getDirectorySizeAsync(dirPath: string): Promise<number> {
 	}
 }
 
+const DEFAULT_STORAGE_INTERVAL = 10;
+let nodeStorageInterval = DEFAULT_STORAGE_INTERVAL;
+let nodeStorageCycleCount = 0;
+
 async function storeNodeStorageMetric(analyticsTable: Table) {
+	if (nodeStorageInterval <= 0 || ++nodeStorageCycleCount % nodeStorageInterval !== 1) return;
 	try {
 		const size = await getDirectorySizeAsync(getHdbBasePath());
 		storeMetric(analyticsTable, {
@@ -689,6 +694,7 @@ if (!parentPort) onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
 let scheduledTasksRunning;
 function startScheduledTasks() {
 	scheduledTasksRunning = true;
+	nodeStorageInterval = envGet(CONFIG_PARAMS.ANALYTICS_STORAGEINTERVAL) ?? DEFAULT_STORAGE_INTERVAL;
 	const AGGREGATE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	if (AGGREGATE_PERIOD) {
 		setInterval(

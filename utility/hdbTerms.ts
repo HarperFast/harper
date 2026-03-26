@@ -426,6 +426,7 @@ export const LEGACY_CONFIG_PARAMS = {
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
+	ANALYTICS_STORAGEINTERVAL: 'analytics_storageInterval',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
 	AUTHENTICATION_COOKIE_DOMAINS: 'authentication_cookie_domains',
