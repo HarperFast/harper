@@ -333,7 +333,7 @@ export async function loadComponent(
 						}
 					}
 					if (componentPath) {
-						subApplicationScope.verifyPath = componentPath;
+						subApplicationScope.verifyPath ??= componentPath;
 						if (!process.env.HARPER_SAFE_MODE) {
 							extensionModule = await loadComponent(componentPath, resources, origin, {
 								isRoot: false,
