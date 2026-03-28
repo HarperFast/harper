@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --disable-warning=ExperimentalWarning --experimental-vm-modules
+#!/usr/bin/env node
 'use strict';
 
 const fs = require('node:fs');
