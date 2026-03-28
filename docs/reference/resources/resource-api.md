@@ -333,7 +333,7 @@ Entry properties:
 - `expiresAt` — When the entry became stale
 - `value` — The stale record value
 
-The following instances are also implemented on Resource instances for backwards compatibility, but generally not necessary to directly use:
+The following instances are also implemented on Resource instances for [backwards compatibility with 4.x](../../reference_versioned_docs/version-v4/resources/resource-api.md), but generally not necessary to directly use:
 
 - `get`
 - `search`
@@ -485,22 +485,25 @@ if (!authorized) {
 
 ## Context and Transactions
 
-Whenever you call other resources from within a resource method, pass `this` as the context argument to share the transaction and ensure atomicity:
+Harper's HTTP/REST request handler automatically starts a transaction for each request, and assigns the `Request` object as the current context. The current context is available via `getContext()` as export from the `harper` module, or as a global variable. All database interactions that are called from the request will automatically use that transaction, for reading and writing data. Transactions and context are tracking using [asynchronous context tracking](https://nodejs.org/dist/latest/docs/api/async_context.html).
+
+However, you can explicitly create transactions to control the scope of atomicity and isolation. Transactions are created with the `transaction()` method, which establishes a transaction and context that are used for all subsequent database operations within the asynchronous context of the transaction. For example:
 
 ```javascript
-export class BlogPost extends tables.BlogPost {
-	static loadAsInstance = false;
+import { transaction } from 'harper';
 
-	post(target, data) {
-		// both writes share the same transaction
-		tables.Comment.put(data, this);
-		const post = this.update(target.id);
-		post.commentCount = (post.commentCount ?? 0) + 1;
-	}
+function receivedShipment(products) {
+	let myContext = {};
+	trasaction(myContext, async () => {
+		for (let received of products) {
+			let product = await Product.update(received.productId);
+			product.addTo('quantity', received.quantity);
+		}
+	}); // all the product updates will be atomically commmited in this transaction
 }
 ```
 
-See [Global APIs — transaction](./global-apis.md#transaction) for explicitly starting transactions outside of request handlers.
+See [Global APIs — transaction](./global-apis.md#transaction) for more information on starting transactions outside of request handlers.
 
 ---
 
