@@ -245,11 +245,11 @@ This returns a promise to an instance of the Resource class that can be updated 
 
 ## Resource Instance Methods
 
-A Resource instance is used to update and interact with a single record/resource. It provides functionality for updating properties, accessing property values, and managing record lifecycle. The Resource instance is normally retrieved from the static `update()` method. An instance from a table has updatable properties that can used to access and update individual properties, as well methods for more advanced updates and saving data. For example:
+A Resource instance is used to update and interact with a single record/resource. It provides functionality for updating properties, accessing property values, and managing record lifecycle. The Resource instance is normally retrieved from the static `update()` method. An instance from a table has updatable properties that can used to access and update individual properties (for properties declared in the table's schema), as well methods for more advanced updates and saving data. For example:
 
 ```javascript
 const product = await Product.update(32);
-product.status = 'active'; // we can directly change properties on the updatable record
+product.status = 'active'; // we can directly change properties on the updatable record, if they are declared in the schema
 product.subtractFrom('quantity', 1); // We can use CRDT incrementation/decrementation to safely update the quantity
 product.save();
 ```
@@ -257,6 +257,8 @@ product.save();
 ### `save()`
 
 This saves the current state of the resource to the database in the current transaction. This method can be called after making changes to the resource to ensure that those changes have been saved to the current transaction and can be queried within the same transaction. Any pending changes are automatically saved when the transaction commits (if `save()` has not already saved them).
+
+This method only saves data when using RocksDB storage engine, and is a no-op when using LMDB.
 
 ### `addTo(property: string, value: number)`
 
@@ -277,7 +279,7 @@ Subtracts `value` from `property` using CRDT incrementation.
 
 ### `set(property: string, value: any): void`
 
-Sets a property to `value`. Equivalent to direct property assignment (`record.property = value`), but useful when the property name is dynamic and not declared in the schema.
+Sets a property to `value`. Equivalent to direct property assignment (`record.property = value`), but can be used when the property name is dynamic and not declared in the schema.
 
 ```javascript
 const record = await Table.update(target.id);
@@ -292,6 +294,10 @@ This replaces the current record data in the instance with the provided `record`
 ### `patch(record: object): void`
 
 This merges the provided `record` object into the current record data for the instance.
+
+### `validate(record: object, partial?: boolean): void`
+
+This validates the provided `record` object against the schema, throwing an error if validation fails. If `partial` is true, only validates the provided properties, otherwise validates all required properties. This can be overridden to implement custom validation logic. This is called at the beginning of a transaction commit, prior to writing data to the transaction and fully committing it.
 
 ### `publish(message: object): void`
 
