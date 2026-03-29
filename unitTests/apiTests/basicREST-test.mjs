@@ -601,5 +601,19 @@ describe('test REST calls', () => {
 		assert.equal(response5.data.name, 'ResourceC');
 		assert.strictEqual(response5.data.params.pathname, '/some/relative/path/');
 		assert.strictEqual(response5.data.params.search, 'with=query.property');
+
+		let badResponse = await axios.post(
+			'http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/anything',
+			{},
+			{
+				customResponse: true,
+				validateStatus: function (_status) {
+					return true;
+				},
+			}
+		);
+		// expect method not implemented
+		assert.equal(badResponse.status, 405);
+		assert(badResponse.headers.allow);
 	});
 });

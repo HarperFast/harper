@@ -683,15 +683,26 @@ function transactional(
 		}
 	}
 }
-function missingMethod(resource, method) {
-	const error = new ClientError(`The ${resource.constructor.name} does not have a ${method} method implemented`, 405);
-	error.allow = [];
+const KNOWN_METHODS = ['get', 'head', 'put', 'post', 'delete', 'patch', 'query', 'move', 'copy'];
+type ClientErrorWithMethods = ClientError & { allow: string[]; method: string };
+export function missingMethod(resource: any, method: string) {
+	const error = new ClientError(
+		`The ${resource.constructor.name} does not have a ${method} method implemented`,
+		405
+	) as ClientErrorWithMethods;
+	error.allow = allowedMethods(resource);
 	error.method = method;
-	for (const method of ['get', 'put', 'post', 'delete', 'query', 'move', 'copy']) {
-		if (typeof resource[method] === 'function') error.allow.push(method);
-	}
 	throw error;
 }
+
+export function allowedMethods(resource: any) {
+	const allow = [];
+	for (const method of KNOWN_METHODS) {
+		if (typeof resource[method] === 'function') allow.push(method);
+	}
+	return allow;
+}
+
 /**
  * This is responsible for handling a select query parameter/call that selects specific
  * properties from the returned record(s).
