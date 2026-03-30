@@ -634,7 +634,6 @@ async function reviewSelfSignedCert() {
 // If CLI or Env values are present it will use those values, else it will use default private key.
 function updateConfigCert() {
 	const cliEnvArgs = assignCmdenvVars(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
-	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
 	const private_key = path.join(hdbTerms.LICENSE_KEY_DIR_NAME, certificatesTerms.PRIVATEKEY_PEM_NAME);
 
 	// This object is what will be added to the harperdb-config.yaml file.
