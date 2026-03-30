@@ -148,6 +148,7 @@ function parseJsonModule(source: string, url: string): any {
 async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	const moduleCache = new Map<string, Promise<SourceTextModule | SyntheticModule>>();
 	const linkingPromises = new Map<string, Promise<void>>();
+	const cjsCache = new Map<string, { exports: any }>();
 
 	// Create a secure context with limited globals
 	const contextObject = getGlobalObject(scope);
@@ -179,7 +180,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	 * Load a CommonJS module in our private context
 	 */
 	function loadCJS(url: string, source: string): { exports: any } {
+		// Check cache first to handle circular dependencies
+		if (cjsCache.has(url)) {
+			return cjsCache.get(url)!;
+		}
+
+		// Create module object and cache it immediately (before execution)
+		// This allows circular dependencies to get a reference to the incomplete module
 		const cjsModule = { exports: {} };
+		cjsCache.set(url, cjsModule);
+
 		if (url.endsWith('.json')) {
 			cjsModule.exports = parseJsonModule(source, url);
 			return cjsModule;
@@ -224,16 +234,18 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	}
 	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
 		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
-		const exportNames = Object.keys(cjsModule.exports);
+		let exports = cjsModule.exports;
+		if (exports.default === undefined) {
+			// provide the default export for compatibility
+			exports = { default: exports, ...exports };
+		}
+		const exportNames = Object.keys(exports);
+
 		const synModule = new SyntheticModule(
-			exportNames.length > 0 ? exportNames : ['default'],
+			exportNames,
 			function () {
-				if (exportNames.length > 0) {
-					for (const key of exportNames) {
-						this.setExport(key, cjsModule.exports[key]);
-					}
-				} else {
-					this.setExport('default', cjsModule.exports);
+				for (const key of exportNames) {
+					this.setExport(key, exports[key]);
 				}
 			},
 			{ identifier: url, context }
@@ -553,13 +565,18 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 			},
 		};
 const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
-const REPLACED_BUILTIN_MODULES = {
-	child_process: {
-		exec: createSpawn(child_process.exec),
-		execFile: createSpawn(child_process.execFile),
-		fork: createSpawn(child_process.fork, true), // this is launching node, so deemed safe
-		spawn: createSpawn(child_process.spawn),
+const child_processConstrained = {
+	exec: createSpawn(child_process.exec),
+	execFile: createSpawn(child_process.execFile),
+	fork: createSpawn(child_process.fork, true), // this is launching node, so deemed safe
+	spawn: createSpawn(child_process.spawn),
+	execSync: function () {
+		throw new Error('execSync is not allowed');
 	},
+};
+child_processConstrained.default = child_processConstrained;
+const REPLACED_BUILTIN_MODULES = {
+	child_process: child_processConstrained,
 };
 /**
  * Creates a ChildProcess-like object for an existing process
