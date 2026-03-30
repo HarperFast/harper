@@ -217,7 +217,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
 				const resolvedUrl = resolveModule(specifier, script.sourceURL);
-				const useContainment = specifier.startsWith('.') || scope.dependencyContainment;
+				const useContainment = specifier.startsWith('.') || scope.dependencyContainment !== false;
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useContainment);
 				return dynamicModule;
 			},
@@ -260,7 +260,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	async function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
 		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
 
-		const useContainment = specifier.startsWith('.') || scope.dependencyContainment;
+		const useContainment = specifier.startsWith('.') || scope.dependencyContainment !== false;
 		// Return the module immediately (even if not yet linked) to support circular dependencies
 		return await getOrCreateModule(resolvedUrl, useContainment);
 	}
