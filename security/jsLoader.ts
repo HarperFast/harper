@@ -354,38 +354,25 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			}
 		} else {
 			const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
-			// For Node.js built-in modules (node:) and npm packages
+			// For Node.js built-in modules (node:) and npm packages without dependency containment
 			// Always try require first to properly handle CJS modules with named exports
-			try {
-				const cjsExports = replacedModule ?? require(url);
-				// It's a CJS module - expose all properties as named exports
-				const exportNames = Object.keys(cjsExports);
-				module = new SyntheticModule(
-					exportNames.length > 0 ? [...exportNames, 'default'] : ['default'],
-					function () {
-						if (exportNames.length > 0) {
-							for (const key of exportNames) {
-								this.setExport(key, cjsExports[key]);
-							}
-						}
-						this.setExport('default', cjsExports);
-					},
-					{ identifier: url, context }
-				);
-			} catch {
-				// Fall back to dynamic import for ESM packages
-				const importedModule = await import(url);
-				const exportNames = Object.keys(importedModule);
-				module = new SyntheticModule(
-					exportNames,
-					function () {
-						for (const key of exportNames) {
-							this.setExport(key, importedModule[key]);
-						}
-					},
-					{ identifier: url, context }
-				);
+			// Fall back to dynamic import for ESM packages
+			let importedModule = replacedModule ?? (await import(url));
+			const cjsModule = importedModule['module.exports'];
+			if (cjsModule) {
+				// back-compat import
+				importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
 			}
+			const exportNames = Object.keys(importedModule);
+			module = new SyntheticModule(
+				exportNames,
+				function () {
+					for (const key of exportNames) {
+						this.setExport(key, importedModule[key]);
+					}
+				},
+				{ identifier: url, context }
+			);
 		}
 
 		return module;
