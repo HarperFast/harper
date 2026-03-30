@@ -165,6 +165,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			// block harper/* for now (reserving for potential future use)
 			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
 		}
+		if (parts[0] === 'file:') {
+			return specifier;
+		}
 		const resolved = createRequire(referrer).resolve(specifier);
 		if (isAbsolute(resolved)) {
 			return pathToFileURL(resolved).toString();
