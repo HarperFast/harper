@@ -149,7 +149,7 @@ async function componentStatusRequestHandler(event) {
 			if (originatorThreadId === undefined) {
 				hdbLogger.debug('No originator threadId, falling back to broadcast');
 			} else {
-				hdbLogger.warn(`Failed to send direct response to thread ${originatorThreadId}, falling back to broadcast`);
+				hdbLogger.debug(`Failed to send direct response to thread ${originatorThreadId}, falling back to broadcast`);
 			}
 			await sendItcEvent(responseMessage);
 		}
