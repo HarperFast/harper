@@ -107,6 +107,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 			return this.rootStore.getSync(key);
 		}
 	}
+	getBinary(key: any) {
+		if (typeof key === 'number') {
+			throw new Error('Unsupported binary access by number');
+		}
+		return this.rootStore.getBinary(key);
+	}
 	getEntry() {
 		throw new Error('Not implemented');
 	}
