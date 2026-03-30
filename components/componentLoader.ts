@@ -147,20 +147,28 @@ function symlinkHarperModule(componentDirectory: string) {
 					mkdirSync(nodeModulesDir);
 				}
 
-				// validate harperdb module
+				// validate harper module
 				const harperModule = join(nodeModulesDir, 'harper');
 				if (existsSync(harperModule)) {
-					if (realpathSync(harperModule) === realpathSync(PACKAGE_ROOT)) {
-						// if it exists and correctly linked, resolve
-						return resolve();
+					if (realpathSync(harperModule) !== realpathSync(PACKAGE_ROOT)) {
+						// if it exists but is incorrectly linked, fix it
+						rmSync(harperModule, { recursive: true, force: true });
+						// create link to harper module
+						symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
 					}
-
-					// Otherwise remove it then link
-					rmSync(harperModule, { recursive: true, force: true });
+				} else {
+					// create link to harper module
+					symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
+				}
+				// if there is a harperdb module, fix that too
+				const harperdbModule = join(nodeModulesDir, 'harperdb');
+				if (existsSync(harperdbModule) && realpathSync(harperdbModule) !== realpathSync(PACKAGE_ROOT)) {
+					// if it exists but is incorrectly linked, fix it
+					rmSync(harperdbModule, { recursive: true, force: true });
+					// create link to harper module
+					symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
 				}
 
-				// create link to harperdb module
-				symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
 				resolve();
 			} finally {
 				// finally release the lock
