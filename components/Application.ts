@@ -359,7 +359,8 @@ export async function installApplication(application: Application) {
 		application.name,
 		(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + 'npm',
 		['install', '--force'],
-		application.dirPath
+		application.dirPath,
+		application.install?.timeout
 	);
 
 	// if it succeeds, return
@@ -557,7 +558,7 @@ export function nonInteractiveSpawn(
 	command: string,
 	args: string[],
 	cwd: string,
-	timeoutMs: number = 5 * 60 * 1000
+	timeoutMs: number = 60 * 60 * 1000
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger

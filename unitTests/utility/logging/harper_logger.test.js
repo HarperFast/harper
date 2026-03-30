@@ -12,6 +12,7 @@ const YAML = require('yaml');
 const harperLoggerModule = require('#js/utility/logging/harper_logger');
 const { createLogger } = harperLoggerModule;
 const { getHttpOptions, handleApplication, logRequest } = require('#src/server/http');
+const { ApplicationScope } = require('#js/components/ApplicationScope');
 
 const HARPER_LOGGER_MODULE = '#js/utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -831,6 +832,16 @@ describe('Test harper_logger module', () => {
 
 			const log = fs.readFileSync(this.externalLogPath, 'utf8');
 			expect(log).to.include('Test of the global logger');
+		});
+		it('Test using an application scoped logger', async () => {
+			const appScope = new ApplicationScope('test-logging-component', {}, {});
+			appScope.logger.warn('Test of an application logger going to the external log');
+
+			// Wait for the log to be written
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const log = fs.readFileSync(this.externalLogPath, 'utf8');
+			expect(log).to.include('Test of an application logger going to the external log');
 		});
 		after(() => {
 			// Disable rotation before restoring path to clean up the rotator interval

@@ -3,7 +3,7 @@
  * database, so replay needs to work for harper to startup.
  */
 import { suite, test, before, after } from 'node:test';
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 import { equal } from 'node:assert';
 
 suite('Transaction log replay on crash', (ctx: ContextWithHarper) => {
@@ -34,15 +34,3 @@ suite('Transaction log replay on crash', (ctx: ContextWithHarper) => {
 		equal(response[0].role, 'super_user');
 	});
 });
-
-// Should this go in harperLifecycle.ts?
-async function sendOperation(config, operation) {
-	const response = await fetch(config.operationsAPIURL, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(operation),
-	});
-	const responseData = await response.json();
-	equal(response.status, 200, JSON.stringify(responseData));
-	return responseData;
-}

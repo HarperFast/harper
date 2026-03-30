@@ -5,6 +5,7 @@ export const METRIC = {
 	MAIN_THREAD_UTILIZATION: 'main-thread-utilization',
 	RESOURCE_USAGE: 'resource-usage',
 	UTILIZATION: 'utilization',
+	NODE_STORAGE: 'node-storage',
 } as const;
 
 export type BuiltInMetricName = (typeof METRIC)[keyof typeof METRIC];

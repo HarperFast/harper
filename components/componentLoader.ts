@@ -260,7 +260,7 @@ export async function loadComponent(
 
 	const {
 		providedLoadedComponents,
-		applicationScope = new ApplicationScope(basename(componentDirectory), resources, server),
+		applicationScope = new ApplicationScope(basename(componentDirectory), resources, server, options.isRoot),
 		isRoot,
 		autoReload,
 		appName,
@@ -311,7 +311,9 @@ export async function loadComponent(
 			// Initialize loading status for all components (applications and extensions)
 			componentLifecycle.loading(componentStatusName);
 
-			const subApplicationScope = isRoot ? new ApplicationScope(componentName, resources, server) : applicationScope;
+			const subApplicationScope = isRoot
+				? new ApplicationScope(componentName, resources, server, TRUSTED_RESOURCE_PLUGINS.hasOwnProperty(componentName))
+				: applicationScope;
 
 			let extensionModule: any;
 			const pkg = componentConfig.package;
@@ -333,7 +335,7 @@ export async function loadComponent(
 						}
 					}
 					if (componentPath) {
-						subApplicationScope.verifyPath = componentPath;
+						subApplicationScope.verifyPath ??= componentPath;
 						if (!process.env.HARPER_SAFE_MODE) {
 							extensionModule = await loadComponent(componentPath, resources, origin, {
 								isRoot: false,

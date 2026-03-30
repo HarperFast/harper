@@ -3,12 +3,12 @@ import { onMessageByType } from '../../server/threads/manageThreads.js';
 import { getDatabases, table } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.js';
-import { stat } from 'node:fs/promises';
+import { stat, readdir } from 'node:fs/promises';
 const { getLogFilePath, forComponent } = harperLogger;
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
-import { get as envGet, initSync } from '../../utility/environment/environmentManager.js';
+import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
@@ -382,6 +382,38 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
+export async function getDirectorySizeAsync(dirPath: string): Promise<number> {
+	try {
+		const entries = await readdir(dirPath, { withFileTypes: true });
+		const sizes = await Promise.all(
+			entries.map((entry) => {
+				const fullPath = join(dirPath, entry.name);
+				if (entry.isDirectory()) return getDirectorySizeAsync(fullPath);
+				if (entry.isFile()) return stat(fullPath).then((s) => s.size);
+				return 0;
+			})
+		);
+		let total = 0;
+		for (const size of sizes) total += size;
+		return total;
+	} catch {
+		// directory may not exist or be inaccessible
+		return 0;
+	}
+}
+
+async function storeNodeStorageMetric(analyticsTable: Table) {
+	try {
+		const size = await getDirectorySizeAsync(getHdbBasePath());
+		storeMetric(analyticsTable, {
+			metric: METRIC.NODE_STORAGE,
+			size,
+		});
+	} catch (error) {
+		log.warn?.('Error getting node storage metric', error);
+	}
+}
+
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
 	const analyticsTable = getAnalyticsTable();
@@ -574,6 +606,9 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// database storage volume metrics
 	storeVolumeMetrics(analyticsTable, databases);
 	storeVolumeMetrics(analyticsTable, { system: databases.system });
+
+	// node storage metric (total HDB directory size)
+	await storeNodeStorageMetric(analyticsTable);
 }
 let lastIdle = 0;
 let lastActive = 0;

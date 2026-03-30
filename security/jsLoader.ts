@@ -20,6 +20,14 @@ import { EventEmitter } from 'node:events';
 
 type Lockdown = 'none' | 'freeze' | 'ses';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
+const HARPER_MODULE_IDS = new Set([
+	'harper',
+	'harperdb',
+	'harperdb/v1',
+	'harperdb/v2',
+	'@harperfast/harper',
+	'@harperfast/harper-pro',
+]);
 
 let lockedDown = false;
 /**
@@ -138,7 +146,7 @@ function parseJsonModule(source: string, url: string): any {
  * Load a module using Node's vm.Module API with (not really secure) sandboxing
  */
 async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
-	const moduleCache = new Map<string, SourceTextModule | SyntheticModule>();
+	const moduleCache = new Map<string, Promise<SourceTextModule | SyntheticModule>>();
 	const linkingPromises = new Map<string, Promise<void>>();
 
 	// Create a secure context with limited globals
@@ -149,23 +157,19 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	 * Resolve module specifier to absolute URL
 	 */
 	function resolveModule(specifier: string, referrer: string): string {
-		if (specifier === 'harperdb' || specifier === 'harper') return 'harper';
-		if (specifier.startsWith('harper/') || specifier.startsWith('harperdb/')) {
+		if (HARPER_MODULE_IDS.has(specifier)) {
+			return 'harper'; // resolve any harper package as an alias to a single synthetic module
+		}
+		const parts = specifier.split('/');
+		if (parts[0] === 'harper') {
+			// block harper/* for now (reserving for potential future use)
 			throw new Error(`Module ${specifier} is not allowed, may only access the 'harper' module`);
 		}
-		if (specifier.startsWith('file://')) {
-			return specifier;
+		const resolved = createRequire(referrer).resolve(specifier);
+		if (isAbsolute(resolved)) {
+			return pathToFileURL(resolved).toString();
 		}
-		// For relative paths, resolve to absolute file URL
-		if (specifier.startsWith('.')) {
-			const resolved = createRequire(referrer).resolve(specifier);
-			if (isAbsolute(resolved)) {
-				return pathToFileURL(resolved).toString();
-			}
-			return resolved;
-		}
-		// For package names and node: specifiers, keep as-is for proper require() handling
-		return specifier;
+		return resolved;
 	}
 
 	/**
@@ -231,7 +235,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			},
 			{ identifier: url, context }
 		);
-		moduleCache.set(url, synModule);
+		// Don't cache here - let getOrCreateModule handle caching
 		return synModule;
 	}
 
@@ -256,7 +260,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		}
 
 		// Create the module and cache it immediately (before linking)
-		const module = await createModule(url, usePrivateGlobal);
+		const module = createModule(url, usePrivateGlobal);
 		moduleCache.set(url, module);
 
 		return module;
@@ -270,10 +274,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 
 		// Only link/evaluate once per module
 		if (!linkingPromises.has(url)) {
-			linkingPromises.set(
-				url,
-				module.link(linker).then(() => module.evaluate())
-			);
+			const linkingPromise = (async () => {
+				await module.link(linker);
+				await module.evaluate();
+			})();
+			linkingPromises.set(url, linkingPromise);
 		}
 
 		// Wait for linking to complete
@@ -288,7 +293,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		let module: SourceTextModule | SyntheticModule;
 
 		// Handle special built-in modules
-		if (url === 'harper' || url === 'harperdb') {
+		if (url === 'harper') {
 			let harperExports = getHarperExports(scope);
 			module = new SyntheticModule(
 				Object.keys(harperExports),
@@ -299,7 +304,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 				},
 				{ identifier: url, context }
 			);
-		} else if (url.startsWith('file://')) {
+		} else if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.verifyPath);
 			let source = await readFile(new URL(url), { encoding: 'utf-8' });
 
@@ -320,30 +325,27 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 					source = await stripTypeScriptTypes(source);
 				}
 
-				// Try to parse as ESM first
+				// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
 				try {
-					module = new SourceTextModule(source, {
-						identifier: url,
-						context,
-						initializeImportMeta(meta) {
-							meta.url = url;
-						},
-						async importModuleDynamically(specifier: string) {
-							const resolvedUrl = resolveModule(specifier, url);
-							const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
-							return dynamicModule;
-						},
-					});
-				} catch (err) {
-					// If ESM parsing fails, try to load as CommonJS
-					if (
-						err.message?.includes('require is not defined') ||
-						source.includes('module.exports') ||
-						source.includes('exports.')
-					) {
-						module = loadCJSModule(url, source, usePrivateGlobal);
-					} else {
-						throw err;
+					module = loadCJSModule(url, source, usePrivateGlobal);
+				} catch {
+					// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
+					try {
+						module = new SourceTextModule(source, {
+							identifier: url,
+							context,
+							initializeImportMeta(meta) {
+								meta.url = url;
+							},
+							async importModuleDynamically(specifier: string) {
+								const resolvedUrl = resolveModule(specifier, url);
+								const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
+								return dynamicModule;
+							},
+						});
+					} catch (esmErr) {
+						// Both failed - throw the ESM error as it's likely more relevant
+						throw esmErr;
 					}
 				}
 			}
@@ -404,7 +406,15 @@ async function getCompartment(scope: ApplicationScope, globals) {
 		{
 			name: 'harper-app',
 			resolveHook(moduleSpecifier, moduleReferrer) {
-				if (moduleSpecifier === 'harperdb' || moduleSpecifier === 'harper') return 'harper';
+				if (HARPER_MODULE_IDS.has(moduleSpecifier)) {
+					return 'harper'; // resolve any harper package as an alias to a single synthetic module
+				}
+				const parts = moduleSpecifier.split('/');
+				if (parts[0] === 'harper') {
+					// block harper/* for now (reserving for potential future use)
+					throw new Error(`Module ${moduleSpecifier} is not allowed, may only access the 'harper' module`);
+				}
+
 				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
 				if (isAbsolute(resolved)) {
 					const resolvedURL = pathToFileURL(resolved).toString();

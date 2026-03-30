@@ -2,7 +2,10 @@ import assert from 'node:assert'; // verify we can access safe node built-in mod
 import { Resource, getContext } from 'harper';
 import { MyComponent, connect as connectFromChild } from './child-dir/in-child-dir.js';
 import { connect } from 'mqtt'; // verify we can import from node_modules packages
+import { testValue } from 'fake-package'; // verify we can import from *our* node_modules packages
 import { fork, spawn } from 'node:child_process';
+
+assert.equal(testValue, 42);
 
 console.log('Verifying we can access console.log in application');
 // verify we can't access parent global variables
