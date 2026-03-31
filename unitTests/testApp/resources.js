@@ -65,9 +65,11 @@ class ResourceB extends Resource {
 }
 
 class ResourceC {
-	// without extending Resource
+	// without extending Resource, and use a Response
 	static get(params) {
-		return { name: 'ResourceC', params };
+		let response = new Response();
+		response.data = { name: 'ResourceC', params };
+		return response;
 	}
 }
 
