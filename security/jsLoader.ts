@@ -56,6 +56,9 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 			}
 			overridableProperty(Promise.prototype, 'then');
 			overridableProperty(Date, 'now');
+			for (let name of ['get', 'set', 'has', 'delete', 'clear', 'forEach', 'entries', 'keys', 'values']) {
+				overridableProperty(Map.prototype, name);
+			}
 			for (let Intrinsic of [
 				Object,
 				Array,
