@@ -255,12 +255,67 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	}
 
 	/**
+	 * Check if a package (or any of its dependencies) depends on harper
+	 * Expects a file URL like: file:///path/to/node_modules/package-name/dist/index.js
+	 */
+	function packageDependsOnHarper(fileUrl: string): boolean {
+		try {
+			// Convert file:// URL to path
+			const filePath = fileURLToPath(fileUrl);
+
+			// Find the node_modules directory and package name
+			// Example: /path/to/node_modules/package-name/dist/index.js
+			// or: /path/to/node_modules/@scope/package-name/dist/index.js
+			const nodeModulesMarker = '/node_modules/';
+			const nodeModulesIndex = filePath.lastIndexOf(nodeModulesMarker);
+			if (nodeModulesIndex === -1) return false;
+
+			// Get the part after /node_modules/
+			const afterNodeModules = filePath.substring(nodeModulesIndex + nodeModulesMarker.length);
+			const parts = afterNodeModules.split('/');
+
+			// Handle scoped packages (@scope/package-name) vs regular packages (package-name)
+			const beforeNodeModules = filePath.substring(0, nodeModulesIndex);
+			const packageRoot = parts[0].startsWith('@')
+				? join(beforeNodeModules, 'node_modules', parts[0], parts[1])
+				: join(beforeNodeModules, 'node_modules', parts[0]);
+
+			// Read package.json from the package root
+			const packageJsonPath = join(packageRoot, 'package.json');
+			const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+
+			const deps = {
+				...packageJson.dependencies,
+				...packageJson.devDependencies,
+				...packageJson.peerDependencies,
+			};
+
+			// Check if harper is a direct dependency
+			return Object.keys(deps).some((dep) => HARPER_MODULE_IDS.has(dep));
+		} catch {
+			return false;
+		}
+	}
+
+	/**
 	 * Linker function for module resolution during instantiation
 	 */
 	async function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
 		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
 
-		const useContainment = specifier.startsWith('.') || scope.dependencyContainment !== false;
+		// Determine if we should use VM containment for this module
+		let useContainment = specifier.startsWith('.'); // Always contain relative imports
+
+		if (!useContainment && scope.dependencyContainment !== false) {
+			// For npm packages, check if they depend on harper
+			if (resolvedUrl.startsWith('file://') && resolvedUrl.includes('node_modules')) {
+				useContainment = packageDependsOnHarper(resolvedUrl);
+			} else {
+				// Non-file URLs (bare specifiers) - use default behavior
+				useContainment = scope.dependencyContainment === true;
+			}
+		}
+
 		// Return the module immediately (even if not yet linked) to support circular dependencies
 		return await getOrCreateModule(resolvedUrl, useContainment);
 	}
