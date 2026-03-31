@@ -39,6 +39,7 @@ import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { PluginModule } from './PluginModule.ts';
 import { getEnvBuiltInComponents } from './Application.ts';
+import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 let loadedComponents = new Map<any, any>();
@@ -360,7 +361,9 @@ export async function loadComponent(
 					const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
 					extensionModule =
 						typeof plugin === 'string'
-							? await import(plugin.startsWith('@/') ? join(PACKAGE_ROOT, plugin.slice(1)) : plugin)
+							? await import(
+									plugin.startsWith('@/') ? pathToFileURL(join(PACKAGE_ROOT, plugin.slice(1))).toString() : plugin
+								)
 							: plugin;
 				}
 
