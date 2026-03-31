@@ -14,7 +14,7 @@ System tables are prefixed with `hdb_` and reside in the `system` database.
 
 ## Analytics Tables
 
-Added in: v4.5.0 (resource and storage analytics expansion)
+<VersionBadge version="v4.5.0" /> (resource and storage analytics expansion)
 
 ### `hdb_raw_analytics`
 
@@ -121,7 +121,7 @@ For a full reference of available metrics and their fields, see [Analytics](../a
 
 ### `hdb_dataloader_hash`
 
-Added in: v4.6.0
+<VersionBadge version="v4.6.0" />
 
 Used internally by the [Data Loader](./data-loader.md) to track which records have been loaded and detect changes. Stores SHA-256 content hashes of data file records so that unchanged records are not re-written on subsequent deployments.
 

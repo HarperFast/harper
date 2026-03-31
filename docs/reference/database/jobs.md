@@ -138,7 +138,7 @@ Exports table data to a local file in JSON or CSV format.
 - `path` _(required)_ — local directory path where the export file will be written
 - `search_operation` _(required)_ — query to select records: `search_by_hash`, `search_by_value`, `search_by_conditions`, or `sql`
 
-Changed in: v4.3.0 — `search_by_conditions` added as a supported search operation for exports
+<VersionBadge type="changed" version="v4.3.0" /> — `search_by_conditions` added as a supported search operation for exports
 
 - `filename` _(optional)_ — filename without extension; auto-generated from epoch timestamp if omitted
 
@@ -160,7 +160,7 @@ Changed in: v4.3.0 — `search_by_conditions` added as a supported search operat
 
 Exports table data to an AWS S3 bucket in JSON or CSV format.
 
-Changed in: v4.3.0 — `search_by_conditions` added as a supported search operation
+<VersionBadge type="changed" version="v4.3.0" /> — `search_by_conditions` added as a supported search operation
 
 - `operation` _(required)_ — `export_to_s3`
 - `format` _(required)_ — `json` or `csv`

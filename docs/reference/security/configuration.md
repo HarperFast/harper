@@ -35,7 +35,7 @@ How long (in milliseconds) an authentication result — a particular `Authorizat
 
 _Type: boolean — Default: `true`_
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Enables cookie-based sessions to maintain an authenticated session across requests. This is the preferred authentication mechanism for web browsers: cookies hold the token securely without exposing it to JavaScript, reducing XSS vulnerability risk.
 
@@ -55,7 +55,7 @@ How long a JWT refresh token remains valid before expiring. Accepts [`jsonwebtok
 
 _Type: string — Default: `sha256`_
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 Password hashing algorithm used when storing user passwords. Replaced the previous MD5 hashing. Options:
 

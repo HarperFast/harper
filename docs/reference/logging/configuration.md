@@ -182,7 +182,7 @@ logging:
 
 ### `logging.auditAuthEvents.logFailed`
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Type: `boolean`
 
@@ -198,7 +198,7 @@ Example log entry:
 
 ### `logging.auditAuthEvents.logSuccessful`
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Type: `boolean`
 
@@ -221,7 +221,7 @@ logging:
 
 ## Per-Component Logging
 
-Added in: v4.6.0
+<VersionBadge version="v4.6.0" />
 
 Harper supports independent logging configurations for different components. Each component logger can have its own `path`, `root`, `level`, `tag`, and `stdStreams` settings. All components default to the main `logging` configuration unless overridden.
 

@@ -243,7 +243,7 @@ A Node.js [`net.Server`](https://nodejs.org/api/net.html#class-netserver) or [`t
 
 ## `server.authenticateUser(username, password)`
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 ```ts
 server.authenticateUser(username: string, password: string): Promise<User>

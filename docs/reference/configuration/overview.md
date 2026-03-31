@@ -94,7 +94,7 @@ HDB_CONFIG=/existing/rootpath/harperdb-config.yaml harperdb
 
 ## Environment Variable-Based Configuration
 
-Added in: v4.7.2
+<VersionBadge version="v4.7.2" />
 
 Harper provides two special environment variables for managing configuration across deployments: `HARPER_DEFAULT_CONFIG` and `HARPER_SET_CONFIG`. Both accept JSON-formatted configuration that mirrors the structure of `harperdb-config.yaml`.
 

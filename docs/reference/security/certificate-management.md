@@ -87,7 +87,7 @@ For full mTLS authentication details, see [mTLS Authentication](./mtls-authentic
 
 ## Certificate Verification
 
-Added in: v4.5.0 (certificate revocation); v4.7.0 (OCSP support)
+<VersionBadge version="v4.5.0" /> (certificate revocation); v4.7.0 (OCSP support)
 
 When using mTLS, enable certificate verification to ensure revoked certificates cannot authenticate even if still within their validity period:
 
@@ -122,7 +122,7 @@ For full configuration options and troubleshooting, see [Certificate Verificatio
 
 ## Dynamic Certificate Management
 
-Added in: v4.4.0
+<VersionBadge version="v4.4.0" />
 
 Certificates — including CAs and private keys — can be dynamically managed without restarting Harper.
 

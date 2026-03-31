@@ -28,7 +28,7 @@ For detailed installation instructions, see the [Getting Started / Install And C
 
 ## Command Name
 
-Changed in: v4.7.0
+<VersionBadge type="changed" version="v4.7.0" />
 
 The CLI command is `harper`. From v4.1.0 to v4.6.x, the command was only available as `harperdb`. Starting in v4.7.0, the preferred command is `harper`, though `harperdb` continues to work as an alias for backward compatibility.
 
@@ -113,7 +113,7 @@ See [CLI Commands](./commands.md) for detailed documentation on each command.
 
 ## Operations API Commands
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 The Harper CLI supports executing most operations from the [Operations API](../operations-api/overview.md) directly from the command line. This includes operations that do not require complex nested parameters.
 
@@ -147,7 +147,7 @@ See [Operations API Commands](./operations-api-commands.md) for the complete lis
 
 ## Remote Operations
 
-Changed in: v4.3.0 (expanded remote operations support)
+<VersionBadge type="changed" version="v4.3.0" /> (expanded remote operations support)
 
 The CLI can execute operations on remote Harper instances by passing the `target` parameter with the HTTP address of the remote instance.
 
@@ -174,7 +174,7 @@ harper describe_database database=dev target=https://server.com:9925 username=HD
 
 ## Development Mode
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 For local application and component development, use `harper dev`:
 

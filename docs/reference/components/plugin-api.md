@@ -8,7 +8,7 @@ title: Plugin API
 
 # Plugin API
 
-Added in: v4.6.0 (experimental)
+<VersionBadge version="v4.6.0" /> (experimental)
 
 > The Plugin API is **experimental**. It is the recommended approach for building new extensions, and is intended to replace the [Extension API](./extension-api.md) in the future. Both systems are supported simultaneously.
 

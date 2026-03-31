@@ -136,7 +136,7 @@ For deeper background on Harper's transaction model, see [Storage Algorithm](./s
 
 ## `createBlob(data, options?)`
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 `createBlob` creates a [`Blob`](https://developer.mozilla.org/en-US/docs/Web/API/Blob) backed by Harper's storage engine. Use it to store large binary content (images, audio, video, large HTML, etc.) in a `Blob`-typed schema field.
 

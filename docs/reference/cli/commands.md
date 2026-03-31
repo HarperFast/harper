@@ -15,7 +15,7 @@ This page documents the core Harper CLI commands for managing Harper instances. 
 
 ### `harper`
 
-Added in: v4.1.0
+<VersionBadge version="v4.1.0" />
 
 Run Harper in the foreground as a standard process. This is the recommended way to run Harper.
 
@@ -66,7 +66,7 @@ For more information on installation, see [Getting Started / Install and Connect
 
 ### `harper run`
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Run a Harper application from any location as a foreground, standard process (similar to `harper`).
 
@@ -78,7 +78,7 @@ This command runs Harper with the specified application directory without automa
 
 ### `harper dev`
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Run Harper in development mode from a specified directory with automatic reloading. Recommended for local application development. Operates similar to `harper` and `harper run`.
 

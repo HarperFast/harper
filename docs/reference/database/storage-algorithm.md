@@ -26,7 +26,7 @@ Each Harper table has a single writer process, eliminating deadlocks and ensurin
 
 ## Universally Indexed
 
-Changed in: v4.3.0 — Storage performance improvements including better free-space management
+<VersionBadge type="changed" version="v4.3.0" /> — Storage performance improvements including better free-space management
 
 For [dynamic schema tables](./overview.md#dynamic-vs-defined-schemas), all top-level attributes are automatically indexed immediately upon ingestion — Harper reflexively creates the attribute and its index as new data arrives. For [schema-defined tables](./schema.md), indexes are created for all attributes marked with `@indexed`.
 
@@ -42,7 +42,7 @@ Within the LMDB implementation, table records are grouped into a single LMDB env
 
 ## Compression
 
-Changed in: v4.3.0 — Compression is now enabled by default for all records over 4KB
+<VersionBadge type="changed" version="v4.3.0" /> — Compression is now enabled by default for all records over 4KB
 
 Harper compresses record data automatically for records over 4KB. Compression settings can be configured in the [storage configuration](../configuration/options.md). Note that compression settings cannot be changed on existing databases without creating a new compacted copy — see [Compaction](./compaction.md).
 

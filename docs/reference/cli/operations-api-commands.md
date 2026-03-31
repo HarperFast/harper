@@ -7,7 +7,7 @@ title: Operations API Commands
 
 # Operations API Commands
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 The Harper CLI supports executing operations from the [Operations API](../operations-api/overview.md) directly from the command line. This enables powerful automation and scripting capabilities.
 

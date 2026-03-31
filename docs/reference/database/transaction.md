@@ -118,9 +118,9 @@ The `original_records` field contains the record state before the operation was 
 
 Deletes audit log entries older than the specified timestamp.
 
-Changed in: v4.3.0 — Audit log cleanup improved to reduce resource consumption during scheduled cleanups
+<VersionBadge type="changed" version="v4.3.0" /> — Audit log cleanup improved to reduce resource consumption during scheduled cleanups
 
-Changed in: v4.5.0 — Storage reclamation: Harper automatically evicts older audit log entries when free storage drops below a configurable threshold
+<VersionBadge type="changed" version="v4.5.0" /> — Storage reclamation: Harper automatically evicts older audit log entries when free storage drops below a configurable threshold
 
 ```json
 {

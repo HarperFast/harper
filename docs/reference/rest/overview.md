@@ -9,7 +9,7 @@ title: REST Overview
 
 # REST Overview
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Harper provides a powerful, efficient, and standard-compliant HTTP REST interface for interacting with tables and other resources. The REST interface is the recommended interface for data access, querying, and manipulation over HTTP, providing the best performance and HTTP interoperability with different clients.
 
@@ -47,7 +47,7 @@ The REST interface follows a consistent URL structure:
 | `/my-resource/record-id/`                    | Trailing slash — the collection of records with the given id prefix                               |
 | `/my-resource/record-id/with/multiple/parts` | Record id with multiple path segments                                                             |
 
-Changed in: v4.5.0 — Resources can be defined with nested paths and accessed by exact path without a trailing slash. The `id.property` dot syntax for accessing properties via URL is only applied to properties declared in a schema.
+<VersionBadge type="changed" version="v4.5.0" /> — Resources can be defined with nested paths and accessed by exact path without a trailing slash. The `id.property` dot syntax for accessing properties via URL is only applied to properties declared in a schema.
 
 ## HTTP Methods
 
@@ -107,7 +107,7 @@ Content-Type: application/json
 
 Partially update a record, merging only the provided properties (CRDT-style update). Unspecified properties are preserved.
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ```http
 PATCH /MyTable/123
@@ -140,7 +140,7 @@ See [Content Types](./content-types.md) for the full list of supported formats a
 
 ## OpenAPI
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Harper automatically generates an OpenAPI specification for all resources exported via a schema. This endpoint is available at:
 

@@ -6,7 +6,7 @@ title: mTLS Authentication
 <!-- Source: versioned_docs/version-4.7/developers/security/mtls-auth.md (primary) -->
 <!-- Source: release-notes/v4-tucker/4.3.0.md (confirmed mTLS introduction) -->
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Harper supports Mutual TLS (mTLS) authentication for incoming HTTP connections. When enabled, the client must present a certificate signed by a trusted Certificate Authority (CA). If the certificate is valid and trusted, the connection is authenticated using the user whose username matches the `CN` (Common Name) from the client certificate's `subject`.
 

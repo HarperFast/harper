@@ -7,7 +7,7 @@ title: Compaction
 
 # Compaction
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Database files grow over time as records are inserted, updated, and deleted. Deleted records and updated values leave behind free space (fragmentation) in the database file, which can increase file size and potentially affect performance. Compaction eliminates this free space, creating a smaller, contiguous database file.
 

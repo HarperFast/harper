@@ -13,7 +13,7 @@ Harper's Resource API is the foundation for building custom data access logic an
 
 A **Resource** is a class that provides a unified interface for a set of records or entities. Harper's built-in tables extend the base `Resource` class, and you can extend either `Resource` or a table class to implement custom behavior for any data source — internal or external.
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 The Resource API is designed to mirror REST/HTTP semantics: methods map directly to HTTP verbs (`get`, `put`, `patch`, `post`, `delete`), making it straightforward to build API endpoints alongside custom data logic.
 

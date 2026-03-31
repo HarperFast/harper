@@ -961,7 +961,7 @@ The following operations are deprecated and should not be used in new code.
 
 Custom Functions were the precursor to the Component architecture introduced in v4.2.0. These operations are preserved for backward compatibility.
 
-Deprecated in: v4.2.0 (moved to legacy in v4.7+)
+<VersionBadge type="deprecated" version="v4.2.0" /> (moved to legacy in v4.7+)
 
 For modern equivalents, see [Components Overview](../components/overview.md).
 

@@ -14,9 +14,9 @@ Harper includes a built-in HTTP server that serves as the primary interface for 
 
 Harper's HTTP server is multi-threaded. Each thread runs an independent copy of the HTTP stack, and incoming connections are distributed across threads using `SO_REUSEPORT` socket sharing — the most performant mechanism available for multi-threaded socket handling.
 
-Added in: v4.1.0 (worker threads for HTTP requests)
+<VersionBadge version="v4.1.0" /> (worker threads for HTTP requests)
 
-Changed in: v4.2.0 (switched from process-per-thread model with session-affinity delegation to `SO_REUSEPORT` socket sharing)
+<VersionBadge type="changed" version="v4.2.0" /> (switched from process-per-thread model with session-affinity delegation to `SO_REUSEPORT` socket sharing)
 
 In previous versions: Session-affinity based socket delegation was used to route requests. This has been deprecated in favor of `SO_REUSEPORT`.
 
@@ -44,7 +44,7 @@ See [Configuration](./configuration) for TLS options and [Security](../security/
 
 ## HTTP/2
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 HTTP/2 can be enabled with the `http2: true` option in `harperdb-config.yaml`. When enabled, HTTP/2 applies to all API endpoints served on `http.securePort` (HTTP/2 requires TLS).
 

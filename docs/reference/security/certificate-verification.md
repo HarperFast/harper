@@ -7,9 +7,9 @@ title: Certificate Verification
 <!-- Source: release-notes/v4-tucker/4.5.0.md (certificate revocation added) -->
 <!-- Source: release-notes/v4-tucker/4.7.0.md (confirmed OCSP support added) -->
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
-Changed in: v4.7.0 (OCSP support added)
+<VersionBadge type="changed" version="v4.7.0" /> (OCSP support added)
 
 Certificate verification (also called certificate revocation checking) ensures that revoked certificates cannot be used for mTLS authentication, even if they are otherwise valid and trusted. This is a critical security control for environments where certificates may need to be revoked before their expiration date — due to compromise, employee departure, or other security concerns.
 

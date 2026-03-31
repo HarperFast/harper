@@ -18,7 +18,7 @@ Harper uses GraphQL Schema Definition Language (SDL) to declaratively define tab
 
 ## Overview
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Schemas are defined using standard [GraphQL type definitions](https://graphql.org/learn/schema/) with Harper-specific directives. A schema definition:
 
@@ -157,7 +157,7 @@ If no primary key is provided on insert, Harper auto-generates one:
 - **UUID string** — when type is `String` or `ID`
 - **Auto-incrementing integer** — when type is `Int`, `Long`, or `Any`
 
-Changed in: v4.4.0
+<VersionBadge type="changed" version="v4.4.0" />
 
 Auto-incrementing integer primary keys were added. Previously only UUID generation was supported for `ID` and `String` types.
 
@@ -203,7 +203,7 @@ type Event @table {
 
 ## Relationships
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 The `@relationship` directive defines how one table relates to another through a foreign key. Relationships enable join queries and allow related records to be selected as nested properties in query results.
 
@@ -277,7 +277,7 @@ Schemas can also define self-referential relationships, enabling parent-child hi
 
 ## Computed Properties
 
-Added in: v4.4.0
+<VersionBadge version="v4.4.0" />
 
 The `@computed` directive marks a field as derived from other fields at query time. Computed properties are not stored in the database but are evaluated when the field is accessed.
 
@@ -334,7 +334,7 @@ Increment `version` whenever the computation function changes. Failing to do so 
 
 ## Vector Indexing
 
-Added in: v4.6.0
+<VersionBadge version="v4.6.0" />
 
 Use `@indexed(type: "HNSW")` to create a vector index using the Hierarchical Navigable Small World algorithm, designed for fast approximate nearest-neighbor search on high-dimensional vectors.
 
@@ -410,7 +410,7 @@ Arrays of a type are expressed with `[Type]` syntax (e.g., `[Float]` for a vecto
 
 ### Blob Type
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 `Blob` fields are designed for large binary content. Harper's `Blob` type implements the [Web API `Blob` interface](https://developer.mozilla.org/en-US/docs/Web/API/Blob), so all standard `Blob` methods (`.text()`, `.arrayBuffer()`, `.stream()`, `.slice()`) are available. Unlike `Bytes`, blobs are stored separately from the record, support streaming, and do not need to be held entirely in memory. Use `Blob` for content typically larger than 20KB (images, video, audio, large HTML, etc.).
 

@@ -18,7 +18,7 @@ Harper offers several approaches to managing applications that differ between lo
 
 ### `dev` and `run` Commands
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 The quickest way to run an application locally is with the `dev` command inside the application directory:
 

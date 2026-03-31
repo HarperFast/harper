@@ -7,7 +7,7 @@ title: Data Loader
 
 # Data Loader
 
-Added in: v4.6.0
+<VersionBadge version="v4.6.0" />
 
 The Data Loader is a built-in component that loads data from JSON or YAML files into Harper tables as part of component deployment. It is designed for seeding tables with initial records — configuration data, reference data, default users, or other records that should exist when a component is first deployed or updated.
 

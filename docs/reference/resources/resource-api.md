@@ -13,7 +13,7 @@ title: Resource API
 
 # Resource API
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 The Resource API provides a unified JavaScript interface for accessing, querying, modifying, and subscribing to data resources in Harper. Tables extend the base `Resource` class, and all resource interactions — whether from HTTP requests, MQTT messages, or application code — flow through this interface.
 
@@ -32,7 +32,7 @@ This page documents V2 behavior (`loadAsInstance = false`). For V1 (legacy insta
 
 ### V2 Behavioral Differences from V1
 
-Changed in: v4.6.0 (Resource API upgrades that formalized V2)
+<VersionBadge type="changed" version="v4.6.0" /> (Resource API upgrades that formalized V2)
 
 When `loadAsInstance = false`:
 
@@ -111,7 +111,7 @@ put(target, data) {
 
 Called for HTTP PATCH requests. Merges `data` into the existing record, preserving any properties not included in `data`.
 
-Added in: v4.3.0 (CRDT support for individual property updates via PATCH)
+<VersionBadge version="v4.3.0" /> (CRDT support for individual property updates via PATCH)
 
 ### `post(target: RequestTarget | Id, data: object): void | Response`
 
@@ -141,7 +141,7 @@ The `Updatable` class provides direct property access plus:
 
 Adds `value` to `property` using CRDT incrementation — safe for concurrent updates across threads and nodes.
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ```javascript
 post(target, data) {
@@ -286,7 +286,7 @@ Save a record (create or replace). The second form reads the primary key from th
 
 Create a new record with an auto-generated primary key. Returns the created record. Do not include a primary key in the `record` argument.
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 ### `patch(target: RequestTarget | Id, updates: object, context?): Promise<void>`
 
@@ -316,7 +316,7 @@ Query the table. See [Query Object](#query-object) below for available query opt
 
 Define the compute function for a `@computed` schema attribute.
 
-Added in: v4.4.0
+<VersionBadge version="v4.4.0" />
 
 ```javascript
 MyTable.setComputedAttribute('fullName', (record) => `${record.firstName} ${record.lastName}`);
@@ -326,7 +326,7 @@ MyTable.setComputedAttribute('fullName', (record) => `${record.firstName} ${reco
 
 Returns the number of records in the table. By default returns an approximate (fast) count. Pass `{ exactCount: true }` for a precise count.
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 ### `sourcedFrom(Resource, options?)`
 
@@ -352,7 +352,7 @@ static parsePath(path) {
 
 Set this static property to `true` to map the full URL (including query string) as the primary key, bypassing query parsing.
 
-Added in: v4.5.0 (documented in improved URL path parsing)
+<VersionBadge version="v4.5.0" /> (documented in improved URL path parsing)
 
 ```javascript
 export class MyTable extends tables.MyTable {
@@ -415,7 +415,7 @@ Product.search({
 Product.search({ conditions: [{ attribute: ['brand', 'name'], value: 'Harper' }] });
 ```
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ### `operator`
 
@@ -511,7 +511,7 @@ return { status: 200, headers: { 'X-Custom-Header': 'value' }, data: { message: 
 
 `body` must be a string, `Buffer`, Node.js stream, or `ReadableStream`. `data` is an object that will be serialized.
 
-Added in: v4.4.0
+<VersionBadge version="v4.4.0" />
 
 ### Throwing Errors
 

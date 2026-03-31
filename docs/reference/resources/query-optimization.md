@@ -7,7 +7,7 @@ title: Query Optimization
 
 # Query Optimization
 
-Added in: v4.3.0 (query planning and execution improvements)
+<VersionBadge version="v4.3.0" /> (query planning and execution improvements)
 
 Harper has powerful query functionality with excellent performance characteristics. Like any database, different queries can vary significantly in performance. Understanding how querying works helps you write queries that perform well as your dataset grows.
 
@@ -89,7 +89,7 @@ type Brand @table {
 }
 ```
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ## Sorting
 

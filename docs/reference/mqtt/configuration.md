@@ -78,7 +78,7 @@ mqtt:
 
 ### `mqtt.network.mtls`
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Type: `boolean | object`
 

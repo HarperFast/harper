@@ -7,7 +7,7 @@ title: Analytics
 <!-- Source: release-notes/v4-tucker/4.5.0.md (confirmed resource and storage analytics added) -->
 <!-- Source: release-notes/v4-tucker/4.7.0.md (confirmed new analytics/licensing functionality) -->
 
-Added in: v4.5.0 (resource and storage analytics)
+<VersionBadge version="v4.5.0" /> (resource and storage analytics)
 
 Harper collects real-time telemetry and statistics across all operations, URL endpoints, and messaging topics. This data can be used to monitor server health, understand traffic and usage patterns, identify resource-intensive queries, and inform scaling decisions.
 

@@ -27,7 +27,7 @@ GET /Product/?category=software&inStock=true
 
 ### Null Queries
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Query for null values or non-null values:
 
@@ -173,11 +173,11 @@ GET /Product/?rating=gt=3&sort(+name)
 GET /Product/?sort(+rating,-price)
 ```
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ## Relationships and Joins
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Harper supports querying across related tables through dot-syntax chained attributes. Relationships must be defined in the schema using `@relation`.
 
@@ -237,7 +237,7 @@ The array order of `resellerIds` is preserved when resolving the relationship.
 
 ## Property Access via URL
 
-Changed in: v4.5.0
+<VersionBadge type="changed" version="v4.5.0" />
 
 Access a specific property of a record by appending it with dot syntax to the record id:
 
@@ -249,7 +249,7 @@ This only works for properties declared in the schema. As of v4.5.0, dots in URL
 
 ## `directURLMapping` Option
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 Resources can be configured with `directURLMapping: true` for more direct URL path handling. When enabled, the URL path is mapped more directly to the resource without the default query parameter parsing semantics. See [Database / Schema](../database/schema.md) for configuration details.
 

@@ -7,7 +7,7 @@ title: Server-Sent Events
 
 # Server-Sent Events
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Harper supports Server-Sent Events (SSE), a simple and efficient mechanism for browser-based applications to receive real-time updates from the server over a standard HTTP connection. SSE is a one-directional transport — the server pushes events to the client, and the client has no way to send messages back on the same connection.
 

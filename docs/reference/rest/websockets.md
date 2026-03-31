@@ -8,7 +8,7 @@ title: WebSockets
 
 # WebSockets
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Harper supports WebSocket connections through the REST interface, enabling real-time bidirectional communication with resources. WebSocket connections target a resource URL path — by default, connecting to a resource subscribes to changes for that resource.
 

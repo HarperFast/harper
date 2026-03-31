@@ -44,7 +44,7 @@ Files are accessed relative to the matched directory root, so `GET /index.html` 
 
 ## `files` and `urlPath` Options
 
-Added in: v4.5
+<VersionBadge version="v4.5" />
 
 `static` is a [Plugin](../components/overview.md) and supports the standard `files` and `urlPath` configuration options for controlling which files to serve and at what URL path.
 
@@ -62,7 +62,7 @@ See [Components Overview](../components/overview.md) for full `files` glob patte
 
 ## Additional Options
 
-Added in: v4.7
+<VersionBadge version="v4.7" />
 
 In addition to the standard `files`, `urlPath`, and `timeout` options, `static` supports these configuration options:
 
@@ -76,7 +76,7 @@ In addition to the standard `files`, `urlPath`, and `timeout` options, `static` 
 
 ## Auto-Updates
 
-Added in: v4.7.0
+<VersionBadge version="v4.7.0" />
 
 Because `static` uses the Plugin API, it automatically responds to changes without requiring a Harper restart. Adding, removing, or modifying files — or updating `config.yaml` — takes effect immediately.
 

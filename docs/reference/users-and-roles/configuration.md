@@ -52,7 +52,7 @@ editor:
 
 ## Password Hashing
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 Harper supports two password hashing algorithms, replacing the previous MD5 hashing:
 

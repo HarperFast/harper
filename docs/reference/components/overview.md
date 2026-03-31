@@ -18,13 +18,13 @@ title: Components
 
 ### Applications
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 **Applications** implement specific user-facing features or functionality. Applications are built on top of extensions and represent the end product that users interact with. For example, a Next.js application serving a web interface or an Apollo GraphQL server providing a GraphQL API are both applications. Also, a collection of Harper Schemas and/or custom Resources is also an application.
 
 ### Extensions
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 **Extensions** are the building blocks of the Harper component system. Applications depend on extensions to provide the functionality they implement. For example, the built-in `graphqlSchema` extension enables applications to define databases and tables using GraphQL schemas. The `@harperdb/nextjs` and `@harperdb/apollo` extensions provide building blocks for Next.js and Apollo applications respectively.
 
@@ -32,7 +32,7 @@ Extensions can also depend on other extensions. For example, `@harperdb/apollo` 
 
 ### Plugins (Experimental)
 
-Added in: v4.6.0 (experimental)
+<VersionBadge version="v4.6.0" /> (experimental)
 
 **Plugins** are a new iteration of the extension system introduced in v4.6. They are simultaneously a simplification and extensibility upgrade over extensions. Instead of defining multiple methods (`start` vs `startOnMainThread`, `handleFile` vs `setupFile`, `handleDirectory` vs `setupDirectory`), plugins only export a single `handleApplication` method.
 
@@ -149,7 +149,7 @@ Extensions require an `extensionModule` option pointing to the extension source.
 
 ## Component Status Monitoring
 
-Added in: v4.7.0
+<VersionBadge version="v4.7.0" />
 
 Harper collects status from each component at load time and tracks any registered status change notifications. This provides visibility into the health and state of running components.
 

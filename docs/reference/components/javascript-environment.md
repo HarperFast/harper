@@ -52,7 +52,7 @@ See [Transactions](../database/transaction.md) for full reference.
 
 ### `createBlob(data, options?)`
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 Creates a [`Blob`](https://developer.mozilla.org/en-US/docs/Web/API/Blob) backed by Harper's storage engine. Use it to store large binary content (images, audio, video, etc.) in `Blob`-typed schema fields.
 

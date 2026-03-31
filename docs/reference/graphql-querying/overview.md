@@ -10,9 +10,9 @@ title: GraphQL Querying
 
 # GraphQL Querying
 
-Added in: v4.4.0 (provisional)
+<VersionBadge version="v4.4.0" /> (provisional)
 
-Changed in: v4.5.0 (disabled by default, configuration options)
+<VersionBadge type="changed" version="v4.5.0" /> (disabled by default, configuration options)
 
 Harper supports GraphQL in a variety of ways. It can be used for [defining schemas](../components/applications.md), and for querying [Resources](../resources/overview.md).
 

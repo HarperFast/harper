@@ -14,7 +14,7 @@ Harper's core logging system is used for diagnostics, monitoring, and observabil
 
 ## Log File
 
-Changed in: v4.1.0 — All logs consolidated into a single `hdb.log` file
+<VersionBadge type="changed" version="v4.1.0" /> — All logs consolidated into a single `hdb.log` file
 
 All standard log output is written to `<ROOTPATH>/log/hdb.log` (default: `~/hdb/log/hdb.log`).
 
@@ -60,7 +60,7 @@ The default log level is `warn`. Setting a level includes that level and all mor
 
 ## Standard Streams
 
-Changed in: v4.6.0
+<VersionBadge type="changed" version="v4.6.0" />
 
 By default, logs are written only to the log file. To also log to `stdout`/`stderr`, set [`logging.stdStreams: true`](./configuration.md#loggingstdstreams) (this is automatically enabled by the `DEFAULT_MODE=dev` configuration during installation).
 

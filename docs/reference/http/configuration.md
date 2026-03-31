@@ -50,7 +50,7 @@ tls:
 
 ### `http.http2`
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 Type: `boolean`
 
@@ -110,7 +110,7 @@ The maximum estimated request queue time in milliseconds. When the queue exceeds
 
 ### `http.compressionThreshold`
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Type: `number`
 
@@ -151,7 +151,7 @@ http:
 
 ### `http.corsAccessControlAllowHeaders`
 
-Added in: v4.5.0
+<VersionBadge version="v4.5.0" />
 
 Type: `string`
 
@@ -163,7 +163,7 @@ Comma-separated list of headers allowed in the [`Access-Control-Allow-Headers`](
 
 ### `http.sessionAffinity`
 
-Added in: v4.1.0
+<VersionBadge version="v4.1.0" />
 
 Type: `string`
 
@@ -189,7 +189,7 @@ If Harper is behind a reverse proxy and you use `ip`, all requests will share th
 
 ### `http.mtls`
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Type: `boolean | object`
 
@@ -212,7 +212,7 @@ For granular control, specify an object:
 
 ### `http.mtls.certificateVerification`
 
-Added in: v4.7.0 (OCSP support)
+<VersionBadge version="v4.7.0" /> (OCSP support)
 
 Type: `boolean | object`
 
@@ -281,7 +281,7 @@ HTTP request logging is disabled by default. Enabling the `http.logging` block t
 
 ### `http.logging`
 
-Added in: v4.6.0
+<VersionBadge version="v4.6.0" />
 
 Type: `object`
 

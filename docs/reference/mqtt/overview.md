@@ -8,7 +8,7 @@ title: MQTT
 <!-- Source: release-notes/v4-tucker/4.3.0.md (confirmed mTLS, single-level wildcards, retain handling, CRDT) -->
 <!-- Source: release-notes/v4-tucker/4.5.0.md (confirmed improved message delivery, blob support) -->
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 Harper includes a built-in MQTT broker that provides real-time pub/sub messaging deeply integrated with the database. Unlike a generic MQTT broker, Harper's MQTT implementation connects topics directly to database records — publishing to a topic writes to the database, and subscribing to a topic delivers live updates for the corresponding record.
 
@@ -53,7 +53,7 @@ Harper supports multi-level topics for both publishing and subscribing:
 
 ### Last Will
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 Harper supports the MQTT Last Will and Testament feature. If a client disconnects unexpectedly, the broker publishes the configured will message on its behalf.
 
