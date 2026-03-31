@@ -25,6 +25,7 @@ coverage
 /unitTests/apiTests/envDir
 /unitTests/testApp/node_modules
 unitTests/server/fastifyRoutes/custom_functions
+unitTests/components/fixtures/testJSWithDeps/node_modules/harper
 
 # TypeScript
 *.tsbuildinfo
