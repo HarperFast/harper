@@ -215,10 +215,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 			verifyPath: PACKAGE_ROOT,
 		});
 
-		const cjsModuleA = await scopedImport(
-			path.join(componentDir, 'cjs-circular-a.cjs'),
-			applicationScope
-		);
+		const cjsModuleA = await scopedImport(path.join(componentDir, 'cjs-circular-a.cjs'), applicationScope);
 
 		// Should successfully load circular CJS modules
 		assert.equal(cjsModuleA.valueA, 'from-a', 'Should have valueA');
