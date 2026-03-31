@@ -3,6 +3,7 @@ import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
+import { asBinary } from 'lmdb';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
 	// we want to be able to test log replay
@@ -81,7 +82,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 
 	putSync(suggestedKey: any, value: any, options: any) {
 		if (typeof suggestedKey === 'symbol') {
-			this.rootStore.putSync(suggestedKey, value, options);
+			this.rootStore.putSync(suggestedKey, asBinary(value), options);
 		} else {
 			this.put(suggestedKey, value, options);
 		}
@@ -111,7 +112,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		if (typeof key === 'number') {
 			throw new Error('Unsupported binary access by number');
 		}
-		return this.rootStore.getBinary(key);
+		return this.rootStore.getBinarySync(key);
 	}
 	getEntry() {
 		throw new Error('Not implemented');
