@@ -35,6 +35,7 @@ const httpServers = {},
 	httpChain = {},
 	httpResponders = [];
 let httpOptions: HttpOptions = {};
+export const universalHeaders: [string, string][] = [];
 
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
@@ -269,7 +270,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-
+				for (let [key, value] of universalHeaders) {
+					response.headers.set(key, value);
+				}
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
