@@ -598,17 +598,8 @@ function secureOnlyFetch(resource, options) {
 	return fetch(resource, options);
 }
 
-let defaultJSGlobalNames: string[];
-// get the global variable names that are intrinsically present in a VM context (so we don't override them)
-function getDefaultJSGlobalNames() {
-	if (!defaultJSGlobalNames) {
-		defaultJSGlobalNames = runInContext(
-			'Object.getOwnPropertyNames((function() { return this })())',
-			createContext({})
-		);
-	}
-	return defaultJSGlobalNames;
-}
+// these are globals that must be left as provided by the VM context so they match their literals construction
+const retainedJSGlobals = ['Object', 'Array', 'Function'];
 
 /**
  * Get the set of global variables that should be available to modules that run in scoped compartments/contexts.
@@ -618,7 +609,7 @@ function getGlobalObject(scope: ApplicationScope) {
 	// create the new global object, assigning all the global variables from this global
 	// except those that will be natural intrinsics of the new VM
 	for (let name of Object.getOwnPropertyNames(global)) {
-		if (getDefaultJSGlobalNames().includes(name)) continue;
+		if (retainedJSGlobals.includes(name)) continue;
 		appGlobal[name] = global[name];
 	}
 	// now assign Harper scope-specific variables

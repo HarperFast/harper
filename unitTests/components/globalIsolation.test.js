@@ -67,6 +67,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 
 		// verify the exported resource works
 		assert.equal(mockResources.get('/testExport').get(), 'hello world');
+		assert(mockResources.get('/testExport').getDate() instanceof Date);
 		assert((await mockResources.get('/testExport').testLoadTypeScript()).isTyped, 'TypeScript exports');
 		assert.equal(typeof mockResources.get('/TestComponent').get, 'function');
 		assert.equal(typeof mockResources.get('/my-component').get, 'function');
