@@ -404,187 +404,120 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		return module;
 	}
 	/**
-	 * Create a module from URL synchronously (for use in linker)
+	 * Create a SyntheticModule from exported object
 	 */
-	function createModuleSync(url: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
-		let module: SourceTextModule | SyntheticModule;
-
-		// Handle special built-in modules
-		if (url === 'harper') {
-			let harperExports = getHarperExports(scope);
-			module = new SyntheticModule(
-				Object.keys(harperExports),
-				function () {
-					for (let key in harperExports) {
-						this.setExport(key, harperExports[key]);
-					}
-				},
-				{ identifier: url, context }
-			);
-		} else if (url.startsWith('file://') && usePrivateGlobal) {
-			checkAllowedModulePath(url, scope.verifyPath);
-			// Read file synchronously
-			let source = readFileSync(new URL(url), { encoding: 'utf-8' });
-
-			// Handle JSON modules as a SyntheticModule with a default export.
-			// JSON imports only support default exports per the ESM spec.
-			if (url.endsWith('.json')) {
-				const jsonData = parseJsonModule(source, url);
-				module = new SyntheticModule(
-					['default'],
-					function () {
-						this.setExport('default', jsonData);
-					},
-					{ identifier: url, context }
-				);
-			} else {
-				// Strip TypeScript types if this is a .ts file
-				if (url.endsWith('.ts') || url.endsWith('.tsx')) {
-					source = stripTypeScriptTypes(source);
+	function createSyntheticModule(url: string, exportedObject: any): SyntheticModule {
+		const exportNames = Object.keys(exportedObject);
+		return new SyntheticModule(
+			exportNames,
+			function () {
+				for (const key of exportNames) {
+					this.setExport(key, exportedObject[key]);
 				}
-
-				// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
-				try {
-					module = loadCJSModule(url, source, usePrivateGlobal);
-				} catch {
-					// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
-					try {
-						module = new SourceTextModule(source, {
-							identifier: url,
-							context,
-							initializeImportMeta(meta) {
-								meta.url = url;
-							},
-							importModuleDynamically(specifier: string, referencingModule) {
-								// Dynamic imports still need to be async, but we return a promise
-								const resolvedUrl = resolveModule(specifier, url);
-								return loadModuleWithCache(resolvedUrl, true);
-							},
-						});
-					} catch (esmErr) {
-						// Both failed - throw the ESM error as it's likely more relevant
-						throw esmErr;
-					}
-				}
-			}
-		} else {
-			const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
-			// For Node.js built-in modules (node:) and npm packages without dependency containment
-			// Use require for synchronous loading
-			// Convert file:// URLs to paths for require()
-			const requirePath = url.startsWith('file://') ? fileURLToPath(url) : url;
-			let importedModule = replacedModule ?? require(requirePath);
-			const cjsModule = importedModule['module.exports'];
-			if (cjsModule) {
-				// back-compat import
-				importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
-			}
-			// Ensure there's a default export for ESM imports that expect it
-			if (!importedModule.default) {
-				importedModule = { default: importedModule, ...importedModule };
-			}
-			const exportNames = Object.keys(importedModule);
-			module = new SyntheticModule(
-				exportNames,
-				function () {
-					for (const key of exportNames) {
-						this.setExport(key, importedModule[key]);
-					}
-				},
-				{ identifier: url, context }
-			);
-		}
-
-		return module;
+			},
+			{ identifier: url, context }
+		);
 	}
 
 	/**
-	 * Create a module from URL without linking or evaluating
+	 * Normalize imported module to ensure it has proper exports including default
 	 */
-	async function createModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
-		let module: SourceTextModule | SyntheticModule;
+	function normalizeImportedModule(importedModule: any): any {
+		const cjsModule = importedModule['module.exports'];
+		if (cjsModule) {
+			// back-compat import
+			importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
+		}
+		// Ensure there's a default export for ESM imports that expect it
+		if (!importedModule.default) {
+			importedModule = { default: importedModule, ...importedModule };
+		}
+		return importedModule;
+	}
 
-		// Handle special built-in modules
-		if (url === 'harper') {
-			let harperExports = getHarperExports(scope);
-			module = new SyntheticModule(
-				Object.keys(harperExports),
+	/**
+	 * Create a SourceTextModule or SyntheticModule from source code
+	 */
+	function createModuleFromSource(url: string, source: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
+		// Handle JSON modules
+		if (url.endsWith('.json')) {
+			const jsonData = parseJsonModule(source, url);
+			return new SyntheticModule(
+				['default'],
 				function () {
-					for (let key in harperExports) {
-						this.setExport(key, harperExports[key]);
-					}
-				},
-				{ identifier: url, context }
-			);
-		} else if (url.startsWith('file://') && usePrivateGlobal) {
-			checkAllowedModulePath(url, scope.verifyPath);
-			let source = await readFile(new URL(url), { encoding: 'utf-8' });
-
-			// Handle JSON modules as a SyntheticModule with a default export.
-			// JSON imports only support default exports per the ESM spec.
-			if (url.endsWith('.json')) {
-				const jsonData = parseJsonModule(source, url);
-				module = new SyntheticModule(
-					['default'],
-					function () {
-						this.setExport('default', jsonData);
-					},
-					{ identifier: url, context }
-				);
-			} else {
-				// Strip TypeScript types if this is a .ts file
-				if (url.endsWith('.ts') || url.endsWith('.tsx')) {
-					source = await stripTypeScriptTypes(source);
-				}
-
-				// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
-				try {
-					module = loadCJSModule(url, source, usePrivateGlobal);
-				} catch {
-					// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
-					try {
-						module = new SourceTextModule(source, {
-							identifier: url,
-							context,
-							initializeImportMeta(meta) {
-								meta.url = url;
-							},
-							async importModuleDynamically(specifier: string) {
-								const resolvedUrl = resolveModule(specifier, url);
-								const dynamicModule = await loadModuleWithCache(resolvedUrl, true);
-								return dynamicModule;
-							},
-						});
-					} catch (esmErr) {
-						// Both failed - throw the ESM error as it's likely more relevant
-						throw esmErr;
-					}
-				}
-			}
-		} else {
-			const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
-			// For Node.js built-in modules (node:) and npm packages without dependency containment
-			// Always try require first to properly handle CJS modules with named exports
-			// Fall back to dynamic import for ESM packages
-			let importedModule = replacedModule ?? (await import(url));
-			const cjsModule = importedModule['module.exports'];
-			if (cjsModule) {
-				// back-compat import
-				importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
-			}
-			const exportNames = Object.keys(importedModule);
-			module = new SyntheticModule(
-				exportNames,
-				function () {
-					for (const key of exportNames) {
-						this.setExport(key, importedModule[key]);
-					}
+					this.setExport('default', jsonData);
 				},
 				{ identifier: url, context }
 			);
 		}
 
-		return module;
+		// Strip TypeScript types if this is a .ts file
+		if (url.endsWith('.ts') || url.endsWith('.tsx')) {
+			source = stripTypeScriptTypes(source);
+		}
+
+		// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
+		try {
+			return loadCJSModule(url, source, usePrivateGlobal);
+		} catch {
+			// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
+			return new SourceTextModule(source, {
+				identifier: url,
+				context,
+				initializeImportMeta(meta) {
+					meta.url = url;
+				},
+				importModuleDynamically(specifier: string, referencingModule) {
+					const resolvedUrl = resolveModule(specifier, url);
+					return loadModuleWithCache(resolvedUrl, true);
+				},
+			});
+		}
+	}
+
+	/**
+	 * Create a module from URL synchronously (for use in linker)
+	 */
+	function createModuleSync(url: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
+		// Handle special built-in modules
+		if (url === 'harper') {
+			return createSyntheticModule(url, getHarperExports(scope));
+		}
+
+		if (url.startsWith('file://') && usePrivateGlobal) {
+			checkAllowedModulePath(url, scope.verifyPath);
+			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
+			return createModuleFromSource(url, source, usePrivateGlobal);
+		}
+
+		// For Node.js built-in modules (node:) and npm packages without dependency containment
+		const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
+		const requirePath = url.startsWith('file://') ? fileURLToPath(url) : url;
+		const importedModule = replacedModule ?? require(requirePath);
+
+		return createSyntheticModule(url, normalizeImportedModule(importedModule));
+	}
+
+	/**
+	 * Create a module from URL without linking or evaluating (async version for initial load)
+	 */
+	async function createModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
+		// Handle special built-in modules
+		if (url === 'harper') {
+			return createSyntheticModule(url, getHarperExports(scope));
+		}
+
+		if (url.startsWith('file://') && usePrivateGlobal) {
+			checkAllowedModulePath(url, scope.verifyPath);
+			const source = await readFile(new URL(url), { encoding: 'utf-8' });
+			return createModuleFromSource(url, source, usePrivateGlobal);
+		}
+
+		// For Node.js built-in modules (node:) and npm packages without dependency containment
+		const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
+		const importedModule = replacedModule ?? (await import(url));
+
+		return createSyntheticModule(url, normalizeImportedModule(importedModule));
 	}
 
 	// Load the entry module
