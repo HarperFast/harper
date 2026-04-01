@@ -10,7 +10,7 @@ const YAML = require('yaml');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { encode } = require('cbor-x');
 const { getHdbPid } = require('../utility/processManagement/processManagement.js');
-const { initConfig } = require('../config/configUtils.js');
+const { initConfig, getConfigPath } = require('../config/configUtils.js');
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
@@ -93,7 +93,7 @@ async function cliOperations(req) {
 			process.exit(1);
 		}
 
-		if (!fs.existsSync(envMgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
+		if (!fs.existsSync(getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
 			console.error('No domain socket found, unable to perform this operation');
 			process.exit(1);
 		}
@@ -102,7 +102,7 @@ async function cliOperations(req) {
 	try {
 		let options = target ?? {
 			protocol: 'http:',
-			socketPath: envMgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+			socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
 		};
 		options.method = 'POST';
 		options.headers = { 'Content-Type': 'application/json' };
