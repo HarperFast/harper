@@ -3,7 +3,6 @@ import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext } from 'node:vm';
@@ -343,10 +342,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		return getOrCreateModuleSync(resolvedUrl, useContainment);
 	}
 
-	function getOrCreateModuleSync(
-		url: string,
-		usePrivateGlobal: boolean
-	): SourceTextModule | SyntheticModule {
+	function getOrCreateModuleSync(url: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
 		// Check if module is already created
 		if (moduleCache.has(url)) {
 			return moduleCache.get(url)!;
@@ -438,7 +434,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	/**
 	 * Create a SourceTextModule or SyntheticModule from source code
 	 */
-	function createModuleFromSource(url: string, source: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
+	function createModuleFromSource(
+		url: string,
+		source: string,
+		usePrivateGlobal: boolean
+	): SourceTextModule | SyntheticModule {
 		// Handle JSON modules
 		if (url.endsWith('.json')) {
 			const jsonData = parseJsonModule(source, url);
@@ -467,7 +467,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 				initializeImportMeta(meta) {
 					meta.url = url;
 				},
-				importModuleDynamically(specifier: string, referencingModule) {
+				importModuleDynamically(specifier: string) {
 					const resolvedUrl = resolveModule(specifier, url);
 					return loadModuleWithCache(resolvedUrl, true);
 				},
