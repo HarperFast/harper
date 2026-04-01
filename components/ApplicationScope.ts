@@ -23,6 +23,7 @@ export class ApplicationScope {
 	dependencyContainment?: boolean; // option to set this from the scope
 	verifyPath?: string;
 	config: any;
+	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
 	constructor(name: string, resources: Resources, server: Server, isInternal = false, verifyPath?: string) {
 		this.logger = forComponent(name, !isInternal);
 

@@ -3,6 +3,7 @@ import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext } from 'node:vm';
@@ -124,12 +125,13 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 
 let amaro: typeof import('amaro') | undefined;
 /**
- * Strip TypeScript types using the amaro library (what Node.js uses internally)
- * Falls back to regex-based stripping if amaro is not available
+ * Strip TypeScript types synchronously using the amaro library (what Node.js uses internally)
  */
-async function stripTypeScriptTypes(source: string): Promise<string> {
+function stripTypeScriptTypes(source: string): string {
 	// Use amaro - the library that Node.js uses internally for type stripping
-	amaro = await import('amaro');
+	if (!amaro) {
+		amaro = require('amaro');
+	}
 	return amaro.transformSync(source, { mode: 'strip-only' }).code;
 }
 
@@ -149,13 +151,29 @@ function parseJsonModule(source: string, url: string): any {
  * Load a module using Node's vm.Module API with (not really secure) sandboxing
  */
 async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
-	const moduleCache = new Map<string, Promise<SourceTextModule | SyntheticModule>>();
-	const linkingPromises = new Map<string, Promise<void>>();
-	const cjsCache = new Map<string, { exports: any }>();
-
-	// Create a secure context with limited globals
-	const contextObject = getGlobalObject(scope);
-	const context = createContext(contextObject);
+	// we want to retain the same module caches across any loading with the application scope
+	let moduleCaches = scope.moduleCache as {
+		moduleCache: Map<string, SourceTextModule | SyntheticModule>;
+		moduleCreationPromises: Map<string, Promise<SourceTextModule | SyntheticModule>>;
+		linkingPromises: Map<string, Promise<void>>;
+		cjsCache: Map<string, { exports: any }>;
+		contextObject: any;
+		context: any;
+	};
+	if (!moduleCaches) {
+		// if they haven't been initialized, do so now
+		const contextObject = getGlobalObject(scope);
+		moduleCaches = scope.moduleCache = {
+			moduleCache: new Map(),
+			moduleCreationPromises: new Map(),
+			linkingPromises: new Map(),
+			cjsCache: new Map(),
+			// Create a secure context with limited globals
+			contextObject,
+			context: createContext(contextObject),
+		};
+	}
+	const { moduleCache, moduleCreationPromises, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
 
 	/**
 	 * Resolve module specifier to absolute URL
@@ -301,9 +319,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	}
 
 	/**
-	 * Linker function for module resolution during instantiation
+	 * Linker function for module resolution during instantiation.
+	 * This is synchronous because Node's module.link() requires the linker
+	 * to return modules synchronously.
 	 */
-	async function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
+	function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
 		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
 
 		// Determine if we should use VM containment for this module
@@ -319,22 +339,39 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			}
 		}
 
-		// Return the module immediately (even if not yet linked) to support circular dependencies
-		return await getOrCreateModule(resolvedUrl, useContainment);
+		// Return the module synchronously - createModuleSync will read files synchronously
+		return getOrCreateModuleSync(resolvedUrl, useContainment);
+	}
+
+	function getOrCreateModuleSync(
+		url: string,
+		usePrivateGlobal: boolean
+	): SourceTextModule | SyntheticModule {
+		// Check if module is already created
+		if (moduleCache.has(url)) {
+			return moduleCache.get(url)!;
+		}
+
+		// Create the module synchronously and cache it immediately (before linking)
+		const module = createModuleSync(url, usePrivateGlobal);
+		moduleCache.set(url, module);
+
+		return module;
 	}
 
 	async function getOrCreateModule(
 		url: string,
 		usePrivateGlobal: boolean
 	): Promise<SourceTextModule | SyntheticModule> {
-		// Check cache first - return cached module immediately (even if not linked yet)
+		// Check if module is already created
 		if (moduleCache.has(url)) {
 			return moduleCache.get(url)!;
 		}
 
 		// Create the module and cache it immediately (before linking)
-		const module = createModule(url, usePrivateGlobal);
+		const module = await createModule(url, usePrivateGlobal);
 		moduleCache.set(url, module);
+		moduleCreationPromises.delete(url);
 
 		return module;
 	}
@@ -348,8 +385,15 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		// Only link/evaluate once per module
 		if (!linkingPromises.has(url)) {
 			const linkingPromise = (async () => {
-				await module.link(linker);
-				await module.evaluate();
+				// Check module status - only link if it's 'unlinked'
+				// Status can be: 'unlinked', 'linking', 'linked', 'evaluating', 'evaluated'
+				if (module.status === 'unlinked') {
+					await module.link(linker);
+				}
+				// Only evaluate if not already evaluated
+				if (module.status === 'linked') {
+					await module.evaluate();
+				}
 			})();
 			linkingPromises.set(url, linkingPromise);
 		}
@@ -359,6 +403,101 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 
 		return module;
 	}
+	/**
+	 * Create a module from URL synchronously (for use in linker)
+	 */
+	function createModuleSync(url: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
+		let module: SourceTextModule | SyntheticModule;
+
+		// Handle special built-in modules
+		if (url === 'harper') {
+			let harperExports = getHarperExports(scope);
+			module = new SyntheticModule(
+				Object.keys(harperExports),
+				function () {
+					for (let key in harperExports) {
+						this.setExport(key, harperExports[key]);
+					}
+				},
+				{ identifier: url, context }
+			);
+		} else if (url.startsWith('file://') && usePrivateGlobal) {
+			checkAllowedModulePath(url, scope.verifyPath);
+			// Read file synchronously
+			let source = readFileSync(new URL(url), { encoding: 'utf-8' });
+
+			// Handle JSON modules as a SyntheticModule with a default export.
+			// JSON imports only support default exports per the ESM spec.
+			if (url.endsWith('.json')) {
+				const jsonData = parseJsonModule(source, url);
+				module = new SyntheticModule(
+					['default'],
+					function () {
+						this.setExport('default', jsonData);
+					},
+					{ identifier: url, context }
+				);
+			} else {
+				// Strip TypeScript types if this is a .ts file
+				if (url.endsWith('.ts') || url.endsWith('.tsx')) {
+					source = stripTypeScriptTypes(source);
+				}
+
+				// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
+				try {
+					module = loadCJSModule(url, source, usePrivateGlobal);
+				} catch {
+					// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
+					try {
+						module = new SourceTextModule(source, {
+							identifier: url,
+							context,
+							initializeImportMeta(meta) {
+								meta.url = url;
+							},
+							importModuleDynamically(specifier: string, referencingModule) {
+								// Dynamic imports still need to be async, but we return a promise
+								const resolvedUrl = resolveModule(specifier, url);
+								return loadModuleWithCache(resolvedUrl, true);
+							},
+						});
+					} catch (esmErr) {
+						// Both failed - throw the ESM error as it's likely more relevant
+						throw esmErr;
+					}
+				}
+			}
+		} else {
+			const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
+			// For Node.js built-in modules (node:) and npm packages without dependency containment
+			// Use require for synchronous loading
+			// Convert file:// URLs to paths for require()
+			const requirePath = url.startsWith('file://') ? fileURLToPath(url) : url;
+			let importedModule = replacedModule ?? require(requirePath);
+			const cjsModule = importedModule['module.exports'];
+			if (cjsModule) {
+				// back-compat import
+				importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
+			}
+			// Ensure there's a default export for ESM imports that expect it
+			if (!importedModule.default) {
+				importedModule = { default: importedModule, ...importedModule };
+			}
+			const exportNames = Object.keys(importedModule);
+			module = new SyntheticModule(
+				exportNames,
+				function () {
+					for (const key of exportNames) {
+						this.setExport(key, importedModule[key]);
+					}
+				},
+				{ identifier: url, context }
+			);
+		}
+
+		return module;
+	}
+
 	/**
 	 * Create a module from URL without linking or evaluating
 	 */
