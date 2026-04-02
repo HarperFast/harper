@@ -67,7 +67,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 
 		// verify the exported resource works
 		assert.equal(mockResources.get('/testExport').get(), 'hello world');
-		assert(mockResources.get('/testExport').getDate() instanceof Date);
+		assert(mockResources.get('/testExport').getDate() instanceof Date, 'instanceof Date should work');
 		assert((await mockResources.get('/testExport').testLoadTypeScript()).isTyped, 'TypeScript exports');
 		assert.equal(typeof mockResources.get('/TestComponent').get, 'function');
 		assert.equal(typeof mockResources.get('/my-component').get, 'function');
@@ -112,6 +112,10 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 			'undefined',
 			'Component global variable should not leak into parent context'
 		);
+		if (mockResources.get('/')) {
+			// indicates an error
+			console.log(mockResources.get('/'));
+		}
 
 		// verify the exported resource works
 		assert.equal(mockResources.get('/testExport').get(), 'hello world');

@@ -552,8 +552,8 @@ async function getCompartment(scope: ApplicationScope, globals) {
 						},
 					};
 				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
-					const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
-					// Handle JSON files in comparttment mode the same way as in VM mode
+					let moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
+					// Handle JSON files in compartment mode the same way as in VM mode
 					if (moduleSpecifier.endsWith('.json')) {
 						const jsonData = parseJsonModule(moduleText, moduleSpecifier);
 						return {
@@ -563,6 +563,10 @@ async function getCompartment(scope: ApplicationScope, globals) {
 								exports.default = jsonData;
 							},
 						};
+					}
+					// Strip TypeScript types if this is a .ts file
+					if (moduleSpecifier.endsWith('.ts') || moduleSpecifier.endsWith('.tsx')) {
+						moduleText = stripTypeScriptTypes(moduleText);
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
