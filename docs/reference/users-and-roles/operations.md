@@ -25,6 +25,7 @@ _Restricted to `super_user` roles._
 - `permission` _(required)_ — Permissions object. See [Permission Structure](./overview#permission-structure).
   - `super_user` _(optional)_ — If `true`, grants full access. Defaults to `false`.
   - `structure_user` _(optional)_ — Boolean or array of database names. If `true`, can create/drop databases and tables. If array, limited to specified databases.
+  - `operations` _(optional)_ — Array of operation names and/or permission group names (`read_only`, `standard_user`) this role may call. When set, any unlisted operation is denied. See [Operation Permissions](./overview#operation-permissions).
 
 ```json
 {

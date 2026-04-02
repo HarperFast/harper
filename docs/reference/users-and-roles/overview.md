@@ -70,6 +70,69 @@ When creating or altering a role, you define a `permission` object:
 }
 ```
 
+### Operation Permissions
+
+The `operations` field in a permission object restricts which Operations API calls this role can make. When set, it acts as a two-gate check:
+
+1. Only listed operations are reachable — any unlisted operation is denied regardless of table CRUD permissions.
+2. For data operations that pass gate one, table-level CRUD permissions still apply as normal.
+
+Operations normally restricted to `super_user` can be selectively granted by including them in the list. If `operations` is not set, the role can call any non-`super_user` operation, subject to table CRUD permissions.
+
+**Permission Groups**
+
+Groups expand to a predefined set of operations and can be mixed with individual operation names:
+
+- `read_only` — Search, SQL SELECT, describe, and monitoring operations. No data modification. Operations: `search`, `search_by_conditions`, `search_by_hash`, `search_by_id`, `search_by_value`, `sql`, `describe_all`, `describe_schema`, `describe_database`, `describe_table`, `user_info`, `get_job`, `get_analytics`, `list_metrics`, `describe_metric`
+
+- `standard_user` — Everything in `read_only` plus full data manipulation and bulk load. Does not include any `super_user`-restricted operations, schema DDL (`create_attribute`), or token management. Additional operations beyond `read_only`: `insert`, `update`, `upsert`, `delete`, `csv_data_load`, `csv_file_load`, `csv_url_load`, `import_from_s3`
+
+**Example: read-only role**
+
+```json
+{
+	"operation": "add_role",
+	"role": "read_only_analyst",
+	"permission": {
+		"operations": ["read_only"],
+		"orders_db": {
+			"tables": {
+				"orders": {
+					"read": true,
+					"insert": false,
+					"update": false,
+					"delete": false,
+					"attribute_permissions": []
+				}
+			}
+		}
+	}
+}
+```
+
+**Example: full data access + targeted admin operations**
+
+```json
+{
+	"operation": "add_role",
+	"role": "ops_engineer",
+	"permission": {
+		"operations": ["standard_user", "get_configuration", "system_information"],
+		"orders_db": {
+			"tables": {
+				"orders": {
+					"read": true,
+					"insert": true,
+					"update": true,
+					"delete": true,
+					"attribute_permissions": []
+				}
+			}
+		}
+	}
+}
+```
+
 ### Table Permissions
 
 Each table entry defines CRUD access:
@@ -112,7 +175,7 @@ Each table entry defines CRUD access:
 
 ## Role-Based Operation Restrictions
 
-The following table shows which operations are restricted to `super_user` roles. Non-`super_user` roles are also restricted within their accessible operations by their CRUD permission set.
+The following table shows which operations are restricted to `super_user` roles. Non-`super_user` roles are also restricted within their accessible operations by their CRUD permission set. Operations marked with X can be selectively granted to non-`super_user` roles using `operations`.
 
 ### Databases and Tables
 
