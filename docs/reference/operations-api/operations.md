@@ -390,7 +390,7 @@ Operations for executing SQL statements.
 Harper SQL is intended for data investigation and use cases where performance is not a priority. For production workloads, use NoSQL or REST operations. SQL performance optimizations are on the roadmap.
 :::
 
-Detailed documentation: [SQL Reference](../database/sql.md)
+Detailed documentation: [SQL Reference](../operations-api/sql.md)
 
 | Operation | Description                                                        | Role Required |
 | --------- | ------------------------------------------------------------------ | ------------- |
