@@ -152,8 +152,7 @@ function parseJsonModule(source: string, url: string): any {
 async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	// we want to retain the same module caches across any loading with the application scope
 	let moduleCaches = scope.moduleCache as {
-		moduleCache: Map<string, SourceTextModule | SyntheticModule>;
-		moduleCreationPromises: Map<string, Promise<SourceTextModule | SyntheticModule>>;
+		moduleCache: Map<string, SourceTextModule | SyntheticModule | Promise<SourceTextModule | SyntheticModule>>;
 		linkingPromises: Map<string, Promise<void>>;
 		cjsCache: Map<string, { exports: any }>;
 		contextObject: any;
@@ -164,7 +163,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		const contextObject = getGlobalObject(scope);
 		moduleCaches = scope.moduleCache = {
 			moduleCache: new Map(),
-			moduleCreationPromises: new Map(),
 			linkingPromises: new Map(),
 			cjsCache: new Map(),
 			// Create a secure context with limited globals
@@ -172,7 +170,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			context: createContext(contextObject),
 		};
 	}
-	const { moduleCache, moduleCreationPromises, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
+	const { moduleCache, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
 
 	/**
 	 * Resolve module specifier to absolute URL
@@ -338,36 +336,22 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			}
 		}
 
-		// Return the module synchronously - createModuleSync will read files synchronously
-		return getOrCreateModuleSync(resolvedUrl, useContainment);
+		// Return the module
+		return getOrCreateModule(resolvedUrl, useContainment);
 	}
 
-	function getOrCreateModuleSync(url: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
-		// Check if module is already created
-		if (moduleCache.has(url)) {
-			return moduleCache.get(url)!;
-		}
-
-		// Create the module synchronously and cache it immediately (before linking)
-		const module = createModuleSync(url, usePrivateGlobal);
-		moduleCache.set(url, module);
-
-		return module;
-	}
-
-	async function getOrCreateModule(
+	function getOrCreateModule(
 		url: string,
 		usePrivateGlobal: boolean
-	): Promise<SourceTextModule | SyntheticModule> {
+	): SourceTextModule | SyntheticModule | Promise<SourceTextModule | SyntheticModule> {
 		// Check if module is already created
 		if (moduleCache.has(url)) {
 			return moduleCache.get(url)!;
 		}
 
 		// Create the module and cache it immediately (before linking)
-		const module = await createModule(url, usePrivateGlobal);
+		const module = createModule(url, usePrivateGlobal);
 		moduleCache.set(url, module);
-		moduleCreationPromises.delete(url);
 
 		return module;
 	}
@@ -501,7 +485,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	/**
 	 * Create a module from URL without linking or evaluating (async version for initial load)
 	 */
-	async function createModule(url: string, usePrivateGlobal: boolean): Promise<SourceTextModule | SyntheticModule> {
+	function createModule(
+		url: string,
+		usePrivateGlobal: boolean
+	): SourceTextModule | SyntheticModule | Promise<SourceTextModule | SyntheticModule> {
 		// Handle special built-in modules
 		if (url === 'harper') {
 			return createSyntheticModule(url, getHarperExports(scope));
@@ -509,17 +496,17 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 
 		if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.verifyPath);
-			const source = await readFile(new URL(url), { encoding: 'utf-8' });
+			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
 			return createModuleFromSource(url, source, usePrivateGlobal);
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without dependency containment
 		const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
-		const importedModule = replacedModule ?? (await import(url));
-
-		return createSyntheticModule(url, normalizeImportedModule(importedModule));
+		if (replacedModule) {
+			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
+		}
+		return import(url).then((importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)));
 	}
-
 	// Load the entry module
 	const entryModule = await loadModuleWithCache(moduleUrl, true);
 
