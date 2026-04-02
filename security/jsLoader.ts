@@ -453,33 +453,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 				},
 				importModuleDynamically(specifier: string) {
 					const resolvedUrl = resolveModule(specifier, url);
-					return loadModuleWithCache(resolvedUrl, true);
+					const useContainment = specifier.startsWith('.') || scope.dependencyContainment !== false;
+					return loadModuleWithCache(resolvedUrl, useContainment);
 				},
 			});
 		}
-	}
-
-	/**
-	 * Create a module from URL synchronously (for use in linker)
-	 */
-	function createModuleSync(url: string, usePrivateGlobal: boolean): SourceTextModule | SyntheticModule {
-		// Handle special built-in modules
-		if (url === 'harper') {
-			return createSyntheticModule(url, getHarperExports(scope));
-		}
-
-		if (url.startsWith('file://') && usePrivateGlobal) {
-			checkAllowedModulePath(url, scope.verifyPath);
-			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
-			return createModuleFromSource(url, source, usePrivateGlobal);
-		}
-
-		// For Node.js built-in modules (node:) and npm packages without dependency containment
-		const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
-		const requirePath = url.startsWith('file://') ? fileURLToPath(url) : url;
-		const importedModule = replacedModule ?? require(requirePath);
-
-		return createSyntheticModule(url, normalizeImportedModule(importedModule));
 	}
 
 	/**
