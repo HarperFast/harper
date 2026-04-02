@@ -44,13 +44,13 @@ Provide a `username` to run the request with that user's current role and permis
 
 ```json
 {
-    "operation": "search_by_hash",
-    "database": "dev",
-    "table": "dog",
-    "hash_values": ["1"],
-    "impersonate": {
-        "username": "test_user"
-    }
+	"operation": "search_by_hash",
+	"database": "dev",
+	"table": "dog",
+	"hash_values": ["1"],
+	"impersonate": {
+		"username": "test_user"
+	}
 }
 ```
 
@@ -62,14 +62,14 @@ Provide a `role_name` to run the request with that role's permissions. You can o
 
 ```json
 {
-    "operation": "search_by_value",
-    "database": "dev",
-    "table": "dog",
-    "search_attribute": "name",
-    "search_value": "Penny",
-    "impersonate": {
-        "role_name": "developer"
-    }
+	"operation": "search_by_value",
+	"database": "dev",
+	"table": "dog",
+	"search_attribute": "name",
+	"search_value": "Penny",
+	"impersonate": {
+		"role_name": "developer"
+	}
 }
 ```
 
@@ -81,26 +81,26 @@ Provide a `role` object with a `permission` property to test with an ad-hoc set 
 
 ```json
 {
-    "operation": "sql",
-    "sql": "SELECT * FROM dev.dog",
-    "impersonate": {
-        "username": "preview_user",
-        "role": {
-            "permission": {
-                "dev": {
-                    "tables": {
-                        "dog": {
-                            "read": true,
-                            "insert": false,
-                            "update": false,
-                            "delete": false,
-                            "attribute_permissions": []
-                        }
-                    }
-                }
-            }
-        }
-    }
+	"operation": "sql",
+	"sql": "SELECT * FROM dev.dog",
+	"impersonate": {
+		"username": "preview_user",
+		"role": {
+			"permission": {
+				"dev": {
+					"tables": {
+						"dog": {
+							"read": true,
+							"insert": false,
+							"update": false,
+							"delete": false,
+							"attribute_permissions": []
+						}
+					}
+				}
+			}
+		}
+	}
 }
 ```
 
@@ -110,38 +110,38 @@ You can also restrict the impersonated identity to a specific set of operations 
 
 ```json
 {
-    "operation": "search_by_hash",
-    "database": "dev",
-    "table": "dog",
-    "hash_values": ["1"],
-    "impersonate": {
-        "role": {
-            "permission": {
-                "operations": ["read_only"],
-                "dev": {
-                    "tables": {
-                        "dog": {
-                            "read": true,
-                            "insert": false,
-                            "update": false,
-                            "delete": false,
-                            "attribute_permissions": []
-                        }
-                    }
-                }
-            }
-        }
-    }
+	"operation": "search_by_hash",
+	"database": "dev",
+	"table": "dog",
+	"hash_values": ["1"],
+	"impersonate": {
+		"role": {
+			"permission": {
+				"operations": ["read_only"],
+				"dev": {
+					"tables": {
+						"dog": {
+							"read": true,
+							"insert": false,
+							"update": false,
+							"delete": false,
+							"attribute_permissions": []
+						}
+					}
+				}
+			}
+		}
+	}
 }
 ```
 
 ## Impersonate Payload Reference
 
-| Field | Type | Description |
-|---|---|---|
-| `username` | string | Target username. Required for existing-user mode. Optional for role-based modes (defaults to the caller's username). |
-| `role_name` | string | Name of an existing role to assume. |
-| `role` | object | Inline role definition. Must include a `permission` object. |
+| Field             | Type   | Description                                                                                                                  |
+| ----------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `username`        | string | Target username. Required for existing-user mode. Optional for role-based modes (defaults to the caller's username).         |
+| `role_name`       | string | Name of an existing role to assume.                                                                                          |
+| `role`            | object | Inline role definition. Must include a `permission` object.                                                                  |
 | `role.permission` | object | Permission object following the standard [role permissions](../users-and-roles/overview.md#operation-permissions) structure. |
 
 Exactly one of `username` (alone), `role_name`, or `role` must be provided. If `role` is present, it takes precedence.
