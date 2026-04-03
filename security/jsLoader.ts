@@ -235,7 +235,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
 				const resolvedUrl = resolveModule(specifier, script.sourceURL);
-				const useContainment = specifier.startsWith('.') || scope.dependencyContainment !== false;
+				const useContainment = shouldUseContainment(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useContainment);
 				return dynamicModule;
 			},
@@ -316,27 +316,36 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	}
 
 	/**
+	 * Determine if a module should use VM containment based on specifier and resolved URL
+	 */
+	function shouldUseContainment(specifier: string, resolvedUrl: string): boolean {
+		// Always contain relative imports
+		if (specifier.startsWith('.')) {
+			return true;
+		}
+
+		// Check the dependencyContainment setting
+		if (scope.dependencyContainment === false) {
+			return false;
+		}
+
+		// For npm packages, check if they depend on harper
+		if (resolvedUrl.startsWith('file://') && resolvedUrl.includes('/node_modules/')) {
+			return packageDependsOnHarper(resolvedUrl);
+		}
+
+		// Non-file URLs (bare specifiers) - use default behavior
+		return scope.dependencyContainment === true;
+	}
+
+	/**
 	 * Linker function for module resolution during instantiation.
 	 * This is synchronous because Node's module.link() requires the linker
 	 * to return modules synchronously.
 	 */
 	function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
 		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
-
-		// Determine if we should use VM containment for this module
-		let useContainment = specifier.startsWith('.'); // Always contain relative imports
-
-		if (!useContainment && scope.dependencyContainment !== false) {
-			// For npm packages, check if they depend on harper
-			if (resolvedUrl.startsWith('file://') && resolvedUrl.includes('node_modules')) {
-				useContainment = packageDependsOnHarper(resolvedUrl);
-			} else {
-				// Non-file URLs (bare specifiers) - use default behavior
-				useContainment = scope.dependencyContainment === true;
-			}
-		}
-
-		// Return the module
+		const useContainment = shouldUseContainment(specifier, resolvedUrl);
 		return getOrCreateModule(resolvedUrl, useContainment);
 	}
 
@@ -443,20 +452,39 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		// Try CJS first since it will fail fast with clear syntax errors on ESM syntax
 		try {
 			return loadCJSModule(url, source, usePrivateGlobal);
-		} catch {
-			// If CJS loading fails (likely due to ESM syntax like import/export), try ESM
-			return new SourceTextModule(source, {
-				identifier: url,
-				context,
-				initializeImportMeta(meta) {
-					meta.url = url;
-				},
-				importModuleDynamically(specifier: string) {
-					const resolvedUrl = resolveModule(specifier, url);
-					const useContainment = specifier.startsWith('.') || scope.dependencyContainment !== false;
-					return loadModuleWithCache(resolvedUrl, useContainment);
-				},
-			});
+		} catch (cjsErr) {
+			// Only fallback to ESM if the error was due to ESM syntax (import/export statements)
+			// Check if the error message indicates ESM syntax
+			const errorMessage = cjsErr?.message || '';
+			const isEsmSyntaxError =
+				errorMessage.includes('import') ||
+				errorMessage.includes('export') ||
+				errorMessage.includes('Cannot use import statement') ||
+				errorMessage.includes('Unexpected token');
+
+			if (!isEsmSyntaxError) {
+				// This was a real error (not ESM syntax), rethrow it
+				throw cjsErr;
+			}
+
+			// If CJS loading fails due to ESM syntax, try ESM
+			try {
+				return new SourceTextModule(source, {
+					identifier: url,
+					context,
+					initializeImportMeta(meta) {
+						meta.url = url;
+					},
+					importModuleDynamically(specifier: string) {
+						const resolvedUrl = resolveModule(specifier, url);
+						const useContainment = shouldUseContainment(specifier, resolvedUrl);
+						return loadModuleWithCache(resolvedUrl, useContainment);
+					},
+				});
+			} catch (esmErr) {
+				// Both failed - throw the ESM error as it's likely more relevant
+				throw esmErr;
+			}
 		}
 	}
 
