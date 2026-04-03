@@ -13,15 +13,15 @@ Harper's Resource API is the foundation for building custom data access logic an
 
 A **Resource** is a class that provides a unified interface for a set of records or entities. Harper's built-in tables extend the base `Resource` class, and you can extend either `Resource` or a table class to implement custom behavior for any data source — internal or external.
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 The Resource API is designed to mirror REST/HTTP semantics: methods map directly to HTTP verbs (`get`, `put`, `patch`, `post`, `delete`), making it straightforward to build API endpoints alongside custom data logic.
 
 ## Relationship to Other Features
 
 - **Database tables** extend `Resource` automatically. You can use tables through the Resource API without writing any custom code.
-- The **REST plugin** maps incoming HTTP requests to Resource methods. See [REST Overview](TODO:reference_versioned_docs/version-v4/rest/overview.md 'REST plugin reference').
-- The **MQTT plugin** routes publish/subscribe messages to `publish` and `subscribe` Resource methods. See [MQTT Overview](TODO:reference_versioned_docs/version-v4/mqtt/overview.md 'MQTT plugin reference').
+- The **REST plugin** maps incoming HTTP requests to Resource methods. See [REST Overview](../rest/overview.md).
+- The **MQTT plugin** routes publish/subscribe messages to `publish` and `subscribe` Resource methods. See [MQTT Overview](../mqtt/overview.md).
 - **Global APIs** (`tables`, `databases`, `transaction`) provide access to resources from JavaScript code.
 - The **`jsResource` plugin** (configured in `config.yaml`) registers a JavaScript file's exported Resource classes as endpoints.
 
@@ -39,7 +39,7 @@ type MyTable @table {
 }
 ```
 
-> For more info on the schema API see [`Database / Schema`]()
+> For more info on the schema API see [`Database / Schema`](../database/schema.md)
 
 Then, in a `resources.js` extend from the `tables.MyTable` global:
 

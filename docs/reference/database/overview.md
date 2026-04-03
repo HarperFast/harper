@@ -31,7 +31,7 @@ The most common way to use Harper's database is through the **schema system**. B
 
 You do not need to build custom application code to use the database. A schema definition alone is enough to create fully functional, queryable REST endpoints for your data.
 
-For more advanced use cases, you can extend table behavior using the [Resource API](TODO:reference_versioned_docs/version-v4/resources/resource-api.md 'Custom resource logic layered on top of tables').
+For more advanced use cases, you can extend table behavior using the [Resource API](../resources/resource-api.md).
 
 ### Architecture Overview
 
@@ -118,6 +118,6 @@ For deeper coverage of each database feature, see the dedicated pages in this se
 ## Related Documentation
 
 - [REST](../rest/overview.md) — HTTP interface built on top of the database resource system
-- [Resources](TODO:reference_versioned_docs/version-v4/resources/overview.md) — Custom application logic extending database tables
-- [Operations API](TODO:reference_versioned_docs/version-v4/operations-api/overview.md) — Direct database management operations (create/drop databases and tables, insert/update/delete records)
-- [Configuration](TODO:reference_versioned_docs/version-v4/configuration/overview.md) — Storage configuration options (compression, blob paths, compaction)
+- [Resources](../resources/overview.md) — Custom application logic extending database tables
+- [Operations API](../operations-api/overview.md) — Direct database management operations (create/drop databases and tables, insert/update/delete records)
+- [Configuration](../configuration/overview.md) — Storage configuration options (compression, blob paths, compaction)

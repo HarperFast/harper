@@ -13,7 +13,7 @@ title: Resource API
 
 # Resource API
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 The Resource API provides a unified JavaScript interface for accessing, querying, modifying, and subscribing to data resources in Harper. Tables extend the base `Resource` class, and all resource interactions — whether from HTTP requests, MQTT messages, or application code — flow through this interface.
 
@@ -120,7 +120,7 @@ class MyResource extends Resource {
 }
 ```
 
-Added in: v4.3.0 (CRDT support for individual property updates via PATCH)
+<VersionBadge version="v4.3.0" /> (CRDT support for individual property updates via PATCH)
 
 ### `post(target: RequestTarget, data: Promise<object>, context?: Resource | Context): Promise<void> | Response`
 
@@ -201,13 +201,13 @@ Marks the specified record as invalid in a caching table, so it will be reloaded
 
 Create a new record with an auto-generated primary key. Returns the created record. Do not include a primary key in the `record` argument.
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 ### `setComputedAttribute(name: string, computeFunction: (record) => any)`
 
 Define the compute function for a `@computed` schema attribute.
 
-Added in: v4.4.0
+<VersionBadge version="v4.4.0" />
 
 ```javascript
 MyTable.setComputedAttribute('fullName', (record) => `${record.firstName} ${record.lastName}`);
@@ -217,7 +217,7 @@ MyTable.setComputedAttribute('fullName', (record) => `${record.firstName} ${reco
 
 Returns the number of records in the table. By default returns an approximate (fast) count. Pass `{ exactCount: true }` for a precise count.
 
-Added in: v4.2.0
+<VersionBadge version="v4.2.0" />
 
 ### `sourcedFrom(Resource, options?)`
 
@@ -264,7 +264,7 @@ This method only saves data when using RocksDB storage engine, and is a no-op wh
 
 Adds `value` to `property` using CRDT incrementation — safe for concurrent updates across threads and nodes.
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ```javascript
 static async post(target, data) {
@@ -386,7 +386,7 @@ Product.search({
 Product.search({ conditions: [{ attribute: ['brand', 'name'], value: 'Harper' }] });
 ```
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ### `operator`
 
@@ -473,7 +473,7 @@ return { status: 200, headers: { 'X-Custom-Header': 'value' }, data: { message: 
 
 `body` must be a string, `Buffer`, Node.js stream, or `ReadableStream`. `data` is an object that will be serialized.
 
-Added in: v4.4.0
+<VersionBadge version="v4.4.0" />
 
 ### Throwing Errors
 

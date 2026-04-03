@@ -7,7 +7,7 @@ title: Query Optimization
 
 # Query Optimization
 
-Added in: v4.3.0 (query planning and execution improvements)
+<VersionBadge version="v4.3.0" /> (query planning and execution improvements)
 
 Harper has powerful query functionality with excellent performance characteristics. Like any database, different queries can vary significantly in performance. Understanding how querying works helps you write queries that perform well as your dataset grows.
 
@@ -66,7 +66,7 @@ More unique values (higher cardinality) = more efficient indexed lookups. For ex
 
 ## Relationships and Joins
 
-Harper supports relationship-based queries that join data across tables. See [Schema documentation](TODO:reference_versioned_docs/version-v4/database/schema.md 'Database schema section with relationship directives') for how to define relationships.
+Harper supports relationship-based queries that join data across tables. See [Schema documentation](../database/schema.md) for how to define relationships.
 
 Join queries involve more lookups and naturally carry more overhead. The same indexing principles apply:
 
@@ -89,7 +89,7 @@ type Brand @table {
 }
 ```
 
-Added in: v4.3.0
+<VersionBadge version="v4.3.0" />
 
 ## Sorting
 
