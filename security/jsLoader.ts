@@ -350,18 +350,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return true;
 		}
 
-		// Check the dependencyContainment setting
-		if (scope.dependencyContainment === false) {
-			return false;
+		// Check the dependencyContainment setting, if it is definitive
+		if (typeof scope.dependencyContainment === 'boolean') {
+			return scope.dependencyContainment;
 		}
 
 		// For npm packages, check if they depend on harper
 		if (resolvedUrl.startsWith('file://') && resolvedUrl.includes('/node_modules/')) {
 			return packageDependsOnHarper(resolvedUrl);
 		}
-
-		// Non-file URLs (bare specifiers) - use default behavior
-		return scope.dependencyContainment === true;
+		return false;
 	}
 
 	/**
