@@ -23,7 +23,7 @@ import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
-import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
 import { handleHDBError, ClientError, ServerError, AccessViolation } from '../utility/errors/hdbError.js';
@@ -3810,7 +3810,12 @@ export function makeTable(options) {
 				const nextTxn = transaction.next;
 				if (!nextTxn) {
 					// no next one, then add our database
-					transaction = transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					if (transaction.open === TRANSACTION_STATE.CLOSED) {
+						// if the current transaction is already closed, we need to retain that state on new databases we work with
+						transaction.next.open = TRANSACTION_STATE.CLOSED;
+					}
+					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;
 				}
