@@ -30,6 +30,9 @@ export const testExport = {
 	getDate() {
 		return new Date();
 	},
+	getArray() {
+		return [];
+	},
 };
 export class TestComponent extends Resource {}
 

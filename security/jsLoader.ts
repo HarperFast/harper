@@ -5,7 +5,7 @@ import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { SourceTextModule, SyntheticModule, createContext, runInContext } from 'node:vm';
+import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
 import { ApplicationScope } from '../components/ApplicationScope.ts';
 import logger from '../utility/logging/harper_logger.js';
 import { createRequire } from 'node:module';
@@ -100,9 +100,12 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 				if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
 				const result = await (await scope.compartment).import(moduleUrl);
 				return result.namespace;
+			} else if (containmentMode === 'vm-current-context' && SourceTextModule) {
+				// Use VM module loader with current context (shares intrinsics, no custom globals)
+				return await loadModuleWithVM(moduleUrl, scope, false);
 			} else if (SourceTextModule) {
-				// else use standard node:vm module to do containment (if it is available)
-				return await loadModuleWithVM(moduleUrl, scope);
+				// Use VM module to do containment with custom context (sandboxed)
+				return await loadModuleWithVM(moduleUrl, scope, true);
 			}
 		}
 		// important! we need to await the import, otherwise the error will not be caught
@@ -147,9 +150,12 @@ function parseJsonModule(source: string, url: string): any {
 }
 
 /**
- * Load a module using Node's vm.Module API with (not really secure) sandboxing
+ * Load a module using Node's vm.Module API with optional sandboxing
+ * @param moduleUrl - The URL of the module to load
+ * @param scope - The application scope
+ * @param useCustomContext - If true, uses a sandboxed context with custom globals. If false, uses current context.
  */
-async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
+async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useCustomContext: boolean = true) {
 	// we want to retain the same module caches across any loading with the application scope
 	let moduleCaches = scope.moduleCache as {
 		moduleCache: Map<string, SourceTextModule | SyntheticModule | Promise<SourceTextModule | SyntheticModule>>;
@@ -160,14 +166,23 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	};
 	if (!moduleCaches) {
 		// if they haven't been initialized, do so now
-		const contextObject = getGlobalObject(scope, true);
+		let contextObject: any, context: any;
+		if (useCustomContext) {
+			// Create a sandboxed context with custom globals
+			contextObject = getGlobalObject(scope, true);
+			context = createContext(contextObject);
+		} else {
+			// Use current context (no sandboxing, shares intrinsics with parent)
+			contextObject = undefined;
+			context = undefined;
+		}
+
 		moduleCaches = scope.moduleCache = {
 			moduleCache: new Map(),
 			linkingPromises: new Map(),
 			cjsCache: new Map(),
-			// Create a secure context with limited globals
 			contextObject,
-			context: createContext(contextObject),
+			context,
 		};
 	}
 	const { moduleCache, linkingPromises, cjsCache, contextObject, context } = moduleCaches;
@@ -195,7 +210,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 	}
 
 	/**
-	 * Load a CommonJS module in our private context
+	 * Load a CommonJS module in our context (private or current)
 	 */
 	function loadCJS(url: string, source: string): { exports: any } {
 		// Check cache first to handle circular dependencies
@@ -231,7 +246,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 			})
 		`;
 
-		const wrappedFn = runInContext(cjsWrapper, contextObject, {
+		const runOptions = {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
 				const resolvedUrl = resolveModule(specifier, script.sourceURL);
@@ -239,7 +254,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useContainment);
 				return dynamicModule;
 			},
-		});
+		};
+
+		// If contextObject is undefined, use current context with runInThisContext
+		const wrappedFn = contextObject
+			? runInContext(cjsWrapper, contextObject, runOptions)
+			: runInThisContext(cjsWrapper, runOptions);
+
 		wrappedFn(
 			cjsModule,
 			cjsModule.exports,
@@ -259,6 +280,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 		}
 		const exportNames = Object.keys(exports);
 
+		const options: any = { identifier: url };
+		if (usePrivateGlobal && context) {
+			options.context = context;
+		}
+
 		const synModule = new SyntheticModule(
 			exportNames,
 			function () {
@@ -266,7 +292,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope) {
 					this.setExport(key, exports[key]);
 				}
 			},
-			{ identifier: url, context }
+			options
 		);
 		// Don't cache here - let getOrCreateModule handle caching
 		return synModule;

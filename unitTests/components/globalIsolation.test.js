@@ -72,6 +72,26 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		assert.equal(typeof mockResources.get('/TestComponent').get, 'function');
 		assert.equal(typeof mockResources.get('/my-component').get, 'function');
 	});
+	it('should be able to use VM loading with current context and load component', async function () {
+		let applicationScope = new ApplicationScope('test', mockResources, server);
+		Object.assign(applicationScope, {
+			mode: 'vm-current-context',
+			dependencyContainment: false,
+			verifyPath: PACKAGE_ROOT,
+		});
+		await loadComponent(componentDir, mockResources, 'test-origin', {
+			applicationScope,
+		});
+
+		// verify the exported resource works
+		assert.equal(mockResources.get('/testExport').get(), 'hello world');
+		assert(mockResources.get('/testExport').getDate() instanceof Date, 'instanceof Date should work');
+		// should shared intrinsics
+		assert(mockResources.get('/testExport').getArray() instanceof Array, 'instanceof Array should work');
+		assert((await mockResources.get('/testExport').testLoadTypeScript()).isTyped, 'TypeScript exports');
+		assert.equal(typeof mockResources.get('/TestComponent').get, 'function');
+		assert.equal(typeof mockResources.get('/my-component').get, 'function');
+	});
 	it('should be able to load component with package dependency containment', async function () {
 		let applicationScope = new ApplicationScope('test', mockResources, server);
 		Object.assign(applicationScope, {
