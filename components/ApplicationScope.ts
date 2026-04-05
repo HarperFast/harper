@@ -19,7 +19,7 @@ export class ApplicationScope {
 	logger: any;
 	resources: Resources;
 	server: Server;
-	mode?: 'none' | 'vm' | 'compartment'; // option to set this from the scope
+	mode?: 'native' | 'vm' | 'vm-current-context' | 'compartment'; // option to set this from the scope
 	dependencyContainment?: boolean; // option to set this from the scope
 	verifyPath?: string;
 	config: any;
@@ -30,7 +30,7 @@ export class ApplicationScope {
 		this.resources = resources;
 		this.server = server;
 
-		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_CONTAINMENT) ?? 'vm';
+		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm';
 		this.dependencyContainment = Boolean(env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYCONTAINMENT));
 		this.verifyPath = verifyPath;
 	}

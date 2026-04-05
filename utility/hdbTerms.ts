@@ -436,7 +436,7 @@ export const CONFIG_PARAMS = {
 	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',
 	AUTHENTICATION_HASHFUNCTION: 'authentication_hashFunction',
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
-	APPLICATIONS_CONTAINMENT: 'applications_containment',
+	APPLICATIONS_MODULELOADER: 'applications_moduleLoader',
 	APPLICATIONS_LOCKDOWN: 'applications_lockdown',
 	APPLICATIONS_DEPENDENCYCONTAINMENT: 'applications_dependencyContainment',
 	APPLICATIONS_PACKAGEMANAGERPREFIX: 'applications_packageManagerPrefix',

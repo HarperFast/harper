@@ -91,7 +91,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
 		const containmentMode = scope?.mode;
-		if (scope && containmentMode !== 'none') {
+		if (scope && containmentMode !== 'native') {
 			if (containmentMode === 'compartment') {
 				// use SES Compartments
 				// note that we use a single compartment per scope and we load it on-demand, only
