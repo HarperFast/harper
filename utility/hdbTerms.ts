@@ -438,7 +438,7 @@ export const CONFIG_PARAMS = {
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
 	APPLICATIONS_MODULELOADER: 'applications_moduleLoader',
 	APPLICATIONS_LOCKDOWN: 'applications_lockdown',
-	APPLICATIONS_DEPENDENCYCONTAINMENT: 'applications_dependencyContainment',
+	APPLICATIONS_DEPENDENCYLOADER: 'applications_dependencyLoader',
 	APPLICATIONS_PACKAGEMANAGERPREFIX: 'applications_packageManagerPrefix',
 	APPLICATIONS_ALLOWEDBUILTINMODULES: 'applications_allowedBuiltInModules',
 	APPLICATIONS_ALLOWEDSPAWNCOMMANDS: 'applications_allowedSpawnCommands',

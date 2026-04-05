@@ -90,9 +90,9 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
 	try {
-		const containmentMode = scope?.mode;
-		if (scope && containmentMode !== 'native') {
-			if (containmentMode === 'compartment') {
+		const loaderMode = scope?.mode;
+		if (scope && loaderMode !== 'native') {
+			if (loaderMode === 'compartment') {
 				// use SES Compartments
 				// note that we use a single compartment per scope and we load it on-demand, only
 				// loading if necessary (since it is actually very heavy)
@@ -100,11 +100,11 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 				if (!scope.compartment) scope.compartment = getCompartment(scope, globals);
 				const result = await (await scope.compartment).import(moduleUrl);
 				return result.namespace;
-			} else if (containmentMode === 'vm-current-context' && SourceTextModule) {
+			} else if (loaderMode === 'vm-current-context' && SourceTextModule) {
 				// Use VM module loader with current context (shares intrinsics, no custom globals)
 				return await loadModuleWithVM(moduleUrl, scope, false);
 			} else if (SourceTextModule) {
-				// Use VM module to do containment with custom context (sandboxed)
+				// Use VM module to do module loading with custom context (sandboxed)
 				return await loadModuleWithVM(moduleUrl, scope, true);
 			}
 		}
@@ -250,8 +250,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
 				const resolvedUrl = resolveModule(specifier, script.sourceURL);
-				const useContainment = shouldUseContainment(specifier, resolvedUrl);
-				const dynamicModule = await loadModuleWithCache(resolvedUrl, useContainment);
+				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
+				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
 				return dynamicModule;
 			},
 		};
@@ -342,17 +342,17 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	}
 
 	/**
-	 * Determine if a module should use VM containment based on specifier and resolved URL
+	 * Determine if a module should use application VM module loader based on specifier and resolved URL
 	 */
-	function shouldUseContainment(specifier: string, resolvedUrl: string): boolean {
+	function shouldUseApplicationLoader(specifier: string, resolvedUrl: string): boolean {
 		// Always contain relative imports
 		if (specifier.startsWith('.')) {
 			return true;
 		}
 
-		// Check the dependencyContainment setting, if it is definitive
-		if (typeof scope.dependencyContainment === 'boolean') {
-			return scope.dependencyContainment;
+		// Check the dependencyLoader setting, if it is definitive
+		if (typeof scope.dependencyLoader === 'boolean') {
+			return scope.dependencyLoader;
 		}
 
 		// For npm packages, check if they depend on harper
@@ -369,8 +369,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	 */
 	function linker(specifier: string, referencingModule: SourceTextModule | SyntheticModule) {
 		const resolvedUrl = resolveModule(specifier, referencingModule.identifier);
-		const useContainment = shouldUseContainment(specifier, resolvedUrl);
-		return getOrCreateModule(resolvedUrl, useContainment);
+		const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
+		return getOrCreateModule(resolvedUrl, useApplicationLoader);
 	}
 
 	function getOrCreateModule(
@@ -492,23 +492,18 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			}
 
 			// If CJS loading fails due to ESM syntax, try ESM
-			try {
-				return new SourceTextModule(source, {
-					identifier: url,
-					context,
-					initializeImportMeta(meta) {
-						meta.url = url;
-					},
-					importModuleDynamically(specifier: string) {
-						const resolvedUrl = resolveModule(specifier, url);
-						const useContainment = shouldUseContainment(specifier, resolvedUrl);
-						return loadModuleWithCache(resolvedUrl, useContainment);
-					},
-				});
-			} catch (esmErr) {
-				// Both failed - throw the ESM error as it's likely more relevant
-				throw esmErr;
-			}
+			return new SourceTextModule(source, {
+				identifier: url,
+				context,
+				initializeImportMeta(meta) {
+					meta.url = url;
+				},
+				importModuleDynamically(specifier: string) {
+					const resolvedUrl = resolveModule(specifier, url);
+					const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
+					return loadModuleWithCache(resolvedUrl, useApplicationLoader);
+				},
+			});
 		}
 	}
 
@@ -530,7 +525,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return createModuleFromSource(url, source, usePrivateGlobal);
 		}
 
-		// For Node.js built-in modules (node:) and npm packages without dependency containment
+		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
 		const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
 		if (replacedModule) {
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));

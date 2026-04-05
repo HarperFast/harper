@@ -20,7 +20,7 @@ export class ApplicationScope {
 	resources: Resources;
 	server: Server;
 	mode?: 'native' | 'vm' | 'vm-current-context' | 'compartment'; // option to set this from the scope
-	dependencyContainment?: boolean; // option to set this from the scope
+	dependencyLoader?: boolean; // option to set this from the scope
 	verifyPath?: string;
 	config: any;
 	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
@@ -31,7 +31,7 @@ export class ApplicationScope {
 		this.server = server;
 
 		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm';
-		this.dependencyContainment = Boolean(env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYCONTAINMENT));
+		this.dependencyLoader = Boolean(env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYLOADER));
 		this.verifyPath = verifyPath;
 	}
 

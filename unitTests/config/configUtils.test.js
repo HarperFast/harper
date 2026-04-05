@@ -146,7 +146,7 @@ describe('Test configUtils module', () => {
 			authentication_operationtokentimeout: '1d',
 			authentication_refreshtokentimeout: '30d',
 			applications_moduleloader: 'vm',
-			applications_dependencycontainment: false,
+			applications_dependencyloader: false,
 			applications_lockdown: 'freeze',
 			applications_allowedspawncommands: 'freeze',
 			http_cors: false,
