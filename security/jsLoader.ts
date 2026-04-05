@@ -350,9 +350,14 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return true;
 		}
 
-		// Check the dependencyLoader setting, if it is definitive
-		if (typeof scope.dependencyLoader === 'boolean') {
-			return scope.dependencyLoader;
+		// Check the dependencyLoader for definitive settings, if it is native we always use native loader
+		if (scope.dependencyLoader === 'native') {
+			return false;
+		}
+
+		// If it is set to always use the app module loader
+		if (scope.dependencyLoader === 'app') {
+			return true;
 		}
 
 		// For npm packages, check if they depend on harper
