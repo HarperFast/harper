@@ -403,7 +403,7 @@ describe('Transactions', () => {
 				writes = (async () => {
 					for (let i = 0; i < 10; i++) {
 						await TxnTest.put(48, { name: 'in and out of txn', count: i });
-						await delay(1);
+						await delay(i);
 					}
 				})();
 			});
