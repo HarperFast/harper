@@ -618,7 +618,7 @@ function receivedShipment(products) {
 }
 ```
 
-See [Global APIs — transaction](./global-apis.md#transaction) for more information on starting transactions outside of request handlers.
+See [Global APIs — transaction](../components/javascript-environment.md#transaction) for more information on starting transactions outside of request handlers.
 
 ---
 
