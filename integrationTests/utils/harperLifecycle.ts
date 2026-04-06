@@ -12,9 +12,9 @@ import { equal } from 'node:assert';
 const HTTP_PORT = 9926;
 const HTTPS_PORT = 9927;
 const OPERATIONS_API_PORT = 9925;
-const DEFAULT_ADMIN_USERNAME = 'admin';
-const DEFAULT_ADMIN_PASSWORD = 'Abc1234!';
-const DEFAULT_STARTUP_TIMEOUT_MS = parseInt(process.env.HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS, 10) || 30000;
+export const DEFAULT_ADMIN_USERNAME = 'admin';
+export const DEFAULT_ADMIN_PASSWORD = 'Abc1234!';
+export const DEFAULT_STARTUP_TIMEOUT_MS = parseInt(process.env.HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS, 10) || 30000;
 const LOG_DIR = process.env.HARPER_INTEGRATION_TEST_LOG_DIR;
 
 /**
