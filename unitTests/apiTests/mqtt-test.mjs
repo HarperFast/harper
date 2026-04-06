@@ -47,6 +47,7 @@ describe('test MQTT connections and commands', function () {
 		available_records = await setupTestApp();
 
 		client = connect('ws://localhost:9926', {
+			protocolVersion: 4,
 			wsOptions: {
 				headers: {
 					Accept: 'application/cbor',
@@ -135,6 +136,7 @@ describe('test MQTT connections and commands', function () {
 				clean: true,
 				connectTimeout: 2000,
 				protocol: 'mqtt',
+				protocolVersion: 4,
 			});
 			clients.push(client);
 			subscriptions.push(
@@ -182,6 +184,7 @@ describe('test MQTT connections and commands', function () {
 		const client_to_die = connect({
 			host: 'localhost',
 			clean: true,
+			protocolVersion: 4,
 			will: {
 				topic,
 				payload: JSON.stringify({ name: 'last will and testimony' }),
@@ -219,6 +222,7 @@ describe('test MQTT connections and commands', function () {
 		const client_to_die = connect({
 			host: 'localhost',
 			clean: true,
+			protocolVersion: 4,
 			will: {
 				topic,
 				payload: JSON.stringify({ name: 'last will and testimony' }),
@@ -259,6 +263,7 @@ describe('test MQTT connections and commands', function () {
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve) => {
 			client.on('connect', function (_connack) {
@@ -290,12 +295,14 @@ describe('test MQTT connections and commands', function () {
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
+			protocolVersion: 4,
 		});
 		const client = connect({
 			host: 'localhost',
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
+			protocolVersion: 4,
 			username: 'restricted',
 			password: 'restricted',
 			will: {
@@ -338,6 +345,7 @@ describe('test MQTT connections and commands', function () {
 			host: 'localhost',
 			clean: true,
 			connectTimeout: 2000,
+			protocolVersion: 4,
 		});
 		await new Promise((resolve) => {
 			client.on('connect', function () {
@@ -353,7 +361,9 @@ describe('test MQTT connections and commands', function () {
 		let path = 'SimpleRecord/77';
 		let client;
 		await new Promise((resolve, reject) => {
-			client = connect('mqtt://localhost:1883');
+			client = connect('mqtt://localhost:1883', {
+				protocolVersion: 4,
+			});
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
@@ -398,6 +408,7 @@ describe('test MQTT connections and commands', function () {
 			client = connect('mqtt://localhost:1883', {
 				clean: false,
 				clientId: 'with-patches',
+				protocolVersion: 4,
 			});
 			client.on('connect', resolve);
 			client.on('error', reject);
@@ -449,6 +460,7 @@ describe('test MQTT connections and commands', function () {
 			client = connect('mqtt://localhost:1883', {
 				clean: false,
 				clientId: 'with-patches',
+				protocolVersion: 4,
 			});
 			client.on('error', reject);
 			client.on('message', (topic, payload, _packet) => {
@@ -478,6 +490,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client-sub2',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -528,6 +541,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client-sub2',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -559,6 +573,7 @@ describe('test MQTT connections and commands', function () {
 		client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client-sub2',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -593,6 +608,7 @@ describe('test MQTT connections and commands', function () {
 		});
 		let bad_client = connect('mqtts://localhost:8884', {
 			clientId: 'test-bad-mtls',
+			protocolVersion: 4,
 		});
 
 		const private_key_path = env_get('tls_privateKey');
@@ -608,6 +624,7 @@ describe('test MQTT connections and commands', function () {
 			ca,
 			clean: true,
 			clientId: 'test-client-mtls',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			bad_client.on('connect', () => {
@@ -676,6 +693,7 @@ describe('test MQTT connections and commands', function () {
 			let bad_client = connect('wss://localhost:8885', {
 				reconnectPeriod: 0,
 				clientId: 'test-bad-mtls',
+				protocolVersion: 4,
 			});
 			let client = connect('wss://localhost:8885', {
 				key: readFileSync(private_key_path),
@@ -685,6 +703,7 @@ describe('test MQTT connections and commands', function () {
 				clean: true,
 				reconnectPeriod: 0,
 				clientId: 'test-client-mtls',
+				protocolVersion: 4,
 			});
 			await new Promise((resolve, reject) => {
 				bad_client.on('connect', () => {
@@ -747,6 +766,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -948,6 +968,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -958,6 +979,7 @@ describe('test MQTT connections and commands', function () {
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -982,6 +1004,7 @@ describe('test MQTT connections and commands', function () {
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -1043,6 +1066,9 @@ describe('test MQTT connections and commands', function () {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 5,
+			properties: {
+				sessionExpiryInterval: 3600,
+			},
 		});
 		let messages = [];
 		await new Promise((resolve) => {
@@ -1067,6 +1093,9 @@ describe('test MQTT connections and commands', function () {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 5,
+			properties: {
+				sessionExpiryInterval: 3600,
+			},
 		});
 		await new Promise((resolve) => {
 			client.on('message', (message) => {
@@ -1081,6 +1110,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -1091,6 +1121,7 @@ describe('test MQTT connections and commands', function () {
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.subscribe(
@@ -1141,6 +1172,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -1161,6 +1193,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -1201,6 +1234,7 @@ describe('test MQTT connections and commands', function () {
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
