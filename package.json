@@ -53,7 +53,7 @@
 		"build": "tsc --project tsconfig.build.json",
 		"build:watch": "npm run build -- --watch --incremental",
 		"package": "./build-tools/build.sh",
-		"lint": "oxlint --deny-warnings .",
+		"lint": "oxlint --format stylish --deny-warnings .",
 		"lint:required": "oxlint --quiet .",
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
