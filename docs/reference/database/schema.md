@@ -456,7 +456,7 @@ When returning a blob via REST, register an error handler to handle interrupted 
 
 ```javascript
 export class MyEndpoint extends MyTable {
-	async get(target) {
+	static async get(target) {
 		const record = super.get(target);
 		let blob = record.data;
 		blob.on('error', () => {

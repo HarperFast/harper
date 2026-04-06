@@ -220,8 +220,10 @@ storage:
   caching: true
   compression: true
   compactOnStart: false
+  engine: rocksdb
 ```
 
+- `engine` — The database storage engine to use. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`.
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
@@ -304,6 +306,25 @@ rootPath: /var/lib/harper
 ```
 
 ---
+
+## `applications
+
+Added in: v5.0.0
+
+```yaml
+applications:
+  lockdown: freeze
+  moduleLoader: vm
+  dependencyLoader: auto
+  allowedSpawnCommands:
+    - npm
+    - node
+```
+
+- `lockdown` — Indicates if intrinsic/built-in objects should be locked down/frozen. This provides additional security and protection against prototype pollution attacks. The options can be `freeze` (default, which freezes the important built-in objects, without interfering with most packages), 'none', or 'ses' (lockdown provided by `ses` package, which is more strict).
+- `moduleLoader` — The method used to load modules (and isolate the application). The default is 'vm', which uses Node's VM to load modules. This can also be set to 'none' (use standard Node module loader), or `compartment`, which uses the `ses` implementation of the proposed `Compartment` functionality.
+- `dependencyLoader` — The application module loader can be used to load packages/dependencies (installed as `dependencies` from the package.json). The default is 'auto', which only use the VM module loader if the package specifies `harper` as a dependency. This can also be set to `app` to always use the application module loader or `native` to always native module loader for packages.
+- `allowedSpawnCommands` - This lists the specific commands that can be spawned by the application (using `child_process`'s `spawn()`, `exec()`, and `execFile()` functions). You can add commands that you are application will need to launch (this is to protect against malicious code spawning processes).
 
 ## Component Configuration
 

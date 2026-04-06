@@ -571,14 +571,6 @@ Creates a new operation token from an existing refresh token.
 
 ---
 
-## Impersonation
-
-Execute Operations API requests as if they were a different, less-privileged user. Restricted to `super_user` roles.
-
-Detailed documentation: [Impersonation](../security/impersonation.md)
-
----
-
 ## Components
 
 Operations for deploying and managing Harper components (applications, extensions, plugins).

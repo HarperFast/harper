@@ -8,7 +8,7 @@ title: Overview
 
 # Database
 
-Harper's database system is the foundation of its data storage and retrieval capabilities. It is built on top of [LMDB](https://www.symas.com/lmdb) (Lightning Memory-Mapped Database) and is designed to provide high performance, ACID-compliant storage with automatic indexing and flexible schema support.
+Harper's database system is the foundation of its data storage and retrieval capabilities. Harper supports two storage enginers, [RocksDB](https://github.com/facebook/rocksdb/wiki/RocksDB-Overview) and [LMDB](https://www.symas.com/lmdb) (Lightning Memory-Mapped Database) and is designed to provide high performance, ACID-compliant storage with indexing and flexible schema support.
 
 ## How Harper Stores Data
 

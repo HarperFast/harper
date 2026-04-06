@@ -207,7 +207,7 @@ Blobs written from a stream can fail mid-stream after the record is committed. R
 
 ```javascript
 export class MyEndpoint extends MyTable {
-	async get(target) {
+	static async get(target) {
 		const record = await super.get(target);
 		let blob = record.data;
 		blob.on('error', () => {

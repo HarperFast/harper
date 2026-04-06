@@ -148,7 +148,7 @@ try {
 }
 ```
 
-Avoid storing an iterator and abandoning it (e.g. never calling `.next()` again without calling `.return()`), as the transaction will remain open until the iterator is garbage collected — which is non-deterministic.
+Avoid storing an iterator and abandoning it (e.g. never using it in a for-loop or calling `.return()`), as the transaction will remain open until the iterator is garbage collected — which is non-deterministic.
 
 ## Practical Guidance
 

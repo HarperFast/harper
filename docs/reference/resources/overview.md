@@ -25,15 +25,6 @@ The Resource API is designed to mirror REST/HTTP semantics: methods map directly
 - **Global APIs** (`tables`, `databases`, `transaction`) provide access to resources from JavaScript code.
 - The **`jsResource` plugin** (configured in `config.yaml`) registers a JavaScript file's exported Resource classes as endpoints.
 
-## Resource API Versions
-
-The Resource API has two behavioral modes controlled by the `loadAsInstance` static property:
-
-- **V2 (recommended, `loadAsInstance = false`)**: Instance methods receive a `RequestTarget` as the first argument; no record is preloaded onto `this`. Recommended for all new code.
-- **V1 (legacy, `loadAsInstance = true`)**: Instance methods are called with `this` pre-bound to the matching record. Preserved for backwards compatibility.
-
-The [Resource API reference](./resource-api.md) is written against V2. For V1 behavior and migration guidance, see the legacy instance binding section of that page.
-
 ## Extending a Table
 
 The most common use case is extending an existing table to add custom logic.
@@ -54,19 +45,16 @@ Then, in a `resources.js` extend from the `tables.MyTable` global:
 
 ```javascript
 export class MyTable extends tables.MyTable {
-	static loadAsInstance = false; // use V2 API
-
-	get(target) {
+	static async get(target) {
+		// get the record from the database
+		const record = await super.get(target);
 		// add a computed property before returning
-
-		const record = await super.get(target)
-
 		return { ...record, computedField: 'value' };
 	}
 
-	post(target, data) {
+	static async post(target, data) {
 		// custom action on POST
-		this.create({ ...data, status: 'pending' });
+		this.create({ ...(await data), status: 'pending' });
 	}
 }
 ```
@@ -87,9 +75,7 @@ You can also extend the base `Resource` class directly to implement custom endpo
 
 ```javascript
 export class CustomEndpoint extends Resource {
-	static loadAsInstance = false;
-
-	get(target) {
+	static get(target) {
 		return {
 			data: doSomething(),
 		};
@@ -97,17 +83,15 @@ export class CustomEndpoint extends Resource {
 }
 
 export class MyExternalData extends Resource {
-	static loadAsInstance = false;
-
-	async get(target) {
+	static async get(target) {
 		const response = await fetch(`https://api.example.com/${target.id}`);
 		return response.json();
 	}
 
-	put(target, data) {
+	static async put(target, data) {
 		return fetch(`https://api.example.com/${target.id}`, {
 			method: 'PUT',
-			body: JSON.stringify(data),
+			body: JSON.stringify(await data),
 		});
 	}
 }

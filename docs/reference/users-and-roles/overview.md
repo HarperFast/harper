@@ -175,7 +175,6 @@ Each table entry defines CRUD access:
 
 ## Role-Based Operation Restrictions
 
-The following table shows which operations are restricted to `super_user` roles. Non-`super_user` roles are also restricted within their accessible operations by their CRUD permission set. Operations marked with X can be selectively granted to non-`super_user` roles using `operations`.
 
 ### Databases and Tables
 
