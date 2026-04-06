@@ -6,31 +6,33 @@ title: JavaScript Environment
 
 # JavaScript Environment
 
-Harper executes component JavaScript inside Node.js VM contexts — isolated module environments that share the same Node.js runtime but have their own global scope. This means each component runs in its own module context while still being able to access Harper's global APIs without any imports.
+Harper executes component JavaScript in distinct module caches, using Node.js's VM module loader. This provides contextualized module environments that share the same Node.js runtime but have their own set of modules isolated from other applications. This means each application runs in its own module context while still being able to access Harper's full set of APIs.
 
 ## Module Loading
 
-Harper supports both ESM and CommonJS module formats.
-
-All Harper globals are available directly as global variables in any component module. They are also accessible by importing from the `harperdb` package, which can provide better TypeScript typing:
+Harper supports both ESM and CommonJS module formats. The full set of Harper APIs are accessible by importing from the `harper` package, for example::
 
 ```javascript
-import { tables, Resource } from 'harperdb';
+import { tables, Resource } from 'harper';
 ```
 
 ```javascript
-const { tables, Resource } = require('harperdb');
+const { tables, Resource } = require('harper');
 ```
 
-For components in their own directory, link the package to your local `harperdb` installation:
+The Harper APIs are also available as global variables. This can be a quick and easy way to use the APIs and is preserved for backward compatibility, but is not the recommended approach. There are also some APIs that are not fully functional as globals.
+
+For components in their own directory, link the package to your local `harper` installation to ensure any typings use the current/correction version of Harper:
 
 ```bash
-npm link harperdb
+npm link harper
 ```
 
-All installed components have `harperdb` automatically linked.
+All installed components have `harper` automatically linked.
 
-## Global APIs
+## Harper API
+
+The following objects and functions are available as exports from the `harper` package (and also available as global variables).
 
 ### `tables`
 
@@ -78,6 +80,56 @@ See [HTTP API](../http/api.md) for full reference.
 
 ### `logger`
 
-Provides structured logging methods (`trace`, `debug`, `info`, `warn`, `error`, `fatal`, `notify`) that write to Harper's log file. Available without any imports in all component code.
+Provides structured logging methods (`trace`, `debug`, `info`, `warn`, `error`, `fatal`, `notify`) that write to Harper's log file. Note that using the global variable may not provide full application tagging and configurability.
 
 See [Logging API](../logging/api.md) for full reference.
+
+### `resources`
+
+A `Map` of all resources registered on this Harper server, keyed by their URL path. Each entry contains the resource class, path, and routing metadata. Use this to look up or enumerate registered resources programmatically.
+
+### `config`
+
+The configuration object for the current application, as provided by the component's configuration (e.g. `config.yaml`). Defaults to an empty object if no configuration is provided.
+
+### `RequestTarget`
+
+A class (extending `URLSearchParams`) that represents a parsed resource request — including the target record ID, query conditions, pagination (`limit`/`offset`), sort order, selected attributes, and caching directives. Use `RequestTarget` to construct typed resource requests when calling resource methods directly:
+
+```javascript
+import { tables, RequestTarget } from 'harper';
+
+const target = new RequestTarget('/my-record-id?limit=10');
+const results = await tables.myTable.search(target);
+```
+
+### `getContext()`
+
+Returns the current async context object for the active request. The context holds request-scoped state including the active transaction, user, response, and timestamp. Returns an empty object if called outside of a request context.
+
+```javascript
+import { getContext } from 'harper';
+
+const ctx = getContext();
+console.log(ctx.user, ctx.transaction);
+```
+
+### `getUser()`
+
+Returns the authenticated user from the current async request context, or `undefined` if called outside a request or the request is unauthenticated. Equivalent to `getContext().user`.
+
+```javascript
+import { getUser } from 'harper';
+
+export class MyResource extends Resource {
+	async get(id) {
+		const user = getUser();
+		if (!user) throw new Error('Unauthorized');
+		// ...
+	}
+}
+```
+
+### `getResponse()`
+
+Returns the outgoing `Response` object for the current request, or `undefined` if called outside a request context. Use this to set response headers or inspect the response mid-handler. Equivalent to `getContext().response`.
