@@ -19,6 +19,7 @@ const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAM
  * a priority of 0.
  * @param path
  * @param handler
+ * @param skipThreadCheck
  */
 export function onStorageReclamation(
 	path: string,
@@ -39,21 +40,8 @@ export function onStorageReclamation(
 }
 let reclamationTimer: NodeJS.Timeout;
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
-	if (statfs) {
-		const fsStats = await statfs(path);
-		return fsStats.bavail / fsStats.blocks;
-	} else {
-		return new Promise((resolve) => {
-			import('hdd-space').then((hddSpace) => {
-				hddSpace.default((space: any) => {
-					for (const volume of space.parts) {
-						if (path.startsWith(volume.place)) return resolve(volume.free / volume.size);
-					}
-					return resolve(1);
-				});
-			});
-		});
-	}
+	const fsStats = await statfs(path);
+	return fsStats.bavail / fsStats.blocks;
 };
 let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvailableSpaceRatio;
 

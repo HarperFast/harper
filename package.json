@@ -236,7 +236,6 @@
 	},
 	"optionalDependencies": {
 		"bufferutil": "^4.0.9",
-		"hdd-space": "^1.2.0",
 		"segfault-handler": "^1.3.0",
 		"utf-8-validate": "^5.0.10"
 	}
