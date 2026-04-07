@@ -175,7 +175,6 @@ Each table entry defines CRUD access:
 
 ## Role-Based Operation Restrictions
 
-
 ### Databases and Tables
 
 | Operation           | Restricted to Super User |
