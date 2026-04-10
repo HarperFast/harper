@@ -112,7 +112,10 @@
 		}
 	},
 	"exports": {
-		".": "./dist/index.js"
+		".": {
+			"types": "./index.d.ts",
+			"default": "./dist/index.js"
+		}
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.6",
