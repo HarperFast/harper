@@ -223,7 +223,7 @@ storage:
   engine: rocksdb
 ```
 
-- `engine` — The database storage engine to use. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`.
+- `engine` — The database storage engine to use for new databases. Currently supported engines are `rocksdb` and `lmdb`. The default is `rocksdb`. Existing databases will use the engine that was used when they were created.
 - `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
