@@ -125,7 +125,7 @@
 		"@types/lodash": "^4.17.23",
 		"@types/micromatch": "^4.0.9",
 		"@types/mocha": "^10.0.10",
-		"@types/sinon": "^17.0.4",
+		"@types/sinon": "^21.0.0",
 		"@types/tar-fs": "^2.0.4",
 		"@typescript-eslint/parser": "^8.48.1",
 		"axios": "1.14.0",
