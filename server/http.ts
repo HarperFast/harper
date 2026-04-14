@@ -19,7 +19,7 @@ import { appendHeader, Headers } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable } from 'node:stream';
-import { server, type ServerOptions, type HttpOptions } from './Server.ts';
+import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
@@ -490,29 +490,10 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	set(_v) {},
 });
 
-type OnUpgradeOptions = {
-	port?: number;
-	securePort?: number;
-	runFirst?: boolean;
-};
-
-/**
- * @typedef {(request: unknown, next: Listener) => void | Promise<void>} Listener
- */
-
 const upgradeListeners = [],
 	upgradeChains = {};
 
-/**
- *
- * @param {Listener} listener
- * @param {OnUpgradeOptions} options
- * @returns
- */
-function onUpgrade(
-	listener: (request: Request, next: (request: Request) => Response) => void,
-	options: OnUpgradeOptions
-) {
+function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 	for (const { port } of getPorts(options)) {
 		upgradeListeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
 		upgradeChains[port] = makeCallbackChain(upgradeListeners, port);
@@ -568,13 +549,14 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			onUpgrade(
 				(request, socket, head, next) => {
 					// If the request has already been upgraded, continue without upgrading
-					if (request.__harperdbRequestUpgraded) {
+					if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
 						return next(request, socket, head);
 					}
 
 					// Otherwise, upgrade the socket and then continue
 					return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
 						request.__harperdbRequestUpgraded = true;
+						request.__harperRequestUpgraded = true;
 						next(request, socket, head);
 						websocketServers[port].emit('connection', ws, request);
 					});
