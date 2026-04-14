@@ -318,7 +318,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		}
 		return mappedAggregateIterable;
 	}
-	getKeys(options: any) {
+	getKeys(_options?: any) {
 		return []; // TODO: implement this
 		// options.onlyKeys = true;
 		// return this.getRange(options);
