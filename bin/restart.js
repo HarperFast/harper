@@ -12,6 +12,7 @@ const { HTTP_STATUS_CODES } = hdbErrors;
 const envMgr = require('../utility/environment/environmentManager.js');
 const path = require('node:path');
 const { unlinkSync } = require('node:fs');
+const { getThisNodeName } = require('../server/nodeName.ts');
 envMgr.initSync();
 
 const RESTART_RESPONSE = `Restarting Harper. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
@@ -124,7 +125,7 @@ async function restartService(req) {
 			req.replicated = false; // don't send a replicated flag to the nodes we are sending to
 			replicatedResponses = [];
 			for (let node of server.nodes) {
-				if (node.name === server.replication.getThisNodeName()) continue;
+				if (node.name === getThisNodeName()) continue;
 				// for now, only one at a time
 				let job_id;
 				try {
