@@ -1,5 +1,5 @@
 import { logger } from '../utility/logging/logger.ts';
-import { Session, url as inspectorURL } from 'inspector';
+import { Session, url as inspectorURL } from 'node:inspector';
 const MAX_EVENT_DELAY_TIME = 3000;
 const DEFAULT_MAX_QUEUE_TIME = 20_000; // 20 seconds
 let lastWarning = 0;
