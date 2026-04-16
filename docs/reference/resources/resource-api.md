@@ -320,13 +320,184 @@ Returns the number of records in the table. By default returns an approximate (f
 
 ### `sourcedFrom(Resource, options?)`
 
-Configure a table to use another resource as its data source (caching behavior). When a record is not found locally, it is fetched from the source and cached. Writes are delegated to the source.
+Configure a table to use another resource as its data source. When a record is not found locally or has expired, it is fetched from the source and cached. Writes to the table are optionally delegated to the source if the source implements `put`, `patch`, or `delete`.
 
-Options:
+```javascript
+tables.MyCache.sourcedFrom(MyDataSource);
+```
 
-- `expiration` — Default TTL in seconds
-- `eviction` — Eviction time in seconds
-- `scanInterval` — Period for scanning expired records
+Options (all optional; prefer setting these via `@table` schema directives):
+
+| Option         | Description                                      |
+| -------------- | ------------------------------------------------ |
+| `expiration`   | Seconds until a record goes stale                |
+| `eviction`     | Seconds after expiration before physical removal |
+| `scanInterval` | Seconds between eviction scans                   |
+
+Harper automatically serializes concurrent requests for the same missing or stale record — all waiting requests share a single upstream fetch, preventing cache stampedes.
+
+#### Source `get` — controlling timestamp and expiration
+
+Inside a source `get()` method, the context (`this.getContext()`) exposes caching-specific properties:
+
+```javascript
+class MySource extends Resource {
+	async get() {
+		const context = this.getContext();
+
+		// Pass If-Modified-Since to origin using the existing cached version
+		const headers = new Headers();
+		if (context.replacingVersion) {
+			headers.set('If-Modified-Since', new Date(context.replacingVersion).toUTCString());
+		}
+
+		const response = await fetch(`https://api.example.com/${this.getId()}`, { headers });
+
+		// Propagate the origin's Last-Modified timestamp to Harper's ETag
+		context.lastModified = response.headers.get('Last-Modified');
+
+		// Honor origin's Cache-Control max-age for per-record TTL
+		const maxAge = response.headers.get('Cache-Control')?.match(/max-age=(\d+)/)?.[1];
+		if (maxAge) {
+			context.expiresAt = Date.now() + Number(maxAge) * 1000;
+		}
+
+		// Return origin's 304 as a cache revalidation (no re-download)
+		if (response.status === 304) return context.replacingRecord;
+
+		return response.json();
+	}
+}
+```
+
+Context properties available inside a source `get()`:
+
+| Property           | Description                                                                                   |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| `replacingVersion` | Timestamp of the currently cached record being replaced (useful for `If-Modified-Since`)      |
+| `replacingRecord`  | The currently cached record value (return this on a 304 to skip a re-download)                |
+| `lastModified`     | Set this to propagate the origin's timestamp as Harper's `ETag` / `Last-Modified`             |
+| `expiresAt`        | Set this (milliseconds epoch) to give the record a per-entry TTL overriding the table default |
+
+#### Source `subscribe` — active caching
+
+For data sources that can push change notifications, implement a `subscribe` method returning an async iterable of events. Harper calls `subscribe` once per process and propagates updates to the cache automatically — no polling needed.
+
+```javascript
+class MySource extends Resource {
+	async *subscribe() {
+		// Option A: async generator
+		const stream = connectToExternalEventStream();
+		for await (const event of stream) {
+			yield {
+				type: 'put', // 'put' | 'invalidate' | 'delete' | 'message' | 'transaction'
+				id: event.id,
+				value: event.data,
+				timestamp: event.ts,
+			};
+		}
+	}
+}
+```
+
+Alternatively, use the default subscription stream to push events from a callback-based source:
+
+```javascript
+class MySource extends Resource {
+	subscribe() {
+		const subscription = super.subscribe();
+		remoteClient.on('update', (event) => {
+			subscription.send({ type: 'put', id: event.id, value: event.data });
+		});
+		return subscription;
+	}
+}
+```
+
+**Supported event types:**
+
+| Type          | Description                                                                        |
+| ------------- | ---------------------------------------------------------------------------------- |
+| `put`         | Record updated — `value` contains the new record                                   |
+| `invalidate`  | Record changed but value not provided — cache evicts and re-fetches on next access |
+| `delete`      | Record deleted                                                                     |
+| `message`     | Pub/sub message passing through the record; record data is not changed             |
+| `transaction` | Atomic group of writes; include an array of events in the `writes` property        |
+
+**Event properties:**
+
+| Property    | Description                                                       |
+| ----------- | ----------------------------------------------------------------- |
+| `type`      | Event type (see above)                                            |
+| `id`        | Primary key of the affected record                                |
+| `value`     | New record value (for `put` and `message`)                        |
+| `writes`    | Array of events for `transaction` events                          |
+| `table`     | Target table name (for cross-table writes inside a `transaction`) |
+| `timestamp` | Timestamp of the change                                           |
+
+By default, `subscribe` runs on a single thread to avoid duplicate notifications and race conditions. To run on multiple threads:
+
+```javascript
+class MySource extends Resource {
+	static subscribeOnThisThread(threadIndex) {
+		return threadIndex < 2; // run on first two threads only
+	}
+	async *subscribe() { ... }
+}
+```
+
+#### Write-through caching
+
+If the source implements `put`, `patch`, or `delete`, writes to the caching table are forwarded to the source before being committed locally:
+
+```javascript
+class MySource extends Resource {
+	async get() { ... }
+
+	async put(data) {
+		await fetch(`https://api.example.com/${this.getId()}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(await data),
+		});
+	}
+
+	async delete() {
+		await fetch(`https://api.example.com/${this.getId()}`, { method: 'DELETE' });
+	}
+}
+```
+
+Harper waits for the source to confirm the write before committing to the local cache (two-phase write).
+
+**Loading from source in write methods:** Methods other than `get()` do not automatically load data from the source. Call `ensureLoaded()` first if you need the existing record:
+
+```javascript
+class MyCache extends tables.MyCache {
+	async post(data) {
+		await this.ensureLoaded(); // loads from source if not cached
+		this.quantity = this.quantity - (await data).purchases;
+	}
+}
+```
+
+#### Passive-active updates
+
+A source `get()` can proactively populate _other_ tables as a side effect, atomically with the main record. Pass `this` (the current context) to any write call to include it in the same transaction:
+
+```javascript
+const { Post, Comment } = tables;
+class BlogSource extends Resource {
+	async get() {
+		const post = await (await fetch(`https://my-blog/${this.getId()}`)).json();
+		for (const comment of post.comments) {
+			await Comment.put(comment, this); // atomic with the Post write
+		}
+		return post;
+	}
+}
+Post.sourcedFrom(BlogSource);
+```
 
 ### `primaryKey`
 

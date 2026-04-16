@@ -73,12 +73,58 @@ type MyTable @table {
 
 Optional arguments:
 
-| Argument     | Type      | Default   | Description                                                             |
-| ------------ | --------- | --------- | ----------------------------------------------------------------------- |
-| `table`      | `String`  | type name | Override the table name                                                 |
-| `database`   | `String`  | `"data"`  | Database to place the table in                                          |
-| `expiration` | `Int`     | —         | Auto-expire records after this many seconds (useful for caching tables) |
-| `replicate`  | `Boolean` | true      | Enable replication of this table                                        |
+| Argument       | Type      | Default                       | Description                                                                 |
+| -------------- | --------- | ----------------------------- | --------------------------------------------------------------------------- |
+| `table`        | `String`  | type name                     | Override the table name                                                     |
+| `database`     | `String`  | `"data"`                      | Database to place the table in                                              |
+| `expiration`   | `Int`     | —                             | Seconds until a record goes stale (useful for caching tables)               |
+| `eviction`     | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed |
+| `scanInterval` | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                              |
+| `replicate`    | `Boolean` | true                          | Enable replication of this table                                            |
+
+**`expiration`, `eviction`, and `scanInterval`**
+
+These three arguments work together to control the full lifecycle of a cached record:
+
+- **`expiration`** — When elapsed, a record is considered _stale_. The next request for a stale record triggers a fetch from the source. The record may still be served while revalidation is in progress.
+- **`eviction`** — Additional time after `expiration` before the record is physically removed from the table. Setting `eviction > 0` lets you serve the stale record while revalidation happens and controls how long after expiration the data is kept on disk.
+- **`scanInterval`** — How often Harper scans the table for records to evict. Defaults to one quarter of `expiration + eviction`.
+
+You can provide a single `expiration` value and all three behaviors share the same TTL. To tune them independently:
+
+```graphql
+# Expire after 5 minutes, evict after 1 hour, scan every 10 minutes
+type WeatherCache @table(expiration: 300, eviction: 3300, scanInterval: 600) {
+	id: ID @primaryKey
+	temperature: Float
+}
+```
+
+#### How `scanInterval` Determines the Eviction Cycle
+
+`scanInterval` determines fixed clock-aligned times when eviction runs. Harper divides the clock into evenly spaced anchors based on the interval, calculated in the server's local timezone. As a result:
+
+- The server's startup time does not affect when eviction runs.
+- Eviction timings are deterministic and timezone-aware.
+- For any given configuration, the eviction schedule is the same across restarts and across servers in the same local timezone.
+
+**Example: 1-hour expiration** — default `scanInterval` = 15 minutes (one quarter of `expiration`). Eviction schedule:
+
+```
+00:00, 00:15, 00:30, 00:45, 01:00, ...
+```
+
+If the server starts at 12:05, the first eviction runs at 12:15 — not 12:20. The schedule is clock-aligned, not startup-aligned.
+
+**Example: 1-day expiration** — default `scanInterval` = 6 hours. Eviction schedule:
+
+```
+00:00, 06:00, 12:00, 18:00, ...
+```
+
+#### Eviction with Indexing
+
+Eviction removes non-indexed record data, but it does _not_ remove a record from its secondary indexes. If an evicted record matches a search query, Harper fetches the full record from the source on demand to satisfy the query. This means indexes remain fully functional even when most of the data has been evicted.
 
 **Examples:**
 

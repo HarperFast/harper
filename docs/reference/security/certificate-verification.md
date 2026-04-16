@@ -242,8 +242,7 @@ certificateVerification:
 Increase CRL cache TTL for stable environments:
 
 ```yaml
-
-...
+---
 crl:
   cacheTtl: 172800000 # 48 hours
 ```
@@ -251,8 +250,7 @@ crl:
 Increase OCSP cache TTL for long-lived connections:
 
 ```yaml
-
-...
+---
 ocsp:
   cacheTtl: 7200000 # 2 hours
 ```
@@ -260,8 +258,7 @@ ocsp:
 Reduce grace period for tighter revocation enforcement:
 
 ```yaml
-
-...
+---
 crl:
   gracePeriod: 0 # No grace period
 ```
