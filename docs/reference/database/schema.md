@@ -73,12 +73,12 @@ type MyTable @table {
 
 Optional arguments:
 
-| Argument     | Type      | Default        | Description                                                             |
-| ------------ | --------- | -------------- | ----------------------------------------------------------------------- |
-| `table`      | `String`  | type name      | Override the table name                                                 |
-| `database`   | `String`  | `"data"`       | Database to place the table in                                          |
-| `expiration` | `Int`     | —              | Auto-expire records after this many seconds (useful for caching tables) |
-| `audit`      | `Boolean` | config default | Enable audit log for this table                                         |
+| Argument     | Type      | Default   | Description                                                             |
+| ------------ | --------- | --------- | ----------------------------------------------------------------------- |
+| `table`      | `String`  | type name | Override the table name                                                 |
+| `database`   | `String`  | `"data"`  | Database to place the table in                                          |
+| `expiration` | `Int`     | —         | Auto-expire records after this many seconds (useful for caching tables) |
+| `replicate`  | `Boolean` | true      | Enable replication of this table                                        |
 
 **Examples:**
 
@@ -99,8 +99,8 @@ type Session @table(expiration: 3600) {
 	userId: String
 }
 
-# Enable audit log for this table explicitly
-type AuditedRecord @table(audit: true) {
+# Disable replication for this table explicitly
+type LocalRecord @table(replicate: false) {
 	id: Long @primaryKey
 	value: String
 }
@@ -113,6 +113,8 @@ type Event @table(database: "analytics", expiration: 86400) {
 ```
 
 **Database naming:** Since all tables default to the `data` database, when designing plugins or applications, consider using unique database names to avoid table naming collisions.
+
+**Replication:** Replication is enabled by default for all tables. Note that if you disable replication on a table and re-enable it later, it will not catch-up on previous writes during when the replication was disabled.
 
 ### `@export`
 

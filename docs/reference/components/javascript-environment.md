@@ -133,3 +133,7 @@ export class MyResource extends Resource {
 ### `getResponse()`
 
 Returns the outgoing `Response` object for the current request, or `undefined` if called outside a request context. Use this to set response headers or inspect the response mid-handler. Equivalent to `getContext().response`.
+
+### Current Working Directory
+
+Harper using a multi-threaded server architecture and uses the harper data root path as the current working directory. Components should not and cannot change the current working directory.
