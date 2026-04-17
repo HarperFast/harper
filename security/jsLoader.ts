@@ -789,7 +789,7 @@ function acquirePidFileLock(
 
 					if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
 						// If a higher version is requested, kill the existing process and re-acquire
-						if (requestedVersion != null && requestedVersion > existingVersion) {
+						if (requestedVersion != null && requestedVersion !== existingVersion) {
 							try {
 								process.kill(existingPid);
 							} catch {
