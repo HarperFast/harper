@@ -1779,7 +1779,7 @@ export class DatabaseTransaction implements Transaction {
 				// on the node itself, so if THIS commit settles while still over the limit and a
 				// different one is now oldest, that one logs too instead of staying silent forever.
 				oldestOutstandingCommit.logged = true;
-				harperLogger.error(
+				harperLogger.status({ problem: 'database.write-queue-overloaded' }).error(
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
 						`${Math.round(now - oldestOutstandingCommit.start)}ms (exceeds the ` +
 						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), ` +
@@ -4247,10 +4247,24 @@ function startMonitoringTxns() {
 					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
 					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
 					// those, keep the prior force-commit behavior below.
+<<<<<<< HEAD
 					harperLogger.error(
 						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
 							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
 							(url ? ` path: ${url}` : ''),
+||||||| parent of 24cca3099 (Add status reporting for transaction queue overload and long-open transactions)
+					harperLogger.error(
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
+=======
+					harperLogger.status({ problem: 'database.txn-open-too-long' }).error(
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
+>>>>>>> 24cca3099 (Add status reporting for transaction queue overload and long-open transactions)
 						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
 					);
 					try {
@@ -4262,7 +4276,18 @@ function startMonitoringTxns() {
 					// Read-only long transaction (no atomicity/index risk — e.g. a large scan or export), or a
 					// canonical-source apply/replay that must never drop a write: preserve the prior behavior of
 					// committing to close out the snapshot without poisoning the transaction.
+<<<<<<< HEAD
 					let result: MaybePromise<CommitResolution>;
+||||||| parent of 24cca3099 (Add status reporting for transaction queue overload and long-open transactions)
+=======
+					harperLogger.status({ problem: 'database.txn-open-too-long' }).error(
+						`Transaction was open too long and has been committed, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
+						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
+					);
+>>>>>>> 24cca3099 (Add status reporting for transaction queue overload and long-open transactions)
 					try {
 						result = txn.commit();
 					} catch (error) {
