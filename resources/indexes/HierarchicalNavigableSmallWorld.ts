@@ -130,8 +130,8 @@ export class HierarchicalNavigableSmallWorld {
 			// Generate random level for this new element
 			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
-			if (level >= currentLevel) {
-				// if we are at this level or higher, make this the new entry point
+			if (level > currentLevel) {
+				// if we are at a higher, make this the new entry point
 				if (typeof nodeId !== 'number') {
 					throw new Error('Invalid nodeId: ' + nodeId);
 				}
@@ -232,6 +232,19 @@ export class HierarchicalNavigableSmallWorld {
 							oldNode[l] = oldConnections;
 						}
 						oldConnections.splice(oldPosition, 1);
+						// update the distance in the reverse connection if the vector changed
+						if (oldConnection.distance !== distance) {
+							const neighborNode = updateNode(id, node);
+							if (neighborNode[l]) {
+								if (Object.isFrozen(neighborNode[l])) {
+									neighborNode[l] = neighborNode[l].slice();
+								}
+								const reverseIdx = neighborNode[l].findIndex(({ id: nid }) => nid === nodeId);
+								if (reverseIdx >= 0) {
+									neighborNode[l][reverseIdx] = { id: nodeId, distance };
+								}
+							}
+						}
 					} else {
 						// add new connection since this is truly a new connection now
 						this.addConnection(id, updateNode(id, node), nodeId, l, distance, updateNode, options);
@@ -360,7 +373,7 @@ export class HierarchicalNavigableSmallWorld {
 		const candidates = [
 			{
 				id: entryPointId,
-				distance: this.distance(queryVector, entryPoint.vector),
+				distance: distanceFunction(queryVector, entryPoint.vector),
 				node: entryPoint,
 			},
 		];
@@ -531,10 +544,13 @@ export class HierarchicalNavigableSmallWorld {
 				if (removedNode) {
 					// Remove the reverse connection if it exists
 					if (removedNode[level]) {
-						removedNode = updateNode(removed.id, removedNode);
-						removedNode[level] = removedNode[level].filter(({ id }) => id !== fromId);
-						if (level === 0 && removedNode[level].length === 0) {
-							logger.info?.('should not remove last connection', fromId, toId);
+						const filtered = removedNode[level].filter(({ id }) => id !== fromId);
+						if (level === 0 && filtered.length === 0) {
+							// don't remove the last connection at level 0 — it would orphan this node
+							logger.info?.('skipping removal of last connection', fromId, toId);
+						} else {
+							removedNode = updateNode(removed.id, removedNode);
+							removedNode[level] = filtered;
 						}
 					}
 				}
