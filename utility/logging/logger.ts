@@ -21,6 +21,8 @@ export interface StatusOptions {
 	resolves?: string;
 	/** Seconds until the status auto-clears. Only valid with `problem`. */
 	expires?: number;
+	/** Status level for status-only calls (no chained log method). Defaults to 'error'. */
+	level?: string;
 }
 
 export interface StatusLogger {

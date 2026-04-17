@@ -514,6 +514,10 @@ export function setStatusHandler(handler: any) {
 	statusHandler = handler;
 }
 function statusLogger(options: any, logger: any) {
+	// If called with just options (no chained log method), register status immediately
+	if (statusHandler) {
+		statusHandler(options, null, logger.tag || currentTag, []);
+	}
 	const wrapper: any = {};
 	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
 		wrapper[level] = function (...args: any[]) {

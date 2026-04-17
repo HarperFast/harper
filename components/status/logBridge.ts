@@ -44,10 +44,31 @@ function formatMessage(args: any[]): string {
  */
 export function handleStatusLog(
 	options: StatusOptions,
-	level: string,
+	level: string | null,
 	componentTag: string | undefined,
 	args: any[]
 ) {
+	// When level is null, this is a status-only call (no chained log method).
+	// If a chained method follows, it will call again with level set — skip the
+	// initial status-only call in that case by deferring: the chained call will
+	// provide the actual level and message.
+	if (level === null) {
+		// Immediate status-only registration (no log output)
+		if (options.resolves) {
+			clearExpiry(options.resolves);
+			componentStatusRegistry.setStatus(
+				options.resolves, COMPONENT_STATUS_LEVELS.HEALTHY, 'Resolved', undefined, 'log'
+			);
+		} else if (options.problem) {
+			const statusLevel = options.level ? (LOG_TO_STATUS_LEVEL[options.level] || COMPONENT_STATUS_LEVELS.WARNING) : COMPONENT_STATUS_LEVELS.ERROR;
+			componentStatusRegistry.setStatus(options.problem, statusLevel, undefined, undefined, 'log');
+			if (options.expires) {
+				scheduleExpiry(options.problem, options.expires * 1000);
+			}
+		}
+		return;
+	}
+
 	const message = formatMessage(args);
 
 	if (options.resolves) {

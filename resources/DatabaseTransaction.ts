@@ -197,7 +197,7 @@ export class DatabaseTransaction implements Transaction {
 			!this.overloadChecked &&
 			performance.now() - outstandingCommitStart > MAX_OUTSTANDING_TXN_DURATION
 		) {
-			harperLogger.status({ problem: 'database.write-queue-overloaded' }).error('Outstanding write transactions have too long of queue');
+			harperLogger.status({ problem: 'database.write-queue-overloaded', expires: 60 });
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
