@@ -360,7 +360,10 @@ export async function loadComponent(
 							componentFunctionality[componentName] = true;
 						}
 					} else if (loadComponentOption === 'if-installed') {
-						componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' skipped (not installed)`);
+						componentLifecycle.loaded(
+							componentStatusName,
+							`Component '${componentStatusName}' skipped (not installed)`
+						);
 						continue;
 					} else {
 						throw new Error(`Unable to find package ${componentName}:${pkg}`);
