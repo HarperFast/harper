@@ -10,6 +10,7 @@ import type { ComponentStatusLevel } from './types.ts';
 import { componentStatusRegistry } from './registry.ts';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
 import { initLogBridge } from './logBridge.ts';
+import { startHealthChecks } from './healthChecks.ts';
 import { isMainThread } from 'node:worker_threads';
 
 // Internal classes and types
