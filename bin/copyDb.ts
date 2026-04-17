@@ -2,6 +2,7 @@ import { getDatabases, getDefaultCompression, resetDatabases } from '../resource
 import { open } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
+import { existsSync, mkdirSync } from 'node:fs';
 import { get } from '../utility/environment/environmentManager.js';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
@@ -11,6 +12,8 @@ import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.js';
 import { updateConfigValue } from '../config/configUtils.js';
 import * as hdbLogger from '../utility/logging/harper_logger.js';
+import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');
@@ -276,5 +279,198 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 	} finally {
 		transaction.done();
 		targetEnv.close();
+	}
+}
+
+function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: boolean } = {}) {
+	options.disableWAL ??= false;
+	if (!existsSync(path)) {
+		mkdirSync(path, { recursive: true });
+	}
+	let db;
+	if (options.dupSort) {
+		db = RocksDatabase.open(new RocksIndexStore(path, options));
+	} else {
+		db = RocksDatabase.open(path, options);
+		db.encoder.name = options.name;
+	}
+	return db;
+}
+
+export async function migrateOnStart() {
+	hdbLogger.notify('Running migrate on start (LMDB to RocksDB)');
+	console.log('Running migrate on start (LMDB to RocksDB)');
+
+	const rootPath = get(CONFIG_PARAMS.ROOTPATH);
+	const databases = getDatabases();
+
+	updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
+
+	try {
+		for (const databaseName in databases) {
+			if (databaseName === 'system') continue;
+			if (databaseName.endsWith('-copy')) continue;
+			let rootStore;
+			for (const tableName in databases[databaseName]) {
+				const table = databases[databaseName][tableName];
+				table.primaryStore.put = noop;
+				table.primaryStore.remove = noop;
+				for (const attributeName in table.indices) {
+					const index = table.indices[attributeName];
+					index.put = noop;
+					index.remove = noop;
+				}
+				if (table.auditStore) {
+					table.auditStore.put = noop;
+					table.auditStore.remove = noop;
+				}
+				rootStore = table.primaryStore.rootStore;
+			}
+			if (!rootStore) {
+				console.log("Couldn't find any tables in database", databaseName);
+				continue;
+			}
+			if (rootStore instanceof RocksDatabase) {
+				console.log('Database', databaseName, 'is already RocksDB, skipping');
+				continue;
+			}
+
+			const targetPath = join(rootPath, DATABASES_DIR_NAME, databaseName);
+			const lmdbPath = rootStore.path;
+			const backupDest = join(rootPath, 'backup', databaseName + '.mdb');
+
+			console.log('Migrating', databaseName, 'from LMDB to RocksDB at', targetPath);
+
+			await copyDbToRocks(rootStore, databaseName, targetPath);
+
+			// Back up the original LMDB file
+			console.log('Backing up LMDB', databaseName, 'to', backupDest);
+			try {
+				await move(lmdbPath, backupDest, { overwrite: true });
+			} catch (error) {
+				console.log('Error moving database', lmdbPath, 'to', backupDest, error);
+			}
+			// Remove the lock file
+			try {
+				await remove(lmdbPath + '-lock');
+			} catch (_error) {
+				// lock file may not exist
+			}
+		}
+
+		try {
+			resetDatabases();
+		} catch (err) {
+			hdbLogger.error('Error resetting databases after migration', err);
+			console.error('Error resetting databases after migration', err);
+		}
+	} catch (err) {
+		hdbLogger.error('Error migrating database', err);
+		console.error('Error migrating database', err);
+		throw err;
+	}
+}
+
+async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
+	console.log(`Migrating database ${sourceDatabase} to RocksDB at ${targetPath}`);
+	const sourceDbisDb = sourceRootStore.dbisDb;
+
+	const targetRootStore = openRocksDb(targetPath, { disableWAL: false });
+	const targetDbisDb = openRocksDb(targetPath, {
+		disableWAL: false,
+		name: INTERNAL_DBIS_NAME,
+	});
+
+	let written;
+	let outstandingWrites = 0;
+	const transaction = sourceDbisDb.useReadTransaction();
+	try {
+		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
+			const isPrimary = attribute.isPrimaryKey;
+			targetDbisDb.put(key, attribute);
+			if (!(isPrimary || attribute.indexed)) continue;
+
+			// Open source LMDB dbi with default encoding so values are decoded
+			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
+			const sourceDbi = sourceRootStore.openDB(key, dbiInit);
+
+			let targetDbi;
+			if (!isPrimary) {
+				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
+			} else {
+				targetDbi = openRocksDb(targetPath, { name: key });
+			}
+
+			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
+			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction);
+		}
+
+		// Note: audit store is not migrated because LMDB and RocksDB use fundamentally different
+		// audit store formats (LMDB uses a custom binary encoding in a regular DB, RocksDB uses TransactionLog).
+		// A new audit store will be created automatically when the RocksDB database is opened.
+
+		await written;
+		console.log('migrated database ' + sourceDatabase + ' to RocksDB');
+	} finally {
+		transaction.done();
+		targetRootStore.close();
+	}
+
+	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction) {
+		let recordsCopied = 0;
+		let skippedRecord = 0;
+		let retries = 10000000;
+		let start = null;
+		while (retries-- > 0) {
+			try {
+				if (isPrimary) {
+					for (const { key, value, version } of sourceDbi.getRange({ start, transaction, versions: true })) {
+						try {
+							start = key;
+							if (value == null) {
+								skippedRecord++;
+								continue;
+							}
+							written = targetDbi.put(key, value, version);
+							recordsCopied++;
+							if (transaction.openTimer) transaction.openTimer = 0;
+							if (outstandingWrites++ > 5000) {
+								await written;
+								console.log('migrated', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
+								outstandingWrites = 0;
+							}
+						} catch (error) {
+							console.error('Error migrating record', typeof key === 'symbol' ? 'symbol' : key, 'from', sourceDatabase, error);
+						}
+					}
+				} else {
+					for (const { key, value } of sourceDbi.getRange({ start, transaction })) {
+						try {
+							start = key;
+							written = targetDbi.put(key, value);
+							recordsCopied++;
+							if (transaction.openTimer) transaction.openTimer = 0;
+							if (outstandingWrites++ > 5000) {
+								await written;
+								console.log('migrated', recordsCopied, 'index entries');
+								outstandingWrites = 0;
+							}
+						} catch (error) {
+							console.error('Error migrating index record', typeof key === 'symbol' ? 'symbol' : key, 'from', sourceDatabase, error);
+						}
+					}
+				}
+				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
+				return;
+			} catch {
+				if (typeof start === 'string') {
+					if (start === 'z') {
+						return console.error('Reached end of dbi', start, 'for', sourceDatabase);
+					}
+					start = start.slice(0, -2) + 'z';
+				} else if (typeof start === 'number') start++;
+				else return console.error('Unknown key type', start, 'for', sourceDatabase);
+			}
+		}
 	}
 }
