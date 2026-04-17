@@ -25,7 +25,7 @@ Resource classes have static methods that directly map to RESTful methods or HTT
 
 Static methods are defined on a Resource class and called when requests are routed to the resource. This is the preferred way to interact with tables and resources from application code. You can override these methods to define custom behavior for these methods and for HTTP requests.
 
-### `get(target: RequestTarget | Id, context?: Resource | Context): Promise<object> | AsyncIterable`
+### `get(target: RequestTarget | Id, context?: Resource | Context): Promise<object> | ExtendedIterable`
 
 This can be called to retrieve a record by primary key.
 
@@ -36,7 +36,7 @@ const product = await Product.get(34);
 
 The default `get` method returns a `RecordObject` — a frozen plain object with the record's properties plus `getUpdatedTime()` and `getExpiresAt()`. The record object is immutable because it represents the current state of the record in the database.
 
-`get` is also called for HTTP GET requests and is always called with a `RequestTarget` as the `target` parameter. When the request targets a single record (e.g. `/Table/some-id`), the default `get` returns a single record object. When the request targets a collection (e.g. `/Table/?name=value`), the `target.isCollection` property is `true` and the default behavior calls `search()`, returning an `AsyncIterable`.
+`get` is also called for HTTP GET requests and is always called with a `RequestTarget` as the `target` parameter. When the request targets a single record (e.g. `/Table/some-id`), the default `get` returns a single record object. When the request targets a collection (e.g. `/Table/?name=value`), the `target.isCollection` property is `true` and the default behavior calls `search()`, returning an `ExtendedIterable`.
 
 ```javascript
 class MyResource extends Resource {
@@ -70,9 +70,9 @@ The `get()` method returns a `RecordObject` — a frozen plain object with all r
 
 ---
 
-### `search(query: RequestTarget): AsyncIterable`
+### `search(query: RequestTarget): ExtendedIterable`
 
-`search` performs a query on the resource or table. This is called by `get()` on collection requests and can be overridden to define custom query behavior. The default implementation on tables queries by the `conditions`, `limit`, `offset`, `select`, and `sort` properties parsed from the URL. See [Query Object](#query-object) below for available query options.
+`search` performs a query on the resource or table. This is called by `get()` on collection requests and can be overridden to define custom query behavior. The default implementation on tables queries by the `conditions`, `limit`, `offset`, `select`, and `sort` properties parsed from the URL. See [Query Object](#query-object) below for available query options. See the [ExtendedIterable](#extendediterable) below for how to interact with the query results.
 
 ### `put(target: RequestTarget | Id, data: Promise<object>, context?: Resource | Context): Promise<void> | Response`
 
@@ -298,7 +298,7 @@ Publish a message to a record/topic.
 
 Subscribe to record changes or messages.
 
-### `search(query: RequestTarget | Query, context?): AsyncIterable`
+### `search(query: RequestTarget | Query, context?): ExtendedIterable`
 
 Query the table. See [Query Object](#query-object) below for available query options.
 
@@ -735,6 +735,46 @@ The `get()` method returns a `RecordObject` — a frozen plain object with all r
 - `getExpiresAt(): number` — Expiration time, if set
 
 ---
+
+## ExtendedIterable
+
+The `ExtendedIterable` extends and behaves like an `AsyncIterable`, but also includes a set of array-like methods:
+
+- `map`: Returns a new `ExtendedIterable` with the results of calling a provided function on every element in the calling `ExtendedIterable` (lazily evaluated as the iterable is consumed).
+- `filter`: Returns a new `ExtendedIterable` with the elements that pass the test implemented by the provided function (lazily evaluated as the iterable is consumed).
+- `flatMap`: Returns a new `ExtendedIterable` with the results of calling a provided function on every element in the calling `ExtendedIterable` and then flattening the result by one-level (lazily evaluated as the iterable is consumed).
+- `concat`: Returns a new `ExtendedIterable` that contains the elements of the calling `ExtendedIterable` followed by the elements of the iterable passed as an argument (lazily evaluated as the iterable is consumed).
+- `forEach`: Iterates the `ExtendedIterable`, calling the provided function once per element. This is executed eagerly/immediately.
+- `slice`: Returns a new `ExtendedIterable` containing a subset of the elements of the calling `ExtendedIterable` (lazily evaluated as the iterable is consumed).
+- `mapError`: Returns a new `ExtendedIterable` with that matches the calling `ExtendedIterable`, but maps any element evaluation that throws an error (lazily evaluated as the iterable is consumed) to a new value.
+
+These methods are intended to allow you to easily interact with the results of search queries, without having to convert the `ExtendedIterable` to an array. Generally, converting results to an array is discouraged because it can consume a excessive memory for large results, and undermines Harper's efficient iteration/streaming system. For example, you might write a `get` method like:
+
+```javascript
+static async function get(target) {
+	const records = this.search(target);
+	// we can filter records here
+	const filteredRecords = records.map((record) => record.quantity > 100);
+	// we can map to new values
+	const mappedRecords = filteredRecords.map((record) => ({ ...record, extraProperty: 'value' }));
+	// we never converted this to an array, large results can efficiently to be streamed to the client
+	return mappedRecords;
+}
+```
+
+If we do want to iterate the results within a function using a for-loop, you can use the `for await` syntax:
+
+```javascript
+for await (const record of records) {
+	if (record.name === 'I found what I was looking for') {
+		return record;
+	}
+}
+```
+
+(but again, using a for-loop to convert to an array is discouraged)
+
+See the [ExtendedIterable documentation](https://github.com/harperfast/extended-iterable) for more details.
 
 ## Response Object
 
