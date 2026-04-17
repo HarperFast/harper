@@ -214,6 +214,32 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		});
 	});
 
+	it('should restart process when version is upgraded', async function () {
+		this.timeout(10000);
+
+		let applicationScope = new ApplicationScope('test', mockResources, server);
+		Object.assign(applicationScope, {
+			mode: 'vm',
+			dependencyLoader: 'native',
+			verifyPath: PACKAGE_ROOT,
+		});
+		await loadComponent(componentDir, mockResources, 'test-origin', {
+			applicationScope,
+		});
+
+		const processSpawnTest = mockResources.get('/processSpawnTest');
+		const childProcessPath = path.join(componentDir, 'test-child-process.js');
+
+		const { child1, child3 } = processSpawnTest.testVersionUpgrade(childProcessPath);
+
+		// Verify the old process was killed and a new one spawned
+		assert(child3.pid, 'New version process should have a PID');
+		assert.notEqual(child1.pid, child3.pid, 'Higher version should have spawned a new process');
+
+		// Clean up
+		child3.kill();
+	});
+
 	it('should handle ESM circular dependencies correctly', async function () {
 		let applicationScope = new ApplicationScope('test', mockResources, server);
 		Object.assign(applicationScope, {
