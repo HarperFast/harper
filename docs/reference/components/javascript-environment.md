@@ -136,4 +136,4 @@ Returns the outgoing `Response` object for the current request, or `undefined` i
 
 ### Current Working Directory
 
-Harper using a multi-threaded server architecture and uses the harper data root path as the current working directory. Components should not and cannot change the current working directory.
+Harper has a multi-threaded server architecture and uses the harper data root path as the current working directory. Components should not and cannot change the current working directory, and must not use `process.chdir()` or any package that does.
