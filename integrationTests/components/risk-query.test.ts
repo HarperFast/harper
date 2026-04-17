@@ -7,25 +7,19 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 
 suite('Component: risk-query', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
 		// Deploy risk-query from GitHub
-		const response = await fetch(ctx.harper.operationsAPIURL, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				operation: 'deploy_component',
-				project: 'risk-query',
-				package: 'https://github.com/HarperFast/risk-query',
-				restart: true,
-			}),
+		const body = await sendOperation(ctx.harper, {
+			operation: 'deploy_component',
+			project: 'risk-query',
+			package: 'https://github.com/HarperFast/risk-query',
+			restart: true,
 		});
-		strictEqual(response.status, 200);
-		const body = await response.json();
 		deepStrictEqual(body, { message: 'Successfully deployed: risk-query, restarting Harper' });
 
 		// Poll until the component is ready
