@@ -763,7 +763,7 @@ function isProcessRunning(pid: number): boolean {
  */
 function parsePidFile(content: string): { pid: number; version: number } {
 	const lines = content.trim().split('\n');
-	const pid = parseInt(lines[0], 10);
+	const pid = Number.parseInt(lines[0], 10);
 	const version = lines.length > 1 ? parseInt(lines[1], 10) : 0;
 	return { pid, version };
 }
@@ -788,7 +788,7 @@ function acquirePidFileLock(
 					const { pid: existingPid, version: existingVersion } = parsePidFile(pidContent);
 
 					if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
-						// If a higher version is requested, kill the existing process and re-acquire
+						// If the version isn't the one we want, kill the existing process and re-acquire
 						if (requestedVersion != null && requestedVersion !== existingVersion) {
 							try {
 								process.kill(existingPid);
