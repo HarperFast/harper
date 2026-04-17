@@ -768,7 +768,12 @@ function parsePidFile(content: string): { pid: number; version: number } {
 	return { pid, version };
 }
 
-function acquirePidFileLock(pidFilePath: string, requestedVersion?: number, maxRetries = 100, retryDelay = 5): { pid: number; version: number } {
+function acquirePidFileLock(
+	pidFilePath: string,
+	requestedVersion?: number,
+	maxRetries = 100,
+	retryDelay = 5
+): { pid: number; version: number } {
 	for (let attempt = 0; attempt < maxRetries; attempt++) {
 		try {
 			// Try to open exclusively - 'wx' fails if file exists
@@ -870,9 +875,8 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		const childProcess = spawnFunction(command, args, options, callback);
 
 		// Write PID (and version if provided) to the file we just created
-		const pidFileContent = requestedVersion != null
-			? `${childProcess.pid}\n${requestedVersion}`
-			: childProcess.pid.toString();
+		const pidFileContent =
+			requestedVersion != null ? `${childProcess.pid}\n${requestedVersion}` : childProcess.pid.toString();
 		try {
 			writeFileSync(pidFilePath, pidFileContent, 'utf-8');
 		} catch (err) {
