@@ -1779,7 +1779,7 @@ export class DatabaseTransaction implements Transaction {
 				// on the node itself, so if THIS commit settles while still over the limit and a
 				// different one is now oldest, that one logs too instead of staying silent forever.
 				oldestOutstandingCommit.logged = true;
-				harperLogger.status({ problem: 'database.write-queue-overloaded' }).error(
+				harperLogger.error(
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
 						`${Math.round(now - oldestOutstandingCommit.start)}ms (exceeds the ` +
 						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), ` +
@@ -1799,6 +1799,7 @@ export class DatabaseTransaction implements Transaction {
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
 			}
+			harperLogger.status({ problem: 'database.write-queue-overloaded', expires: 60 });
 			throw new ServerError('Outstanding write transactions have too long a queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
