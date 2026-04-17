@@ -87,6 +87,9 @@ export let externalLogger: any = {
 	forComponent(name: string) {
 		return externalLogger.forComponent(name);
 	},
+	status(options) {
+		return externalLogger.status(options);
+	},
 };
 _assignPackageExport('logger', externalLogger);
 // default logger used for the global used by external components
@@ -304,6 +307,9 @@ class HarperLogger extends Console {
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
 	}
+	status(options) {
+		return statusLogger(options, this);
+	}
 	forComponent(_name) {
 		// to be replaced
 		return this;
@@ -346,6 +352,8 @@ module.exports = {
 	errorForLog,
 	disableStdio,
 	externalLogger,
+	setStatusHandler,
+	status: (options) => statusLogger(options, mainLogger),
 };
 
 /**
@@ -501,9 +509,26 @@ function stdioLogging() {
 	}
 }
 
+let statusHandler: any;
+export function setStatusHandler(handler: any) {
+	statusHandler = handler;
+}
+function statusLogger(options: any, logger: any) {
+	const wrapper: any = {};
+	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
+		wrapper[level] = function (...args: any[]) {
+			logger[level](...args);
+			if (statusHandler) {
+				statusHandler(options, level, logger.tag || currentTag, args);
+			}
+		};
+	}
+	return wrapper;
+}
+
 export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
-	return {
+	const taggedLogger = {
 		notify: logWithTag(logger.notify, 'notify'),
 		fatal: logWithTag(logger.fatal, 'fatal'),
 		error: logWithTag(logger.error, 'error'),
@@ -511,7 +536,11 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger: any = 
 		info: logWithTag(logger.info, 'info'),
 		debug: logWithTag(logger.debug, 'debug'),
 		trace: logWithTag(logger.trace, 'trace'),
+		status(options) {
+			return statusLogger(options, logger);
+		},
 	};
+	return taggedLogger;
 	function logWithTag(loggerMethod, level) {
 		return !conditional || logger.level <= LOG_LEVEL_HIERARCHY[level]
 			? function (...args) {

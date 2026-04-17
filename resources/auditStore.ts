@@ -229,7 +229,7 @@ export function openAuditStore(rootStore) {
 		for (const time of auditStore.getKeys({ reverse: true, limit: 1 })) {
 			if (time > Date.now()) {
 				timestampErrored = true;
-				harperLogger.error(
+				harperLogger.status({ problem: 'system.time-reversal' }).error(
 					'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
 				);
 			}

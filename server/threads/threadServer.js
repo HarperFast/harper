@@ -82,7 +82,7 @@ process.on('uncaughtException', (error) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
-	harperLogger.error('uncaughtException', error);
+	harperLogger.status({ problem: 'threads.uncaught-exception' }).error('uncaughtException', error);
 });
 // In both Node.js 15+ and Bun, an unhandled promise rejection exits the worker unless a
 // handler is registered. Without this, any async path that rejects without being caught
@@ -498,7 +498,7 @@ async function listenOnPortsBun() {
 				harperLogger.info('Domain socket listening on ' + udsPath);
 			}
 		} catch (error) {
-			harperLogger.error(`Unable to start Bun server on port ${port}`, error);
+			harperLogger.status({ problem: 'server.port-bind' }).error(`Unable to start Bun server on port ${port}`, error);
 		}
 	}
 	// Also start any non-HTTP servers (raw socket servers) that were registered in SERVERS

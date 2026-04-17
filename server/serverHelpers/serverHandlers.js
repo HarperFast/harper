@@ -48,7 +48,7 @@ function handleServerUncaughtException(err) {
 		os.EOL
 	}Terminating ${isMainThread ? 'HDB' : 'thread'}.`;
 	console.error(message);
-	harperLogger.fatal(message);
+	harperLogger.status({ problem: 'system.uncaught-exception' }).fatal(message);
 	// Harper-intentional fatal termination on uncaught exception. Use realExit
 	// so the worker process guard does not intercept it.
 	realExit(1);
