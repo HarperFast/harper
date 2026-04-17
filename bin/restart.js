@@ -81,7 +81,8 @@ async function restart(req) {
 			}
 			// now launch the new process and exit this process
 			require('./run.js').launch(true);
-		}, 50); // can't await this because it is going to do an exit()
+		}, 50); // can't await this because it is going to do an exit(), but wait for 50ms so we give the HTTP thread a
+		// chance to return a response
 	} else {
 		// Post msg to main parent thread requesting it restart (so the main thread can process.exit())
 		parentPort.postMessage({
