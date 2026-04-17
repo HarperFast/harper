@@ -440,7 +440,13 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 								outstandingWrites = 0;
 							}
 						} catch (error) {
-							console.error('Error migrating record', typeof key === 'symbol' ? 'symbol' : key, 'from', sourceDatabase, error);
+							console.error(
+								'Error migrating record',
+								typeof key === 'symbol' ? 'symbol' : key,
+								'from',
+								sourceDatabase,
+								error
+							);
 						}
 					}
 				} else {
@@ -456,7 +462,13 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 								outstandingWrites = 0;
 							}
 						} catch (error) {
-							console.error('Error migrating index record', typeof key === 'symbol' ? 'symbol' : key, 'from', sourceDatabase, error);
+							console.error(
+								'Error migrating index record',
+								typeof key === 'symbol' ? 'symbol' : key,
+								'from',
+								sourceDatabase,
+								error
+							);
 						}
 					}
 				}
