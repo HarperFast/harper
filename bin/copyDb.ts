@@ -353,7 +353,7 @@ export async function migrateOnStart() {
 			// Remove the lock file
 			try {
 				await remove(lmdbPath + '-lock');
-			} catch (_error) {
+			} catch {
 				// lock file may not exist
 			}
 		}
