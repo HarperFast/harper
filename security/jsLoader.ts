@@ -14,7 +14,16 @@ import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type { CompartmentOptions } from 'ses';
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync, realpathSync } from 'node:fs';
+import {
+	mkdirSync,
+	readFileSync,
+	writeFileSync,
+	unlinkSync,
+	openSync,
+	closeSync,
+	statSync,
+	realpathSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
@@ -914,8 +923,10 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 function checkAllowedModulePath(moduleUrl: string, allowedPaths?: string[]): boolean {
 	if (moduleUrl.startsWith('file:')) {
 		let path = moduleUrl.slice(7);
-		try { path = realpathSync(path); } catch {}
-		if (!allowedPaths || allowedPaths.some(p => path.startsWith(p))) {
+		try {
+			path = realpathSync(path);
+		} catch {}
+		if (!allowedPaths || allowedPaths.some((p) => path.startsWith(p))) {
 			return;
 		}
 		throw new Error(`Can not load module outside of allowed paths`);
