@@ -14,7 +14,7 @@ import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type { CompartmentOptions } from 'ses';
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
@@ -495,13 +495,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		}
 
 		if (url.startsWith('file://') && usePrivateGlobal) {
-			checkAllowedModulePath(url, scope.verifyPath);
+			checkAllowedModulePath(url, scope.allowedPaths);
 			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
 			return createModuleFromSource(url, source, usePrivateGlobal);
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
-		const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
+		const replacedModule = checkAllowedModulePath(url, scope.allowedPaths);
 		if (replacedModule) {
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
 		}
@@ -570,7 +570,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedModulePath(moduleSpecifier, scope.verifyPath);
+					checkAllowedModulePath(moduleSpecifier, scope.allowedPaths);
 					const moduleExports = await import(moduleSpecifier);
 					return {
 						imports: [],
@@ -903,21 +903,22 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 
 /**
  * Validates whether a module can be loaded based on security restrictions and returns the module path or replacement.
- * For file URLs, ensures the module is within the containing folder.
+ * For file URLs, ensures the module is within the allowed paths.
  * For node built-in modules, checks against an allowlist and returns any replacements.
  *
  * @param {string} moduleUrl - The URL or identifier of the module to be loaded, which may be a file: URL, node: URL, or bare module specifier.
- * @param {string} containingFolder - The absolute path of the folder that contains the application, used to validate file: URLs are within bounds.
+ * @param {string[]} allowedPaths - Array of absolute paths that the module is allowed to load from.
  * @return {any} Returns undefined for allowed file paths, or a replacement module identifier for allowed node built-in modules.
- * @throws {Error} Throws an error if the module is outside the application folder or if the module is not in the allowed list.
+ * @throws {Error} Throws an error if the module is outside the allowed paths or if the module is not in the allowed list.
  */
-function checkAllowedModulePath(moduleUrl: string, containingFolder?: string): boolean {
+function checkAllowedModulePath(moduleUrl: string, allowedPaths?: string[]): boolean {
 	if (moduleUrl.startsWith('file:')) {
-		const path = moduleUrl.slice(7);
-		if (!containingFolder || path.startsWith(containingFolder)) {
+		let path = moduleUrl.slice(7);
+		try { path = realpathSync(path); } catch {}
+		if (!allowedPaths || allowedPaths.some(p => path.startsWith(p))) {
 			return;
 		}
-		throw new Error(`Can not load module outside of application folder ${containingFolder}`);
+		throw new Error(`Can not load module outside of allowed paths`);
 	}
 	let simpleName = moduleUrl.startsWith('node:') ? moduleUrl.slice(5) : moduleUrl;
 	simpleName = simpleName.split('/')[0];

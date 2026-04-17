@@ -21,10 +21,10 @@ export class ApplicationScope {
 	server: Server;
 	mode?: 'native' | 'vm' | 'vm-current-context' | 'compartment'; // option to set this from the scope
 	dependencyLoader?: 'native' | 'app' | 'auto'; // option to set this from the scope
-	verifyPath?: string;
+	allowedPaths?: string[];
 	config: any;
 	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
-	constructor(name: string, resources: Resources, server: Server, isInternal = false, verifyPath?: string) {
+	constructor(name: string, resources: Resources, server: Server, isInternal = false) {
 		this.logger = forComponent(name, !isInternal);
 
 		this.resources = resources;
@@ -32,7 +32,6 @@ export class ApplicationScope {
 
 		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm';
 		this.dependencyLoader = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYLOADER);
-		this.verifyPath = verifyPath;
 	}
 
 	/**
