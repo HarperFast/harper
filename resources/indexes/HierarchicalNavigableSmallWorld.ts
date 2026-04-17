@@ -131,7 +131,7 @@ export class HierarchicalNavigableSmallWorld {
 			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
 			if (level > currentLevel) {
-				// if we are at a higher, make this the new entry point
+				// if we are at a higher level, make this the new entry point
 				if (typeof nodeId !== 'number') {
 					throw new Error('Invalid nodeId: ' + nodeId);
 				}
