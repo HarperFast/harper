@@ -105,6 +105,9 @@ export let externalLogger: any = {
 	forComponent(name: string) {
 		return externalLogger.forComponent(name);
 	},
+	status(options) {
+		return externalLogger.status(options);
+	},
 };
 _assignPackageExport('logger', externalLogger);
 // default logger used for the global used by external components
@@ -193,6 +196,7 @@ function updateConditional(logger: any) {
 	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
+	conditional.status = logger.status.bind(logger);
 }
 /**
  * Resolve a config path value against rootPath if it is relative.
@@ -420,6 +424,9 @@ class HarperLogger extends Console {
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
 	}
+	status(options) {
+		return statusLogger(options, this);
+	}
 	forComponent(_name) {
 		// to be replaced
 		return this;
@@ -470,6 +477,8 @@ module.exports = {
 	externalLogger,
 	conditional: mainLogger.conditional,
 	updateLogger,
+	setStatusHandler,
+	status: (options) => statusLogger(options, mainLogger),
 };
 
 // Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
@@ -708,6 +717,23 @@ function stdioLogging() {
 	installStdioGuard(process.stderr);
 }
 
+let statusHandler: any;
+export function setStatusHandler(handler: any) {
+	statusHandler = handler;
+}
+function statusLogger(options: any, logger: any) {
+	const wrapper: any = {};
+	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
+		wrapper[level] = function (...args: any[]) {
+			logger[level](...args);
+			if (statusHandler) {
+				statusHandler(options, level, logger.tag || currentTag, args);
+			}
+		};
+	}
+	return wrapper;
+}
+
 export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) {
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
 	const methods = {
@@ -719,10 +745,7 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) 
 		debug: logWithTag('debug'),
 		trace: logWithTag('trace'),
 	};
-	if (!conditional) {
-		return methods;
-	}
-	return {
+	const taggedLogger = !conditional ? methods : {
 		get notify() {
 			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
 		},
@@ -745,6 +768,8 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) 
 			return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
 		},
 	};
+	Object.defineProperty(taggedLogger, 'status', { value(options) { return statusLogger(options, taggedLogger); } });
+	return taggedLogger;
 	function logWithTag(level) {
 		return function (...args) {
 			const targetLogger = logger ?? mainLogger;

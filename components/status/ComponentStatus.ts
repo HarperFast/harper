@@ -5,7 +5,7 @@
  * component's status with methods for status management.
  */
 
-import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS } from './types.ts';
+import { type ComponentStatusLevel, type ComponentStatusSource, COMPONENT_STATUS_LEVELS } from './types.ts';
 
 /**
  * Component status information class
@@ -19,12 +19,23 @@ export class ComponentStatus {
 	public message?: string;
 	/** Error information if status is 'error' */
 	public error?: Error | string;
+	/** How the status was set */
+	public source?: ComponentStatusSource;
+	/** Epoch ms when this status should auto-clear */
+	public expiresAt?: number;
+	/** Number of times this status has been reported */
+	public occurrenceCount: number;
+	/** When this status was first reported */
+	public firstOccurrence: Date;
 
-	constructor(status: ComponentStatusLevel, message?: string, error?: Error | string) {
+	constructor(status: ComponentStatusLevel, message?: string, error?: Error | string, source?: ComponentStatusSource) {
 		this.lastChecked = new Date();
 		this.status = status;
 		this.message = message;
 		this.error = error;
+		this.source = source;
+		this.occurrenceCount = 1;
+		this.firstOccurrence = this.lastChecked;
 	}
 
 	/**
