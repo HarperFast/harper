@@ -7,24 +7,18 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
 
 suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
-		const response = await fetch(ctx.harper.operationsAPIURL, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				operation: 'deploy_component',
-				project: 'harper-ecommerce-template',
-				package: 'https://github.com/HarperFast/harper-ecommerce-template',
-				restart: true,
-			}),
+		const body = await sendOperation(ctx.harper, {
+			operation: 'deploy_component',
+			project: 'harper-ecommerce-template',
+			package: 'https://github.com/HarperFast/harper-ecommerce-template',
+			restart: true,
 		});
-		const body = await response.json();
-		strictEqual(response.status, 200, `deploy_component failed: ${JSON.stringify(body)}`);
 		deepStrictEqual(body, { message: 'Successfully deployed: harper-ecommerce-template, restarting Harper' });
 
 		const deadline = Date.now() + 60_000;
