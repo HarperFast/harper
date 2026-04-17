@@ -18,6 +18,8 @@ export const COMPONENT_STATUS_LEVELS = {
 
 export type ComponentStatusLevel = (typeof COMPONENT_STATUS_LEVELS)[keyof typeof COMPONENT_STATUS_LEVELS];
 
+export type ComponentStatusSource = 'log' | 'explicit' | 'health-check';
+
 /**
  * Component status information as a plain object
  */
@@ -32,6 +34,10 @@ export interface ComponentStatusSummary {
 	error?: Error | string;
 	/** Worker index for cross-thread tracking */
 	workerIndex?: number;
+	/** How the status was set */
+	source?: ComponentStatusSource;
+	/** Number of times this status has been reported */
+	occurrenceCount?: number;
 }
 
 /**
@@ -69,6 +75,10 @@ export interface AggregatedComponentStatus {
 	latestMessage?: string;
 	/** Any error from any thread */
 	error?: Error | string;
+	/** How the status was set */
+	source?: ComponentStatusSource;
+	/** Number of times this status has been reported (across all threads) */
+	occurrenceCount?: number;
 }
 
 /**

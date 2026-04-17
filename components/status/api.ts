@@ -7,7 +7,7 @@
 
 import { componentStatusRegistry } from './registry.ts';
 import { ComponentStatus } from './ComponentStatus.ts';
-import { COMPONENT_STATUS_LEVELS } from './types.ts';
+import { COMPONENT_STATUS_LEVELS, type ComponentStatusSource } from './types.ts';
 
 /**
  * Component Status Builder
@@ -15,9 +15,11 @@ import { COMPONENT_STATUS_LEVELS } from './types.ts';
  */
 export class ComponentStatusBuilder {
 	private componentName: string;
+	private source: ComponentStatusSource;
 
-	constructor(componentName: string) {
+	constructor(componentName: string, source: ComponentStatusSource = 'explicit') {
 		this.componentName = componentName;
+		this.source = source;
 	}
 
 	/**
@@ -26,7 +28,7 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	healthy(message?: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.HEALTHY, message);
+		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.HEALTHY, message, undefined, this.source);
 		return this;
 	}
 
@@ -36,7 +38,7 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	warning(message: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.WARNING, message);
+		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.WARNING, message, undefined, this.source);
 		return this;
 	}
 
@@ -47,7 +49,7 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	error(message: string, error?: Error): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error);
+		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error, this.source);
 		return this;
 	}
 
@@ -57,7 +59,7 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	loading(message?: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.LOADING, message || 'Loading...');
+		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.LOADING, message || 'Loading...', undefined, this.source);
 		return this;
 	}
 
@@ -67,7 +69,7 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	unknown(message?: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.UNKNOWN, message);
+		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.UNKNOWN, message, undefined, this.source);
 		return this;
 	}
 

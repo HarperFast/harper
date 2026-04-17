@@ -8,6 +8,7 @@
 import { ComponentStatus } from './ComponentStatus.ts';
 import {
 	type ComponentStatusLevel,
+	type ComponentStatusSource,
 	COMPONENT_STATUS_LEVELS,
 	type AggregatedComponentStatus,
 	type ComponentApplicationStatus,
@@ -43,7 +44,8 @@ export class ComponentStatusRegistry {
 		componentName: string,
 		status: ComponentStatusLevel,
 		message?: string,
-		error?: Error | string
+		error?: Error | string,
+		source?: ComponentStatusSource
 	): void {
 		if (!componentName || typeof componentName !== 'string') {
 			throw new ComponentStatusOperationError(
@@ -61,7 +63,16 @@ export class ComponentStatusRegistry {
 			);
 		}
 
-		this.statusMap.set(componentName, new ComponentStatus(status, message, error));
+		const existing = this.statusMap.get(componentName);
+		if (existing && existing.status === status) {
+			existing.lastChecked = new Date();
+			existing.message = message;
+			if (error !== undefined) existing.error = error;
+			if (source !== undefined) existing.source = source;
+			existing.occurrenceCount++;
+		} else {
+			this.statusMap.set(componentName, new ComponentStatus(status, message, error, source));
+		}
 	}
 
 	/**
