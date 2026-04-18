@@ -172,14 +172,24 @@ export async function extractApplication(application: Application) {
 				}
 			}
 		} else {
-			// Given a package, resolve using `npm pack` (downloads the package as a tarball and writes the path to stdout)
-			const {
-				stdout: tarballFilePath,
-				code,
-				stderr,
-			} = await nonInteractiveSpawn(application.name, 'npm', ['pack', application.packageIdentifier], parentDirPath);
-			if (code !== 0) throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
-			tarballPath = join(parentDirPath, tarballFilePath.trim());
+			// `npm pack --json` writes a JSON array describing the packed tarball(s).
+			const { stdout, code, stderr } = await nonInteractiveSpawn(
+				application.name,
+				'npm',
+				['pack', '--json', application.packageIdentifier],
+				parentDirPath
+			);
+			if (code !== 0) {
+				throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+			}
+
+			const jsonStart = stdout.indexOf('[');
+			if (jsonStart === -1) {
+				throw new Error(`npm pack produced no JSON output for ${application.packageIdentifier}:\n${stdout}`);
+			}
+
+			const [{ filename }] = JSON.parse(stdout.slice(jsonStart)) as [{ filename: string }];
+			tarballPath = join(parentDirPath, filename);
 			// Create a Readable from the tarball
 			tarball = createReadStream(tarballPath);
 		}
