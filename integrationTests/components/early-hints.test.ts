@@ -31,7 +31,9 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 				const check = await fetch(`${ctx.harper.httpURL}/site-images/`);
 				if (check.status === 200) {
 					const data = await check.json();
-					console.log(`[poll] status=200 isArray=${Array.isArray(data)} length=${Array.isArray(data) ? data.length : 'n/a'}`);
+					console.log(
+						`[poll] status=200 isArray=${Array.isArray(data)} length=${Array.isArray(data) ? data.length : 'n/a'}`
+					);
 					if (Array.isArray(data) && data.length >= 3) break;
 				}
 			} catch {
@@ -211,8 +213,10 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	});
 
 	test('response stays within 1024 char limit', async () => {
-		const longHints = Array.from({ length: 8 }, (_, i) =>
-			`https://cdn.example.com/image-with-a-really-long-name-that-keeps-going-${String(i).padStart(4, '0')}.png`
+		const longHints = Array.from(
+			{ length: 8 },
+			(_, i) =>
+				`https://cdn.example.com/image-with-a-really-long-name-that-keeps-going-${String(i).padStart(4, '0')}.png`
 		);
 
 		await fetch(`${ctx.harper.httpURL}/site-images/`, {
