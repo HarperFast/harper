@@ -908,7 +908,6 @@ describe('Querying through Resource API', () => {
 		});
 		it('Query data in a table with and sort on createdAt', async function () {
 			let results = [];
-			let start_count = QueryTable.primaryStore.readCount;
 			for await (let record of QueryTable.search({
 				conditions: [{ attribute: 'relatedId', value: 3 }],
 				sort: { attribute: 'createdAt', descending: true },
