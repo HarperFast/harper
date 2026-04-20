@@ -188,9 +188,12 @@ export async function extractApplication(application: Application) {
 				throw new Error(`npm pack produced no JSON output for ${application.packageIdentifier}:\n${stdout}`);
 			}
 
-			const [{ filename }] = JSON.parse(stdout.slice(jsonStart)) as [{ filename: string }];
-			tarballPath = join(parentDirPath, filename);
-			// Create a Readable from the tarball
+			const packResult = JSON.parse(stdout.slice(jsonStart));
+			if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+				throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+			}
+
+			tarballPath = join(parentDirPath, packResult[0].filename);
 			tarball = createReadStream(tarballPath);
 		}
 	}
