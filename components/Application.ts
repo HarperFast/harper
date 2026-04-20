@@ -183,12 +183,12 @@ export async function extractApplication(application: Application) {
 				throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
 			}
 
-			const jsonStart = stdout.indexOf('[');
-			if (jsonStart === -1) {
-				throw new Error(`npm pack produced no JSON output for ${application.packageIdentifier}:\n${stdout}`);
+			let packResult: Array<{ filename: string }>;
+			try {
+				packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+			} catch (err) {
+				throw new Error(`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`);
 			}
-
-			const packResult = JSON.parse(stdout.slice(jsonStart));
 			if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
 				throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
 			}
