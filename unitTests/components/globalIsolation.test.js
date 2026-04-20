@@ -46,7 +46,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -77,7 +77,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm-current-context',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -97,7 +97,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'app',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -120,7 +120,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'compartment',
 			dependencyLoader: 'app',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -149,7 +149,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -169,7 +169,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -192,7 +192,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -221,7 +221,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -245,7 +245,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
@@ -263,7 +263,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 
 		const cjsModuleA = await scopedImport(path.join(componentDir, 'cjs-circular-a.cjs'), applicationScope);
@@ -280,7 +280,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native', // Default to native loading
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 
 		// harper-dependent-package has harper in its dependencies, so should use VM
@@ -299,7 +299,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native', // Default to native loading
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 
 		// fake-package doesn't depend on harper, should load natively (not through VM)
@@ -318,7 +318,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 		Object.assign(applicationScope, {
 			mode: 'vm',
 			dependencyLoader: 'native',
-			verifyPath: PACKAGE_ROOT,
+			allowedPath: PACKAGE_ROOT,
 		});
 		await loadComponent(componentDir, mockResources, 'test-origin', {
 			applicationScope,
