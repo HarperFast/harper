@@ -187,7 +187,9 @@ export async function extractApplication(application: Application) {
 			try {
 				packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
 			} catch (err) {
-				throw new Error(`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`);
+				throw new Error(
+					`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+				);
 			}
 			if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
 				throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
