@@ -14,7 +14,16 @@ import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type { CompartmentOptions } from 'ses';
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
+import {
+	mkdirSync,
+	readFileSync,
+	writeFileSync,
+	unlinkSync,
+	openSync,
+	closeSync,
+	statSync,
+	realpathSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
@@ -495,13 +504,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		}
 
 		if (url.startsWith('file://') && usePrivateGlobal) {
-			checkAllowedModulePath(url, scope.verifyPath);
+			checkAllowedModulePath(url, scope.allowedPath);
 			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
 			return createModuleFromSource(url, source, usePrivateGlobal);
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
-		const replacedModule = checkAllowedModulePath(url, scope.verifyPath);
+		const replacedModule = checkAllowedModulePath(url, scope.allowedPath);
 		if (replacedModule) {
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
 		}
@@ -570,7 +579,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedModulePath(moduleSpecifier, scope.verifyPath);
+					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
 					const moduleExports = await import(moduleSpecifier);
 					return {
 						imports: [],
@@ -761,23 +770,54 @@ function isProcessRunning(pid: number): boolean {
  * Acquires an exclusive lock using the PID file itself (synchronously with busy-wait)
  * Returns 0 if lock was acquired (need to spawn new process), or the existing PID if process is running
  */
-function acquirePidFileLock(pidFilePath: string, maxRetries = 100, retryDelay = 5): number {
+function parsePidFile(content: string): { pid: number; version: number } {
+	const lines = content.trim().split('\n');
+	const pid = Number.parseInt(lines[0], 10);
+	const version = lines.length > 1 ? parseInt(lines[1], 10) : 0;
+	return { pid, version };
+}
+
+function acquirePidFileLock(
+	pidFilePath: string,
+	requestedVersion?: number,
+	maxRetries = 100,
+	retryDelay = 5
+): { pid: number; version: number } {
 	for (let attempt = 0; attempt < maxRetries; attempt++) {
 		try {
 			// Try to open exclusively - 'wx' fails if file exists
 			const fd = openSync(pidFilePath, 'wx');
 			closeSync(fd);
-			return 0; // Successfully acquired lock (file created), caller should spawn process
+			return { pid: 0, version: 0 }; // Successfully acquired lock (file created), caller should spawn process
 		} catch (err) {
 			if (err.code === 'EEXIST') {
 				// File exists - check if it contains a valid running process
 				try {
 					const pidContent = readFileSync(pidFilePath, 'utf-8');
-					const existingPid = parseInt(pidContent.trim(), 10);
+					const { pid: existingPid, version: existingVersion } = parsePidFile(pidContent);
 
 					if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
-						// Valid process is running, return its PID immediately
-						return existingPid;
+						// If the version isn't the one we want, kill the existing process and re-acquire
+						if (requestedVersion != null && requestedVersion !== existingVersion) {
+							try {
+								process.kill(existingPid);
+							} catch {
+								// Process may have already exited
+							}
+							try {
+								unlinkSync(pidFilePath);
+							} catch {
+								// Another thread may have removed it
+							}
+							// Retry to acquire the lock for the new version
+							const start = Date.now();
+							while (Date.now() - start < retryDelay) {
+								// Busy wait for process cleanup
+							}
+							continue;
+						}
+						// Valid process is running at same or higher version, return its PID
+						return { pid: existingPid, version: existingVersion };
 					}
 
 					// Invalid/empty PID - check file age to determine if it's stale or being written
@@ -824,6 +864,7 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 			throw new Error(
 				`Calling ${spawnFunction.name} in Harper must have a process "name" in the options to ensure that a single process is started and reused`
 			);
+		const requestedVersion = options?.version;
 
 		// Ensure PID directory exists
 		const pidDir = join(basePath, 'pids');
@@ -831,20 +872,22 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
 
-		// Try to acquire lock - returns 0 if acquired, or existing PID
-		const existingPid = acquirePidFileLock(pidFilePath);
+		// Try to acquire lock - returns pid: 0 if acquired, or existing PID/version
+		const existing = acquirePidFileLock(pidFilePath, requestedVersion);
 
-		if (existingPid !== 0) {
+		if (existing.pid !== 0) {
 			// Existing process is running, return wrapper
-			return new ExistingProcessWrapper(existingPid);
+			return new ExistingProcessWrapper(existing.pid);
 		}
 
 		// We acquired the lock (file was created), spawn new process
 		const childProcess = spawnFunction(command, args, options, callback);
 
-		// Write PID to the file we just created
+		// Write PID (and version if provided) to the file we just created
+		const pidFileContent =
+			requestedVersion != null ? `${childProcess.pid}\n${requestedVersion}` : childProcess.pid.toString();
 		try {
-			writeFileSync(pidFilePath, childProcess.pid.toString(), 'utf-8');
+			writeFileSync(pidFilePath, pidFileContent, 'utf-8');
 		} catch (err) {
 			// Failed to write PID, clean up
 			try {
@@ -869,21 +912,24 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 
 /**
  * Validates whether a module can be loaded based on security restrictions and returns the module path or replacement.
- * For file URLs, ensures the module is within the containing folder.
+ * For file URLs, ensures the module is within the allowed path.
  * For node built-in modules, checks against an allowlist and returns any replacements.
  *
  * @param {string} moduleUrl - The URL or identifier of the module to be loaded, which may be a file: URL, node: URL, or bare module specifier.
- * @param {string} containingFolder - The absolute path of the folder that contains the application, used to validate file: URLs are within bounds.
+ * @param {string} allowedPath - The absolute path that the module is allowed to load from.
  * @return {any} Returns undefined for allowed file paths, or a replacement module identifier for allowed node built-in modules.
- * @throws {Error} Throws an error if the module is outside the application folder or if the module is not in the allowed list.
+ * @throws {Error} Throws an error if the module is outside the allowed path or if the module is not in the allowed list.
  */
-function checkAllowedModulePath(moduleUrl: string, containingFolder?: string): boolean {
+function checkAllowedModulePath(moduleUrl: string, allowedPath?: string): boolean {
 	if (moduleUrl.startsWith('file:')) {
-		const path = moduleUrl.slice(7);
-		if (!containingFolder || path.startsWith(containingFolder)) {
+		let path = moduleUrl.slice(7);
+		try {
+			path = realpathSync(path);
+		} catch {}
+		if (!allowedPath || path.startsWith(allowedPath)) {
 			return;
 		}
-		throw new Error(`Can not load module outside of application folder ${containingFolder}`);
+		throw new Error(`Can not load module outside of allowed path`);
 	}
 	let simpleName = moduleUrl.startsWith('node:') ? moduleUrl.slice(5) : moduleUrl;
 	simpleName = simpleName.split('/')[0];
