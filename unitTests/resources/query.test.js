@@ -54,6 +54,7 @@ describe('Querying through Resource API', () => {
 						{ name: 'name', type: 'String' },
 					],
 				},
+				{ name: 'createdAt', type: 'Date', assignCreatedTime: true },
 			],
 		});
 		QueryTable.setComputedAttribute('computed', (instance) => instance.name + ' computed');
@@ -148,6 +149,7 @@ describe('Querying through Resource API', () => {
 				notIndexed: 'not indexed ' + i,
 				nestedData: i > 0 ? { id: 'nested-' + i, name: 'nested name ' + i } : null,
 			});
+			await new Promise((resolve) => setTimeout(resolve, 1)); // leave one ms so createdAt is different
 		}
 		await last;
 		// rewrite one of them to ensure the prototype doesn't get messed up
@@ -901,6 +903,19 @@ describe('Querying through Resource API', () => {
 			}
 			assert.equal(results.length, 20);
 			assert(QueryTable.primaryStore.readCount - start_count < 25);
+			assert.equal(results[0].id, 'id-98');
+			assert.equal(results[1].id, 'id-93');
+		});
+		it('Query data in a table with and sort on createdAt', async function () {
+			let results = [];
+			let start_count = QueryTable.primaryStore.readCount;
+			for await (let record of QueryTable.search({
+				conditions: [{ attribute: 'relatedId', value: 3 }],
+				sort: { attribute: 'createdAt', descending: true },
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 20);
 			assert.equal(results[0].id, 'id-98');
 			assert.equal(results[1].id, 'id-93');
 		});
