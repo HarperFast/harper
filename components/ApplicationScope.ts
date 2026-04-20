@@ -21,7 +21,7 @@ export class ApplicationScope {
 	server: Server;
 	mode?: 'native' | 'vm' | 'vm-current-context' | 'compartment'; // option to set this from the scope
 	dependencyLoader?: 'native' | 'app' | 'auto'; // option to set this from the scope
-	allowedPaths?: string[];
+	allowedPath?: string;
 	config: any;
 	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
 	constructor(name: string, resources: Resources, server: Server, isInternal = false) {

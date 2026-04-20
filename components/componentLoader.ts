@@ -274,7 +274,7 @@ export async function loadComponent(
 		autoReload,
 		appName,
 	} = options;
-	applicationScope.allowedPaths ??= [realpathSync(componentDirectory), PACKAGE_ROOT];
+	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {
 		let config;
@@ -349,7 +349,7 @@ export async function loadComponent(
 						}
 					}
 					if (componentPath) {
-						subApplicationScope.allowedPaths ??= [realpathSync(componentPath), PACKAGE_ROOT];
+						subApplicationScope.allowedPath ??= realpathSync(componentPath);
 						if (!process.env.HARPER_SAFE_MODE) {
 							extensionModule = await loadComponent(componentPath, resources, origin, {
 								isRoot: false,

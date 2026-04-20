@@ -504,13 +504,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		}
 
 		if (url.startsWith('file://') && usePrivateGlobal) {
-			checkAllowedModulePath(url, scope.allowedPaths);
+			checkAllowedModulePath(url, scope.allowedPath);
 			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
 			return createModuleFromSource(url, source, usePrivateGlobal);
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
-		const replacedModule = checkAllowedModulePath(url, scope.allowedPaths);
+		const replacedModule = checkAllowedModulePath(url, scope.allowedPath);
 		if (replacedModule) {
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
 		}
@@ -579,7 +579,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					}
 					return new StaticModuleRecord(moduleText, moduleSpecifier);
 				} else {
-					checkAllowedModulePath(moduleSpecifier, scope.allowedPaths);
+					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
 					const moduleExports = await import(moduleSpecifier);
 					return {
 						imports: [],
@@ -912,24 +912,24 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 
 /**
  * Validates whether a module can be loaded based on security restrictions and returns the module path or replacement.
- * For file URLs, ensures the module is within the allowed paths.
+ * For file URLs, ensures the module is within the allowed path.
  * For node built-in modules, checks against an allowlist and returns any replacements.
  *
  * @param {string} moduleUrl - The URL or identifier of the module to be loaded, which may be a file: URL, node: URL, or bare module specifier.
- * @param {string[]} allowedPaths - Array of absolute paths that the module is allowed to load from.
+ * @param {string} allowedPath - The absolute path that the module is allowed to load from.
  * @return {any} Returns undefined for allowed file paths, or a replacement module identifier for allowed node built-in modules.
- * @throws {Error} Throws an error if the module is outside the allowed paths or if the module is not in the allowed list.
+ * @throws {Error} Throws an error if the module is outside the allowed path or if the module is not in the allowed list.
  */
-function checkAllowedModulePath(moduleUrl: string, allowedPaths?: string[]): boolean {
+function checkAllowedModulePath(moduleUrl: string, allowedPath?: string): boolean {
 	if (moduleUrl.startsWith('file:')) {
 		let path = moduleUrl.slice(7);
 		try {
 			path = realpathSync(path);
 		} catch {}
-		if (!allowedPaths || allowedPaths.some((p) => path.startsWith(p))) {
+		if (!allowedPath || path.startsWith(allowedPath)) {
 			return;
 		}
-		throw new Error(`Can not load module outside of allowed paths`);
+		throw new Error(`Can not load module outside of allowed path`);
 	}
 	let simpleName = moduleUrl.startsWith('node:') ? moduleUrl.slice(5) : moduleUrl;
 	simpleName = simpleName.split('/')[0];
