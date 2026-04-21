@@ -26,7 +26,6 @@ const { startHTTPThreads } = require('../server/threads/socketRouter.ts');
 const hdbInfoController = require('../dataLayer/hdbInfoController.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const { getHdbPid, isProcessRunning } = require('../utility/processManagement/processManagement.js');
-const { PACKAGE_ROOT } = require('../utility/packageUtils');
 
 let pmUtils;
 let cmdArgs;
@@ -78,7 +77,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	addUnhandleRejectionListener();
 
 	hdbLogger.suppressLogging?.(() => {
-		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
+		console.log(chalk.magenta(hdbTerms.ASCII_LOGO));
 	});
 	hdbLogger.debug('Checking to make sure hdb is installed');
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
