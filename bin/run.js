@@ -19,7 +19,7 @@ const installation = require('../utility/installation.ts');
 const configUtils = require('../config/configUtils.js');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables.js');
 const upgrade = require('./upgrade.js');
-const { compactOnStart } = require('./copyDb.ts');
+const { compactOnStart, migrateOnStart } = require('./copyDb.ts');
 const minimist = require('minimist');
 const keys = require('../security/keys.js');
 const { startHTTPThreads } = require('../server/threads/socketRouter.ts');
@@ -192,6 +192,7 @@ async function main(calledByInstall = false) {
 		await initialize(calledByInstall, true);
 
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
+		if (env.get(terms.CONFIG_PARAMS.STORAGE_MIGRATEONSTART)) await migrateOnStart();
 
 		const isScripted = process.env.IS_SCRIPTED_SERVICE && !cmdArgs.service;
 

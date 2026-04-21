@@ -2262,7 +2262,9 @@ export function makeTable(options) {
 						return (entryA, entryB) => {
 							const a = getAttributeValue(entryA, order.attribute, context);
 							const b = getAttributeValue(entryB, order.attribute, context);
-							const diff = descending ? compareKeys(b, a) : compareKeys(a, b);
+							const diff = descending
+								? compareKeys(convertToComparableKeys(b), convertToComparableKeys(a))
+								: compareKeys(convertToComparableKeys(a), convertToComparableKeys(b));
 							if (diff === 0) return nextComparator?.(entryA, entryB) || 0;
 							return diff;
 						};
@@ -4571,4 +4573,13 @@ function hasOtherProcesses(store) {
 			// if the pid from the reader list is different than ours, must be another process accessing the database
 			return +line.match(/\d+/)?.[0] != pid;
 		});
+}
+function convertToComparableKeys(a) {
+	if (a instanceof Date) {
+		return a.getTime();
+	}
+	if (Array.isArray(a)) {
+		return a.map(convertToComparableKeys);
+	}
+	return a;
 }
