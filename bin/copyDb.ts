@@ -419,7 +419,7 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
-		let retries = 10000000;
+		let retries = 1000000;
 		let start = null;
 		while (retries-- > 0) {
 			try {
