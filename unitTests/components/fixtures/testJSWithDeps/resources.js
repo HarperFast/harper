@@ -75,4 +75,20 @@ export const processSpawnTest = {
 
 		return { child1, child2 };
 	},
+	testVersionUpgrade(childProcessPath) {
+		// First call with version 1
+		const child1 = fork(childProcessPath, [], { name: 'test-version-process', version: 1 });
+		assert(child1.pid, 'First fork should return a process with a PID');
+
+		// Second call with same version should reuse
+		const child2 = fork(childProcessPath, [], { name: 'test-version-process', version: 1 });
+		assert.equal(child1.pid, child2.pid, 'Same version should reuse existing process');
+
+		// Third call with higher version should spawn new process
+		const child3 = fork(childProcessPath, [], { name: 'test-version-process', version: 2 });
+		assert(child3.pid, 'Higher version should return a process with a PID');
+		assert.notEqual(child1.pid, child3.pid, 'Higher version should spawn a new process');
+
+		return { child1, child3 };
+	},
 };
