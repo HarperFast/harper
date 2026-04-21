@@ -142,6 +142,59 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		);
 		assert.equal(results[0].id, 2);
 	});
+	it('produces different rankings under cosine, euclidean, and dot product metrics', async () => {
+	const records = [
+		{ id: 0, name: 'A', vector: [0.1, 0.1] },   // best cosine (direction match)
+		{ id: 1, name: 'B', vector: [1.2, 0.8] },   // best euclidean (closest in space)
+		{ id: 2, name: 'C', vector: [7.0, 8.0] },   // best dot product (max projection)
+	];
+
+	await HNSWTest.dropTable?.();
+
+	HNSWTest = table({
+		table: 'HNSWMetricTest',
+		database: 'test',
+		attributes: [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'name', indexed: true },
+			{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+		],
+	});
+
+	for (let r of records) {
+		await HNSWTest.put(r.id, r);
+	}
+
+	const target = [1, 1];
+
+	const cosine = await fromAsync(
+		HNSWTest.search({
+			sort: { attribute: 'vector', target, distance: 'cosine' },
+			select: ['id'],
+			limit: 1,
+		})
+	);
+
+	const euclidean = await fromAsync(
+		HNSWTest.search({
+			sort: { attribute: 'vector', target, distance: 'euclidean' },
+			select: ['id'],
+			limit: 1,
+		})
+	);
+
+	const dot = await fromAsync(
+		HNSWTest.search({
+			sort: { attribute: 'vector', target, distance: 'dotProduct' },
+			select: ['id'],
+			limit: 1,
+		})
+	);
+
+	assert.equal(cosine[0].id, 0);
+	assert.equal(euclidean[0].id, 1);
+	assert.equal(dot[0].id, 2);
+});
 	after(() => {
 		HNSWTest.dropTable();
 	});

@@ -52,7 +52,12 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
-		this.distance = options?.distance === 'euclidean' ? euclideanDistance : options?.distance === 'dotProduct' ? dotProductDistance : cosineDistance;
+		this.distance =
+			options?.distance === 'euclidean'
+				? euclideanDistance
+				: options?.distance === 'dotProduct'
+					? dotProductDistance
+					: cosineDistance;
 		if (options) {
 			// allow all the HNSW parameters to be configured/tuned
 			if (options.M !== undefined) {
@@ -622,7 +627,12 @@ export class HierarchicalNavigableSmallWorld {
 
 			let distanceFunction = this.distance;
 			if (sortDefinition.type)
-				distanceFunction = sortDefinition.distance === 'euclidean' ? euclideanDistance : sortDefinition.distance === 'dotProduct' ? dotProductDistance : cosineDistance;
+				distanceFunction =
+					sortDefinition.distance === 'euclidean'
+						? euclideanDistance
+						: sortDefinition.distance === 'dotProduct'
+							? dotProductDistance
+							: cosineDistance;
 			const distance = distanceFunction(sortDefinition.target, vector);
 			vectorDistances.set(entry, distance);
 			return distance;
