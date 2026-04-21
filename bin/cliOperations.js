@@ -63,7 +63,7 @@ function buildRequest() {
  */
 async function cliOperations(req) {
 	if (!req.target) {
-		req.target = process.env.CLI_TARGET;
+		req.target = process.env.CLI_TARGET || process.env.HARPER_CLI_TARGET;
 	}
 	let target;
 	if (req.target) {
@@ -73,15 +73,15 @@ async function cliOperations(req) {
 			try {
 				target = new URL(`https://${req.target}:9925`);
 			} catch {
-				throw error; // throw the original error
+				throw error;
 			}
 		}
 		target = {
 			protocol: target.protocol,
 			hostname: target.hostname,
 			port: target.port,
-			username: req.username || target.username || process.env.CLI_TARGET_USERNAME,
-			password: req.password || target.password || process.env.CLI_TARGET_PASSWORD,
+			username: req.username || target.username || process.env.CLI_TARGET_USERNAME || process.env.HARPER_CLI_USERNAME,
+			password: req.password || target.password || process.env.CLI_TARGET_PASSWORD || process.env.HARPER_CLI_PASSWORD,
 			rejectUnauthorized: req.rejectUnauthorized,
 		};
 	} else {
