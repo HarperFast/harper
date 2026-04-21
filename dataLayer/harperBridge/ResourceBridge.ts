@@ -1,7 +1,6 @@
-import LMDBBridge from './lmdbBridge/LMDBBridge.js';
 import searchValidator from '../../validation/searchValidator.js';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.js';
-import { table, getDatabases, database, dropDatabase } from '../../resources/databases.ts';
+import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.js';
 import {
@@ -14,9 +13,22 @@ import * as signalling from '../../utility/signalling.js';
 import { SchemaEventMsg } from '../../server/threads/itc.js';
 import { asyncSetTimeout } from '../../utility/common_utils.js';
 import { transaction } from '../../resources/transaction.ts';
-import type { Condition, Query, Context, Select, Id, DirectCondition } from '../../resources/ResourceInterface.ts';
+import type {
+	Condition,
+	Query,
+	Context,
+	Select,
+	Id,
+	DirectCondition,
+	Operator,
+} from '../../resources/ResourceInterface.ts';
 import { collapseData } from '../../resources/tracked.ts';
 import { errorToString } from '../../utility/logging/harper_logger.js';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
+import BridgeMethods from './BridgeMethods.js';
+import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
+import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
+import type { Readable } from 'node:stream';
 
 const { HDB_ERROR_MSGS } = hdbErrors;
 const DEFAULT_DATABASE = 'data';
@@ -30,13 +42,15 @@ export type SearchByConditionsRequest = Query &
 		table: string;
 		get_attributes: Select;
 		reverse?: boolean;
+		operator?: Operator;
 	};
 
 /**
- * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
- * implemented
+ * Bridge between the operations/REST/SQL API layer and the underlying resource layer.
+ * Handles search (by conditions, hash, or value), schema/table/attribute CRUD, record
+ * create/update/upsert/delete, audit log read/purge, and backup operations.
  */
-export class ResourceBridge extends LMDBBridge {
+export class ResourceBridge extends BridgeMethods {
 	async searchByConditions(searchObject: SearchByConditionsRequest) {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 
@@ -266,7 +280,8 @@ export class ResourceBridge extends LMDBBridge {
 		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
 		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
-			const ids: Id[] = deleteObj.hash_values || deleteObj.records.map((record) => record[Table.primaryKey]);
+			const ids: Id[] =
+				deleteObj.ids || deleteObj.hash_values || deleteObj.records.map((record) => record[Table.primaryKey]);
 			const deleted = [];
 			const skipped = [];
 			for (const id of ids) {
@@ -315,7 +330,7 @@ export class ResourceBridge extends LMDBBridge {
 			const deleteRes = await this.deleteRecords({
 				schema: deleteObj.schema,
 				table: deleteObj.table,
-				hash_values: ids,
+				ids,
 			});
 			deletedIds.push(...deleteRes.deleted_hashes);
 			skippedIds.push(...deleteRes.skipped_hashes);
@@ -432,16 +447,13 @@ export class ResourceBridge extends LMDBBridge {
 		);
 	}
 
-	async getDataByValue(searchObject: SearchObject, comparator) {
+	async getDataByValue(searchObject: SearchObject, comparator?: string) {
 		const map = new Map();
 		const table = getTable(searchObject);
-		if (
-			searchObject.get_attributes &&
-			!searchObject.get_attributes.includes(table.primaryKey) &&
-			searchObject.get_attributes[0] !== '*'
-		)
+		const attrs = searchObject.get_attributes as Select | undefined;
+		if (attrs && !attrs.includes(table.primaryKey) && attrs[0] !== '*')
 			// ensure that we get the primary key so we can make a mapping
-			searchObject.get_attributes.push(table.primaryKey);
+			attrs.push(table.primaryKey);
 		for await (const record of this.searchByValue(searchObject, comparator)) {
 			map.set(record[table.primaryKey], record);
 		}
@@ -452,9 +464,46 @@ export class ResourceBridge extends LMDBBridge {
 		getTable({ schema, table })?.primaryStore.resetReadTxn?.();
 	}
 
-	async deleteAuditLogsBefore(deleteObj) {
+	/**
+	 * Deletes transaction logs before a given timestamp.
+	 * @param deleteObj The request body
+	 * @returns
+	 */
+	async deleteTransactionLogsBefore(deleteObj: {
+		schema?: string; // deprecated in favor of `database`
+		database?: string;
+		table?: string; // lmdb only
+		timestamp: Date | number | string;
+		cleanup_deleted_records?: boolean; // lmdb only
+	}): Promise<DeleteTransactionLogsBeforeResults> {
+		let totalResults = new DeleteTransactionLogsBeforeResults();
+		const before =
+			deleteObj.timestamp instanceof Date
+				? deleteObj.timestamp.getTime()
+				: typeof deleteObj.timestamp === 'string'
+					? Number.parseInt(deleteObj.timestamp)
+					: deleteObj.timestamp;
 		const table = getTable(deleteObj);
-		return table.deleteHistory(deleteObj.timestamp, deleteObj.cleanup_deleted_records);
+		if (!table) {
+			// no table, check if any of the tables are RocksDB
+			// since all tables share the same transaction log store, we break after the first
+			// RocksDB table is found
+			const tables = getDatabases()[deleteObj.database];
+			if (tables) {
+				for (const table of Object.values(tables)) {
+					if (table.primaryStore instanceof RocksDatabase) {
+						const deleted = table.primaryStore.purgeLogs({ before });
+						totalResults.log_files_deleted += deleted.length;
+						break;
+					}
+				}
+			}
+		} else if (table.primaryStore instanceof RocksDatabase) {
+			totalResults.log_files_deleted += table.primaryStore.purgeLogs({ before }).length;
+		} else {
+			await table.deleteHistory(before, deleteObj.cleanup_deleted_records);
+		}
+		return totalResults;
 	}
 
 	async readAuditLog(readAuditLogObj) {
@@ -471,7 +520,7 @@ export class ResourceBridge extends LMDBBridge {
 							operation,
 							timestamp: auditRecord.version,
 							user_name: auditRecord.user,
-							hash_values: [id],
+							ids: [id],
 							records: [auditRecord.value],
 						};
 					});
@@ -491,11 +540,20 @@ export class ResourceBridge extends LMDBBridge {
 			default:
 				return groupRecordsInHistory(
 					table,
-					readAuditLogObj.search_values?.[0],
-					readAuditLogObj.search_values?.[1],
+					readAuditLogObj.search_values?.[0], // start timestamp
+					readAuditLogObj.search_values?.[1], // end timestamp
 					readAuditLogObj.limit
 				);
 		}
+	}
+
+	async getBackup(getBackupObj: {
+		database?: string;
+		schema?: string;
+		table?: string;
+		tables?: string[];
+	}): Promise<Readable> {
+		return lmdbGetBackup(getBackupObj);
 	}
 }
 
@@ -576,12 +634,19 @@ function getRecords(searchObject, returnKeyValue?) {
 		},
 	};
 }
-function getTable(operationObject) {
+
+/**
+ * Gets the table object for the given database and table names.
+ * @param operationObject The operation object containing the database and table names
+ * @returns The table object or undefined if the table is not found
+ */
+function getTable(operationObject: { database?: string; schema?: string; table?: string }): Table | undefined {
 	const databaseName = operationObject.database || operationObject.schema || DEFAULT_DATABASE;
 	const tables = getDatabases()[databaseName];
 	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(databaseName), 404);
-	return tables[operationObject.table];
+	return operationObject.table ? tables[operationObject.table] : undefined;
 }
+
 /**
  * creates the response object for deletes based on the deleted & skipped hashes
  * @param {[]} deleted - list of hash values successfully deleted
@@ -609,7 +674,7 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 		if (operation === 'put') operation = 'upsert';
 		const { id, version: timestamp, value } = entry;
 		if (enqueued?.timestamp === timestamp) {
-			enqueued.hash_values.push(id);
+			enqueued.ids.push(id);
 			enqueued.records.push(value);
 		} else {
 			if (enqueued) {
@@ -624,7 +689,7 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 				operation,
 				user_name: entry.user,
 				timestamp,
-				hash_values: [id],
+				ids: [id],
 				records: [value],
 			};
 		}

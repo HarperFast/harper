@@ -145,7 +145,13 @@ export function openAuditStore(rootStore) {
 		}
 	});
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
-		if (auditStore instanceof RocksTransactionLogStore) return; // transaction logs are simply deleted with rocksdb
+		if (auditStore instanceof RocksTransactionLogStore) {
+			auditStore.rootStore.purgeLogs({
+				before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
+			});
+			return;
+		}
+
 		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
 		clearTimeout(pendingCleanup);
 		const resolution = new Promise<void>((resolve) => {

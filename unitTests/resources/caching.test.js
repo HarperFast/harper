@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('assert');
+const { setTimeout: delay } = require('timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
@@ -23,7 +24,12 @@ describe('Caching', () => {
 		CachingTable = table({
 			table: 'CachingTable',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'createdAt', type: 'Date', assignCreatedTime: true },
+				{ name: 'updatedAt', type: 'Date', assignUpdatedTime: true },
+			],
 		});
 		IndexedCachingTable = table({
 			table: 'IndexedCachingTable',
@@ -93,13 +99,16 @@ describe('Caching', () => {
 	it('Can load cached data', async function () {
 		sourceRequests = 0;
 		events = [];
+		const start = new Date();
 		CachingTable.setTTLExpiration(0.01);
 		await CachingTable.invalidate(23);
 		let result = await CachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
+		assert(result.createdAt >= start);
+		assert(result.updatedAt >= start);
 		assert.equal(sourceRequests, 1);
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		await delay(5);
 		let target23 = new RequestTarget();
 		target23.id = 23;
 		result = await CachingTable.get(target23);
@@ -107,7 +116,7 @@ describe('Caching', () => {
 		assert.equal(result.id, 23);
 		assert.equal(sourceRequests, 1);
 		// let it expire
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await delay(10);
 		result = await CachingTable.get(target23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
@@ -116,6 +125,8 @@ describe('Caching', () => {
 		//assert.equal(events.length, 0);
 		await CachingTable.put(23, { name: 'expires in past' }, { expiresAt: 0 });
 		result = await CachingTable.get(target23);
+		assert(result.createdAt >= start);
+		assert(result.updatedAt >= start);
 		assert.equal(sourceRequests, 3);
 		assert.equal(target23.loadedFromSource, true);
 	});
@@ -316,7 +327,7 @@ describe('Caching', () => {
 		assert.equal(result.id, 23);
 		sourceRequests = 0;
 		// let it expire
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await delay(10);
 		result = await IndexedCachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
@@ -324,7 +335,14 @@ describe('Caching', () => {
 		assert.equal(events.length, 0);
 		result = await IndexedCachingTable.get(23);
 		// TODO: This should always be there, per https://github.com/HarperFast/harper/issues/239
+		await delay(10); // give the lock a chance to be released
 		//assert(result.getExpiresAt());
+		result = IndexedCachingTable.primaryStore.getEntry(23);
+		await IndexedCachingTable.evict(23, result, result.version);
+		await delay(10);
+		// evict should completely eliminate the record
+		result = IndexedCachingTable.primaryStore.getSync(23); // verify that the record is evicted
+		assert.strictEqual(result, undefined);
 	});
 
 	it('Bigger stampede is handled', async function () {

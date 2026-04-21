@@ -3,22 +3,30 @@ import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
 import type { Resources } from '../resources/Resources.ts';
 import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
+import { Duplex } from 'stream';
+import { Request } from './serverHelpers/Request.ts';
 
+export type HttpListener = (request: Request, nextLayer: (request: Request) => Response) => void;
+// based on `upgrade` event in Node.js http server: https://nodejs.org/docs/latest/api/http.html#event-upgrade-1
+export type UpgradeListener = (
+	request: Request,
+	socket: Duplex,
+	head: Buffer,
+	nextLayer: (request: Request, socket: Duplex, head: Buffer) => Promise<void>
+) => Promise<void>;
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
  * incoming connections and requests.
  */
 export interface Server {
 	socket?(listener: (socket: Socket) => void, options: ServerOptions): void;
-	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: HttpOptions): void;
-	request?(
-		listener: (request: Request, nextLayer: (request: Request) => Response) => void,
-		options?: HttpOptions
-	): void;
+	http?(listener: HttpListener, options?: HttpOptions): void;
+	request?(listener: HttpListener, options?: HttpOptions): void;
 	ws?(
 		listener: (ws: WebSocket, request: Request, requestCompletion: Promise<any>) => any,
 		options?: WebSocketOptions
 	): void;
+	upgrade?(listener: UpgradeListener, options?: UpgradeOptions): void;
 	contentTypes: Map<string, ContentTypeHandler>;
 	getUser(username: string, password: string | null, request: Request): any;
 	authenticateUser(username: string, password: string, request: Request): any;
@@ -55,6 +63,12 @@ export interface ServerOptions {
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;
 }
+export interface UpgradeOptions {
+	port?: number;
+	securePort?: number;
+	runFirst?: boolean;
+}
+
 export interface HttpOptions extends ServerOptions {
 	runFirst?: boolean;
 }

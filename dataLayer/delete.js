@@ -13,6 +13,7 @@ const harperBridge = require('./harperBridge/harperBridge.js');
 const { DeleteResponseObject } = require('./DataLayerObjects.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+const DeleteAuditLogsBeforeResults = require('./harperBridge/lmdbBridge/lmdbMethods/DeleteAuditLogsBeforeResults.js');
 
 const SUCCESS_MESSAGE = 'records successfully deleted';
 
@@ -77,6 +78,8 @@ async function deleteFilesBefore(deleteObj) {
  * Deletes audit logs which are older than a specific date
  *
  * @param {DeleteBeforeObject} deleteObj - the request passed from chooseOperation.
+ *
+ * @deprecated This has been deprecated in favor of deleteTransactionLogsBefore.
  */
 async function deleteAuditLogsBefore(deleteObj) {
 	let validation = bulkDeleteValidator(deleteObj, 'timestamp');
@@ -109,11 +112,11 @@ async function deleteAuditLogsBefore(deleteObj) {
 		);
 	}
 
-	let results = await harperBridge.deleteAuditLogsBefore(deleteObj);
+	const results = await harperBridge.deleteTransactionLogsBefore(deleteObj);
 	await pGlobalSchema(deleteObj.schema, deleteObj.table);
 	harperLogger.info(`Finished deleting audit logs before ${deleteObj.timestamp}`);
 
-	return results;
+	return new DeleteAuditLogsBeforeResults(results.start_timestamp, results.end_timestamp, results.transactions_deleted);
 }
 
 /**

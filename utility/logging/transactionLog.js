@@ -46,12 +46,14 @@ async function readTransactionLog(req) {
  */
 async function deleteTransactionLogsBefore(req) {
 	const validation = deleteTransactionLogsBeforeValidator(req);
-	if (validation) {
-		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	if (validation.error) {
+		const err = new Error(validation.error.message);
+		throw handleHDBError(err, err.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	req.database = req.database ?? req.schema ?? 'data';
+	const { value } = validation;
+	value.database = value.database ?? value.schema ?? 'data';
 
 	log.info('Delete transaction logs called for Plexus');
-	return harperBridge.deleteAuditLogsBefore(req);
+	return harperBridge.deleteTransactionLogsBefore(value);
 }

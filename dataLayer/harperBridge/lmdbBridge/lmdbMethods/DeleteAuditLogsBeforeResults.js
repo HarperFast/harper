@@ -13,6 +13,7 @@ class DeleteAuditLogsBeforeResults {
 		this.start_timestamp = startTimestamp;
 		this.end_timestamp = endTimestamp;
 		this.transactions_deleted = transactionsDeleted;
+		this.deprecated = 'Please use delete_transaction_logs_before instead';
 	}
 }
 

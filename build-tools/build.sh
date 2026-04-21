@@ -3,7 +3,7 @@
 set -e
 
 echo -e "\n📦 Installing core deps"
-npm install
+npm install --ignore-scripts
 
 echo -e "\n📦 Building project"
 npm run build || true

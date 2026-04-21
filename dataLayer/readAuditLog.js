@@ -20,7 +20,8 @@ module.exports = readAuditLog;
  * @returns {Promise<void>}
  */
 async function readAuditLog(readAuditLogObject) {
-	if (hdbUtils.isEmpty(readAuditLogObject.schema)) {
+	const database = readAuditLogObject.database || readAuditLogObject.schema;
+	if (hdbUtils.isEmpty(database)) {
 		throw new Error(HDB_ERROR_MSGS.SCHEMA_REQUIRED_ERR);
 	}
 
@@ -39,7 +40,7 @@ async function readAuditLog(readAuditLogObject) {
 		);
 	}
 
-	const invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(readAuditLogObject.schema, readAuditLogObject.table);
+	const invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(database, readAuditLogObject.table);
 	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),

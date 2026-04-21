@@ -123,7 +123,7 @@ async function addJob(jsonBody) {
 			validationMsg = bulkDeleteValidator(jsonBody, 'timestamp');
 			break;
 		case hdbTerms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
-			validationMsg = deleteTransactionLogsBeforeValidator(jsonBody);
+			validationMsg = deleteTransactionLogsBeforeValidator(jsonBody).error;
 			break;
 		case hdbTerms.OPERATIONS_ENUM.RESTART_SERVICE:
 			if (hdbTerms.HDB_PROCESS_SERVICES[jsonBody.service] === undefined) {

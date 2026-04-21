@@ -14,6 +14,11 @@ if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
 const HAS_PREVIOUS_RESIDENCY_ID = 0x40000000;
 const HAS_PREVIOUS_VERSION = 0x20000000;
 
+type TransactionLogIterator = Iterator<TransactionEntry | number> & {
+	addLog(logName: string);
+	removeLog(logName: string);
+};
+
 /**
  * Represents a transaction log store backed by RocksDB.
  * This class provides methods that conform to a standard store interface
@@ -168,7 +173,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		readUncommitted?: boolean;
 	}): Iterable<AuditRecord> {
 		let iterable = new ExtendedIterable<TransactionEntry>();
-		let aggregateIterator: Iterator<TransactionEntry>;
+		let aggregateIterator: TransactionLogIterator;
 		if (options.log !== undefined) {
 			let log = typeof options.log === 'number' ? this.nodeLogs?.[options.log] : this.logByName.get(options.log);
 			if (!log) {
@@ -260,7 +265,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					nextEntries.length = 0; // reset so if this iterator is restarted, we can re-query
 					return { value: undefined, done: true };
 				},
-				addLog: (logName) => {
+				addLog(logName: string) {
 					let index = options.excludeLogs?.indexOf(logName);
 					if (index >= 0) {
 						options.excludeLogs.splice(index, 1);
@@ -313,10 +318,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 		}
 		return mappedAggregateIterable;
 	}
-	getKeys(options: any) {
+	getKeys(_options?: any) {
 		return []; // TODO: implement this
-		options.onlyKeys = true;
-		return this.getRange(options);
+		// options.onlyKeys = true;
+		// return this.getRange(options);
 	}
 	getStats() {
 		let totalSize = 0;

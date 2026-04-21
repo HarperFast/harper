@@ -71,6 +71,7 @@ async function parseMessage(runnerMessage) {
 			await runJob(runnerMessage, hdbDelete.deleteFilesBefore);
 			break;
 		case hdbTerms.JOB_TYPE_ENUM.delete_audit_logs_before:
+			// deprecated in favor of delete_transaction_logs_before
 			await runJob(runnerMessage, hdbDelete.deleteAuditLogsBefore);
 			break;
 		case hdbTerms.JOB_TYPE_ENUM.delete_transaction_logs_before:

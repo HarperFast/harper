@@ -17,8 +17,9 @@ import type { CompartmentOptions } from 'ses';
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
+import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 
-type Lockdown = 'none' | 'freeze' | 'ses';
+type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
 const HARPER_MODULE_IDS = new Set([
 	'harper',
@@ -50,42 +51,11 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 			});
 		} else {
 			preventFunctionConstructor();
-			for (let name of Object.getOwnPropertyNames(Object.prototype)) {
-				if (name === '__proto__') continue;
-				overridableProperty(Object.prototype, name);
+			if (APPLICATIONS_LOCKDOWN === 'freeze-after-load') {
+				whenComponentsLoaded.then(freezeIntrinsics);
+			} else {
+				freezeIntrinsics();
 			}
-			overridableProperty(Promise.prototype, 'then');
-			overridableProperty(Date, 'now');
-			for (let name of ['get', 'set', 'has', 'delete', 'clear', 'forEach', 'entries', 'keys', 'values']) {
-				overridableProperty(Map.prototype, name);
-			}
-			for (let Intrinsic of [
-				Object,
-				Array,
-				Promise,
-				BigInt,
-				String,
-				Number,
-				Boolean,
-				Symbol,
-				RegExp,
-				Date,
-				Map,
-				Set,
-				WeakMap,
-				WeakSet,
-				Math,
-				JSON,
-				Reflect,
-				Atomics,
-				SharedArrayBuffer,
-				WeakRef,
-				FinalizationRegistry,
-			]) {
-				Object.freeze(Intrinsic);
-				Object.freeze(Intrinsic.prototype);
-			}
-			Object.freeze(Function);
 		}
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
@@ -933,6 +903,45 @@ function getResponse() {
 
 export function preventFunctionConstructor() {
 	Function.prototype.constructor = function () {}; // prevent this from being used to eval data in a parent context
+}
+
+function freezeIntrinsics() {
+	overridableProperty(Object.prototype, 'toString');
+	overridableProperty(Object.prototype, 'valueOf');
+	overridableProperty(Object.prototype, 'hasOwnProperty');
+	overridableProperty(Object.prototype, 'constructor');
+	overridableProperty(Promise.prototype, 'then');
+	overridableProperty(Date, 'now');
+	for (let name of ['get', 'set', 'has', 'delete', 'clear', 'forEach', 'entries', 'keys', 'values']) {
+		overridableProperty(Map.prototype, name);
+	}
+	for (let Intrinsic of [
+		Object,
+		Array,
+		Promise,
+		BigInt,
+		String,
+		Number,
+		Boolean,
+		Symbol,
+		RegExp,
+		Date,
+		Map,
+		Set,
+		WeakMap,
+		WeakSet,
+		Math,
+		JSON,
+		Reflect,
+		Atomics,
+		SharedArrayBuffer,
+		WeakRef,
+		FinalizationRegistry,
+	]) {
+		Object.freeze(Intrinsic);
+		Object.freeze(Intrinsic.prototype);
+	}
+	Object.freeze(Function);
 }
 
 /**
