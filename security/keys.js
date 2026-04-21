@@ -621,7 +621,7 @@ async function reviewSelfSignedCert() {
 		const newPublicCert = await generateCertificates(pki.privateKeyFromPem(caAndKey.private_key), publicKey, hdbCa);
 		await setCertTable({
 			name: certName,
-			uses: ['https', 'operations', 'wss'],
+			uses: ['https', 'operations', 'wss', 'replication'],
 			certificate: newPublicCert,
 			is_authority: false,
 			private_key_name: caAndKey.ca.private_key_name,
@@ -755,7 +755,7 @@ function createTLSSelector(type, mtlsOptions) {
 							}
 							let quality = cert.is_self_signed ? 1 : 3;
 							// prefer operations certificates for operations API
-							if (cert.uses?.includes(type)) quality += 1;
+							if (cert.uses?.includes(type)) quality += 3;
 
 							const private_key = getPrivateKeyByName(cert.private_key_name);
 
