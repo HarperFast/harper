@@ -572,6 +572,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_COMPRESSION_THRESHOLD: 'storage_compression_threshold',
 	STORAGE_COMPACTONSTART: 'storage_compactOnStart',
 	STORAGE_COMPACTONSTARTKEEPBACKUP: 'storage_compactOnStartKeepBackup',
+	STORAGE_MIGRATEONSTART: 'storage_migrateOnStart',
 	STORAGE_RECLAMATION_THRESHOLD: 'storage_reclamation_threshold',
 	STORAGE_RECLAMATION_INTERVAL: 'storage_reclamation_interval',
 	STORAGE_RECLAMATION_EVICTIONFACTOR: 'storage_reclamation_evictionFactor',

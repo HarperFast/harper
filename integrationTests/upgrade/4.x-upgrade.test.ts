@@ -70,4 +70,24 @@ suite('Start 4.x server and test upgrade', (ctx: ContextWithHarper) => {
 		});
 		ok(response.length > 10);
 	});
+
+	test('migrate LMDB to RocksDB', async () => {
+		await killHarper(ctx);
+		// restart with migrateOnStart enabled
+		await startHarper(ctx, {
+			config: {
+				storage: {
+					migrateOnStart: true,
+				},
+			},
+			env: {},
+		});
+		// verify data is still accessible after migration
+		const response = await sendOperation(ctx.harper, {
+			operation: 'search_by_conditions',
+			table: 'test',
+			conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
+		});
+		ok(response.length > 4);
+	});
 });

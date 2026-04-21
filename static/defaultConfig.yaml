@@ -24,7 +24,7 @@ analytics:
   aggregatePeriod: 60
   replicate: false
 applications:
-  lockdown: freeze
+  lockdown: freeze-after-load
   moduleLoader: vm
   dependencyLoader: auto
   allowedSpawnCommands:

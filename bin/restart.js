@@ -61,12 +61,6 @@ async function restart(req) {
 
 		if (envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 
-		if (process.env.HARPER_EXIT_ON_RESTART) {
-			// use this to exit the process so that it will be restarted by the
-			// PM/container/orchestrator.
-			hdbLogger.warn('Exiting Harper process to trigger a container restart');
-			process.exit(0);
-		}
 		setTimeout(async () => {
 			// It seems like you should just be able to start the other process and kill this process and everything should
 			// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
@@ -79,9 +73,16 @@ async function restart(req) {
 			// remove pid file so it doesn't trip up the launch
 			await unlinkSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
 			hdbLogger.debug('Starting new process...');
+			if (process.env.HARPER_EXIT_ON_RESTART) {
+				// use this to exit the process so that it will be restarted by the
+				// PM/container/orchestrator.
+				hdbLogger.warn('Exiting Harper process to trigger a container restart');
+				process.exit(0);
+			}
 			// now launch the new process and exit this process
 			require('./run.js').launch(true);
-		}, 50); // can't await this because it is going to do an exit()
+		}, 50); // can't await this because it is going to do an exit(), but wait for 50ms so we give the HTTP thread a
+		// chance to return a response
 	} else {
 		// Post msg to main parent thread requesting it restart (so the main thread can process.exit())
 		parentPort.postMessage({
