@@ -238,7 +238,7 @@ function loadCertificates() {
 
 								promise = certificateTable.put({
 									name: certCn,
-									uses: config.uses ?? ['https', ...(configKey.includes('operations') ? ['operations'] : [])],
+									uses: config.uses ?? ['server', ...(configKey.includes('operations') ? ['operations-api'] : [])],
 									ciphers: config.ciphers,
 									certificate: certificatePem,
 									private_key_name,
@@ -351,7 +351,7 @@ function certExtensions() {
 async function createCertificateTable(cert, caCert) {
 	await setCertTable({
 		name: getThisNodeName(),
-		uses: ['https', 'wss'],
+		uses: ['server', 'operations-api'],
 		certificate: cert,
 		private_key_name: 'privateKey.pem',
 		is_authority: false,
@@ -360,7 +360,7 @@ async function createCertificateTable(cert, caCert) {
 
 	await setCertTable({
 		name: caCert.subject.getField('CN').value,
-		uses: ['https', 'wss'],
+		uses: ['server', 'operations-api'],
 		certificate: pki.certificateToPem(caCert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
@@ -600,7 +600,7 @@ async function reviewSelfSignedCert() {
 
 		await setCertTable({
 			name: hdbCa.subject.getField('CN').value,
-			uses: ['https'],
+			uses: ['server'],
 			certificate: pki.certificateToPem(hdbCa),
 			private_key_name: keyName,
 			is_authority: true,
@@ -621,7 +621,7 @@ async function reviewSelfSignedCert() {
 		const newPublicCert = await generateCertificates(pki.privateKeyFromPem(caAndKey.private_key), publicKey, hdbCa);
 		await setCertTable({
 			name: certName,
-			uses: ['https', 'operations', 'wss', 'replication'],
+			uses: ['server', 'operations-api', 'replication'],
 			certificate: newPublicCert,
 			is_authority: false,
 			private_key_name: caAndKey.ca.private_key_name,
