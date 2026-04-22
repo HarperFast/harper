@@ -120,9 +120,13 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	}
 	let db: RocksRootDatabase;
 	if (options.dupSort) {
-		db = RocksDatabase.open(new RocksIndexStore(path, options)) as RocksDatabaseEx;
+		db = new RocksIndexStore(path, options).open() as RocksDatabaseEx;
 	} else {
 		db = RocksDatabase.open(path, options) as RocksDatabaseEx;
+		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
+		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
+		db.put = db.putSync;
+		db.remove = db.removeSync;
 		db.encoder.name = options.name;
 	}
 	db.env = {};
@@ -549,7 +553,10 @@ function initStores(
 						existingAttribute,
 						'from attributes',
 						existingAttributes,
-						tableName
+						'in',
+						tableName,
+						'requesting new attribute list',
+						attributes
 					);
 					continue;
 				}

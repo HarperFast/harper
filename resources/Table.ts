@@ -3547,12 +3547,7 @@ export function makeTable(options) {
 				}
 				//if the update cleared out the attribute value we need to delete it from the index
 				for (let i = 0, l = valuesToRemove.length; i < l; i++) {
-					if (isLMDB) {
-						index.remove(valuesToRemove[i], id);
-					} else {
-						if (options) options.primaryKey = id; // we have to pass the primary key in through the options, because the DBI interface only takes two args
-						index.removeSync(valuesToRemove[i], options);
-					}
+					index.remove(valuesToRemove[i], id, options);
 				}
 			} else if (isLMDB && valuesToAdd?.length > 0 && LMDB_PREFETCH_WRITES) {
 				// no old values, just new
@@ -3563,11 +3558,7 @@ export function makeTable(options) {
 			}
 			if (valuesToAdd) {
 				for (let i = 0, l = valuesToAdd.length; i < l; i++) {
-					if (isLMDB) {
-						index.put(valuesToAdd[i], id);
-					} else {
-						index.putSync(valuesToAdd[i], id, options);
-					}
+					index.put(valuesToAdd[i], id, options);
 				}
 			}
 		}
