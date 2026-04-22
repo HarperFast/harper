@@ -1,7 +1,5 @@
 import {
 	DBI,
-	Store,
-	type StoreContext,
 	type StoreIteratorOptions,
 	type StorePutOptions,
 	type StoreRemoveOptions,

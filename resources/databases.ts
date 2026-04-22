@@ -432,13 +432,6 @@ function initStores(
 	definedTables.rootStore = rootStore;
 	const tablesToLoad = new Map<string, any>();
 
-	console.log(
-		'loading attributes from ',
-		rootStore.path,
-		attributesDbi.path,
-		'checking hdb_raw_analytics',
-		attributesDbi.getSync('hdb_raw_analytics/')
-	);
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		let [tableName, attribute_name] = key.toString().split('/');
@@ -1051,7 +1044,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					hasChanges = true; // send out notification of the change
 					exclusiveLock();
-					console.log('setting attribute', dbiKey, updatedPrimaryAttribute);
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
@@ -1100,7 +1092,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							attributesToIndex.push(attribute);
 						}
 					}
-					console.log('setting attribute', dbiKey, attribute);
 					attributesDbi.put(dbiKey, attribute);
 				}
 				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
@@ -1109,7 +1100,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else if (changed) {
 				hasChanges = true;
 				exclusiveLock();
-				console.log('setting attribute', dbiKey, attribute);
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
@@ -1280,7 +1270,6 @@ export function dropTableMeta({ table: tableName, database: databaseName }) {
 	const removals = [];
 	const dbisDb = rootStore.dbisDb;
 	for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-		console.log('removing attribute', key);
 		removals.push(dbisDb.remove(key));
 	}
 	databaseEventsEmitter.emit('dropTable', tableName, databaseName);

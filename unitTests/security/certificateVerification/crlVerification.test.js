@@ -228,9 +228,7 @@ describe('certificateVerification/crlVerification.ts', function () {
 			const certFromBERStub = sinon.stub(pkijs.Certificate, 'fromBER').returns(mockIssuerCert);
 
 			// Mock fetch to return CRL data
-			//
 			const originalFetch = globalThis.fetch;
-			//
 			globalThis.fetch = sinon.stub().resolves({
 				ok: true,
 				status: 200,
@@ -264,7 +262,6 @@ describe('certificateVerification/crlVerification.ts', function () {
 			} finally {
 				fromBERStub.restore();
 				certFromBERStub.restore();
-				//
 				globalThis.fetch = originalFetch;
 			}
 		});
@@ -295,9 +292,7 @@ describe('certificateVerification/crlVerification.ts', function () {
 			const certFromBERStub = sinon.stub(pkijs.Certificate, 'fromBER').returns(mockIssuerCert);
 
 			// Mock fetch to return CRL data
-			//
 			const originalFetch = globalThis.fetch;
-			//
 			globalThis.fetch = sinon.stub().resolves({
 				ok: true,
 				status: 200,
@@ -331,7 +326,6 @@ describe('certificateVerification/crlVerification.ts', function () {
 			} finally {
 				fromBERStub.restore();
 				certFromBERStub.restore();
-				//
 				globalThis.fetch = originalFetch;
 			}
 		});

@@ -95,7 +95,6 @@ export class DatabaseTransaction implements Transaction {
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 
 		this.transaction = new RocksTransaction(this.db.store);
-		if (this.transaction.id < 20) harperLogger.warn('Created new transaction to read', this.transaction.id);
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
@@ -123,10 +122,8 @@ export class DatabaseTransaction implements Transaction {
 			trackedTxns.delete(this);
 			if (this.open === TRANSACTION_STATE.LINGERING) {
 				// if we have lingering writes, we have to call commit to finish them
-				if (this.transaction.id < 20) harperLogger.warn('Commiting lingering txn', this.transaction.id);
 				this.commit();
 			} else {
-				if (this.transaction.id < 20) harperLogger.warn('Aborting finished read txn', this.transaction.id);
 				this.transaction?.abort();
 				this.transaction = null;
 			}
@@ -166,9 +163,8 @@ export class DatabaseTransaction implements Transaction {
 		if (!transaction) {
 			transaction = new RocksTransaction(operation.store.store as RocksStore);
 			if (operation.store.rootStore !== this.db.rootStore) {
-				harperLogger.warn('Created new transaction in save, but the store does match existing store', transaction.id);
+				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
 			}
-			if (transaction.id < 20) harperLogger.warn('Created new transaction in save', transaction.id);
 			if (this.open === TRANSACTION_STATE.OPEN) {
 				this.transaction = transaction;
 			} else {
@@ -179,7 +175,6 @@ export class DatabaseTransaction implements Transaction {
 				transaction.setTimestamp(txnTime);
 			}
 		} else {
-			if (transaction.id < 20) harperLogger.warn('existing transaction in save', transaction.id);
 		}
 		if (this.retries > 0) {
 			// This marks the Rocks transaction as a retry so we don't write the transaction log again
@@ -187,7 +182,6 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (reloadEntry || operation.entry === undefined) {
-			if (transaction.id == 15) console.log('loading entry');
 			operation.entry = operation.store.getEntry(operation.key, { transaction });
 		}
 		if (!operation.saved) {
@@ -202,11 +196,8 @@ export class DatabaseTransaction implements Transaction {
 			result = operation.beforeIntermediate?.() as Promise<void>;
 			if (result?.then) this.completions.push(result);
 		}
-		if (transaction.id == 15) console.log('operation.commit');
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
-		if (transaction.id == 15) console.log('operation.commit completed');
 		if (immediateCommit) {
-			if (transaction.id == 15) console.log('commit immediately');
 			return this.commit({ transaction }); // immediately commit if the harper transaction is closed
 		}
 	}
@@ -254,10 +245,8 @@ export class DatabaseTransaction implements Transaction {
 				this.transaction = null; // clear transaction so any further operations operate immediately
 				if (transaction) {
 					if (this.writes.length > 0) {
-						if (transaction.id < 20) harperLogger.warn('Committing txn', transaction.id);
 						commitResolution = transaction.commit();
 					} else {
-						if (transaction.id < 20) harperLogger.warn('aborting txn', transaction.id);
 						commitResolution = transaction.abort();
 					}
 				}
@@ -414,7 +403,6 @@ function startMonitoringTxns() {
 				);
 				// reset the transaction
 				try {
-					harperLogger.warn('timeout txn', txn.id);
 					const result = txn.commit();
 					if (result?.then) {
 						result.catch((error) => {

@@ -202,7 +202,7 @@ async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 
 		delete global.hdb_schema;
 		global.lmdb_map = undefined;
-		//if (!partial_teardown) await fs.remove(ENV_DIR_PATH);
+		if (!partial_teardown) await fs.remove(ENV_DIR_PATH);
 	} catch (err) {
 		console.error('Error tearing down mock DB used for unit tests');
 		console.error(err);
