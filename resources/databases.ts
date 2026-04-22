@@ -390,18 +390,18 @@ function initStores(
 ) {
 	const envInit = new OpenEnvironmentObject(path, false);
 	const internalDbiInit = createOpenDBIObject(false);
-	let dbisStore = rootStore.dbisDb;
-	if (!dbisStore) {
+	let attributesDbi = rootStore.dbisDb;
+	if (!attributesDbi) {
 		if (rootStore instanceof RocksDatabase) {
-			dbisStore = openRocksDatabase(rootStore.path, {
+			attributesDbi = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
 			}) as RocksDatabaseEx;
 		} else {
-			dbisStore = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
+			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
 		}
-		rootStore.dbisDb = dbisStore;
+		rootStore.dbisDb = attributesDbi;
 	}
 
 	let auditStore = rootStore.auditStore;
@@ -432,7 +432,14 @@ function initStores(
 	definedTables.rootStore = rootStore;
 	const tablesToLoad = new Map<string, any>();
 
-	for (const result of dbisStore.getRange({ start: false })) {
+	console.log(
+		'loading attributes from ',
+		rootStore.path,
+		attributesDbi.path,
+		'checking hdb_raw_analytics',
+		attributesDbi.getSync('hdb_raw_analytics/')
+	);
+	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
@@ -493,16 +500,16 @@ function initStores(
 		} else {
 			tableId = primaryAttribute.tableId;
 			if (tableId) {
-				if (tableId >= (dbisStore.getSync(NEXT_TABLE_ID) || 0)) {
-					dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
+				if (tableId >= (attributesDbi.getSync(NEXT_TABLE_ID) || 0)) {
+					attributesDbi.putSync(NEXT_TABLE_ID, tableId + 1);
 					logger.info(`Updating next table id (it was out of sync) to ${tableId + 1} for ${tableName}`);
 				}
 			} else {
-				primaryAttribute.tableId = tableId = dbisStore.getSync(NEXT_TABLE_ID);
+				primaryAttribute.tableId = tableId = attributesDbi.getSync(NEXT_TABLE_ID);
 				if (!tableId) tableId = 1;
 				logger.debug(`Table {tableName} missing an id, assigning {tableId}`);
-				dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
-				dbisStore.putSync(primaryAttribute.key, primaryAttribute);
+				attributesDbi.putSync(NEXT_TABLE_ID, tableId + 1);
+				attributesDbi.putSync(primaryAttribute.key, primaryAttribute);
 			}
 			const dbiInit = createOpenDBIObject(!primaryAttribute.isPrimaryKey, primaryAttribute.isPrimaryKey);
 			dbiInit.compression = primaryAttribute.compression;
@@ -558,7 +565,7 @@ function initStores(
 						'requesting new attribute list',
 						attributes,
 						'full metadata list',
-						Array.from(dbisStore.getRange({ start: false }))
+						Array.from(attributesDbi.getRange({ start: false }))
 					);
 					continue;
 				}
@@ -596,7 +603,7 @@ function initStores(
 					indices,
 					attributes,
 					schemaDefined: primaryAttribute.schemaDefined,
-					dbisDB: dbisStore,
+					dbisDB: attributesDbi,
 				})
 			);
 			table.schemaVersion = 1;
@@ -1044,6 +1051,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					hasChanges = true; // send out notification of the change
 					exclusiveLock();
+					console.log('setting attribute', dbiKey, updatedPrimaryAttribute);
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
@@ -1092,6 +1100,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							attributesToIndex.push(attribute);
 						}
 					}
+					console.log('setting attribute', dbiKey, attribute);
 					attributesDbi.put(dbiKey, attribute);
 				}
 				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
@@ -1100,6 +1109,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else if (changed) {
 				hasChanges = true;
 				exclusiveLock();
+				console.log('setting attribute', dbiKey, attribute);
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
@@ -1270,6 +1280,7 @@ export function dropTableMeta({ table: tableName, database: databaseName }) {
 	const removals = [];
 	const dbisDb = rootStore.dbisDb;
 	for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		console.log('removing attribute', key);
 		removals.push(dbisDb.remove(key));
 	}
 	databaseEventsEmitter.emit('dropTable', tableName, databaseName);
