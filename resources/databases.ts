@@ -549,7 +549,7 @@ function initStores(
 			if (!attribute) {
 				if (existingAttribute.isPrimaryKey) {
 					logger.error(
-						'Unable to remove existing primary key attribute',
+						new Error('Unable to remove existing primary key attribute'),
 						existingAttribute,
 						'from attributes',
 						existingAttributes,
