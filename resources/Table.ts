@@ -1876,7 +1876,7 @@ export function makeTable(options) {
 							}
 						})()
 					);
-					updateIndices(id, existingRecord, recordToStore, { transaction });
+					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					writeCommit(true);
 					if (context.expiresAt) scheduleCleanup();
@@ -1966,7 +1966,7 @@ export function makeTable(options) {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
 					} // a newer record exists locally
-					updateIndices(id, existingRecord, null, { transaction });
+					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
 						updateRecord(
 							id,
@@ -4138,7 +4138,7 @@ export function makeTable(options) {
 								// don't do anything if the version has changed
 								return;
 							}
-							updateIndices(id, existingRecord, updatedRecord, { transaction });
+							updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
 							if (updatedRecord) {
 								if (existingEntry) {
 									context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
