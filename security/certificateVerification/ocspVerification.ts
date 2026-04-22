@@ -95,7 +95,7 @@ export async function verifyOCSP(
 			method: cached.method || 'ocsp',
 		};
 	} catch (error) {
-		logger.error?.(`OCSP verification error: ${error}`);
+		logger.error?.(`OCSP verification error:`, error);
 
 		// Check failure mode
 		if (config.failureMode === 'fail-closed') {
