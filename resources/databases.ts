@@ -556,7 +556,9 @@ function initStores(
 						'in',
 						tableName,
 						'requesting new attribute list',
-						attributes
+						attributes,
+						'full metadata list',
+						Array.from(dbisStore.getRange({ start: false }))
 					);
 					continue;
 				}
