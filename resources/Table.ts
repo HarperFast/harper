@@ -3522,6 +3522,7 @@ export function makeTable(options) {
 			// determine what index values need to be removed and added
 			let valuesToAdd = getIndexedValues(value, indexNulls) as any[];
 			let valuesToRemove = getIndexedValues(existingValue, indexNulls) as any[];
+			let isLMDB = !!index.prefetch;
 			if (valuesToRemove?.length > 0) {
 				// put this in a conditional so we can do a faster version for new records
 				// determine the changes/diff from new values and old values
@@ -3538,26 +3539,34 @@ export function makeTable(options) {
 						})
 					: [];
 				valuesToRemove = Array.from(setToRemove);
-				if ((valuesToRemove.length > 0 || valuesToAdd.length > 0) && LMDB_PREFETCH_WRITES) {
+				if (isLMDB && (valuesToRemove.length > 0 || valuesToAdd.length > 0) && LMDB_PREFETCH_WRITES) {
 					// prefetch any values that have been removed or added
 					const valuesToPrefetch = valuesToRemove.concat(valuesToAdd).map((v) => ({ key: v, value: id }));
-					index.prefetch?.(valuesToPrefetch, noop);
+					index.prefetch(valuesToPrefetch, noop);
 				}
 				//if the update cleared out the attribute value we need to delete it from the index
 				for (let i = 0, l = valuesToRemove.length; i < l; i++) {
-					if (options) options.primaryKey = id; // we have to pass the primary key in through the options, because the DBI interface only takes two args
-					index.remove(valuesToRemove[i], options);
+					if (isLMDB) {
+						index.remove(valuesToRemove[i], id);
+					} else {
+						if (options) options.primaryKey = id; // we have to pass the primary key in through the options, because the DBI interface only takes two args
+						index.removeSync(valuesToRemove[i], options);
+					}
 				}
-			} else if (valuesToAdd?.length > 0 && LMDB_PREFETCH_WRITES) {
+			} else if (isLMDB && valuesToAdd?.length > 0 && LMDB_PREFETCH_WRITES) {
 				// no old values, just new
-				index.prefetch?.(
+				index.prefetch(
 					valuesToAdd.map((v) => ({ key: v, value: id })),
 					noop
 				);
 			}
 			if (valuesToAdd) {
 				for (let i = 0, l = valuesToAdd.length; i < l; i++) {
-					index.put(valuesToAdd[i], id, options);
+					if (isLMDB) {
+						index.put(valuesToAdd[i], id);
+					} else {
+						index.putSync(valuesToAdd[i], id, options);
+					}
 				}
 			}
 		}
