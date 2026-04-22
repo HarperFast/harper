@@ -1447,8 +1447,9 @@ export function makeTable(options) {
 				let context = {};
 				return transaction(context, () => {
 					let txn = txnForContext(context);
-					updateIndices(id, existingRecord, null);
-					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), { transaction: txn.getReadTxn() });
+					let options = { transaction: txn.getReadTxn() };
+					updateIndices(id, existingRecord, null, options);
+					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				});
 			}
 		}

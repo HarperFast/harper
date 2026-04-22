@@ -544,7 +544,13 @@ function initStores(
 			const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 			if (!attribute) {
 				if (existingAttribute.isPrimaryKey) {
-					logger.error('Unable to remove existing primary key attribute', existingAttribute);
+					logger.error(
+						'Unable to remove existing primary key attribute',
+						existingAttribute,
+						'from attributes',
+						existingAttributes,
+						tableName
+					);
 					continue;
 				}
 				if (existingAttribute.indexed) {
