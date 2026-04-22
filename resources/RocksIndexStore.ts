@@ -10,7 +10,6 @@ import { Id } from './ResourceInterface.ts';
 import { MAXIMUM_KEY } from 'ordered-binary';
 
 declare module '@harperfast/rocksdb-js' {
-	// eslint-disable-next-line no-unused-vars
 	interface DBI<T> {
 		getValuesCount(indexedValue: any): number;
 	}
@@ -53,7 +52,10 @@ export class RocksIndexStore extends Store {
 		return super.removeSync(context, [indexedValue, primaryKey], options);
 	}
 
-	removeSync(context: StoreContext, indexedValue: any, primaryKey: Id, options?: StoreRemoveOptions) {
+	removeSync(context: StoreContext, indexedValue: any, options?: StoreRemoveOptions) {
+		// the removeSync operation only takes 2 arguments, and we are stuck inside the store interface, so we need to pass
+		// the removed primary key in the options
+		let primaryKey = options.primaryKey;
 		super.removeSync(context, [indexedValue, primaryKey], options);
 	}
 }
