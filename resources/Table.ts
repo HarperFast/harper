@@ -1424,33 +1424,34 @@ export function makeTable(options) {
 		 */
 		static evict(id, existingRecord, existingVersion) {
 			let entry;
-			if (hasSourceGet || audit) {
-				if (!existingRecord) return;
-				entry = primaryStore.getEntry(id);
-				if (!entry || !existingRecord) return;
-				if (entry.version !== existingVersion) return;
-			}
-			if (hasSourceGet) {
-				// if there is a resolution in-progress, abandon the eviction
-				if (primaryStore.hasLock(id, entry.version)) return;
-			}
-			// evictions never go in the audit log, so we can not record a deletion entry for the eviction
-			// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
-			// removed the entry entirely, but first cleanup indices
-			if (primaryStore.ifVersion) {
-				// lmdb
-				primaryStore.ifVersion?.(id, existingVersion, () => {
-					updateIndices(id, existingRecord, null);
-				});
-				return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
-			} else {
-				let context = {};
-				return transaction(context, () => {
-					let txn = txnForContext(context);
-					let options = { transaction: txn.getReadTxn() };
+			let transaction = txnForContext({ transaction: new DatabaseTransaction() }).getReadTxn();
+			let options = { transaction };
+			try {
+				if (hasSourceGet || audit) {
+					if (!existingRecord) return;
+					entry = primaryStore.getEntry(id, options);
+					if (!entry || !existingRecord) return;
+					if (entry.version !== existingVersion) return;
+				}
+				if (hasSourceGet) {
+					// if there is a resolution in-progress, abandon the eviction
+					if (primaryStore.hasLock(id, entry.version)) return;
+				}
+				// evictions never go in the audit log, so we can not record a deletion entry for the eviction
+				// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
+				// removed the entry entirely, but first cleanup indices
+				if (primaryStore.ifVersion) {
+					// lmdb
+					primaryStore.ifVersion?.(id, existingVersion, () => {
+						updateIndices(id, existingRecord, null);
+					});
+					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+				} else {
 					updateIndices(id, existingRecord, null, options);
 					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
-				});
+				}
+			} finally {
+				return transaction.commit();
 			}
 		}
 		/**

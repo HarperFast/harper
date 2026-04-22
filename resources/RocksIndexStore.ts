@@ -16,6 +16,13 @@ declare module '@harperfast/rocksdb-js' {
 	}
 }
 
+/**
+ * A specialized RocksDB-based index store that maintains indexed references to primary keys.
+ * This store uses composite keys consisting of indexed values and primary keys, enabling
+ * efficient range queries over indexed data. The actual data values are stored as null since
+ * this is purely an index structure pointing to primary records elsewhere. This extends
+ * RocksDatabase rather than a store because it actually alters the interface
+ */
 export class RocksIndexStore extends RocksDatabase {
 	/**
 	 * Get all entries matching the range
