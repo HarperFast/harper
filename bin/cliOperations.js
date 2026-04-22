@@ -85,7 +85,6 @@ async function cliOperations(req) {
 			rejectUnauthorized: req.rejectUnauthorized,
 		};
 		console.error(`Connecting to ${target.protocol}//${target.hostname}:${target.port}`);
-
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
