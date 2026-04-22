@@ -46,10 +46,6 @@ async function schemaHandler(event) {
  */
 async function syncSchemaMetadata(msg) {
 	try {
-		// reset current read transactions to ensure that we are getting the very latest data
-		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
-		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
-		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
 		if (msg.table && msg.database)
