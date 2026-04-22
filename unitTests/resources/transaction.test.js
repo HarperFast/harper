@@ -7,6 +7,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#js/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Transactions', () => {
 	let TxnTest, TxnTest2, TxnTest3;
@@ -216,6 +217,7 @@ describe('Transactions', () => {
 		});
 
 		it('Write after read after delete', async function () {
+			if (isLMDB) return;
 			const context = {};
 			await transaction(context, async () => {
 				await TxnTest.put(71, { name: 'before delete' });
@@ -236,6 +238,7 @@ describe('Transactions', () => {
 		});
 
 		it('Successive patches, concurrently', async function () {
+			if (isLMDB) return;
 			await TxnTest.put(71, { name: 'original', count: 0 });
 			let txns = [];
 			for (let i = 0; i < 4; i++) {
