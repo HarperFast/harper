@@ -125,7 +125,7 @@ function getCertTable() {
 }
 
 async function getReplicationCert() {
-	const SNICallback = createTLSSelector('operations-api');
+	const SNICallback = createTLSSelector('replication');
 	const secureTarget = {
 		secureContexts: null,
 		setSecureContext: (_ctx) => {},
@@ -351,7 +351,7 @@ function certExtensions() {
 async function createCertificateTable(cert, caCert) {
 	await setCertTable({
 		name: getThisNodeName(),
-		uses: [],
+		uses: ['replication'],
 		certificate: cert,
 		private_key_name: 'privateKey.pem',
 		is_authority: false,
