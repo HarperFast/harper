@@ -20,7 +20,7 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-const MAX_RETRIES = 100;
+const MAX_RETRIES = 40;
 let outstandingCommit, outstandingCommitStart;
 let confirmReplication;
 export function replicationConfirmation(callback) {
@@ -313,7 +313,7 @@ export class DatabaseTransaction implements Transaction {
 							// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 							// for future transactions
 							this.retries++;
-							harperLogger.warn('retrying', transaction.id, this.retries);
+							harperLogger.debug?.('retrying', transaction.id, this.retries);
 							if (this.retries > 2) {
 								if (this.retries > MAX_RETRIES) {
 									throw new ServerError(
@@ -321,7 +321,7 @@ export class DatabaseTransaction implements Transaction {
 									);
 								}
 								// start delaying, back off to try to space out transactions and avoid excessive conflicts
-								return delay(this.retries).then(() => this.commit({ transaction }));
+								return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
 							}
 							return this.commit({ transaction }); // try again
 						} else throw error;
