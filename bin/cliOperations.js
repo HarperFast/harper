@@ -84,9 +84,12 @@ async function cliOperations(req) {
 			password: req.password || target.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
 			rejectUnauthorized: req.rejectUnauthorized,
 		};
+		console.error(`Connecting to ${target.protocol}//${target.hostname}:${target.port}`);
+
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
+		console.error('Connecting to local Harper instance');
 		initConfig();
 		if (!getHdbPid()) {
 			console.error('Harper must be running to perform this operation');
