@@ -122,14 +122,14 @@ export class RocksTransactionLogStore extends EventEmitter {
 	getEntry() {
 		throw new Error('Not implemented');
 	}
-	addLogToMaps(logName: string, log: TransactionLog) {
-		const nodeId = ((globalThis as any).server?.replication?.getIdOfRemoteNode?.(logName, this) ?? 0) as number;
+	addLogToMaps(log: TransactionLog) {
+		let logName: string = log.name;
 		if (this.nodeLogs) {
+			const nodeId = ((globalThis as any).server?.replication?.getIdOfRemoteNode?.(logName, this) ?? 0) as number;
 			this.nodeLogs![nodeId] ??= log;
 		}
 		this.updates++;
 		this.logByName.set(logName, log);
-		return nodeId;
 	}
 
 	loadLogs() {
@@ -137,16 +137,30 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// listLogs should only be called one time, and then listen for changes to update
 			return this.nodeLogs;
 		}
-		this.nodeLogs = [];
+		let nodeLogs = [];
 		for (const logName of this.rootStore.listLogs()) {
 			const log = this.rootStore.useLog(logName);
-			this.addLogToMaps(logName, log);
+			nodeLogs.push(log);
+			this.logByName.set(logName, log);
+		}
+		if (nodeLogs.length === 0 || (nodeLogs.length === 1 && nodeLogs[0].name === 'local')) {
+			// simple local case, cache this
+			this.nodeLogs = nodeLogs;
+		} else if ((globalThis as any).server?.replication?.getIdOfRemoteNode) {
+			// if we have deterministic ids, we can set those and cache it
+			this.nodeLogs = [];
+			for (let log of nodeLogs) {
+				this.addLogToMaps(log);
+			}
+		} else {
+			// otherwise can not cache, just return the array we created
+			return nodeLogs;
 		}
 		this.rootStore.on('new-transaction-log', (logName) => {
 			if (this.logByName.has(logName)) return; // already added
 			// Add this to our logs
 			const log = this.rootStore.useLog(logName);
-			this.addLogToMaps(logName, log);
+			this.addLogToMaps(log);
 		});
 		return this.nodeLogs;
 	}
@@ -154,7 +168,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	ensureLogExists(logName: string) {
 		if (this.logByName.has(logName)) return;
 		const log = this.rootStore.useLog(logName);
-		return this.addLogToMaps(logName, log);
+		return this.addLogToMaps(log);
 	}
 
 	/**
