@@ -30,6 +30,7 @@ applications:
   allowedSpawnCommands:
     - npm
     - node
+  allowedDirectory: app
 componentsRoot: null
 localStudio:
   enabled: true
