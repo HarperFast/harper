@@ -7,6 +7,7 @@
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
+import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import type {
@@ -3912,14 +3913,14 @@ export function makeTable(options) {
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Entry, nodeId?: number): number {
 		if (nodeId === undefined) {
-			nodeId = server.replication?.getThisNodeId(auditStore);
+			nodeId = getThisNodeId(auditStore);
 		}
 
 		if (txnTime <= existingEntry?.version) {
 			if (existingEntry?.version === txnTime && nodeId !== undefined) {
 				// if we have a timestamp tie, we break the tie by comparing the node name of the
 				// existing entry to the node name of the update
-				const nodeNameToId = server.replication?.exportIdMapping(auditStore);
+				const nodeNameToId = exportIdMapping(auditStore);
 				let existingNodeId = existingEntry.nodeId;
 				if (nodeId === existingNodeId) {
 					return 0; // early match for a tie

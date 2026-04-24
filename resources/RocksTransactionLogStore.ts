@@ -1,5 +1,6 @@
 import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '@harperfast/rocksdb-js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
+import { getIdOfRemoteNode } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
@@ -123,7 +124,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		throw new Error('Not implemented');
 	}
 	addLogToMaps(logName: string, log: TransactionLog) {
-		const nodeId = ((globalThis as any).server?.replication?.getIdOfRemoteNode?.(logName, this) ?? 0) as number;
+		const nodeId = (getIdOfRemoteNode(logName, this) ?? 0) as number;
 		if (this.nodeLogs) {
 			this.nodeLogs![nodeId] ??= log;
 		}

@@ -38,9 +38,6 @@ export interface Server {
 	hostname: string;
 	resources: Resources;
 	replication: {
-		getThisNodeId(auditStore: any): number;
-		exportIdMapping(auditStore: any): any;
-		getIdOfRemoteNode(remoteNodeName: string, auditStore: any): number;
 		replicateOperation(operation: {
 			replicated: boolean;
 			[key: string]: any;
@@ -81,12 +78,6 @@ export interface ContentTypeHandler {
 
 export const server: Server = {
 	replication: {
-		getThisNodeId() {
-			return 0;
-		},
-		exportIdMapping() {
-			return undefined;
-		},
 		replicateOperation(operation) {
 			return operation.replicated
 				? Promise.reject(new Error('Replication not implemented.'))
