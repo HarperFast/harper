@@ -110,7 +110,8 @@ async function install() {
 
 	// REPLICATION_HOSTNAME was renamed to NODE_HOSTNAME in v5, but we still support the replication value if provided
 	if (promptOverride[hdbTerms.INSTALL_PROMPTS.REPLICATION_HOSTNAME]) {
-		promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] = promptOverride[hdbTerms.INSTALL_PROMPTS.REPLICATION_HOSTNAME];
+		promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] =
+			promptOverride[hdbTerms.INSTALL_PROMPTS.REPLICATION_HOSTNAME];
 	}
 
 	// For backwards compatibility for a time before DEFAULTS_MODE (and host name) assume prod when these args used
