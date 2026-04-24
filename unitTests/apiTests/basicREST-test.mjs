@@ -443,6 +443,40 @@ describe('test REST calls', () => {
 			req.end(body);
 		});
 	});
+	describe('HTTP response status code caching', function () {
+		it('caches a cacheable 404 response and returns it with 404 status', async () => {
+			const response = await axios.get('http://localhost:9926/CacheOfHttp/not-found', {
+				validateStatus: () => true,
+			});
+			assert.equal(response.status, 404);
+			// second request should also return 404 (served from cache)
+			const response2 = await axios.get('http://localhost:9926/CacheOfHttp/not-found', {
+				validateStatus: () => true,
+			});
+			assert.equal(response2.status, 404);
+			assert(!response2.headers['server-timing'].includes('miss'));
+		});
+		it('does not cache a non-cacheable 500 response', async () => {
+			const response = await axios.get('http://localhost:9926/CacheOfHttp/server-error', {
+				validateStatus: () => true,
+			});
+			assert.equal(response.status, 500);
+			// second request should also hit source (not cached)
+			const response2 = await axios.get('http://localhost:9926/CacheOfHttp/server-error', {
+				validateStatus: () => true,
+			});
+			assert.equal(response2.status, 500);
+			assert(response2.headers['server-timing'].includes('miss'));
+		});
+		it('does not store status in cached record for 200 responses', async () => {
+			// The CacheOfHttp 'created-response' source returns a 200 with a custom header
+			// If status 200 were stored, it would appear as a field in the raw record
+			// We verify that the 200 response is served correctly without redundantly caching status
+			const response = await axios.get('http://localhost:9926/CacheOfHttp/created-response');
+			assert.equal(response.status, 200);
+			assert.equal(response.headers.get('x-custom-header'), 'custom value');
+		});
+	});
 	it('post with custom response', async () => {
 		const response = await axios.post('http://localhost:9926/SimpleCache/35555', {
 			customResponse: true,

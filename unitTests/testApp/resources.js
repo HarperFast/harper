@@ -194,6 +194,10 @@ tables.CacheOfHttp.sourcedFrom({
 					headers: { 'x-custom-header': 'custom value' },
 					name: 'test-sibling-to-headers',
 				};
+			case 'not-found':
+				return new Response('Not Found', { status: 404 });
+			case 'server-error':
+				return new Response('Internal Server Error', { status: 500 });
 		}
 	},
 });
