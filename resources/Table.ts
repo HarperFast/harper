@@ -3921,7 +3921,7 @@ export function makeTable(options) {
 				// if we have a timestamp tie, we break the tie by comparing the node name of the
 				// existing entry to the node name of the update
 				const nodeNameToId = exportIdMapping(auditStore);
-				let existingNodeId = existingEntry.nodeId;
+				let existingNodeId = existingEntry.nodeId ?? 0;
 				if (nodeId === existingNodeId) {
 					return 0; // early match for a tie
 				}
