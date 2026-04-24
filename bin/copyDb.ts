@@ -291,7 +291,7 @@ function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: b
 	}
 	let db;
 	if (options.dupSort) {
-		db = RocksDatabase.open(new RocksIndexStore(path, options));
+		db = new RocksIndexStore(path, options).open();
 	} else {
 		db = RocksDatabase.open(path, options);
 		db.encoder.name = options.name;
@@ -309,8 +309,10 @@ export async function migrateOnStart() {
 	updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
 
 	try {
-		for (const databaseName in databases) {
-			if (databaseName === 'system') continue;
+		let databaseNames = Object.keys(databases);
+		// system is a dontenum property, so we have to manually add it
+		if (!databaseNames.includes('system')) databaseNames.push('system');
+		for (const databaseName of databaseNames) {
 			if (databaseName.endsWith('-copy')) continue;
 			let rootStore;
 			for (const tableName in databases[databaseName]) {
