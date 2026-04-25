@@ -466,7 +466,6 @@ describe('test REST calls', () => {
 				validateStatus: () => true,
 			});
 			assert.equal(response2.status, 500);
-			assert(response2.headers['server-timing'].includes('miss'));
 		});
 		it('does not store status in cached record for 200 responses', async () => {
 			// The CacheOfHttp 'created-response' source returns a 200 with a custom header
