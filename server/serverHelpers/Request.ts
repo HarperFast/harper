@@ -2,7 +2,9 @@ import { platform } from 'os';
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
-import type { Headers as ResponseHeaders } from './Headers.ts';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { Headers as ResponseHeaders } from './Headers.ts';
 
 // Some request compatible type-ing. We can handle both HTTP and HTTPS requests and the server is augmented.
 interface IncomingMessage extends NodeIncomingMessage {
@@ -102,6 +104,146 @@ export class Request {
 	// Expose node request for cases that need direct access (e.g., replication)
 	get nodeRequest() {
 		return this._nodeRequest;
+	}
+	/**
+	 * Returns a Node.js IncomingMessage/ServerResponse pair that adapts this Request and a captured
+	 * Response into the Node HTTP API. Useful for integrating third-party Node middleware that expects
+	 * the native node http request/response objects.
+	 *
+	 * `nodeRequest` mirrors the current Request state (method, url, headers may have been modified by
+	 * middleware) while delegating body reading to the underlying IncomingMessage stream.
+	 *
+	 * `nodeResponse` captures status, headers, and body written by the consumer and resolves `response`
+	 * once headers are available. The response body is streamed via a PassThrough, so it can be piped
+	 * back into the Harper middleware chain.
+	 */
+	getNodeRequestResponse(): {
+		nodeRequest: NodeIncomingMessage;
+		nodeResponse: NodeServerResponse;
+		response: Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>;
+	} {
+		// Flat headers object matching IncomingMessage.headers format (lowercase keys)
+		const reqHeaders: Record<string, string | string[]> = Object.create(null);
+		for (const [key, value] of this.headers) {
+			reqHeaders[key.toLowerCase()] = value;
+		}
+
+		// Proxy the underlying IncomingMessage so body streaming works, but expose
+		// the current Request's (possibly middleware-mutated) method/url/headers.
+		const self = this;
+		const nodeReq = new Proxy(this._nodeRequest, {
+			get(target, prop, receiver) {
+				if (prop === 'method') return self.method;
+				if (prop === 'url') return self.url;
+				if (prop === 'headers') return reqHeaders;
+				return Reflect.get(target, prop, receiver);
+			},
+		}) as NodeIncomingMessage;
+
+		let resolveResponse!: (value: { status: number; headers: ResponseHeaders; body: PassThrough }) => void;
+		let rejectResponse!: (reason: unknown) => void;
+		const response = new Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>(
+			(resolve, reject) => {
+				resolveResponse = resolve;
+				rejectResponse = reject;
+			}
+		);
+
+		const responseBody = new PassThrough();
+		const capturedHeaders = new ResponseHeaders();
+		let headersFlushed = false;
+
+		const flushHeaders = () => {
+			if (!headersFlushed) {
+				headersFlushed = true;
+				resolveResponse({ status: nodeRes.statusCode as number, headers: capturedHeaders, body: responseBody });
+			}
+		};
+
+		const applyHeaders = (hdrs: object | unknown[]) => {
+			if (Array.isArray(hdrs)) {
+				if (hdrs.length > 0 && Array.isArray(hdrs[0])) {
+					for (const [name, value] of hdrs as [string, string][]) capturedHeaders.set(name, value);
+				} else {
+					for (let i = 0; i < hdrs.length; i += 2) capturedHeaders.set(hdrs[i] as string, hdrs[i + 1] as string);
+				}
+			} else {
+				for (const [k, v] of Object.entries(hdrs)) capturedHeaders.set(k, v as string);
+			}
+		};
+
+		const nodeRes = Object.assign(new EventEmitter(), {
+			statusCode: 200 as number,
+			statusMessage: '',
+			headersSent: false,
+			writable: true,
+			writableEnded: false,
+			writableFinished: false,
+			socket: this._nodeRequest.socket,
+
+			setHeader(name: string, value: string | number | string[]) {
+				capturedHeaders.set(name, Array.isArray(value) ? value.map(String).join(', ') : String(value));
+				return nodeRes;
+			},
+			getHeader(name: string) {
+				return capturedHeaders.get(name);
+			},
+			getHeaders() {
+				return Object.fromEntries(capturedHeaders);
+			},
+			hasHeader(name: string) {
+				return capturedHeaders.has(name);
+			},
+			removeHeader(name: string) {
+				capturedHeaders.delete(name);
+			},
+			flushHeaders() {
+				flushHeaders();
+			},
+			writeHead(statusCode: number, statusMessageOrHeaders?: string | object, maybeHeaders?: object) {
+				if (headersFlushed) return nodeRes;
+				nodeRes.statusCode = statusCode;
+				const hdrs = typeof statusMessageOrHeaders === 'string' ? maybeHeaders : statusMessageOrHeaders;
+				if (hdrs) applyHeaders(hdrs as object | unknown[]);
+				nodeRes.headersSent = true;
+				flushHeaders();
+				return nodeRes;
+			},
+			write(
+				chunk: unknown,
+				encoding?: BufferEncoding | ((error?: Error | null) => void),
+				callback?: (error?: Error | null) => void
+			) {
+				flushHeaders();
+				if (typeof encoding === 'function') return responseBody.write(chunk as any, encoding);
+				return responseBody.write(chunk as any, encoding, callback);
+			},
+			end(chunk?: unknown, encoding?: BufferEncoding | (() => void), callback?: () => void) {
+				flushHeaders();
+				nodeRes.writableEnded = true;
+				if (typeof encoding === 'function') responseBody.end(chunk as any, encoding);
+				else responseBody.end(chunk as any, encoding, callback);
+				return nodeRes;
+			},
+			destroy(error?: Error) {
+				if (error && !headersFlushed) rejectResponse(error);
+				responseBody.destroy(error);
+				return nodeRes;
+			},
+		}) as unknown as NodeServerResponse;
+
+		responseBody.on('finish', () => {
+			nodeRes.writableFinished = true;
+			(nodeRes as unknown as EventEmitter).emit('finish');
+		});
+		responseBody.on('close', () => {
+			(nodeRes as unknown as EventEmitter).emit('close');
+		});
+		// Prevent uncaught 'error' events when destroy(err) is called; errors before headers
+		// are propagated via the response promise rejection instead.
+		responseBody.on('error', () => {});
+
+		return { nodeRequest: nodeReq, nodeResponse: nodeRes, response };
 	}
 	sendEarlyHints(link: string, headers: Record<string, any> = {}) {
 		headers.link = link;

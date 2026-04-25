@@ -395,6 +395,248 @@ describe('Request class', function () {
 		});
 	});
 
+	describe('getNodeRequestResponse', function () {
+		let mockNodeRequest;
+
+		beforeEach(function () {
+			mockNodeRequest = {
+				method: 'GET',
+				url: '/original',
+				headers: { host: 'example.com', 'content-type': 'text/plain' },
+				httpVersion: '1.1',
+				socket: {
+					encrypted: false,
+					remoteAddress: '127.0.0.1',
+					authorized: false,
+					server: {},
+					getPeerCertificate: sinon.stub().returns(null),
+				},
+				on: sinon.stub().returnsThis(),
+				pipe: sinon.stub(),
+			};
+		});
+
+		function makeRequest(overrides = {}) {
+			return new Request({ ...mockNodeRequest, ...overrides }, {});
+		}
+
+		describe('nodeRequest', function () {
+			it('reflects current method and url', function () {
+				const request = makeRequest();
+				request.method = 'POST';
+				request.url = '/modified';
+
+				const { nodeRequest } = request.getNodeRequestResponse();
+
+				assert.strictEqual(nodeRequest.method, 'POST');
+				assert.strictEqual(nodeRequest.url, '/modified');
+			});
+
+			it('reflects middleware-mutated headers', function () {
+				const request = makeRequest();
+				request.headers.set('x-custom', 'added');
+
+				const { nodeRequest } = request.getNodeRequestResponse();
+
+				assert.strictEqual(nodeRequest.headers['x-custom'], 'added');
+				assert.strictEqual(nodeRequest.headers['content-type'], 'text/plain');
+			});
+
+			it('has lowercase header keys', function () {
+				const request = makeRequest({
+					headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+				});
+
+				const { nodeRequest } = request.getNodeRequestResponse();
+
+				assert.ok('content-type' in nodeRequest.headers);
+				assert.ok('authorization' in nodeRequest.headers);
+				assert.strictEqual(nodeRequest.headers['content-type'], 'application/json');
+			});
+
+			it('delegates socket to the underlying IncomingMessage socket', function () {
+				const request = makeRequest();
+				const { nodeRequest } = request.getNodeRequestResponse();
+				assert.strictEqual(nodeRequest.socket, mockNodeRequest.socket);
+			});
+		});
+
+		describe('nodeResponse — writeHead', function () {
+			it('resolves response with correct status and headers', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.writeHead(201, { 'content-type': 'application/json' });
+				nodeResponse.end();
+
+				const resolved = await response;
+				assert.strictEqual(resolved.status, 201);
+				assert.strictEqual(resolved.headers.get('content-type'), 'application/json');
+			});
+
+			it('is idempotent — second writeHead call is a no-op', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.writeHead(200, { 'x-first': 'yes' });
+				nodeResponse.writeHead(500, { 'x-first': 'overwritten' });
+				nodeResponse.end();
+
+				const { status, headers } = await response;
+				assert.strictEqual(status, 200);
+				assert.strictEqual(headers.get('x-first'), 'yes');
+			});
+
+			it('accepts array-of-pairs header format', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.writeHead(200, [['x-pair', 'value']]);
+				nodeResponse.end();
+
+				const { headers } = await response;
+				assert.strictEqual(headers.get('x-pair'), 'value');
+			});
+
+			it('sets headersSent after writeHead', function () {
+				const request = makeRequest();
+				const { nodeResponse } = request.getNodeRequestResponse();
+
+				assert.strictEqual(nodeResponse.headersSent, false);
+				nodeResponse.writeHead(200);
+				assert.strictEqual(nodeResponse.headersSent, true);
+			});
+		});
+
+		describe('nodeResponse — setHeader / end path', function () {
+			it('resolves response with headers set before end()', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.setHeader('content-type', 'text/html');
+				nodeResponse.end('<h1>hi</h1>');
+
+				const { status, headers } = await response;
+				assert.strictEqual(status, 200);
+				assert.strictEqual(headers.get('content-type'), 'text/html');
+			});
+
+			it('captures statusCode set directly', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.statusCode = 404;
+				nodeResponse.end();
+
+				const { status } = await response;
+				assert.strictEqual(status, 404);
+			});
+
+			it('getHeader / hasHeader / removeHeader work', function () {
+				const request = makeRequest();
+				const { nodeResponse } = request.getNodeRequestResponse();
+
+				nodeResponse.setHeader('x-test', 'abc');
+				assert.strictEqual(nodeResponse.getHeader('x-test'), 'abc');
+				assert.ok(nodeResponse.hasHeader('x-test'));
+
+				nodeResponse.removeHeader('x-test');
+				assert.ok(!nodeResponse.hasHeader('x-test'));
+			});
+		});
+
+		describe('nodeResponse — body streaming', function () {
+			async function collectBody(stream) {
+				const chunks = [];
+				for await (const chunk of stream) {
+					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				}
+				return Buffer.concat(chunks).toString();
+			}
+
+			it('end() with a chunk delivers the body', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.end('hello world');
+
+				const { body } = await response;
+				assert.strictEqual(await collectBody(body), 'hello world');
+			});
+
+			it('multiple write() calls are streamed in order', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.write('chunk1');
+				nodeResponse.write('chunk2');
+				nodeResponse.end('chunk3');
+
+				const { body } = await response;
+				assert.strictEqual(await collectBody(body), 'chunk1chunk2chunk3');
+			});
+
+			it('end() with no body yields an empty body', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.end();
+
+				const { body } = await response;
+				assert.strictEqual(await collectBody(body), '');
+			});
+
+			it('sets writableEnded after end()', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				assert.strictEqual(nodeResponse.writableEnded, false);
+				nodeResponse.end();
+				assert.strictEqual(nodeResponse.writableEnded, true);
+
+				await response;
+			});
+
+			it('emits finish event after body is fully written', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				const finishSpy = sinon.spy();
+				nodeResponse.on('finish', finishSpy);
+
+				nodeResponse.end('done');
+				await response;
+
+				// Wait for finish to propagate through the PassThrough
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.ok(finishSpy.calledOnce);
+			});
+		});
+
+		describe('nodeResponse — destroy', function () {
+			it('rejects the response promise with the provided error', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				const err = new Error('stream destroyed');
+				nodeResponse.destroy(err);
+
+				await assert.rejects(() => response, /stream destroyed/);
+			});
+
+			it('does not reject if destroy called after headers already flushed', async function () {
+				const request = makeRequest();
+				const { nodeResponse, response } = request.getNodeRequestResponse();
+
+				nodeResponse.end('body');
+				await response; // resolve first
+
+				// Should not throw
+				nodeResponse.destroy(new Error('late destroy'));
+			});
+		});
+	});
+
 	describe('Headers class', function () {
 		let headers;
 
