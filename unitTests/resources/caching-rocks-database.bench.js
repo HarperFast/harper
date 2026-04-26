@@ -1,27 +1,23 @@
 /**
- * Benchmark: RocksDatabase (no VT/cache) vs CachingRocksDatabase (WeakLRUCache + VT)
+ * Benchmark: PrimaryRocksDatabase without caching vs with caching (WeakLRUCache + VT)
  *
- * Run via: npm run bench (or directly with mocha --file unitTests/resources/caching-rocks-database.bench.js)
+ * Run via: npm run bench
  */
 require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { CachingRocksDatabase } = require('#src/resources/CachingRocksDatabase');
-const { RecordEncoder, handleLocalTimeForGets } = require('#src/resources/RecordEncoder');
+const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 const path = require('path');
 const { mkdirSync } = require('fs');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const RECORD_COUNT = 2_000;
-const WARMUP_ROUNDS = 2; // reads before timing (to prime block cache)
+const WARMUP_ROUNDS = 2;
 
-/** Format a number of ops/sec nicely */
 function opsPerSec(n, ms) {
 	return ((n / ms) * 1000).toFixed(0).padStart(10);
 }
 
-/** Print a formatted results row */
 function row(label, plain, caching) {
 	const ratio = (plain / caching).toFixed(2);
 	console.log(
@@ -34,17 +30,17 @@ function row(label, plain, caching) {
 function header() {
 	console.log('');
 	console.log(
-		`  ${'Scenario'.padEnd(38)} | ${'RocksDatabase'.padStart(13)}` +
-			` | ${'CachingRocksDB'.padStart(15)}` +
+		`  ${'Scenario'.padEnd(38)} | ${'cache: false'.padStart(13)}` +
+			` | ${'cache: true'.padStart(15)}` +
 			` | Speedup`
 	);
 	console.log('  ' + '-'.repeat(85));
 }
 
-describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
+describe('Benchmark: PrimaryRocksDatabase cache:false vs cache:true', function () {
 	this.timeout(120_000);
 
-	let plainDb, cachingDb, dbBase;
+	let noCacheDb, cachingDb, dbBase;
 	const keys = Array.from({ length: RECORD_COUNT }, (_, i) => `record-${String(i).padStart(8, '0')}`);
 	const values = keys.map((k, i) => ({ id: i, name: k, payload: 'x'.repeat(80) }));
 
@@ -54,56 +50,47 @@ describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
 		dbBase = path.join(setupTestDBPath(), 'bench');
 		mkdirSync(dbBase, { recursive: true });
 
-		const encoderOptions = {
-			encoder: { Encoder: RecordEncoder },
-			disableWAL: true,
-			name: 'bench',
-		};
+		const sharedOptions = { disableWAL: true, name: 'bench' };
 
-		// Plain RocksDatabase: standard msgpack + RecordEncoder, no VT or cache
-		plainDb = RocksDatabase.open(path.join(dbBase, 'plain'), encoderOptions);
-		plainDb.put = plainDb.putSync;
-		plainDb.remove = plainDb.removeSync;
-		plainDb.encoder.name = 'bench';
-		handleLocalTimeForGets(plainDb, plainDb);
+		// No cache: PrimaryRocksDatabase without WeakLRUCache or VT
+		noCacheDb = new PrimaryRocksDatabase(path.join(dbBase, 'nocache'), { ...sharedOptions, cache: false }).open();
+		noCacheDb.put = noCacheDb.putSync;
+		noCacheDb.remove = noCacheDb.removeSync;
+		noCacheDb.initStore(noCacheDb);
 
-		// CachingRocksDatabase: same encoder + VT + WeakLRUCache
-		cachingDb = new CachingRocksDatabase(path.join(dbBase, 'caching'), encoderOptions).open();
+		// With cache: PrimaryRocksDatabase with WeakLRUCache + VT (default)
+		cachingDb = new PrimaryRocksDatabase(path.join(dbBase, 'caching'), sharedOptions).open();
 		cachingDb.put = cachingDb.putSync;
 		cachingDb.remove = cachingDb.removeSync;
-		cachingDb.encoder.name = 'bench';
-		handleLocalTimeForGets(cachingDb, cachingDb);
+		cachingDb.initStore(cachingDb);
 
 		// Populate both stores with the same records
 		for (let i = 0; i < RECORD_COUNT; i++) {
-			plainDb.putSync(keys[i], values[i]);
+			noCacheDb.putSync(keys[i], values[i]);
 			cachingDb.putSync(keys[i], values[i]);
 		}
 	});
 
 	after(function () {
-		plainDb?.close?.();
+		noCacheDb?.close?.();
 		cachingDb?.close?.();
 	});
 
 	it('prints benchmark results', function () {
 		header();
 
-		// ── 1. Cold read: first read of every key (neither cache nor VT populated) ──
+		// ── 1. Cold read: first read of every key ──
 		{
-			// prime block cache with WARMUP_ROUNDS reads so disk I/O doesn't dominate
 			for (let r = 0; r < WARMUP_ROUNDS; r++) {
-				for (const k of keys) plainDb.getSync(k);
+				for (const k of keys) noCacheDb.getSync(k);
 			}
-			// flush CachingRocksDatabase's WeakLRUCache by writing each key
-			// (putSync deletes from cache), then read once to populate WeakLRUCache
-			for (const k of keys) cachingDb.putSync(k, values[keys.indexOf(k)]);
+			// flush cachingDb's WeakLRUCache by writing each key, then time the cold cache read
+			for (let i = 0; i < RECORD_COUNT; i++) cachingDb.putSync(keys[i], values[i]);
 
 			const t0 = performance.now();
-			for (const k of keys) plainDb.getSync(k);
+			for (const k of keys) noCacheDb.getSync(k);
 			const tPlain = performance.now() - t0;
 
-			// cold caching read: WeakLRUCache was cleared by the putSync above
 			const t1 = performance.now();
 			for (const k of keys) cachingDb.getSync(k);
 			const tCold = performance.now() - t1;
@@ -111,14 +98,12 @@ describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
 			row('getSync — cold (cache miss)', tPlain, tCold);
 		}
 
-		// ── 2. Soft VT miss: second read (cache warm, VT not yet populated) ──
+		// ── 2. Soft VT miss: second read (WeakLRUCache warm, VT not yet populated) ──
 		{
 			const t0 = performance.now();
-			for (const k of keys) plainDb.getSync(k);
+			for (const k of keys) noCacheDb.getSync(k);
 			const tPlain = performance.now() - t0;
 
-			// second read: WeakLRUCache is warm, passes expectedVersion, soft VT miss
-			// → DB read happens but FRESH is returned and VT slot populated
 			const t1 = performance.now();
 			for (const k of keys) cachingDb.getSync(k);
 			const tSoftMiss = performance.now() - t1;
@@ -126,10 +111,10 @@ describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
 			row('getSync — soft VT miss (2nd read)', tPlain, tSoftMiss);
 		}
 
-		// ── 3. VT fast-path: third+ read (VT populated, no DB access) ──
+		// ── 3. VT fast-path: third+ read ──
 		{
 			const t0 = performance.now();
-			for (const k of keys) plainDb.getSync(k);
+			for (const k of keys) noCacheDb.getSync(k);
 			const tPlain = performance.now() - t0;
 
 			const t1 = performance.now();
@@ -145,7 +130,7 @@ describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
 			const N = RECORD_COUNT;
 
 			const t0 = performance.now();
-			for (let i = 0; i < N; i++) plainDb.getSync(hotKey);
+			for (let i = 0; i < N; i++) noCacheDb.getSync(hotKey);
 			const tPlain = performance.now() - t0;
 
 			const t1 = performance.now();
@@ -156,13 +141,11 @@ describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
 		}
 
 		// ── 5. Async get: VT fast-path ──
-		// (measuring the async path separately since it goes through a different code path)
 		{
-			// Ensure VT is populated (do a sync read first)
-			for (const k of keys) cachingDb.getSync(k);
+			for (const k of keys) cachingDb.getSync(k); // ensure VT is populated
 
 			const t0 = performance.now();
-			for (const k of keys) plainDb.get(k);
+			for (const k of keys) noCacheDb.get(k);
 			const tPlain = performance.now() - t0;
 
 			const t1 = performance.now();
@@ -175,7 +158,7 @@ describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
 		// ── 6. Write throughput (putSync) ──
 		{
 			const t0 = performance.now();
-			for (let i = 0; i < RECORD_COUNT; i++) plainDb.putSync(keys[i], values[i]);
+			for (let i = 0; i < RECORD_COUNT; i++) noCacheDb.putSync(keys[i], values[i]);
 			const tPlain = performance.now() - t0;
 
 			const t1 = performance.now();
@@ -187,7 +170,7 @@ describe('Benchmark: RocksDatabase vs CachingRocksDatabase', function () {
 
 		console.log('');
 		console.log(`  Records: ${RECORD_COUNT}, value size: ~80 bytes`);
-		console.log(`  Speedup > 1x means CachingRocksDatabase is faster`);
+		console.log(`  Speedup > 1x means cache:true is faster`);
 		console.log('');
 	});
 });

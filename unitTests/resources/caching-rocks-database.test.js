@@ -4,11 +4,11 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { CachingRocksDatabase } = require('#src/resources/CachingRocksDatabase');
+const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-describe('CachingRocksDatabase', function () {
+describe('PrimaryRocksDatabase', function () {
 	let TestTable;
 
 	before(async function () {
@@ -16,7 +16,7 @@ describe('CachingRocksDatabase', function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		TestTable = table({
-			table: 'CachingRocksTest',
+			table: 'PrimaryRocksTest',
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
@@ -25,8 +25,8 @@ describe('CachingRocksDatabase', function () {
 		});
 	});
 
-	it('Primary store is a CachingRocksDatabase instance', function () {
-		assert(TestTable.primaryStore instanceof CachingRocksDatabase);
+	it('Primary store is a PrimaryRocksDatabase instance (and a RocksDatabase)', function () {
+		assert(TestTable.primaryStore instanceof PrimaryRocksDatabase);
 		assert(TestTable.primaryStore instanceof RocksDatabase);
 	});
 
@@ -45,12 +45,11 @@ describe('CachingRocksDatabase', function () {
 
 	it('VT slot is populated after two reads, enabling fast-path verification', async function () {
 		await TestTable.put(3, { name: 'three' });
-		// First read: cache cold, populates WeakLRUCache, VT not yet populated
+		// First read: cache cold, entry stored in WeakLRUCache, VT slot not yet populated
 		await TestTable.get(3);
-		// Second read: cache warm, passes expectedVersion → soft VT miss populates slot
+		// Second read: cache warm, expectedVersion passed → soft VT miss populates slot
 		const entry = await TestTable.primaryStore.getEntry(3);
 		assert(entry.version, 'entry should have a version after read');
-		// VT slot should now hold this version
 		assert(
 			TestTable.primaryStore.verifyVersion(3, entry.version),
 			'VT slot should be populated after two reads'
@@ -89,7 +88,7 @@ describe('CachingRocksDatabase', function () {
 	it('Remove clears cache entry and subsequent read returns undefined', async function () {
 		await TestTable.put(5, { name: 'five' });
 		await TestTable.get(5); // populate cache
-		await TestTable.remove(5);
+		await TestTable.delete(5);
 		const result = await TestTable.get(5);
 		assert.equal(result, undefined);
 	});

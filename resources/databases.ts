@@ -27,7 +27,7 @@ import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
-import { CachingRocksDatabase } from './CachingRocksDatabase.ts';
+import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
@@ -123,7 +123,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	if (options.dupSort) {
 		db = new RocksIndexStore(path, options).open() as RocksDatabaseEx;
 	} else {
-		db = new CachingRocksDatabase(path, options).open() as RocksDatabaseEx;
+		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksDatabaseEx;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
 		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
 		db.put = db.putSync;

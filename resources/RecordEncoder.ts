@@ -335,6 +335,10 @@ function getTimestamp() {
 }
 
 export function handleLocalTimeForGets(store, rootStore) {
+	if ((store as any).isPrimaryRocksDatabase) {
+		(store as any).initStore(rootStore);
+		return store;
+	}
 	const isRocksDB = store instanceof RocksDatabase;
 	store.readCount = 0;
 	store.cachePuts = false;
