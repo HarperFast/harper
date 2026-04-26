@@ -339,52 +339,33 @@ export function handleLocalTimeForGets(store, rootStore) {
 		(store as any).initStore(rootStore);
 		return store;
 	}
-	const isRocksDB = store instanceof RocksDatabase;
 	store.readCount = 0;
 	store.cachePuts = false;
 	store.rootStore = rootStore;
 	store.encoder.rootStore = rootStore;
-	store.encoder.isRocksDB = isRocksDB;
 	store.decoder = store.encoder;
 	const storeGetEntry = store.getEntry;
-	const storeGetSync = store.getSync;
-	const storeGet = store.get;
 
 	store.getEntry = function (id, options) {
 		store.readCount++;
 		lastMetadata = null;
-		if (isRocksDB) {
-			return when(
-				options?.async ? storeGet.call(store, id, options) : storeGetSync.call(store, id, options),
-				(entry) => {
-					if (entry) {
-						if (entry[METADATA]) {
-							entry.metadataFlags = entry[METADATA];
-							return withEntry(entry);
-						} else return { value: entry };
-					} else return entry;
-				}
-			);
-		} else {
-			let entry: Entry = storeGetEntry.call(this, id, options);
-			if (lastMetadata) {
-				entry.metadataFlags = lastMetadata[METADATA];
-				entry.localTime = lastMetadata.localTime;
-				entry.residencyId = lastMetadata.residencyId;
-				entry.nodeId = lastMetadata.nodeId;
-				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
-				entry.size = lastMetadata.size;
-				if (lastMetadata.expiresAt >= 0) {
-					entry.expiresAt = lastMetadata.expiresAt;
-				}
-				if (isRocksDB) entry.version = lastMetadata.localTime;
-				if (entry.value) {
-					entryMap.set(entry.value, entry); // allow the record to access the entry
-				}
-				entry.key = id;
+		let entry: Entry = storeGetEntry.call(this, id, options);
+		if (lastMetadata) {
+			entry.metadataFlags = lastMetadata[METADATA];
+			entry.localTime = lastMetadata.localTime;
+			entry.residencyId = lastMetadata.residencyId;
+			entry.nodeId = lastMetadata.nodeId;
+			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+			entry.size = lastMetadata.size;
+			if (lastMetadata.expiresAt >= 0) {
+				entry.expiresAt = lastMetadata.expiresAt;
 			}
-			return entry && withEntry(entry);
+			if (entry.value) {
+				entryMap.set(entry.value, entry); // allow the record to access the entry
+			}
+			entry.key = id;
 		}
+		return entry && withEntry(entry);
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
 		function withEntry(entry) {
 			if (entry.value) {
@@ -429,15 +410,9 @@ export function handleLocalTimeForGets(store, rootStore) {
 		if (options.values === false || options.onlyCount) return iterable;
 		return iterable.map((entry) => {
 			// if we have metadata, move the metadata to the entry
-			if (isRocksDB) {
-				if (entry.value?.[METADATA]) {
-					entry.metadataFlags = entry.value[METADATA];
-					Object.assign(entry, entry.value);
-				}
-			} else if (lastMetadata) {
+			if (lastMetadata) {
 				entry.metadataFlags = lastMetadata[METADATA];
 				entry.localTime = lastMetadata.localTime;
-				if (isRocksDB) entry.version = lastMetadata.localTime;
 				entry.residencyId = lastMetadata.residencyId;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
@@ -457,34 +432,32 @@ export function handleLocalTimeForGets(store, rootStore) {
 		});
 	};
 
-	if (!isRocksDB) {
-		// add read transaction tracking
-		const txn = store.useReadTransaction();
-		txn.done();
-		if (!txn.done.isTracked) {
-			const Txn = txn.constructor;
-			const use = txn.use;
-			const done = txn.done;
-			Txn.prototype.use = function () {
-				if (!this.timerTracked) {
-					this.timerTracked = true;
-					trackedTxns.push(new WeakRef(this));
-				}
-				use.call(this);
-			};
-			Txn.prototype.done = function () {
-				done.call(this);
-				if (this.isDone) {
-					for (let i = 0; i < trackedTxns.length; i++) {
-						const txn = trackedTxns[i].deref();
-						if (!txn || txn.isDone || txn.isCommitted) {
-							trackedTxns.splice(i--, 1);
-						}
+	// add read transaction tracking (LMDB only — RocksDB stores are PrimaryRocksDatabase)
+	const txn = store.useReadTransaction();
+	txn.done();
+	if (!txn.done.isTracked) {
+		const Txn = txn.constructor;
+		const use = txn.use;
+		const done = txn.done;
+		Txn.prototype.use = function () {
+			if (!this.timerTracked) {
+				this.timerTracked = true;
+				trackedTxns.push(new WeakRef(this));
+			}
+			use.call(this);
+		};
+		Txn.prototype.done = function () {
+			done.call(this);
+			if (this.isDone) {
+				for (let i = 0; i < trackedTxns.length; i++) {
+					const txn = trackedTxns[i].deref();
+					if (!txn || txn.isDone || txn.isCommitted) {
+						trackedTxns.splice(i--, 1);
 					}
 				}
-			};
-			Txn.prototype.done.isTracked = true;
-		}
+			}
+		};
+		Txn.prototype.done.isTracked = true;
 	}
 
 	return store;

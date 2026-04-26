@@ -7,6 +7,7 @@ require('../testUtils');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+const { RecordEncoder, recordUpdater } = require('#src/resources/RecordEncoder');
 const path = require('path');
 const { mkdirSync } = require('fs');
 
@@ -40,7 +41,7 @@ function header() {
 describe('Benchmark: PrimaryRocksDatabase cache:false vs cache:true', function () {
 	this.timeout(120_000);
 
-	let noCacheDb, cachingDb, dbBase;
+	let noCacheDb, cachingDb, noCacheUpdate, cachingUpdate, dbBase;
 	const keys = Array.from({ length: RECORD_COUNT }, (_, i) => `record-${String(i).padStart(8, '0')}`);
 	const values = keys.map((k, i) => ({ id: i, name: k, payload: 'x'.repeat(80) }));
 
@@ -50,24 +51,30 @@ describe('Benchmark: PrimaryRocksDatabase cache:false vs cache:true', function (
 		dbBase = path.join(setupTestDBPath(), 'bench');
 		mkdirSync(dbBase, { recursive: true });
 
-		const sharedOptions = { disableWAL: true, name: 'bench' };
+		const primaryOptions = {
+			disableWAL: true,
+			name: 'bench',
+			encoder: { Encoder: RecordEncoder },
+		};
 
 		// No cache: PrimaryRocksDatabase without WeakLRUCache or VT
-		noCacheDb = new PrimaryRocksDatabase(path.join(dbBase, 'nocache'), { ...sharedOptions, cache: false }).open();
-		noCacheDb.put = noCacheDb.putSync;
-		noCacheDb.remove = noCacheDb.removeSync;
+		noCacheDb = new PrimaryRocksDatabase(path.join(dbBase, 'nocache'), { ...primaryOptions, cache: false }).open();
 		noCacheDb.initStore(noCacheDb);
+		noCacheUpdate = recordUpdater(noCacheDb, 1, null);
 
 		// With cache: PrimaryRocksDatabase with WeakLRUCache + VT (default)
-		cachingDb = new PrimaryRocksDatabase(path.join(dbBase, 'caching'), sharedOptions).open();
-		cachingDb.put = cachingDb.putSync;
-		cachingDb.remove = cachingDb.removeSync;
+		cachingDb = new PrimaryRocksDatabase(path.join(dbBase, 'caching'), primaryOptions).open();
 		cachingDb.initStore(cachingDb);
+		cachingUpdate = recordUpdater(cachingDb, 1, null);
 
-		// Populate both stores with the same records
+		// Populate both stores using recordUpdater so values carry encoded version bytes.
+		// Versions must be in the Date.now() range (~1e12) so RecordEncoder recognises
+		// the 0x42 first byte of the float64 and strips the version prefix on decode.
+		let version = Date.now();
 		for (let i = 0; i < RECORD_COUNT; i++) {
-			noCacheDb.putSync(keys[i], values[i]);
-			cachingDb.putSync(keys[i], values[i]);
+			noCacheUpdate(keys[i], values[i], null, version, 0, false);
+			cachingUpdate(keys[i], values[i], null, version, 0, false);
+			version++;
 		}
 	});
 
@@ -85,7 +92,8 @@ describe('Benchmark: PrimaryRocksDatabase cache:false vs cache:true', function (
 				for (const k of keys) noCacheDb.getSync(k);
 			}
 			// flush cachingDb's WeakLRUCache by writing each key, then time the cold cache read
-			for (let i = 0; i < RECORD_COUNT; i++) cachingDb.putSync(keys[i], values[i]);
+			let flushVersion = Date.now() + 100_000;
+			for (let i = 0; i < RECORD_COUNT; i++) cachingUpdate(keys[i], values[i], null, flushVersion++, 0, false);
 
 			const t0 = performance.now();
 			for (const k of keys) noCacheDb.getSync(k);
@@ -155,17 +163,18 @@ describe('Benchmark: PrimaryRocksDatabase cache:false vs cache:true', function (
 			row('get (async) — VT fast-path (sync fallback)', tPlain, tVTHit);
 		}
 
-		// ── 6. Write throughput (putSync) ──
+		// ── 6. Write throughput (recordUpdater) ──
 		{
+			let v = Date.now() + 200_000;
 			const t0 = performance.now();
-			for (let i = 0; i < RECORD_COUNT; i++) noCacheDb.putSync(keys[i], values[i]);
+			for (let i = 0; i < RECORD_COUNT; i++) noCacheUpdate(keys[i], values[i], null, v++, 0, false);
 			const tPlain = performance.now() - t0;
 
 			const t1 = performance.now();
-			for (let i = 0; i < RECORD_COUNT; i++) cachingDb.putSync(keys[i], values[i]);
+			for (let i = 0; i < RECORD_COUNT; i++) cachingUpdate(keys[i], values[i], null, v++, 0, false);
 			const tCaching = performance.now() - t1;
 
-			row('putSync', tPlain, tCaching);
+			row('recordUpdater put', tPlain, tCaching);
 		}
 
 		console.log('');

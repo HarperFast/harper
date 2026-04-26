@@ -88,14 +88,24 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	 */
 	getEntry(id: any, options?: any): any {
 		this.readCount++;
-		const cache = options?.transaction ? null : this.#cache;
+		const cache = this.#cache;
 		const cached = cache?.get(id) as Entry | undefined;
 		const expectedVersion = cached?.version;
 
-		// Pass expectedVersion when we have a cached version:
+		// Build get options, always merging with caller options to preserve
+		// transaction snapshot. Pass expectedVersion when cached:
 		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
 		//   VT miss → native reads DB and auto-populates VT slot
-		const getOptions = expectedVersion != null ? ({ expectedVersion } as any) : options;
+		// For cold reads (no cached version), use populateVersion flag so the
+		// native layer seeds the VT slot in the same call.
+		let getOptions: any;
+		if (expectedVersion != null) {
+			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
+		} else if (cache) {
+			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
+		} else {
+			getOptions = options;
+		}
 		const raw = options?.async ? super.get(id, getOptions) : super.getSync(id, getOptions);
 
 		return when(raw, (result) => {
@@ -106,10 +116,6 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				return undefined;
 			}
 			if (entry.version != null && cache) {
-				if (expectedVersion == null) {
-					// cold read: no expectedVersion passed, native doesn't auto-populate
-					this.populateVersion(id, entry.version);
-				}
 				cache.set(id, entry, (entry.size ?? 0) >> 10);
 			}
 			return entry;

@@ -93,10 +93,9 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(result, undefined);
 	});
 
-	it('Read with a transaction bypasses the cache', async function () {
+	it('Read with a transaction context returns correct value', async function () {
 		await TestTable.put(6, { name: 'six' });
 		const context = {};
-		// transaction-scoped read should still return the correct value
 		const result = await TestTable.get(6, context);
 		assert.equal(result.name, 'six');
 	});
