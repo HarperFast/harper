@@ -457,6 +457,7 @@ describe('test REST calls', () => {
 			assert(!response2.headers['server-timing'].includes('miss'));
 		});
 		it('does not cache a non-cacheable 500 response', async () => {
+			const callsBefore = tables.CacheOfHttp.serverErrorCalls;
 			const response = await axios.get('http://localhost:9926/CacheOfHttp/server-error', {
 				validateStatus: () => true,
 			});
@@ -466,6 +467,7 @@ describe('test REST calls', () => {
 				validateStatus: () => true,
 			});
 			assert.equal(response2.status, 500);
+			assert.equal(tables.CacheOfHttp.serverErrorCalls, callsBefore + 2);
 		});
 		it('does not store status in cached record for 200 responses', async () => {
 			// The CacheOfHttp 'created-response' source returns a 200 with a custom header
