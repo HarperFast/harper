@@ -1,4 +1,6 @@
-import { RocksDatabase, type RocksDatabaseOptions, type Store } from '@harperfast/rocksdb-js';
+import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from '@harperfast/rocksdb-js';
+
+const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
 import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
@@ -79,25 +81,35 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 
 	/**
 	 * Core read method. Returns a full Entry (with version, metadataFlags, value, …) or
-	 * undefined. When caching is enabled and the VerificationTable slot is current,
-	 * returns the cached Entry without touching disk.
+	 * undefined. When caching is enabled, passes `expectedVersion` to the native layer so
+	 * a single call handles both verification (returns FRESH_VERSION_FLAG on hit) and VT
+	 * population (auto-seeded on DB read). Only cold reads (no cached version) need a
+	 * separate populateVersion call.
 	 */
 	getEntry(id: any, options?: any): any {
 		this.readCount++;
 		const cache = options?.transaction ? null : this.#cache;
+		const cached = cache?.get(id) as Entry | undefined;
+		const expectedVersion = cached?.version;
 
-		if (cache) {
-			const cached = cache.get(id) as Entry | undefined;
-			if (cached !== undefined && cached.version != null && this.verifyVersion(id, cached.version)) {
-				return cached;
-			}
-		}
+		// Pass expectedVersion when we have a cached version:
+		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
+		//   VT miss → native reads DB and auto-populates VT slot
+		const getOptions = expectedVersion != null ? ({ expectedVersion } as any) : options;
+		const raw = options?.async ? super.get(id, getOptions) : super.getSync(id, getOptions);
 
-		const raw = options?.async ? super.get(id, options) : super.getSync(id, options);
 		return when(raw, (result) => {
+			if (result === FRESH_VERSION_FLAG) return cached;
 			const entry = this.#processEntry(result, id);
-			if (entry?.version != null && cache) {
-				this.populateVersion(id, entry.version);
+			if (entry == null) {
+				if (cache && cached !== undefined) cache.delete(id);
+				return undefined;
+			}
+			if (entry.version != null && cache) {
+				if (expectedVersion == null) {
+					// cold read: no expectedVersion passed, native doesn't auto-populate
+					this.populateVersion(id, entry.version);
+				}
 				cache.set(id, entry, (entry.size ?? 0) >> 10);
 			}
 			return entry;
