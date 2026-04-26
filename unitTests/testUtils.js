@@ -20,7 +20,8 @@ const MOCK_ARGS_ERROR_MSG =
 const UNIT_TEST_DIR = __dirname;
 const ENV_DIR_NAME = 'envDir';
 const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
-const BASE_SCHEMA_PATH = path.join(ENV_DIR_PATH, 'schema');
+const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
+const BASE_SCHEMA_PATH = path.join(PID_DIR_PATH, 'schema');
 const BASE_SYSTEM_PATH = path.join(BASE_SCHEMA_PATH, 'system');
 
 /**
@@ -202,7 +203,7 @@ async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 
 		delete global.hdb_schema;
 		global.lmdb_map = undefined;
-		if (!partial_teardown) await fs.remove(ENV_DIR_PATH);
+		if (!partial_teardown) await fs.remove(PID_DIR_PATH);
 	} catch (err) {
 		console.error('Error tearing down mock DB used for unit tests');
 		console.error(err);
@@ -352,9 +353,8 @@ function setTestPath(testPath) {
  * @returns {string}
  */
 function getMockTestPath() {
-	const testPath = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
-	setTestPath(testPath);
-	return testPath;
+	setTestPath(PID_DIR_PATH);
+	return PID_DIR_PATH;
 }
 
 /**
@@ -362,7 +362,7 @@ function getMockTestPath() {
  * @returns String representing the path value to the mock lmdb system directory
  */
 function setupTestDBPath() {
-	let dbPath = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
+	let dbPath = PID_DIR_PATH;
 	if (!fs.existsSync(dbPath)) {
 		fs.mkdirSync(dbPath, { recursive: true });
 	}
