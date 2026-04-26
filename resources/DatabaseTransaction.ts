@@ -7,8 +7,8 @@ import * as envMngr from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.js';
 import { when } from '../utility/when.ts';
-import { setTimeout as delay } from 'node:timers/promises';
-import { Transaction as RocksTransaction, type Store as RocksStore } from '@harperfast/rocksdb-js';
+import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
+const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 
@@ -94,7 +94,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 
-		this.transaction = new RocksTransaction(this.db.store);
+		this.transaction = new RocksTransaction(this.db.store, { coordinatedRetry: true });
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
@@ -262,7 +262,12 @@ export class DatabaseTransaction implements Transaction {
 				}
 				const completions = [];
 				return commitResolution.then(
-					() => {
+					(commitResult) => {
+						if (commitResult === RETRY_NOW_VALUE) {
+							this.retries++;
+							harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
+							return this.commit({ transaction });
+						}
 						transaction.onCommit?.();
 						if (this.next) {
 							completions.push(this.next.commit(options));
@@ -298,22 +303,7 @@ export class DatabaseTransaction implements Transaction {
 						});
 					},
 					(error) => {
-						if (error.code === 'ERR_BUSY') {
-							// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
-							// for future transactions
-							this.retries++;
-							harperLogger.debug?.('retrying', transaction.id, this.retries);
-							if (this.retries > 2) {
-								if (this.retries > MAX_RETRIES) {
-									throw new ServerError(
-										`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
-									);
-								}
-								// start delaying, back off to try to space out transactions and avoid excessive conflicts
-								return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
-							}
-							return this.commit({ transaction }); // try again
-						} else throw error;
+						throw error;
 					}
 				);
 			}
