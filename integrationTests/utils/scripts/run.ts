@@ -2,7 +2,7 @@ import { run } from 'node:test';
 import { availableParallelism } from 'node:os';
 import { spec } from 'node:test/reporters';
 import { parseArgs } from 'node:util';
-import { validateLoopbackAddressPool } from '../loopbackAddressPool.ts';
+import { validateLoopbackAddressPool } from '../loopbackAddressPool.js';
 
 /**
  * Important! This script should not be required to execute integration tests.

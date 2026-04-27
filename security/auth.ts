@@ -1,19 +1,17 @@
-import { getSuperUser } from './user.ts';
-import { server } from '../server/Server.ts';
-import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.ts';
-import { table } from '../resources/databases.ts';
+import { getSuperUser } from './user.js';
+import { server } from '../server/Server.js';
+import { resources } from '../resources/Resources.js';
+import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.js';
+import { table } from '../resources/databases.js';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.js';
-import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
+import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
 const { forComponent, AuthAuditLog } = harperLogger;
-import serverHandlers from '../server/itc/serverHandlers.js';
-const { user } = serverHandlers;
-import { Headers } from '../server/serverHelpers/Headers.ts';
-import { convertToMS } from '../utility/common_utils.js';
-import { verifyCertificate } from './certificateVerification/index.ts';
-import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
+import { Headers } from '../server/serverHelpers/Headers.js';
+import { convertToMS, autoCastBooleanStrict } from '../utility/common_utils.js';
+import { verifyCertificate } from './certificateVerification/index.js';
+import { serializeMessage } from '../server/serverHelpers/contentTypes.js';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
 const authEventLog = authLogger.withTag('auth-event');
@@ -242,7 +240,8 @@ export async function authentication(request, nextHandler) {
 			// or should this be cached in the session?
 			request.user = await server.getUser(session.user, null, request);
 		} else if (
-			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
+			process.env.UNIT_TEST_DIR ||
+			(autoCastBooleanStrict(AUTHORIZE_LOCAL) && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
 			(request?._nodeRequest?.socket?.server?._pipeName && request.ip === undefined) // allow socket domain
 		) {
 			request.user = await getSuperUser();
@@ -353,6 +352,8 @@ export function start({ server, port, securePort }) {
 		setInterval(() => {
 			authorizationCache = new Map();
 		}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
+		const serverHandlers = require('../server/itc/serverHandlers.js');
+		const user = serverHandlers.default?.user || serverHandlers.user;
 		user.addListener(() => {
 			authorizationCache = new Map();
 		});

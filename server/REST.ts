@@ -1,17 +1,17 @@
-import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
-import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.js';
+import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError.js';
-import { Resources } from '../resources/Resources.ts';
-import { Resource, missingMethod, allowedMethods } from '../resources/Resource.ts';
-import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
-import { transaction } from '../resources/transaction.ts';
-import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
-import { generateJsonApi } from '../resources/openApi.ts';
-import type { Context } from '../resources/ResourceInterface.ts';
-import { Request } from '../server/serverHelpers/Request.ts';
-import { RequestTarget } from '../resources/RequestTarget';
+import { Resources } from '../resources/Resources.js';
+import { Resource, missingMethod, allowedMethods } from '../resources/Resource.js';
+import { IterableEventQueue } from '../resources/IterableEventQueue.js';
+import { transaction } from '../resources/transaction.js';
+import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.js';
+import { generateJsonApi } from '../resources/openApi.js';
+import type { Context } from '../resources/ResourceInterface.js';
+import { Request } from '../server/serverHelpers/Request.js';
+import { RequestTarget } from '../resources/RequestTarget.js';
 
 const { errorToString } = harperLogger;
 const etagBytes = new Uint8Array(8);

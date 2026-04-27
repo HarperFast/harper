@@ -14,14 +14,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as https from 'node:https';
 
-import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.js';
 import {
 	setupOcspResponderWithCerts,
 	stopOcspResponder,
 	type OcspResponderContext,
 	type OcspCertificates,
-} from '../utils/securityServices.ts';
-import { generateOcspCertificates } from '../utils/security/ocsp/generate-test-certs.ts';
+} from '../utils/securityServices.js';
+import { generateOcspCertificates } from '../utils/security/ocsp/generate-test-certs.js';
 
 const HTTPS_PORT = 9927;
 const FIXTURE_PATH = join(import.meta.dirname, 'fixture');

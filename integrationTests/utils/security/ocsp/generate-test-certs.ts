@@ -16,7 +16,7 @@ import {
 	OCSP_SIGNING_OID,
 	CLIENT_AUTH_OID,
 	type Ed25519KeyPair,
-} from '../certGenUtils.ts';
+} from '../certGenUtils.js';
 
 export interface OcspCertificates {
 	/** Path to CA certificate */

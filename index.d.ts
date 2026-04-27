@@ -1,10 +1,10 @@
-import { Resource as ResourceImport } from './resources/Resource.ts';
-import { server as serverImport } from './server/Server.ts';
-import { tables as dbTables, databases as dbDatabases } from './resources/databases.ts';
-import { BlobCreationOptions } from './resources/blob.ts';
-import { Logger } from './utility/logging/logger.ts';
+import { Resource as ResourceImport } from './resources/Resource.js';
+import { server as serverImport } from './server/Server.js';
+import { tables as dbTables, databases as dbDatabases } from './resources/databases.js';
+import { BlobCreationOptions } from './resources/blob.js';
+import { Logger } from './utility/logging/logger.js';
 
-export { Resource } from './resources/Resource.ts';
+export { Resource } from './resources/Resource.js';
 export type {
 	Query,
 	Context,
@@ -12,20 +12,20 @@ export type {
 	SourceContext,
 	SubscriptionRequest,
 	RequestTargetOrId,
-} from './resources/ResourceInterface.ts';
-export { ResourceInterface } from './resources/ResourceInterface.ts';
-export type { User } from './security/user.ts';
-export type { RecordObject } from './resources/RecordEncoder.ts';
-export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
-export { RequestTarget } from './resources/RequestTarget.ts';
-export { server } from './server/Server';
-export { tables, databases, type Table } from './resources/databases.ts';
-export type { Attribute } from './resources/Table.ts';
+} from './resources/ResourceInterface.js';
+export { ResourceInterface } from './resources/ResourceInterface.js';
+export type { User } from './security/user.js';
+export type { RecordObject } from './resources/RecordEncoder.js';
+export type { IterableEventQueue } from './resources/IterableEventQueue.js';
+export { RequestTarget } from './resources/RequestTarget.js';
+export { server } from './server/Server.js';
+export { tables, databases, type Table } from './resources/databases.js';
+export type { Attribute } from './resources/Table.js';
 
-export { Scope } from './components/Scope.ts';
-export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
-export type { FileAndURLPathConfig } from './components/Component.ts';
-export { OptionsWatcher, type Config, type ConfigValue } from './components/OptionsWatcher.ts';
+export { Scope } from './components/Scope.js';
+export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.js';
+export type { FileAndURLPathConfig } from './components/Component.js';
+export { OptionsWatcher, type Config, type ConfigValue } from './components/OptionsWatcher.js';
 export {
 	EntryHandler,
 	type BaseEntry,
@@ -38,7 +38,7 @@ export {
 	type AddDirectoryEvent,
 	type UnlinkDirectoryEvent,
 	type DirectoryEntryEvent,
-} from './components/EntryHandler.ts';
+} from './components/EntryHandler.js';
 
 declare const logger: Logger;
 export { type Logger, logger };

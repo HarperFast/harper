@@ -1,0 +1,124 @@
+'use strict';
+
+import * as search from './search.js';
+import * as globalSchema from '../utility/globalSchema.js';
+import * as logger from '../utility/logging/harper_logger.js';
+import * as write from './insert.js';
+import clone from 'clone';
+import alasql from 'alasql';
+import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.js';
+import util from 'util';
+
+const pGetTableSchema = util.promisify(globalSchema.getTableSchema);
+const pSearch = util.promisify(search.search);
+
+import * as terms from '../utility/hdbTerms.js';
+import * as hdbUtils from '../utility/common_utils.js';
+
+//here we call to define and import custom functions to alasql
+alasqlFunctionImporter(alasql);
+
+export {
+	update,
+};
+
+const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please check the logs and try again.';
+
+/**
+ * This method is used specifically for SQL UPDATE statements.
+ * @method update
+ * @param statement
+ * @param hdb_user
+ * @return
+ */
+async function update({ statement, hdb_user }: { statement: any, hdb_user: any }): Promise<any> {
+	let tableInfo = await pGetTableSchema(statement.table.databaseid, statement.table.tableid);
+	let update_record = createUpdateRecord(statement.columns);
+
+	//convert this update statement to a SQL search capable statement
+	hdbUtils.backtickASTSchemaItems(statement);
+	let { table: from, where } = statement;
+	let tableClone = clone(from);
+
+	let whereString = hdbUtils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
+
+	let selectString = `SELECT ${tableInfo.hash_attribute} FROM ${from.toString()} ${whereString}`;
+	let searchStatement = (alasql as any).parse(selectString).statements[0];
+	//let result = await transaction.writeTransaction(tableInfo.schema, tableInfo.name, async () => {
+	let records = await pSearch(searchStatement);
+	let newRecords = buildUpdateRecords(update_record, records);
+	return updateRecords(tableClone, newRecords, hdb_user);
+	//});
+	//await write.flush({ schema: tableInfo.schema, table: tableInfo.name });
+	//return result;
+}
+
+/**
+ * creates a json object based on the AST
+ * @param columns
+ */
+function createUpdateRecord(columns: any[]): any {
+	try {
+		let record: any = {};
+
+		columns.forEach((column) => {
+			if ('value' in column.expression) {
+				record[column.column.columnid] = column.expression.value ?? null;
+			} else {
+				record[column.column.columnid] = (alasql as any).compile(
+					`SELECT ${column.expression.toString()} AS [${terms.FUNC_VAL}] FROM ?`
+				);
+			}
+		});
+
+		return record;
+	} catch (err) {
+		logger.error(err as any);
+		throw new Error(SQL_UPDATE_ERROR_MSG);
+	}
+}
+
+/**
+ * Description
+ * @method buildUpdateRecords
+ * @param {{}} update_record
+ * @param {[]} records
+ * @return
+ */
+function buildUpdateRecords(update_record: any, records: any[]): any[] {
+	if (hdbUtils.isEmptyOrZeroLength(records)) {
+		return [];
+	}
+
+	return records.map((record) => Object.assign(record, update_record));
+}
+
+/**
+ * Description
+ * @method updateRecords
+ * @param  table
+ * @param {[{}]} records
+ * @param {{}} hdb_user
+ * @return
+ */
+async function updateRecords(table: any, records: any[], hdb_user: any): Promise<any> {
+	let updateObject = {
+		operation: 'update',
+		schema: table.databaseid_orig,
+		table: table.tableid_orig,
+		records,
+		hdb_user,
+	};
+
+	let res = await write.update(updateObject);
+
+	try {
+		// We do not want the API returning the new attributes property.
+		delete res.new_attributes;
+		delete res.txn_time;
+	} catch (deleteErr) {
+		logger.error(`Error delete new_attributes from update response: ${deleteErr}`);
+	}
+
+	return res;
+}

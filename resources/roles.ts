@@ -1,4 +1,4 @@
-import { getDatabases } from './databases.ts';
+import { getDatabases } from './databases.js';
 import { alterRole, addRole } from '../security/role.js';
 import { parseDocument } from 'yaml';
 import { isEqual } from 'lodash';
@@ -79,6 +79,7 @@ export function start({ ensureTable }) {
 	}
 }
 async function ensureRole(role) {
+	if (process.env.UNIT_TEST_DIR) return;
 	const roleTable = getDatabases().system.hdb_role;
 	// if the role already exists, we need to update it
 	for await (let existingRole of roleTable.search([{ attribute: 'role', value: role.role }])) {

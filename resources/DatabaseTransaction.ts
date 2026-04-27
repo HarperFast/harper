@@ -2,19 +2,32 @@ import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import { ServerError } from '../utility/errors/hdbError.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
-import type { Context, Id } from './ResourceInterface.ts';
-import * as envMngr from '../utility/environment/environmentManager.js';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import type { Context, Id } from './ResourceInterface.js';
+import envMngr from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 import { convertToMS } from '../utility/common_utils.js';
-import { when } from '../utility/when.ts';
+import { when } from '../utility/when.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore } from '@harperfast/rocksdb-js';
-import type { RootDatabaseKind } from './databases.ts';
-import type { Entry } from './RecordEncoder.ts';
+import type { RootDatabaseKind } from './databases.js';
+import type { Entry } from './RecordEncoder.js';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
-const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
+let MAX_OUTSTANDING_TXN_DURATION: number;
+let DEBUG_LONG_TXNS: any;
+
+let txnExpiration: number;
+
+class StartedTransaction extends Error {}
+
+function initConfigVars() {
+	if (MAX_OUTSTANDING_TXN_DURATION === undefined) {
+		MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000;
+		DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
+		txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
+	}
+}
+
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN: 1, // the transaction is open and can be used for reads and writes
@@ -26,9 +39,6 @@ let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
 }
-let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
-
-class StartedTransaction extends Error {}
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -86,6 +96,7 @@ export class DatabaseTransaction implements Transaction {
 	replicatedConfirmation: number;
 
 	getReadTxn(): ReadTransaction {
+		initConfigVars();
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.timeout = txnExpiration; // reset the timeout
 		if (this.transaction) {
@@ -137,6 +148,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	checkOverloaded() {
+		initConfigVars();
 		if (
 			outstandingCommit &&
 			!this.overloadChecked &&

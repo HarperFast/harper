@@ -1,4 +1,4 @@
-import { type Logger } from '../utility/logging/logger.ts';
+import { type Logger } from '../utility/logging/logger.js';
 import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';

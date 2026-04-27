@@ -1,4 +1,4 @@
-import type { User } from '../security/user.ts';
+import type { User } from '../security/user.js';
 import type { RecordObject } from './RecordEncoder.js';
 import {
 	ResourceInterface,
@@ -8,16 +8,16 @@ import {
 	Query,
 	SourceContext,
 	RequestTargetOrId,
-} from './ResourceInterface.ts';
+} from './ResourceInterface.js';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, type Transaction } from './DatabaseTransaction.ts';
-import { IterableEventQueue } from './IterableEventQueue.ts';
+import { DatabaseTransaction, type Transaction } from './DatabaseTransaction.js';
+import { IterableEventQueue } from './IterableEventQueue.js';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.js';
-import { transaction, contextStorage } from './transaction.ts';
-import { parseQuery } from './search.ts';
-import { RequestTarget } from './RequestTarget.ts';
-import { when, promiseNormalize } from '../utility/when.ts';
+import { transaction, contextStorage } from './transaction.js';
+import { parseQuery } from './search.js';
+import { RequestTarget } from './RequestTarget.js';
+import { when, promiseNormalize } from '../utility/when.js';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',

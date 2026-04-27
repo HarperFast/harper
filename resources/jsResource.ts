@@ -1,4 +1,4 @@
-import { Scope } from '../components/Scope.ts';
+import { Scope } from '../components/Scope.js';
 import { dirname } from 'path';
 
 function isResource(value: any) {

@@ -1,11 +1,11 @@
 import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
-import { Resource } from './Resource.ts';
-import type { Context } from './ResourceInterface.ts';
+import { Resource } from './Resource.js';
+import type { Context } from './ResourceInterface.js';
 import * as logger from '../utility/logging/harper_logger.js';
-import { DatabaseTransaction } from './DatabaseTransaction.ts';
-import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
+import { DatabaseTransaction } from './DatabaseTransaction.js';
+import { RocksTransactionLogStore } from './RocksTransactionLogStore.js';
 import { isMainThread } from 'node:worker_threads';
-import { RequestTarget } from './RequestTarget.ts';
+import { RequestTarget } from './RequestTarget.js';
 
 let warnedReplayHappening = false;
 export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void> {

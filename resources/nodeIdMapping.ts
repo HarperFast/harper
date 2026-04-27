@@ -1,11 +1,11 @@
 /**
  * This module is responsible for managing the mapping of node/host names to node ids.
  */
-import { logger } from '../utility/logging/logger.ts';
-import { getThisNodeName } from '../server/nodeName.ts';
+import { logger } from '../utility/logging/logger.js';
+import { getThisNodeName } from '../server/nodeName.js';
 import { pack, unpack } from 'msgpackr';
 import type { Database } from 'lmdb';
-import { server } from '../server/Server.ts';
+import { server } from '../server/Server.js';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(auditStore) {

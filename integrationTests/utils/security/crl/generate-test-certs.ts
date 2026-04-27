@@ -15,7 +15,7 @@ import {
 	crlToPem,
 	CLIENT_AUTH_OID,
 	makeExtKeyUsageExt,
-} from '../certGenUtils.ts';
+} from '../certGenUtils.js';
 
 export interface CrlCertificates {
 	/** Path to CA certificate */

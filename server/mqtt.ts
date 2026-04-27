@@ -1,17 +1,17 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
 import { parser as makeParser, generate } from 'mqtt-packet';
-import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
-import { getSuperUser } from '../security/user.ts';
-import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes.ts';
-import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
-import { server } from '../server/Server.ts';
+import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.js';
+import { getSuperUser } from '../security/user.js';
+import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes.js';
+import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.js';
+import { server } from '../server/Server.js';
 import { get } from '../utility/environment/environmentManager.js';
-import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
-import { loggerWithTag } from '../utility/logging/logger.ts';
+import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.js';
+import { loggerWithTag } from '../utility/logging/logger.js';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.js';
 import { EventEmitter } from 'events';
-import { verifyCertificate } from '../security/certificateVerification/index.ts';
+import { verifyCertificate } from '../security/certificateVerification/index.js';
 const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 

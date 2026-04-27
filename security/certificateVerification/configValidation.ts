@@ -3,7 +3,7 @@
  */
 
 import Joi from 'joi';
-import type { CertificateVerificationConfig, OCSPDefaults, CRLDefaults } from './types.ts';
+import type { CertificateVerificationConfig, OCSPDefaults, CRLDefaults } from './types.js';
 
 export const DEFAULT_FAILURE_MODE = 'fail-closed'; // Global default for certificate verification
 

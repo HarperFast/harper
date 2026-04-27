@@ -1,9 +1,9 @@
-import type { Resources } from '../resources/Resources.ts';
-import { type Server } from '../server/Server.ts';
+import type { Resources } from '../resources/Resources.js';
+import { type Server } from '../server/Server.js';
 import { forComponent } from '../utility/logging/harper_logger.js';
-import { scopedImport } from '../security/jsLoader.ts';
+import { scopedImport } from '../security/jsLoader.js';
 import * as env from '../utility/environment/environmentManager.js';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {

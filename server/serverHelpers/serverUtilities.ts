@@ -1,49 +1,48 @@
-import search from '../../dataLayer/search.js';
-import bulkLoad from '../../dataLayer/bulkLoad.js';
-import schema from '../../dataLayer/schema.js';
-import schemaDescribe from '../../dataLayer/schemaDescribe.js';
-import delete_ from '../../dataLayer/delete.js';
-import readAuditLog from '../../dataLayer/readAuditLog.js';
-import * as user from '../../security/user.ts';
-import role from '../../security/role.js';
-import customFunctionOperations from '../../components/operations.js';
-import harperLogger from '../../utility/logging/harper_logger.js';
-import readLog from '../../utility/logging/readLog.js';
-import export_ from '../../dataLayer/export.js';
-import opAuth from '../../utility/operation_authorization.js';
-import jobs from '../jobs/jobs.js';
-import * as terms from '../../utility/hdbTerms.ts';
+import * as search from '../../dataLayer/search.js';
+import * as bulkLoad from '../../dataLayer/bulkLoad.js';
+import * as schema from '../../dataLayer/schema.js';
+import * as schemaDescribe from '../../dataLayer/schemaDescribe.js';
+import * as delete_ from '../../dataLayer/delete.js';
+import * as readAuditLog from '../../dataLayer/readAuditLog.js';
+import * as user from '../../security/user.js';
+import * as role from '../../security/role.js';
+import * as customFunctionOperations from '../../components/operations.js';
+import * as harperLogger from '../../utility/logging/harper_logger.js';
+import * as readLog from '../../utility/logging/readLog.js';
+import * as export_ from '../../dataLayer/export.js';
+import * as opAuth from '../../utility/operation_authorization.js';
+import * as jobs from '../jobs/jobs.js';
+import * as terms from '../../utility/hdbTerms.js';
 import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES } = hdbErrors;
-import restart from '../../bin/restart.js';
+import * as restart from '../../bin/restart.js';
 import * as util from 'util';
-import insert from '../../dataLayer/insert.js';
-import globalSchema from '../../utility/globalSchema.js';
-import systemInformation from '../../utility/environment/systemInformation.js';
-import jobRunner from '../jobs/jobRunner.js';
-import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
-import * as auth from '../../security/auth.ts';
-import configUtils from '../../config/configUtils.js';
-import transactionLog from '../../utility/logging/transactionLog.js';
-import npmUtilities from '../../utility/npmUtilities.js';
+import * as insert from '../../dataLayer/insert.js';
+import * as globalSchema from '../../utility/globalSchema.js';
+import * as systemInformation from '../../utility/environment/systemInformation.js';
+import * as jobRunner from '../jobs/jobRunner.js';
+import * as tokenAuthentication from '../../security/tokenAuthentication.js';
+import * as auth from '../../security/auth.js';
+import * as configUtils from '../../config/configUtils.js';
+import * as transactionLog from '../../utility/logging/transactionLog.js';
+import * as npmUtilities from '../../utility/npmUtilities.js';
 import { _assignPackageExport } from '../../globals.js';
 import { transformReq } from '../../utility/common_utils.js';
-import { server } from '../Server.ts';
+import { server } from '../Server.js';
 const operationLog = harperLogger.loggerWithTag('operation');
-import * as analytics from '../../resources/analytics/read.ts';
-import operationFunctionCaller from '../../utility/OperationFunctionCaller.js';
-import type { OperationRequest, OperationRequestBody } from '../operationsServer.ts';
-import type { Context } from '../../resources/ResourceInterface.ts';
-import * as status from '../status/index.ts';
-import * as regDeprecated from '../../resources/registrationDeprecated.ts';
+import * as analytics from '../../resources/analytics/read.js';
+import * as operationFunctionCaller from '../../utility/OperationFunctionCaller.js';
+import type { OperationRequest, OperationRequestBody } from '../operationsServer.js';
+import type { Context } from '../../resources/ResourceInterface.js';
+import * as status from '../status/index.js';
+import * as regDeprecated from '../../resources/registrationDeprecated.js';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
 function evaluateSQL(command) {
 	if (!pEvaluateSql) {
-		const sql = require('../../sqlTranslator/index.js');
-		pEvaluateSql = util.promisify(sql.evaluateSQL);
-	}
+        pEvaluateSql = util.promisify(sql.evaluateSQL);
+    }
 	return pEvaluateSql(command);
 }
 
@@ -56,7 +55,8 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 	[terms.OPERATIONS_ENUM.DROP_SCHEMA]: true,
 };
 
-import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { OperationFunctionObject } from './OperationFunctionObject.js';
+import * as sql from '../../sqlTranslator/index.js';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -136,11 +136,10 @@ export function chooseOperation(json: OperationRequestBody) {
 	// on all affected tables/attributes.
 	try {
 		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
-			const sql = require('../../sqlTranslator/index.js');
-			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
-			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
-			json.parsed_sql_object = parsedSqlObject;
-			if (!json.bypass_auth) {
+            const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
+            const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
+            json.parsed_sql_object = parsedSqlObject;
+            if (!json.bypass_auth) {
 				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject);
 				if (astPermCheck) {
 					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
@@ -155,8 +154,8 @@ export function chooseOperation(json: OperationRequestBody) {
 					);
 				}
 			}
-			//we need to bypass permission checks to allow the createAuthorizationTokens
-		} else if (
+            //we need to bypass permission checks to allow the createAuthorizationTokens
+        } else if (
 			!json.bypass_auth &&
 			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&

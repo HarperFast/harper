@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as argon2 from 'argon2';
 import { get } from './environment/environmentManager.js';
-import { CONFIG_PARAMS } from './hdbTerms.ts';
+import { CONFIG_PARAMS } from './hdbTerms.js';
 const configuredHashFunction = get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION)?.toLowerCase();
 
 const SALT_LENGTH = 16;

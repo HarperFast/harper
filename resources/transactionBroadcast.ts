@@ -1,7 +1,7 @@
 import { warn } from '../utility/logging/harper_logger.js';
-import { IterableEventQueue } from './IterableEventQueue.ts';
-import { keyArrayToString } from './Resources.ts';
-import type { Id } from './ResourceInterface.ts';
+import { IterableEventQueue } from './IterableEventQueue.js';
+import { keyArrayToString } from './Resources.js';
+import type { Id } from './ResourceInterface.js';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
 const allSameThreadSubscriptions = Object.create(null); // using it as a map that doesn't change much

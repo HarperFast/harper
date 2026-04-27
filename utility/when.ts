@@ -1,4 +1,4 @@
-import type { RequestTarget, RequestTargetOrId } from '../resources/RequestTarget.ts';
+import type { RequestTarget, RequestTargetOrId } from '../resources/RequestTarget.js';
 
 // wait for a promise or plain object to resolve
 export function when<T, R>(

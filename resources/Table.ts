@@ -4,10 +4,10 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.js';
 import { type Database } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
-import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
+import { getThisNodeId, exportIdMapping } from './nodeIdMapping.js';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import type {
@@ -19,18 +19,18 @@ import type {
 	Sort,
 	SubSelect,
 	RequestTargetOrId,
-} from './ResourceInterface.ts';
-import type { User } from '../security/user.ts';
-import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, transformForSelect } from './Resource.ts';
-import { when, promiseNormalize } from '../utility/when.ts';
-import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
-import * as envMngr from '../utility/environment/environmentManager.js';
-import { addSubscription } from './transactionBroadcast.ts';
+} from './ResourceInterface.js';
+import type { User } from '../security/user.js';
+import * as lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
+import { Resource, transformForSelect } from './Resource.js';
+import { when, promiseNormalize } from '../utility/when.js';
+import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.js';
+import envMngr from '../utility/environment/environmentManager.js';
+import { addSubscription } from './transactionBroadcast.js';
 import { handleHDBError, ClientError, ServerError, AccessViolation } from '../utility/errors/hdbError.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
-import { databases, table } from './databases.ts';
+import { databases, table } from './databases.js';
 import {
 	searchByIndex,
 	findAttribute,
@@ -38,13 +38,13 @@ import {
 	flattenKey,
 	COERCIBLE_OPERATORS,
 	executeConditions,
-} from './search.ts';
-import { logger } from '../utility/logging/logger.ts';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
-import { transaction, contextStorage } from './transaction.ts';
+} from './search.js';
+import { logger } from '../utility/logging/logger.js';
+import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.js';
+import { transaction, contextStorage } from './transaction.js';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.js';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.js';
 import {
 	recordUpdater,
@@ -53,19 +53,19 @@ import {
 	type RecordObject,
 	type Entry,
 	entryMap,
-} from './RecordEncoder.ts';
-import { recordAction, recordActionBinary } from './analytics/write.ts';
-import { rebuildUpdateBefore } from './crdt.ts';
-import { appendHeader } from '../server/serverHelpers/Headers.ts';
+} from './RecordEncoder.js';
+import { recordAction, recordActionBinary } from './analytics/write.js';
+import { rebuildUpdateBefore } from './crdt.js';
+import { appendHeader } from '../server/serverHelpers/Headers.js';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation } from '../server/storageReclamation.ts';
-import { RequestTarget } from './RequestTarget.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
-import { throttle } from '../server/throttle.ts';
+import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.js';
+import { onStorageReclamation } from '../server/storageReclamation.js';
+import { RequestTarget } from './RequestTarget.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
+import { throttle } from '../server/throttle.js';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
-import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
-import { contentTypes } from '../server/serverHelpers/contentTypes';
+import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction.js';
+import { contentTypes } from '../server/serverHelpers/contentTypes.js';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;

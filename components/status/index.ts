@@ -5,7 +5,7 @@
  *
  * @example Basic usage:
  * ```typescript
- * import { statusForComponent, STATUS } from './components/status/index.ts';
+ * import { statusForComponent, STATUS } from './components/status/index.js';
  *
  * // Report component status
  * statusForComponent('my-service').healthy('Service initialized');
@@ -18,7 +18,7 @@
  *
  * @example Lifecycle usage (for component loader):
  * ```typescript
- * import { lifecycle } from './components/status/index.ts';
+ * import { lifecycle } from './components/status/index.js';
  *
  * lifecycle.loading('my-component');
  * // ... load component ...
@@ -34,11 +34,11 @@ export {
 	lifecycle, // Component loader lifecycle hooks
 	reset, // Reset all statuses (testing)
 	STATUS, // Status level constants
-} from './api.ts';
+} from './api.js';
 
 // Only export types that external code needs
-export type { ComponentStatusLevel, AggregatedComponentStatus, ComponentStatus } from './api.ts';
+export type { ComponentStatusLevel, AggregatedComponentStatus, ComponentStatus } from './api.js';
 
 // Internal exports for Harper core only
 // These should NOT be used by components
-export * as internal from './internal.ts';
+export * as internal from './internal.js';

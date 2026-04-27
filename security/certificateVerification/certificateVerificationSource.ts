@@ -2,9 +2,9 @@
  * Certificate verification source that handles both CRL and OCSP methods
  */
 
-import { Resource } from '../../resources/Resource.ts';
-import type { SourceContext, Query } from '../../resources/ResourceInterface.ts';
-import type { CertificateVerificationContext } from './types.ts';
+import { Resource } from '../../resources/Resource.js';
+import type { SourceContext, Query } from '../../resources/ResourceInterface.js';
+import type { CertificateVerificationContext } from './types.js';
 
 // Import verification functions
 let performCRLCheck: any;
@@ -13,11 +13,11 @@ let performOCSPCheck: any;
 // Lazy load to avoid circular dependencies
 async function loadVerificationFunctions() {
 	if (!performCRLCheck) {
-		const crlModule = await import('./crlVerification.js');
+		const crlModule = require('./crlVerification.js');
 		performCRLCheck = (crlModule as any).performCRLCheck;
 	}
 	if (!performOCSPCheck) {
-		const ocspModule = await import('./ocspVerification.js');
+		const ocspModule = require('./ocspVerification.js');
 		performOCSPCheck = (ocspModule as any).performOCSPCheck;
 	}
 }

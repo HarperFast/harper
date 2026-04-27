@@ -1,21 +1,28 @@
-import { streamAsJSON, stringify, parse } from './JSONStream.ts';
+import { streamAsJSON, stringify, parse } from './JSONStream.js';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { ClientError } from '../../utility/errors/hdbError.js';
 import stream, { Readable, Transform } from 'node:stream';
-import { server } from '../Server.ts';
+import { server } from '../Server.js';
 import { _assignPackageExport } from '../../globals.js';
-import envMgr from '../../utility/environment/environmentManager.js';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import * as envMgr from '../../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.js';
 import * as YAML from 'yaml';
-import { logger } from '../../utility/logging/logger.ts';
-import { Blob } from '../../resources/blob.ts';
+import { logger } from '../../utility/logging/logger.js';
+import { Blob } from '../../resources/blob.js';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
-const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
-const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
-const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
+let _SERIALIZATION_BIGINT: boolean | undefined;
+function getSerializationBigInt() {
+	if (_SERIALIZATION_BIGINT === undefined) {
+		_SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+	}
+	return _SERIALIZATION_BIGINT;
+}
+
+const JSONStringify = (...args: any[]) => (getSerializationBigInt() ? stringify : JSON.stringify)(...args);
+const JSONParse = (...args: any[]) => (getSerializationBigInt() ? parse : JSON.parse)(...args);
 
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
@@ -323,7 +330,13 @@ export function findBestSerializer(incomingMessage) {
 }
 
 // about an average TCP packet size (if headers included)
-const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+let _COMPRESSION_THRESHOLD: number | undefined;
+function getCompressionThreshold() {
+	if (_COMPRESSION_THRESHOLD === undefined) {
+		_COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+	}
+	return _COMPRESSION_THRESHOLD;
+}
 /**
  * Serialize a response
  * @param responseData
@@ -334,7 +347,7 @@ const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD
 export function serialize(responseData, request, responseObject) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
+	let canCompress = getCompressionThreshold() && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
 	if (responseData?.contentType != null && responseData.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
@@ -390,8 +403,7 @@ export function serialize(responseData, request, responseObject) {
 		}
 		responseBody = serializer.serializer.serialize(responseData, responseObject);
 	}
-	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
-		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
+	if (canCompress && responseBody?.length > getCompressionThreshold()) {		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		responseObject.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call
 		return new Promise((resolve, reject) =>

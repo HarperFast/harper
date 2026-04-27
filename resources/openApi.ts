@@ -1,6 +1,6 @@
 import { packageJson } from '../utility/packageUtils.js';
-import { Resources } from './Resources.ts';
-import { Resource } from './Resource.ts';
+import { Resources } from './Resources.js';
+import { Resource } from './Resource.js';
 
 const OPENAPI_VERSION = '3.0.3';
 // Maps graphql primitive types to open api types

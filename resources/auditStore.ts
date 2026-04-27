@@ -1,16 +1,16 @@
 import { readKey, writeKey } from 'ordered-binary';
 import { initSync, get as envGet } from '../utility/environment/environmentManager.js';
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.js';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { convertToMS } from '../utility/common_utils.js';
-import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder.ts';
+import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
-import { getRecordAtTime } from './crdt.ts';
-import { decodeFromDatabase } from './blob.ts';
-import { onStorageReclamation } from '../server/storageReclamation.ts';
+import { getRecordAtTime } from './crdt.js';
+import { decodeFromDatabase } from './blob.js';
+import { onStorageReclamation } from '../server/storageReclamation.js';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
-import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
+import { RocksTransactionLogStore } from './RocksTransactionLogStore.js';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.

@@ -1,9 +1,9 @@
-import type { User } from '../security/user.ts';
-import type { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
-import { DatabaseTransaction } from './DatabaseTransaction.ts';
-import { IterableEventQueue } from './IterableEventQueue.ts';
-import type { Entry, RecordObject } from './RecordEncoder.ts';
-import { RequestTarget } from './RequestTarget.ts';
+import type { User } from '../security/user.js';
+import type { OperationFunctionName } from '../server/serverHelpers/serverUtilities.js';
+import { DatabaseTransaction } from './DatabaseTransaction.js';
+import { IterableEventQueue } from './IterableEventQueue.js';
+import type { Entry, RecordObject } from './RecordEncoder.js';
+import { RequestTarget } from './RequestTarget.js';
 
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {

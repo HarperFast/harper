@@ -1,10 +1,10 @@
 import { Socket } from 'net';
 import { _assignPackageExport } from '../globals.js';
-import type { Value } from '../resources/analytics/write.ts';
-import type { Resources } from '../resources/Resources.ts';
-import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
+import type { Value } from '../resources/analytics/write.js';
+import type { Resources } from '../resources/Resources.js';
+import { OperationDefinition } from './serverHelpers/serverUtilities.js';
 import { Duplex } from 'stream';
-import { Request } from './serverHelpers/Request.ts';
+import { Request } from './serverHelpers/Request.js';
 
 export type HttpListener = (request: Request, nextLayer: (request: Request) => Response) => void;
 // based on `upgrade` event in Node.js http server: https://nodejs.org/docs/latest/api/http.html#event-upgrade-1

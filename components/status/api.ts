@@ -5,9 +5,9 @@
  * All internal implementation details are hidden behind this interface.
  */
 
-import { componentStatusRegistry } from './registry.ts';
-import { ComponentStatus } from './ComponentStatus.ts';
-import { COMPONENT_STATUS_LEVELS } from './types.ts';
+import { componentStatusRegistry } from './registry.js';
+import { ComponentStatus } from './ComponentStatus.js';
+import { COMPONENT_STATUS_LEVELS } from './types.js';
 
 /**
  * Component Status Builder
@@ -149,5 +149,5 @@ export const STATUS = COMPONENT_STATUS_LEVELS;
 /**
  * Re-export only the types that external users need
  */
-export type { ComponentStatusLevel, AggregatedComponentStatus } from './types.ts';
-export type { ComponentStatus } from './ComponentStatus.ts';
+export type { ComponentStatusLevel, AggregatedComponentStatus } from './types.js';
+export type { ComponentStatus } from './ComponentStatus.js';

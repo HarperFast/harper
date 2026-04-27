@@ -1,7 +1,7 @@
-import { type Logger } from '../utility/logging/logger.ts';
+import { type Logger } from '../utility/logging/logger.js';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
-import logger from '../utility/logging/harper_logger.js';
+import * as logger from '../utility/logging/harper_logger.js';
 
 import { dirname, extname, join } from 'node:path';
 import {

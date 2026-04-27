@@ -1,18 +1,18 @@
-import { Resource } from '../resources/Resource.ts';
-import { contextStorage, transaction } from '../resources/transaction.ts';
-import { RequestTarget } from '../resources/RequestTarget.ts';
-import { tables, databases } from '../resources/databases.ts';
+import { Resource } from '../resources/Resource.js';
+import { contextStorage, transaction } from '../resources/transaction.js';
+import { RequestTarget } from '../resources/RequestTarget.js';
+import { tables, databases } from '../resources/databases.js';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
-import { ApplicationScope } from '../components/ApplicationScope.ts';
-import logger from '../utility/logging/harper_logger.js';
+import { ApplicationScope } from '../components/ApplicationScope.js';
+import * as logger from '../utility/logging/harper_logger.js';
 import { createRequire } from 'node:module';
-import * as env from '../utility/environment/environmentManager';
+import * as env from '../utility/environment/environmentManager.js';
 import * as child_process from 'node:child_process';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
+import { contentTypes } from '../server/serverHelpers/contentTypes.js';
 import type { CompartmentOptions } from 'ses';
 import {
 	mkdirSync,
@@ -50,15 +50,15 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	if (!lockedDown && APPLICATIONS_LOCKDOWN && APPLICATIONS_LOCKDOWN !== 'none') {
 		lockedDown = true;
 		if (APPLICATIONS_LOCKDOWN === 'ses') {
-			require('ses'); // load the lockdown function
-			lockdown({
+            require('ses');
+            lockdown({
 				domainTaming: 'unsafe',
 				consoleTaming: 'unsafe',
 				errorTaming: 'unsafe',
 				errorTrapping: 'none',
 				stackFiltering: 'verbose',
 			});
-		} else {
+        } else {
 			preventFunctionConstructor();
 			if (APPLICATIONS_LOCKDOWN === 'freeze-after-load') {
 				whenComponentsLoaded.then(freezeIntrinsics);
@@ -95,7 +95,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 			// is hidden behind a private symbol (arrowMessagePrivateSymbol)
 			// on the error object and the only way to access it is to use the
 			// internal util.decorateErrorStack() function
-			const util = await import('internal/util');
+			const util = require('internal/util');
 			util.default.decorateErrorStack(err);
 		} catch {
 			// maybe --expose-internals was not set?
@@ -113,7 +113,7 @@ function stripTypeScriptTypes(source: string): string {
 	if (!amaro) {
 		amaro = require('amaro');
 	}
-	return amaro.transformSync(source, { mode: 'strip-only' }).code;
+	return amaro!.transformSync(source, { mode: 'strip-only' }).code;
 }
 
 /**
@@ -251,7 +251,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		return cjsModule;
 	}
 	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
-		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
+		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: createRequire(url)(url) };
 		let exports = cjsModule.exports;
 		if (exports.default === undefined) {
 			// provide the default export for compatibility
@@ -524,9 +524,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 }
 
 async function getCompartment(scope: ApplicationScope, globals) {
-	const { StaticModuleRecord } = await import('@endo/static-module-record');
-	require('ses');
-	const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
+    const { StaticModuleRecord } = require('@endo/static-module-record');
+    require('ses');
+
+    const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
 		globals,
 		{
 			//harperdb: { Resource, tables, databases }
@@ -594,7 +595,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 			},
 		}
 	);
-	return compartment;
+    return compartment;
 }
 
 /**

@@ -1,8 +1,8 @@
-import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
+import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.js';
 import { FLOAT32_OPTIONS } from 'msgpackr';
-import { loggerWithTag } from '../../utility/logging/logger.ts';
+import { loggerWithTag } from '../../utility/logging/logger.js';
 import { ClientError } from '../../utility/errors/hdbError.js';
-import type { Id } from '../../resources/ResourceInterface.ts';
+import type { Id } from '../../resources/ResourceInterface.js';
 
 const logger = loggerWithTag('HNSW');
 /**

@@ -8,7 +8,8 @@ const COMMON_TEST_TERMS = require('./commonTestTerms.js');
 const systemSchema = require('../json/systemSchema.json');
 const { table: ensure_table, resetDatabases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
-const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
+const loadedHarperBridge = require('#src/dataLayer/harperBridge/harperBridge');
+const harperBridge = loadedHarperBridge.default || loadedHarperBridge;
 const { isMainThread } = require('node:worker_threads');
 const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#js/utility/errors/hdbError');
@@ -18,6 +19,7 @@ let envMgrInitSyncStub;
 const MOCK_ARGS_ERROR_MSG =
 	'Null, undefined, and/or empty string argument values not allowed when building mock HDB for testing';
 const UNIT_TEST_DIR = __dirname;
+process.env.UNIT_TEST_DIR = 'true';
 const ENV_DIR_NAME = 'envDir';
 const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 const BASE_SCHEMA_PATH = path.join(ENV_DIR_PATH, 'schema');

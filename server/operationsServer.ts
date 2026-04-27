@@ -1,20 +1,20 @@
 import cluster from 'cluster';
 import zlib from 'node:zlib';
-import env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.js';
 env.initSync();
-import * as terms from '../utility/hdbTerms.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
+import * as terms from '../utility/hdbTerms.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
-import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
+import * as requestTimePlugin from './serverHelpers/requestTimePlugin.js';
 import guidePath from 'path';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
-import globalSchema from '../utility/globalSchema.js';
-import commonUtils from '../utility/common_utils.js';
-import * as userSchema from '../security/user.ts';
-import { server as serverRegistration, type ServerOptions } from '../server/Server.ts';
+import * as globalSchema from '../utility/globalSchema.js';
+import * as commonUtils from '../utility/common_utils.js';
+import * as userSchema from '../security/user.js';
+import { server as serverRegistration, type ServerOptions } from '../server/Server.js';
 import {
 	authHandler,
 	authAndEnsureUserOnRequest,
@@ -22,11 +22,11 @@ import {
 	serverErrorHandler,
 	reqBodyValidationHandler,
 } from './serverHelpers/serverHandlers.js';
-import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
-import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
+import { registerContentHandlers } from './serverHelpers/contentTypes.js';
+import type { OperationFunctionName } from './serverHelpers/serverUtilities.js';
 import type { ParsedSqlObject } from '../sqlTranslator/index.js';
-import { generateJsonApi } from '../resources/openApi.ts';
-import { Resources } from '../resources/Resources.ts';
+import { generateJsonApi } from '../resources/openApi.js';
+import { Resources } from '../resources/Resources.js';
 import { ServerError } from '../utility/errors/hdbError.js';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;

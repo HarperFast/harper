@@ -1,7 +1,7 @@
-import { table } from '../databases.ts';
+import { table } from '../databases.js';
 import crypto from 'crypto';
 import { isIPv6 } from 'node:net';
-import type { Resource } from '../Resource.ts';
+import type { Resource } from '../Resource.js';
 
 export const nodeIds = new Map<string, number>();
 

@@ -3,26 +3,26 @@
  */
 
 // Apply PKI.js Ed25519 patch before importing easy-ocsp
-import './pkijs-ed25519-patch.ts';
+import './pkijs-ed25519-patch.js';
 import { getCertStatus } from 'easy-ocsp';
-import { loggerWithTag } from '../../utility/logging/logger.ts';
+import { loggerWithTag } from '../../utility/logging/logger.js';
 import {
 	bufferToPem,
 	createCacheKey,
 	getCertificateCacheTable as getSharedCertificateCacheTable,
-} from './verificationUtils.ts';
+} from './verificationUtils.js';
 import type {
 	CertificateVerificationResult,
 	CertificateVerificationContext,
 	CertificateCacheEntry,
 	OCSPCheckResult,
 	OCSPConfig,
-} from './types.ts';
+} from './types.js';
 
 const logger = loggerWithTag('ocsp-verification');
 
 // Import the shared source
-import { CertificateVerificationSource } from './certificateVerificationSource.ts';
+import { CertificateVerificationSource } from './certificateVerificationSource.js';
 
 // Lazy-load the certificate verification cache table
 let certCacheTable: ReturnType<typeof getSharedCertificateCacheTable>;

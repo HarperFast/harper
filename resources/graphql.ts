@@ -1,8 +1,8 @@
 import { dirname } from 'path';
 import { Script } from 'node:vm';
-import { table } from './databases.ts';
+import { table } from './databases.js';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
-import { Resources } from './Resources.ts';
+import { Resources } from './Resources.js';
 import type { NamedTypeNode, StringValueNode } from 'graphql';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
@@ -43,7 +43,7 @@ export function start({ ensureTable }) {
 
 	async function handleFile(gqlContent, urlPath, filePath, resources) {
 		// lazy load the graphql package so we don't load it for users that don't use graphql
-		const { parse, Source, Kind } = await import('graphql');
+		const { parse, Source, Kind } = require('graphql');
 		const ast = parse(new Source(gqlContent.toString(), filePath));
 		const types = new Map();
 		const tables = [];

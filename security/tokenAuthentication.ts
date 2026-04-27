@@ -9,17 +9,17 @@ import {
 	LICENSE_KEY_DIR_NAME,
 	SYSTEM_SCHEMA_NAME,
 	SYSTEM_TABLE_NAMES,
-} from '../utility/hdbTerms.ts';
+} from '../utility/hdbTerms.js';
 import { ClientError, hdbErrors } from '../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
-import logger from '../utility/logging/harper_logger.js';
-import * as password from '../utility/password.ts';
-import { findAndValidateUser, type User } from './user.ts';
+import * as logger from '../utility/logging/harper_logger.js';
+import * as password from '../utility/password.js';
+import { findAndValidateUser, type User } from './user.js';
 import { update } from '../dataLayer/insert.js';
-import UpdateObject from '../dataLayer/UpdateObject.js';
-import signalling from '../utility/signalling.js';
+import * as UpdateObject from '../dataLayer/UpdateObject.js';
+import * as signalling from '../utility/signalling.js';
 import { UserEventMsg } from '../server/threads/itc.js';
-import env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.js';
 env.initSync();
 
 type StringValue = SignOptions['expiresIn'];

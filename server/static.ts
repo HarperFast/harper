@@ -1,6 +1,6 @@
 import { realpathSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { Scope } from '../components/Scope';
+import { Scope } from '../components/Scope.js';
 import send from 'send';
 
 /**

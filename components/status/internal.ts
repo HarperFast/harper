@@ -6,24 +6,24 @@
  */
 
 // Import what we need for the query object
-import type { ComponentStatusLevel } from './types.ts';
-import { componentStatusRegistry } from './registry.ts';
-import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
+import type { ComponentStatusLevel } from './types.js';
+import { componentStatusRegistry } from './registry.js';
+import { ComponentStatusRegistry } from './ComponentStatusRegistry.js';
 
 // Internal classes and types
-export { ComponentStatus } from './ComponentStatus.ts';
-export { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
-export { CrossThreadStatusCollector, StatusAggregator, crossThreadCollector } from './crossThread.ts';
-export type { ComponentStatusMap } from './ComponentStatusRegistry.ts';
+export { ComponentStatus } from './ComponentStatus.js';
+export { ComponentStatusRegistry } from './ComponentStatusRegistry.js';
+export { CrossThreadStatusCollector, StatusAggregator, crossThreadCollector } from './crossThread.js';
+export type { ComponentStatusMap } from './ComponentStatusRegistry.js';
 
 // Registry singleton for internal use
-export { componentStatusRegistry } from './registry.ts';
+export { componentStatusRegistry } from './registry.js';
 
 // All error types for internal error handling
-export * from './errors.ts';
+export * from './errors.js';
 
 // All type definitions
-export * from './types.ts';
+export * from './types.js';
 
 // Internal query functions for Harper core
 export const query = {

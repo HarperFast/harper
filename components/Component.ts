@@ -1,6 +1,6 @@
-import { resolveBaseURLPath } from './resolveBaseURLPath';
-import { deriveCommonPatternBase } from './deriveCommonPatternBase';
-import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions';
+import { resolveBaseURLPath } from './resolveBaseURLPath.js';
+import { deriveCommonPatternBase } from './deriveCommonPatternBase.js';
+import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions.js';
 import { scan } from 'micromatch';
 
 interface ComponentConfig {

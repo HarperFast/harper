@@ -5,7 +5,7 @@ import {
 	type StoreRemoveOptions,
 	RocksDatabase,
 } from '@harperfast/rocksdb-js';
-import { Id } from './ResourceInterface.ts';
+import { Id } from './ResourceInterface.js';
 import { MAXIMUM_KEY } from 'ordered-binary';
 
 declare module '@harperfast/rocksdb-js' {

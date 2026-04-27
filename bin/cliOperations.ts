@@ -1,0 +1,178 @@
+'use strict';
+
+import * as envMgr from '../utility/environment/environmentManager.js';
+envMgr.initSync();
+import * as terms from '../utility/hdbTerms.js';
+import { httpRequest } from '../utility/common_utils.js';
+import path from 'path';
+import fs from 'fs-extra';
+import YAML from 'yaml';
+import { packageDirectory } from '../components/packageComponent.js';
+import { encode } from 'cbor-x';
+import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { initConfig, getConfigPath } from '../config/configUtils.js';
+import { URL } from 'url';
+import { ClientRequestArgs } from 'http';
+
+const OP_ALIASES: Record<string, string> = { deploy: 'deploy_component', package: 'package_component' };
+
+const PREPARE_OPERATION: Record<string, (req: any) => Promise<void>> = {
+	deploy_component: async (req: any) => {
+		if (req.package) {
+			return;
+		}
+
+		const projectPath = process.cwd();
+		req.payload = await packageDirectory(projectPath, { skip_node_modules: true, ...req });
+		req.cborEncode = true;
+		if (!req.project) req.project = path.basename(projectPath);
+	},
+};
+
+/**
+ * Builds an Op-API request object from CLI args
+ */
+export function buildRequest(): Record<string, any> {
+	const req: Record<string, any> = {};
+	for (const arg of process.argv.slice(2)) {
+		if (arg in OP_ALIASES) {
+			req.operation = OP_ALIASES[arg];
+		} else if (arg.includes('=')) {
+			let [first, ...restParts] = arg.split('=');
+			let rest: any = restParts.join('=');
+
+			try {
+				rest = JSON.parse(rest);
+			} catch {
+				/* noop */
+			}
+
+			req[first] = rest;
+		} else {
+			// operation should only be in the first arg
+			req.operation ??= arg;
+		}
+	}
+
+	return req;
+}
+
+interface Target {
+    protocol: string;
+    hostname: string;
+    port: string;
+    username?: string;
+    password?: string;
+    rejectUnauthorized?: any;
+}
+
+/**
+ * Using a unix domain socket will send a request to hdb operations API server
+ * @param req
+ * @returns {Promise<void>}
+ */
+export async function cliOperations(req: any): Promise<any> {
+	if (!req.target) {
+		req.target = process.env.HARPER_CLI_TARGET || process.env.CLI_TARGET;
+	}
+	let target: Target | undefined;
+	if (req.target) {
+		try {
+			const url = new URL(req.target);
+            target = {
+                protocol: url.protocol,
+                hostname: url.hostname,
+                port: url.port,
+                username: req.username || url.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME,
+                password: req.password || url.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
+                rejectUnauthorized: req.rejectUnauthorized,
+            };
+		} catch (error) {
+			try {
+				const url = new URL(`https://${req.target}:9925`);
+                target = {
+                    protocol: url.protocol,
+                    hostname: url.hostname,
+                    port: url.port,
+                    username: req.username || url.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME,
+                    password: req.password || url.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
+                    rejectUnauthorized: req.rejectUnauthorized,
+                };
+			} catch {
+				throw error as any;
+			}
+		}
+		
+		console.error(`Connecting to ${target.protocol}//${target.hostname}:${target.port}`);
+	} else {
+		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
+		// is running and that we can communicate with it.
+		console.error('Connecting to local Harper instance');
+		initConfig();
+		if (!getHdbPid()) {
+			console.error('Harper must be running to perform this operation');
+			process.exit(1);
+		}
+
+		if (!fs.existsSync(getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
+			console.error('No domain socket found, unable to perform this operation');
+			process.exit(1);
+		}
+	}
+	await PREPARE_OPERATION[req.operation]?.(req);
+	try {
+		let options: ClientRequestArgs = target ?? {
+			protocol: 'http:',
+			socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+		};
+		options.method = 'POST';
+		options.headers = { 'Content-Type': 'application/json' };
+		if (target?.username) {
+			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
+		}
+		if (req.cborEncode) {
+			options.headers['Content-Type'] = 'application/cbor';
+			req = encode(req);
+		}
+		let response = await httpRequest(options, req);
+
+		let responseData;
+		try {
+			responseData = JSON.parse(response.body);
+		} catch {
+			responseData = {
+				status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
+				body: response.body,
+			};
+		}
+
+		let responseLog;
+		if (req.json) {
+			responseLog = JSON.stringify(responseData, null, 2);
+		} else {
+			responseLog = YAML.stringify(responseData).trim();
+		}
+
+		const { statusCode } = response;
+		if (statusCode < 200 || (statusCode >= 300 && statusCode !== 304)) {
+			const errorPrefix = responseLog.startsWith('error:') ? '' : 'error: ';
+			console.error(`${errorPrefix}${responseLog}`);
+			process.exit(1);
+		}
+
+		console.log(responseLog);
+
+		return responseData;
+	} catch (err: any) {
+		if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
+			console.error(`error: Failed to connect to Harper (${err.code}): ${err.message}`);
+		} else if (err.code === 'EACCES') {
+			console.error(`error: Permission denied accessing the domain socket: ${err.message}`);
+		} else if (err.code === 'ENOTFOUND') {
+			console.error(`error: Host not found: "${err.hostname}" ${err.message}`);
+		} else {
+			console.error(`error: ${err.message ?? err}`);
+		}
+		process.exit(1);
+	}
+}

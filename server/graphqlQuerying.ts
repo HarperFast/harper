@@ -1,8 +1,8 @@
 import * as graphql from 'graphql';
 import type { RequestParams } from 'graphql-http';
-import { getDeserializer } from './serverHelpers/contentTypes.ts';
-import { resources } from '../resources/Resources.ts';
-import logger from '../utility/logging/harper_logger.js';
+import { getDeserializer } from './serverHelpers/contentTypes.js';
+import { resources } from '../resources/Resources.js';
+import * as logger from '../utility/logging/harper_logger.js';
 
 // This code makes heavy use of the word "node" to refer to a node in the GraphQL AST.
 

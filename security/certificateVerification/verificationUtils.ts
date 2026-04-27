@@ -5,9 +5,9 @@
 import { createHash } from 'node:crypto';
 import * as pkijs from 'pkijs';
 import * as asn1js from 'asn1js';
-import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { table } from '../../resources/databases.ts';
-import type { PeerCertificate, CertificateChainEntry } from './types.ts';
+import { loggerWithTag } from '../../utility/logging/logger.js';
+import { table } from '../../resources/databases.js';
+import type { PeerCertificate, CertificateChainEntry } from './types.js';
 
 const logger = loggerWithTag('cert-verification-utils');
 

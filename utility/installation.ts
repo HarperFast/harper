@@ -1,4 +1,4 @@
-import type { Logger } from '../components/Logger.ts';
+import type { Logger } from '../components/Logger.js';
 import * as terms from './hdbTerms.js';
 import fs from 'node:fs';
 import { noBootFile, getPropsFilePath } from './common_utils.js';

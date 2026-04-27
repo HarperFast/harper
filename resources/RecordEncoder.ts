@@ -14,14 +14,14 @@ import {
 	HAS_BLOBS,
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
-} from './auditStore.ts';
+} from './auditStore.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
-import './blob.ts';
-import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
-import { getThisNodeId } from './nodeIdMapping.ts';
-import { recordAction } from './analytics/write.ts';
+import './blob.js';
+import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.js';
+import { getThisNodeId } from './nodeIdMapping.js';
+import { recordAction } from './analytics/write.js';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
-import { when } from '../utility/when.ts';
+import { when } from '../utility/when.js';
 export type Entry = {
 	key: any;
 	value: any;

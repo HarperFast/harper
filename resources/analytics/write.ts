@@ -1,19 +1,19 @@
 import { parentPort, threadId } from 'worker_threads';
-import { onMessageByType } from '../../server/threads/manageThreads.js';
-import { getDatabases, table } from '../databases.ts';
-import type { Databases, Table, Tables } from '../databases.ts';
-import harperLogger from '../../utility/logging/harper_logger.js';
+import { onMessageByType } from '../../server/threads/threadEvents.js';
+import { getDatabases, table } from '../databases.js';
+import type { Databases, Table, Tables } from '../databases.js';
+import * as harperLogger from '../../utility/logging/harper_logger.js';
 import { stat, readdir } from 'node:fs/promises';
 const { getLogFilePath, forComponent } = harperLogger;
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
 import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.js';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
-import { server } from '../../server/Server.ts';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.js';
+import { server } from '../../server/Server.js';
 import * as fs from 'node:fs';
-import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
-import { METRIC } from './metadata.ts';
+import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.js';
+import { METRIC } from './metadata.js';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;

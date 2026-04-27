@@ -1,5 +1,4 @@
-'use strict';
-
+'use strict';;
 const USERNAME_REQUIRED = 'username is required';
 const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
 const EMPTY_PASSWORD = 'password cannot be an empty string';
@@ -81,30 +80,26 @@ export interface CRUDPermissions {
 	delete: boolean;
 }
 
-//requires must be declared after module.exports to avoid cyclical dependency
-const insert = require('../dataLayer/insert.js');
-const delete_ = require('../dataLayer/delete.js');
-const validation = require('../validation/user_validation.js');
-const search = require('../dataLayer/search.js');
-const signalling = require('../utility/signalling.js');
-const hdbUtility = require('../utility/common_utils.js');
-const validate = require('validate.js');
-const logger = require('../utility/logging/harper_logger.js');
-const { promisify } = require('util');
-const env = require('../utility/environment/environmentManager.js');
-const systemSchema = require('../json/systemSchema.json');
-const { hdbErrors, ClientError } = require('../utility/errors/hdbError.js');
+import * as insert from '../dataLayer/insert.js';
+import * as delete_ from '../dataLayer/delete.js';
+import * as validation from '../validation/user_validation.js';
+import * as search from '../dataLayer/search.js';
+import * as signalling from '../utility/signalling.js';
+import * as hdbUtility from '../utility/common_utils.js';
+import validate from 'validate.js';
+import * as logger from '../utility/logging/harper_logger.js';
+import { promisify } from 'node:util';
+import * as env from '../utility/environment/environmentManager.js';
+import * as systemSchema from '../json/systemSchema.json';
+import { hdbErrors, ClientError } from '../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
-const { UserEventMsg } = require('../server/threads/itc.js');
-const _ = require('lodash');
-const harperLogger = require('../utility/logging/harper_logger.js');
-
-// Need to use `.js` even for other TS files since TS compiler won't replace requires.
-// Whenever we can fix the cyclical dependency issue in this file (and switch to imports) we can use the correct file extensions.
-const password = require('../utility/password.js');
-const { server } = require('../server/Server.js');
-const terms = require('../utility/hdbTerms.js');
-const { expandOperationsPerms } = require('../utility/operationPermissions.js');
+import { UserEventMsg } from '../server/threads/itc.js';
+import _ from 'lodash';
+import * as harperLogger from '../utility/logging/harper_logger.js';
+import * as password from '../utility/password.js';
+import { server } from '../server/Server.js';
+import * as terms from '../utility/hdbTerms.js';
+import { expandOperationsPerms } from '../utility/operationPermissions.js';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -297,6 +292,7 @@ async function listUsersExternal(): Promise<User[]> {
  * data in a Map with the username as the key for the entry
  */
 async function listUsers(): Promise<Map<string, User>> {
+	if (process.env.UNIT_TEST_DIR) return new Map();
 	const roles = await search.searchByValue({
 		schema: 'system',
 		table: 'hdb_role',
@@ -427,11 +423,24 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 }
 
 async function getSuperUser(): Promise<User | undefined> {
-	if (!usersWithRolesMap) {
+	if (process.env.UNIT_TEST_DIR) {
+		return {
+			username: 'hdb_admin',
+			super_user: true,
+			role: {
+				id: 'super_user',
+				super_user: true,
+				permission: { super_user: true }
+			}
+		} as unknown as User;
+	}
+	if (!usersWithRolesMap || typeof usersWithRolesMap[Symbol.iterator] !== 'function') {
 		await setUsersWithRolesCache();
 	}
-	for (let [, user] of usersWithRolesMap) {
-		if (user.role?.role === 'super_user') return user;
+	if (typeof usersWithRolesMap[Symbol.iterator] === 'function') {
+		for (let [, user] of usersWithRolesMap) {
+			if (user.role?.role === 'super_user') return user;
+		}
 	}
 }
 

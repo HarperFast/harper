@@ -1,9 +1,9 @@
-import type { User } from './user.ts';
-import type { ImpersonatePayload } from '../server/operationsServer.ts';
-import { getUsersWithRolesCache } from './user.ts';
-import { validateOperations } from '../utility/operationPermissions.ts';
+import type { User } from './user.js';
+import type { ImpersonatePayload } from '../server/operationsServer.js';
+import { getUsersWithRolesCache } from './user.js';
+import { validateOperations } from '../utility/operationPermissions.js';
 import { ClientError } from '../utility/errors/hdbError.js';
-import harperLogger from '../utility/logging/harper_logger.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
 import { getRoleByName } from './role.js';
 
 /**

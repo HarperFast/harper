@@ -1,6 +1,6 @@
-import type { UserRoleDatabasePermissions } from '../security/user.ts';
-import type { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
-import { parseQuery } from './search.ts';
+import type { UserRoleDatabasePermissions } from '../security/user.js';
+import type { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface.js';
+import { parseQuery } from './search.js';
 
 export class RequestTarget extends URLSearchParams {
 	#target?: string;

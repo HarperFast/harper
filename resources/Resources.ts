@@ -1,9 +1,9 @@
-import { Resource } from './Resource.ts';
-import { transaction } from './transaction.ts';
-import { ErrorResource } from './ErrorResource.ts';
-import logger from '../utility/logging/harper_logger.js';
+import { Resource } from './Resource.js';
+import { transaction } from './transaction.js';
+import { ErrorResource } from './ErrorResource.js';
+import * as logger from '../utility/logging/harper_logger.js';
 import { ServerError } from '../utility/errors/hdbError.js';
-import { server } from '../server/Server.ts';
+import { server } from '../server/Server.js';
 
 interface ResourceEntry {
 	Resource: typeof Resource;

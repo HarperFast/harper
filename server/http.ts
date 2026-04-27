@@ -2,27 +2,27 @@
  * This module represents the HTTP component for Harper, and receives the HTTP options and uses them to configure
  * HTTP servers
  */
-import { Scope } from '../components/Scope.ts';
+import { Scope } from '../components/Scope.js';
 import { Socket } from 'node:net';
-import harperLogger from '../utility/logging/harper_logger.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
 import { parentPort } from 'node:worker_threads';
-import env from '../utility/environment/environmentManager.js';
-import * as terms from '../utility/hdbTerms.ts';
+import * as env from '../utility/environment/environmentManager.js';
+import * as terms from '../utility/hdbTerms.js';
 import { getConfigPath } from '../config/configUtils.js';
 import { getTicketKeys } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.js';
 import { createSecureServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
-import { Request } from './serverHelpers/Request.ts';
-import { appendHeader, Headers } from './serverHelpers/Headers.ts';
-import { Blob } from '../resources/blob.ts';
-import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { Request } from './serverHelpers/Request.js';
+import { appendHeader, Headers } from './serverHelpers/Headers.js';
+import { Blob } from '../resources/blob.js';
+import { recordAction, recordActionBinary } from '../resources/analytics/write.js';
 import { Readable } from 'node:stream';
-import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
-import { setPortServerMap, SERVERS } from './serverRegistry.ts';
-import { getComponentName } from '../components/componentLoader.ts';
-import { throttle } from './throttle.ts';
+import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.js';
+import { setPortServerMap, SERVERS } from './serverRegistry.js';
+import { getComponentName } from '../components/componentLoader.js';
+import { throttle } from './throttle.js';
 import { WebSocketServer } from 'ws';
 
 const { errorToString } = harperLogger;

@@ -1,6 +1,6 @@
-import type { Context } from './ResourceInterface.ts';
+import type { Context } from './ResourceInterface.js';
 import { _assignPackageExport } from '../globals.js';
-import { DatabaseTransaction, type Transaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, type Transaction, TRANSACTION_STATE } from './DatabaseTransaction.js';
 import { AsyncLocalStorage } from 'async_hooks';
 
 export function transaction<T>(context: Context, callback: (transaction: Transaction) => T): T;

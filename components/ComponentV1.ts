@@ -1,12 +1,12 @@
 import { isMainThread } from 'node:worker_threads';
 import fg from 'fast-glob';
-import { Resources } from '../resources/Resources.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
-import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
-import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions.ts';
+import { Resources } from '../resources/Resources.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
+import { resolveBaseURLPath } from './resolveBaseURLPath.js';
+import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions.js';
 import { basename, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { deriveURLPath } from './deriveURLPath.ts';
+import { deriveURLPath } from './deriveURLPath.js';
 import { scan } from 'micromatch';
 
 interface ComponentV1Config {

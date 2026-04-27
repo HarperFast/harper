@@ -2,11 +2,11 @@ import { ClientError, ServerError, Violation } from '../utility/errors/hdbError.
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.js';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
-import { INVALIDATED, EVICTED } from './Table.ts';
-import type { DirectCondition, Id } from './ResourceInterface.ts';
-import { RequestTarget } from './RequestTarget.ts';
-import { lastMetadata } from './RecordEncoder.ts';
-import { recordAction } from './analytics/write';
+import { INVALIDATED, EVICTED } from './Table.js';
+import type { DirectCondition, Id } from './ResourceInterface.js';
+import { RequestTarget } from './RequestTarget.js';
+import { lastMetadata } from './RecordEncoder.js';
+import { recordAction } from './analytics/write.js';
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;

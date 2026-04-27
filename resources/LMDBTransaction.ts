@@ -4,12 +4,12 @@ import {
 	type CommitOptions,
 	type TransactionWrite,
 	type CommitResolution,
-} from './DatabaseTransaction';
+} from './DatabaseTransaction.js';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
-import type { Context } from './ResourceInterface.ts';
+import type { Context } from './ResourceInterface.js';
 import { Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
-import type { RootDatabaseKind } from './databases.ts';
+import type { RootDatabaseKind } from './databases.js';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const trackedTxns = new Set<DatabaseTransaction>();

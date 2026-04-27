@@ -75,7 +75,27 @@
 		"test:unit:typestrip:all": "npm run test:unit:typestrip unitTests"
 	},
 	"imports": {
+		"#src/*.ts": {
+			"import": {
+				"typestrip": "./*.ts",
+				"default": "./dist/*.js"
+			},
+			"require": {
+				"typestrip": "./*.ts",
+				"default": "./dist/*.js"
+			}
+		},
 		"#src/*": {
+			"import": {
+				"typestrip": "./*.ts",
+				"default": "./dist/*.js"
+			},
+			"require": {
+				"typestrip": "./*.ts",
+				"default": "./dist/*.js"
+			}
+		},
+		"#js/*.ts": {
 			"import": {
 				"typestrip": "./*.ts",
 				"default": "./dist/*.js"

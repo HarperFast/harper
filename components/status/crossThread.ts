@@ -7,9 +7,9 @@
 
 import { sendItcEvent } from '../../server/threads/itc.js';
 import { getWorkerIndex, onMessageByType, getWorkerCount } from '../../server/threads/manageThreads.js';
-import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
-import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
+import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.js';
+import { loggerWithTag } from '../../utility/logging/logger.js';
+import { ComponentStatusRegistry } from './ComponentStatusRegistry.js';
 import {
 	type ComponentStatusSummary,
 	type WorkerComponentStatuses,
@@ -17,8 +17,8 @@ import {
 	type ComponentStatusLevel,
 	COMPONENT_STATUS_LEVELS,
 	type ComponentStatusAbnormality,
-} from './types.ts';
-import { ITCError } from './errors.ts';
+} from './types.js';
+import { ITCError } from './errors.js';
 
 const logger = loggerWithTag('componentStatus.crossThread');
 

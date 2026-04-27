@@ -8,8 +8,8 @@
 import { createServer, type Server } from 'node:http';
 import * as pkijs from 'pkijs';
 import * as asn1js from 'asn1js';
-import { signBasicOCSPResponse } from './certGenUtils.ts';
-import type { OcspServerCerts } from './ocsp/generate-test-certs.ts';
+import { signBasicOCSPResponse } from './certGenUtils.js';
+import type { OcspServerCerts } from './ocsp/generate-test-certs.js';
 
 const OCSP_BASIC_RESPONSE_OID = '1.3.6.1.5.5.7.48.1.1';
 

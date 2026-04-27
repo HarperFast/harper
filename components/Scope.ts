@@ -1,15 +1,15 @@
-import { type Logger } from '../utility/logging/logger.ts';
+import { type Logger } from '../utility/logging/logger.js';
 import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import { EventEmitter, once } from 'node:events';
-import { databaseEventsEmitter } from '../resources/databases.ts';
-import { server, type Server } from '../server/Server.ts';
-import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
-import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
-import { resources, type Resources } from '../resources/Resources.ts';
-import type { FileAndURLPathConfig } from './Component.ts';
-import { FilesOption } from './deriveGlobOptions.ts';
-import { requestRestart } from './requestRestart.ts';
-import { ApplicationScope } from './ApplicationScope.ts';
+import { databaseEventsEmitter } from '../resources/databases.js';
+import { server, type Server } from '../server/Server.js';
+import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.js';
+import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.js';
+import { resources, type Resources } from '../resources/Resources.js';
+import type { FileAndURLPathConfig } from './Component.js';
+import { FilesOption } from './deriveGlobOptions.js';
+import { requestRestart } from './requestRestart.js';
+import { ApplicationScope } from './ApplicationScope.js';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {

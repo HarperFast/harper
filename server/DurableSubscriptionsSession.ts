@@ -1,12 +1,12 @@
-import { table } from '../resources/databases.ts';
-import { keyArrayToString, resources } from '../resources/Resources.ts';
+import { table } from '../resources/databases.js';
+import { keyArrayToString, resources } from '../resources/Resources.js';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import { warn, trace } from '../utility/logging/harper_logger.js';
-import { transaction } from '../resources/transaction.ts';
+import { transaction } from '../resources/transaction.js';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
-import { server } from '../server/Server.ts';
-import { RequestTarget } from '../resources/RequestTarget';
+import { server } from '../server/Server.js';
+import { RequestTarget } from '../resources/RequestTarget.js';
 import { cloneDeep } from 'lodash';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;

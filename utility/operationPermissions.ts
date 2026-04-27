@@ -1,4 +1,4 @@
-import { OPERATIONS_ENUM } from './hdbTerms.ts';
+import { OPERATIONS_ENUM } from './hdbTerms.js';
 
 /**
  * Predefined operation permission groups for use with `operations` role permissions.

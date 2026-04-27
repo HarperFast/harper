@@ -11,9 +11,9 @@
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { OcspCertificates } from './security/ocsp/generate-test-certs.ts';
-import type { CrlCertificates } from './security/crl/generate-test-certs.ts';
-import { startOcspServer, stopOcspServer } from './security/ocspServer.ts';
+import type { OcspCertificates } from './security/ocsp/generate-test-certs.js';
+import type { CrlCertificates } from './security/crl/generate-test-certs.js';
+import { startOcspServer, stopOcspServer } from './security/ocspServer.js';
 
 export interface OcspResponderContext {
 	server: Server;
@@ -95,8 +95,8 @@ export async function stopCrlServer(ctx: CrlServerContext): Promise<void> {
 }
 
 // Re-export certificate generation functions and types
-export { generateOcspCertificates, type OcspCertificates } from './security/ocsp/generate-test-certs.ts';
-export { generateCrlCertificates, type CrlCertificates } from './security/crl/generate-test-certs.ts';
+export { generateOcspCertificates, type OcspCertificates } from './security/ocsp/generate-test-certs.js';
+export { generateCrlCertificates, type CrlCertificates } from './security/crl/generate-test-certs.js';
 
 /**
  * Setup CRL server with automatic port allocation and retry on conflict
@@ -110,7 +110,7 @@ export async function setupCrlServerWithCerts(
 		const port = 50000 + Math.floor(Math.random() * 10000);
 
 		try {
-			const { generateCrlCertificates } = await import('./security/crl/generate-test-certs.ts');
+			const { generateCrlCertificates } = require('./security/crl/generate-test-certs.js');
 			const certs = await generateCrlCertificates(certsPath, hostname, port);
 			return startCrlServer(certsPath, port, certs);
 		} catch (error: any) {
@@ -138,7 +138,7 @@ export async function setupOcspResponderWithCerts(
 		const port = 50000 + Math.floor(Math.random() * 10000);
 
 		try {
-			const { generateOcspCertificates } = await import('./security/ocsp/generate-test-certs.ts');
+			const { generateOcspCertificates } = require('./security/ocsp/generate-test-certs.js');
 			const { files, serverCerts } = await generateOcspCertificates(certsPath, hostname, port);
 
 			const server = await startOcspServer(port, serverCerts);

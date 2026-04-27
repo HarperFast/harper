@@ -1,0 +1,49 @@
+import { onMessageByType } from '../server/threads/manageThreads.ts';
+import { readdirSync, readFileSync, existsSync, realpathSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
+import { isMainThread } from 'node:worker_threads';
+import { parseDocument } from 'yaml';
+import * as env from '../utility/environment/environmentManager.ts';
+import { PACKAGE_ROOT } from '../utility/packageUtils.ts';
+import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
+import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.ts';
+import { scopedImport } from '../security/jsLoader.ts';
+import { server } from '../server/Server.ts';
+import { Resources } from '../resources/Resources.ts';
+import { table } from '../resources/databases.ts';
+import { startSocketServer } from '../server/threads/socketRouter.ts';
+import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
+import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
+import httpComponent from '../server/http.ts';
+
+// Lazy-loaded built-ins to break circular dependencies
+export const TRUSTED_RESOURCE_PLUGINS: any = {
+	get REST() { return require('../server/REST.ts'); },
+	get rest() { return require('../server/REST.ts'); },
+	get graphql() { return require('../server/graphqlQuerying.ts'); },
+	get graphqlSchema() { return require('../resources/graphql.ts'); },
+	get roles() { return require('../resources/roles.ts'); },
+	get jsResource() { return require('../resources/jsResource.ts'); },
+	get fastifyRoutes() { return require('../server/fastifyRoutes.ts'); },
+	get login() { return require('../resources/login.ts'); },
+	get static() { return require('../server/static.ts'); },
+	get operationsApi() { return require('../server/operationsServer.ts'); },
+	customFunctions: {},
+	http: httpComponent,
+	get authentication() { return require('../security/auth.ts'); },
+	get mqtt() { return require('../server/mqtt.ts'); },
+	get loadEnv() { return require('../resources/loadEnv.ts'); },
+	get logging() { return require('../utility/logging/harper_logger.ts'); },
+	get dataLoader() { return require('../resources/dataLoader.ts'); },
+};
+
+function getEnvBuiltInComponents() {
+    // placeholder or actual implementation
+    return [];
+}
+
+for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
+	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
+}
+
+const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);

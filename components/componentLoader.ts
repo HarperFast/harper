@@ -1,44 +1,30 @@
-import { onMessageByType } from '../server/threads/manageThreads.js';
+import { onMessageByType } from '../server/threads/threadEvents.js';
 import { readdirSync, readFileSync, existsSync, realpathSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.js';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
-import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
-import * as graphqlHandler from '../resources/graphql.ts';
-import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
-import * as roles from '../resources/roles.ts';
-import * as jsHandler from '../resources/jsResource.ts';
-import * as login from '../resources/login.ts';
-import * as REST from '../server/REST.ts';
-import * as fastifyRoutesHandler from '../server/fastifyRoutes.ts';
-import * as staticFiles from '../server/static.ts';
-import * as loadEnv from '../resources/loadEnv.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
-import * as dataLoader from '../resources/dataLoader.ts';
+import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.js';
 import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
-import { scopedImport } from '../security/jsLoader.ts';
-import { server } from '../server/Server.ts';
-import { Resources } from '../resources/Resources.ts';
-import { table } from '../resources/databases.ts';
-import { startSocketServer } from '../server/threads/socketRouter.ts';
+import { scopedImport } from '../security/jsLoader.js';
+import { server } from '../server/Server.js';
+import { Resources } from '../resources/Resources.js';
+import { table } from '../resources/databases.js';
+import { startSocketServer } from '../server/threads/socketRouter.js';
 import { getHdbBasePath } from '../utility/environment/environmentManager.js';
-import * as operationsServer from '../server/operationsServer.ts';
-import * as auth from '../security/auth.ts';
-import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, getConfigPath } from '../config/configUtils.js';
-import { createReuseportFd } from '../server/serverHelpers/Request.ts';
-import { ErrorResource } from '../resources/ErrorResource.ts';
-import { Scope } from './Scope.ts';
-import { ApplicationScope } from './ApplicationScope.ts';
-import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
-import * as httpComponent from '../server/http.ts';
-import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle } from './status/index.ts';
-import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
-import { PluginModule } from './PluginModule.ts';
-import { getEnvBuiltInComponents } from './Application.ts';
+import { createReuseportFd } from '../server/serverHelpers/Request.js';
+import { ErrorResource } from '../resources/ErrorResource.js';
+import { Scope } from './Scope.js';
+import { ApplicationScope } from './ApplicationScope.js';
+import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.js';
+import * as httpComponent from '../server/http.js';
+import { Status } from '../server/status/index.js';
+import { lifecycle as componentLifecycle } from './status/index.js';
+import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.js';
+import { PluginModule } from './PluginModule.js';
+import { getEnvBuiltInComponents } from './Application.js';
 import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
@@ -82,28 +68,24 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 	});
 }
 
-export const TRUSTED_RESOURCE_PLUGINS = {
-	REST, // for backwards compatibility with older configs
-	rest: REST,
-	graphql: graphqlQueryHandler,
-	graphqlSchema: graphqlHandler,
-	roles,
-	jsResource: jsHandler,
-	fastifyRoutes: fastifyRoutesHandler,
-	login,
-	static: staticFiles,
-	operationsApi: operationsServer,
+export const TRUSTED_RESOURCE_PLUGINS: any = {
+	get REST() { return require('../server/REST.js'); },
+	get rest() { return require('../server/REST.js'); },
+	get graphql() { return require('../server/graphqlQuerying.js'); },
+	get graphqlSchema() { return require('../resources/graphql.js'); },
+	get roles() { return require('../resources/roles.js'); },
+	get jsResource() { return require('../resources/jsResource.js'); },
+	get fastifyRoutes() { return require('../server/fastifyRoutes.js'); },
+	get login() { return require('../resources/login.js'); },
+	get static() { return require('../server/static.js'); },
+	get operationsApi() { return require('../server/operationsServer.js'); },
 	customFunctions: {},
 	http: httpComponent,
-	authentication: auth,
-	mqtt,
-	loadEnv,
-	logging: harperLogger,
-	dataLoader,
-	/*
-	static: ...
-	login: ...
-	 */
+	get authentication() { return require('../security/auth.js'); },
+	get mqtt() { return require('../server/mqtt.js'); },
+	get loadEnv() { return require('../resources/loadEnv.js'); },
+	get logging() { return require('../utility/logging/harper_logger.js'); },
+	get dataLoader() { return require('../resources/dataLoader.js'); },
 };
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
@@ -296,9 +278,9 @@ export async function loadComponent(
 			try {
 				await symlinkHarperModule(componentDirectory);
 			} catch (error) {
-				harperLogger.error('Error symlinking harperdb module', error);
+				(harperLogger as any).error('Error symlinking harperdb module', error);
 				if (error.code == 'EPERM' && process.platform === 'win32') {
-					harperLogger.error(
+					(harperLogger as any).error(
 						'You may need to enable developer mode in "Settings" / "System" (or "Update & Security") / "For developers", in order to enable symlinks so components can use `import from "harperdb"`'
 					);
 				}
@@ -437,7 +419,7 @@ export async function loadComponent(
 						'setupFile' in extensionModule ||
 						'setupDirectory' in extensionModule)
 				) {
-					harperLogger.warn?.(
+					(harperLogger as any).warn?.(
 						`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API. For more information: https://docs.harperdb.io/docs/reference/components/plugins`
 					);
 				}
@@ -458,7 +440,7 @@ export async function loadComponent(
 								if (+possiblePort && !portsStarted.includes(possiblePort)) {
 									const sessionAffinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
 									if (sessionAffinity)
-										harperLogger.warn('Session affinity is not recommended and may cause memory leaks');
+										(harperLogger as any).warn('Session affinity is not recommended and may cause memory leaks');
 									if (sessionAffinity || !createReuseportFd) {
 										// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
 										portsStarted.push(possiblePort);
@@ -508,7 +490,7 @@ export async function loadComponent(
 					error.message
 				}`;
 				errorReporter?.(error);
-				(getWorkerIndex() === 0 ? console : harperLogger).error(error);
+				(getWorkerIndex() === 0 ? console : harperLogger as any).error(error);
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
@@ -537,13 +519,13 @@ export async function loadComponent(
 		) {
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
 			errorReporter?.(new Error(errorMessage));
-			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
+			(getWorkerIndex() === 0 ? console : harperLogger as any).error(errorMessage);
 			componentLifecycle.failed(basename(componentDirectory), errorMessage);
 		}
 
 		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {
 			if (!functionality)
-				harperLogger.warn(
+				(harperLogger as any).warn(
 					`Component ${componentName} from (${basename(componentDirectory)}) did not load any functionality.`
 				);
 		}

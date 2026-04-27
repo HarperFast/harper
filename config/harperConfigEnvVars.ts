@@ -11,12 +11,13 @@
  * - Snapshot-based deletion (remove values when omitted from env var)
  */
 
-import type { Logger } from '../utility/logging/logger.ts';
+import type { Logger } from '../utility/logging/logger.js';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
-import { getBackupDirPath } from './configHelpers.ts';
+import { getBackupDirPath } from './configHelpers.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.js';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 
@@ -25,8 +26,7 @@ const STATE_FILE_NAME = '.harper-config-state.json';
  * and ensure logger is initialized before use
  */
 function getLogger(): Logger {
-	const { loggerWithTag } = require('../utility/logging/harper_logger.js');
-	return loggerWithTag('env-config');
+    return loggerWithTag('env-config');
 }
 
 // Type definitions

@@ -1,4 +1,4 @@
-import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases.ts';
+import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases.js';
 import { open } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
@@ -7,13 +7,13 @@ import { get } from '../utility/environment/environmentManager.js';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.js';
-import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
-import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
+import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.js';
+import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.js';
 import { describeSchema } from '../dataLayer/schemaDescribe.js';
 import { updateConfigValue } from '../config/configUtils.js';
 import * as hdbLogger from '../utility/logging/harper_logger.js';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
-import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
+import { RocksIndexStore } from '../resources/RocksIndexStore.js';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');

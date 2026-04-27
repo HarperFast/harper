@@ -1,4 +1,4 @@
-import { HierarchicalNavigableSmallWorld } from './HierarchicalNavigableSmallWorld.ts';
+import { HierarchicalNavigableSmallWorld } from './HierarchicalNavigableSmallWorld.js';
 
 export const CUSTOM_INDEXES = {
 	HNSW: HierarchicalNavigableSmallWorld,

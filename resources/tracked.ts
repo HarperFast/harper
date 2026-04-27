@@ -1,6 +1,6 @@
 import { ClientError } from '../utility/errors/hdbError.js';
-import * as crdtOperations from './crdt.ts';
-import { Blob } from './blob.ts';
+import * as crdtOperations from './crdt.js';
+import { Blob } from './blob.js';
 
 function getChanges(target) {
 	let changes = target.getChanges();

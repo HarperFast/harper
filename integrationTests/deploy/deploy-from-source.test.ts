@@ -12,8 +12,8 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
-import { targz } from '../utils/targz.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.js';
+import { targz } from '../utils/targz.js';
 
 suite('Local application deployment', (ctx: ContextWithHarper) => {
 	before(async () => {

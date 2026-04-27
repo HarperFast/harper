@@ -3,10 +3,10 @@
  */
 
 import * as pkijs from 'pkijs';
-import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { table } from '../../resources/databases.ts';
-import { Resource } from '../../resources/Resource.ts';
-import type { SourceContext } from '../../resources/ResourceInterface.ts';
+import { loggerWithTag } from '../../utility/logging/logger.js';
+import { table } from '../../resources/databases.js';
+import { Resource } from '../../resources/Resource.js';
+import type { SourceContext } from '../../resources/ResourceInterface.js';
 import {
 	extractCRLDistributionPoints,
 	extractSerialNumber,
@@ -16,8 +16,8 @@ import {
 	createCacheKey,
 	getCertificateCacheTable as getSharedCertificateCacheTable,
 	pemToBuffer,
-} from './verificationUtils.ts';
-import { ERROR_CACHE_TTL, CRL_DEFAULT_VALIDITY_PERIOD, CRL_USER_AGENT } from './verificationConfig.ts';
+} from './verificationUtils.js';
+import { ERROR_CACHE_TTL, CRL_DEFAULT_VALIDITY_PERIOD, CRL_USER_AGENT } from './verificationConfig.js';
 import type {
 	CertificateVerificationResult,
 	CertificateVerificationContext,
@@ -27,7 +27,7 @@ import type {
 	CRLVerificationContext,
 	CRLCacheEntry,
 	RevokedCertificateEntry,
-} from './types.ts';
+} from './types.js';
 
 /**
  * Custom error for CRL signature verification failures
@@ -39,7 +39,7 @@ export class CRLSignatureVerificationError extends Error {
 		this.name = 'CRLSignatureVerificationError';
 	}
 }
-import { CertificateVerificationSource } from './certificateVerificationSource.ts';
+import { CertificateVerificationSource } from './certificateVerificationSource.js';
 
 const logger = loggerWithTag('crl-verification');
 

@@ -22,12 +22,12 @@
  * - Failure mode: fail-closed (rejects connections if verification fails)
  */
 
-import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { extractCertificateChain, extractRevocationUrls, bufferToPem } from './verificationUtils.ts';
-import { getCachedCertificateVerificationConfig } from './verificationConfig.ts';
-import { verifyOCSP } from './ocspVerification.ts';
-import { verifyCRL } from './crlVerification.ts';
-import type { PeerCertificate, CertificateVerificationResult } from './types.ts';
+import { loggerWithTag } from '../../utility/logging/logger.js';
+import { extractCertificateChain, extractRevocationUrls, bufferToPem } from './verificationUtils.js';
+import { getCachedCertificateVerificationConfig } from './verificationConfig.js';
+import { verifyOCSP } from './ocspVerification.js';
+import { verifyCRL } from './crlVerification.js';
+import type { PeerCertificate, CertificateVerificationResult } from './types.js';
 
 const logger = loggerWithTag('cert-verification');
 

@@ -1,18 +1,19 @@
 import {
 	startWorker,
-	setMonitorListener,
 	setMainIsWorker,
 	shutdownWorkers,
 	threadsHaveStarted,
 } from './manageThreads.js';
+import { setMonitorListener } from './threadMonitor.js';
 import { createServer, Socket } from 'net';
-import * as hdbTerms from '../../utility/hdbTerms.ts';
+import * as hdbTerms from '../../utility/hdbTerms.js';
 import * as harperLogger from '../../utility/logging/harper_logger.js';
 import { unlinkSync, existsSync } from 'fs';
-import { recordHostname, recordAction } from '../../resources/analytics/write.ts';
+import { recordHostname, recordAction } from '../../resources/analytics/write.js';
 import { isMainThread } from 'worker_threads';
 import { packageJson } from '../../utility/packageUtils.js';
 import { join } from 'path';
+import { loadRootComponents } from '../loadRootComponents.js';
 
 const workers = [];
 let queuedSockets = [];
@@ -40,14 +41,17 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		if (dynamicThreads) {
 			startHTTPWorker(0, 1, true);
 		} else {
-			const { loadRootComponents } = require('../loadRootComponents.js');
-			if (threadCount === 0) {
+
+
+                        
+
+            if (threadCount === 0) {
 				setMainIsWorker(true);
 				await require('./threadServer.js').startServers();
 				return Promise.resolve([]);
 			}
-			await loadRootComponents();
-		}
+            await loadRootComponents();
+        }
 		for (let i = 0; i < threadCount; i++) {
 			startHTTPWorker(i, threadCount);
 		}

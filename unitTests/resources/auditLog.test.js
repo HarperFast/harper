@@ -1,16 +1,18 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
+setupTestDBPath();
+
 const { table } = require('#src/resources/databases');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 require('#src/server/serverHelpers/serverUtilities');
+
 describe('Audit log', () => {
 	let AuditedTable;
 	let events = [];
 
 	before(async function () {
-		setupTestDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
 		AuditedTable = table({
 			table: 'AuditedTable',

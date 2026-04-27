@@ -11,7 +11,7 @@ export class InvalidBaseURLPathError extends Error {
  * - `undefined`, `''`, `'/'` -> `'/'`
  * - `'static'`, `'/static/'`, `'/static'`, `'static/'` -> `'/static/'`
  * - `'v1/static'`, `'/v1/static/'`, `'/v1/static'`, `'v1/static/'` -> `'/v1/static/'`
- * - `'./static'`, `'./static/'` -> `'/test-component/static/'`
+ * - `'./static.js'`, `'./static/.js'` -> `'/test-component/static/'`
  * - `'.'`, `'./'` -> `'/test-component/'`
  * - `'..'`, `'../'`, `'../static'`, `'./..'` -> Error
  */

@@ -5,15 +5,15 @@
  * centralized management of component health status.
  */
 
-import { ComponentStatus } from './ComponentStatus.ts';
+import { ComponentStatus } from './ComponentStatus.js';
 import {
 	type ComponentStatusLevel,
 	COMPONENT_STATUS_LEVELS,
 	type AggregatedComponentStatus,
 	type ComponentApplicationStatus,
-} from './types.ts';
-import { crossThreadCollector, StatusAggregator } from './crossThread.ts';
-import { ComponentStatusOperationError } from './errors.ts';
+} from './types.js';
+import { crossThreadCollector, StatusAggregator } from './crossThread.js';
+import { ComponentStatusOperationError } from './errors.js';
 
 /**
  * Map of component names to their status information

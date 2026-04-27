@@ -13,9 +13,9 @@
 		"upgrade/**/*",
 		"utility/**/*",
 		"validation/**/*",
-		"globals.js",
+		"globals.ts",
 		"index.d.ts",
-		"index.js"
+		"index.ts"
 	],
 	"compilerOptions": {
 		// Allow JS files for mixed codebase
@@ -26,8 +26,8 @@
 
 		// Target Node 20+ with ES2022 features
 		"target": "ES2022",
-		"module": "NodeNext",
-		"moduleResolution": "NodeNext",
+		"module": "CommonJS",
+		"moduleResolution": "Node",
 
 		// Interop and module resolution
 		"esModuleInterop": true,

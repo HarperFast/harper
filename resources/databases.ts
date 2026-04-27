@@ -9,28 +9,28 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { makeTable } from './Table.ts';
+import { makeTable } from './Table.js';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
-import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.js';
 import { getConfigPath } from '../config/configUtils.js';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
-import harperLogger from '../utility/logging/harper_logger.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
-import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
-import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { deleteRootBlobPathsForDB } from './blob.ts';
-import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
+import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.js';
+import { handleLocalTimeForGets } from './RecordEncoder.js';
+import { deleteRootBlobPathsForDB } from './blob.js';
+import { CUSTOM_INDEXES } from './indexes/customIndexes.js';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
-import { replayLogs } from './replayLogs.ts';
+import { replayLogs } from './replayLogs.js';
 import { totalmem } from 'node:os';
-import { RocksIndexStore } from './RocksIndexStore.ts';
-import { when } from '../utility/when.ts';
+import { RocksIndexStore } from './RocksIndexStore.js';
+import { when } from '../utility/when.js';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 
 function createOpenDBIObject(dupSort = false, isPrimary = false) {

@@ -2,7 +2,7 @@
  * Shared TypeScript interfaces and types for certificate verification
  */
 
-import type { Context } from '../../resources/ResourceInterface.ts';
+import type { Context } from '../../resources/ResourceInterface.js';
 
 export type CertificateStatus = 'good' | 'revoked' | 'unknown';
 

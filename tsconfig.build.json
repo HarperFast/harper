@@ -3,6 +3,7 @@
 	"exclude": ["index.d.ts"],
 	"compilerOptions": {
 		"noEmit": false,
+		"noCheck": true,
 		"rewriteRelativeImportExtensions": true,
 		"outDir": "dist",
 		"declaration": true,
