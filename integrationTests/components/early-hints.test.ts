@@ -8,7 +8,7 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
 
-import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const q = (url: string) => encodeURIComponent(url);
 

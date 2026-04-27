@@ -8,7 +8,7 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 
-import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const REDIRECT_CSV = `utcStartTime,utcEndTime,path,host,version,redirectURL,operations,statusCode,regex
 ,,/shop/live-shopping,,0,/s/events,,301,
