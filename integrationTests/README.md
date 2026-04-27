@@ -61,7 +61,7 @@ npm run test:integration:all -- --shard=3/4
 To capture Harper's logs during a test run, set `HARPER_INTEGRATION_TEST_LOG_DIR`. Logs from passing suites are cleaned up automatically; only failing suite logs are retained.
 
 ```sh
-HARPER_INTEGRATION_TEST_LOG_DIR=/tmp/harper-test-logs npm run test:integration
+HARPER_INTEGRATION_TEST_LOG_DIR=/tmp/harper-test-logs npm run test:integration:all
 ```
 
 This is how CI captures logs for failed jobs — the log directory is uploaded as a workflow artifact.
