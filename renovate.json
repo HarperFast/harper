@@ -17,9 +17,14 @@
 			"pinDigests": true
 		},
 		{
+			"matchPackageNames": ["alasql"],
+			"groupName": "alasql"
+		},
+		{
 			"groupName": "all non-major dependencies",
 			"groupSlug": "all-minor-patch",
 			"matchUpdateTypes": ["minor", "patch"],
+			"excludePackageNames": ["alasql"],
 			"matchCurrentVersion": "!/^0/"
 		}
 	]

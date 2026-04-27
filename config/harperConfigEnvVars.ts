@@ -15,6 +15,7 @@ import type { Logger } from '../utility/logging/logger.ts';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
@@ -588,6 +589,39 @@ function cleanupRemovedEnvVar(
 
 	delete state.snapshots[sourceName];
 	logger.debug?.(`${envVarName} removed, cleaned up values`);
+}
+
+/**
+ * Compose a merged config from HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG
+ * layered with an optional base. Later layers win:
+ *   HARPER_DEFAULT_CONFIG  <  base  <  HARPER_SET_CONFIG
+ *
+ * HARPER_DEFAULT_CONFIG provides scaffolding defaults, the base (e.g., the
+ * user's existing config file) is layered on top, and HARPER_SET_CONFIG
+ * force-overrides everything. This matches the precedence applied by the
+ * runtime pipeline in applyRuntimeEnvConfig.
+ *
+ * Unlike applyRuntimeEnvConfig, this does NOT read or write the config state
+ * file and does NOT track sources — it returns a fresh object. Use when you
+ * need the effective value of a config key before the state/file wiring is in
+ * place (e.g., during clone / pre-install).
+ */
+export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
+	const result: ConfigObject = {};
+	const layers: (ConfigObject | null)[] = [
+		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
+		cloneDeep(base),
+		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
+	];
+
+	for (const layer of layers) {
+		if (!layer) continue;
+		for (const [p, value] of Object.entries(flattenObject(layer))) {
+			setNestedValue(result, p, value);
+		}
+	}
+
+	return result;
 }
 
 /**

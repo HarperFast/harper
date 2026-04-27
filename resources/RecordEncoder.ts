@@ -18,6 +18,7 @@ import {
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import './blob.ts';
 import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
+import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
@@ -614,7 +615,7 @@ export function recordUpdater(store, tableId, auditStore) {
 					store.encoder.structureUpdate = null;
 				}
 				const structureVersion = store.encoder.structures.length + (store.encoder.typedStructs?.length ?? 0);
-				const nodeId = options?.nodeId ?? server.replication?.getThisNodeId(auditStore) ?? 0;
+				const nodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
 				const viaNodeId = options?.viaNodeId ?? nodeId;
 				if (resolveRecord && existingEntry?.localTime) {
 					const replacingId = existingEntry?.localTime;
@@ -688,13 +689,13 @@ export function recordUpdater(store, tableId, auditStore) {
 export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: number }> | undefined) {
 	additionalAuditRefsNextEncoding = refs;
 }
-export function removeEntry(store: any, entry: any, existingVersion?: number) {
+export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;
 	if (entry.value && entry.metadataFlags & HAS_BLOBS) {
 		// if it used to have blobs, we need to delete the old blobs
 		deleteBlobsInObject(entry.value);
 	}
-	return store.remove(entry.key, existingVersion);
+	return store.remove(entry.key, options);
 }
 export interface RecordObject {
 	getUpdatedTime(): number;

@@ -15,7 +15,7 @@ const DELAY_ITERATIONS = 100;
 /**
  * function execute the readTransactionLog operation
  * @param {GetBackupObject} getBackupObj
- * @returns {Promise<[]>}
+ * @returns {Promise<Readable>}
  */
 async function getBackup(getBackupObj) {
 	const databaseName = getBackupObj.database || getBackupObj.schema || 'data';

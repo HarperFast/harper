@@ -22,12 +22,13 @@ function readTransactionLogValidator(req) {
 }
 
 function deleteTransactionLogsBeforeValidator(req) {
+	// `table` will need to be required for lmdb, but not for rocksdb
 	const schema = Joi.object({
 		schema: Joi.string(),
 		database: Joi.string(),
-		table: Joi.string().required(),
+		table: Joi.string(),
 		timestamp: Joi.date().timestamp().required(),
-	});
+	}).or('schema', 'database');
 
-	return validator.validateBySchema(req, schema);
+	return schema.validate(req, { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } });
 }

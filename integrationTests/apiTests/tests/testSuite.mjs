@@ -27,4 +27,5 @@ describe('Main Test Suite', async () => {
 	await import('./21_authenticationTests.mjs');
 	await import('./22_openApi.mjs');
 	await import('./23_blob.mjs');
+	await import('./28_transactionLogs.mjs');
 });

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { X509Certificate } from 'node:crypto';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import env from '../utility/environment/environmentManager.js';
+import { logger } from '../utility/logging/logger.ts';
 
 Object.defineProperty(server, 'hostname', {
 	get() {
@@ -24,17 +25,26 @@ function getCommonNameFromCert() {
 
 let nodeName: string | undefined;
 export function getThisNodeName(): string {
-	return (
-		nodeName ||
-		(nodeName =
-			env.get(CONFIG_PARAMS.NODE_HOSTNAME) ??
-			env.get('replication_hostname') ?? // for backwards compatibility
-			urlToNodeName(env.get('replication_url') as string) ??
-			getCommonNameFromCert() ??
-			getHostFromListeningPort('operationsapi_network_secureport') ??
-			getHostFromListeningPort('operationsapi_network_port') ??
-			'127.0.0.1')
-	);
+	if (nodeName) return nodeName; // if already determined, just return
+	nodeName = env.get(CONFIG_PARAMS.NODE_HOSTNAME); // standard config
+	if (nodeName) {
+		if (env.get('replication_hostname') && env.get('replication_hostname') !== nodeName) {
+			// if these are both set, it can be very confusing, make sure to warn
+			logger.warn?.(
+				`The node.hostname and replication.hostname configuration values are both set and are different. It is recommended that you set the node.hostname, using node.hostname: ${nodeName})`
+			);
+		}
+		return nodeName;
+	}
+	// fallback to other means of getting the node name
+	nodeName =
+		env.get('replication_hostname') ?? // for backwards compatibility
+		urlToNodeName(env.get('replication_url') as string) ??
+		getCommonNameFromCert() ??
+		getHostFromListeningPort('operationsapi_network_secureport') ??
+		getHostFromListeningPort('operationsapi_network_port') ??
+		'127.0.0.1';
+	return nodeName;
 }
 
 export function clearThisNodeName() {

@@ -61,19 +61,23 @@ class BridgeMethods {
 		throw new Error('getDataByHash bridge method is not defined');
 	}
 
-	getDataByValue() {
+	async getDataByValue(_searchObject, _comparator) {
 		throw new Error('getDataByValue bridge method is not defined');
 	}
 
-	deleteRecordsBefore() {
+	async deleteRecordsBefore(_deleteObj) {
 		throw new Error('deleteRecordsBefore bridge method is not defined');
 	}
 
-	deleteAuditLogsBefore() {
+	async deleteAuditLogsBefore(_deleteObj) {
 		throw new Error('deleteAuditLogsBefore bridge method is not defined');
 	}
 
-	async readAuditLog() {
+	async deleteTransactionLogsBefore(_deleteObj) {
+		throw new Error('deleteTransactionLogsBefore bridge method is not defined');
+	}
+
+	async readAuditLog(_readAuditLogObj) {
 		throw new Error('readAuditLog bridge method is not defined');
 	}
 }

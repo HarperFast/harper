@@ -63,7 +63,7 @@ function buildRequest() {
  */
 async function cliOperations(req) {
 	if (!req.target) {
-		req.target = process.env.CLI_TARGET;
+		req.target = process.env.HARPER_CLI_TARGET || process.env.CLI_TARGET;
 	}
 	let target;
 	if (req.target) {
@@ -73,20 +73,22 @@ async function cliOperations(req) {
 			try {
 				target = new URL(`https://${req.target}:9925`);
 			} catch {
-				throw error; // throw the original error
+				throw error;
 			}
 		}
 		target = {
 			protocol: target.protocol,
 			hostname: target.hostname,
 			port: target.port,
-			username: req.username || target.username || process.env.CLI_TARGET_USERNAME,
-			password: req.password || target.password || process.env.CLI_TARGET_PASSWORD,
+			username: req.username || target.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME,
+			password: req.password || target.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
 			rejectUnauthorized: req.rejectUnauthorized,
 		};
+		console.error(`Connecting to ${target.protocol}//${target.hostname}:${target.port}`);
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
+		console.error('Connecting to local Harper instance');
 		initConfig();
 		if (!getHdbPid()) {
 			console.error('Harper must be running to perform this operation');

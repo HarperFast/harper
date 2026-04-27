@@ -458,7 +458,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							}
 							subscription.acks.push(update.timestamp);
 							trace('Received ack', topic, update.timestamp);
-							DurableSession.put(this.sessionRecord);
+							DurableSession.put(this.sessionRecord, { source: true }); // add source: true context to bypass any overloaded checks, as skipping this can lead to increased load
 							return;
 						}
 					}
@@ -471,7 +471,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				subscription.startTime = update.timestamp;
 			}
 		}
-		DurableSession.put(this.sessionRecord);
+		DurableSession.put(this.sessionRecord, { source: true });
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 

@@ -120,9 +120,13 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	}
 	let db: RocksRootDatabase;
 	if (options.dupSort) {
-		db = RocksDatabase.open(new RocksIndexStore(path, options)) as RocksDatabaseEx;
+		db = new RocksIndexStore(path, options).open() as RocksDatabaseEx;
 	} else {
 		db = RocksDatabase.open(path, options) as RocksDatabaseEx;
+		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
+		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
+		db.put = db.putSync;
+		db.remove = db.removeSync;
 		db.encoder.name = options.name;
 	}
 	db.env = {};
@@ -386,18 +390,18 @@ function initStores(
 ) {
 	const envInit = new OpenEnvironmentObject(path, false);
 	const internalDbiInit = createOpenDBIObject(false);
-	let dbisStore = rootStore.dbisDb;
-	if (!dbisStore) {
+	let attributesDbi = rootStore.dbisDb;
+	if (!attributesDbi) {
 		if (rootStore instanceof RocksDatabase) {
-			dbisStore = openRocksDatabase(rootStore.path, {
+			attributesDbi = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
 			}) as RocksDatabaseEx;
 		} else {
-			dbisStore = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
+			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
 		}
-		rootStore.dbisDb = dbisStore;
+		rootStore.dbisDb = attributesDbi;
 	}
 
 	let auditStore = rootStore.auditStore;
@@ -428,7 +432,7 @@ function initStores(
 	definedTables.rootStore = rootStore;
 	const tablesToLoad = new Map<string, any>();
 
-	for (const result of dbisStore.getRange({ start: false })) {
+	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
@@ -489,16 +493,16 @@ function initStores(
 		} else {
 			tableId = primaryAttribute.tableId;
 			if (tableId) {
-				if (tableId >= (dbisStore.getSync(NEXT_TABLE_ID) || 0)) {
-					dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
+				if (tableId >= (attributesDbi.getSync(NEXT_TABLE_ID) || 0)) {
+					attributesDbi.putSync(NEXT_TABLE_ID, tableId + 1);
 					logger.info(`Updating next table id (it was out of sync) to ${tableId + 1} for ${tableName}`);
 				}
 			} else {
-				primaryAttribute.tableId = tableId = dbisStore.getSync(NEXT_TABLE_ID);
+				primaryAttribute.tableId = tableId = attributesDbi.getSync(NEXT_TABLE_ID);
 				if (!tableId) tableId = 1;
 				logger.debug(`Table {tableName} missing an id, assigning {tableId}`);
-				dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
-				dbisStore.putSync(primaryAttribute.key, primaryAttribute);
+				attributesDbi.putSync(NEXT_TABLE_ID, tableId + 1);
+				attributesDbi.putSync(primaryAttribute.key, primaryAttribute);
 			}
 			const dbiInit = createOpenDBIObject(!primaryAttribute.isPrimaryKey, primaryAttribute.isPrimaryKey);
 			dbiInit.compression = primaryAttribute.compression;
@@ -544,7 +548,18 @@ function initStores(
 			const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 			if (!attribute) {
 				if (existingAttribute.isPrimaryKey) {
-					logger.error('Unable to remove existing primary key attribute', existingAttribute);
+					logger.error(
+						new Error('Unable to remove existing primary key attribute'),
+						existingAttribute,
+						'from attributes',
+						existingAttributes,
+						'in',
+						tableName,
+						'requesting new attribute list',
+						attributes,
+						'full metadata list',
+						Array.from(attributesDbi.getRange({ start: false }))
+					);
 					continue;
 				}
 				if (existingAttribute.indexed) {
@@ -581,7 +596,7 @@ function initStores(
 					indices,
 					attributes,
 					schemaDefined: primaryAttribute.schemaDefined,
-					dbisDB: dbisStore,
+					dbisDB: attributesDbi,
 				})
 			);
 			table.schemaVersion = 1;

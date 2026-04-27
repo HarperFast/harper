@@ -1,3 +1,7 @@
+/**
+ * This file is used by `utility/operation_authorization.js` to define the permissions.
+ */
+
 'use strict';
 
 const harperBridge = require('./harperBridge/harperBridge.js');

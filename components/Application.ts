@@ -172,15 +172,30 @@ export async function extractApplication(application: Application) {
 				}
 			}
 		} else {
-			// Given a package, resolve using `npm pack` (downloads the package as a tarball and writes the path to stdout)
-			const {
-				stdout: tarballFilePath,
-				code,
-				stderr,
-			} = await nonInteractiveSpawn(application.name, 'npm', ['pack', application.packageIdentifier], parentDirPath);
-			if (code !== 0) throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
-			tarballPath = join(parentDirPath, tarballFilePath.trim());
-			// Create a Readable from the tarball
+			// `npm pack --json` writes a JSON array describing the packed tarball(s).
+			const { stdout, code, stderr } = await nonInteractiveSpawn(
+				application.name,
+				'npm',
+				['pack', '--json', application.packageIdentifier],
+				parentDirPath
+			);
+			if (code !== 0) {
+				throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+			}
+
+			let packResult: Array<{ filename: string }>;
+			try {
+				packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+			} catch (err) {
+				throw new Error(
+					`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+				);
+			}
+			if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+				throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+			}
+
+			tarballPath = join(parentDirPath, packResult[0].filename);
 			tarball = createReadStream(tarballPath);
 		}
 	}

@@ -7,6 +7,7 @@ import * as envMngr from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.js';
 import { when } from '../utility/when.ts';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore } from '@harperfast/rocksdb-js';
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -19,6 +20,7 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
+const MAX_RETRIES = 40;
 let outstandingCommit, outstandingCommitStart;
 let confirmReplication;
 export function replicationConfirmation(callback) {
@@ -93,6 +95,7 @@ export class DatabaseTransaction implements Transaction {
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 
 		this.transaction = new RocksTransaction(this.db.store);
+
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
 		}
@@ -158,7 +161,10 @@ export class DatabaseTransaction implements Transaction {
 		transaction ??= this.transaction;
 		let immediateCommit = false;
 		if (!transaction) {
-			transaction = new RocksTransaction(this.db.store as RocksStore);
+			transaction = new RocksTransaction(operation.store.store as RocksStore);
+			if (operation.store.rootStore !== this.db.rootStore) {
+				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
+			}
 			if (this.open === TRANSACTION_STATE.OPEN) {
 				this.transaction = transaction;
 			} else {
@@ -168,9 +174,10 @@ export class DatabaseTransaction implements Transaction {
 			if (txnTime) {
 				transaction.setTimestamp(txnTime);
 			}
+		} else {
 		}
 		if (this.retries > 0) {
-			// this is marks the rocks transaction as a retry so we don't write the transaction log again
+			// This marks the Rocks transaction as a retry so we don't write the transaction log again
 			transaction.isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
@@ -295,6 +302,16 @@ export class DatabaseTransaction implements Transaction {
 							// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 							// for future transactions
 							this.retries++;
+							harperLogger.debug?.('retrying', transaction.id, this.retries);
+							if (this.retries > 2) {
+								if (this.retries > MAX_RETRIES) {
+									throw new ServerError(
+										`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+									);
+								}
+								// start delaying, back off to try to space out transactions and avoid excessive conflicts
+								return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
+							}
 							return this.commit({ transaction }); // try again
 						} else throw error;
 					}

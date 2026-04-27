@@ -355,7 +355,20 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 										} else {
 											// set a timer for the watcher too
 											timer = setTimeout(() => {
-												onError(new Error(`File read timed out reading from ${filePath}`));
+												if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
+													// finally try to read one more time to see if it was a watcher failure
+													onError(
+														new Error(
+															`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+														)
+													);
+												} else {
+													onError(
+														new Error(
+															`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+														)
+													);
+												}
 											}, FILE_READ_TIMEOUT).unref();
 										}
 									} else {
@@ -952,7 +965,7 @@ export function deleteBlobsInObject(object) {
  */
 export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	if (object instanceof Blob) {
-		// eslint-disable-next-line
+		//
 		// @ts-ignore
 		callback(object);
 	} else if (Array.isArray(object)) {

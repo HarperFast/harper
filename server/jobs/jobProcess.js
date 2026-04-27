@@ -9,6 +9,10 @@ const serverUtils = require('../serverHelpers/serverUtilities.ts');
 const moment = require('moment');
 const jobs = require('./jobs.js');
 const { cloneDeep } = require('lodash');
+const { getEnvBuiltInComponents } = require('../../components/Application.ts');
+const { pathToFileURL } = require('node:url');
+const { join } = require('node:path');
+const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const JOB_NAME = process.env[hdbTerms.PROCESS_NAME_ENV_PROP];
 const JOB_ID = JOB_NAME.substring(4);
 
@@ -25,6 +29,13 @@ const JOB_ID = JOB_NAME.substring(4);
 		harperLogger.notify('Starting job:', JOB_ID);
 		globalSchema.setSchemaDataToGlobal();
 		await user.setUsersWithRolesCache();
+
+		for (const { packageIdentifier } of getEnvBuiltInComponents()) {
+			if (packageIdentifier.startsWith('@/')) {
+				// for internal built-in components, we need to load the package in case it needs to register handlers
+				await import(pathToFileURL(join(PACKAGE_ROOT, packageIdentifier.slice(1))).toString());
+			}
+		}
 
 		// When the job record is first inserted in hdbJob table by HDB, the incoming API request is included, this is
 		// how we pass the request to the job process. IPC was initially used but messages were getting lost under heavy load.

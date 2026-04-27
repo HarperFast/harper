@@ -37,7 +37,7 @@ VOLUME /home/harperdb/harper
 
 # Install Harper globally
 RUN <<-EOF
-  npm install --global harper-*.tgz
+  npm install --ignore-scripts --global harper-*.tgz
   rm harper-*.tgz
   mkdir -p /home/harperdb/harper
   chown harperdb:harperdb /home/harperdb/harper
@@ -48,7 +48,7 @@ ENV HDB_ADMIN_USERNAME=admin
 ENV HDB_ADMIN_PASSWORD=password
 ENV ROOTPATH=/home/harperdb/harper
 ENV TC_AGREEMENT=yes
-ENV NETWORK_OPERATIONSAPI_PORT=9925
+ENV OPERATIONSAPI_NETWORK_PORT=9925
 ENV LOGGING_STDSTREAMS=true
 ENV NODE_HOSTNAME=localhost
 ENV DEFAULTS_MODE=prod

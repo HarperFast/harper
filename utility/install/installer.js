@@ -56,6 +56,7 @@ const DEV_MODE_CONFIG = {
 	[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925,
 	[CONFIG_PARAMS.LOCALSTUDIO_ENABLED]: true,
 	[CONFIG_PARAMS.NODE_HOSTNAME]: DEFAULT_NODE_HOSTNAME,
+	[CONFIG_PARAMS.APPLICATIONS_ALLOWEDDIRECTORY]: 'any',
 };
 
 // Install prompts
@@ -95,22 +96,27 @@ async function install() {
 	// Check to see if any cmd/env vars are passed that override install prompts.
 	const promptOverride = checkForPromptOverride();
 	Object.assign(promptOverride, configFromFile);
+	const hasRequiredPromptOverrides =
+		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] &&
+		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] &&
+		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD];
+
 	if (
-		promptOverride[hdbTerms.INSTALL_PROMPTS.REPLICATION_HOSTNAME] &&
+		hasRequiredPromptOverrides &&
+		!promptOverride[hdbTerms.INSTALL_PROMPTS.REPLICATION_HOSTNAME] &&
 		!promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME]
 	) {
+		promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] = null;
+	}
+
+	// REPLICATION_HOSTNAME was renamed to NODE_HOSTNAME in v5, but we still support the replication value if provided
+	if (promptOverride[hdbTerms.INSTALL_PROMPTS.REPLICATION_HOSTNAME]) {
 		promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] =
 			promptOverride[hdbTerms.INSTALL_PROMPTS.REPLICATION_HOSTNAME];
 	}
 
 	// For backwards compatibility for a time before DEFAULTS_MODE (and host name) assume prod when these args used
-	if (
-		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] &&
-		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] &&
-		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD] &&
-		promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] &&
-		promptOverride[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE] === undefined
-	) {
+	if (hasRequiredPromptOverrides && promptOverride[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE] === undefined) {
 		promptOverride[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE] = 'prod';
 	}
 

@@ -1,27 +1,32 @@
 import {
 	DBI,
-	Store,
-	type StoreContext,
 	type StoreIteratorOptions,
 	type StorePutOptions,
 	type StoreRemoveOptions,
+	RocksDatabase,
 } from '@harperfast/rocksdb-js';
 import { Id } from './ResourceInterface.ts';
 import { MAXIMUM_KEY } from 'ordered-binary';
 
 declare module '@harperfast/rocksdb-js' {
-	// eslint-disable-next-line no-unused-vars
 	interface DBI<T> {
 		getValuesCount(indexedValue: any): number;
 	}
 }
 
-export class RocksIndexStore extends Store {
+/**
+ * A specialized RocksDB-based index store that maintains indexed references to primary keys.
+ * This store uses composite keys consisting of indexed values and primary keys, enabling
+ * efficient range queries over indexed data. The actual data values are stored as null since
+ * this is purely an index structure pointing to primary records elsewhere. This extends
+ * RocksDatabase rather than a store because it actually alters the interface
+ */
+export class RocksIndexStore extends RocksDatabase {
 	/**
 	 * Get all entries matching the range
 	 * @param options
 	 */
-	getRange(context: StoreContext, options: StoreIteratorOptions): Iterable<any> {
+	getRange(options: StoreIteratorOptions): Iterable<any> {
 		let { start, end, exclusiveStart, inclusiveEnd, reverse } = options;
 		if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
 			start = [start, MAXIMUM_KEY];
@@ -30,7 +35,7 @@ export class RocksIndexStore extends Store {
 			end = [end, MAXIMUM_KEY];
 		}
 		const translatedOptions = { ...options, start, end };
-		return super.getRange(context, translatedOptions).map(({ key }) => {
+		return super.getRange(translatedOptions).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
 	}
@@ -41,20 +46,20 @@ export class RocksIndexStore extends Store {
 	 * @param primaryKey
 	 * @param txnId
 	 */
-	put(context: StoreContext, indexedValue: any, primaryKey: Id, options: StorePutOptions) {
-		return super.putSync(context, [indexedValue, primaryKey], null, options);
+	put(indexedValue: any, primaryKey: Id, options: StorePutOptions) {
+		return super.putSync([indexedValue, primaryKey], null, options);
 	}
 
-	putSync(context: StoreContext, indexedValue: any, primaryKey: Id, options: StorePutOptions) {
-		return super.putSync(context, [indexedValue, primaryKey], null, options);
+	putSync(indexedValue: any, primaryKey: Id, options: StorePutOptions) {
+		return super.putSync([indexedValue, primaryKey], null, options);
 	}
 
-	remove(context: StoreContext, indexedValue: any, primaryKey: Id, options?: StoreRemoveOptions) {
-		return super.removeSync(context, [indexedValue, primaryKey], options);
+	remove(indexedValue: any, primaryKey: Id, options?: StoreRemoveOptions) {
+		return super.removeSync([indexedValue, primaryKey], options);
 	}
 
-	removeSync(context: StoreContext, indexedValue: any, primaryKey: Id, options?: StoreRemoveOptions) {
-		super.removeSync(context, [indexedValue, primaryKey], options);
+	removeSync(indexedValue: any, primaryKey: Id, options?: StoreRemoveOptions) {
+		super.removeSync([indexedValue, primaryKey], options);
 	}
 }
 
@@ -63,7 +68,7 @@ export class RocksIndexStore extends Store {
  * classes.
  */
 DBI.prototype.getValuesCount = function getValuesCount(indexedValue: any) {
-	if (this.store instanceof RocksIndexStore) {
+	if (this instanceof RocksIndexStore) {
 		return this.store.getCount(this._context, { start: indexedValue, end: [indexedValue, MAXIMUM_KEY] });
 	}
 	throw new Error('getValuesCount is only supported if dupSort=true');

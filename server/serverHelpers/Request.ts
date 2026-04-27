@@ -24,8 +24,8 @@ interface IncomingMessage extends NodeIncomingMessage {
 export class Request {
 	#body: RequestBody | undefined;
 	#peerCertificate: any;
-	private _nodeRequest: IncomingMessage;
-	private _nodeResponse: NodeServerResponse;
+	public _nodeRequest: IncomingMessage;
+	public _nodeResponse?: NodeServerResponse;
 	public method: string;
 	public url: string;
 	public headers: Headers;
@@ -35,6 +35,7 @@ export class Request {
 		status?: number;
 		headers: ResponseHeaders;
 	};
+	public __harperRequestUpgraded: boolean;
 
 	constructor(nodeRequest: IncomingMessage, nodeResponse: NodeServerResponse) {
 		this.method = nodeRequest.method;
@@ -43,6 +44,7 @@ export class Request {
 		this._nodeResponse = nodeResponse;
 		this.url = url;
 		this.headers = new Headers(nodeRequest.headers);
+		this.__harperRequestUpgraded = false;
 	}
 	get absoluteURL() {
 		return this.protocol + '://' + this.host + this.url;

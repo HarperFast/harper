@@ -11,8 +11,6 @@ describe('9. Transactions', () => {
 
 	//Transactions Folder
 
-	//Delete Audit Logs Before Tests
-
 	it('create test table', async () => {
 		await req()
 			.send({
@@ -82,9 +80,12 @@ describe('9. Transactions', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 		assert.ok(jobResponse.body[0].message.includes('Successfully completed'), jobResponse.text);
+		assert.equal(
+			jobResponse.body[0].result?.deprecated,
+			'Please use delete_transaction_logs_before instead',
+			jobResponse.text
+		);
 	});
-
-	//Read Transaction Logs
 
 	it('create test table', async () => {
 		await req()

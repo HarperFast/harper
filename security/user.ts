@@ -258,14 +258,16 @@ async function userInfo(body): Promise<string | User> {
 	}
 
 	let user = _.cloneDeep(body.hdb_user);
-	let roleData = await search.searchByHash({
-		schema: 'system',
-		table: 'hdb_role',
-		hash_values: [user.role.id],
-		get_attributes: ['*'],
-	});
+	let roleData =
+		user.role &&
+		(await search.searchByHash({
+			schema: 'system',
+			table: 'hdb_role',
+			hash_values: [user.role.id],
+			get_attributes: ['*'],
+		}));
 
-	user.role = roleData[0];
+	user.role = roleData?.[0];
 	delete user.password;
 	delete user.refresh_token;
 	delete user.hash;
@@ -429,7 +431,7 @@ async function getSuperUser(): Promise<User | undefined> {
 		await setUsersWithRolesCache();
 	}
 	for (let [, user] of usersWithRolesMap) {
-		if (user.role.role === 'super_user') return user;
+		if (user.role?.role === 'super_user') return user;
 	}
 }
 

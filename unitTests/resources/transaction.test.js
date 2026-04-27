@@ -7,6 +7,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#js/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Transactions', () => {
 	let TxnTest, TxnTest2, TxnTest3;
@@ -26,6 +27,7 @@ describe('Transactions', () => {
 				{ name: 'countInt', type: 'Int' },
 				{ name: 'computed', computed: true, indexed: true },
 			],
+			audit: true,
 		});
 		TxnTest.sourcedFrom({
 			subscribe() {
@@ -212,6 +214,45 @@ describe('Transactions', () => {
 			let record = await TxnTest.get(61);
 			assert.equal(record.name, 'newer');
 			assert.equal(record.count, 3);
+		});
+
+		it('Write after read after delete', async function () {
+			if (isLMDB) return;
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(71, { name: 'before delete' });
+				await TxnTest.delete(71);
+				let rawRecord = TxnTest.primaryStore.getSync(71);
+				console.log({ rawRecord });
+				let record = await TxnTest.get(71);
+				assert(!record);
+				await TxnTest.put(71, { name: 'after delete' });
+				record = await TxnTest.get(71);
+				assert.equal(record.name, 'after delete');
+				await TxnTest.put(71, { name: 'after delete 2' });
+				record = await TxnTest.get(71);
+				assert.equal(record.name, 'after delete 2');
+			});
+			let record = await TxnTest.get(71);
+			assert.equal(record.name, 'after delete 2');
+		});
+
+		it('Successive patches, concurrently', async function () {
+			if (isLMDB) return;
+			await TxnTest.put(71, { name: 'original', count: 0 });
+			let txns = [];
+			for (let i = 0; i < 4; i++) {
+				txns.push(
+					transaction({}, async (txn) => {
+						await TxnTest.patch(71, { count: 1 });
+						console.log('id', txn.transaction?.id);
+						await TxnTest.patch(71, { count: 2 });
+					})
+				);
+			}
+			await Promise.all(txns);
+			let record = await TxnTest.get(71);
+			assert.equal(record.count, 2);
 		});
 
 		it('Store additional audit refs on out-of-order writes', async function () {

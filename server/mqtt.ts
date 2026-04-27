@@ -35,6 +35,13 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 		server.mqtt.events.on('error', () => {});
 	}
 	const mqttSettings = server.mqtt;
+	function emitEvent(type: string, ...args: any[]) {
+		try {
+			mqttSettings.events.emit(type, ...args);
+		} catch (error) {
+			mqttLog.warn?.(`Error emitting MQTT event '${type}':`, error);
+		}
+	}
 	let serverInstances = [];
 	const mtls = network?.mtls;
 	if (webSocket)
@@ -44,7 +51,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 					return next(ws, request, chainCompletion);
 				}
 
-				mqttSettings.events.emit('connection', ws);
+				emitEvent('connection', ws);
 				mqttLog.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
 				const { onMessage, onClose } = onSocket(
 					ws,
@@ -69,7 +76,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 			server.socket(
 				async (socket) => {
 					let user;
-					mqttSettings.events.emit('connection', socket);
+					emitEvent('connection', socket);
 					mqttLog.debug?.(
 						`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
 					);
@@ -127,7 +134,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 									);
 								}
 							} catch (error) {
-								mqttSettings.events.emit('error', error, socket);
+								emitEvent('error', error, socket);
 								mqttLog.error?.(error);
 							}
 						} else if (mtls.required) {
@@ -169,6 +176,13 @@ function onSocket(socket, send, request, user, mqttSettings) {
 				});
 		});
 	}
+	function emitEvent(type: string, ...args: any[]) {
+		try {
+			mqttSettings.events.emit(type, ...args);
+		} catch (error) {
+			mqttLog.warn?.(`Error emitting MQTT event '${type}':`, error);
+		}
+	}
 	let disconnected;
 	numberOfConnections++;
 	let session: DurableSubscriptionsSession;
@@ -182,7 +196,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		if (!disconnected) {
 			disconnected = true;
 			session?.disconnect?.();
-			mqttSettings.events.emit('disconnected', session, socket);
+			emitEvent('disconnected', session, socket);
 			mqttSettings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
 			mqttLog.debug?.('MQTT connection was closed', socket.remoteAddress);
@@ -238,7 +252,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 									remoteAddress: socket.remoteAddress,
 								});
 							}
-							mqttSettings.events.emit('auth-failed', packet, socket, error);
+							emitEvent('auth-failed', packet, socket, error);
 							recordActionBinary(false, 'connection', 'mqtt', 'connect');
 							return sendPacket({
 								// Send a connection acknowledgment with indication of auth failure
@@ -249,7 +263,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						}
 					}
 					if (!user && mqttSettings.requireAuthentication) {
-						mqttSettings.events.emit('auth-failed', packet, socket);
+						emitEvent('auth-failed', packet, socket);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -283,7 +297,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						mqttSettings.sessions.add(session);
 					} catch (error) {
 						mqttLog.error?.(error);
-						mqttSettings.events.emit('auth-failed', packet, socket, error);
+						emitEvent('auth-failed', packet, socket, error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -292,7 +306,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							returnCode: error.code || 0x80, // generic error
 						});
 					}
-					mqttSettings.events.emit('connected', session, socket);
+					emitEvent('connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
 					sendPacket({
 						// Send a connection acknowledgment
@@ -344,7 +358,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 									? 0x80 // only error code in v3.1.1
 									: 0x8f; // invalid topic indicated
 						} catch (error) {
-							mqttSettings.events.emit('error', error, socket, subscription, session);
+							emitEvent('error', error, socket, subscription, session);
 							if (error.statusCode) {
 								if (error.statusCode === 500) mqttLog.warn?.(error);
 								else mqttLog.info?.(error);
@@ -400,7 +414,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					try {
 						published = await session.publish(packet, data);
 					} catch (error) {
-						mqttSettings.events.emit('error', error, socket, packet, session);
+						emitEvent('error', error, socket, packet, session);
 						mqttLog.warn?.(error);
 						if (packet.qos > 0) {
 							sendPacket(
@@ -448,7 +462,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 				case 'disconnect':
 					disconnected = true;
 					session?.disconnect(true);
-					mqttSettings.events.emit('disconnected', session, socket);
+					emitEvent('disconnected', session, socket);
 					mqttSettings.sessions.delete(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					mqttLog.debug?.('Received disconnect command, closing MQTT session', socket.remoteAddress);
@@ -457,7 +471,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					break;
 			}
 		} catch (error) {
-			mqttSettings.events.emit('error', error, socket, packet, session);
+			emitEvent('error', error, socket, packet, session);
 			mqttLog.error?.(error);
 			sendPacket({
 				// Send a subscription acknowledgment

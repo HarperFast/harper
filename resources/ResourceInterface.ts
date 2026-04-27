@@ -69,7 +69,7 @@ export interface Context {
 	/**	 The user making the request */
 	user?: User;
 	/** Check the username and password against the core user table to verify user identity */
-	login: (username: string, password: string) => Promise<string>;
+	login?: (username: string, password: string) => Promise<string>;
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
 	session?: Session;
 	/**	 The database transaction object */

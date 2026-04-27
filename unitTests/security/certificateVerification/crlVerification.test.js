@@ -33,12 +33,12 @@ describe('certificateVerification/crlVerification.ts', function () {
 			for await (const entry of entries) {
 				try {
 					await certCacheTable.delete(entry.certificate_id);
-					// eslint-disable-next-line sonarjs/no-ignored-exceptions
+					//
 				} catch {
 					// Ignore delete errors
 				}
 			}
-			// eslint-disable-next-line sonarjs/no-ignored-exceptions
+			//
 		} catch {
 			// Ignore if cache doesn't exist yet
 		}
@@ -228,9 +228,7 @@ describe('certificateVerification/crlVerification.ts', function () {
 			const certFromBERStub = sinon.stub(pkijs.Certificate, 'fromBER').returns(mockIssuerCert);
 
 			// Mock fetch to return CRL data
-			// eslint-disable-next-line no-undef
 			const originalFetch = globalThis.fetch;
-			// eslint-disable-next-line no-undef
 			globalThis.fetch = sinon.stub().resolves({
 				ok: true,
 				status: 200,
@@ -264,7 +262,6 @@ describe('certificateVerification/crlVerification.ts', function () {
 			} finally {
 				fromBERStub.restore();
 				certFromBERStub.restore();
-				// eslint-disable-next-line no-undef
 				globalThis.fetch = originalFetch;
 			}
 		});
@@ -295,9 +292,7 @@ describe('certificateVerification/crlVerification.ts', function () {
 			const certFromBERStub = sinon.stub(pkijs.Certificate, 'fromBER').returns(mockIssuerCert);
 
 			// Mock fetch to return CRL data
-			// eslint-disable-next-line no-undef
 			const originalFetch = globalThis.fetch;
-			// eslint-disable-next-line no-undef
 			globalThis.fetch = sinon.stub().resolves({
 				ok: true,
 				status: 200,
@@ -331,7 +326,6 @@ describe('certificateVerification/crlVerification.ts', function () {
 			} finally {
 				fromBERStub.restore();
 				certFromBERStub.restore();
-				// eslint-disable-next-line no-undef
 				globalThis.fetch = originalFetch;
 			}
 		});
