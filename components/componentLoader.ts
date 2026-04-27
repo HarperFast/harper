@@ -17,7 +17,8 @@ import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
 import * as dataLoader from '../resources/dataLoader.ts';
-import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -515,10 +516,16 @@ export async function loadComponent(
 		}
 
 		compName = parentCompName;
-		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watchesSetup && autoReload) {
-			watchDir(componentDirectory, async () => {
-				return loadComponentDirectories(); // return the promise
+			let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+			subscribeToRestartRequests(() => {
+				if (debounceTimer) clearTimeout(debounceTimer);
+				debounceTimer = setTimeout(async () => {
+					debounceTimer = null;
+					resetRestartNeeded();
+					await loadComponentDirectories();
+					restartWorkers();
+				}, 500);
 			});
 		}
 		if ((config.extensionModule || config.pluginModule) && (!isMainThread || config.runOnMainThread)) {
