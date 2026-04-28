@@ -8,7 +8,8 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.js';
 import { when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Transaction as RocksTransaction, type Store as RocksStore } from '@harperfast/rocksdb-js';
+import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
+const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 
@@ -94,7 +95,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 
-		this.transaction = new RocksTransaction(this.db.store);
+		this.transaction = new RocksTransaction(this.db.store, { coordinatedRetry: true });
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
@@ -161,7 +162,7 @@ export class DatabaseTransaction implements Transaction {
 		transaction ??= this.transaction;
 		let immediateCommit = false;
 		if (!transaction) {
-			transaction = new RocksTransaction(operation.store.store as RocksStore);
+			transaction = new RocksTransaction(operation.store.store as RocksStore, { coordinatedRetry: true });
 			if (operation.store.rootStore !== this.db.rootStore) {
 				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
 			}
@@ -261,61 +262,55 @@ export class DatabaseTransaction implements Transaction {
 					});
 				}
 				const completions = [];
-				return commitResolution.then(
-					() => {
-						transaction.onCommit?.();
-						if (this.next) {
-							completions.push(this.next.commit(options));
-						}
-						if (options?.flush) {
-							completions.push(this.writes[0].store.flushed);
-						}
-						if (this.replicatedConfirmation) {
-							// if we want to wait for replication confirmation, we need to track the transaction times
-							// and when replication notifications come in, we count the number of confirms until we reach the desired number
-							const databaseName = this.writes[0].store.rootStore.databaseName;
-							const lastWrite = this.writes[this.writes.length - 1];
-							if (confirmReplication && lastWrite) {
-								completions.push(
-									confirmReplication(
-										databaseName,
-										lastWrite.store.getEntry(lastWrite.key).version,
-										this.replicatedConfirmation
-									)
+				return commitResolution.then((commitResult) => {
+					if (commitResult === RETRY_NOW_VALUE) {
+						this.retries++;
+						harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
+						if (this.retries > 2) {
+							if (this.retries > MAX_RETRIES) {
+								throw new ServerError(
+									`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 								);
 							}
+							// start delaying, back off to try to space out transactions and avoid excessive conflicts
+							return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
 						}
-						// now reset transactions tracking; this transaction be reused and committed again
-						this.writes = [];
-						if (this.#context?.resourceCache) this.#context.resourceCache = null;
-						this.next = null;
-						let txnTime = this.timestamp;
-						this.timestamp = 0; // reset the timestamp as well
-						return Promise.all(completions).then(() => {
-							return {
-								txnTime,
-							};
-						});
-					},
-					(error) => {
-						if (error.code === 'ERR_BUSY') {
-							// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
-							// for future transactions
-							this.retries++;
-							harperLogger.debug?.('retrying', transaction.id, this.retries);
-							if (this.retries > 2) {
-								if (this.retries > MAX_RETRIES) {
-									throw new ServerError(
-										`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
-									);
-								}
-								// start delaying, back off to try to space out transactions and avoid excessive conflicts
-								return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
-							}
-							return this.commit({ transaction }); // try again
-						} else throw error;
+						return this.commit({ transaction });
 					}
-				);
+					transaction.onCommit?.();
+					if (this.next) {
+						completions.push(this.next.commit(options));
+					}
+					if (options?.flush) {
+						completions.push(this.writes[0].store.flushed);
+					}
+					if (this.replicatedConfirmation) {
+						// if we want to wait for replication confirmation, we need to track the transaction times
+						// and when replication notifications come in, we count the number of confirms until we reach the desired number
+						const databaseName = this.writes[0].store.rootStore.databaseName;
+						const lastWrite = this.writes[this.writes.length - 1];
+						if (confirmReplication && lastWrite) {
+							completions.push(
+								confirmReplication(
+									databaseName,
+									lastWrite.store.getEntry(lastWrite.key).version,
+									this.replicatedConfirmation
+								)
+							);
+						}
+					}
+					// now reset transactions tracking; this transaction be reused and committed again
+					this.writes = [];
+					if (this.#context?.resourceCache) this.#context.resourceCache = null;
+					this.next = null;
+					let txnTime = this.timestamp;
+					this.timestamp = 0; // reset the timestamp as well
+					return Promise.all(completions).then(() => {
+						return {
+							txnTime,
+						};
+					});
+				});
 			}
 			const txnResolution: CommitResolution = {
 				txnTime: this.timestamp,
