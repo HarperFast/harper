@@ -395,7 +395,7 @@ describe('Request class', function () {
 		});
 	});
 
-	describe('getNodeRequestResponse', function () {
+	describe('sendNodeRequestResponse', function () {
 		let mockNodeRequest;
 
 		beforeEach(function () {
@@ -420,26 +420,34 @@ describe('Request class', function () {
 			return new Request({ ...mockNodeRequest, ...overrides }, {});
 		}
 
-		describe('nodeRequest', function () {
+		describe('nodeRequest argument', function () {
 			it('reflects current method and url', function () {
 				const request = makeRequest();
 				request.method = 'POST';
 				request.url = '/modified';
 
-				const { nodeRequest } = request.getNodeRequestResponse();
+				let capturedReq;
+				request.sendNodeRequestResponse((req, res) => {
+					capturedReq = req;
+					res.end();
+				});
 
-				assert.strictEqual(nodeRequest.method, 'POST');
-				assert.strictEqual(nodeRequest.url, '/modified');
+				assert.strictEqual(capturedReq.method, 'POST');
+				assert.strictEqual(capturedReq.url, '/modified');
 			});
 
 			it('reflects middleware-mutated headers', function () {
 				const request = makeRequest();
 				request.headers.set('x-custom', 'added');
 
-				const { nodeRequest } = request.getNodeRequestResponse();
+				let capturedReq;
+				request.sendNodeRequestResponse((req, res) => {
+					capturedReq = req;
+					res.end();
+				});
 
-				assert.strictEqual(nodeRequest.headers['x-custom'], 'added');
-				assert.strictEqual(nodeRequest.headers['content-type'], 'text/plain');
+				assert.strictEqual(capturedReq.headers['x-custom'], 'added');
+				assert.strictEqual(capturedReq.headers['content-type'], 'text/plain');
 			});
 
 			it('has lowercase header keys', function () {
@@ -447,101 +455,118 @@ describe('Request class', function () {
 					headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
 				});
 
-				const { nodeRequest } = request.getNodeRequestResponse();
+				let capturedReq;
+				request.sendNodeRequestResponse((req, res) => {
+					capturedReq = req;
+					res.end();
+				});
 
-				assert.ok('content-type' in nodeRequest.headers);
-				assert.ok('authorization' in nodeRequest.headers);
-				assert.strictEqual(nodeRequest.headers['content-type'], 'application/json');
+				assert.ok('content-type' in capturedReq.headers);
+				assert.ok('authorization' in capturedReq.headers);
+				assert.strictEqual(capturedReq.headers['content-type'], 'application/json');
 			});
 
 			it('delegates socket to the underlying IncomingMessage socket', function () {
 				const request = makeRequest();
-				const { nodeRequest } = request.getNodeRequestResponse();
-				assert.strictEqual(nodeRequest.socket, mockNodeRequest.socket);
+
+				let capturedReq;
+				request.sendNodeRequestResponse((req, res) => {
+					capturedReq = req;
+					res.end();
+				});
+
+				assert.strictEqual(capturedReq.socket, mockNodeRequest.socket);
 			});
 		});
 
 		describe('nodeResponse — writeHead', function () {
 			it('resolves response with correct status and headers', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.writeHead(201, { 'content-type': 'application/json' });
+					res.end();
+				});
 
-				nodeResponse.writeHead(201, { 'content-type': 'application/json' });
-				nodeResponse.end();
-
-				const resolved = await response;
+				const resolved = await responsePromise;
 				assert.strictEqual(resolved.status, 201);
 				assert.strictEqual(resolved.headers.get('content-type'), 'application/json');
 			});
 
 			it('is idempotent — second writeHead call is a no-op', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.writeHead(200, { 'x-first': 'yes' });
+					res.writeHead(500, { 'x-first': 'overwritten' });
+					res.end();
+				});
 
-				nodeResponse.writeHead(200, { 'x-first': 'yes' });
-				nodeResponse.writeHead(500, { 'x-first': 'overwritten' });
-				nodeResponse.end();
-
-				const { status, headers } = await response;
+				const { status, headers } = await responsePromise;
 				assert.strictEqual(status, 200);
 				assert.strictEqual(headers.get('x-first'), 'yes');
 			});
 
 			it('accepts array-of-pairs header format', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.writeHead(200, [['x-pair', 'value']]);
+					res.end();
+				});
 
-				nodeResponse.writeHead(200, [['x-pair', 'value']]);
-				nodeResponse.end();
-
-				const { headers } = await response;
+				const { headers } = await responsePromise;
 				assert.strictEqual(headers.get('x-pair'), 'value');
 			});
 
 			it('sets headersSent after writeHead', function () {
 				const request = makeRequest();
-				const { nodeResponse } = request.getNodeRequestResponse();
+				let capturedRes;
+				request.sendNodeRequestResponse((req, res) => {
+					capturedRes = res;
+					assert.strictEqual(res.headersSent, false);
+					res.writeHead(200);
+					assert.strictEqual(res.headersSent, true);
+					res.end();
+				});
 
-				assert.strictEqual(nodeResponse.headersSent, false);
-				nodeResponse.writeHead(200);
-				assert.strictEqual(nodeResponse.headersSent, true);
+				assert.ok(capturedRes.headersSent);
 			});
 		});
 
 		describe('nodeResponse — setHeader / end path', function () {
 			it('resolves response with headers set before end()', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.setHeader('content-type', 'text/html');
+					res.end('<h1>hi</h1>');
+				});
 
-				nodeResponse.setHeader('content-type', 'text/html');
-				nodeResponse.end('<h1>hi</h1>');
-
-				const { status, headers } = await response;
+				const { status, headers } = await responsePromise;
 				assert.strictEqual(status, 200);
 				assert.strictEqual(headers.get('content-type'), 'text/html');
 			});
 
 			it('captures statusCode set directly', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.statusCode = 404;
+					res.end();
+				});
 
-				nodeResponse.statusCode = 404;
-				nodeResponse.end();
-
-				const { status } = await response;
+				const { status } = await responsePromise;
 				assert.strictEqual(status, 404);
 			});
 
 			it('getHeader / hasHeader / removeHeader work', function () {
 				const request = makeRequest();
-				const { nodeResponse } = request.getNodeRequestResponse();
+				request.sendNodeRequestResponse((req, res) => {
+					res.setHeader('x-test', 'abc');
+					assert.strictEqual(res.getHeader('x-test'), 'abc');
+					assert.ok(res.hasHeader('x-test'));
 
-				nodeResponse.setHeader('x-test', 'abc');
-				assert.strictEqual(nodeResponse.getHeader('x-test'), 'abc');
-				assert.ok(nodeResponse.hasHeader('x-test'));
+					res.removeHeader('x-test');
+					assert.ok(!res.hasHeader('x-test'));
 
-				nodeResponse.removeHeader('x-test');
-				assert.ok(!nodeResponse.hasHeader('x-test'));
+					res.end();
+				});
 			});
 		});
 
@@ -556,57 +581,59 @@ describe('Request class', function () {
 
 			it('end() with a chunk delivers the body', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.end('hello world');
+				});
 
-				nodeResponse.end('hello world');
-
-				const { body } = await response;
+				const { body } = await responsePromise;
 				assert.strictEqual(await collectBody(body), 'hello world');
 			});
 
 			it('multiple write() calls are streamed in order', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.write('chunk1');
+					res.write('chunk2');
+					res.end('chunk3');
+				});
 
-				nodeResponse.write('chunk1');
-				nodeResponse.write('chunk2');
-				nodeResponse.end('chunk3');
-
-				const { body } = await response;
+				const { body } = await responsePromise;
 				assert.strictEqual(await collectBody(body), 'chunk1chunk2chunk3');
 			});
 
 			it('end() with no body yields an empty body', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.end();
+				});
 
-				nodeResponse.end();
-
-				const { body } = await response;
+				const { body } = await responsePromise;
 				assert.strictEqual(await collectBody(body), '');
 			});
 
 			it('sets writableEnded after end()', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				let capturedRes;
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					capturedRes = res;
+					assert.strictEqual(res.writableEnded, false);
+					res.end();
+					assert.strictEqual(res.writableEnded, true);
+				});
 
-				assert.strictEqual(nodeResponse.writableEnded, false);
-				nodeResponse.end();
-				assert.strictEqual(nodeResponse.writableEnded, true);
-
-				await response;
+				await responsePromise;
+				assert.ok(capturedRes.writableEnded);
 			});
 
 			it('emits finish event after body is fully written', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
-
 				const finishSpy = sinon.spy();
-				nodeResponse.on('finish', finishSpy);
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.on('finish', finishSpy);
+					res.end('done');
+				});
 
-				nodeResponse.end('done');
-				await response;
-
+				await responsePromise;
 				// Wait for finish to propagate through the PassThrough
 				await new Promise((resolve) => setImmediate(resolve));
 				assert.ok(finishSpy.calledOnce);
@@ -616,23 +643,25 @@ describe('Request class', function () {
 		describe('nodeResponse — destroy', function () {
 			it('rejects the response promise with the provided error', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.destroy(new Error('stream destroyed'));
+				});
 
-				const err = new Error('stream destroyed');
-				nodeResponse.destroy(err);
-
-				await assert.rejects(() => response, /stream destroyed/);
+				await assert.rejects(() => responsePromise, /stream destroyed/);
 			});
 
 			it('does not reject if destroy called after headers already flushed', async function () {
 				const request = makeRequest();
-				const { nodeResponse, response } = request.getNodeRequestResponse();
+				let capturedRes;
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					capturedRes = res;
+					res.end('body');
+				});
 
-				nodeResponse.end('body');
-				await response; // resolve first
+				await responsePromise; // resolve first
 
 				// Should not throw
-				nodeResponse.destroy(new Error('late destroy'));
+				capturedRes.destroy(new Error('late destroy'));
 			});
 		});
 	});

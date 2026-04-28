@@ -106,22 +106,24 @@ export class Request {
 		return this._nodeRequest;
 	}
 	/**
-	 * Returns a Node.js IncomingMessage/ServerResponse pair that adapts this Request and a captured
-	 * Response into the Node HTTP API. Useful for integrating third-party Node middleware that expects
+	 * Invokes `handler` with a Node.js IncomingMessage/ServerResponse pair that adapts this Request
+	 * into the Node HTTP API, and returns a Promise that resolves to a Harper Response once the handler
+	 * writes its status and headers. Useful for integrating third-party Node middleware that expects
 	 * the native node http request/response objects.
 	 *
-	 * `nodeRequest` mirrors the current Request state (method, url, headers may have been modified by
-	 * middleware) while delegating body reading to the underlying IncomingMessage stream.
+	 * The IncomingMessage mirrors the current Request state (method, url, headers may have been modified
+	 * by middleware) while delegating body reading to the underlying stream. The ServerResponse captures
+	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
+	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
-	 * `nodeResponse` captures status, headers, and body written by the consumer and resolves `response`
-	 * once headers are available. The response body is streamed via a PassThrough, so it can be piped
-	 * back into the Harper middleware chain.
+	 * Example:
+	 *   server.http((request, next) =>
+	 *     request.sendNodeRequestResponse((req, res) => someNodeMiddleware(req, res))
+	 *   );
 	 */
-	getNodeRequestResponse(): {
-		nodeRequest: NodeIncomingMessage;
-		nodeResponse: NodeServerResponse;
-		response: Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>;
-	} {
+	sendNodeRequestResponse(
+		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void
+	): Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }> {
 		// Flat headers object matching IncomingMessage.headers format (lowercase keys)
 		const reqHeaders: Record<string, string | string[]> = Object.create(null);
 		for (const [key, value] of this.headers) {
@@ -142,12 +144,10 @@ export class Request {
 
 		let resolveResponse!: (value: { status: number; headers: ResponseHeaders; body: PassThrough }) => void;
 		let rejectResponse!: (reason: unknown) => void;
-		const response = new Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>(
-			(resolve, reject) => {
-				resolveResponse = resolve;
-				rejectResponse = reject;
-			}
-		);
+		const response = new Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>((resolve, reject) => {
+			resolveResponse = resolve;
+			rejectResponse = reject;
+		});
 
 		const responseBody = new PassThrough();
 		const capturedHeaders = new ResponseHeaders();
@@ -226,7 +226,10 @@ export class Request {
 				return nodeRes;
 			},
 			destroy(error?: Error) {
-				if (error && !headersFlushed) rejectResponse(error);
+				if (!headersFlushed) {
+					if (error) rejectResponse(error);
+					else rejectResponse(new Error('Response destroyed before headers were sent'));
+				}
 				responseBody.destroy(error);
 				return nodeRes;
 			},
@@ -243,7 +246,8 @@ export class Request {
 		// are propagated via the response promise rejection instead.
 		responseBody.on('error', () => {});
 
-		return { nodeRequest: nodeReq, nodeResponse: nodeRes, response };
+		handler(nodeReq, nodeRes);
+		return response;
 	}
 	sendEarlyHints(link: string, headers: Record<string, any> = {}) {
 		headers.link = link;
