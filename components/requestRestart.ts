@@ -36,5 +36,9 @@ export function resetRestartNeeded() {
 
 export function subscribeToRestartRequests(callback: () => void) {
 	ensureInitialized();
+export function subscribeToRestartRequests(callback: () => void) {
+	ensureInitialized();
+	if (onRestartRequestedCallback) throw new Error('A restart-request subscriber is already registered');
 	onRestartRequestedCallback = callback;
+}
 }
