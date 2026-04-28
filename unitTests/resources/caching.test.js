@@ -18,7 +18,7 @@ describe('Caching', () => {
 	let timer = 0;
 	let return_value = true;
 	let return_error;
-	// skip LMDB test for now
+	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
 		setupTestDBPath();
