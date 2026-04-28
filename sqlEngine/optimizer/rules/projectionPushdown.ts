@@ -48,6 +48,16 @@ function rewrite(plan: LogicalPlan, required: Set<string> | undefined): LogicalP
 			return { ...plan, input: rewrite(plan.input, required) };
 		case 'Distinct':
 			return { ...plan, input: rewrite(plan.input, required) };
+		case 'Aggregate': {
+			// `required` from above contains synthetic __agg_N__ names that don't
+			// exist in the input. Compute the actual columns the input must supply.
+			const need = new Set<string>();
+			for (const k of plan.groupKeys) collectColumns(k, need);
+			for (const a of plan.aggs) {
+				if (a.arg.kind !== 'star') collectColumns(a.arg as ExprNode, need);
+			}
+			return { ...plan, input: rewrite(plan.input, need.size > 0 ? need : undefined) };
+		}
 		case 'Scan': {
 			if (!required) return { ...plan, projection: undefined };
 			if (plan.pushedFilter) collectColumns(plan.pushedFilter, required);

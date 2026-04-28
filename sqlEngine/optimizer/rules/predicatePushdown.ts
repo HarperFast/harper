@@ -34,6 +34,10 @@ function rewrite(plan: LogicalPlan): LogicalPlan {
 			return { ...plan, input: rewrite(plan.input) };
 		case 'Distinct':
 			return { ...plan, input: rewrite(plan.input) };
+		case 'Aggregate':
+			// Recurse into input so WHERE filters below get pushed to the scan.
+			// HAVING (a Filter above us) must NOT be pushed through the Aggregate.
+			return { ...plan, input: rewrite(plan.input) };
 		default:
 			return plan;
 	}

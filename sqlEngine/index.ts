@@ -18,6 +18,7 @@ import { compileToPhysical } from './physical/plan.ts';
 import { runSelect } from './executor/runSelect.ts';
 import { optimize } from './optimizer/optimize.ts';
 import { registerStandardFunctions } from './functions/standard.ts';
+import { registerAggregateFunctions } from './functions/aggregates.ts';
 
 export interface RunStatementInput {
 	variant: 'select' | 'insert' | 'update' | 'delete';
@@ -27,6 +28,7 @@ export interface RunStatementInput {
 
 export async function runStatement(input: RunStatementInput): Promise<unknown> {
 	registerStandardFunctions();
+	registerAggregateFunctions();
 
 	if (input.variant !== 'select') {
 		throw new EngineUnsupportedError(`${input.variant} is not implemented yet (phase 1: select only)`);

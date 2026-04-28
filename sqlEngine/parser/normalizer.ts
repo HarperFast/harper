@@ -28,6 +28,7 @@ import type {
 	BinaryOp,
 } from './ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
+import { functionRegistry } from '../functions/registry.ts';
 
 interface AlaSqlNode {
 	[key: string]: unknown;
@@ -69,15 +70,12 @@ function normalizeSelect(stmt: AlaSqlNode): SelectNode {
 	}
 	const projections = columns.map((c) => normalizeProjection(c as AlaSqlNode));
 
-	if (stmt.group != null && (stmt.group as unknown[]).length > 0) {
-		throw new EngineUnsupportedError('GROUP BY is not supported in phase 1', stmt.group);
-	}
-	if (stmt.having != null) {
-		throw new EngineUnsupportedError('HAVING is not supported in phase 1', stmt.having);
-	}
-	if (hasAggregate(projections)) {
-		throw new EngineUnsupportedError('aggregate functions are not supported in phase 1', projections);
-	}
+	const groupBy =
+		stmt.group != null && Array.isArray(stmt.group) && (stmt.group as unknown[]).length > 0
+			? (stmt.group as AlaSqlNode[]).map(normalizeExpr)
+			: undefined;
+
+	const having = stmt.having != null ? normalizeExpr(extractWhere(stmt.having as AlaSqlNode)) : undefined;
 
 	const where = stmt.where ? normalizeExpr(extractWhere(stmt.where as AlaSqlNode)) : undefined;
 	const orderBy = stmt.order ? (stmt.order as AlaSqlNode[]).map(normalizeSort) : undefined;
@@ -92,6 +90,8 @@ function normalizeSelect(stmt: AlaSqlNode): SelectNode {
 		from,
 		joins,
 		where,
+		groupBy,
+		having,
 		orderBy,
 		limit,
 		offset,
@@ -190,23 +190,37 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 	}
 
 	if (node.aggregatorid != null && node.expression != null) {
+		// AlaSQL uses aggregatorid='REDUCE' with funcid set for user-defined aggregates
+		// (e.g. MEDIAN). Use funcid as the real name when aggregatorid is REDUCE.
+		const rawName =
+			String(node.aggregatorid).toUpperCase() === 'REDUCE' && node.funcid != null
+				? String(node.funcid)
+				: String(node.aggregatorid);
 		const arg =
 			(node.expression as AlaSqlNode).columnid === '*'
 				? ({ kind: 'star' } as const)
 				: normalizeExpr(node.expression as AlaSqlNode);
 		return {
 			kind: 'aggCall',
-			name: String(node.aggregatorid).toLowerCase(),
+			name: rawName.toLowerCase(),
 			arg,
 			distinct: !!node.distinct,
 		};
 	}
 
 	if (node.funcid != null) {
+		const fnName = String(node.funcid).toLowerCase();
 		const args = Array.isArray(node.args) ? (node.args as AlaSqlNode[]).map(normalizeExpr) : [];
+		// If this funcCall is a registered aggregate (e.g. PROD, MEAN that AlaSQL
+		// doesn't recognize as aggregates), treat it as an aggCall.
+		const desc = functionRegistry.lookup(fnName);
+		if (desc?.kind === 'aggregate') {
+			const arg: ExprNode | { kind: 'star' } = args.length === 0 ? { kind: 'star' } : args[0];
+			return { kind: 'aggCall', name: fnName, arg, distinct: !!node.distinct };
+		}
 		return {
 			kind: 'funcCall',
-			name: String(node.funcid).toLowerCase(),
+			name: fnName,
 			args,
 			distinct: !!node.distinct,
 		};

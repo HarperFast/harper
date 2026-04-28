@@ -233,7 +233,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		);
 	});
 
-	it('rejects GROUP BY in phase 1', async () => {
+	it('rejects GROUP BY aggregate with no usable index condition (allowFullScan=false)', async () => {
 		await assert.rejects(() => runSql('SELECT city, COUNT(*) FROM dev.user GROUP BY city'), EngineUnsupportedError);
 	});
 

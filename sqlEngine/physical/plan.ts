@@ -20,7 +20,10 @@ import { physicalFilter } from './PhysicalFilter.ts';
 import { physicalProject } from './PhysicalProject.ts';
 import { physicalSort } from './PhysicalSort.ts';
 import { physicalLimit } from './PhysicalLimit.ts';
+import { physicalHashAggregate } from './PhysicalHashAggregate.ts';
+import { physicalDistinct } from './PhysicalDistinct.ts';
 import { whereToConditions } from '../optimizer/whereToConditions.ts';
+import { getSqlEngineConfig } from '../config.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 
 export function compileToPhysical(plan: LogicalPlan): PhysicalOp {
@@ -41,9 +44,16 @@ export function compileToPhysical(plan: LogicalPlan): PhysicalOp {
 		case 'Limit':
 			return physicalLimit(compileToPhysical(plan.input), plan.limit, plan.offset);
 		case 'Distinct':
-			throw new EngineUnsupportedError('DISTINCT is not supported in phase 1');
-		case 'Aggregate':
-			throw new EngineUnsupportedError('aggregate plan is not supported in phase 1');
+			return physicalDistinct(compileToPhysical(plan.input));
+		case 'Aggregate': {
+			const { maxHashRows } = getSqlEngineConfig();
+			return physicalHashAggregate(
+				compileToPhysical(plan.input),
+				plan.groupKeys,
+				plan.aggs,
+				maxHashRows,
+			);
+		}
 		case 'Join':
 			throw new EngineUnsupportedError('JOIN is not supported in phase 1');
 		case 'Insert':

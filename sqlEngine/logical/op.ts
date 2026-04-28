@@ -58,7 +58,7 @@ export interface LogicalAggregate {
 	kind: 'Aggregate';
 	input: LogicalPlan;
 	groupKeys: ExprNode[];
-	aggs: { name: string; arg: ExprNode | { kind: 'star' }; alias?: string; distinct?: boolean }[];
+	aggs: { name: string; arg: ExprNode | { kind: 'star' }; outputName: string; distinct?: boolean }[];
 	having?: ExprNode;
 }
 
