@@ -7,7 +7,7 @@ title: Configuration Overview
 
 # Configuration
 
-Harper is configured through a [YAML](https://yaml.org/) file called `harperdb-config.yaml` located in the Harper root directory. By default the root directory is a folder named `hdb` in the home directory of the current user.
+Harper is configured through a [YAML](https://yaml.org/) file called `harper-config.yaml` located in the Harper root directory. By default the root directory is a folder named `hdb` in the home directory of the current user.
 
 Some configuration values are pre-populated in the config file on install, regardless of whether they are used.
 
@@ -17,7 +17,7 @@ For a complete reference of all available configuration options, see [Configurat
 
 ## The Configuration File
 
-To change a configuration value, edit `harperdb-config.yaml` and save. **Harper must be restarted for changes to take effect.**
+To change a configuration value, edit `harper-config.yaml` and save. **Harper must be restarted for changes to take effect.**
 
 Configuration keys use camelCase (e.g. `operationsApi`). Nested keys use dot notation conceptually (e.g. `operationsApi.network.port`).
 
@@ -29,7 +29,7 @@ All configuration values can be set through four mechanisms:
 
 ### 1. YAML File (direct edit)
 
-Edit `harperdb-config.yaml` directly:
+Edit `harper-config.yaml` directly:
 
 ```yaml
 http:
@@ -49,7 +49,7 @@ Examples:
 - `operationsApi.network.port` → `OPERATIONSAPI_NETWORK_PORT=9925`
 
 ```bash
-HTTP_PORT=9926 harperdb
+HTTP_PORT=9926 harper
 ```
 
 > **Note:** Component configuration cannot be set via environment variables or CLI arguments.
@@ -59,7 +59,7 @@ HTTP_PORT=9926 harperdb
 Same naming convention as environment variables, prefixed with `--`:
 
 ```bash
-harperdb --HTTP_PORT 9926 --LOGGING_LEVEL warn
+harper --HTTP_PORT 9926 --LOGGING_LEVEL warn
 ```
 
 ### 4. Operations API
@@ -84,10 +84,10 @@ To specify a custom config file location at install time, use the `HDB_CONFIG` v
 
 ```bash
 # Use a custom config file path
-HDB_CONFIG=/path/to/custom-config.yaml harperdb
+HDB_CONFIG=/path/to/custom-config.yaml harper
 
 # Install over an existing config
-HDB_CONFIG=/existing/rootpath/harperdb-config.yaml harperdb
+HDB_CONFIG=/existing/rootpath/harper-config.yaml harper
 ```
 
 ---
@@ -96,7 +96,7 @@ HDB_CONFIG=/existing/rootpath/harperdb-config.yaml harperdb
 
 <VersionBadge version="v4.7.2" />
 
-Harper provides two special environment variables for managing configuration across deployments: `HARPER_DEFAULT_CONFIG` and `HARPER_SET_CONFIG`. Both accept JSON-formatted configuration that mirrors the structure of `harperdb-config.yaml`.
+Harper provides two special environment variables for managing configuration across deployments: `HARPER_DEFAULT_CONFIG` and `HARPER_SET_CONFIG`. Both accept JSON-formatted configuration that mirrors the structure of `harper-config.yaml`.
 
 ```bash
 export HARPER_DEFAULT_CONFIG='{"http":{"port":8080},"logging":{"level":"info"}}'
@@ -123,7 +123,7 @@ Provides default configuration values while respecting user modifications. Ideal
 
 ```bash
 export HARPER_DEFAULT_CONFIG='{"http":{"port":8080},"logging":{"level":"info"}}'
-harperdb
+harper
 
 # If an administrator manually changes the port to 9000, Harper will
 # detect this edit and respect it on subsequent restarts.
@@ -146,9 +146,9 @@ Forces configuration values that cannot be overridden by user edits. Designed fo
 
 ```bash
 export HARPER_SET_CONFIG='{"authentication":{"enabled":true},"logging":{"level":"error","stdStreams":true}}'
-harperdb
+harper
 
-# Any change to these values in harperdb-config.yaml will be
+# Any change to these values in harper-config.yaml will be
 # overridden on the next restart.
 ```
 
@@ -203,7 +203,7 @@ logging:
 
 ### Important Notes
 
-- Both variables must contain valid JSON matching the structure of `harperdb-config.yaml`
+- Both variables must contain valid JSON matching the structure of `harper-config.yaml`
 - Invalid values are caught by Harper's configuration validator at startup
 - Changes to these variables require a Harper restart to take effect
 - The state file is per-instance (stored in the root path)

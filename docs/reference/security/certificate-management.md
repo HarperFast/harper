@@ -23,7 +23,7 @@ These certificates have a valid Common Name (CN), but they are not signed by a r
 
 By default, HTTPS is disabled. HTTP is suitable for local development and trusted private networks. If you are developing on a remote server with requests traversing the Internet, enable HTTPS.
 
-To enable HTTPS, set `http.securePort` in `harperdb-config.yaml` and restart Harper:
+To enable HTTPS, set `http.securePort` in `harper-config.yaml` and restart Harper:
 
 ```yaml
 http:

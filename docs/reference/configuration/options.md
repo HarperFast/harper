@@ -11,7 +11,7 @@ title: Configuration Options
 
 # Configuration Options
 
-Quick reference for all `harperdb-config.yaml` top-level sections.
+Quick reference for all `harper-config.yaml` top-level sections.
 
 For how to apply configuration (YAML file, environment variables, CLI, Operations API), see [Configuration Overview](./overview.md).
 
@@ -328,7 +328,7 @@ applications:
 
 ## Component Configuration
 
-Installed components are configured directly at the root of `harperdb-config.yaml` using the component name as the key — not nested under a `components:` section. See [Components](../components/overview.md).
+Installed components are configured directly at the root of `harper-config.yaml` using the component name as the key — not nested under a `components:` section. See [Components](../components/overview.md).
 
 ```yaml
 my-component:

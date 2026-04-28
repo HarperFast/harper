@@ -9,7 +9,7 @@ title: MQTT Configuration
 <!-- Source: release-notes/v4-tucker/4.3.0.md (confirmed mTLS support added) -->
 <!-- Source: release-notes/v4-tucker/4.5.0.md (confirmed default replication port change - note: this is the replication port, not MQTT) -->
 
-The `mqtt` section in `harperdb-config.yaml` controls Harper's built-in MQTT broker. MQTT is enabled by default.
+The `mqtt` section in `harper-config.yaml` controls Harper's built-in MQTT broker. MQTT is enabled by default.
 
 Harper must be restarted for configuration changes to take effect.
 

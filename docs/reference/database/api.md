@@ -96,7 +96,7 @@ For most operations — HTTP request handlers, for example — Harper automatica
 ### Basic Usage
 
 ```javascript
-import { tables } from 'harperdb';
+import { tables } from 'harper';
 const { MyTable } = tables;
 
 if (isMainThread) {

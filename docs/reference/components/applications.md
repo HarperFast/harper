@@ -23,7 +23,7 @@ Harper offers several approaches to managing applications that differ between lo
 The quickest way to run an application locally is with the `dev` command inside the application directory:
 
 ```sh
-harperdb dev .
+harper dev .
 ```
 
 The `dev` command watches for file changes and restarts Harper worker threads automatically.
@@ -36,11 +36,11 @@ Stop either process with SIGINT (Ctrl+C).
 
 To mimic interaction with a hosted Harper instance locally:
 
-1. Start Harper: `harperdb`
+1. Start Harper: `harper`
 2. Deploy the application:
 
    ```sh
-   harperdb deploy \
+   harper deploy \
      project=<name> \
      package=<path-to-project> \
      restart=true
@@ -50,15 +50,15 @@ To mimic interaction with a hosted Harper instance locally:
    - Setting `package=<path-to-project>` creates a symlink so file changes are picked up automatically between restarts.
    - `restart=true` restarts worker threads after deploy. Use `restart=rolling` for a rolling restart.
 
-3. Use `harperdb restart` in another terminal to restart threads at any time.
-4. Remove an application: `harperdb drop_component project=<name>`
+3. Use `harper restart` in another terminal to restart threads at any time.
+4. Remove an application: `harper drop_component project=<name>`
 
 > Not all [component operations](#operations-api) are available via CLI. When in doubt, use the Operations API via direct HTTP requests to the local Harper instance.
 
 Example:
 
 ```sh
-harperdb deploy \
+harper deploy \
   project=test-application \
   package=/Users/dev/test-application \
   restart=true
@@ -71,7 +71,7 @@ harperdb deploy \
 Managing applications on a remote Harper instance uses the same operations as local management. The key difference is specifying a `target` along with credentials:
 
 ```sh
-harperdb deploy \
+harper deploy \
   project=<name> \
   package=<package> \
   username=<username> \
@@ -86,7 +86,7 @@ Credentials can also be provided via environment variables:
 ```sh
 export CLI_TARGET_USERNAME=<username>
 export CLI_TARGET_PASSWORD=<password>
-harperdb deploy \
+harper deploy \
   project=<name> \
   package=<package> \
   target=<remote> \
@@ -121,13 +121,13 @@ Harper uses `npm` and `package.json` for dependency management.
 During application loading, Harper follows this resolution order to determine how to install dependencies:
 
 1. If `node_modules` exists, or if `package.json` is absent — skip installation
-2. Check the application's `harperdb-config.yaml` for `install: { command, timeout }` fields
+2. Check the application's `harper-config.yaml` for `install: { command, timeout }` fields
 3. Derive the package manager from [`package.json#devEngines#packageManager`](https://docs.npmjs.com/cli/v10/configuring-npm/package-json#devengines)
 4. Default to `npm install`
 
 The `add_component` and `deploy_component` operations support `install_command` and `install_timeout` fields for customizing this behavior.
 
-### Example `harperdb-config.yaml` with Custom Install
+### Example `harper-config.yaml` with Custom Install
 
 ```yaml
 myApp:
@@ -155,9 +155,9 @@ myApp:
 
 > If you plan to use an alternative package manager, ensure it is installed on the host machine. Harper does not support the `"onFail": "download"` option and falls back to `"onFail": "error"` behavior.
 
-## Advanced: Direct `harperdb-config.yaml` Configuration
+## Advanced: Direct `harper-config.yaml` Configuration
 
-Applications can be added to Harper by adding them directly to `harperdb-config.yaml` (located in the Harper `rootPath`, typically `~/hdb`).
+Applications can be added to Harper by adding them directly to `harper-config.yaml` (located in the Harper `rootPath`, typically `~/hdb`).
 
 ```yaml
 status-check:
@@ -172,7 +172,7 @@ Any valid npm dependency specifier works:
 myGithubComponent:
   package: HarperDB-Add-Ons/package#v2.2.0
 myNPMComponent:
-  package: harperdb
+  package: harper
 myTarBall:
   package: /Users/harper/cool-component.tar
 myLocal:
@@ -183,7 +183,7 @@ myWebsite:
 
 Harper generates a `package.json` and installs all components into `<componentsRoot>` (default: `~/hdb/components`). A symlink back to `<rootPath>/node_modules` is created for dependency resolution.
 
-> Use `harperdb get_configuration` to find the `rootPath` and `componentsRoot` values on your instance.
+> Use `harper get_configuration` to find the `rootPath` and `componentsRoot` values on your instance.
 
 ## Operations API
 
@@ -264,7 +264,7 @@ Packages a project folder as a base64-encoded `.tar` string.
 
 ### `get_components`
 
-Returns all local component files, folders, and configuration from `harperdb-config.yaml`.
+Returns all local component files, folders, and configuration from `harper-config.yaml`.
 
 ```json
 {

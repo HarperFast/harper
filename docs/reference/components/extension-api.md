@@ -41,7 +41,7 @@ A Resource Extension processes specific files or directories. It is comprised of
 | `setupFile()`       | Main thread only   | Once, at initial start    |
 | `setupDirectory()`  | Main thread only   | Once, at initial start    |
 
-> **Important**: `harperdb restart` only restarts worker threads. Code in `setupFile()` and `setupDirectory()` runs only when Harper fully shuts down and starts again—not on `deploy` or `restart`.
+> **Important**: `harper restart` only restarts worker threads. Code in `setupFile()` and `setupDirectory()` runs only when Harper fully shuts down and starts again—not on `deploy` or `restart`.
 
 `handleFile()` and `setupFile()` have identical signatures. `handleDirectory()` and `setupDirectory()` have identical signatures.
 

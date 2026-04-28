@@ -38,7 +38,7 @@ The HTTP server handles multiple protocols on the same port:
 
 ## TLS / HTTPS
 
-HTTPS support is enabled by setting `http.securePort` in `harperdb-config.yaml` and configuring the `tls` section with a certificate and private key. The same `tls` configuration is shared by HTTPS and MQTT secure connections.
+HTTPS support is enabled by setting `http.securePort` in `harper-config.yaml` and configuring the `tls` section with a certificate and private key. The same `tls` configuration is shared by HTTPS and MQTT secure connections.
 
 See [Configuration](./configuration) for TLS options and [Security](../security/overview.md) for certificate management details.
 
@@ -46,7 +46,7 @@ See [Configuration](./configuration) for TLS options and [Security](../security/
 
 <VersionBadge version="v4.5.0" />
 
-HTTP/2 can be enabled with the `http2: true` option in `harperdb-config.yaml`. When enabled, HTTP/2 applies to all API endpoints served on `http.securePort` (HTTP/2 requires TLS).
+HTTP/2 can be enabled with the `http2: true` option in `harper-config.yaml`. When enabled, HTTP/2 applies to all API endpoints served on `http.securePort` (HTTP/2 requires TLS).
 
 ## Compression
 

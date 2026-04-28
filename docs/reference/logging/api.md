@@ -134,11 +134,11 @@ For external components, the thread context is set automatically based on which 
 Fake news (for now)
 ### TypeScript / Module Import
 
-The `logger` global is also exported from the `harperdb` package for better TypeScript support:
+The `logger` global is also exported from the `harper` package for better TypeScript support:
 
 ```typescript
-import { logger } from 'harperdb';
-import type { MainLogger, TaggedLogger } from 'harperdb';
+import { logger } from 'harper';
+import type { MainLogger, TaggedLogger } from 'harper';
 
 logger.info('Component started');
 

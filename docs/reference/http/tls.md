@@ -6,7 +6,7 @@ title: TLS Configuration
 <!-- Source: versioned_docs/version-4.7/deployments/configuration.md (tls section - primary) -->
 <!-- Source: release-notes/v4-tucker/4.2.0.md (confirmed top-level tls section added) -->
 
-Harper uses a top-level `tls` section in `harperdb-config.yaml` to configure Transport Layer Security. This configuration is shared by the HTTP server (HTTPS), the MQTT broker (secure MQTT), and any TLS socket servers created via the [HTTP API](./api#serversocketlistener-options).
+Harper uses a top-level `tls` section in `harper-config.yaml` to configure Transport Layer Security. This configuration is shared by the HTTP server (HTTPS), the MQTT broker (secure MQTT), and any TLS socket servers created via the [HTTP API](./api#serversocketlistener-options).
 
 The `operationsApi` section can optionally define its own `tls` block, which overrides the root `tls` for Operations API traffic only. See the [Operations API Configuration](../configuration/operations.md) for more details.
 

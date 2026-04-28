@@ -8,7 +8,7 @@ title: HTTP Configuration
 <!-- Source: release-notes/v4-tucker/4.2.0.md (confirmed http section expansion, compressionThreshold, securePort, tls section) -->
 <!-- Source: release-notes/v4-tucker/4.5.0.md (confirmed http2 support) -->
 
-The `http` section in `harperdb-config.yaml` controls the built-in HTTP server that serves REST, WebSocket, component, and Operations API traffic.
+The `http` section in `harper-config.yaml` controls the built-in HTTP server that serves REST, WebSocket, component, and Operations API traffic.
 
 Harper must be restarted for configuration changes to take effect.
 
@@ -32,7 +32,7 @@ The port for HTTPS connections. Requires a valid `tls` section configured with c
 
 ## TLS
 
-TLS is configured in its own top-level `tls` section in `harperdb-config.yaml`, separate from the `http` section. It is shared by the HTTP server (HTTPS), the MQTT broker (secure MQTT), and any TLS socket servers. See [TLS Configuration](./tls) for all options including multi-domain (SNI) certificates and the Operations API override.
+TLS is configured in its own top-level `tls` section in `harper-config.yaml`, separate from the `http` section. It is shared by the HTTP server (HTTPS), the MQTT broker (secure MQTT), and any TLS socket servers. See [TLS Configuration](./tls) for all options including multi-domain (SNI) certificates and the Operations API override.
 
 To enable HTTPS, set `http.securePort` and add a `tls` block:
 

@@ -20,7 +20,7 @@ Harper supports Mutual TLS (mTLS) authentication for incoming HTTP connections. 
 
 ## Configuration
 
-mTLS is configured via the `http.mtls` section in `harperdb-config.yaml`.
+mTLS is configured via the `http.mtls` section in `harper-config.yaml`.
 
 **Require mTLS for all connections:**
 

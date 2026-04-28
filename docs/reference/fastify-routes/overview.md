@@ -118,7 +118,7 @@ Executes a request against Harper without any security checks around whether the
 
 ### logger
 
-This helper allows you to write directly to the log file, hdb.log. It's useful for debugging during development, although you may also use the console logger. There are 5 functions contained within logger, each of which pertains to a different **logging.level** configuration in your harperdb-config.yaml file.
+This helper allows you to write directly to the log file, hdb.log. It's useful for debugging during development, although you may also use the console logger. There are 5 functions contained within logger, each of which pertains to a different **logging.level** configuration in your harper-config.yaml file.
 
 - logger.trace('Starting the handler for /dogs')
 - logger.debug('This should only fire once')

@@ -91,7 +91,7 @@ When both tokens have expired, call `create_authentication_tokens` again with yo
 
 ## Token Expiry Configuration
 
-Token timeouts are configurable in `harperdb-config.yaml` under the top-level `authentication` section:
+Token timeouts are configurable in `harper-config.yaml` under the top-level `authentication` section:
 
 ```yaml
 authentication:

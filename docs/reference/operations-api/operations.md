@@ -693,7 +693,7 @@ Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
 ### `set_configuration`
 
-Updates configuration parameters in `harperdb-config.yaml`. A restart (`restart` or `restart_service`) is required for changes to take effect.
+Updates configuration parameters in `harper-config.yaml`. A restart (`restart` or `restart_service`) is required for changes to take effect.
 
 ```json
 {

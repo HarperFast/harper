@@ -8,7 +8,7 @@ title: Logging Configuration
 <!-- Source: release-notes/v4-tucker/4.2.0.md (confirmed auditAuthEvents.logFailed/logSuccessful added) -->
 <!-- Source: release-notes/v4-tucker/4.6.0.md (confirmed per-component logging, dynamic reload, HTTP logging) -->
 
-The `logging` section in `harperdb-config.yaml` controls standard log output. Many logging settings are applied dynamically without a restart (added in v4.6.0).
+The `logging` section in `harper-config.yaml` controls standard log output. Many logging settings are applied dynamically without a restart (added in v4.6.0).
 
 ## Main Logger
 

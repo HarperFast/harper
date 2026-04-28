@@ -186,7 +186,7 @@ server.upgrade(
 	(request, socket, head, next) => {
 		if (request.url === '/_next/webpack-hmr') {
 			return upgradeHandler(request, socket, head).then(() => {
-				request.__harperdb_request_upgraded = true;
+				request.__harperRequestUpgraded = true;
 				next(request, socket, head);
 			});
 		}
@@ -196,7 +196,7 @@ server.upgrade(
 );
 ```
 
-When `server.ws()` is registered, Harper adds a default upgrade handler. The default handler sets `request.__harperdb_request_upgraded = true` after upgrading, and checks for this flag before upgrading again (so external upgrade handlers can detect whether Harper has already handled the upgrade).
+When `server.ws()` is registered, Harper adds a default upgrade handler. The default handler sets `request.__harperRequestUpgraded = true` after upgrading, and checks for this flag before upgrading again (so external upgrade handlers can detect whether Harper has already handled the upgrade).
 
 ### `UpgradeListener`
 
@@ -330,7 +330,7 @@ Metrics are aggregated and available via the [analytics API](../analytics/overvi
 
 ## `server.config`
 
-The parsed `harperdb-config.yaml` configuration object. Read-only access to Harper's current runtime configuration.
+The parsed `harper-config.yaml` configuration object. Read-only access to Harper's current runtime configuration.
 
 ---
 
@@ -371,7 +371,7 @@ A [`Map`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Glob
 Register or replace a handler by setting it on the `contentTypes` map:
 
 ```js
-import { contentTypes } from 'harperdb';
+import { contentTypes } from 'harper';
 
 contentTypes.set('text/xml', {
 	serialize(data) {

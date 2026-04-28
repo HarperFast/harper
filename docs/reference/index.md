@@ -32,7 +32,7 @@ For concept introductions, tutorials, and guides, see the [Learn](/learn) sectio
 | Section                                        | Description                                                   |
 | ---------------------------------------------- | ------------------------------------------------------------- |
 | [CLI](./cli/overview.md)                       | All CLI commands, Operations API commands, and authentication |
-| [Configuration](./configuration/overview.md)   | `harperdb-config.yaml` options and configuration operations   |
+| [Configuration](./configuration/overview.md)   | `harper-config.yaml` options and configuration operations     |
 | [Operations API](./operations-api/overview.md) | Full index of all Operations API operations                   |
 
 ### Features

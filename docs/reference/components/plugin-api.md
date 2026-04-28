@@ -82,10 +82,10 @@ customPlugin:
 
 ## TypeScript Support
 
-All classes and types are exported from the `harperdb` package:
+All classes and types are exported from the `harper` package:
 
 ```typescript
-import type { Scope, Config } from 'harperdb';
+import type { Scope, Config } from 'harper';
 ```
 
 ## API Reference

@@ -59,7 +59,7 @@ Harper supports two password hashing algorithms, replacing the previous MD5 hash
 - **`sha256`** — Default algorithm. Good security and excellent performance.
 - **`argon2id`** — Highest security. More CPU-intensive; recommended for high-security environments.
 
-Password hashing is configured via the `authentication.hashFunction` key in `harperdb-config.yaml`. See [Security / Configuration](../security/configuration.md#hashfunction) for details.
+Password hashing is configured via the `authentication.hashFunction` key in `harper-config.yaml`. See [Security / Configuration](../security/configuration.md#hashfunction) for details.
 
 ## Related
 

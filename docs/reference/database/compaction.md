@@ -24,7 +24,7 @@ Creates a compacted copy of a database file. The original database is left uncha
 Run using the [CLI](../cli/commands.md):
 
 ```bash
-harperdb copy-db <source-database> <target-database-path>
+harper copy-db <source-database> <target-database-path>
 ```
 
 The `source-database` is the database name (not a file path). The target is the full file path where the compacted copy will be written.
@@ -34,14 +34,14 @@ To replace the original database with the compacted copy, move or rename the out
 **Example — compact the default `data` database:**
 
 ```bash
-harperdb copy-db data /home/user/hdb/database/copy.mdb
+harper copy-db data /home/user/hdb/database/copy.mdb
 ```
 
 ## Compact on Start
 
 Automatically compacts all non-system databases when Harper starts. Harper will not start until compaction is complete. Under the hood, it loops through all user databases, creates a backup of each, compacts it, replaces the original with the compacted copy, and removes the backup.
 
-Configure in `harperdb-config.yaml`:
+Configure in `harper-config.yaml`:
 
 ```yaml
 storage:
@@ -52,7 +52,7 @@ storage:
 Using CLI environment variables:
 
 ```bash
-STORAGE_COMPACTONSTART=true STORAGE_COMPACTONSTARTKEEPBACKUP=true harperdb
+STORAGE_COMPACTONSTART=true STORAGE_COMPACTONSTARTKEEPBACKUP=true harper
 ```
 
 ### Options

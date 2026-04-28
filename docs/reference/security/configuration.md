@@ -5,7 +5,7 @@ title: Authentication Configuration
 
 <!-- Source: versioned_docs/version-4.7/deployments/configuration.md (authentication section, primary) -->
 
-Harper's authentication system is configured via the top-level `authentication` section of `harperdb-config.yaml`.
+Harper's authentication system is configured via the top-level `authentication` section of `harper-config.yaml`.
 
 ```yaml
 authentication:
