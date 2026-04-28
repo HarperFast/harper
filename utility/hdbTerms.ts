@@ -442,6 +442,7 @@ export const CONFIG_PARAMS = {
 	APPLICATIONS_PACKAGEMANAGERPREFIX: 'applications_packageManagerPrefix',
 	APPLICATIONS_ALLOWEDBUILTINMODULES: 'applications_allowedBuiltInModules',
 	APPLICATIONS_ALLOWEDSPAWNCOMMANDS: 'applications_allowedSpawnCommands',
+	APPLICATIONS_ALLOWEDDIRECTORY: 'applications_allowedDirectory',
 	THREADS: 'threads',
 	THREADS_COUNT: 'threads_count',
 	THREADS_DEBUG: 'threads_debug',

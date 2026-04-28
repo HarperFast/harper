@@ -756,6 +756,9 @@ function createTLSSelector(type, mtlsOptions) {
 							let quality = cert.is_self_signed ? 1 : 3;
 							// prefer operations certificates for operations API
 							if (cert.uses?.includes(type)) quality += 3;
+							else if (cert.uses?.includes('https'))
+								quality += 0.5; // this was a legacy generic general use type
+							else quality -= (cert.uses?.length ?? 0) / 5; // if there are designed uses for this that don't match, dock points
 
 							const private_key = getPrivateKeyByName(cert.private_key_name);
 
