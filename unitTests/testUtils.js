@@ -345,6 +345,10 @@ function setTestPath(testPath) {
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(testPath, 'database'));
 	fs.mkdirpSync(testPath);
+	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
+	if (systemPath) {
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, { system: { path: path.dirname(systemPath) } });
+	}
 	fs.writeFileSync(path.join(testPath, 'harperdb-config.yaml'), JSON.stringify({}));
 }
 
