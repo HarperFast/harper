@@ -7,7 +7,9 @@ title: Storage Algorithm
 
 # Storage Algorithm
 
-Harper's storage algorithm is the foundation of all database functionality. It is built on top of [LMDB](https://www.symas.com/lmdb) (Lightning Memory-Mapped Database), a high-performance key-value store, and extends it with automatic indexing, query-language-agnostic data access, and ACID compliance.
+Harper's storage algorithm is the foundation of all database functionality. It is built on top of [RocksDB](https://rocksdb.org/) (the default) or [LMDB](https://www.symas.com/lmdb) (legacy), both high-performance key-value stores, and extends them with automatic indexing, query-language-agnostic data access, and ACID compliance.
+
+RocksDB is the default storage engine for new installations. LMDB databases from prior versions are still supported and loaded automatically when detected.
 
 ## Query Language Agnostic
 
@@ -15,14 +17,14 @@ Harper's storage layer is decoupled from any specific query language. Data inser
 
 ## ACID Compliance
 
-Harper provides full ACID compliance on each node using Multi-Version Concurrency Control (MVCC) through LMDB:
+Harper provides full ACID compliance on each node:
 
 - **Atomicity**: All writes in a transaction either fully commit or fully roll back
 - **Consistency**: Each transaction moves data from one valid state to another
-- **Isolation**: Readers and writers operate independently — readers do not block writers and writers do not block readers
-- **Durability**: Committed transactions are persisted to disk
+- **Isolation**: Reads use snapshots and do not block writes; writes do not block reads
+- **Durability**: RocksDB commits are persisted via its Write-Ahead Log (WAL); LMDB uses memory-mapped file writes
 
-Each Harper table has a single writer process, eliminating deadlocks and ensuring writes are executed in the order received. Multiple reader processes can operate concurrently for high-throughput reads.
+Harper uses application-level locking to serialize schema changes and table creation, ensuring write ordering without deadlocks.
 
 ## Universally Indexed
 
@@ -36,9 +38,20 @@ Indexes are type-agnostic, ordering values as follows:
 2. Numbers (ordered numerically)
 3. Strings (ordered lexically)
 
-### LMDB Storage Layout
+### Storage Layout
 
-Within the LMDB implementation, table records are grouped into a single LMDB environment file. Each attribute index is stored as a sub-database (`dbi`) within that environment.
+Each Harper database corresponds to a separate storage environment:
+
+- **RocksDB** (default): a directory on disk containing all stores for that database
+- **LMDB** (legacy): a single `.mdb` file containing all sub-databases for that database
+
+Within each database, a table is represented by multiple key-value stores:
+
+- **Primary store** (`tableName/`): stores the full record for each primary key
+- **Secondary index stores** (`tableName/attributeName`): one store per indexed attribute, mapping attribute values to primary keys
+- **Metadata store** (`__internal_dbis__`): tracks table and attribute definitions for the database
+
+All stores for a given database reside within the same RocksDB directory (or LMDB environment file), so cross-table operations within a database share the same underlying I/O path.
 
 ## Compression
 
@@ -48,13 +61,21 @@ Harper compresses record data automatically for records over 4KB. Compression se
 
 ## Performance Characteristics
 
-Harper inherits the following performance properties from LMDB:
+Harper inherits strong performance properties from its storage engines:
+
+**RocksDB (default)**:
+
+- **LSM-tree writes**: Optimized for write-heavy workloads via log-structured merge trees
+- **Block cache**: Configurable in-memory block cache (defaults to 25% of available system memory)
+- **WAL durability**: Write-Ahead Log provides crash recovery without sacrificing throughput
+- **Compression**: Native support for multiple compression algorithms per level
+
+**LMDB (legacy)**:
 
 - **Memory-mapped I/O**: Data is accessed via memory mapping, enabling fast reads without data duplication between disk and memory
 - **Buffer cache integration**: Fully exploits the OS buffer cache for reduced I/O
-- **CPU cache optimization**: Built to maximize data locality within CPU caches
-- **Deadlock-free writes**: Full serialization of writers guarantees write ordering without deadlocks
 - **Zero-copy reads**: Readers access data directly from the memory map without copying
+- **Deadlock-free writes**: Full serialization of writers guarantees write ordering without deadlocks
 
 ## Indexing Example
 
@@ -72,12 +93,12 @@ Given a table with records like this:
 └────┴────────┴────────┘
 ```
 
-Harper maintains three separate LMDB sub-databases for that table:
+Harper maintains three separate key-value stores for that table, all within the same database:
 
 ```
-Table (LMDB environment file)
+Database (RocksDB directory or LMDB environment)
 │
-├── primary index: id
+├── primary store: "MyTable/"
 │   ┌─────┬──────────────────────────────────────┐
 │   │ Key │ Value (full record)                  │
 │   ├─────┼──────────────────────────────────────┤
@@ -88,19 +109,19 @@ Table (LMDB environment file)
 │   │  5  │ { id:5, field1:true, field2:2      } │
 │   └─────┴──────────────────────────────────────┘
 │
-├── secondary index: field1          secondary index: field2
-│   ┌────────┬───────┐               ┌────────┬───────┐
-│   │ Key    │ Value │               │ Key    │ Value │
-│   ├────────┼───────┤               ├────────┼───────┤
-│   │ -1     │  3    │               │  2     │  5    │
-│   │  25    │  2    │               │  X     │  1    │
-│   │  A     │  1    │               │  X     │  2    │
-│   │  A     │  4    │               │  Y     │  3    │
-│   │  true  │  5    │               └────────┴───────┘
+├── secondary index: "MyTable/field1"    secondary index: "MyTable/field2"
+│   ┌────────┬───────┐                   ┌────────┬───────┐
+│   │ Key    │ Value │                   │ Key    │ Value │
+│   ├────────┼───────┤                   ├────────┼───────┤
+│   │ -1     │  3    │                   │  2     │  5    │
+│   │  25    │  2    │                   │  X     │  1    │
+│   │  A     │  1    │                   │  X     │  2    │
+│   │  A     │  4    │                   │  Y     │  3    │
+│   │  true  │  5    │                   └────────┴───────┘
 │   └────────┴───────┘
 ```
 
-Secondary indexes store the attribute value as the key and the record's primary key (`id`) as the value. To resolve a query result, Harper looks up the matching ids in the secondary index, then fetches the full records from the primary index.
+Secondary indexes store the attribute value as the key and the record's primary key (`id`) as the value. To resolve a query result, Harper looks up the matching ids in the secondary index, then fetches the full records from the primary store.
 
 Indexes are ordered — booleans first, then numbers (numerically), then strings (lexically) — enabling efficient range queries across all types.
 
