@@ -238,7 +238,7 @@ function loadCertificates() {
 
 								promise = certificateTable.put({
 									name: certCn,
-									uses: config.uses ?? [configKey.includes('operations') ? ['operations-api'] : []],
+									uses: config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []),
 									ciphers: config.ciphers,
 									certificate: certificatePem,
 									private_key_name,
