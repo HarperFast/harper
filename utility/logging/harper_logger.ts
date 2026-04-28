@@ -17,7 +17,6 @@ let _externalLogger: any; // The actual logger instance
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)
 let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
-
 	? function () {
 			// if this is a child process started by a start/restart
 			// command, we can't write to stdout/stderr, we make this a noop
@@ -316,7 +315,7 @@ externalLogger = {
 	},
 	set tag(value) {
 		if (_externalLogger) _externalLogger.tag = value;
-	}
+	},
 } as any;
 export { externalLogger };
 _assignPackageExport('logger', externalLogger);
@@ -382,7 +381,7 @@ function initLogSettings(forceInit = false) {
 				rotation,
 				isExternalInstance: false,
 				writeToLog: undefined,
-				component: undefined
+				component: undefined,
 			});
 			// setup the external logger
 			_externalLogger = mainLogger.forComponent('external');
@@ -422,7 +421,15 @@ function initLogSettings(forceInit = false) {
 
 			logLevel = logLevel === undefined ? defaultLevel : logLevel;
 
-			mainLogger = createLogger({ level: logLevel, path: undefined, stdStreams: undefined, rotation: undefined, isExternalInstance: undefined, writeToLog: undefined, component: undefined });
+			mainLogger = createLogger({
+				level: logLevel,
+				path: undefined,
+				stdStreams: undefined,
+				rotation: undefined,
+				isExternalInstance: undefined,
+				writeToLog: undefined,
+				component: undefined,
+			});
 			// setup the external logger
 			_externalLogger = mainLogger.forComponent('external');
 			_externalLogger.tag = null; // don't tag by default
@@ -513,7 +520,15 @@ function createLogger({
 	isExternalInstance,
 	writeToLog,
 	component,
-}: { path: string | undefined, level: string, stdStreams: boolean | undefined, rotation: any, isExternalInstance: boolean | undefined, writeToLog: any, component: boolean | undefined }): any {
+}: {
+	path: string | undefined;
+	level: string;
+	stdStreams: boolean | undefined;
+	rotation: any;
+	isExternalInstance: boolean | undefined;
+	writeToLog: any;
+	component: boolean | undefined;
+}): any {
 	if (!logLevel) logLevel = 'info';
 	let level = typeof logLevel === 'number' ? logLevel : LOG_LEVEL_HIERARCHY[logLevel];
 	let logger: any;
@@ -687,7 +702,7 @@ function getFileLogger(path: string, rotation: any, isExternalInstance: boolean 
 		openLogFile(false);
 		if (logFD) {
 			let startTime = performance.now();
-			fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry as string);
+			fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : (entry as string));
 			let endTime = performance.now();
 			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
 			// will start buffering
@@ -928,7 +943,14 @@ export class AuthAuditLog {
 	originating_ip: string;
 	request_method: string;
 	path: string;
-	constructor(username: string, status: string, type: string, originatingIp: string, requestMethod: string, path: string) {
+	constructor(
+		username: string,
+		status: string,
+		type: string,
+		originatingIp: string,
+		requestMethod: string,
+		path: string
+	) {
 		this.username = username;
 		this.status = status;
 		this.type = type;

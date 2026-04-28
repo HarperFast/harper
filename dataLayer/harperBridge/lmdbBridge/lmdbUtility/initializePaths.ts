@@ -1,4 +1,4 @@
-'use strict';;
+'use strict';
 import * as hdbTerms from '../../../../utility/hdbTerms.js';
 import * as hdbUtils from '../../../../utility/common_utils.js';
 import * as env from '../../../../utility/environment/environmentManager.js';
@@ -7,6 +7,7 @@ import minimist from 'minimist';
 import fs from 'fs-extra';
 import _ from 'lodash';
 import { getConfigPath } from '../../../../config/configUtils.js';
+env.initSync();
 
 const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdbTerms;
 let BASE_SCHEMA_PATH = undefined;

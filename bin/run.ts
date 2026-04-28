@@ -1,5 +1,4 @@
 'use strict';
-
 import * as env from '../utility/environment/environmentManager.js';
 env.initSync();
 
@@ -194,9 +193,7 @@ export async function main(calledByInstall = false) {
 		const isScripted = process.env.IS_SCRIPTED_SERVICE && !cmdArgs.service;
 
 		await startHTTPThreads(
-			process.env.DEV_MODE
-				? 1
-				: (env.get(terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(terms.CONFIG_PARAMS.THREADS))
+			process.env.DEV_MODE ? 1 : (env.get(terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(terms.CONFIG_PARAMS.THREADS))
 		);
 
 		if (!isScripted) started();
@@ -237,7 +234,7 @@ export async function launch(exit = true) {
 	}
 }
 
-export function startupLog(portResolutions: Map<number, { name: string, protocol_name: string }[]>) {
+export function startupLog(portResolutions: Map<number, { name: string; protocol_name: string }[]>) {
 	// Adds padding to a string
 	const padding = 20;
 	const pad = (param: string) => param.padEnd(padding);

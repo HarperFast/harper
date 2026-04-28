@@ -1,10 +1,12 @@
-import { setupTestDBPath, setGlobalSchema } from '../testUtils.js';
+import { setupTestDBPath } from '../testUtils.js';
 import { fileURLToPath } from 'url';
 import hdbTerms from '#src/utility/hdbTerms';
 import { join } from 'path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
-import { writeFileSync } from 'node:fs';
+import analytics from '#src/resources/analytics/write';
+import { bypassAuth } from '#src/security/auth';
+import { bypassAuth as bypassAuthMQTT } from '#src/server/mqtt';
 import environmentManager from '#js/utility/environment/environmentManager';
 const { setProperty } = environmentManager;
 const config = {};
@@ -32,81 +34,22 @@ function makeString() {
 let createdRecords;
 let serverStarted;
 export async function setupTestApp() {
-	// exit if it is already setup or we are running in the browser
-	if (typeof process === 'undefined') return createdRecords;
-	let path = setupTestDBPath();
-	const configPath = join(path, 'harperdb-config.yaml');
-	process.env.HDB_ROOT_PATH = path;
-	const yamlContent = `
-rootPath: "${path.replace(/\\/g, '\\\\')}"
-authentication:
-  authorizeLocal: true
-http:
-  port: 9926
-operationsApi:
-  network:
-    port: 9925
-componentsRoot: "${join(path, 'components').replace(/\\/g, '\\\\')}"
-`;
-	writeFileSync(configPath, yamlContent);
-	environmentManager.initSync(true);
-
-	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9925);
-	setProperty(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT, join(path, 'components'));
-	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
-	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, 9926);
-	setProperty(hdbTerms.CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, true);
-	process.env.AUTHENTICATION_AUTHORIZELOCAL = 'true';
-	// Set a mock config file path so loadCertificates doesn't crash
-	setProperty('configPath', configPath);
-	setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, configPath);
-
-	process.env.SCHEMAS_DATA_PATH = path;
-	
-	const analytics = await import('#src/resources/analytics/write');
-	const { bypassAuth } = await import('#src/security/auth');
-	const { bypassAuth: bypassAuthMQTT } = await import('#src/server/mqtt');
-	const { createMockDB } = await import('../testUtils.js');
-	await createMockDB('username', 'system', 'hdb_user', [{ username: 'mock' }]);
-	await createMockDB('id', 'system', 'hdb_role', [{ id: 'mock' }]);
-	const { getDatabases } = await import('#src/resources/databases');
-	const dbs = getDatabases();
-	dbs.system.hdb_role.attributes = [{name: 'id', isPrimaryKey: true}, {name: 'role'}, {name: 'permission'}];
-	dbs.system.hdb_user.attributes = [{name: 'username', isPrimaryKey: true}, {name: 'role'}, {name: 'active'}];
-	
-	const { server } = await import('#src/server/Server');
 	analytics.setAnalyticsEnabled(false);
 	bypassAuth();
 	bypassAuthMQTT();
-
-	server.listUsers = async () => [];
-	server.listRoles = async () => [];
-
 	let superGetUser = server.getUser;
 	server.getUser = function (user, password) {
-		console.log(`MOCKED GETUSER CALLED WITH ${user}:${password}`);
 		if (user === 'test' && password === 'test') {
 			return {
 				id: 'test',
-				username: 'test',
-				super_user: true,
 				role: {
-					id: 'super_user',
-					super_user: true,
 					permission: {
-						super_user: true,
 						FourProp: {
 							read: true,
 							insert: true,
 							update: true,
 							delete: true,
 							attribute_permissions: [{ attribute_name: 'name', read: true, insert: true, update: true }],
-						},
-						VariedProps: {
-							read: true,
-							insert: true,
-							update: true,
-							delete: true,
 						},
 					},
 				},
@@ -115,6 +58,14 @@ componentsRoot: "${join(path, 'components').replace(/\\/g, '\\\\')}"
 		return superGetUser(user, password);
 	};
 
+	// exit if it is already setup or we are running in the browser
+	if (typeof process === 'undefined') return createdRecords;
+	let path = setupTestDBPath();
+	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
+	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
+	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, 9926);
+	setProperty(hdbTerms.CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, true);
+	process.env.SCHEMAS_DATA_PATH = path;
 	// make it easy to see what is going on when unit testing
 	process.env.LOGGING_STDSTREAMS = 'true';
 	// might need fileURLToPath
@@ -131,7 +82,7 @@ componentsRoot: "${join(path, 'components').replace(/\\/g, '\\\\')}"
 		tables.SubObject.clear();
 	} else {
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
-		serverStarted = await startHTTPThreads(0);
+		serverStarted = await startHTTPThreads(config.threads || 0);
 	}
 	try {
 		seed = 0; // reset the seed to make sure we are deterministic here

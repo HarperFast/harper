@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
+env.initSync();
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
 import { join, extname, basename } from 'path';
@@ -32,6 +33,7 @@ import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.js';
 import { when } from '../utility/when.js';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import env from '../../utility/environment/environmentManager';
 
 function createOpenDBIObject(dupSort = false, isPrimary = false) {
 	return new OpenDBIObject(dupSort, isPrimary);

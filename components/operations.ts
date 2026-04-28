@@ -366,7 +366,7 @@ export async function deployComponent(req: any): Promise<any> {
 	// Write to root config if the request contains a package identifier
 	// TODO: how can we keep record of the `payload`? Its often too large to stuff into a config file; especially the root config. Maybe we can write it to a file and reference that way?
 	if (req.package) {
-        if (TRUSTED_RESOURCE_PLUGINS[req.project] && !req.force) {
+		if (TRUSTED_RESOURCE_PLUGINS[req.project] && !req.force) {
 			throw handleHDBError(
 				new Error(),
 				`Cannot deploy component with name '${req.project}': this is a protected core component name. Use force: true to overwrite.`,
@@ -374,16 +374,16 @@ export async function deployComponent(req: any): Promise<any> {
 			);
 		}
 
-        const applicationConfig: any = { package: req.package };
-        // Avoid writing an empty `install:` block
-        if (req.install_command || req.install_timeout) {
+		const applicationConfig: any = { package: req.package };
+		// Avoid writing an empty `install:` block
+		if (req.install_command || req.install_timeout) {
 			applicationConfig.install = {
 				command: req.install_command,
 				timeout: req.install_timeout,
 			};
 		}
-        await configUtils.addConfig(req.project, applicationConfig);
-    }
+		await configUtils.addConfig(req.project, applicationConfig);
+	}
 
 	const application = new Application({
 		name: req.project,
@@ -406,9 +406,9 @@ export async function deployComponent(req: any): Promise<any> {
 	pseudoResources.isWorker = true;
 
 	if (!process.env.HARPER_SAFE_MODE) {
-        let lastError;
-        componentLoader.setErrorReporter((error: any) => (lastError = error));
-        await componentLoader.loadComponent(
+		let lastError;
+		componentLoader.setErrorReporter((error: any) => (lastError = error));
+		await componentLoader.loadComponent(
 			application.dirPath,
 			pseudoResources,
 			undefined,
@@ -418,8 +418,8 @@ export async function deployComponent(req: any): Promise<any> {
 			req.project
 		);
 
-        if (lastError) throw lastError;
-    }
+		if (lastError) throw lastError;
+	}
 	const rollingRestart = req.restart === 'rolling';
 	// if doing a rolling restart set restart to false so that other nodes don't also restart.
 	req.restart = rollingRestart ? false : req.restart;
@@ -428,15 +428,15 @@ export async function deployComponent(req: any): Promise<any> {
 		manageThreads.restartWorkers('http');
 		response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 	} else if (rollingRestart) {
-        const jobResponse = await serverUtilities.executeJob({
+		const jobResponse = await serverUtilities.executeJob({
 			operation: 'restart_service',
 			service: 'http',
 			replicated: true,
 		});
 
-        response.restartJobId = jobResponse.job_id;
-        response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-    } else response.message = `Successfully deployed: ${application.name}`;
+		response.restartJobId = jobResponse.job_id;
+		response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+	} else response.message = `Successfully deployed: ${application.name}`;
 
 	return response;
 }
@@ -472,10 +472,10 @@ function getProjectNameFromPackage(pkg: string): string {
  * @returns {Promise<*>}
  */
 export async function getComponents(): Promise<any> {
-    // Recursive function that will traverse the components dir and build json
-    // directory tree as it goes.
-    const rootConfig = configUtils.getConfiguration();
-    const walkDir = async (dir: string, result: any): Promise<any> => {
+	// Recursive function that will traverse the components dir and build json
+	// directory tree as it goes.
+	const rootConfig = configUtils.getConfiguration();
+	const walkDir = async (dir: string, result: any): Promise<any> => {
 		try {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
@@ -506,18 +506,18 @@ export async function getComponents(): Promise<any> {
 		}
 	};
 
-    const results = await walkDir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), {
+	const results = await walkDir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), {
 		name: configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
-    for (let entry of results.entries) {
+	for (let entry of results.entries) {
 		const sourcePackage = rootConfig[entry.name]?.package;
 		if (sourcePackage) entry.package = sourcePackage;
 	}
 
-    let consolidatedStatuses;
+	let consolidatedStatuses;
 
-    try {
+	try {
 		consolidatedStatuses = await statusInternal.ComponentStatusRegistry.getAggregatedFromAllThreads(
 			statusInternal.componentStatusRegistry
 		);
@@ -526,7 +526,7 @@ export async function getComponents(): Promise<any> {
 		log.debug(`Failed to get component status from threads: ${error.message}`);
 	}
 
-    for (const component of results.entries) {
+	for (const component of results.entries) {
 		try {
 			component.status = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
 				component.name,
@@ -541,7 +541,7 @@ export async function getComponents(): Promise<any> {
 			};
 		}
 	}
-    return results;
+	return results;
 }
 
 /**

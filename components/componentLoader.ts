@@ -69,23 +69,53 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 }
 
 export const TRUSTED_RESOURCE_PLUGINS: any = {
-	get REST() { return require('../server/REST.js'); },
-	get rest() { return require('../server/REST.js'); },
-	get graphql() { return require('../server/graphqlQuerying.js'); },
-	get graphqlSchema() { return require('../resources/graphql.js'); },
-	get roles() { return require('../resources/roles.js'); },
-	get jsResource() { return require('../resources/jsResource.js'); },
-	get fastifyRoutes() { return require('../server/fastifyRoutes.js'); },
-	get login() { return require('../resources/login.js'); },
-	get static() { return require('../server/static.js'); },
-	get operationsApi() { return require('../server/operationsServer.js'); },
+	get REST() {
+		return require('../server/REST.js');
+	},
+	get rest() {
+		return require('../server/REST.js');
+	},
+	get graphql() {
+		return require('../server/graphqlQuerying.js');
+	},
+	get graphqlSchema() {
+		return require('../resources/graphql.js');
+	},
+	get roles() {
+		return require('../resources/roles.js');
+	},
+	get jsResource() {
+		return require('../resources/jsResource.js');
+	},
+	get fastifyRoutes() {
+		return require('../server/fastifyRoutes.js');
+	},
+	get login() {
+		return require('../resources/login.js');
+	},
+	get static() {
+		return require('../server/static.js');
+	},
+	get operationsApi() {
+		return require('../server/operationsServer.js');
+	},
 	customFunctions: {},
 	http: httpComponent,
-	get authentication() { return require('../security/auth.js'); },
-	get mqtt() { return require('../server/mqtt.js'); },
-	get loadEnv() { return require('../resources/loadEnv.js'); },
-	get logging() { return require('../utility/logging/harper_logger.js'); },
-	get dataLoader() { return require('../resources/dataLoader.js'); },
+	get authentication() {
+		return require('../security/auth.js');
+	},
+	get mqtt() {
+		return require('../server/mqtt.js');
+	},
+	get loadEnv() {
+		return require('../resources/loadEnv.js');
+	},
+	get logging() {
+		return require('../utility/logging/harper_logger.ts');
+	},
+	get dataLoader() {
+		return require('../resources/dataLoader.js');
+	},
 };
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
@@ -490,7 +520,7 @@ export async function loadComponent(
 					error.message
 				}`;
 				errorReporter?.(error);
-				(getWorkerIndex() === 0 ? console : harperLogger as any).error(error);
+				(getWorkerIndex() === 0 ? console : (harperLogger as any)).error(error);
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
@@ -519,7 +549,7 @@ export async function loadComponent(
 		) {
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
 			errorReporter?.(new Error(errorMessage));
-			(getWorkerIndex() === 0 ? console : harperLogger as any).error(errorMessage);
+			(getWorkerIndex() === 0 ? console : (harperLogger as any)).error(errorMessage);
 			componentLifecycle.failed(basename(componentDirectory), errorMessage);
 		}
 
