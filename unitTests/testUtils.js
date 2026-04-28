@@ -10,7 +10,7 @@ const { table: ensure_table, resetDatabases } = require('#src/resources/database
 const terms = require('#src/utility/hdbTerms');
 const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
 const { isMainThread } = require('node:worker_threads');
-const { getDatabases } = require('#src/resources/databases');
+const { getDatabases, databases } = require('#src/resources/databases');
 const { handleHDBError } = require('#js/utility/errors/hdbError');
 
 let envMgrInitSyncStub;
@@ -367,12 +367,18 @@ function setupTestDBPath() {
 		fs.mkdirSync(dbPath, { recursive: true });
 	}
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
-	env.setProperty(terms.CONFIG_PARAMS.DATABASES, {
+	const databasePaths = {
 		data: { path: dbPath },
 		dev: { path: dbPath },
 		test: { path: dbPath },
 		test2: { path: dbPath },
-	});
+	};
+	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
+	if (systemPath) {
+		// do NOT change an existing system path, really confuses the system
+		databasePaths.system = { path: path.dirname(systemPath) };
+	}
+	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
 	resetDatabases();
 	if (isMainThread) {
 		process.on('exit', function () {
