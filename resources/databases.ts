@@ -184,7 +184,6 @@ export function getDatabases(): Databases {
 		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
 		(databasePath && (existsSync(databasePath) ? databasePath : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME)));
 	if (!databasePath) return;
-	console.error({ databasePath });
 	if (existsSync(databasePath)) {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
@@ -246,7 +245,6 @@ export function getDatabases(): Databases {
 		for (const dbName in schemaConfigs) {
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
-			console.log('specific database path', { dbName, databasePath });
 			if (existsSync(databasePath)) {
 				for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {

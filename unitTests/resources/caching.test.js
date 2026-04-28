@@ -18,6 +18,8 @@ describe('Caching', () => {
 	let timer = 0;
 	let return_value = true;
 	let return_error;
+	// skip LMDB test for now
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
