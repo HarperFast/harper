@@ -6,21 +6,17 @@ const path = require('path');
 const assert = require('assert');
 const fs = require('fs-extra');
 const env_util = require('#js/utility/lmdb/environmentUtility');
-const get_table_size = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
+const { lmdbGetTableSize } = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 
 describe('Test getLMDBStats function', function () {
 	let env = undefined;
 	let txn_env;
+	let mockTable;
 	const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
 	const BASE_TEST_PATH = path.join(testUtils.setupTestDBPath(), LMDB_TEST_FOLDER_NAME);
 	const BASE_TXN_PATH = path.join(testUtils.setupTestDBPath(), 'transactions', LMDB_TEST_FOLDER_NAME);
 	const TEST_ENVIRONMENT_NAME = 'test';
 	const ID_DBI_NAME = 'id';
-	const TABLE_RESULT = {
-		schema: LMDB_TEST_FOLDER_NAME,
-		name: TEST_ENVIRONMENT_NAME,
-		hash_attribute: ID_DBI_NAME,
-	};
 
 	before(async function () {
 		global.lmdb_map = undefined;
@@ -28,10 +24,17 @@ describe('Test getLMDBStats function', function () {
 		await fs.mkdirp(BASE_TEST_PATH);
 		await fs.mkdirp(BASE_TXN_PATH);
 		env = await env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-		await env_util.createDBI(env, ID_DBI_NAME);
+		const primaryStore = await env_util.createDBI(env, ID_DBI_NAME);
 
 		txn_env = await env_util.createEnvironment(BASE_TXN_PATH, TEST_ENVIRONMENT_NAME, true);
-		await env_util.createDBI(txn_env, 'timestamp');
+		const auditStore = await env_util.createDBI(txn_env, 'timestamp');
+
+		mockTable = {
+			databaseName: LMDB_TEST_FOLDER_NAME,
+			tableName: TEST_ENVIRONMENT_NAME,
+			primaryStore,
+			auditStore,
+		};
 	});
 
 	after(async function () {
@@ -42,14 +45,13 @@ describe('Test getLMDBStats function', function () {
 		await fs.remove(testUtils.setupTestDBPath());
 	});
 
-	it('getLMDBStats, test nominal case', async function () {
-		let table = testUtils.deepClone(TABLE_RESULT);
-		let results = await get_table_size(table);
-		assert(results.schema === table.schema);
-		assert(results.table === table.name);
-		assert(results.table_size !== undefined);
-		assert(results.record_count === 0);
-		assert(results.transaction_log_size !== undefined);
-		assert(results.transaction_log_record_count === 0);
+	it('getLMDBStats, test nominal case', () => {
+		const results = lmdbGetTableSize(mockTable);
+		assert(results.schema === mockTable.databaseName);
+		assert(results.table === mockTable.tableName);
+		assert(results.tableSize !== undefined);
+		assert(results.recordCount === 0);
+		assert(results.transactionLogSize !== undefined);
+		assert(results.transactionLogRecordCount === 0);
 	});
 });

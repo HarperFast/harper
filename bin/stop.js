@@ -4,7 +4,7 @@ const hdbLogger = require('../utility/logging/harper_logger.js');
 const util = require('util');
 const childProcess = require('child_process');
 const exec = util.promisify(childProcess.exec);
-const sysInfo = require('../utility/environment/systemInformation.js');
+const systemInformation = require('../utility/environment/systemInformation.ts');
 
 const STOP_MSG = 'Stopping Harper.';
 
@@ -14,9 +14,8 @@ async function stop() {
 	console.log(STOP_MSG);
 	hdbLogger.notify(STOP_MSG);
 
-	const processes = await sysInfo.getHDBProcessInfo();
-
-	processes.core.forEach((p) => {
-		exec(`kill ${p.pid}`);
-	});
+	const processes = await systemInformation.getHDBProcessInfo();
+	for (const { pid } of processes.core) {
+		exec(`kill ${pid}`);
+	}
 }

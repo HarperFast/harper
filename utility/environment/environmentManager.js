@@ -152,16 +152,22 @@ function initTestEnvironment(testConfigObj = {}) {
 		// __dirname is dist/utility/environment when running tests, so go up 3 levels to reach project root
 		const propsPath = path.join(__dirname, '../../../', 'unitTests');
 		installProps[BOOT_PROPS_FILE_PATH] = path.join(propsPath, 'hdb_boot_properties.file');
+		const TEST_HDB_PATH = path.join(propsPath, 'envDir', process.pid.toString());
 		try {
-			mkdirSync(path.join(propsPath, 'envDir'));
+			mkdirSync(TEST_HDB_PATH, { recursive: true });
 		} catch {}
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, path.join(propsPath, 'settings.test'));
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo() ? os.userInfo().username : undefined);
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
-		setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, path.join(propsPath, 'envDir', 'log'));
+		setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, path.join(TEST_HDB_PATH, 'log'));
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
-		setProperty(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(propsPath, 'envDir'));
-		setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, path.join(propsPath, 'envDir'));
+		setProperty(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, TEST_HDB_PATH);
+		setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, TEST_HDB_PATH);
+		const systemPath = typeof databases !== 'undefined' && databases.system?.hdb_user?.primaryStore?.path;
+		if (systemPath) {
+			setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, { system: { path: path.dirname(systemPath) } });
+		}
+
 		if (https_enabled) {
 			setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, get(hdbTerms.CONFIG_PARAMS.HTTP_PORT));
 			setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, null);

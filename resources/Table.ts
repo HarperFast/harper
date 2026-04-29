@@ -91,6 +91,7 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -4038,15 +4039,14 @@ export function makeTable(options) {
 							if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
 							if (updatedRecord.status > 0 && updatedRecord.headers) {
 								// if the source has a status code and headers, treat it as a response
-								if (updatedRecord.status >= 300) {
-									if (updatedRecord.status === 304) {
-										// revalidation of our current cached record
-										updatedRecord = existingRecord;
-										version = existingVersion;
-									} else {
-										// if the source has an error status, we need to throw an error
-										throw new ServerError(updatedRecord.body || 'Error from source', updatedRecord.status);
-									} // there are definitely more status codes to handle
+								const status = updatedRecord.status;
+								if (status === 304) {
+									// revalidation of our current cached record
+									updatedRecord = existingRecord;
+									version = existingVersion;
+								} else if (!CACHEABLE_STATUS_CODES.has(status)) {
+									// non-cacheable status - propagate to client without caching
+									throw new ServerError(updatedRecord.body || 'Error from source', status);
 								} else {
 									let headers: any;
 									const sourceHeaders = updatedRecord.headers;
@@ -4074,16 +4074,11 @@ export function makeTable(options) {
 									if (data !== undefined) {
 										// we have structured data that we have parsed
 										delete headers['content-type']; // don't store the content type if we have already parsed it
-										updatedRecord = {
-											headers,
-											data,
-										};
+										updatedRecord = { headers, data };
 									} else {
-										updatedRecord = {
-											headers,
-											body: createBlob(updatedRecord.body),
-										};
+										updatedRecord = { headers, body: createBlob(updatedRecord.body) };
 									}
+									if (status !== 200) updatedRecord.status = status;
 								}
 							}
 							if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();

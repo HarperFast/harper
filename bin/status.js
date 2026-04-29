@@ -6,7 +6,7 @@ const YAML = require('yaml');
 
 const hdbTerms = require('../utility/hdbTerms.ts');
 const hdbLog = require('../utility/logging/harper_logger.js');
-const sysInfo = require('../utility/environment/systemInformation.js');
+const systemInformation = require('../utility/environment/systemInformation.ts');
 const envMgr = require('../utility/environment/environmentManager.js');
 const installation = require('../utility/installation.ts');
 envMgr.initSync();
@@ -51,7 +51,7 @@ async function status() {
 	}
 
 	// Check the saved pid against any running hdb processes
-	const hdbSysInfo = await sysInfo.getHDBProcessInfo();
+	const hdbSysInfo = await systemInformation.getHDBProcessInfo();
 	for (const proc of hdbSysInfo.core) {
 		if (proc.pid === hdbPid) {
 			status.harperdb.status = STATUSES.RUNNING;
