@@ -232,9 +232,11 @@ export class Request {
 			end(chunk?: unknown, encoding?: BufferEncoding | (() => void), callback?: () => void) {
 				flushHeaders();
 				nodeRes.writableEnded = true;
-				if (typeof encoding === 'function') responseBody.end(chunk as any, encoding);
+				if (typeof chunk === 'function') responseBody.end(chunk as () => void);
+				else if (typeof encoding === 'function') responseBody.end(chunk as any, encoding);
 				else responseBody.end(chunk as any, encoding, callback);
 				return nodeRes;
+			},
 			},
 			destroy(error?: Error) {
 				if (!headersFlushed) {
