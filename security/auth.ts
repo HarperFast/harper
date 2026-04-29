@@ -344,15 +344,18 @@ export async function authentication(request, nextHandler) {
 		return response;
 	}
 }
+setInterval(() => {
+	authorizationCache = new Map();
+}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
+user.addListener(() => {
+	authorizationCache = new Map();
+});
+let started = false;
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+	if (started) return;
+	started = true;
 	const { port, securePort } = scope.options.getAll() as { port?: number; securePort?: number };
 	scope.server.http(authentication, port || securePort ? { port, securePort } : { port: 'all' });
-	setInterval(() => {
-		authorizationCache = new Map();
-	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
-	user.addListener(() => {
-		authorizationCache = new Map();
-	});
 }
 // operations
 export async function login(loginObject) {

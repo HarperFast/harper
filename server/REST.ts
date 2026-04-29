@@ -276,6 +276,7 @@ async function http(request: Context & Request, nextHandler) {
 	}
 }
 
+let started = false;
 let resources: Resources;
 let addedMetrics;
 let connectionCount = 0;
@@ -287,6 +288,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		Request.prototype.includeExpensiveRecordCountEstimates = true;
 	}
 	resources = scope.resources;
+	if (started) return;
+	started = true;
 	scope.server.http(async (request: Request, nextHandler) => {
 		if (request.isWebSocket) return;
 		return http(request, nextHandler);
