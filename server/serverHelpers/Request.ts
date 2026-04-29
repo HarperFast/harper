@@ -256,7 +256,13 @@ export class Request {
 		// are propagated via the response promise rejection instead.
 		responseBody.on('error', () => {});
 
-		handler(nodeReq, nodeRes);
+		const handlerResult = handler(nodeReq, nodeRes);
+		if (handlerResult != null && typeof (handlerResult as unknown as Promise<void>).then === 'function') {
+			(handlerResult as unknown as Promise<void>).catch((err: unknown) => {
+				if (!headersFlushed) rejectResponse(err);
+			});
+		}
+		return response;
 		return response;
 	}
 	sendEarlyHints(link: string, headers: Record<string, any> = {}) {
