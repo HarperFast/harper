@@ -516,6 +516,18 @@ describe('Request class', function () {
 				assert.strictEqual(headers.get('x-pair'), 'value');
 			});
 
+			it('accepts flat alternating-array header format', async function () {
+				const request = makeRequest();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.writeHead(200, ['x-flat', 'one', 'x-other', 'two']);
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.strictEqual(headers.get('x-flat'), 'one');
+				assert.strictEqual(headers.get('x-other'), 'two');
+			});
+
 			it('sets headersSent after writeHead', function () {
 				const request = makeRequest();
 				let capturedRes;
@@ -640,6 +652,34 @@ describe('Request class', function () {
 			});
 		});
 
+		describe('nodeResponse — setHeader multi-value', function () {
+			it('preserves Set-Cookie as separate values', async function () {
+				const request = makeRequest();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.setHeader('Set-Cookie', ['session=abc; Path=/', 'csrf=xyz; Path=/']);
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				const cookieValue = headers.get('Set-Cookie');
+				assert.ok(Array.isArray(cookieValue), 'Set-Cookie should be an array, not a joined string');
+				assert.strictEqual(cookieValue.length, 2);
+				assert.strictEqual(cookieValue[0], 'session=abc; Path=/');
+				assert.strictEqual(cookieValue[1], 'csrf=xyz; Path=/');
+			});
+
+			it('setHeader with a single string value works normally', async function () {
+				const request = makeRequest();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.setHeader('content-type', 'text/plain');
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.strictEqual(headers.get('content-type'), 'text/plain');
+			});
+		});
+
 		describe('nodeResponse — destroy', function () {
 			it('rejects the response promise with the provided error', async function () {
 				const request = makeRequest();
@@ -648,6 +688,15 @@ describe('Request class', function () {
 				});
 
 				await assert.rejects(() => responsePromise, /stream destroyed/);
+			});
+
+			it('rejects the response promise when destroyed with no error', async function () {
+				const request = makeRequest();
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.destroy();
+				});
+
+				await assert.rejects(() => responsePromise, /destroyed before headers/);
 			});
 
 			it('does not reject if destroy called after headers already flushed', async function () {

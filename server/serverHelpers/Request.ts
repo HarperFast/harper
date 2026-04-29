@@ -182,7 +182,17 @@ export class Request {
 			socket: this._nodeRequest.socket,
 
 			setHeader(name: string, value: string | number | string[]) {
-				capturedHeaders.set(name, Array.isArray(value) ? value.map(String).join(', ') : String(value));
+				if (Array.isArray(value)) {
+					// Use set() for first value (overwrites any existing entry) then append() for
+					// the rest so multiple values — critical for Set-Cookie — are preserved as an
+					// array rather than collapsed into a single comma-joined string.
+					if (value.length > 0) {
+						capturedHeaders.set(name, String(value[0]));
+						for (let i = 1; i < value.length; i++) capturedHeaders.append(name, String(value[i]));
+					}
+				} else {
+					capturedHeaders.set(name, String(value));
+				}
 				return nodeRes;
 			},
 			getHeader(name: string) {
