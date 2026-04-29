@@ -713,6 +713,29 @@ describe('Request class', function () {
 				capturedRes.destroy(new Error('late destroy'));
 			});
 		});
+
+		describe('async handler', function () {
+			it('rejects the response promise when async handler throws before writing headers', async function () {
+				const request = makeRequest();
+				const err = new Error('async handler failed');
+				const responsePromise = request.sendNodeRequestResponse(async (req, res) => {
+					throw err;
+				});
+
+				await assert.rejects(() => responsePromise, /async handler failed/);
+			});
+
+			it('does not double-reject after headers are flushed when async handler throws', async function () {
+				const request = makeRequest();
+				const responsePromise = request.sendNodeRequestResponse(async (req, res) => {
+					res.end('body');
+					throw new Error('late async throw');
+				});
+
+				const { status } = await responsePromise;
+				assert.strictEqual(status, 200);
+			});
+		});
 	});
 
 	describe('Headers class', function () {

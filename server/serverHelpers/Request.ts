@@ -122,7 +122,7 @@ export class Request {
 	 *   );
 	 */
 	sendNodeRequestResponse(
-		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void
+		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void | Promise<void>
 	): Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }> {
 		// Flat headers object matching IncomingMessage.headers format (lowercase keys)
 		const reqHeaders: Record<string, string | string[]> = Object.create(null);
@@ -262,7 +262,6 @@ export class Request {
 				if (!headersFlushed) rejectResponse(err);
 			});
 		}
-		return response;
 		return response;
 	}
 	sendEarlyHints(link: string, headers: Record<string, any> = {}) {
