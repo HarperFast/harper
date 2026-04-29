@@ -728,7 +728,7 @@ describe('Request class', function () {
 				await assert.rejects(() => responsePromise, /destroyed before headers/);
 			});
 
-			it('does not reject if destroy called after headers already flushed', async function () {
+			it('does not reject the response promise when destroy called after headers flushed', async function () {
 				const request = makeRequest();
 				let capturedRes;
 				const responsePromise = request.sendNodeRequestResponse((req, res) => {
@@ -736,10 +736,33 @@ describe('Request class', function () {
 					res.end('body');
 				});
 
-				await responsePromise; // resolve first
+				const { body } = await responsePromise;
+				// Attach error handler so the post-flush destroy error has a listener
+				body.on('error', () => {});
 
-				// Should not throw
 				capturedRes.destroy(new Error('late destroy'));
+			});
+
+			it('propagates destroy error to body consumer after headers are flushed', async function () {
+				const request = makeRequest();
+				let capturedRes;
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					capturedRes = res;
+					res.write('partial');
+					// deliberately do NOT call end() — destroy simulates a mid-stream abort
+				});
+
+				const { body } = await responsePromise;
+
+				// Collect body, expecting the stream error to be thrown
+				const bodyErrorPromise = new Promise((resolve, reject) => {
+					body.on('error', reject);
+					body.on('end', resolve);
+				});
+
+				capturedRes.destroy(new Error('connection reset'));
+
+				await assert.rejects(() => bodyErrorPromise, /connection reset/);
 			});
 		});
 

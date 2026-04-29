@@ -241,6 +241,10 @@ export class Request {
 				if (!headersFlushed) {
 					if (error) rejectResponse(error);
 					else rejectResponse(new Error('Response destroyed before headers were sent'));
+					// The error has been forwarded to the response promise; suppress the
+					// PassThrough 'error' event for this one destroy call so Node doesn't
+					// throw due to having no other listeners.
+					responseBody.once('error', () => {});
 				}
 				responseBody.destroy(error);
 				return nodeRes;
@@ -254,9 +258,6 @@ export class Request {
 		responseBody.on('close', () => {
 			(nodeRes as unknown as EventEmitter).emit('close');
 		});
-		// Prevent uncaught 'error' events when destroy(err) is called; errors before headers
-		// are propagated via the response promise rejection instead.
-		responseBody.on('error', () => {});
 
 		const handlerResult = handler(nodeReq, nodeRes);
 		if (handlerResult != null && typeof (handlerResult as unknown as Promise<void>).then === 'function') {
