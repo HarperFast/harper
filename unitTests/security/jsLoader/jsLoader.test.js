@@ -4,6 +4,10 @@ const { join } = require('node:path');
 const { scopedImport } = require('#src/security/jsLoader');
 const { expect } = require('chai');
 
+const SYMLINK_FIXTURE = join(__dirname, 'fixtures', 'symlink-test', 'node_modules', 'proxyTransform');
+// Minimal scope that routes through the VM loader without requiring a full Harper server context
+const vmScope = () => ({ mode: 'vm-current-context' });
+
 describe('scopedImport', () => {
 	it('should import a module', async () => {
 		const result = await scopedImport(join(__dirname, 'fixtures', 'good.cjs'));
@@ -58,5 +62,21 @@ describe('scopedImport', () => {
 				/libbad\.mjs:1\nexport const baz ====\n +\^\^\^\n+SyntaxError: Missing initializer in const declaration/
 			);
 		}
+	});
+});
+
+describe('symlinked module resolution', () => {
+	it('should resolve relative CJS require through a symlinked module', async () => {
+		// proxyTransform is a symlink to ../harper-modules/proxy-transform-module
+		// index.cjs does require('../cache.cjs') which must resolve via the real path,
+		// not the symlink path (node_modules/proxyTransform/../cache.cjs would not exist)
+		const result = await scopedImport(join(SYMLINK_FIXTURE, 'index.cjs'), vmScope());
+		expect(result.default.cached).to.equal('hit');
+	});
+
+	it('should resolve relative ESM import through a symlinked module', async () => {
+		// Same scenario for ESM: import cache from '../cache.mjs' must resolve via realpath
+		const result = await scopedImport(join(SYMLINK_FIXTURE, 'index.mjs'), vmScope());
+		expect(result.cached).to.equal('hit');
 	});
 });
