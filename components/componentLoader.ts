@@ -162,11 +162,16 @@ function symlinkHarperModule(componentDirectory: string) {
 					// create link to harper module
 					symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
 				}
-				// if there is a harperdb module, fix that too
+				// validate harperdb module
 				const harperdbModule = join(nodeModulesDir, 'harperdb');
-				if (existsSync(harperdbModule) && realpathSync(harperdbModule) !== realpathSync(PACKAGE_ROOT)) {
-					// if it exists but is incorrectly linked, fix it
-					rmSync(harperdbModule, { recursive: true, force: true });
+				if (existsSync(harperdbModule)) {
+					if (realpathSync(harperdbModule) !== realpathSync(PACKAGE_ROOT)) {
+						// if it exists but is incorrectly linked, fix it
+						rmSync(harperdbModule, { recursive: true, force: true });
+						// create link to harper module
+						symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
+					}
+				} else {
 					// create link to harper module
 					symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
 				}

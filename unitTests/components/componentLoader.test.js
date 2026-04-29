@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const sinon = require('sinon');
 const path = require('path');
 const { tmpdir } = require('os');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } = require('fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync, lstatSync, symlinkSync } = require('fs');
 
 describe('ComponentLoader Status Integration', function () {
 	let componentStatusRegistry;
@@ -261,6 +261,82 @@ describe('ComponentLoader Status Integration', function () {
 
 			// Restore the original handleApplication method
 			dataLoaderModule.handleApplication = originalhandleApplication;
+		});
+	});
+
+	describe('harperdb module symlink creation', function () {
+		const { PACKAGE_ROOT } = require('#js/utility/packageUtils');
+
+		it('should create both harper and harperdb symlinks in node_modules', async function () {
+			const componentDirName = 'symlink-both';
+			const componentDir = path.join(tempDir, componentDirName);
+			mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), 'logging: {}');
+
+			const mockResources = { isWorker: true, set: sinon.stub() };
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
+
+			const harperLink = path.join(componentDir, 'node_modules', 'harper');
+			const harperdbLink = path.join(componentDir, 'node_modules', 'harperdb');
+
+			assert.ok(existsSync(harperLink), 'harper symlink should exist');
+			assert.ok(existsSync(harperdbLink), 'harperdb symlink should exist');
+
+			assert.equal(
+				realpathSync(harperLink),
+				realpathSync(PACKAGE_ROOT),
+				'harper symlink should point to PACKAGE_ROOT'
+			);
+			assert.equal(
+				realpathSync(harperdbLink),
+				realpathSync(PACKAGE_ROOT),
+				'harperdb symlink should point to PACKAGE_ROOT'
+			);
+		});
+
+		it('should create harperdb symlink when node_modules exists but harperdb does not', async function () {
+			const componentDirName = 'symlink-missing-harperdb';
+			const componentDir = path.join(tempDir, componentDirName);
+			mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), 'logging: {}');
+
+			// Pre-create node_modules without a harperdb symlink
+			mkdirSync(path.join(componentDir, 'node_modules'));
+
+			const mockResources = { isWorker: true, set: sinon.stub() };
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
+
+			const harperdbLink = path.join(componentDir, 'node_modules', 'harperdb');
+			assert.ok(existsSync(harperdbLink), 'harperdb symlink should be created when missing');
+			assert.equal(
+				realpathSync(harperdbLink),
+				realpathSync(PACKAGE_ROOT),
+				'harperdb symlink should point to PACKAGE_ROOT'
+			);
+		});
+
+		it('should fix harperdb symlink when it points to wrong target', async function () {
+			const componentDirName = 'symlink-fix-harperdb';
+			const componentDir = path.join(tempDir, componentDirName);
+			mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), 'logging: {}');
+
+			// Pre-create node_modules with a wrong harperdb symlink
+			const nodeModules = path.join(componentDir, 'node_modules');
+			mkdirSync(nodeModules);
+			const wrongTarget = path.join(tempDir, 'wrong-target');
+			mkdirSync(wrongTarget);
+			symlinkSync(wrongTarget, path.join(nodeModules, 'harperdb'), 'dir');
+
+			const mockResources = { isWorker: true, set: sinon.stub() };
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin');
+
+			const harperdbLink = path.join(nodeModules, 'harperdb');
+			assert.equal(
+				realpathSync(harperdbLink),
+				realpathSync(PACKAGE_ROOT),
+				'harperdb symlink should be corrected to point to PACKAGE_ROOT'
+			);
 		});
 	});
 });
