@@ -48,6 +48,21 @@ describe('scopedImport', () => {
 		}
 	});
 
+	it('should resolve require("harperdb") to harper exports', async () => {
+		const scope = {
+			mode: 'vm-current-context',
+			allowedPath: '',
+			moduleCache: null,
+			server: { authenticateUser: null, operation: null },
+			logger: {},
+			resources: {},
+			config: {},
+		};
+		const result = await scopedImport(join(__dirname, 'fixtures', 'uses-harperdb.cjs'), scope);
+		expect(result.Resource).to.be.a('function');
+		expect(result.tables).to.exist;
+	});
+
 	it('should throw an error importing an ESM module with invalid dependency', async () => {
 		try {
 			await scopedImport(join(__dirname, 'fixtures', 'invalid4.mjs'));
