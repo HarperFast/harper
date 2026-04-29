@@ -63,7 +63,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#pluginName = pluginName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
-		this.#logger = logger || loggerWithTag(this.#appName);
+		this.#logger = loggerWithTag(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;

@@ -24,8 +24,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: latest
-          package-manager-cache: false
+          node-version-file: '.node-version'
+          cache: 'npm'
       - name: Get package.json version
         id: package-version
         run: echo "packageVersion=$(npm pkg get version | tr -d '\"')" >> "$GITHUB_OUTPUT"
