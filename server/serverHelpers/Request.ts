@@ -255,6 +255,9 @@ export class Request {
 			nodeRes.writableFinished = true;
 			(nodeRes as unknown as EventEmitter).emit('finish');
 		});
+		responseBody.on('drain', () => {
+			(nodeRes as unknown as EventEmitter).emit('drain');
+		});
 		responseBody.on('close', () => {
 			(nodeRes as unknown as EventEmitter).emit('close');
 		});
