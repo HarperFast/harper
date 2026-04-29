@@ -237,7 +237,6 @@ export class Request {
 				else responseBody.end(chunk as any, encoding, callback);
 				return nodeRes;
 			},
-			},
 			destroy(error?: Error) {
 				if (!headersFlushed) {
 					if (error) rejectResponse(error);
