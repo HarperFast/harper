@@ -650,6 +650,35 @@ describe('Request class', function () {
 				await new Promise((resolve) => setImmediate(resolve));
 				assert.ok(finishSpy.calledOnce);
 			});
+
+			it('write() invokes callback-as-second-arg after chunk is written', async function () {
+				const request = makeRequest();
+				let called = false;
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.write('hello', () => {
+						called = true;
+					});
+					res.end();
+				});
+
+				const { body } = await responsePromise;
+				await collectBody(body);
+				assert.ok(called);
+			});
+
+			it('end() invokes callback-as-second-arg after body is flushed', async function () {
+				const request = makeRequest();
+				let called = false;
+				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+					res.end('done', () => {
+						called = true;
+					});
+				});
+
+				const { body } = await responsePromise;
+				await collectBody(body);
+				assert.ok(called);
+			});
 		});
 
 		describe('nodeResponse — setHeader multi-value', function () {

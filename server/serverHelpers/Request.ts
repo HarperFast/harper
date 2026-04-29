@@ -152,10 +152,12 @@ export class Request {
 		const responseBody = new PassThrough();
 		const capturedHeaders = new ResponseHeaders();
 		let headersFlushed = false;
+		let nodeRes: ReturnType<typeof Object.assign> & NodeServerResponse;
 
 		const flushHeaders = () => {
 			if (!headersFlushed) {
 				headersFlushed = true;
+				nodeRes.headersSent = true;
 				resolveResponse({ status: nodeRes.statusCode as number, headers: capturedHeaders, body: responseBody });
 			}
 		};
@@ -172,7 +174,7 @@ export class Request {
 			}
 		};
 
-		const nodeRes = Object.assign(new EventEmitter(), {
+		nodeRes = Object.assign(new EventEmitter(), {
 			statusCode: 200 as number,
 			statusMessage: '',
 			headersSent: false,
@@ -215,7 +217,6 @@ export class Request {
 				nodeRes.statusCode = statusCode;
 				const hdrs = typeof statusMessageOrHeaders === 'string' ? maybeHeaders : statusMessageOrHeaders;
 				if (hdrs) applyHeaders(hdrs as object | unknown[]);
-				nodeRes.headersSent = true;
 				flushHeaders();
 				return nodeRes;
 			},
