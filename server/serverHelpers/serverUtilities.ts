@@ -19,7 +19,7 @@ import restart from '../../bin/restart.js';
 import * as util from 'util';
 import insert from '../../dataLayer/insert.js';
 import globalSchema from '../../utility/globalSchema.js';
-import systemInformation from '../../utility/environment/systemInformation.js';
+import { systemInformation } from '../../utility/environment/systemInformation.ts';
 import jobRunner from '../jobs/jobRunner.js';
 import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
 import * as auth from '../../security/auth.ts';
@@ -363,10 +363,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.SYSTEM_INFORMATION,
-		new OperationFunctionObject(systemInformation.systemInformation)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(systemInformation));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE,
 		new OperationFunctionObject(executeJob, delete_.deleteAuditLogsBefore)

@@ -26,7 +26,7 @@ const restart = require('../bin/restart.js');
 const terms = require('./hdbTerms.ts');
 const { expandOperationsPerms } = require('./operationPermissions.ts');
 const permsTranslator = require('../security/permissionsTranslator.js');
-const systemInformation = require('../utility/environment/systemInformation.js');
+const { systemInformation } = require('../utility/environment/systemInformation.ts');
 const tokenAuthentication = require('../security/tokenAuthentication.ts');
 const auth = require('../security/auth.ts');
 const configUtils = require('../config/configUtils.js');
@@ -157,10 +157,7 @@ requiredPermissions.set(restart.restartService.name, new permission(true, []));
 requiredPermissions.set(readAuditLog.name, new permission(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
 requiredPermissions.set(getBackup.name, new permission(true, [READ_PERM]));
 requiredPermissions.set(schema.cleanupOrphanBlobs.name, new permission(true, []));
-requiredPermissions.set(
-	systemInformation.systemInformation.name,
-	new permission(true, [], terms.OPERATIONS_ENUM.SYSTEM_INFORMATION)
-);
+requiredPermissions.set(systemInformation.name, new permission(true, [], terms.OPERATIONS_ENUM.SYSTEM_INFORMATION));
 requiredPermissions.set(
 	configUtils.getConfiguration.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_CONFIGURATION)
