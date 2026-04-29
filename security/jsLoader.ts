@@ -181,7 +181,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (parts[0] === 'file:') {
 			return specifier;
 		}
-		const resolved = createRequire(referrer).resolve(specifier);
+		let resolveReferrer = referrer;
+		if (referrer.startsWith('file:')) {
+			try {
+				resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
+			} catch {}
+		}
+		const resolved = createRequire(resolveReferrer).resolve(specifier);
 		if (isAbsolute(resolved)) {
 			return pathToFileURL(resolved).toString();
 		}
@@ -206,7 +212,13 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			cjsModule.exports = parseJsonModule(source, url);
 			return cjsModule;
 		}
-		const require = createRequire(url);
+		let requireUrl = url;
+		if (url.startsWith('file://')) {
+			try {
+				requireUrl = pathToFileURL(realpathSync(fileURLToPath(url))).toString();
+			} catch {}
+		}
+		const require = createRequire(requireUrl);
 
 		const cjsRequire = (spec: string) => {
 			const resolvedPath = require.resolve(spec);
