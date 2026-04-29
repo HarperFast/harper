@@ -8,11 +8,12 @@ title: Plugin API
 
 # Plugin API
 
-<VersionBadge version="v4.6.0" /> (experimental)
+<VersionBadge version="v5.0.0" type="stable" />
+<VersionBadge version="v4.6.0" />
 
-> The Plugin API is **experimental**. It is the recommended approach for building new extensions, and is intended to replace the [Extension API](./extension-api.md) in the future. Both systems are supported simultaneously.
+**Plugins** are the building blocks of the Harper component system. Applications depend on plugins to provide the functionality they implement. For example, the built-in `graphqlSchema` plugin enables applications to define databases and tables using GraphQL schemas. The `@harperfast/nextjs` plugin provides the functionality to build a Next.js application on Harper. Plugins export a single `handleApplication` method and are always executed on worker threads.
 
-The Plugin API is a new iteration of the extension system that simplifies the interface. Instead of defining multiple methods (`start`, `startOnMainThread`, `handleFile`, `setupFile`, `handleDirectory`, `setupDirectory`), a plugin exports a single `handleApplication` method.
+Plugins can also depend on other plugins. For example, `@harperfast/nextjs` depends on the built-in `graphqlSchema` to create caching tables.
 
 ## Declaring a Plugin
 
@@ -375,7 +376,7 @@ Function signature for the `'all'` event handler passed to `scope.handleEntry()`
 
 ## Example: Static File Server Plugin
 
-A simplified form of the built-in `static` extension demonstrating key Plugin API patterns:
+A simplified form of the built-in `static` plugin demonstrating key Plugin API patterns:
 
 ```js
 export function handleApplication(scope) {

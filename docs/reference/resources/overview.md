@@ -104,7 +104,7 @@ Resources are the true customization point for Harper. This is where the busines
 
 ## Exporting Resources as Endpoints
 
-Resources become HTTP/MQTT endpoints when they are exported. As the examples demonstrated if a Resource extends an existing table, make sure to not have conflicting exports between the schema and the JavaScript implementation. Alternatively, you can register resources programmatically using `server.resources.set()`. See [HTTP API](../http/api.md) for server extension documentation.
+Resources become HTTP/MQTT endpoints when they are exported. As the examples demonstrated if a Resource extends an existing table, make sure to not have conflicting exports between the schema and the JavaScript implementation. Alternatively, you can register resources programmatically using `server.resources.set()`. See [HTTP API](../http/api.md) for `server` API documentation.
 
 ## Pages in This Section
 

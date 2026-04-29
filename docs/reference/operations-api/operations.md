@@ -573,7 +573,7 @@ Creates a new operation token from an existing refresh token.
 
 ## Components
 
-Operations for deploying and managing Harper components (applications, extensions, plugins).
+Operations for deploying and managing Harper components (applications, plugins).
 
 Detailed documentation: [Components Overview](../components/overview.md)
 

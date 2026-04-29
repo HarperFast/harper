@@ -22,21 +22,21 @@ title: Components
 
 **Applications** implement specific user-facing features or functionality. Applications are built on top of extensions and represent the end product that users interact with. For example, a Next.js application serving a web interface or an Apollo GraphQL server providing a GraphQL API are both applications. Also, a collection of Harper Schemas and/or custom Resources is also an application.
 
+### Plugins
+
+<VersionBadge version="v5.0.0" type="stable" />
+<VersionBadge version="v4.6.0" />
+
+**Plugins** are the building blocks of the Harper component system. Applications depend on plugins to provide the functionality they implement. For example, the built-in `graphqlSchema` plugin enables applications to define databases and tables using GraphQL schemas. The `@harperfast/nextjs` plugin provides the functionality to build a Next.js application on Harper. Plugins export a single `handleApplication` method and are always executed on worker threads.
+
+Plugins can also depend on other plugins. For example, `@harperfast/nextjs` depends on the built-in `graphqlSchema` to create caching tables.
+
 ### Extensions
 
+<VersionBadge version="v5.0.0" type="deprecated" />
 <VersionBadge version="v4.2.0" />
 
-**Extensions** are the building blocks of the Harper component system. Applications depend on extensions to provide the functionality they implement. For example, the built-in `graphqlSchema` extension enables applications to define databases and tables using GraphQL schemas. The `@harperdb/nextjs` and `@harperdb/apollo` extensions provide building blocks for Next.js and Apollo applications respectively.
-
-Extensions can also depend on other extensions. For example, `@harperdb/apollo` depends on the built-in `graphqlSchema` extension to create a cache table for Apollo queries.
-
-### Plugins (Experimental)
-
-<VersionBadge version="v4.6.0" /> (experimental)
-
-**Plugins** are a new iteration of the extension system introduced in v4.6. They are simultaneously a simplification and extensibility upgrade over extensions. Instead of defining multiple methods (`start` vs `startOnMainThread`, `handleFile` vs `setupFile`, `handleDirectory` vs `setupDirectory`), plugins only export a single `handleApplication` method.
-
-Plugins are **experimental**. In time extensions will be deprecated in favor of plugins, but both are currently supported. See the [Plugin API](./plugin-api.md) reference for complete documentation.
+**Extensions** were replace by **plugins** in Harper v5; however, they are still supported for backwards compatibility. Extensions make use of the `start`, `startOnMainThread`, `handleFile`, `setupFile`, `handleDirectory`, and `setupDirectory` methods.
 
 ### Built-In vs. Custom Components
 

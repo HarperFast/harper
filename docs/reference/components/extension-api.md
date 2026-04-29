@@ -7,7 +7,9 @@ title: Extension API
 
 # Extension API
 
-> As of Harper v4.6, a new iteration of the extension system called **Plugins** was released. Plugins simplify the API and are recommended for new extension development. See the [Plugin API](./plugin-api.md) reference. Both extensions and plugins are supported; extensions are not yet deprecated.
+<VersionBadge version="v5.0.0" type="deprecated" />
+
+> As of Harper v4.6 and now stable in v5.0, a new iteration of the extension system called **plugins** was released. Plugins simplify the API and are recommended for new extension development. See the [Plugin API](./plugin-api.md) reference. Extensions are still supported as of v5.0 but are considered deprecated in favor of plugins.
 
 Extensions are components that provide reusable building blocks for applications. There are two key types:
 

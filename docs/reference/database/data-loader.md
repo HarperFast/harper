@@ -20,7 +20,7 @@ dataLoader:
   files: 'data/*.json'
 ```
 
-`dataLoader` is an [Extension](../components/extension-api.md) and supports the standard `files` configuration option, including glob patterns.
+`dataLoader` is a [plugin](../components/plugin-api.md) and supports the standard `files` configuration option, including glob patterns.
 
 ## Data File Format
 
@@ -213,4 +213,4 @@ Because the data loader uses content hashing, adding new countries or correcting
 
 - [Schema](./schema.md) — Defining table structure before loading data
 - [Jobs](./jobs.md) — Bulk data operations via the Operations API (CSV/JSON import from file, URL, or S3)
-- [Components](../components/overview.md) — Extension and plugin system that the data loader is built on
+- [Components](../components/overview.md) — Plugin system that the data loader is built on

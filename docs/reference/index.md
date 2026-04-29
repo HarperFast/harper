@@ -16,7 +16,7 @@ For concept introductions, tutorials, and guides, see the [Learn](/learn) sectio
 | -------------------------------------- | ----------------------------------------------------------------------- |
 | [Database](./database/overview.md)     | Schema system, storage, indexing, transactions, and the database JS API |
 | [Resources](./resources/overview.md)   | Custom resource classes, the Resource API, and query optimization       |
-| [Components](./components/overview.md) | Applications, extensions, the Plugin API, and the JS environment        |
+| [Components](./components/overview.md) | Applications, plugins, and the JS environment                           |
 
 ### Access & Security
 
