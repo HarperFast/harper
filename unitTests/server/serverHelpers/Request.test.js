@@ -402,7 +402,7 @@ describe('Request class', function () {
 			mockNodeRequest = {
 				method: 'GET',
 				url: '/original',
-				headers: { host: 'example.com', 'content-type': 'text/plain' },
+				headers: { 'host': 'example.com', 'content-type': 'text/plain' },
 				httpVersion: '1.1',
 				socket: {
 					encrypted: false,
@@ -452,7 +452,7 @@ describe('Request class', function () {
 
 			it('has lowercase header keys', function () {
 				const request = makeRequest({
-					headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+					headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer tok' },
 				});
 
 				let capturedReq;
@@ -770,7 +770,7 @@ describe('Request class', function () {
 			it('rejects the response promise when async handler throws before writing headers', async function () {
 				const request = makeRequest();
 				const err = new Error('async handler failed');
-				const responsePromise = request.sendNodeRequestResponse(async (req, res) => {
+				const responsePromise = request.sendNodeRequestResponse(async (_req, _res) => {
 					throw err;
 				});
 
