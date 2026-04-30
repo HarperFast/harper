@@ -336,9 +336,8 @@ describe('Caching', () => {
 		assert.equal(sourceRequests, 1);
 		assert.equal(events.length, 0);
 		result = await IndexedCachingTable.get(23);
-		// TODO: This should always be there, per https://github.com/HarperFast/harper/issues/239
 		await delay(10); // give the lock a chance to be released
-		//assert(result.getExpiresAt());
+		assert(result.getExpiresAt());
 		result = IndexedCachingTable.primaryStore.getEntry(23);
 		await IndexedCachingTable.evict(23, result, result.version);
 		await delay(10);

@@ -4085,11 +4085,25 @@ export function makeTable(options) {
 							if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 						}
 						resolved = true;
-						resolve({
+						const resolvedEntry: Entry = {
 							key: id,
 							version,
 							value: updatedRecord,
-						});
+							expiresAt: sourceContext.expiresAt,
+						};
+						// Convert plain object to RecordObject so that getExpiresAt/getUpdatedTime
+						// methods are available on the immediately-resolved entry before it is written
+						// to and re-read from the store with proper deserialization.
+						if (updatedRecord && updatedRecord.constructor === Object) {
+							const recordObject = new primaryStore.encoder.structPrototype.constructor();
+							Object.assign(recordObject, updatedRecord);
+							Object.freeze(recordObject);
+							resolvedEntry.value = recordObject;
+							resolvedEntry.metadataFlags ??= 0;
+							resolvedEntry.size ??= 0;
+							entryMap.set(recordObject, resolvedEntry);
+						}
+						resolve(resolvedEntry);
 					} catch (error) {
 						error.message += ` while resolving record ${id} for ${tableName}`;
 						if (
