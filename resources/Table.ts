@@ -6,7 +6,7 @@
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
-import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
@@ -99,6 +99,7 @@ export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
+const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -2615,12 +2616,21 @@ export function makeTable(options) {
 			}
 			if (!request) request = {};
 			const getFullRecord = !request.rawEvents;
-			let pendingRealTimeQueue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
+			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
+			// messages from the listener accumulate here and are drained at the end of the IIFE so they
+			// arrive after the replayed history, in order. The startTime branch sets this to null and
+			// uses dropDuringReplay instead — its snapshot:false cursor picks up the live tail directly.
+			let pendingRealTimeQueue: any[] | null = [];
+			// Set during the startTime audit-log replay. The cursor iterates the audit log forward with
+			// snapshot:false, which catches any commits that land during yield points; dropping in the
+			// listener avoids duplicate delivery.
+			let dropDuringReplay = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
 				function (id: Id, auditRecord: any, localTime: number, beginTxn: boolean) {
+					if (dropDuringReplay) return;
 					try {
 						let type = auditRecord.type;
 						let value;
@@ -2663,6 +2673,11 @@ export function makeTable(options) {
 				request.startTime || 0,
 				request
 			);
+			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
+			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
+			// in subscription.queue. Without this, the IIFE can fill the queue past
+			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
+			if (request.listener) subscription!.on('data', request.listener);
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
@@ -2673,17 +2688,27 @@ export function makeTable(options) {
 				let count = request.previousCount;
 				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 				let startTime = request.startTime;
+				let recordsSinceYield = 0;
+
 				if (isCollection) {
 					// a collection should retrieve all descendant ids
 					if (startTime) {
 						if (count)
 							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
-						// start time specified, get the audit history for this time range
+						// start time specified, get the audit history for this time range. We drop real-time
+						// messages during this loop because the snapshot:false cursor will pick them up itself.
+						pendingRealTimeQueue = null;
+						dropDuringReplay = true;
+
 						for (const auditRecord of auditStore.getRange({
 							start: startTime,
 							exclusiveStart: true,
 							snapshot: false, // no need for a snapshot, audits don't change
 						})) {
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+							}
 							if (auditRecord.tableId !== tableId) continue;
 							const id = auditRecord.recordId;
 							if (thisId == null || isDescendantId(thisId, id)) {
@@ -2701,14 +2726,33 @@ export function makeTable(options) {
 									if ((await subscription.waitForDrain()) === false) return;
 								}
 							}
-							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-							//await rest(); // yield for fairness
-							subscription.startTime = auditRecord.localTime; // update so we don't double send
+							subscription!.startTime = auditRecord.localTime ?? auditRecord.version; // update so we don't double send
 						}
+						// No catch-up sweep needed. With snapshot:false (lmdb), notifyFromTransactionData
+						// calls resetReadTxn before iterating, which bumps renewId; on the cursor's next
+						// .next() it renews to a fresh txn whose snapshot is at least as recent. With
+						// rocksdb, the audit-log iterator re-reads `_lastCommittedPosition` on each next()
+						// (live tail). Either way, at loop exit subscription.startTime is at or past
+						// lastTxnTime, and the gate in notifyFromTransactionData handles the handoff
+						// once dropDuringReplay flips back.
+						dropDuringReplay = false;
 					} else if (count) {
+						// Raise the listener's gate up front so that any in-flight 'committed' callbacks
+						// for records the cursor will capture in `history` get gated out of
+						// pendingRealTimeQueue rather than queued and re-emitted as duplicates after
+						// history is sent. getNextMonotonicTime() returns a strictly-greater value than
+						// any audit record's localTime issued so far — it's the same source Harper uses
+						// to assign localTimes — so this gates exactly the records the cursor's
+						// snapshot:true view can see. Anything committed strictly after this point will
+						// pass the gate and reach the queue.
+						subscription!.startTime = getNextMonotonicTime();
 						const history = [];
 						// we are collecting the history in reverse order to get the right count, then reversing to send
 						for (const auditRecord of auditStore.getRange({ start: 'z', end: false, reverse: true })) {
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+							}
 							try {
 								if (auditRecord.tableId !== tableId) continue;
 								const id = auditRecord.recordId;
@@ -2726,20 +2770,34 @@ export function makeTable(options) {
 							} catch (error) {
 								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
-							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-							//await rest(); // yield for fairness
 						}
 						for (let i = history.length; i > 0; ) {
 							send(history[--i]);
 						}
-						if (history[0]) subscription.startTime = history[0].localTime; // update so don't double send
 					} else if (!request.omitCurrent) {
+						// Raise the listener's gate up front so that any in-flight 'committed' callbacks
+						// for pre-subscribe commits (which haven't yet advanced lastTxnTime when subscribe
+						// is called) get gated out of the queue. Otherwise the listener fires for them
+						// during cursor yields and emits stale events the cursor either covered (current
+						// state) or correctly skipped (e.g., deletes via `if (!value) continue`).
+						// getNextMonotonicTime() is the same source Harper uses to assign audit record
+						// localTimes, so the gate cuts at a precise instant in the same time domain.
+						subscription!.startTime = getNextMonotonicTime();
+
+						// Retained-message semantics: subscriber may legitimately receive a record twice
+						// if a post-subscribe write hits a key the cursor also visits. This is
+						// idempotent for "current state then live updates" — both deliveries land at
+						// the same final state. We don't dedupe.
 						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
 							start: thisId ?? false,
 							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 							versions: true,
 							snapshot: false, // no need for a snapshot, just want the latest data
 						})) {
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+							}
 							if (!value) continue;
 							send({ id, localTime, value, version, type: 'put', size });
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
@@ -2765,13 +2823,19 @@ export function makeTable(options) {
 					}
 					logger.trace?.('Subscription from', startTime, 'from', thisId, localTime);
 					if (startTime < localTime) {
-						// start time specified, get the audit history for this record
+						// start time specified, get the audit history for this record. Set startTime up
+						// front so the listener gate skips any in-flight 'committed' for this version
+						// during the yields below — otherwise that event would be queued and drained as a
+						// duplicate of the entry send.
+						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
 						let nextTime = localTime;
 						let nodeId = entry?.nodeId;
 						do {
-							//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
-							//await auditStore.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+							}
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
 							if (auditRecord) {
 								if (startTime < nextTime) {
@@ -2793,7 +2857,6 @@ export function makeTable(options) {
 						for (let i = history.length; i > 0; ) {
 							send(history[--i]);
 						}
-						subscription.startTime = localTime; // make sure we don't re-broadcast the current version that we already sent
 					}
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
@@ -2805,10 +2868,12 @@ export function makeTable(options) {
 					}
 				}
 				// now send any queued messages
-				for (const event of pendingRealTimeQueue) {
-					send(event);
+				if (pendingRealTimeQueue) {
+					for (const event of pendingRealTimeQueue) {
+						send(event);
+					}
+					pendingRealTimeQueue = null;
 				}
-				pendingRealTimeQueue = null;
 			})();
 			result.catch((error) => {
 				harperLogger.error?.('Error in real-time subscription:', error);
@@ -2820,7 +2885,6 @@ export function makeTable(options) {
 				}
 				subscription.send(event);
 			}
-			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}
 
