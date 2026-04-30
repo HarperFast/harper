@@ -178,7 +178,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// First, ensure current and new config values are Config objects (not null, undefined, or a primitive)
 		if (!this.#isConfig(currentConfigValue) || !this.#isConfig(newConfigValue)) {
 			// If either is not a config, then just set as there is no need to diff/merge
-			this.#setValue(prevKeys, newConfigValue);
+			if (!isDeepStrictEqual(currentConfigValue, newConfigValue)) {
+				this.#setValue(prevKeys, newConfigValue);
+			}
 			return;
 		}
 
@@ -254,6 +256,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 
 		if (!['object', 'string', 'array', 'number', 'boolean', 'undefined'].includes(typeof value)) {
 			throw new InvalidValueTypeError(keys, value);
+		}
+
+		if (keys.length === 0) {
+			this.#scopedConfig = value;
+			this.emit('change', keys, value, this.#scopedConfig);
+			return;
 		}
 
 		let obj: ConfigValue = this.#scopedConfig;
