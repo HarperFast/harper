@@ -161,6 +161,9 @@ jobs:
         with:
           name: harper-build-artifacts-node-${{ matrix.node-version }}
 
+      - name: Relink bin scripts
+        run: npm install --ignore-scripts
+
       - name: Install harperdb@4 for legacy tests
         run: |
           mkdir -p /tmp/harperdb-legacy
@@ -171,7 +174,7 @@ jobs:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
         run: |
-          npm run test:integration -- --shard=${{ matrix.shard }}/4
+          npm run test:integration:all -- --shard=${{ matrix.shard }}/4
 
       - name: Upload Harper server logs
         if: failure()

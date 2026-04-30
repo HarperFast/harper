@@ -23,7 +23,14 @@ export function bypassAuth() {
 const authorizeLocal = (remoteAddress: string) =>
 	AUTHORIZE_LOCAL && (remoteAddress.includes('127.0.0.') || remoteAddress === '::1');
 
-export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
+export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+	const { network, webSocket, requireAuthentication } = scope.options.getAll() as {
+		network?: any;
+		webSocket?: any;
+		requireAuthentication?: boolean;
+	};
+	const server = scope.server;
+	const { port, securePort } = network ?? {};
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	if (!server.mqtt) {
 		server.mqtt = {
@@ -160,7 +167,6 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 			)
 		);
 	}
-	return serverInstances;
 }
 let addingMetrics,
 	numberOfConnections = 0;

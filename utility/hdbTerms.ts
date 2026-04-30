@@ -593,6 +593,7 @@ export const CONFIG_PARAMS = {
 	TLS_PRIVATEKEY: 'tls_privateKey',
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
 	TLS_CIPHERS: 'tls_ciphers',
+	TLS_UNIXDOMAINSOCKETS: 'tls_unixDomainSockets',
 	TLS: 'tls',
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',

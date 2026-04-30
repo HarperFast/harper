@@ -3,7 +3,7 @@
  * database, so replay needs to work for harper to startup.
  */
 import { suite, test, before, after } from 'node:test';
-import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 import { equal } from 'node:assert';
 
 suite('Transaction log replay on crash', (ctx: ContextWithHarper) => {

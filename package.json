@@ -59,7 +59,8 @@
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
 		"test:integration:api-tests": "node --test integrationTests/apiTests/tests/testSuite.mjs",
-		"test:integration": "node integrationTests/utils/scripts/run.ts",
+		"test:integration": "HARPER_INTEGRATION_TEST_INSTALL_SCRIPT=dist/bin/harper.js harper-integration-test-run",
+		"test:integration:all": "npm run test:integration -- integrationTests/**/*.test.ts",
 		"test:unit": "mocha",
 		"test:unit:main": "mocha 'unitTests/**/*test.*js' --exclude 'unitTests/apiTests/**/*' --exclude 'unitTests/dataLayer/harperBridge/**/*' --exclude 'unitTests/resources/**/*'",
 		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
@@ -122,6 +123,7 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.6",
+		"@harperfast/integration-testing": "^0.2.0",
 		"@types/fs-extra": "^11.0.4",
 		"@types/gunzip-maybe": "^1.4.3",
 		"@types/jsonwebtoken": "^9.0.10",

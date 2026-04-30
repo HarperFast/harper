@@ -12,7 +12,7 @@ import { ok, strictEqual } from 'node:assert/strict';
 import { pack, unpack } from 'msgpackr';
 import { encode, decode } from 'cbor-x';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 suite('Operations Server', (ctx: ContextWithHarper) => {
 	before(async () => {

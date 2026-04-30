@@ -240,12 +240,41 @@ jobs:
 
             ## How to post the review
 
-            - Use `gh pr comment` for the single consolidated top-level
-              summary comment.
-            - Use `mcp__github_inline_comment__create_inline_comment`
-              (with `confirmed: true`) for specific code-line annotations.
-            - Only post GitHub comments — do NOT submit review text as SDK
-              messages.
+            Aim for **concise and actionable**. The cost is cognitive
+            overhead on humans; the constant is that you're missing
+            context the PR author has (motivation, prior conversation,
+            related work). Don't restate the PR's intent, don't recap
+            the diff, don't grade the author's reasoning — focus on
+            what to change.
+
+            Two surfaces:
+
+            - **Inline findings** via
+              `mcp__github_inline_comment__create_inline_comment` (with
+              `confirmed: true`). Per-line concerns belong here — it's
+              the most actionable place to put them. New findings post
+              fresh on each run; GitHub auto-marks superseded ones
+              "outdated".
+            - **Top-level PR comment** — a concise summary that
+              anchors the inline findings. Cap at ~5 lines. Edit
+              in place across runs so the PR never accumulates stacked
+              review comments:
+              `gh pr comment <N> --edit-last --create-if-none --body "<BODY>"`.
+              Use `--body-file` if the body is large enough to hit
+              shell argument limits. Don't wrap prior reviews in
+              `<details>` here — the related ai-review-log issue
+              keeps history across runs.
+
+            For "no blockers" runs, a single sentence on the PR is
+            enough (e.g. `Reviewed; no blockers found.`). Don't
+            restate scope, confidence, or what you checked — that's
+            noise on the PR. The next workflow step threads each
+            run's PR comment into a per-PR ai-review-log issue, so
+            cross-run history accumulates there rather than on the
+            PR itself.
+
+            Only post GitHub comments — do NOT submit review text as SDK
+            messages.
 
             Cap the review at 10 findings.
 
@@ -316,23 +345,75 @@ jobs:
           BODY=$(printf '**Source:** %s\n**Repo:** %s\n**PR:** #%s\n**Model:** claude-sonnet-4-6\n**Phase:** baseline\n**Review job status:** %s\n**Date:** %s\n\n---\n\n%s\n' \
             "$PR_URL" "$REPO_SHORT" "$PR_NUMBER" "$REVIEW_STATUS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CLAUDE_BODY")
 
-          PAYLOAD=$(jq -nc \
-            --arg title "$TITLE" \
-            --arg repo_label "repo:$REPO_SHORT" \
-            --arg body "$BODY" \
-            '{title: $title, body: $body, labels: [$repo_label, "verdict:pending", "phase:baseline"]}')
+          # One ai-review-log issue per PR. Stable prefix
+          # `[<repo>] PR #<N>:` lets us look up an existing issue for
+          # this PR across runs even though the count/status portion
+          # past the colon changes per run. List API (not search) is
+          # used because search is eventually-consistent — a same-day
+          # second review run might fire before the first issue is
+          # indexed.
+          TITLE_PREFIX="[$REPO_SHORT] PR #$PR_NUMBER:"
 
-          HTTP=$(curl -sS -o /tmp/ai-log-resp.json -w '%{http_code}' -X POST \
+          EXISTING_NUMBER=$(curl -sS \
             -H "Authorization: Bearer $AI_REVIEW_LOG_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/HarperFast/ai-review-log/issues \
-            -d "$PAYLOAD")
+            "https://api.github.com/repos/HarperFast/ai-review-log/issues?labels=repo:$REPO_SHORT&state=all&per_page=100&sort=created&direction=desc" \
+            | jq -r --arg prefix "$TITLE_PREFIX" \
+              '[.[] | select(.title | startswith($prefix))] | first | .number // empty')
 
-          if [ "$HTTP" -ge 200 ] && [ "$HTTP" -lt 300 ]; then
-            ISSUE_URL=$(jq -r '.html_url' /tmp/ai-log-resp.json)
-            echo "Logged review to $ISSUE_URL"
+          if [ -n "$EXISTING_NUMBER" ] && [ "$EXISTING_NUMBER" != "null" ]; then
+            # Existing issue: append a comment, refresh the title to
+            # reflect this run's status. Title refresh is best-effort —
+            # we still report success on the comment alone.
+            COMMENT_PAYLOAD=$(jq -nc --arg body "$BODY" '{body: $body}')
+            HTTP_C=$(curl -sS -o /tmp/ai-log-comment-resp.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $AI_REVIEW_LOG_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/HarperFast/ai-review-log/issues/$EXISTING_NUMBER/comments" \
+              -d "$COMMENT_PAYLOAD")
+
+            PATCH_PAYLOAD=$(jq -nc --arg title "$TITLE" '{title: $title}')
+            HTTP_T=$(curl -sS -o /tmp/ai-log-patch-resp.json -w '%{http_code}' -X PATCH \
+              -H "Authorization: Bearer $AI_REVIEW_LOG_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/HarperFast/ai-review-log/issues/$EXISTING_NUMBER" \
+              -d "$PATCH_PAYLOAD")
+
+            if [ "$HTTP_C" -ge 200 ] && [ "$HTTP_C" -lt 300 ]; then
+              COMMENT_URL=$(jq -r '.html_url' /tmp/ai-log-comment-resp.json)
+              echo "Logged review as comment on existing issue: $COMMENT_URL"
+            else
+              echo "::warning::ai-review-log comment POST failed (HTTP $HTTP_C):"
+              cat /tmp/ai-log-comment-resp.json
+            fi
+
+            if [ "$HTTP_T" -lt 200 ] || [ "$HTTP_T" -ge 300 ]; then
+              echo "::warning::ai-review-log title PATCH failed (HTTP $HTTP_T):"
+              cat /tmp/ai-log-patch-resp.json
+            fi
           else
-            echo "::warning::ai-review-log POST failed (HTTP $HTTP):"
-            cat /tmp/ai-log-resp.json
+            # No existing issue for this PR — create one.
+            CREATE_PAYLOAD=$(jq -nc \
+              --arg title "$TITLE" \
+              --arg repo_label "repo:$REPO_SHORT" \
+              --arg body "$BODY" \
+              '{title: $title, body: $body, labels: [$repo_label, "verdict:pending", "phase:baseline"]}')
+
+            HTTP=$(curl -sS -o /tmp/ai-log-resp.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $AI_REVIEW_LOG_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/HarperFast/ai-review-log/issues \
+              -d "$CREATE_PAYLOAD")
+
+            if [ "$HTTP" -ge 200 ] && [ "$HTTP" -lt 300 ]; then
+              ISSUE_URL=$(jq -r '.html_url' /tmp/ai-log-resp.json)
+              echo "Logged review to new issue: $ISSUE_URL"
+            else
+              echo "::warning::ai-review-log POST failed (HTTP $HTTP):"
+              cat /tmp/ai-log-resp.json
+            fi
           fi

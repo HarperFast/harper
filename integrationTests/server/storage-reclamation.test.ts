@@ -20,7 +20,7 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const TEST_DATABASE = 'test';
 const TEST_TABLE = 'reclaim';

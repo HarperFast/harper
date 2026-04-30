@@ -1,4 +1,4 @@
-import { dirname } from 'path';
+import { dirname, basename } from 'path';
 import { existsSync } from 'fs';
 import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
@@ -32,35 +32,36 @@ const routeFolders = new Set();
  * @param filePath
  * @param projectName
  */
-export function start(options) {
+export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
-	const isHttps = options.securePort > 0;
-	return {
-		// eslint-disable-next-line no-unused-vars
-		async handleFile(jsContent, relativePath, filePath, projectName) {
-			if (!fastifyServer) {
-				fastifyServer = buildServer(isHttps);
-				server.http((await fastifyServer).server);
+	const isHttps = (scope.options.getAll() as { securePort?: number }).securePort > 0;
+	scope.handleEntry(async (entry) => {
+		if (entry.eventType !== 'add') {
+			scope.requestRestart();
+			return;
+		}
+		if (!fastifyServer) {
+			fastifyServer = buildServer(isHttps);
+			server.http((await fastifyServer).server);
+		}
+		const resolvedServer = await fastifyServer;
+		const routeFolder = dirname(entry.absolutePath);
+		let prefix = basename(scope.appName);
+		if (prefix.startsWith('/')) prefix = prefix.slice(1);
+		if (!routeFolders.has(routeFolder)) {
+			routeFolders.add(routeFolder);
+			try {
+				resolvedServer.register(buildRouteFolder(routeFolder, prefix));
+			} catch (error) {
+				if (error.message === 'Root plugin has already booted')
+					harperLogger.warn(
+						`Could not load root fastify route for ${entry.absolutePath}, this may require a restart to install properly`
+					);
+				else throw error;
 			}
-			const resolvedServer = await fastifyServer;
-			const routeFolder = dirname(filePath);
-			let prefix = dirname(relativePath);
-			if (prefix.startsWith('/')) prefix = prefix.slice(1);
-			if (!routeFolders.has(routeFolder)) {
-				routeFolders.add(routeFolder);
-				try {
-					resolvedServer.register(buildRouteFolder(routeFolder, prefix));
-				} catch (error) {
-					if (error.message === 'Root plugin has already booted')
-						harperLogger.warn(
-							`Could not load root fastify route for ${filePath}, this may require a restart to install properly`
-						);
-					else throw error;
-				}
-			}
-		},
-		ready,
-	};
+		}
+		await ready();
+	});
 }
 /**
  * Function called to start up server instance on a forked process - this method is called from customFunctionServer after process is
@@ -118,7 +119,7 @@ async function setUp() {
 	}
 }
 
-// eslint-disable-next-line require-await
+//
 function buildRouteFolder(routesFolder, projectName) {
 	return async function (cfServer) {
 		try {

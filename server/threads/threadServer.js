@@ -2,7 +2,8 @@
 
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { createServer: createSocketServer } = require('node:net');
-const { unlinkSync, existsSync } = require('fs');
+const { unlinkSync, existsSync, mkdirSync } = require('fs');
+const { join } = require('path');
 let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
@@ -144,6 +145,8 @@ function startServers() {
 								}, 5000).unref();
 							});
 						}
+						// Clean up per-thread UDS socket and metadata files
+						httpComponent.cleanupUdsFiles();
 						if (debugThreads || process.env.DEV_MODE) {
 							try {
 								require('inspector').close();
@@ -172,6 +175,8 @@ function startServers() {
 			});
 		});
 	componentsLoadedResolve(loaded);
+	// Clean up UDS files on unexpected process exit
+	process.on('exit', () => httpComponent.cleanupUdsFiles());
 	return loaded;
 }
 function listenOnPorts() {
@@ -180,7 +185,7 @@ function listenOnPorts() {
 		const server = SERVERS[port];
 
 		// If server is unix domain socket
-		if (port.includes?.('/') && getWorkerIndex() == 0) {
+		if (port.includes?.('/')) {
 			if (existsSync(port)) unlinkSync(port);
 			listening.push(
 				new Promise((resolve, reject) => {
@@ -265,6 +270,29 @@ function onSocket(listener, options) {
 		);
 		SNICallback.initialize(socketServer);
 		SERVERS[options.securePort] = socketServer;
+
+		// Create a corresponding Unix Domain Socket mirror for the secure socket
+		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
+			const socketsDir = join(env.getHdbBasePath(), 'sockets');
+			mkdirSync(socketsDir, { recursive: true });
+			const socketName = `${getWorkerIndex()}-${options.securePort}`;
+			const udsPath = join(socketsDir, `${socketName}.sock`);
+			const yamlPath = join(socketsDir, `${socketName}.yaml`);
+
+			const udsServer = createSocketServer(listener, {
+				noDelay: true,
+				keepAlive: true,
+				keepAliveInitialDelay: 600,
+			});
+
+			udsServer.isPerThreadSocket = true;
+			SERVERS[udsPath] = udsServer;
+			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
+
+			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, socketServer);
+			SNICallback.ready.then(writeMetadata);
+			socketServer.secureContextsListeners.push(writeMetadata);
+		}
 	}
 	if (options.port) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });

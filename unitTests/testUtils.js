@@ -10,7 +10,7 @@ const { table: ensure_table, resetDatabases } = require('#src/resources/database
 const terms = require('#src/utility/hdbTerms');
 const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
 const { isMainThread } = require('node:worker_threads');
-const { getDatabases } = require('#src/resources/databases');
+const { getDatabases, databases } = require('#src/resources/databases');
 const { handleHDBError } = require('#js/utility/errors/hdbError');
 
 let envMgrInitSyncStub;
@@ -20,7 +20,8 @@ const MOCK_ARGS_ERROR_MSG =
 const UNIT_TEST_DIR = __dirname;
 const ENV_DIR_NAME = 'envDir';
 const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
-const BASE_SCHEMA_PATH = path.join(ENV_DIR_PATH, 'schema');
+const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
+const BASE_SCHEMA_PATH = path.join(PID_DIR_PATH, 'schema');
 const BASE_SYSTEM_PATH = path.join(BASE_SCHEMA_PATH, 'system');
 
 /**
@@ -202,7 +203,7 @@ async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 
 		delete global.hdb_schema;
 		global.lmdb_map = undefined;
-		if (!partial_teardown) await fs.remove(ENV_DIR_PATH);
+		if (!partial_teardown) await fs.remove(PID_DIR_PATH);
 	} catch (err) {
 		console.error('Error tearing down mock DB used for unit tests');
 		console.error(err);
@@ -344,6 +345,10 @@ function setTestPath(testPath) {
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(testPath, 'database'));
 	fs.mkdirpSync(testPath);
+	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
+	if (systemPath) {
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, { system: { path: path.dirname(systemPath) } });
+	}
 	fs.writeFileSync(path.join(testPath, 'harperdb-config.yaml'), JSON.stringify({}));
 }
 
@@ -352,9 +357,8 @@ function setTestPath(testPath) {
  * @returns {string}
  */
 function getMockTestPath() {
-	const testPath = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
-	setTestPath(testPath);
-	return testPath;
+	setTestPath(PID_DIR_PATH);
+	return PID_DIR_PATH;
 }
 
 /**
@@ -362,17 +366,23 @@ function getMockTestPath() {
  * @returns String representing the path value to the mock lmdb system directory
  */
 function setupTestDBPath() {
-	let dbPath = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
+	let dbPath = PID_DIR_PATH;
 	if (!fs.existsSync(dbPath)) {
 		fs.mkdirSync(dbPath, { recursive: true });
 	}
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
-	env.setProperty(terms.CONFIG_PARAMS.DATABASES, {
+	const databasePaths = {
 		data: { path: dbPath },
 		dev: { path: dbPath },
 		test: { path: dbPath },
 		test2: { path: dbPath },
-	});
+	};
+	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
+	if (systemPath) {
+		// do NOT change an existing system path, really confuses the system
+		databasePaths.system = { path: path.dirname(systemPath) };
+	}
+	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
 	resetDatabases();
 	if (isMainThread) {
 		process.on('exit', function () {

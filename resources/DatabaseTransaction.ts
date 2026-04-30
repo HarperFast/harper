@@ -256,9 +256,14 @@ export class DatabaseTransaction implements Transaction {
 				if (!outstandingCommit) {
 					outstandingCommit = commitResolution;
 					outstandingCommitStart = performance.now();
-					outstandingCommit.finally(() => {
-						outstandingCommit = null;
-					});
+					outstandingCommit
+						// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
+						// will correct course, but the reject will still be propagated on the
+						// `outstandingCommit` promise and needs to be caught and silenced
+						.catch(() => {})
+						.finally(() => {
+							outstandingCommit = null;
+						});
 				}
 				const completions = [];
 				return commitResolution.then(

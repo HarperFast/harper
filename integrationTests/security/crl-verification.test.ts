@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as https from 'node:https';
 
-import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import {
 	generateCrlCertificates,
 	setupCrlServerWithCerts,
