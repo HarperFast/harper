@@ -857,7 +857,7 @@ function createTLSSelector(type, mtlsOptions) {
 	return SNICallback;
 	function SNICallback(servername, cb) {
 		// find the matching server name, substituting wildcards for each part of the domain to find matches
-		logger.info?.('TLS requested for', servername || '(no SNI)');
+		logger.debug?.('TLS requested for', servername || '(no SNI)');
 		let matchingName = servername;
 		while (true) {
 			let context = secureContexts.get(matchingName);
