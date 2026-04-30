@@ -4090,6 +4090,11 @@ export function makeTable(options) {
 							version,
 							value: updatedRecord,
 							expiresAt: sourceContext.expiresAt,
+							metadataFlags: 0,
+							size: 0,
+							localTime: 0,
+							nodeId: 0,
+							residencyId: 0,
 						};
 						// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
 						// are available on the immediately-resolved entry. We mutate the prototype
@@ -4097,8 +4102,6 @@ export function makeTable(options) {
 						// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
 						if (updatedRecord && updatedRecord.constructor === Object) {
 							Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
-							resolvedEntry.metadataFlags ??= 0;
-							resolvedEntry.size ??= 0;
 							entryMap.set(updatedRecord, resolvedEntry);
 						}
 						resolve(resolvedEntry);
