@@ -470,6 +470,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			};
 			Txn.prototype.done = function () {
 				done.call(this);
+				this.openTimer = 0; // reset so idle pool time doesn't accumulate toward the stale-open threshold
 				if (this.isDone) {
 					for (let i = 0; i < trackedTxns.length; i++) {
 						const txn = trackedTxns[i].deref();
@@ -498,7 +499,14 @@ setInterval(() => {
 							'Read transaction detected that has been open too long (over 15 minutes), ending transaction',
 							txn
 						);
-						txn.done();
+						trackedTxns.splice(i--, 1);
+						txn.timerTracked = false;
+						txn.openTimer = 0;
+						try {
+							txn.done();
+						} catch {
+							// transaction was already released; stale WeakRef from a lmdb pool renewal cycle
+						}
 					} else
 						harperLogger.error(
 							'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
