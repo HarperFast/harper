@@ -190,6 +190,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				cwd: this.#component.directory,
 				persistent: false,
 				followSymlinks: false,
+				dot: true,
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
 					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
