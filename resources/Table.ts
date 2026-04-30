@@ -4091,17 +4091,15 @@ export function makeTable(options) {
 							value: updatedRecord,
 							expiresAt: sourceContext.expiresAt,
 						};
-						// Convert plain object to RecordObject so that getExpiresAt/getUpdatedTime
-						// methods are available on the immediately-resolved entry before it is written
-						// to and re-read from the store with proper deserialization.
+						// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
+						// are available on the immediately-resolved entry. We mutate the prototype
+						// in-place rather than copying so that the commit callback (which adds
+						// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
 						if (updatedRecord && updatedRecord.constructor === Object) {
-							const recordObject = new primaryStore.encoder.structPrototype.constructor();
-							Object.assign(recordObject, updatedRecord);
-							Object.freeze(recordObject);
-							resolvedEntry.value = recordObject;
+							Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 							resolvedEntry.metadataFlags ??= 0;
 							resolvedEntry.size ??= 0;
-							entryMap.set(recordObject, resolvedEntry);
+							entryMap.set(updatedRecord, resolvedEntry);
 						}
 						resolve(resolvedEntry);
 					} catch (error) {
