@@ -257,6 +257,7 @@ class SubscriptionsSession {
 			const _result = (async () => {
 				for await (const update of subscription) {
 					try {
+						if (!update || typeof update !== 'object') continue;
 						let messageId;
 						if (
 							update.type &&

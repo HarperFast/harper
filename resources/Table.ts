@@ -364,6 +364,10 @@ export function makeTable(options) {
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							try {
+								if (!event || typeof event !== 'object') {
+									logger.error?.('Bad subscription event', event);
+									continue;
+								}
 								const firstWrite = event.type === 'transaction' ? event.writes[0] : event;
 								if (!firstWrite) {
 									logger.error?.('Bad subscription event', event);
