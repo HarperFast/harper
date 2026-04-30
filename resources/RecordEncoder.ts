@@ -504,8 +504,8 @@ setInterval(() => {
 						txn.openTimer = 0;
 						try {
 							txn.done();
-						} catch {
-							// transaction was already released; stale WeakRef from a lmdb pool renewal cycle
+						} catch (error) {
+							harperLogger.warn('Unexpected error force-closing stale LMDB read transaction', error);
 						}
 					} else
 						harperLogger.error(
