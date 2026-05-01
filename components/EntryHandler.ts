@@ -189,12 +189,14 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			.watch(this.#component.commonPatternBase, {
 				cwd: this.#component.directory,
 				persistent: false,
+				followSymlinks: false,
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
 					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
 					return (
-						normalizedPath !== this.#component.directory.replace(/\\/g, '/') &&
-						normalizedBases.every((base) => !normalizedPath.startsWith(base))
+						normalizedPath.includes('/node_modules') ||
+						(normalizedPath !== this.#component.directory.replace(/\\/g, '/') &&
+							normalizedBases.every((base) => !normalizedPath.startsWith(base)))
 					);
 				},
 			})

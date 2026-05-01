@@ -1,6 +1,9 @@
 const assert = require('node:assert');
+const { Worker } = require('worker_threads');
+const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
@@ -290,6 +293,68 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		assert(invertedSimiliarities <= 6, `expected at most 6 distance inversions, got ${invertedSimiliarities}`);
 	}
 });
+
+describe('HNSW concurrent PUT race condition (issue #386)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const WORKER_COUNT = 4;
+	const PUTS_PER_WORKER = 2;
+	const DIMS = 768;
+	let ConcurrentTest;
+	let workers = [];
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		ConcurrentTest = table({
+			table: 'HNSWConcurrentTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		for (let w = 0; w < WORKER_COUNT; w++) {
+			workers.push(new Worker(__dirname + '/vectorIndex-thread.js'));
+		}
+	});
+
+	it('handles concurrent multi-worker PUTs without race conditions', async () => {
+		const replies = await Promise.all(
+			workers.map(
+				(worker, w) =>
+					new Promise((resolve) => {
+						worker.once('message', resolve);
+						worker.once('error', (err) =>
+							resolve({ type: 'error', start: w * PUTS_PER_WORKER, message: err.message, stack: err.stack })
+						);
+						worker.postMessage({
+							type: 'insert',
+							start: w * PUTS_PER_WORKER,
+							count: PUTS_PER_WORKER,
+							dims: DIMS,
+						});
+					})
+			)
+		);
+		const errors = replies.filter((r) => r.type === 'error');
+		assert.deepEqual(
+			errors,
+			[],
+			`expected no worker errors, got: ${errors.map((e) => `[start=${e.start}] ${e.message} ${e.stack}`).join('; ')}`
+		);
+
+		const expected = WORKER_COUNT * PUTS_PER_WORKER;
+		let count = 0;
+		for await (const _ of ConcurrentTest.search([])) count++;
+		assert.equal(count, expected, `expected ${expected} records after concurrent puts, got ${count}`);
+	});
+
+	after(async () => {
+		await Promise.all(workers.map((w) => w.terminate()));
+		ConcurrentTest.dropTable();
+	});
+});
+
 async function fromAsync(iterable) {
 	let results = [];
 	for await (let entry of iterable) {

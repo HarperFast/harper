@@ -8,7 +8,36 @@ import environmentManager from '#js/utility/environment/environmentManager';
 const { get: env_get, setProperty } = environmentManager;
 import { connect } from 'mqtt';
 import { readFileSync } from 'fs';
-import { start as startMQTT } from '#src/server/mqtt';
+import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
+
+// Adapter: creates a minimal scope and delegates to the new plugin API,
+// capturing socket/ws server instances so callers can call .listen() on them.
+function startMQTT(config) {
+	const serverInstances = [];
+	const mockServer = {
+		get mqtt() {
+			return global.server.mqtt;
+		},
+		set mqtt(value) {
+			global.server.mqtt = value;
+		},
+		socket(listener, options) {
+			const instance = global.server.socket(listener, options);
+			serverInstances.push(instance);
+			return instance;
+		},
+		ws(listener, options) {
+			const result = global.server.ws(listener, options);
+			serverInstances.push(...(Array.isArray(result) ? result : [result]));
+			return result;
+		},
+	};
+	handleMQTTApplication({
+		options: { getAll: () => config },
+		server: mockServer,
+	});
+	return serverInstances;
+}
 import axios from 'axios';
 describe('test MQTT connections and commands', function () {
 	this.timeout(10000);
@@ -558,8 +587,7 @@ describe('test MQTT connections and commands', function () {
 		await new Promise((resolve, reject) => {
 			server = startMQTT({
 				server: global.server,
-				securePort: 8884,
-				network: { mtls: { user: 'HDB_ADMIN', required: true } },
+				network: { securePort: 8884, mtls: { user: 'HDB_ADMIN', required: true } },
 			})[0].listen(8884, resolve);
 			server.on('error', reject);
 		});
