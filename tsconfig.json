@@ -14,8 +14,7 @@
 		"utility/**/*",
 		"validation/**/*",
 		"globals.js",
-		"index.d.ts",
-		"index.js"
+		"index.ts"
 	],
 	"compilerOptions": {
 		// Allow JS files for mixed codebase

@@ -116,7 +116,7 @@
 	},
 	"exports": {
 		".": {
-			"types": "./index.d.ts",
+			"types": "./dist/index.d.ts",
 			"default": "./dist/index.js"
 		}
 	},

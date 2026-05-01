@@ -1,11 +1,14 @@
 'use strict';
-global.Resource = exports.Resource = undefined;
-global.tables = exports.tables = {};
-global.databases = exports.databases = {};
-global.server = exports.server = {};
 global.contentTypes = exports.contentTypes = null;
+global.createBlob = exports.createBlob = undefined;
+global.databases = exports.databases = {};
+global.logger = exports.logger = {};
+global.operation = exports.operation = undefined;
+global.Resource = exports.Resource = undefined;
+global.server = exports.server = {};
+global.tables = exports.tables = {};
 global.threads = exports.threads = [];
-global.logger = {};
+global.transaction = exports.transaction = undefined;
 exports._assignPackageExport = (name, value) => {
 	global[name] = exports[name] = value;
 };

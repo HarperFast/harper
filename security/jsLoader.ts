@@ -955,13 +955,13 @@ function checkAllowedModulePath(moduleUrl: string, allowedPath?: string): boolea
 	throw new Error(`Module ${moduleUrl} is not allowed to be imported`);
 }
 
-function getContext() {
+export function getContext() {
 	return contextStorage.getStore() ?? {};
 }
-function getUser() {
+export function getUser() {
 	return contextStorage.getStore()?.user;
 }
-function getResponse() {
+export function getResponse() {
 	return contextStorage.getStore()?.response;
 }
 
