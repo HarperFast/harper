@@ -74,7 +74,15 @@ for f in "${files[@]}"; do
   #    error rather than a silent runtime denial. Defense in depth
   #    against a PR that drops the env var thinking the script will
   #    "do the right thing".
-  users_to_check=$(yq -r '[.jobs.authorize.steps[].env.USERS_TO_CHECK // empty] | .[0] // ""' "$f" 2>/dev/null)
+  #
+  # NOTE: yq on ubuntu-latest is mikefarah/yq (Go), not jq. It does
+  # NOT support jq's `empty` keyword, and an earlier version of this
+  # check using `// empty` lexer-erred silently (`2>/dev/null` ate it)
+  # and produced a false fail on workflows that DID set the env var.
+  # `select(. != null)` is the idiomatic yq filter for "skip steps
+  # without this env var"; `head -1` collapses the per-step stream to
+  # a single value (or empty).
+  users_to_check=$(yq -r '.jobs.authorize.steps[].env.USERS_TO_CHECK | select(. != null)' "$f" 2>/dev/null | head -1)
   [ -n "$users_to_check" ] \
     || fail "$f: authorize job has no step setting USERS_TO_CHECK env var — the auth script needs at least one login to check (PR author, commenter, labeler, etc.)"
 
