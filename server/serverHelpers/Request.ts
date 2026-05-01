@@ -116,12 +116,17 @@ export class Request {
 	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
 	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
+	 * **Important:** The resolved `body` PassThrough must have an `error` listener attached (or be piped
+	 * to a destination that handles errors) before it is consumed. If the underlying connection is reset
+	 * after headers are sent, the body stream is destroyed with an error — without a listener, Node.js
+	 * will throw an uncaught exception.
+	 *
 	 * Example:
 	 *   server.http((request, next) =>
-	 *     request.sendNodeRequestResponse((req, res) => someNodeMiddleware(req, res))
+	 *     request.withNodeAdapter((req, res) => someNodeMiddleware(req, res))
 	 *   );
 	 */
-	sendNodeRequestResponse(
+	withNodeAdapter(
 		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void | Promise<void>
 	): Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }> {
 		// Flat headers object matching IncomingMessage.headers format (lowercase keys)

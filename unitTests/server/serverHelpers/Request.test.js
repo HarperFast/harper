@@ -395,7 +395,7 @@ describe('Request class', function () {
 		});
 	});
 
-	describe('sendNodeRequestResponse', function () {
+	describe('withNodeAdapter', function () {
 		let mockNodeRequest;
 
 		beforeEach(function () {
@@ -427,7 +427,7 @@ describe('Request class', function () {
 				request.url = '/modified';
 
 				let capturedReq;
-				request.sendNodeRequestResponse((req, res) => {
+				request.withNodeAdapter((req, res) => {
 					capturedReq = req;
 					res.end();
 				});
@@ -441,7 +441,7 @@ describe('Request class', function () {
 				request.headers.set('x-custom', 'added');
 
 				let capturedReq;
-				request.sendNodeRequestResponse((req, res) => {
+				request.withNodeAdapter((req, res) => {
 					capturedReq = req;
 					res.end();
 				});
@@ -456,7 +456,7 @@ describe('Request class', function () {
 				});
 
 				let capturedReq;
-				request.sendNodeRequestResponse((req, res) => {
+				request.withNodeAdapter((req, res) => {
 					capturedReq = req;
 					res.end();
 				});
@@ -470,7 +470,7 @@ describe('Request class', function () {
 				const request = makeRequest();
 
 				let capturedReq;
-				request.sendNodeRequestResponse((req, res) => {
+				request.withNodeAdapter((req, res) => {
 					capturedReq = req;
 					res.end();
 				});
@@ -482,7 +482,7 @@ describe('Request class', function () {
 		describe('nodeResponse — writeHead', function () {
 			it('resolves response with correct status and headers', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.writeHead(201, { 'content-type': 'application/json' });
 					res.end();
 				});
@@ -494,7 +494,7 @@ describe('Request class', function () {
 
 			it('is idempotent — second writeHead call is a no-op', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.writeHead(200, { 'x-first': 'yes' });
 					res.writeHead(500, { 'x-first': 'overwritten' });
 					res.end();
@@ -507,7 +507,7 @@ describe('Request class', function () {
 
 			it('accepts array-of-pairs header format', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.writeHead(200, [['x-pair', 'value']]);
 					res.end();
 				});
@@ -518,7 +518,7 @@ describe('Request class', function () {
 
 			it('accepts flat alternating-array header format', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.writeHead(200, ['x-flat', 'one', 'x-other', 'two']);
 					res.end();
 				});
@@ -531,7 +531,7 @@ describe('Request class', function () {
 			it('sets headersSent after writeHead', function () {
 				const request = makeRequest();
 				let capturedRes;
-				request.sendNodeRequestResponse((req, res) => {
+				request.withNodeAdapter((req, res) => {
 					capturedRes = res;
 					assert.strictEqual(res.headersSent, false);
 					res.writeHead(200);
@@ -546,7 +546,7 @@ describe('Request class', function () {
 		describe('nodeResponse — setHeader / end path', function () {
 			it('resolves response with headers set before end()', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.setHeader('content-type', 'text/html');
 					res.end('<h1>hi</h1>');
 				});
@@ -558,7 +558,7 @@ describe('Request class', function () {
 
 			it('captures statusCode set directly', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.statusCode = 404;
 					res.end();
 				});
@@ -569,7 +569,7 @@ describe('Request class', function () {
 
 			it('getHeader / hasHeader / removeHeader work', function () {
 				const request = makeRequest();
-				request.sendNodeRequestResponse((req, res) => {
+				request.withNodeAdapter((req, res) => {
 					res.setHeader('x-test', 'abc');
 					assert.strictEqual(res.getHeader('x-test'), 'abc');
 					assert.ok(res.hasHeader('x-test'));
@@ -593,7 +593,7 @@ describe('Request class', function () {
 
 			it('end() with a chunk delivers the body', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.end('hello world');
 				});
 
@@ -603,7 +603,7 @@ describe('Request class', function () {
 
 			it('multiple write() calls are streamed in order', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.write('chunk1');
 					res.write('chunk2');
 					res.end('chunk3');
@@ -615,7 +615,7 @@ describe('Request class', function () {
 
 			it('end() with no body yields an empty body', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.end();
 				});
 
@@ -626,7 +626,7 @@ describe('Request class', function () {
 			it('sets writableEnded after end()', async function () {
 				const request = makeRequest();
 				let capturedRes;
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					capturedRes = res;
 					assert.strictEqual(res.writableEnded, false);
 					res.end();
@@ -640,7 +640,7 @@ describe('Request class', function () {
 			it('emits finish event after body is fully written', async function () {
 				const request = makeRequest();
 				const finishSpy = sinon.spy();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.on('finish', finishSpy);
 					res.end('done');
 				});
@@ -654,7 +654,7 @@ describe('Request class', function () {
 			it('write() invokes callback-as-second-arg after chunk is written', async function () {
 				const request = makeRequest();
 				let called = false;
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.write('hello', () => {
 						called = true;
 					});
@@ -669,7 +669,7 @@ describe('Request class', function () {
 			it('end() invokes callback-as-second-arg after body is flushed', async function () {
 				const request = makeRequest();
 				let called = false;
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.end('done', () => {
 						called = true;
 					});
@@ -684,7 +684,7 @@ describe('Request class', function () {
 		describe('nodeResponse — setHeader multi-value', function () {
 			it('preserves Set-Cookie as separate values', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.setHeader('Set-Cookie', ['session=abc; Path=/', 'csrf=xyz; Path=/']);
 					res.end();
 				});
@@ -699,7 +699,7 @@ describe('Request class', function () {
 
 			it('setHeader with a single string value works normally', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.setHeader('content-type', 'text/plain');
 					res.end();
 				});
@@ -712,7 +712,7 @@ describe('Request class', function () {
 		describe('nodeResponse — destroy', function () {
 			it('rejects the response promise with the provided error', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.destroy(new Error('stream destroyed'));
 				});
 
@@ -721,7 +721,7 @@ describe('Request class', function () {
 
 			it('rejects the response promise when destroyed with no error', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.destroy();
 				});
 
@@ -731,7 +731,7 @@ describe('Request class', function () {
 			it('does not reject the response promise when destroy called after headers flushed', async function () {
 				const request = makeRequest();
 				let capturedRes;
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					capturedRes = res;
 					res.end('body');
 				});
@@ -746,7 +746,7 @@ describe('Request class', function () {
 			it('propagates destroy error to body consumer after headers are flushed', async function () {
 				const request = makeRequest();
 				let capturedRes;
-				const responsePromise = request.sendNodeRequestResponse((req, res) => {
+				const responsePromise = request.withNodeAdapter((req, res) => {
 					capturedRes = res;
 					res.write('partial');
 					// deliberately do NOT call end() — destroy simulates a mid-stream abort
@@ -770,7 +770,7 @@ describe('Request class', function () {
 			it('rejects the response promise when async handler throws before writing headers', async function () {
 				const request = makeRequest();
 				const err = new Error('async handler failed');
-				const responsePromise = request.sendNodeRequestResponse(async (_req, _res) => {
+				const responsePromise = request.withNodeAdapter(async (_req, _res) => {
 					throw err;
 				});
 
@@ -779,7 +779,7 @@ describe('Request class', function () {
 
 			it('does not double-reject after headers are flushed when async handler throws', async function () {
 				const request = makeRequest();
-				const responsePromise = request.sendNodeRequestResponse(async (req, res) => {
+				const responsePromise = request.withNodeAdapter(async (req, res) => {
 					res.end('body');
 					throw new Error('late async throw');
 				});
