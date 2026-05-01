@@ -80,6 +80,22 @@ jobs:
             }
       - name: Package Harper
         run: npm run package
+      - name: Generate release notes from git log
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || echo "")
+          {
+            echo "## What's Changed"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              git log --format="- %s" "${PREV_TAG}..HEAD" | grep -v "^- Release v"
+            else
+              git log --format="- %s" | grep -v "^- Release v" | head -50
+            fi
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full Changelog**: ${{ github.server_url }}/${{ github.repository }}/compare/${PREV_TAG}...${{ steps.tag-version.outputs.tagVersion }}"
+            fi
+          } > release-notes.md
       - name: Get version components
         id: version-components
         uses: matt-usurp/validate-semver@7bbc9584679de1aeef57aa531504ab00438481ab # v2.1.0
@@ -93,7 +109,7 @@ jobs:
           tag_name: ${{ steps.tag-version.outputs.tagVersion }}
           files: harper-*.tgz
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: release-notes.md
           prerelease: ${{ steps.version-components.outputs.prerelease != '' }}
           draft: true
           make_latest: ${{ github.event.inputs.draft == 'false' && steps.version-components.outputs.prerelease == '' }}
