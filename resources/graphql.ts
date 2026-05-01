@@ -4,7 +4,6 @@ import { table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode } from 'graphql';
-import { once } from 'node:events';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -36,18 +35,11 @@ server.knownGraphQLDirectives.push(
  * @param filePath
  * @param resources
  */
-export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	const entryHandler = scope.handleEntry(async (entry) => {
-		if (entry.eventType === 'unlink') return;
-		if (entry.entryType === 'directory') {
-			scope.logger.warn?.('graphqlSchema currently does not handle directories. Specify file patterns only.');
-			return;
-		}
-
-		await processGraphQLSchema(entry.contents, entry.urlPath, entry.absolutePath, scope.resources);
-	});
-	return once(entryHandler, 'initialLoadComplete');
-}
+export function start({ ensureTable }) {
+	return {
+		handleFile,
+		setupFile: handleFile,
+	};
 
 async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
