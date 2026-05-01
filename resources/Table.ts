@@ -1426,7 +1426,8 @@ export function makeTable(options) {
 		 */
 		static evict(id, existingRecord, existingVersion) {
 			let entry;
-			let transaction = txnForContext({ transaction: new DatabaseTransaction() }).getReadTxn();
+			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
+			let transaction = lmdbTransaction.getReadTxn();
 			let options = { transaction };
 			try {
 				if (hasSourceGet || audit) {
@@ -1453,7 +1454,7 @@ export function makeTable(options) {
 					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
 			} finally {
-				return transaction.commit();
+				return lmdbTransaction.commit();
 			}
 		}
 		/**
