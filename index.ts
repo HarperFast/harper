@@ -6,6 +6,10 @@ if (!workerThreads.isMainThread) {
 	workerThreads.workerData.noServerStart = true;
 }
 
+// Regular exports (don't require the same initialization as the globals at the end of this file do)
+export { RequestTarget } from './resources/RequestTarget.ts';
+export { getContext, getResponse, getUser } from './security/jsLoader.ts';
+
 // Type only exports.
 // Anything exported here will only be available as TypeScript types, not as values.
 // For exporting values see below.
@@ -21,7 +25,6 @@ export type {
 export type { User } from './security/user.ts';
 export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
-export type { RequestTarget } from './resources/RequestTarget.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
 export type { Scope } from './components/Scope.ts';
@@ -96,7 +99,7 @@ exports.createBlob = undefined;
 exports.databases = {};
 exports.logger = {};
 exports.operation = undefined;
-exports.Resource = {};
+exports.Resource = undefined;
 exports.server = {};
 exports.tables = {};
 exports.threads = [];
