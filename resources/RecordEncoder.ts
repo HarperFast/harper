@@ -71,12 +71,6 @@ let timestampNextEncoding = 0,
 	residencyIdAtNextEncoding = 0,
 	nodeIdAtNextEncoding = -1,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
-	timestampNextEncoding = 0,
-	metadataInNextEncoding = -1,
-	expiresAtNextEncoding = -1,
-	residencyIdAtNextEncoding = 0,
-	nodeIdAtNextEncoding = -1,
-	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
 export class RecordEncoder extends Encoder {
