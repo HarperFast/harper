@@ -31,7 +31,7 @@ onMessageFromWorkers(async (event, sender) => {
  * @param event
  */
 function sendItcEvent(event) {
-	if (!isMainThread && event.message) event.message.originator = threadId;
+	if (event.message) event.message.originator = threadId;
 	return broadcastWithAcknowledgement(event);
 }
 
