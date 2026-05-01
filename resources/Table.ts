@@ -1454,7 +1454,13 @@ export function makeTable(options) {
 					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
 			} finally {
-				return lmdbTransaction.commit();
+				if (primaryStore.ifVersion) {
+					// LMDB: committing the wrapper calls doneReadTxn(), removing it from trackedTxns
+					return lmdbTransaction.commit();
+				}
+				// RocksDB: eviction writes went directly into the raw transaction via options;
+				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes)
+				return transaction?.commit();
 			}
 		}
 		/**
