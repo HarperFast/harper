@@ -112,12 +112,7 @@ export class HierarchicalNavigableSmallWorld {
 			oldNode = { ...this.indexStore.getSync(nodeId, options) };
 		} else oldNode = {} as Node;
 		if (vector) {
-			let entryPoint: Node | null | false;
-			try {
-				entryPoint = entryPointId && this.indexStore.getSync(entryPointId, options);
-			} catch {
-				entryPoint = null;
-			}
+			let entryPoint = entryPointId ? this.safeGetSync(entryPointId, options) : undefined;
 			if (entryPoint == null) {
 				const level = Math.floor(-Math.log(Math.random()) * this.mL);
 				const node = {
@@ -223,15 +218,7 @@ export class HierarchicalNavigableSmallWorld {
 
 					for (const { fromId, toId } of connectionsToBeReplaced) {
 						let from = updateNode(fromId);
-						if (!from) {
-							let fromNode: Node;
-							try {
-								fromNode = this.indexStore.getSync(fromId, options);
-							} catch {
-								continue;
-							}
-							from = updateNode(fromId, fromNode);
-						}
+						if (!from) from = updateNode(fromId, this.safeGetSync(fromId, options));
 						if (!from) continue;
 						const fromAtLevel = from[l];
 						if (!fromAtLevel) continue;
@@ -335,13 +322,7 @@ export class HierarchicalNavigableSmallWorld {
 				const oldConnections = oldNode[l];
 				for (const { id: neighborId } of oldConnections) {
 					// get and copy the neighbor node so we can modify it
-					let _neighborRaw: Node;
-					try {
-						_neighborRaw = this.indexStore.getSync(neighborId, options);
-					} catch {
-						continue;
-					}
-					const neighborNode = updateNode(neighborId, _neighborRaw);
+					const neighborNode = updateNode(neighborId, this.safeGetSync(neighborId, options));
 					if (!neighborNode) continue;
 					for (let l2 = 0; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
@@ -372,14 +353,24 @@ export class HierarchicalNavigableSmallWorld {
 		for (const [key, vector] of needsReindexing) {
 			this.index(key, vector, vector, options);
 		}
-		this.checkSymmetry(nodeId, this.indexStore.getSync(nodeId, options), options);
+		this.checkSymmetry(nodeId, this.safeGetSync(nodeId, options), options);
+	}
+
+	private safeGetSync(key: any, options?: any): any {
+		try {
+			return this.indexStore.getSync(key, options);
+		} catch {
+			logger.warn?.('Failed to decode HNSW node, skipping', key);
+			return undefined;
+		}
 	}
 
 	private getEntryPoint(options: { transaction?: any } = {}) {
 		// Get entry point
 		const entryPointId = this.indexStore.getSync(ENTRY_POINT, options);
 		if (entryPointId === undefined) return;
-		const node = this.indexStore.getSync(entryPointId, options);
+		const node = this.safeGetSync(entryPointId, options);
+		if (!node) return;
 		return { id: entryPointId, ...node };
 	}
 
@@ -432,12 +423,7 @@ export class HierarchicalNavigableSmallWorld {
 				if (visited.has(neighborId) || neighborId === undefined) continue;
 				visited.add(neighborId);
 
-				let neighbor: Node;
-				try {
-					neighbor = this.indexStore.getSync(neighborId, options);
-				} catch {
-					continue;
-				}
+				const neighbor = this.safeGetSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
 				const distance = distanceFunction(queryVector, neighbor.vector);
@@ -546,9 +532,9 @@ export class HierarchicalNavigableSmallWorld {
 			// verify that the level is not empty, otherwise this means we have an orphaned node
 			if (connections.length === 0) break;
 			for (const { id: neighbor } of connections) {
-				const neighborNode = this.indexStore.getSync(neighbor, options);
+				const neighborNode = this.safeGetSync(neighbor, options);
 				if (!neighborNode) {
-					logger.info?.('could not find neighbor node', neighborNode);
+					logger.info?.('could not find neighbor node', neighbor);
 					continue;
 				}
 				// verify that the connection is symmetrical
@@ -594,13 +580,7 @@ export class HierarchicalNavigableSmallWorld {
 			node[level] = keptConnections;
 			// For removed connections, ensure there's still a path to them
 			for (const removed of removedConnections) {
-				let removedNodeRaw: Node;
-				try {
-					removedNodeRaw = this.indexStore.getSync(removed.id, options);
-				} catch {
-					continue;
-				}
-				let removedNode = updateNode(removed.id) ?? removedNodeRaw;
+				let removedNode = updateNode(removed.id) ?? this.safeGetSync(removed.id, options);
 				if (removedNode) {
 					// Remove the reverse connection if it exists
 					if (removedNode[level]) {

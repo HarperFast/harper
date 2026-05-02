@@ -198,6 +198,58 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		assert.equal(euclidean[0].id, 1);
 		assert.equal(dot[0].id, 2);
 	});
+	it('does not crash when an index node decodes as corrupt', () => {
+		const nodes = new Map();
+		let entryPoint;
+		let neighborReadCount = 0;
+
+		// Minimal mock indexStore: corrupt reads on numeric neighbor-node keys after the first few
+		const mockStore = {
+			encoder: { useFloat32: false },
+			getSync(key) {
+				if (key === Symbol.for('entryPoint')) return entryPoint;
+				if (typeof key === 'number') {
+					neighborReadCount++;
+					// After the graph has a few nodes, simulate a corrupt node read
+					if (neighborReadCount > 3) {
+						throw new Error('Data read, but end of buffer not reached 0');
+					}
+					return nodes.get(key);
+				}
+				return nodes.get(JSON.stringify(key));
+			},
+			put(key, value) {
+				if (key === Symbol.for('entryPoint')) {
+					entryPoint = value;
+				} else if (typeof key === 'number') {
+					nodes.set(key, value);
+				} else {
+					nodes.set(JSON.stringify(key), value);
+				}
+			},
+			remove(key) {
+				nodes.delete(typeof key === 'number' ? key : JSON.stringify(key));
+			},
+			getKeys() {
+				return [];
+			},
+			getUserSharedBuffer(_name, buffer) {
+				return buffer;
+			},
+		};
+
+		const hnsw = new HierarchicalNavigableSmallWorld(mockStore, {});
+
+		// Build a small graph (neighbor reads stay under threshold here)
+		for (let i = 0; i < 5; i++) {
+			hnsw.index(i, [i, i + 1, i + 2], null, {});
+		}
+		neighborReadCount = 0; // reset so subsequent inserts hit the corrupt path
+
+		// Inserting new nodes must not throw even though neighbor reads now corrupt
+		assert.doesNotThrow(() => hnsw.index(100, [1, 2, 3], null, {}));
+		assert.doesNotThrow(() => hnsw.index(101, [4, 5, 6], null, {}));
+	});
 	after(() => {
 		HNSWTest.dropTable();
 	});
