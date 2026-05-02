@@ -638,3 +638,53 @@ describe.skip('Test schema module', function () {
 		});
 	});
 });
+
+describe('Schema legacy field rejection', function () {
+	const LEGACY_ERROR_MSG = "Use 'database' instead of the deprecated 'schema' field";
+
+	async function expectLegacyRejection(fn, args) {
+		let error;
+		try {
+			await fn(...args);
+		} catch (err) {
+			error = err;
+		}
+		expect(error).to.be.instanceOf(Error);
+		expect(error.statusCode).to.equal(400);
+		expect(error.message).to.include(LEGACY_ERROR_MSG);
+	}
+
+	it('rejects dropTable with schema-only field', () =>
+		expectLegacyRejection(schema.dropTable, [{ operation: 'drop_table', schema: 'mydb', table: 'mytable' }]));
+
+	it('rejects dropSchema with schema-only field', () =>
+		expectLegacyRejection(schema.dropSchema, [{ operation: 'drop_schema', schema: 'mydb' }]));
+
+	it('rejects createSchemaStructure with schema-only field', () =>
+		expectLegacyRejection(schema.createSchemaStructure, [{ operation: 'create_schema', schema: 'mydb' }]));
+
+	it('rejects createTable with schema-only field', () =>
+		expectLegacyRejection(schema.createTable, [
+			{ operation: 'create_table', schema: 'mydb', table: 'mytable', primary_key: 'id' },
+		]));
+
+	it('rejects dropAttribute with schema-only field', () =>
+		expectLegacyRejection(schema.dropAttribute, [
+			{ operation: 'drop_attribute', schema: 'mydb', table: 'mytable', attribute: 'name' },
+		]));
+
+	it('rejects createAttribute with schema-only field', () =>
+		expectLegacyRejection(schema.createAttribute, [
+			{ operation: 'create_attribute', schema: 'mydb', table: 'mytable', attribute: 'name' },
+		]));
+
+	it('does not reject dropTable when both database and schema are set', async function () {
+		let error;
+		try {
+			await schema.dropTable({ operation: 'drop_table', database: 'mydb', schema: 'mydb', table: 'mytable' });
+		} catch (err) {
+			error = err;
+		}
+		expect(error?.message).to.not.include(LEGACY_ERROR_MSG);
+	});
+});

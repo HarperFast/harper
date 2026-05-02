@@ -19,6 +19,12 @@ import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
 
+function rejectLegacySchemaField(obj: any) {
+	if (obj.schema && !obj.database) {
+		throw new ClientError("'database' is required. Use 'database' instead of the deprecated 'schema' field.");
+	}
+}
+
 const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
@@ -63,7 +69,7 @@ export async function createSchemaStructure(schemaCreateObject: any) {
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
-
+	rejectLegacySchemaField(schemaCreateObject);
 	transformReq(schemaCreateObject);
 
 	if (!(await schemaMetadataValidator.checkSchemaExists(schemaCreateObject.schema))) {
@@ -83,6 +89,7 @@ export async function createSchemaStructure(schemaCreateObject: any) {
 }
 
 export async function createTable(createTableObject: any) {
+	rejectLegacySchemaField(createTableObject);
 	transformReq(createTableObject);
 	createTableObject.primary_key = createTableObject.primary_key ?? createTableObject.hash_attribute;
 	return await createTableStructure(createTableObject);
@@ -154,7 +161,7 @@ export async function dropSchema(dropSchemaObject: any) {
 			})
 	);
 	if (validation) throw new ClientError(validation.message);
-
+	rejectLegacySchemaField(dropSchemaObject);
 	transformReq(dropSchemaObject);
 
 	let invalidSchemaMsg = await schemaMetadataValidator.checkSchemaExists(dropSchemaObject.schema);
@@ -187,7 +194,7 @@ export async function dropTable(dropTableObject: any) {
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
-
+	rejectLegacySchemaField(dropTableObject);
 	transformReq(dropTableObject);
 
 	let invalidSchemaTableMsg = await schemaMetadataValidator.checkSchemaTableExists(
@@ -230,7 +237,7 @@ export async function dropAttribute(dropAttributeObject: any) {
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
-
+	rejectLegacySchemaField(dropAttributeObject);
 	transformReq(dropAttributeObject);
 
 	let invalidSchemaTableMsg = await schemaMetadataValidator.checkSchemaTableExists(
@@ -310,6 +317,7 @@ function dropAttributeFromGlobal(dropAttributeObject) {
 }
 
 export async function createAttribute(createAttributeObject: any) {
+	rejectLegacySchemaField(createAttributeObject);
 	transformReq(createAttributeObject);
 
 	const tableAttr = getDatabases()[createAttributeObject.schema][createAttributeObject.table].attributes;
