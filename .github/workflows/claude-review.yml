@@ -61,7 +61,7 @@ jobs:
           owner: HarperFast
 
       - name: Checkout (for CODEOWNERS read)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: |
             .github/CODEOWNERS
@@ -110,7 +110,7 @@ jobs:
         # Paired with a tightly-scoped `Bash(git <subcommand>:*)` allowlist
         # below (no `Bash(git:*)` — that would allow `git push --force`,
         # `git reset --hard`, etc.).
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -118,7 +118,7 @@ jobs:
         # Pinned to a specific SHA (not `main`) so review behavior is
         # reproducible across runs — updates to the skills repo require
         # an explicit pin bump here.
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: HarperFast/skills
           ref: d2db99bb37a6dde868cbc5ac81ca4146be8956fb # 1.3.0 (2026-04-16)
@@ -127,7 +127,7 @@ jobs:
       - name: Clone review prompts
         # Layer files live in HarperFast/ai-review-prompts (public).
         # Pinned to a merge SHA — bump this deliberately to adopt updates.
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: HarperFast/ai-review-prompts
           ref: 14c79a1c36565c764b68d3641c32bdadfc4d0512 # main 2026-04-30 (incl. concise-PR + within-PR-memory)
