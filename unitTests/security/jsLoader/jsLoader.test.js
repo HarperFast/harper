@@ -1,6 +1,7 @@
 'use strict';
 
 const { join } = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
 const { expect } = require('chai');
 
@@ -83,6 +84,17 @@ describe('scopedImport', () => {
 		const result = await scopedImport(join(__dirname, 'fixtures', 'uses-dynamic-import.cjs'), vmScope());
 		const lib = await result.load();
 		expect(lib.baz).to.equal('pow');
+	});
+});
+
+describe('import.meta compatibility', () => {
+	it('should populate import.meta.url, filename, dirname, and resolve for ESM modules', async () => {
+		const fixturePath = join(__dirname, 'fixtures', 'import-meta.mjs');
+		const result = await scopedImport(fixturePath, vmScope());
+		expect(result.metaUrl).to.be.a('string').and.include('import-meta.mjs');
+		expect(result.metaFilename).to.equal(fixturePath);
+		expect(result.metaDirname).to.equal(join(__dirname, 'fixtures'));
+		expect(result.resolvedSelf).to.equal(pathToFileURL(fixturePath).toString());
 	});
 });
 
