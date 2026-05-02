@@ -112,7 +112,12 @@ export class HierarchicalNavigableSmallWorld {
 			oldNode = { ...this.indexStore.getSync(nodeId, options) };
 		} else oldNode = {} as Node;
 		if (vector) {
-			let entryPoint = entryPointId && this.indexStore.getSync(entryPointId, options);
+			let entryPoint: Node | null | false;
+			try {
+				entryPoint = entryPointId && this.indexStore.getSync(entryPointId, options);
+			} catch {
+				entryPoint = null;
+			}
 			if (entryPoint == null) {
 				const level = Math.floor(-Math.log(Math.random()) * this.mL);
 				const node = {
@@ -218,8 +223,19 @@ export class HierarchicalNavigableSmallWorld {
 
 					for (const { fromId, toId } of connectionsToBeReplaced) {
 						let from = updateNode(fromId);
-						if (!from) from = updateNode(fromId, this.indexStore.getSync(fromId, options));
-						for (let i = 0; i < from[l].length; i++) {
+						if (!from) {
+							let fromNode: Node;
+							try {
+								fromNode = this.indexStore.getSync(fromId, options);
+							} catch {
+								continue;
+							}
+							from = updateNode(fromId, fromNode);
+						}
+						if (!from) continue;
+						const fromAtLevel = from[l];
+						if (!fromAtLevel) continue;
+						for (let i = 0; i < fromAtLevel.length; i++) {
 							if (from[l][i].id === toId) {
 								if (Object.isFrozen(from[l])) {
 									from[l] = from[l].slice();
@@ -319,7 +335,13 @@ export class HierarchicalNavigableSmallWorld {
 				const oldConnections = oldNode[l];
 				for (const { id: neighborId } of oldConnections) {
 					// get and copy the neighbor node so we can modify it
-					const neighborNode = updateNode(neighborId, this.indexStore.getSync(neighborId, options));
+					let _neighborRaw: Node;
+					try {
+						_neighborRaw = this.indexStore.getSync(neighborId, options);
+					} catch {
+						continue;
+					}
+					const neighborNode = updateNode(neighborId, _neighborRaw);
 					if (!neighborNode) continue;
 					for (let l2 = 0; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
@@ -410,7 +432,12 @@ export class HierarchicalNavigableSmallWorld {
 				if (visited.has(neighborId) || neighborId === undefined) continue;
 				visited.add(neighborId);
 
-				const neighbor = this.indexStore.getSync(neighborId, options);
+				let neighbor: Node;
+				try {
+					neighbor = this.indexStore.getSync(neighborId, options);
+				} catch {
+					continue;
+				}
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
 				const distance = distanceFunction(queryVector, neighbor.vector);
@@ -567,7 +594,13 @@ export class HierarchicalNavigableSmallWorld {
 			node[level] = keptConnections;
 			// For removed connections, ensure there's still a path to them
 			for (const removed of removedConnections) {
-				let removedNode = updateNode(removed.id) ?? this.indexStore.getSync(removed.id, options);
+				let removedNodeRaw: Node;
+				try {
+					removedNodeRaw = this.indexStore.getSync(removed.id, options);
+				} catch {
+					continue;
+				}
+				let removedNode = updateNode(removed.id) ?? removedNodeRaw;
 				if (removedNode) {
 					// Remove the reverse connection if it exists
 					if (removedNode[level]) {
