@@ -1,0 +1,124 @@
+name: Cherry-pick patch PRs to release branch
+
+on:
+  pull_request:
+    types: [closed, labeled]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  cherry-pick:
+    name: Cherry-pick onto ${{ vars.RELEASE_BRANCH || 'v5.0' }}
+    runs-on: ubuntu-latest
+    # Run when a PR with the patch label is merged into main.
+    # Handles two triggering paths:
+    #   closed  — PR merged with patch label already present
+    #   labeled — patch label added to an already-merged PR
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'patch') &&
+      (github.event.action == 'closed' || github.event.label.name == 'patch')
+
+    env:
+      RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH || 'v5.0' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Cherry-pick onto ${{ env.RELEASE_BRANCH }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin "$RELEASE_BRANCH"
+
+          # Skip if this commit is already in the release branch.
+          # Subject matching handles cherry-picks whose patch-id changed due to
+          # conflict resolution (e.g. package-lock.json merges).
+          SUBJECT=$(git log -1 --format=%s "$MERGE_SHA")
+          if git log "origin/$RELEASE_BRANCH" --format=%s | grep -qxF "$SUBJECT"; then
+            echo "PR #$PR_NUMBER already applied to $RELEASE_BRANCH — skipping."
+            exit 0
+          fi
+
+          # ── Determine pick strategy ────────────────────────────────────────────
+          PARENT_COUNT=$(git cat-file -p "$MERGE_SHA" | grep -c "^parent ")
+          PICK_FLAGS=""
+          PICK_SHAS="$MERGE_SHA"
+
+          if [ "$PARENT_COUNT" -gt 1 ]; then
+            # True merge commit → cherry-pick combined diff
+            PICK_FLAGS="-m 1"
+          else
+            COMMIT_COUNT=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" --jq '. | length')
+            if [ "$COMMIT_COUNT" -gt 1 ]; then
+              LAST_BRANCH_SUBJECT=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" \
+                --jq '.[-1].commit.message | split("\n")[0]')
+              # Rebase merge: subject equals last branch commit subject with no "(#N)" suffix.
+              # Squash merge: either has "(#N)" suffix, or subject differs from last branch commit.
+              if ! echo "$SUBJECT" | grep -qF "(#$PR_NUMBER)" && [ "$SUBJECT" = "$LAST_BRANCH_SUBJECT" ]; then
+                # Rebase merge — reconstruct commit list oldest→newest
+                PICK_SHAS=""
+                for i in $(seq $((COMMIT_COUNT - 1)) -1 0); do
+                  SHA=$([ "$i" -eq 0 ] && echo "$MERGE_SHA" || git rev-parse "${MERGE_SHA}~${i}")
+                  PICK_SHAS="${PICK_SHAS:+$PICK_SHAS }$SHA"
+                done
+              fi
+              # else: squash — PICK_SHAS stays as $MERGE_SHA
+            fi
+          fi
+
+          # ── Cherry-pick ────────────────────────────────────────────────────────
+          git checkout "$RELEASE_BRANCH"
+
+          # shellcheck disable=SC2086
+          if git cherry-pick $PICK_FLAGS $PICK_SHAS; then
+            git push origin "$RELEASE_BRANCH"
+            echo "✅ Cherry-picked PR #$PR_NUMBER onto $RELEASE_BRANCH"
+          else
+            echo "⚠️ Cherry-pick conflict — creating resolution branch"
+            git cherry-pick --abort 2>/dev/null || true
+
+            CONFLICT_BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+            git checkout -b "$CONFLICT_BRANCH"
+
+            # Re-apply each commit individually so partial successes are preserved.
+            # Conflict markers are staged and committed for the reviewer to resolve.
+            for SHA in $PICK_SHAS; do
+              # shellcheck disable=SC2086
+              git cherry-pick $PICK_FLAGS "$SHA" || {
+                git add -A
+                git cherry-pick --continue --no-edit || git cherry-pick --skip
+              }
+            done
+
+            git push origin "$CONFLICT_BRANCH"
+
+            gh pr create \
+              --title "cherry-pick: \`${PR_TITLE}\` → \`${RELEASE_BRANCH}\` (conflict)" \
+              --body "## Resolve cherry-pick conflicts
+
+PR #${PR_NUMBER} (_${PR_TITLE}_) conflicted when cherry-picking onto \`${RELEASE_BRANCH}\`.
+
+Conflict markers (\`<<<<<<<\` / \`=======\` / \`>>>>>>>\`) have been committed to this branch. Please check out the branch, resolve all conflicts, push, and merge.
+
+**Source PR:** #${PR_NUMBER}
+**Commit(s):** \`${PICK_SHAS}\`" \
+              --base "$RELEASE_BRANCH" \
+              --head "$CONFLICT_BRANCH"
+          fi
