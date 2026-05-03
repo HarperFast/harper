@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore } from '@harperfast/rocksdb-js';
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
+import { cleanupUnusedBlobs } from './blob.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
@@ -57,6 +58,11 @@ export type TransactionWrite = {
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
+	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
+	savedBlobs?: Blob[];
+	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
+	// reset at the top of each commit-handler invocation so retries see a fresh state.
+	skipped?: boolean;
 };
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
@@ -215,133 +221,151 @@ export class DatabaseTransaction implements Transaction {
 		this.validated = this.writes.length;
 		const completions = this.completions;
 		if (completions.length > 0) this.completions = []; // reset
-		return when(completions.length > 0 ? Promise.all(completions) : null, () => {
-			if (this.writes.length > this.validated) {
-				// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
-				return this.commit(options);
-			}
-			this.open = TRANSACTION_STATE.CLOSED;
-			let commitResolution: MaybePromise<void>;
-			if (--this.readTxnsUsed > 0) {
-				// we still have outstanding iterators using the transaction, we can't just commit/abort it, we will still
-				// need to use it
-				if (this.writes.length > 0) {
-					// if there are outstanding writes, we have to call commit later to finish them
-					this.open = TRANSACTION_STATE.LINGERING;
-					/* TODO: This is not really the intended behavior though, we want to immediately commit writes, but continue to use
-					 * the transaction, as there is likely existing references to the transaction in other parts of the codebase,
-					 * particularly in the query iterator */
+		return when(
+			completions.length > 0 ? Promise.all(completions) : null,
+			() => {
+				if (this.writes.length > this.validated) {
+					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
+					return this.commit(options);
 				}
-				/*
+				this.open = TRANSACTION_STATE.CLOSED;
+				let commitResolution: MaybePromise<void>;
+				if (--this.readTxnsUsed > 0) {
+					// we still have outstanding iterators using the transaction, we can't just commit/abort it, we will still
+					// need to use it
+					if (this.writes.length > 0) {
+						// if there are outstanding writes, we have to call commit later to finish them
+						this.open = TRANSACTION_STATE.LINGERING;
+						/* TODO: This is not really the intended behavior though, we want to immediately commit writes, but continue to use
+						 * the transaction, as there is likely existing references to the transaction in other parts of the codebase,
+						 * particularly in the query iterator */
+					}
+					/*
 				commitResolution =
 					this.writes.length > 0
 						? transaction?.commit({ renewAfterCommit: true }) // Try to use RocksDB's CommitAndTryCreateSnapshot
 			: // don't abort, we still have outstanding reads to complete
 							null;
 				*/
-			} else {
-				// no more reads need to be performed, just commit/abort based if there are any writes
-				trackedTxns.delete(this);
-				this.transaction = null; // clear transaction so any further operations operate immediately
-				if (transaction) {
-					if (this.writes.length > 0) {
-						commitResolution = transaction.commit();
-					} else {
-						commitResolution = transaction.abort();
+				} else {
+					// no more reads need to be performed, just commit/abort based if there are any writes
+					trackedTxns.delete(this);
+					this.transaction = null; // clear transaction so any further operations operate immediately
+					if (transaction) {
+						if (this.writes.length > 0) {
+							commitResolution = transaction.commit();
+						} else {
+							commitResolution = transaction.abort();
+						}
 					}
 				}
-			}
 
-			if (commitResolution) {
-				if (!outstandingCommit) {
-					outstandingCommit = commitResolution;
-					outstandingCommitStart = performance.now();
-					outstandingCommit
-						// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
-						// will correct course, but the reject will still be propagated on the
-						// `outstandingCommit` promise and needs to be caught and silenced
-						.catch(() => {})
-						.finally(() => {
-							outstandingCommit = null;
-						});
-				}
-				const completions = [];
-				return commitResolution.then(
-					() => {
-						transaction.onCommit?.();
-						if (this.next) {
-							completions.push(this.next.commit(options));
-						}
-						if (options?.flush) {
-							completions.push(this.writes[0].store.flushed);
-						}
-						if (this.replicatedConfirmation) {
-							// if we want to wait for replication confirmation, we need to track the transaction times
-							// and when replication notifications come in, we count the number of confirms until we reach the desired number
-							const databaseName = this.writes[0].store.rootStore.databaseName;
-							const lastWrite = this.writes[this.writes.length - 1];
-							if (confirmReplication && lastWrite) {
-								completions.push(
-									confirmReplication(
-										databaseName,
-										lastWrite.store.getEntry(lastWrite.key).version,
-										this.replicatedConfirmation
-									)
-								);
+				if (commitResolution) {
+					if (!outstandingCommit) {
+						outstandingCommit = commitResolution;
+						outstandingCommitStart = performance.now();
+						outstandingCommit
+							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
+							// will correct course, but the reject will still be propagated on the
+							// `outstandingCommit` promise and needs to be caught and silenced
+							.catch(() => {})
+							.finally(() => {
+								outstandingCommit = null;
+							});
+					}
+					const completions = [];
+					return commitResolution.then(
+						() => {
+							transaction.onCommit?.();
+							if (this.next) {
+								completions.push(this.next.commit(options));
 							}
-						}
-						// now reset transactions tracking; this transaction be reused and committed again
-						this.writes = [];
-						if (this.#context?.resourceCache) this.#context.resourceCache = null;
-						this.next = null;
-						let txnTime = this.timestamp;
-						this.timestamp = 0; // reset the timestamp as well
-						return Promise.all(completions).then(() => {
-							return {
-								txnTime,
-							};
-						});
-					},
-					(error) => {
-						if (error.code === 'ERR_BUSY') {
-							// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
-							// for future transactions
-							this.retries++;
-							harperLogger.debug?.('retrying', transaction.id, this.retries);
-							if (this.retries > 2) {
-								if (this.retries > MAX_RETRIES) {
-									throw new ServerError(
-										`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+							if (options?.flush) {
+								completions.push(this.writes[0].store.flushed);
+							}
+							if (this.replicatedConfirmation) {
+								// if we want to wait for replication confirmation, we need to track the transaction times
+								// and when replication notifications come in, we count the number of confirms until we reach the desired number
+								const databaseName = this.writes[0].store.rootStore.databaseName;
+								const lastWrite = this.writes[this.writes.length - 1];
+								if (confirmReplication && lastWrite) {
+									completions.push(
+										confirmReplication(
+											databaseName,
+											lastWrite.store.getEntry(lastWrite.key).version,
+											this.replicatedConfirmation
+										)
 									);
 								}
-								// start delaying, back off to try to space out transactions and avoid excessive conflicts
-								return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
 							}
-							return this.commit({ transaction }); // try again
-						} else throw error;
-					}
-				);
+							// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
+							// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
+							for (const write of this.writes) {
+								if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+							}
+							// now reset transactions tracking; this transaction be reused and committed again
+							this.writes = [];
+							if (this.#context?.resourceCache) this.#context.resourceCache = null;
+							this.next = null;
+							let txnTime = this.timestamp;
+							this.timestamp = 0; // reset the timestamp as well
+							return Promise.all(completions).then(() => {
+								return {
+									txnTime,
+								};
+							});
+						},
+						(error) => {
+							if (error.code === 'ERR_BUSY') {
+								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
+								// for future transactions
+								this.retries++;
+								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								if (this.retries > 2) {
+									if (this.retries > MAX_RETRIES) {
+										throw new ServerError(
+											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+										);
+									}
+									// start delaying, back off to try to space out transactions and avoid excessive conflicts
+									return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
+								}
+								return this.commit({ transaction }); // try again
+							} else throw error;
+						}
+					);
+				}
+				const txnResolution: CommitResolution = {
+					txnTime: this.timestamp,
+				};
+				if (this.next) {
+					// now run any other transactions
+					options.timestamp = this.timestamp;
+					const nextResolution = this.next?.commit(options);
+					if (nextResolution?.then)
+						return nextResolution?.then((nextResolution) => ({
+							txnTime: this.timestamp,
+							next: nextResolution,
+						}));
+					txnResolution.next = nextResolution;
+				}
+				return txnResolution;
+			},
+			(error) => {
+				// before/beforeIntermediate (e.g. blob save) failed; abort to clean up pre-saved blob files
+				// and the underlying transaction so it doesn't leak.
+				this.abort();
+				throw error;
 			}
-			const txnResolution: CommitResolution = {
-				txnTime: this.timestamp,
-			};
-			if (this.next) {
-				// now run any other transactions
-				options.timestamp = this.timestamp;
-				const nextResolution = this.next?.commit(options);
-				if (nextResolution?.then)
-					return nextResolution?.then((nextResolution) => ({
-						txnTime: this.timestamp,
-						next: nextResolution,
-					}));
-				txnResolution.next = nextResolution;
-			}
-			return txnResolution;
-		});
+		);
 	}
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
+		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
+		for (const write of this.writes) {
+			if (write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+		}
 		// reset the transaction
 		this.writes = [];
 		if (this.#context?.resourceCache) this.#context.resourceCache = null;

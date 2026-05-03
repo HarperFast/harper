@@ -5,6 +5,7 @@ const { table, getDatabases } = require('#src/resources/databases');
 const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
 const {
 	getFilePathForBlob,
 	setDeletionDelay,
@@ -12,6 +13,7 @@ const {
 	findBlobsInObject,
 	isSaving,
 	cleanupOrphans,
+	cleanupUnusedBlobs,
 } = require('#src/resources/blob');
 const { existsSync } = require('fs');
 const { pack } = require('msgpackr');
@@ -390,6 +392,59 @@ describe('Blob test', () => {
 			await BlobTest.publish(20, { id: 20, noBlobs: true });
 		}
 		// hopefully no orphans below
+	});
+	it('multi-write transaction with one failing blob cleans up succeeded blobs', async () => {
+		// Both blobs use saveBeforeCommit so they save in beforeIntermediate. The bad one errors mid-stream,
+		// which rejects Promise.all in beforeIntermediate and aborts the whole transaction. The good blob's
+		// file is already on disk at that point and would be orphaned without the abort cleanup.
+		setDeletionDelay(0); // make cleanup observable without waiting; afterEach restores to 50ms
+		let goodBlob = await createBlob(Buffer.alloc(20000, 'a'), { saveBeforeCommit: true });
+		let badBlob = await createBlob(
+			Readable.from(
+				(async function* () {
+					yield 'partial';
+					throw new Error('induced failure');
+				})()
+			),
+			{ saveBeforeCommit: true }
+		);
+		const context = {};
+		await assert.rejects(async () => {
+			await transaction(context, async () => {
+				await BlobTest.put({ id: 200, blob: goodBlob }, context);
+				await BlobTest.put({ id: 201, blob: badBlob }, context);
+			});
+		});
+		const goodPath = getFilePathForBlob(goodBlob);
+		assert(goodPath, 'good blob was assigned a file path during pre-commit');
+		await delay(100); // wait for cleanup setTimeout
+		assert(!existsSync(goodPath), `good blob ${goodPath} should be cleaned up by abort`);
+	});
+	it('superseded incremental update cleans up pre-saved blob', async () => {
+		// Establish a record at the current monotonic time.
+		await BlobTest.put({ id: 250, blob: await createBlob(Buffer.from('first')) });
+		// A patch with an older timestamp is treated as duplicate/superseded by the commit handler;
+		// without orphan cleanup the pre-saved blob would be left behind.
+		const olderBlob = await createBlob(Buffer.alloc(20000, 'b'), { saveBeforeCommit: true });
+		const context = { timestamp: 1 };
+		await transaction(context, async () => {
+			await BlobTest.put({ id: 250, blob: olderBlob }, context);
+		});
+		const blobPath = getFilePathForBlob(olderBlob);
+		assert(blobPath, 'older blob was assigned a file path during pre-commit');
+		await delay(100); // wait for cleanup setTimeout
+		assert(!existsSync(blobPath), `superseded blob ${blobPath} should be cleaned up`);
+		// the original record value is preserved
+		const existing = await BlobTest.get(250);
+		assert.equal(await existing.blob.text(), 'first');
+	});
+	it('cleanupUnusedBlobs is a no-op for unsaved blobs and clears the list', () => {
+		const unsavedBlob = createBlob(Buffer.from('not yet saved'));
+		const list = [unsavedBlob];
+		cleanupUnusedBlobs(list);
+		assert.equal(list.length, 0); // list cleared so subsequent abort/skip calls are no-ops
+		cleanupUnusedBlobs(list); // does not throw on empty list
+		cleanupUnusedBlobs(undefined); // does not throw when never tracked
 	});
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);
