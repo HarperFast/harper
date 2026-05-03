@@ -355,7 +355,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 											// re-read the header to handle the race where the writer finished between
 											// the last async read completing and the watcher being set up
 											if (readSync(fd, buffer, 0, HEADER_SIZE, 0) >= HEADER_SIZE) {
-												const updatedSize = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
+												const updatedSize = Number(
+													new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn
+												);
 												if (updatedSize !== UNKNOWN_SIZE) {
 													size = updatedSize;
 													if (watcher) {
@@ -370,7 +372,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 											timer = setTimeout(() => {
 												// re-read the header to handle the race where the writer finished and the watcher missed the notification
 												if (readSync(fd, buffer, 0, HEADER_SIZE, 0) >= HEADER_SIZE) {
-													const updatedSize = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
+													const updatedSize = Number(
+														new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn
+													);
 													if (updatedSize !== UNKNOWN_SIZE) {
 														size = updatedSize;
 														if (watcher) {
