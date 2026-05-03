@@ -80,9 +80,6 @@ let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 // the header is 8 bytes
-// this is a reusable buffer for reading and writing to the header (without having to create new allocations)
-const HEADER = new Uint8Array(8);
-const headerView = new DataView(HEADER.buffer);
 const FILE_READ_TIMEOUT = 60000;
 // We want FileBackedBlob instances to be an instanceof Blob, but we don't want to actually extend the class and call Blob's constructor, which is quite expensive because it has to set it up as a transferrable.
 function InstanceOfBlobWithNoConstructor() {}
@@ -167,8 +164,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			try {
 				rawBytes = await readFile(filePath);
 				if (rawBytes.length >= HEADER_SIZE) {
-					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
-					const headerValue = headerView.getBigUint64(0);
+					const headerValue = new DataView(rawBytes.buffer, rawBytes.byteOffset, 8).getBigUint64(0);
 					if (Number(headerValue >> 48n) === ERROR_TYPE) {
 						throw new Error('Error in blob: ' + rawBytes.subarray(HEADER_SIZE));
 					}
@@ -316,8 +312,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								// else throw new Error();
 								return;
 							}
-							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-							const headerValue = headerView.getBigUint64(0);
+							const headerValue = new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0);
 							if (Number(headerValue >> 48n) === ERROR_TYPE) {
 								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead)));
 							}
@@ -334,28 +329,58 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							const buffer = Buffer.allocUnsafe(8);
 							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
 								if (error) return onError(error);
-								HEADER.set(buffer);
-								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+								size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
 									if (checkIfIsBeingWritten()) {
 										// the file is not finished being written, watch the file for changes to resume reading
 										// set up a watcher to be notified of file changes
 										watcher = watch(filePath, { persistent: false }, () => {
-											watcher.close();
-											watcher = null;
-											clearTimeout(timer); // clear it
-											readMore(resolve, reject);
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+												clearTimeout(timer); // clear it
+												readMore(resolve, reject);
+											}
 										});
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
 											// never mind with the watcher, let's read more data
-											watcher.close();
-											watcher = null;
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+											}
 											readMore(resolve, reject);
 										} else {
+											// re-read the header to handle the race where the writer finished between
+											// the last async read completing and the watcher being set up
+											if (readSync(fd, buffer, 0, HEADER_SIZE, 0) >= HEADER_SIZE) {
+												const updatedSize = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
+												if (updatedSize !== UNKNOWN_SIZE) {
+													size = updatedSize;
+													if (watcher) {
+														watcher.close();
+														watcher = null;
+													}
+													readMore(resolve, reject);
+													return;
+												}
+											}
 											// set a timer for the watcher too
 											timer = setTimeout(() => {
+												// re-read the header to handle the race where the writer finished and the watcher missed the notification
+												if (readSync(fd, buffer, 0, HEADER_SIZE, 0) >= HEADER_SIZE) {
+													const updatedSize = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
+													if (updatedSize !== UNKNOWN_SIZE) {
+														size = updatedSize;
+														if (watcher) {
+															watcher.close();
+															watcher = null;
+														}
+														readMore(resolve, reject);
+														return;
+													}
+												}
 												if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
 													// finally try to read one more time to see if it was a watcher failure
 													onError(
@@ -1126,8 +1151,7 @@ addExtension({
 			try {
 				const buffer = readFileSync(getFilePath(storageInfo));
 				if (buffer.length >= HEADER_SIZE) {
-					buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-					const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+					const size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 					if (size === buffer.length - HEADER_SIZE) {
 						// the file is there and complete, we can return the encoding
 						return Buffer.concat([pack([options]), buffer]);
