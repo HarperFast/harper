@@ -986,13 +986,22 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	}
 }
 
+export interface PreCommitBlobs {
+	blobs: Blob[];
+	complete: () => Promise<void[]>;
+}
+
 /**
  * Do a shallow/fast search for blobs on the record and start saving them if they are supposed to be saved before a commit
  * @param record
  * @param store
  */
-export function startPreCommitBlobsForRecord(record: any, store: LMDBStore | RocksDatabase, saveInRecord?: boolean) {
-	let blobsNeedingSaving = [];
+export function startPreCommitBlobsForRecord(
+	record: any,
+	store: LMDBStore | RocksDatabase,
+	saveInRecord?: boolean
+): PreCommitBlobs | undefined {
+	const blobsNeedingSaving: Blob[] = [];
 	for (const key in record) {
 		const value = record[key];
 		if (value instanceof FileBackedBlob && (saveInRecord || value.saveBeforeCommit)) {
@@ -1004,16 +1013,43 @@ export function startPreCommitBlobsForRecord(record: any, store: LMDBStore | Roc
 		}
 	}
 	if (blobsNeedingSaving.length > 0) {
-		// we do have blobs, start saving once the returned function is called
-		return () => {
-			currentStore = store;
-			return Promise.all(
-				blobsNeedingSaving.map((blob) => {
-					return saveBlob(blob, true).saving ?? Promise.resolve();
-				})
-			);
+		// we do have blobs, start saving once complete() is called
+		return {
+			blobs: blobsNeedingSaving,
+			complete: () => {
+				currentStore = store;
+				return Promise.all(
+					blobsNeedingSaving.map((blob) => {
+						return saveBlob(blob, true).saving ?? Promise.resolve();
+					})
+				);
+			},
 		};
 	}
+}
+
+/**
+ * Clean up blob files that were pre-saved as part of a transaction that ended up not committing
+ * (e.g. transaction aborted, optimistic-lock retry where the commit handler skipped the update).
+ *
+ * Waits for any in-flight save to settle before unlinking, so we don't race with the writer
+ * and leave a half-written file. Errors are swallowed — the blob may have already been
+ * cleaned up by deleteOnFailure on the save path.
+ * @param blobs blobs that were registered via {@link startPreCommitBlobsForRecord}
+ */
+export function cleanupUnusedBlobs(blobs: Blob[] | undefined): void {
+	if (!blobs?.length) return;
+	for (const blob of blobs) {
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
+		const settle = storageInfo.saving ?? Promise.resolve();
+		settle.then(
+			() => deleteBlob(blob),
+			() => deleteBlob(blob) // even on save failure, attempt cleanup in case a partial file remains
+		);
+	}
+	// idempotent: subsequent calls (e.g. from abort after commit-handler already cleaned up) are no-ops
+	blobs.length = 0;
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
