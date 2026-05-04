@@ -148,7 +148,7 @@ jobs:
 
       - name: Claude review
         id: claude-review
-        uses: anthropics/claude-code-action@c3d45e8e941e1b2ad7b278c57482d9c5bf1f35b3 # v1.0.99
+        uses: anthropics/claude-code-action@ef50f123a3a9be95b60040d042717517407c7256 # v1.0.110
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Admit the issue-to-PR bot's PRs. Job-level `if:` gate above lets
