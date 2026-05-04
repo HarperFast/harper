@@ -5,6 +5,59 @@ import { ClientError } from '../../utility/errors/hdbError.js';
 import type { Id } from '../../resources/ResourceInterface.ts';
 
 const logger = loggerWithTag('HNSW');
+
+class MinHeap {
+	private data: Candidate[] = [];
+	get size() {
+		return this.data.length;
+	}
+	push(item: Candidate) {
+		this.data.push(item);
+		let i = this.data.length - 1;
+		while (i > 0) {
+			const p = (i - 1) >> 1;
+			if (this.data[p].distance <= this.data[i].distance) break;
+			const tmp = this.data[p];
+			this.data[p] = this.data[i];
+			this.data[i] = tmp;
+			i = p;
+		}
+	}
+	pop(): Candidate | undefined {
+		if (this.data.length === 0) return undefined;
+		const top = this.data[0];
+		const last = this.data.pop()!;
+		if (this.data.length > 0) {
+			this.data[0] = last;
+			let i = 0;
+			for (;;) {
+				const l = 2 * i + 1,
+					r = l + 1;
+				let min = i;
+				if (l < this.data.length && this.data[l].distance < this.data[min].distance) min = l;
+				if (r < this.data.length && this.data[r].distance < this.data[min].distance) min = r;
+				if (min === i) break;
+				const tmp = this.data[min];
+				this.data[min] = this.data[i];
+				this.data[i] = tmp;
+				i = min;
+			}
+		}
+		return top;
+	}
+}
+
+function bisectInsert(arr: Candidate[], distance: number): number {
+	let lo = 0,
+		hi = arr.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (arr[mid].distance <= distance) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
 /**
  * Implementation of a vector index for Harper, using hierarchical navigable small world graphs.
  */
@@ -383,50 +436,58 @@ export class HierarchicalNavigableSmallWorld {
 		options: { transaction?: any } = {},
 		distanceFunction = this.distance
 	): SearchResults {
+		// Pre-compute query vector magnitude for cosine to avoid recomputing it per neighbor
+		let computeDistance: (b: number[]) => number;
+		if (distanceFunction === cosineDistance) {
+			let magASq = 0;
+			for (const v of queryVector) magASq += v * v;
+			const invMagA = 1 / (Math.sqrt(magASq) || 1);
+			computeDistance = (b: number[]) => {
+				let dot = 0,
+					magBSq = 0;
+				for (let i = 0; i < b.length; i++) {
+					dot += queryVector[i] * b[i];
+					magBSq += b[i] * b[i];
+				}
+				return 1 - (dot * invMagA) / (Math.sqrt(magBSq) || 1);
+			};
+		} else {
+			computeDistance = (b: number[]) => distanceFunction(queryVector, b);
+		}
+
 		const visited = new Set([entryPointId]);
-		const candidates = [
-			{
-				id: entryPointId,
-				distance: distanceFunction(queryVector, entryPoint.vector),
-				node: entryPoint,
-			},
-		];
-		const results = [...candidates] as SearchResults;
+		const initialCandidate: Candidate = {
+			id: entryPointId,
+			distance: computeDistance(entryPoint.vector),
+			node: entryPoint,
+		};
 
-		while (candidates.length > 0) {
-			// Get closest unvisited element
-			candidates.sort((a, b) => a.distance - b.distance);
-			const current = candidates.shift();
+		const candidates = new MinHeap();
+		candidates.push(initialCandidate);
+		const results = [initialCandidate] as SearchResults;
 
-			// Get least result distance
+		while (candidates.size > 0) {
+			const current = candidates.pop()!;
 			const furthestDistance = results[results.length - 1].distance;
 
-			// If current candidate is less similar than our worst result, we're done
 			if (current.distance > furthestDistance) break;
 
-			// Check neighbors of current point
-			const currentNode = current.node;
-			for (const { id: neighborId } of currentNode[level] || []) {
+			for (const { id: neighborId } of current.node[level] || []) {
 				if (visited.has(neighborId) || neighborId === undefined) continue;
 				visited.add(neighborId);
 
 				const neighbor = this.indexStore.getSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
-				const distance = distanceFunction(queryVector, neighbor.vector);
+				const distance = computeDistance(neighbor.vector);
 
 				if (distance < furthestDistance || results.length < ef) {
-					const candidate = {
-						id: neighborId,
-						distance,
-						node: neighbor,
-					};
+					const candidate: Candidate = { id: neighborId, distance, node: neighbor };
 					candidates.push(candidate);
-					results.push(candidate);
+					results.splice(bisectInsert(results, distance), 0, candidate);
+					if (results.length > ef) results.pop();
 				}
 			}
-			results.sort((a, b) => a.distance - b.distance);
-			if (results.length > ef) results.splice(ef, results.length - ef);
 		}
 		results.visited = visited.size;
 		return results;
