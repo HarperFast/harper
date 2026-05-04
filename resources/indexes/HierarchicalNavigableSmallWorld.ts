@@ -70,6 +70,7 @@ type Connection = {
 };
 type Node = {
 	vector: number[];
+	invMag?: number; // cached 1/|vector| for cosine distance; undefined on legacy nodes
 	level?: number;
 	primaryKey: string;
 	[level: number]: Connection[];
@@ -165,11 +166,19 @@ export class HierarchicalNavigableSmallWorld {
 			oldNode = { ...this.indexStore.getSync(nodeId, options) };
 		} else oldNode = {} as Node;
 		if (vector) {
+			// Pre-compute 1/|vector| for cosine distance so searchLayer can skip sqrt per neighbor
+			let invMag: number | undefined;
+			if (this.distance === cosineDistance) {
+				let magSq = 0;
+				for (const v of vector) magSq += v * v;
+				invMag = 1 / (Math.sqrt(magSq) || 1);
+			}
 			let entryPoint = entryPointId && this.indexStore.getSync(entryPointId, options);
 			if (entryPoint == null) {
 				const level = Math.floor(-Math.log(Math.random()) * this.mL);
 				const node = {
 					vector,
+					invMag,
 					level,
 					primaryKey,
 				};
@@ -322,6 +331,7 @@ export class HierarchicalNavigableSmallWorld {
 				nodeId,
 				{
 					vector,
+					invMag,
 					level,
 					primaryKey,
 					...connections,
@@ -436,19 +446,18 @@ export class HierarchicalNavigableSmallWorld {
 		options: { transaction?: any } = {},
 		distanceFunction = this.distance
 	): SearchResults {
-		// Pre-compute query vector magnitude for cosine to avoid recomputing it per neighbor
-		let computeDistance: (b: number[]) => number;
+		// Pre-compute query magnitude for cosine; use cached invMag on stored nodes to skip sqrt per neighbor
+		let computeDistance: (b: number[], invMagB?: number) => number;
 		if (distanceFunction === cosineDistance) {
 			let magASq = 0;
 			for (const v of queryVector) magASq += v * v;
 			const invMagA = 1 / (Math.sqrt(magASq) || 1);
-			computeDistance = (b: number[]) => {
-				let dot = 0,
-					magBSq = 0;
-				for (let i = 0; i < b.length; i++) {
-					dot += queryVector[i] * b[i];
-					magBSq += b[i] * b[i];
-				}
+			computeDistance = (b: number[], invMagB?: number) => {
+				let dot = 0;
+				for (let i = 0; i < b.length; i++) dot += queryVector[i] * b[i];
+				if (invMagB !== undefined) return 1 - dot * invMagA * invMagB;
+				let magBSq = 0;
+				for (let i = 0; i < b.length; i++) magBSq += b[i] * b[i];
 				return 1 - (dot * invMagA) / (Math.sqrt(magBSq) || 1);
 			};
 		} else {
@@ -458,7 +467,7 @@ export class HierarchicalNavigableSmallWorld {
 		const visited = new Set([entryPointId]);
 		const initialCandidate: Candidate = {
 			id: entryPointId,
-			distance: computeDistance(entryPoint.vector),
+			distance: computeDistance(entryPoint.vector, entryPoint.invMag),
 			node: entryPoint,
 		};
 
@@ -479,7 +488,7 @@ export class HierarchicalNavigableSmallWorld {
 				const neighbor = this.indexStore.getSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
-				const distance = computeDistance(neighbor.vector);
+				const distance = computeDistance(neighbor.vector, neighbor.invMag);
 
 				if (distance < furthestDistance || results.length < ef) {
 					const candidate: Candidate = { id: neighborId, distance, node: neighbor };
