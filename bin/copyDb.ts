@@ -14,6 +14,7 @@ import { updateConfigValue } from '../config/configUtils.js';
 import * as hdbLogger from '../utility/logging/harper_logger.js';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
+import { encodeBlobsWithFilePath } from '../resources/blob.ts';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');
@@ -431,7 +432,11 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 								skippedRecord++;
 								continue;
 							}
-							written = targetDbi.put(key, value, version);
+							written = encodeBlobsWithFilePath(
+								() => targetDbi.put(key, value, version),
+								typeof key === 'number' ? key : recordsCopied,
+								sourceRootStore
+							);
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;
 							if (outstandingWrites++ > 5000) {
