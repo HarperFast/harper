@@ -111,16 +111,11 @@ jobs:
 
             git push origin "$CONFLICT_BRANCH"
 
+            PR_BODY=$(printf '## Resolve cherry-pick conflicts\n\nPR #%s (_%s_) conflicted when cherry-picking onto `%s`.\n\nConflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) have been committed to this branch. Please check out the branch, resolve all conflicts, push, and merge.\n\n**Source PR:** #%s\n**Commit(s):** `%s`' \
+              "$PR_NUMBER" "$PR_TITLE" "$RELEASE_BRANCH" "$PR_NUMBER" "$PICK_SHAS")
             gh pr create \
               --title "cherry-pick: \`${PR_TITLE}\` → \`${RELEASE_BRANCH}\` (conflict)" \
-              --body "## Resolve cherry-pick conflicts
-
-PR #${PR_NUMBER} (_${PR_TITLE}_) conflicted when cherry-picking onto \`${RELEASE_BRANCH}\`.
-
-Conflict markers (\`<<<<<<<\` / \`=======\` / \`>>>>>>>\`) have been committed to this branch. Please check out the branch, resolve all conflicts, push, and merge.
-
-**Source PR:** #${PR_NUMBER}
-**Commit(s):** \`${PICK_SHAS}\`" \
+              --body "$PR_BODY" \
               --base "$RELEASE_BRANCH" \
               --head "$CONFLICT_BRANCH"
           fi
