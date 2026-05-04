@@ -2701,42 +2701,39 @@ export function makeTable(options) {
 						pendingRealTimeQueue = null;
 						dropDuringReplay = true;
 
-						for (const auditRecord of auditStore.getRange({
-							start: startTime,
-							exclusiveStart: true,
-							snapshot: false, // no need for a snapshot, audits don't change
-						})) {
-							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
-								recordsSinceYield = 0;
-								await rest();
-							}
-							if (auditRecord.tableId !== tableId) continue;
-							const id = auditRecord.recordId;
-							if (thisId == null || isDescendantId(thisId, id)) {
-								const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
-								send({
-									id,
-									localTime: auditRecord.localTime,
-									value,
-									version: auditRecord.version,
-									type: auditRecord.type,
-									size: auditRecord.size,
-								});
-								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-									// if we have too many messages, we need to pause and let the client catch up
-									if ((await subscription.waitForDrain()) === false) return;
+						try {
+							for (const auditRecord of auditStore.getRange({
+								start: startTime,
+								exclusiveStart: true,
+								snapshot: false, // no need for a snapshot, audits don't change
+							})) {
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
 								}
+								if (auditRecord.tableId !== tableId) continue;
+								const id = auditRecord.recordId;
+								if (thisId == null || isDescendantId(thisId, id)) {
+									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
+									send({
+										id,
+										localTime: auditRecord.localTime,
+										value,
+										version: auditRecord.version,
+										type: auditRecord.type,
+										size: auditRecord.size,
+									});
+									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+										// if we have too many messages, we need to pause and let the client catch up
+										if ((await subscription.waitForDrain()) === false) return;
+									}
+								}
+								subscription!.startTime = auditRecord.localTime ?? auditRecord.version; // update so we don't double send
 							}
-							subscription!.startTime = auditRecord.localTime ?? auditRecord.version; // update so we don't double send
+						} finally {
+							// replay is done, we can start sending real-time messages again
+							dropDuringReplay = false;
 						}
-						// No catch-up sweep needed. With snapshot:false (lmdb), notifyFromTransactionData
-						// calls resetReadTxn before iterating, which bumps renewId; on the cursor's next
-						// .next() it renews to a fresh txn whose snapshot is at least as recent. With
-						// rocksdb, the audit-log iterator re-reads `_lastCommittedPosition` on each next()
-						// (live tail). Either way, at loop exit subscription.startTime is at or past
-						// lastTxnTime, and the gate in notifyFromTransactionData handles the handoff
-						// once dropDuringReplay flips back.
-						dropDuringReplay = false;
 					} else if (count) {
 						const history = [];
 						// we are collecting the history in reverse order to get the right count, then reversing to send
