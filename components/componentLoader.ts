@@ -1,5 +1,14 @@
 import { onMessageByType } from '../server/threads/manageThreads.js';
-import { readdirSync, readFileSync, existsSync, realpathSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import {
+	readdirSync,
+	readFileSync,
+	existsSync,
+	lstatSync,
+	realpathSync,
+	mkdirSync,
+	rmSync,
+	symlinkSync,
+} from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
@@ -151,23 +160,26 @@ function symlinkHarperModule(componentDirectory: string) {
 
 				// validate harper module
 				const harperModule = join(nodeModulesDir, 'harper');
-				if (existsSync(harperModule)) {
-					if (realpathSync(harperModule) !== realpathSync(PACKAGE_ROOT)) {
-						// if it exists but is incorrectly linked, fix it
-						rmSync(harperModule, { recursive: true, force: true });
-						// create link to harper module
-						symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
-					}
-				} else {
-					// create link to harper module
+				let harperModuleLinked = false;
+				try {
+					lstatSync(harperModule); // throws ENOENT if absent; succeeds even for dangling symlinks
+					harperModuleLinked = realpathSync(harperModule) === realpathSync(PACKAGE_ROOT);
+				} catch {}
+				if (!harperModuleLinked) {
+					rmSync(harperModule, { recursive: true, force: true });
 					symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
 				}
 				// if there is a harperdb module, fix that too
 				const harperdbModule = join(nodeModulesDir, 'harperdb');
-				if (existsSync(harperdbModule) && realpathSync(harperdbModule) !== realpathSync(PACKAGE_ROOT)) {
-					// if it exists but is incorrectly linked, fix it
+				let harperdbModulePresent = false;
+				let harperdbModuleLinked = false;
+				try {
+					lstatSync(harperdbModule);
+					harperdbModulePresent = true;
+					harperdbModuleLinked = realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
+				} catch {}
+				if (harperdbModulePresent && !harperdbModuleLinked) {
 					rmSync(harperdbModule, { recursive: true, force: true });
-					// create link to harper module
 					symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
 				}
 
