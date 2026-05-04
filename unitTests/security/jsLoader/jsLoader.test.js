@@ -78,6 +78,12 @@ describe('scopedImport', () => {
 			);
 		}
 	});
+
+	it('should handle dynamic import() from a CJS module', async () => {
+		const result = await scopedImport(join(__dirname, 'fixtures', 'uses-dynamic-import.cjs'), vmScope());
+		const lib = await result.load();
+		expect(lib.baz).to.equal('pow');
+	});
 });
 
 describe('symlinked module resolution', () => {
