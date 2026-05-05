@@ -357,7 +357,9 @@ export function searchByIndex(
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
-					const loadedEntry = Table.primaryStore.getEntry(key);
+					if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+					const loadedEntry = Table.primaryStore.getEntry(key, { transaction: context?.transaction?.getReadTxn?.() });
+					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 					Object.freeze(loadedEntry?.value);
 					recordRead(loadedEntry);
 					return { ...otherProps, ...loadedEntry };
