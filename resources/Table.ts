@@ -2512,7 +2512,10 @@ export function makeTable(options) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
 									value = filterMap.get(key);
-									if (!value) value = [];
+									if (!value) {
+										console.log("[DEBUG select] hasMappings=true but get(key) empty. attr:", attribute_name, "key:", key, "mapSize:", filterMap.size, "mapKeys:", [...filterMap.keys()].slice(0,5));
+										value = [];
+									}
 								} else {
 									value = filterMap.fromRecord?.(record);
 								}
