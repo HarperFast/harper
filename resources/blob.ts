@@ -332,6 +332,22 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
 									if (checkIfIsBeingWritten()) {
+										// detects the race where the writer finished between our last async read
+										// and the watcher being set up (or the watcher missing the final write event)
+										const resumeIfWriterFinished = (): boolean => {
+											if (readSync(fd, buffer, 0, HEADER_SIZE, 0) < HEADER_SIZE) return false;
+											const updatedSize = Number(
+												new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn
+											);
+											if (updatedSize === UNKNOWN_SIZE) return false;
+											size = updatedSize;
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+											}
+											readMore(resolve, reject);
+											return true;
+										};
 										// the file is not finished being written, watch the file for changes to resume reading
 										// set up a watcher to be notified of file changes
 										watcher = watch(filePath, { persistent: false }, () => {
@@ -351,53 +367,24 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 												watcher = null;
 											}
 											readMore(resolve, reject);
-										} else {
-											// re-read the header to handle the race where the writer finished between
-											// the last async read completing and the watcher being set up
-											if (readSync(fd, buffer, 0, HEADER_SIZE, 0) >= HEADER_SIZE) {
-												const updatedSize = Number(
-													new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn
-												);
-												if (updatedSize !== UNKNOWN_SIZE) {
-													size = updatedSize;
-													if (watcher) {
-														watcher.close();
-														watcher = null;
-													}
-													readMore(resolve, reject);
-													return;
-												}
-											}
+										} else if (!resumeIfWriterFinished()) {
 											// set a timer for the watcher too
 											timer = setTimeout(() => {
-												// re-read the header to handle the race where the writer finished and the watcher missed the notification
-												if (readSync(fd, buffer, 0, HEADER_SIZE, 0) >= HEADER_SIZE) {
-													const updatedSize = Number(
-														new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn
-													);
-													if (updatedSize !== UNKNOWN_SIZE) {
-														size = updatedSize;
-														if (watcher) {
-															watcher.close();
-															watcher = null;
-														}
-														readMore(resolve, reject);
-														return;
+												if (!resumeIfWriterFinished()) {
+													if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
+														// finally try to read one more time to see if it was a watcher failure
+														onError(
+															new Error(
+																`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															)
+														);
+													} else {
+														onError(
+															new Error(
+																`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															)
+														);
 													}
-												}
-												if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
-													// finally try to read one more time to see if it was a watcher failure
-													onError(
-														new Error(
-															`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
-														)
-													);
-												} else {
-													onError(
-														new Error(
-															`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
-														)
-													);
 												}
 											}, FILE_READ_TIMEOUT).unref();
 										}
