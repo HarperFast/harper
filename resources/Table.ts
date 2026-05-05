@@ -2512,6 +2512,7 @@ export function makeTable(options) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
 									value = filterMap.get(key);
+									if (!value) value = [];
 								} else {
 									value = filterMap.fromRecord?.(record);
 								}
