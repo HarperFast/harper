@@ -358,7 +358,7 @@ export function searchByIndex(
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
 					if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-					const loadedEntry = Table.primaryStore.getEntry(key, { transaction: context?.transaction?.getReadTxn?.() });
+					const loadedEntry = Table.primaryStore.getEntry(key, { transaction: context && Table._readTxnForContext(context) });
 					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 					Object.freeze(loadedEntry?.value);
 					recordRead(loadedEntry);
