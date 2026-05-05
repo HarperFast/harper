@@ -518,6 +518,10 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
+export function setNextEncoding(timestamp: number, metadata: number) {
+	timestampNextEncoding = timestamp;
+	metadataInNextEncoding = metadata;
+}
 export function recordUpdater(store, tableId, auditStore) {
 	return function (
 		id,
