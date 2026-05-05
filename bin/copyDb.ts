@@ -200,9 +200,18 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 			await copyDbi(sourceDbi, targetDbi, isPrimary, transaction);
 		}
 		if (sourceAuditStore) {
-			const targetAuditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+			// Copy audit store in binary mode to avoid encode/decode issues with symbol-keyed metadata entries
+			const auditBinaryOptions: any = {
+				keyEncoder: AUDIT_STORE_OPTIONS.keyEncoder,
+				encoding: 'binary',
+			};
+			const sourceAuditBinary: any = rootStore.openDB(AUDIT_STORE_NAME, auditBinaryOptions);
+			sourceAuditBinary.decoder = null;
+			sourceAuditBinary.decoderCopies = false;
+			const targetAuditStore: any = targetEnv.openDB(AUDIT_STORE_NAME, auditBinaryOptions);
+			targetAuditStore.encoder = null;
 			console.log('copying audit log for', sourceDatabase, 'to', targetDatabasePath);
-			copyDbi(sourceAuditStore, targetAuditStore, false, transaction);
+			await copyDbi(sourceAuditBinary, targetAuditStore, false, transaction);
 		}
 
 		async function copyDbi(sourceDbi, targetDbi, isPrimary, transaction) {
