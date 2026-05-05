@@ -13,7 +13,7 @@ const {
 	isSaving,
 	cleanupOrphans,
 } = require('#src/resources/blob');
-const { existsSync } = require('fs');
+const { existsSync, writeFileSync } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 
@@ -394,6 +394,37 @@ describe('Blob test', () => {
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);
 		assert.equal(orphansDeleted, 0);
+	});
+	it('bytes() retries up to 3x then rejects when lock is free but file is incomplete', async () => {
+		// Simulate a crashed-writer scenario: the blob file exists on disk with a
+		// DEFAULT_HEADER (UNKNOWN_SIZE) + partial content, but no writer holds the lock.
+		// bytes() should retry 3 times (100 ms each) before throwing.
+		const content = Buffer.alloc(9001, 0x61); // >8192 so it is file-backed
+		// Use a Readable stream source so storageInfo.contentBuffer is NOT set — otherwise
+		// bytes() returns the in-memory buffer and never reads the corrupted disk file.
+		const blob = await createBlob(Readable.from([content]));
+		await BlobTest.put({ id: 901, blob });
+		// Use the original blob object (not the decoded record.blob) to ensure we always
+		// read from disk — the decoded blob may carry an in-memory contentBuffer in some
+		// storage-engine / transaction-cache configurations.
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'blob should be file-backed for this test');
+		// Await the blob file write to complete before corrupting — BlobTest.put only awaits
+		// the DB write, not the blob stream pipeline, so without this the pipeline can race
+		// and overwrite our corrupted file with the complete content.
+		await isSaving(blob);
+		assert(existsSync(filePath), 'blob file should exist after save');
+
+		// Corrupt: DEFAULT_HEADER (UNKNOWN_SIZE) + partial content, as a crashed write leaves.
+		// Byte[1] = 0 = UNCOMPRESSED_TYPE, matching the DEFAULT_HEADER constant in blob.ts.
+		const DEFAULT_HEADER = Buffer.from([0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+		writeFileSync(filePath, Buffer.concat([DEFAULT_HEADER, content.subarray(0, 100)]));
+
+		const start = Date.now();
+		await assert.rejects(() => blob.bytes(), /incomplete blob/i);
+		const elapsed = Date.now() - start;
+		// 3 retries × 100 ms each = at least 300 ms
+		assert(elapsed >= 290, `expected ≥300 ms of retry delay, got ${elapsed} ms`);
 	});
 	afterEach(function () {
 		setAuditRetention(60000);

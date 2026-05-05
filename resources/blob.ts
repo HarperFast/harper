@@ -161,6 +161,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		}
 		const filePath = getFilePath(storageInfo);
 		let writeFinished: boolean;
+		let writeFinishedRetries = 0;
 		const readContents = async () => {
 			let rawBytes: Buffer;
 			let size = HEADER_SIZE;
@@ -192,6 +193,18 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 					const store = storageInfo.store;
 					const lockKey = storageInfo.fileId + ':blob';
 					if (writeFinished) {
+						// The lock was free but the file is still incomplete — the writer may have
+						// crashed mid-write (process restart clears in-memory lock state). Allow a
+						// few brief retries so that an in-progress new write (e.g. replication
+						// re-send) can acquire the lock before we give up.
+						if (writeFinishedRetries++ < 3) {
+							logger.trace?.(
+								`Incomplete blob after writer finished, retrying (attempt ${writeFinishedRetries})`,
+								filePath
+							);
+							writeFinished = false;
+							return new Promise((resolve) => setTimeout(() => resolve(readContents()), 100));
+						}
 						throw new Error(`Incomplete blob for ${filePath}`);
 					}
 					return new Promise((resolve) => {
