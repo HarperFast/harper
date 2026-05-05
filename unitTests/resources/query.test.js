@@ -1148,6 +1148,11 @@ describe('Querying through Resource API', () => {
 				});
 			}
 			await last;
+			// DEBUG: log RelatedTable record count at start of Query optimizations suite
+			const relatedCount = RelatedTable.primaryStore.readerCheck
+				? RelatedTable.primaryStore.getStats().entryCount
+				: RelatedTable.primaryStore.getKeysCount();
+			console.log('[DEBUG] RelatedTable primary count at start of Query optimizations:', relatedCount);
 		});
 		it('Uses both indices for two similar conditions', async function () {
 			let results = [];
@@ -1290,6 +1295,23 @@ describe('Querying through Resource API', () => {
 		it('Combine medium condition with join to non-primary key', async function () {
 			let results = [];
 			let start_read_count = Bigger.primaryStore.readCount;
+			// DEBUG: log condition estimates and store state before search
+			const explainResult = Bigger.search({
+				conditions: [
+					{ attribute: '10values', value: 2 },
+					{ attribute: ['relatedByName', 'name'], value: 'related name 3' },
+				],
+				select: ['10values', 'relatedByName', 'relatedName'],
+				explain: true,
+			});
+			console.log('[DEBUG] explain conditions:', JSON.stringify(explainResult?.conditions?.map((c) => ({ attr: JSON.stringify(c.attribute), est: c.estimated_count }))));
+			const relatedTablePrimaryCount = RelatedTable.primaryStore.readerCheck
+				? RelatedTable.primaryStore.getStats().entryCount
+				: RelatedTable.primaryStore.getKeysCount();
+			const relatedNameIndexCount = Bigger.indices['relatedName']?.readerCheck
+				? Bigger.indices['relatedName'].getStats().entryCount
+				: Bigger.indices['relatedName']?.getKeysCount();
+			console.log('[DEBUG] RelatedTable primary count:', relatedTablePrimaryCount, '| Bigger relatedName index count:', relatedNameIndexCount);
 			for await (let record of Bigger.search({
 				conditions: [
 					{ attribute: '10values', value: 2 },
@@ -1298,6 +1320,9 @@ describe('Querying through Resource API', () => {
 				select: ['10values', 'relatedByName', 'relatedName'],
 			})) {
 				results.push(record);
+			}
+			if (results.length > 0 && results[0].relatedByName?.length === 0) {
+				console.log('[DEBUG FAILURE] relatedByName is empty for first result. relatedName:', results[0].relatedName);
 			}
 
 			assert.equal(results.length, 27);
