@@ -461,7 +461,7 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						for (const entry of rightIterable) {
 							const record = entry.value ?? store.getSync(entry.key ?? entry);
 							const leftKey = record?.[rightProperty];
-							if (leftKey == null) { console.log('[DEBUG joinTo] skipping entry, leftKey is null. entry=', typeof entry, entry?.key, 'record=', record); continue; }
+							if (leftKey == null) continue;
 							if (joined.filters?.some((filter) => !filter(record))) continue;
 							if (isManyToMany) {
 								for (let i = 0; i < leftKey.length; i++) {
@@ -469,7 +469,6 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 								}
 							} else {
 								addEntry(leftKey, entry);
-								console.log('[DEBUG joinTo] added entry for leftKey:', leftKey, 'entry type:', typeof entry, entry?.key);
 							}
 							// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
 							/*

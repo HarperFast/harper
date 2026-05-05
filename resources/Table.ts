@@ -2465,7 +2465,6 @@ export function makeTable(options) {
 					if (!record && (entry.key === undefined || entry.deref)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
 						// being GC'ed, we need to load it now
-						console.log('[DEBUG transform] before loadLocalRecord: entryType:', typeof entry, 'key:', entry?.key ?? entry, 'isSync:', this?.isSync, 'readTxnDone:', (readTxn as any)?.isDone);
 						entry = loadLocalRecord(
 							entry.key ?? entry,
 							context,
@@ -2477,13 +2476,7 @@ export function makeTable(options) {
 							this?.isSync,
 							(entry: Entry) => entry
 						);
-						console.log('[DEBUG transform] after loadLocalRecord: resultType:', typeof entry, entry == null ? 'null/undef' : (entry?.then ? 'Promise' : 'sync'), 'value:', (entry as any)?.value, 'entryKey:', (entry as any)?.key);
-						if (entry?.then) {
-							return entry.then((resolved) => {
-								console.log('[DEBUG transform] Promise resolved:', typeof resolved, resolved == null ? 'null/undef' : 'has entry', 'key:', (resolved as any)?.key);
-								return transform.call(this, resolved);
-							});
-						}
+						if (entry?.then) return entry.then(transform.bind(this));
 						record = entry?.value;
 					}
 					if (
@@ -2519,10 +2512,6 @@ export function makeTable(options) {
 								if (filterMap.hasMappings) {
 									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
 									value = filterMap.get(key);
-									if (!value) {
-										console.log("[DEBUG select] hasMappings=true but get(key) empty. attr:", attribute_name, "key:", key, "mapSize:", filterMap.size, "mapKeys:", [...filterMap.keys()].slice(0,5));
-										value = [];
-									}
 								} else {
 									value = filterMap.fromRecord?.(record);
 								}
@@ -2534,9 +2523,8 @@ export function makeTable(options) {
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
-									// When loading records from a related/joined table, use that table's own
-									// read transaction. Bigger's readTxn is scoped to Bigger's RocksDB store
-									// and cannot read from a different table's column family.
+									// Use the target table's own read transaction; each table's readTxn is
+									// scoped to its RocksDB column family and cannot read another table's store.
 									const targetReadTxn = targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
 									const transform =
 										transformCache[attribute_name] ||
