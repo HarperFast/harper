@@ -1321,8 +1321,8 @@ describe('Querying through Resource API', () => {
 			})) {
 				results.push(record);
 			}
-			if (results.length > 0 && results[0].relatedByName?.length === 0) {
-				console.log('[DEBUG FAILURE] relatedByName is empty for first result. relatedName:', results[0].relatedName);
+			if (results.length > 0 && (results[0].relatedByName?.length === 0 || results[0].relatedByName?.[0] === undefined)) {
+				console.log('[DEBUG FAILURE] relatedByName bad for first result. relatedByName:', JSON.stringify(results[0].relatedByName), 'relatedName:', results[0].relatedName);
 			}
 
 			assert.equal(results.length, 27);

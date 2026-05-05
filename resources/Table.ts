@@ -2465,6 +2465,7 @@ export function makeTable(options) {
 					if (!record && (entry.key === undefined || entry.deref)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
 						// being GC'ed, we need to load it now
+						console.log('[DEBUG transform] before loadLocalRecord: entryType:', typeof entry, 'key:', entry?.key ?? entry, 'isSync:', this?.isSync, 'readTxnDone:', (readTxn as any)?.isDone);
 						entry = loadLocalRecord(
 							entry.key ?? entry,
 							context,
@@ -2476,6 +2477,7 @@ export function makeTable(options) {
 							this?.isSync,
 							(entry: Entry) => entry
 						);
+						console.log('[DEBUG transform] after loadLocalRecord: resultType:', typeof entry, entry == null ? 'null/undef' : (entry?.then ? 'Promise' : 'sync'), 'value:', (entry as any)?.value, 'entryKey:', (entry as any)?.key);
 						if (entry?.then) return entry.then(transform.bind(this));
 						record = entry?.value;
 					}
