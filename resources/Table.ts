@@ -2478,7 +2478,12 @@ export function makeTable(options) {
 							(entry: Entry) => entry
 						);
 						console.log('[DEBUG transform] after loadLocalRecord: resultType:', typeof entry, entry == null ? 'null/undef' : (entry?.then ? 'Promise' : 'sync'), 'value:', (entry as any)?.value, 'entryKey:', (entry as any)?.key);
-						if (entry?.then) return entry.then(transform.bind(this));
+						if (entry?.then) {
+							return entry.then((resolved) => {
+								console.log('[DEBUG transform] Promise resolved:', typeof resolved, resolved == null ? 'null/undef' : 'has entry', 'key:', (resolved as any)?.key);
+								return transform.call(this, resolved);
+							});
+						}
 						record = entry?.value;
 					}
 					if (
@@ -2529,6 +2534,10 @@ export function makeTable(options) {
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
+									// When loading records from a related/joined table, use that table's own
+									// read transaction. Bigger's readTxn is scoped to Bigger's RocksDB store
+									// and cannot read from a different table's column family.
+									const targetReadTxn = targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
 									const transform =
 										transformCache[attribute_name] ||
 										(transformCache[attribute_name] = targetTable.transformEntryForSelect(
@@ -2538,7 +2547,7 @@ export function makeTable(options) {
 												? null
 												: attribute.select || (Array.isArray(attribute) ? attribute : null),
 											context,
-											readTxn,
+											targetReadTxn,
 											filterMap,
 											ensure_loaded
 										));
@@ -2550,7 +2559,7 @@ export function makeTable(options) {
 												attribute.select,
 												typeof attribute.sort === 'object' && attribute.sort,
 												context,
-												readTxn,
+												targetReadTxn,
 												transform
 											)
 											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
