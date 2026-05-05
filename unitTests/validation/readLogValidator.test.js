@@ -99,16 +99,42 @@ describe('Test readLogValidator module', () => {
 		expect(result.message).to.equal("'start' must be greater than or equal to 0");
 	});
 
-	it('Test log_name invalid returned', () => {
+	it('Test happy path validation with log name without extension returns undefined', () => {
+		env_mangr.setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
+
+		sandbox.stub(fs, 'existsSync').returns(true);
+
+		const test_read_log_object = {
+			operation: 'read_log',
+			log_name: 'clustering_connector',
+		};
+
+		const result = read_log_validator(test_read_log_object);
+		expect(result).to.be.undefined;
+	});
+
+	it('Test log_name path traversal invalid returned', () => {
 		env_mangr.setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
 
 		const test_read_log_object = {
 			operation: 'read_log',
-			log_name: 'hashbrown.log',
+			log_name: '../sensitive.log',
 		};
 
 		const result = read_log_validator(test_read_log_object);
-		expect(result.message).to.equal("'log_name' 'hashbrown.log' is invalid.");
+		expect(result.message).to.equal("'log_name' '../sensitive.log' is invalid.");
+	});
+
+	it('Test log_name with non-.log extension invalid returned', () => {
+		env_mangr.setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
+
+		const test_read_log_object = {
+			operation: 'read_log',
+			log_name: 'cool-log.txt',
+		};
+
+		const result = read_log_validator(test_read_log_object);
+		expect(result.message).to.equal("'log_name' 'cool-log.txt' is invalid.");
 	});
 
 	it("Test log_name doesn't exist returned", () => {
@@ -120,6 +146,6 @@ describe('Test readLogValidator module', () => {
 		};
 
 		const result = read_log_validator(test_read_log_object);
-		expect(result.message).to.equal("'log_name' 'clustering_connector.log' is invalid.");
+		expect(result.message).to.equal("'log_name' 'clustering_connector.log' does not exist.");
 	});
 });

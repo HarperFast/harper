@@ -40,7 +40,8 @@ async function readLog(request) {
 	let whenReplicatedResponse = server.replication.replicateOperation(request);
 
 	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-	const logName = request.log_name === undefined ? hdbTerms.LOG_NAMES.HDB : request.log_name;
+	const rawLogName = request.log_name === undefined ? hdbTerms.LOG_NAMES.HDB : request.log_name;
+	const logName = path.extname(rawLogName) === '.log' ? rawLogName : `${rawLogName}.log`;
 	const readLogPath =
 		logName === hdbTerms.LOG_NAMES.INSTALL
 			? path.join(INSTALL_LOG_LOCATION, hdbTerms.LOG_NAMES.INSTALL)
