@@ -22,7 +22,7 @@ describe('Test readLogValidator module', () => {
 	it('Test happy path validation returns undefined', () => {
 		env_mangr.setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
 
-		sandbox.stub(fs, 'existsSync').returns(true);
+		const existsSyncStub = sandbox.stub(fs, 'existsSync').returns(true);
 
 		const test_read_log_object = {
 			operation: 'read_log',
@@ -37,6 +37,7 @@ describe('Test readLogValidator module', () => {
 
 		const result = read_log_validator(test_read_log_object);
 		expect(result).to.be.undefined;
+		expect(existsSyncStub.calledOnceWith(path.join(TEST_LOG_DIR, 'hdb.log'))).to.be.true;
 	});
 
 	it('Test from datetime invalid returned', () => {
@@ -102,7 +103,7 @@ describe('Test readLogValidator module', () => {
 	it('Test happy path validation with log name without extension returns undefined', () => {
 		env_mangr.setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
 
-		sandbox.stub(fs, 'existsSync').returns(true);
+		const existsSyncStub = sandbox.stub(fs, 'existsSync').returns(true);
 
 		const test_read_log_object = {
 			operation: 'read_log',
@@ -111,6 +112,7 @@ describe('Test readLogValidator module', () => {
 
 		const result = read_log_validator(test_read_log_object);
 		expect(result).to.be.undefined;
+		expect(existsSyncStub.calledOnceWith(path.join(TEST_LOG_DIR, 'clustering_connector.log'))).to.be.true;
 	});
 
 	it('Test log_name path traversal invalid returned', () => {
@@ -123,6 +125,18 @@ describe('Test readLogValidator module', () => {
 
 		const result = read_log_validator(test_read_log_object);
 		expect(result.message).to.equal("'log_name' '../sensitive.log' is invalid.");
+	});
+
+	it('Test log_name with Windows backslash traversal invalid returned', () => {
+		env_mangr.setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
+
+		const test_read_log_object = {
+			operation: 'read_log',
+			log_name: '..\\sensitive.log',
+		};
+
+		const result = read_log_validator(test_read_log_object);
+		expect(result.message).to.equal("'log_name' '..\\sensitive.log' is invalid.");
 	});
 
 	it('Test log_name with non-.log extension invalid returned', () => {

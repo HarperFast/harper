@@ -10,7 +10,6 @@ const hdbTerms = require('../utility/hdbTerms.ts');
 const { LOG_LEVELS } = require('../utility/hdbTerms.ts');
 
 const LOG_DATE_FORMAT = 'YYYY-MM-DD hh:mm:ss';
-const INSTALL_LOG_LOCATION = path.resolve(__dirname, `../logs`);
 
 module.exports = function (object) {
 	return validator.validateBySchema(object, readLogSchema);
@@ -43,7 +42,7 @@ function validateDatetime(value, helpers) {
 }
 
 function validateReadLogPath(value, helpers) {
-	if (path.basename(value) !== value) {
+	if (path.posix.basename(value) !== value || path.win32.basename(value) !== value) {
 		return helpers.message(`'log_name' '${value}' is invalid.`);
 	}
 
@@ -54,13 +53,10 @@ function validateReadLogPath(value, helpers) {
 
 	const logName = ext === '.log' ? value : `${value}.log`;
 	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-	const readLogPath =
-		logName === hdbTerms.LOG_NAMES.INSTALL
-			? path.join(INSTALL_LOG_LOCATION, hdbTerms.LOG_NAMES.INSTALL)
-			: path.join(logPath, logName);
+	const readLogPath = path.join(logPath, logName);
 
 	if (fs.existsSync(readLogPath)) {
-		return null;
+		return value;
 	}
 	return helpers.message(`'log_name' '${value}' does not exist.`);
 }

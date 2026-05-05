@@ -65,7 +65,6 @@ export const DEFAULT_DATABASE_NAME = 'data';
 /** Log File Names */
 export const LOG_NAMES = {
 	HDB: 'hdb.log',
-	INSTALL: 'install.log',
 } as const;
 
 /** Log Levels */
