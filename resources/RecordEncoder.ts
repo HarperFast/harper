@@ -518,9 +518,18 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
-export function setNextEncoding(timestamp: number, metadata: number) {
+export function setNextEncoding(
+	timestamp: number,
+	metadata: number,
+	expiresAt = -1,
+	nodeId = -1,
+	residencyId = 0
+) {
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
+	expiresAtNextEncoding = expiresAt;
+	nodeIdAtNextEncoding = nodeId;
+	residencyIdAtNextEncoding = residencyId;
 }
 export function recordUpdater(store, tableId, auditStore) {
 	return function (
