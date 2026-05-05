@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
@@ -352,6 +353,70 @@ describe('HNSW concurrent PUT race condition (issue #386)', () => {
 	after(async () => {
 		await Promise.all(workers.map((w) => w.terminate()));
 		ConcurrentTest.dropTable();
+	});
+});
+
+describe('HNSW search result loading (searchByIndex)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWSearchLoadTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	it('skips a deleted record instead of returning a broken partial entry', async () => {
+		await T.put(1, { name: 'keep', vector: [1, 0, 0] });
+		await T.put(2, { name: 'delete-me', vector: [0.99, 0.1, 0] });
+
+		await T.delete(2);
+
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, limit: 5 })
+		);
+
+		assert(
+			results.some((r) => r.id === 1),
+			'kept record should appear in results'
+		);
+		assert(
+			!results.some((r) => r.id === 2),
+			'deleted record should not appear in results'
+		);
+		assert(
+			results.every((r) => r.id != null),
+			'no partial entries (missing id) should appear in results'
+		);
+	});
+
+	it('write-then-search within the same transaction sees the written record', async () => {
+		const context = {};
+		let foundInTxn = false;
+
+		await transaction(context, async () => {
+			await T.put(100, { name: 'in-txn', vector: [0, 0, 1] }, context);
+
+			const results = await fromAsync(
+				T.search({ sort: { attribute: 'vector', target: [0, 0, 1], distance: 'cosine' }, limit: 5 }, context)
+			);
+
+			foundInTxn = results.some((r) => r.id === 100);
+		});
+
+		assert(foundInTxn, 'record written in a transaction must be visible to a search in the same transaction');
 	});
 });
 
