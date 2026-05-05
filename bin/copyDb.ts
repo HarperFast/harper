@@ -15,6 +15,7 @@ import * as hdbLogger from '../utility/logging/harper_logger.js';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
 import { encodeBlobsWithFilePath } from '../resources/blob.ts';
+import { RecordEncoder, setNextEncoding } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');
@@ -400,6 +401,11 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
 			} else {
 				targetDbi = openRocksDb(targetPath, { name: key });
+				// Use RecordEncoder so the metadata header (including HAS_BLOBS) is written correctly
+				const encoder = new RecordEncoder({ name: key });
+				encoder.isRocksDB = true;
+				encoder.rootStore = targetRootStore;
+				targetDbi.encoder = encoder;
 			}
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
@@ -432,6 +438,7 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 								skippedRecord++;
 								continue;
 							}
+							setNextEncoding(version, 0);
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.put(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,
