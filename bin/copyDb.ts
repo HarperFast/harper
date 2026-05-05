@@ -15,7 +15,7 @@ import * as hdbLogger from '../utility/logging/harper_logger.js';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
 import { encodeBlobsWithFilePath } from '../resources/blob.ts';
-import { RecordEncoder, setNextEncoding } from '../resources/RecordEncoder.ts';
+import { RecordEncoder, setNextEncoding, lastMetadata, METADATA } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');
@@ -431,14 +431,31 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 		while (retries-- > 0) {
 			try {
 				if (isPrimary) {
-					for (const { key, value, version } of sourceDbi.getRange({ start, transaction, versions: true })) {
+					for (const {
+						key,
+						value,
+						version,
+						expiresAt: entryExpiresAt,
+						nodeId: entryNodeId,
+						residencyId: entryResidencyId,
+						metadataFlags: entryMetadataFlags,
+					} of sourceDbi.getRange({ start, transaction, versions: true })) {
 						try {
 							start = key;
 							if (value == null) {
 								skippedRecord++;
 								continue;
 							}
-							setNextEncoding(version, 0);
+							// lastMetadata is set by RecordEncoder.decode for unpatched stores;
+							// entry fields are set by handleLocalTimeForGets for patched stores
+							const sourceMeta = lastMetadata;
+							setNextEncoding(
+								version,
+								entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
+								entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
+								entryNodeId ?? sourceMeta?.nodeId ?? -1,
+								entryResidencyId ?? sourceMeta?.residencyId ?? 0
+							);
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.put(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,
