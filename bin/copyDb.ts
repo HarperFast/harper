@@ -1,5 +1,5 @@
 import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases.ts';
-import { open } from 'lmdb';
+import { open, asBinary } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -401,11 +401,15 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
 			} else {
 				targetDbi = openRocksDb(targetPath, { name: key });
-				// Use RecordEncoder so the metadata header (including HAS_BLOBS) is written correctly
-				const encoder = new RecordEncoder({ name: key });
-				encoder.isRocksDB = true;
-				encoder.rootStore = targetRootStore;
-				targetDbi.encoder = encoder;
+				// Patch the existing encoder (encoder is a getter-only property on RocksDatabase, cannot be replaced)
+				// to install RecordEncoder's encode method so metadata headers (timestamps, HAS_BLOBS flag) are written
+				const existingEncoder = targetDbi.encoder as any;
+				existingEncoder.isRocksDB = true;
+				existingEncoder.rootStore = targetRootStore;
+				const tempEncoder = new RecordEncoder({ name: key }) as any;
+				existingEncoder.encode = tempEncoder.encode;
+				existingEncoder.saveStructures = tempEncoder.saveStructures;
+				existingEncoder.getStructures = tempEncoder.getStructures;
 			}
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
@@ -417,6 +421,15 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 		// A new audit store will be created automatically when the RocksDB database is opened.
 
 		await written;
+
+		// Preserve the node ID mapping from the LMDB audit store so replication can resume
+		// incrementally instead of triggering a full table copy after migration.
+		const REMOTE_NODE_IDS_KEY = Symbol.for('remote-ids');
+		const idMappingBytes = sourceRootStore.auditStore?.getBinary?.(REMOTE_NODE_IDS_KEY);
+		if (idMappingBytes) {
+			targetRootStore.putSync(REMOTE_NODE_IDS_KEY, asBinary(idMappingBytes));
+		}
+
 		console.log('migrated database ' + sourceDatabase + ' to RocksDB');
 	} finally {
 		transaction.done();

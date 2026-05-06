@@ -518,13 +518,7 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
-export function setNextEncoding(
-	timestamp: number,
-	metadata: number,
-	expiresAt = -1,
-	nodeId = -1,
-	residencyId = 0
-) {
+export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
 	expiresAtNextEncoding = expiresAt;
