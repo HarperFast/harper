@@ -392,10 +392,7 @@ describe('HNSW search result loading (searchByIndex)', () => {
 			results.some((r) => r.id === 1),
 			'kept record should appear in results'
 		);
-		assert(
-			!results.some((r) => r.id === 2),
-			'deleted record should not appear in results'
-		);
+		assert(!results.some((r) => r.id === 2), 'deleted record should not appear in results');
 		assert(
 			results.every((r) => r.id != null),
 			'no partial entries (missing id) should appear in results'
