@@ -2525,7 +2525,8 @@ export function makeTable(options) {
 									if (!transformCache) transformCache = {};
 									// Use the target table's own read transaction; each table's readTxn is
 									// scoped to its RocksDB column family and cannot read another table's store.
-									const targetReadTxn = targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
+									const targetReadTxn =
+										targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
 									const transform =
 										transformCache[attribute_name] ||
 										(transformCache[attribute_name] = targetTable.transformEntryForSelect(
