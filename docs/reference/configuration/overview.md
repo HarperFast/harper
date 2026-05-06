@@ -78,6 +78,25 @@ See [Configuration Operations](./operations.md) for the full `set_configuration`
 
 ---
 
+## Configuration File Backups
+
+When `harper-config.yaml` is updated through the [Operations API](#4-operations-api) (`set_configuration`) or by passing CLI arguments / environment variables to Harper at startup, Harper writes a timestamped copy of the previous file to `{rootPath}/backup/` before applying the change.
+
+Backup files are named `<ISO-timestamp>-harper-config.yaml.bak`, for example:
+
+```
+hdb/backup/2026-05-06T14-22-08.123Z-harper-config.yaml.bak
+```
+
+Notes:
+
+- Backups are not produced when you edit `harper-config.yaml` directly — Harper only sees that change on its next start.
+- The `HARPER_DEFAULT_CONFIG` and `HARPER_SET_CONFIG` mechanisms do not produce timestamped backups; their provenance is tracked separately in `{rootPath}/backup/.harper-config-state.json` (see [State Tracking](#state-tracking)).
+- Backups are not rotated. Old `.bak` files accumulate in `{rootPath}/backup/` until you remove them.
+- A failure to write the backup is logged at `error` level and does not block the configuration update.
+
+---
+
 ## Custom Config File Path
 
 To specify a custom config file location at install time, use the `HDB_CONFIG` variable:
