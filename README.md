@@ -20,12 +20,7 @@ Harper is an open-source Node.js unified development platform that fuses databas
 
 ## Getting Started
 
-1. [Install Harper](https://docs.harperdb.io/docs/getting-started/installation)
-2. [Create Your First App](https://docs.harperdb.io/docs/getting-started/quickstart)
-
-## Open Source Note
-
-This repository represents Harper's future direction as an open-source-first platform. The code here is under active development and targets the upcoming **Harper v5** release. If you're looking for production-ready Harper, please refer to **Harper v4** — our current closed-source release documented at https://docs.harper.fast . We're rebuilding Harper from the ground up with an open source core and modular source-available plugins. This code is not yet published or production-ready, but we're excited to build the next generation of Harper in the open. Follow along, provide feedback, and watch as we shape the future of the platform together.
+Get started by following our Learn guide: https://docs.harperdb.io/learn or by following the in-browser [Harper Fabric](https://fabric.harper.fast/) workflow.
 
 ## What is HarperDB?
 
