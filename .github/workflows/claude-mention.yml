@@ -1,10 +1,16 @@
 name: Claude Mention Handler
 
-# Responds to `@claude …` in PR comments and PR review (inline) comments.
-# Claude enters the action's "agent mode": reads the commenter's request,
-# uses the PR/issue as context, and can edit + commit + push. Gated to
-# HarperFast org members/collaborators so external contributors can't
-# trigger work against the repo.
+# Thin caller of the reusable in HarperFast/ai-review-prompts. The
+# single `uses:` ref pin below controls everything that moves
+# together — workflow logic, parse + auth scripts, agent prompt.
+# Bumping the pin is the entire upgrade motion.
+#
+# Pre-requisites (org-level secrets, configured once on HarperFast):
+#   - HARPERFAST_AI_CLIENT_ID       (the App's Client ID, like Iv23li…)
+#   - HARPERFAST_AI_APP_PRIVATE_KEY (.pem file contents)
+#
+# Plus the per-repo / inherited:
+#   - ANTHROPIC_API_KEY             (required)
 
 on:
   issue_comment:
@@ -17,251 +23,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  authorize:
-    # Single source of truth for "is this commenter allowed to trigger
-    # Claude on this repo?". The `work` job below has ONE `if:` that
-    # depends on this — no step-level guards, no individual user list.
-    #
-    # Cheap pre-filter at job level: comment must mention `@claude`.
-    # The first-non-whitespace-token precision check is in the work
-    # job's `Parse mention` step.
-    #
-    # Trust set: the @HarperFast teams listed in this repo's
-    # `.github/CODEOWNERS`. Defaults to `@HarperFast/developers` if the
-    # file is missing, empty, or has no HarperFast handles. External-
-    # org handles are deliberately ignored — we only admit HarperFast
-    # members.
-    #
-    # Required (organization-level) secrets:
-    #   - HARPERFAST_AI_CLIENT_ID       (the App's Client ID, like Iv23li…)
-    #   - HARPERFAST_AI_APP_PRIVATE_KEY (.pem file contents)
-    if: contains(github.event.comment.body, '@claude')
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    permissions:
-      # contents: read for the .github/CODEOWNERS fetch via default token.
-      contents: read
-    outputs:
-      authorized: ${{ steps.check.outputs.authorized }}
-    steps:
-      - name: Mint org-read token
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        with:
-          client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
-          private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
-          owner: HarperFast
+  mention:
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-mention.yml@11872cb1cc2d0e90659659ade6d8ddbbdfbf1d05 # main 2026-05-06 (post #11/#12/#14)
+    with:
+      # Same SHA as the `uses:` ref above. The reusable uses this to
+      # check out HarperFast/ai-review-prompts (parse + auth scripts)
+      # at the same ref as the workflow logic itself.
+      #
+      # The duplication is unavoidable: reusable workflows can't
+      # introspect their own ref (`github.workflow_ref` resolves to
+      # the CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
+      # is parsed literally so we can't interpolate a variable.
+      ai-review-prompts-ref: 11872cb1cc2d0e90659659ade6d8ddbbdfbf1d05
+      repo-specific-conventions: |
+        ## Harper core notes
 
-      - name: Checkout (for CODEOWNERS read)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          sparse-checkout: |
-            .github/CODEOWNERS
-            .github/scripts/authorize-claude-workflow.sh
-          sparse-checkout-cone-mode: false
-
-      - name: Check commenter authorization
-        id: check
-        env:
-          DEFAULT_TOKEN: ${{ github.token }}
-          ORG_TOKEN: ${{ steps.app-token.outputs.token }}
-          ADMIT_CLAUDE_BOT: 'false'
-          USERS_TO_CHECK: ${{ github.event.comment.user.login }}
-        run: bash .github/scripts/authorize-claude-workflow.sh
-
-  work:
-    needs: authorize
-    if: needs.authorize.outputs.authorized == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      # Write access is intentional — mention mode is "do work", which
-      # means editing files, committing, and pushing (either to the PR's
-      # branch or a new claude/… branch for issue-originated asks).
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
-
-    steps:
-      - name: Checkout
-        # Default shallow fetch (depth 1). The agent can commit and push on a
-        # shallow clone; `git log` / `git blame` aren't reached for by the
-        # current prompt. Bump to a deeper fetch only if we see the agent
-        # blocked on history lookups.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Parse mention
-        # Real precision gate (the job-level `if:` is a cheap pre-filter).
-        # Enforces:
-        #   1. `@claude` must be the FIRST non-whitespace token (word-
-        #      boundary after) — rules out `@claudette`, inline prose
-        #      mentions ("saw @claude's fix"), and quoted replies
-        #      (`> @claude ...`) where the reply is addressing a human.
-        #   2. Case-insensitive word-boundary `deep` anywhere in the body
-        #      → escalate to Opus. Sonnet is the default.
-        id: mention
-        env:
-          BODY: ${{ github.event.comment.body }}
-        run: bash .github/scripts/parse-claude-mention.sh
-
-      - name: Clone shared Harper skills
-        # Pinned to a SHA so agent behavior is reproducible across runs —
-        # updates require an explicit pin bump here.
-        if: steps.mention.outputs.proceed == 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: HarperFast/skills
-          ref: d2db99bb37a6dde868cbc5ac81ca4146be8956fb # 1.3.0 (2026-04-16)
-          path: .harper-skills
-
-      - name: Setup Node.js
-        # Needed so the agent can run `npm ci` / `npm run <script>` when a
-        # specific mention actually requires it. We DON'T eagerly `npm ci`
-        # here — most mentions (explain, review, tiny edits) don't need
-        # deps, and ~35-60s install cost × every mention adds up. The
-        # prompt tells the agent to run `npm ci` itself before any script
-        # that needs dependencies.
-        if: steps.mention.outputs.proceed == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: '.node-version'
-          cache: 'npm'
-
-      - name: Claude (agent mode)
-        if: steps.mention.outputs.proceed == 'true'
-        id: claude-agent
-        uses: anthropics/claude-code-action@ef50f123a3a9be95b60040d042717517407c7256 # v1.0.110
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          show_full_output: true
-          claude_args: |
-            --model ${{ steps.mention.outputs.model }}
-            --max-turns 48
-            # `--allowedTools` is convenience pre-approval, not a
-            # security boundary. Per claude-code-action's
-            # `docs/configuration.md` (v1.0.110): "The base GitHub
-            # tools are always included. Use `--allowedTools` to add
-            # additional tools, and `--disallowedTools` to prevent
-            # specific tools from being used." Tools NOT listed below
-            # will still execute — in CI's non-interactive mode (no
-            # `canUseTool` callback), the SDK's `default` permission
-            # mode falls through to "execute" rather than prompting.
-            #
-            # Real containment for this workflow (mention mode does
-            # AUTHORING work — file edits, commits, pushes — so the
-            # agent has broader git/npm access than the review path):
-            #   * Token scope: `contents: write`, `pull-requests: write`,
-            #     `issues: write`, `id-token: write`. Repo-scoped only;
-            #     no cross-repo reach.
-            #   * Branch protection on protected refs (`main` /
-            #     `release_*` / `v*.x`) — the agent CAN run
-            #     `git push --force` if it tries; what stops protected-
-            #     ref damage is GitHub's ruleset.
-            #   * Auth gate (CODEOWNERS-driven HarperFast team
-            #     check) — only trusted commenters trigger the
-            #     workflow at all.
-            #   * Runner ephemerality — workspace destroyed at job
-            #     end.
-            #   * Prompt-injection guards in the prompt itself.
-            #
-            # The "deliberately absent / tightened" entries below are
-            # PROMPT-LEVEL discipline, not allowlist enforcement. They
-            # document our intent for the agent and the expected
-            # surface; an injected instruction that ran (e.g.)
-            # `Bash(npx malicious)` would still execute, and the
-            # damage is bounded by the containment bullets above
-            # rather than by the allowlist.
-            #
-            # Notable absences in spirit (containment is elsewhere):
-            #   * `Bash(npx:*)` — would let an injected instruction
-            #     run arbitrary published packages. Containment:
-            #     runner ephemerality + token scope.
-            #   * `Bash(npm install)` (no-arg, not `Bash(npm install:*)`) —
-            #     "tightening" is illusory: the agent has `Write`/`Edit`
-            #     on package.json and can construct an injected
-            #     `postinstall` script + bare `npm install` chain.
-            #     A future PR may add `ignore-scripts=true` via
-            #     `.npmrc` and/or defer installs to a separate CI job
-            #     for actual enforcement.
-            --allowedTools "Read,Write,Edit,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checkout:*),Bash(gh pr create:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(git:*),Bash(npm install),Bash(npm ci:*),Bash(npm run:*),Bash(npm test:*)"
-          # In agent mode the action can use the triggering comment as the
-          # prompt, but we inline it explicitly below to guarantee the agent
-          # always has PR/issue number, URL, and the commenter's exact
-          # request.
-          #
-          # TODO: revisit if a future claude-code-action release reliably
-          # forwards the triggering comment as the prompt.
-          prompt: |
-            You were invoked via an `@claude` mention on ${{ github.repository }}.
-
-            ## Mention context
-
-            - Repo: ${{ github.repository }}
-            - Target number: #${{ github.event.issue.number || github.event.pull_request.number }}
-            - Target URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
-            - Target kind: ${{ github.event.issue.pull_request && 'pull request' || (github.event.pull_request && 'pull request' || 'issue') }}
-            - Commenter: @${{ github.event.comment.user.login }}
-
-            The commenter wrote (verbatim, including any multi-line content):
-
-            ```
-            ${{ github.event.comment.body }}
-            ```
-
-            Start by reading the target so you have real context:
-            - For a PR: `gh pr view <N>` then `gh pr diff <N>` if you need
-              the changes.
-            - For an issue: `gh issue view <N>`.
-
-            Then act on the request. If the request is "review this PR",
-            follow the review discipline from HarperFast/ai-review-prompts
-            (see .github/workflows/claude-review.yml for the layered
-            scope this repo uses) — do NOT treat review as a code-edit task.
-
-            ## Conventions
-
-            Read the repo's agent context files first (commonly
-            `CLAUDE.md`, `AGENTS.md`, or similar at the repo root). Their
-            conventions and gotchas apply to any code you write. Match
-            the repo's existing style rather than introducing a new one.
-
-            Harper-specific notes for code work:
-            - Linter is oxlint, not eslint. `npm run lint` runs oxlint.
-            - Primary storage is RocksDB (LMDB is the alternate via
-              `HARPER_STORAGE_ENGINE=lmdb`).
-            - TypeStrip-compatible (`erasableSyntaxOnly`). Don't use
-              TypeScript features that break typestrip.
-            - `dependencies.md` documents all npm packages; if you add
-              a runtime dep, add an entry there.
-
-            ## Before committing
-
-            Scale validation to the kind of change you made:
-
-            - Doc-only change (only `*.md` / `README.md` / `CLAUDE.md` /
-              `AGENTS.md` / `dependencies.md`, or `package.json`
-              keyword/description edits): run `npm run format:check` and
-              `npm run lint`. Do NOT run `npm run build` /
-              `npm run test:unit` — they are not affected and waste turns.
-            - Code change that affects behavior: run `npm ci` first
-              (deps aren't pre-installed in this workflow), then
-              `npm run build && npm run lint && npm run format:check && npm run test:unit`.
-              Fix anything that fails. Integration tests
-              (`npm run test:integration`) are slow; run them only if
-              the change plausibly affects integration behavior.
-
-            When in doubt, err toward the fuller validation.
-
-            ## Output
-
-            - Scope your changes to exactly what the mention asked for.
-              Don't refactor unrelated code.
-            - Commit with a descriptive message referencing the
-              issue/PR.
-            - If the request is ambiguous or you have to make a
-              judgment call that changes public API or semantics, post
-              a comment on the PR/issue explaining your interpretation
-              and stop — do NOT push speculative changes.
-            - Do NOT use REQUEST_CHANGES or APPROVE on PRs. Post
-              comments or push commits only.
+        - Linter is **oxlint**, not eslint. `npm run lint` runs
+          oxlint. Don't add eslint config or invoke `eslint` directly.
+        - Primary storage engine is **RocksDB**; LMDB is supported
+          via `HARPER_STORAGE_ENGINE=lmdb`. Changes affecting storage
+          should work on both.
+        - **TypeStrip-compatible** (`erasableSyntaxOnly`) — avoid
+          TypeScript features that break typestrip (non-type-only
+          type imports, parameter property initialization).
+        - **`dependencies.md`** documents all npm packages and their
+          justifications; keep it in sync with `package.json` when
+          adding a runtime dep.
+        - **Build tolerance (`tsc || true`)** is NOT used here —
+          Harper core's build should pass cleanly. Treat type errors
+          as real failures.
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      HARPERFAST_AI_CLIENT_ID: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+      HARPERFAST_AI_APP_PRIVATE_KEY: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
