@@ -1298,14 +1298,17 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				beforeIntermediate: preCommitBlobsForRecordBefore(partialRecord),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
+					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
+						write.skipped = true;
+						return;
+					}
 					partialRecord ??= null;
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
@@ -1334,7 +1337,9 @@ export function makeTable(options) {
 					);
 					// TODO: recordDeletion?
 				},
-			});
+			};
+			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, partialRecord);
+			transaction.addWrite(write);
 		}
 		_writeRelocate(id: Id, options: any) {
 			const context = this.getContext();
@@ -1601,7 +1606,7 @@ export function makeTable(options) {
 				}
 			};
 
-			const write = {
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
@@ -1653,8 +1658,8 @@ export function makeTable(options) {
 					}
 				},
 				before: writeToSource(),
-				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -1734,6 +1739,7 @@ export function makeTable(options) {
 													'The transaction time is equal to the existing version, treating as duplicate',
 													id
 												);
+												write.skipped = true;
 												return; // treat a tie as a duplicate and drop it
 											}
 											if (precedesExisting > 0) {
@@ -1750,6 +1756,7 @@ export function makeTable(options) {
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
 										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
 											// There is newer full record update, so this incremental update is completely superseded
+											write.skipped = true;
 											return;
 										}
 									}
@@ -1811,7 +1818,9 @@ export function makeTable(options) {
 							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
-							// was the same type. Assuming a full update this record update loses and there are no changes
+							// was the same type. Assuming a full update this record update loses and there are no changes —
+							// without audit no record references the pre-saved blobs, so they have to be cleaned up.
+							write.skipped = true;
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
@@ -1923,6 +1932,7 @@ export function makeTable(options) {
 				},
 			};
 			this.#savingOperation = write;
+			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
 			return transaction.addWrite(write);
 		}
 
@@ -2513,6 +2523,10 @@ export function makeTable(options) {
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
+									// Use the target table's own read transaction; each table's readTxn is
+									// scoped to its RocksDB column family and cannot read another table's store.
+									const targetReadTxn =
+										targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
 									const transform =
 										transformCache[attribute_name] ||
 										(transformCache[attribute_name] = targetTable.transformEntryForSelect(
@@ -2522,7 +2536,7 @@ export function makeTable(options) {
 												? null
 												: attribute.select || (Array.isArray(attribute) ? attribute : null),
 											context,
-											readTxn,
+											targetReadTxn,
 											filterMap,
 											ensure_loaded
 										));
@@ -2534,7 +2548,7 @@ export function makeTable(options) {
 												attribute.select,
 												typeof attribute.sort === 'object' && attribute.sort,
 												context,
-												readTxn,
+												targetReadTxn,
 												transform
 											)
 											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
@@ -2879,7 +2893,7 @@ export function makeTable(options) {
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry: this.#entry,
@@ -2894,11 +2908,6 @@ export function makeTable(options) {
 					this.constructor.source?.publish && !context?.source
 						? this.constructor.source.publish.bind(this.constructor.source, id, message, context)
 						: undefined,
-				beforeIntermediate: preCommitBlobsForRecordBefore(
-					message,
-					undefined,
-					true // because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
-				),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -2931,7 +2940,10 @@ export function makeTable(options) {
 						message
 					);
 				},
-			});
+			};
+			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
+			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
+			transaction.addWrite(write);
 		}
 		validate(record: any, patch?: boolean) {
 			let validationErrors;
@@ -4139,15 +4151,16 @@ export function makeTable(options) {
 						return;
 					}
 					const dbTxn = txnForContext(sourceContext);
-					dbTxn.addWrite({
+					const sourceWrite: any = {
 						key: id,
 						store: primaryStore,
 						entry: existingEntry,
 						nodeName: 'source',
-						before: preCommitBlobsForRecordBefore(updatedRecord),
 						commit: (txnTime, existingEntry, _retry, transaction: any) => {
+							sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
 							if (existingEntry?.version !== existingVersion) {
 								// don't do anything if the version has changed
+								sourceWrite.skipped = true;
 								return;
 							}
 							updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
@@ -4250,7 +4263,9 @@ export function makeTable(options) {
 								}
 							}
 						},
-					});
+					};
+					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
+					dbTxn.addWrite(sourceWrite);
 				}),
 				() => {
 					primaryStore.unlock(id);
@@ -4464,12 +4479,15 @@ export function makeTable(options) {
 		}
 	}
 	function preCommitBlobsForRecordBefore(
+		write: any,
 		record: any,
 		before?: () => Promise<void>,
 		saveInRecord?: boolean
 	): Promise<void> | void {
-		const blobCompletion = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord);
-		if (blobCompletion) {
+		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord);
+		if (preCommit) {
+			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
+			write.savedBlobs = preCommit.blobs;
 			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
 			// them to finish and we return a new callback for the before phase of the commit
 			const callSources = before;
@@ -4477,9 +4495,9 @@ export function makeTable(options) {
 				? async () => {
 						// if we are calling the sources first and waiting for blobs, do those in order
 						await callSources();
-						await blobCompletion();
+						await preCommit.complete();
 					}
-				: () => blobCompletion();
+				: () => preCommit.complete();
 		}
 		return before;
 	}
