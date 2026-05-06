@@ -33,6 +33,36 @@ import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 
+/**
+ * Check if Harper is running in read-only mode.
+ * Read-only mode can be enabled via:
+ * - HARPER_READONLY environment variable (truthy value)
+ * - --readonly CLI flag
+ * - storage.readOnly config setting
+ */
+let _isReadOnlyMode: boolean | undefined;
+export function isReadOnlyMode(): boolean {
+	if (_isReadOnlyMode !== undefined) return _isReadOnlyMode;
+	// Check environment variable
+	const envReadOnly = process.env.HARPER_READONLY;
+	if (envReadOnly && envReadOnly !== '0' && envReadOnly !== 'false') {
+		_isReadOnlyMode = true;
+		return true;
+	}
+	// Check CLI flag (simple argv check)
+	if (process.argv.includes('--readonly') || process.argv.includes('--read-only')) {
+		_isReadOnlyMode = true;
+		return true;
+	}
+	// Check config setting
+	if (envGet(CONFIG_PARAMS.STORAGE_READONLY)) {
+		_isReadOnlyMode = true;
+		return true;
+	}
+	_isReadOnlyMode = false;
+	return false;
+}
+
 function createOpenDBIObject(dupSort = false, isPrimary = false) {
 	return new OpenDBIObject(dupSort, isPrimary);
 }
@@ -114,8 +144,16 @@ const MEMORY_FOR_ROCKS_DB = Math.min(process.constrainedMemory?.() ?? Infinity, 
 
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
+	// Apply read-only mode if enabled
+	if (isReadOnlyMode()) {
+		options.readOnly = true;
+	}
 	RocksDatabase.config({ blockCacheSize: MEMORY_FOR_ROCKS_DB });
 	if (!existsSync(path)) {
+		// Don't create directories in read-only mode
+		if (isReadOnlyMode()) {
+			throw new Error(`Database cannot be created in read-only mode: ${path}`);
+		}
 		mkdirSync(path, { recursive: true });
 	}
 	let db: RocksRootDatabase;
@@ -125,8 +163,8 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		db = RocksDatabase.open(path, options) as RocksDatabaseEx;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
 		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
-		db.put = db.putSync;
-		db.remove = db.removeSync;
+		db.put = db.putSync as typeof db.put;
+		db.remove = db.removeSync as typeof db.remove;
 		db.encoder.name = options.name;
 	}
 	db.env = {};
@@ -335,7 +373,7 @@ export function readMetaDb(
 	auditPath?: string,
 	isLegacy?: boolean
 ) {
-	const envInit = new OpenEnvironmentObject(path, false);
+	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	try {
 		let rootStore = lmdbDatabaseEnvs.get(path);
 		if (rootStore) {
@@ -370,7 +408,10 @@ function readRocksMetaDb(path: string, defaultTable?: string, databaseName: stri
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as RocksDatabaseEx;
 			rocksdbDatabaseEnvs.set(path, rootStore);
 			initStores(path, rootStore, databaseName, defaultTable);
-			replayLogs(rootStore, databases[databaseName]);
+			// Skip transaction log replay in read-only mode
+			if (!isReadOnlyMode()) {
+				replayLogs(rootStore, databases[databaseName]);
+			}
 		}
 		return rootStore;
 	} catch (error) {
@@ -387,7 +428,7 @@ function initStores(
 	auditPath?: string,
 	isLegacy?: boolean
 ) {
-	const envInit = new OpenEnvironmentObject(path, false);
+	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
 	if (!attributesDbi) {
@@ -731,7 +772,7 @@ export function database({ database: databaseName, table: tableName }) {
 		rootStore = lmdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// TODO: validate database name
-			const envInit = new OpenEnvironmentObject(path, false);
+			const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 			rootStore = open(envInit);
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
@@ -1311,4 +1352,12 @@ export function getDefaultCompression() {
 		LMDB_COMPRESSION_OPTS['dictionary'] = readFileSync(STORAGE_COMPRESSION_DICTIONARY);
 	if (STORAGE_COMPRESSION_THRESHOLD) LMDB_COMPRESSION_OPTS['threshold'] = STORAGE_COMPRESSION_THRESHOLD;
 	return LMDB_COMPRESSION && LMDB_COMPRESSION_OPTS;
+}
+
+/**
+ * Force all RocksDB databases to flush to disk.
+ */
+export async function flushDatabases() {
+	// flush all RocksDB databases
+	return Promise.all(Array.from(rocksdbDatabaseEnvs.values()).map((db) => db.flush()));
 }
