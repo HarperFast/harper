@@ -10,6 +10,7 @@ const envMngr = require('../utility/environment/environmentManager.js');
 envMngr.initSync();
 const { getDatabases } = require('../resources/databases.ts');
 const fs = require('fs-extra');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 
 module.exports = {
 	describeAll,
@@ -185,7 +186,11 @@ async function descTable(describeTableObject, attrPerms) {
 	}
 	let db_size;
 	try {
-		db_size = (await fs.stat(tableObj.primaryStore.path)).size;
+		if (tableObj.primaryStore instanceof RocksDatabase) {
+			db_size = tableObj.getSize() + (tableObj.getAuditSize() ?? 0);
+		} else {
+			db_size = (await fs.stat(tableObj.primaryStore.path)).size;
+		}
 	} catch (error) {
 		logger.warn(`unable to get database size`, error);
 	}
