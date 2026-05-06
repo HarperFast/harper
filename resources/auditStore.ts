@@ -11,6 +11,7 @@ import { decodeFromDatabase } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
+import { isReadOnlyMode } from './databases.ts';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -145,6 +146,8 @@ export function openAuditStore(rootStore) {
 		}
 	});
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
+		// Skip audit cleanup/purge in read-only mode
+		if (isReadOnlyMode()) return;
 		if (auditStore instanceof RocksTransactionLogStore) {
 			auditStore.rootStore.purgeLogs({
 				before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),

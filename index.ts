@@ -8,6 +8,7 @@ if (!workerThreads.isMainThread) {
 
 // Regular exports (don't require the same initialization as the globals at the end of this file do)
 export { RequestTarget } from './resources/RequestTarget.ts';
+export { flushDatabases } from './resources/databases.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
 
 // Type only exports.
