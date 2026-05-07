@@ -370,11 +370,9 @@ describe('certificateVerification/ocspVerification.ts', function () {
 
 		function makeMockTable(entry, wasFromSource) {
 			return {
-				get: sandbox.stub().resolves(
-					entry
-						? Object.assign({}, entry, { wasLoadedFromSource: () => wasFromSource })
-						: null
-				),
+				get: sandbox
+					.stub()
+					.resolves(entry ? Object.assign({}, entry, { wasLoadedFromSource: () => wasFromSource }) : null),
 				sourcedFrom: sandbox.stub(),
 			};
 		}
@@ -460,10 +458,15 @@ describe('certificateVerification/ocspVerification.ts', function () {
 
 			// eslint-disable-next-line sonarjs/no-clear-text-protocols
 			const ocspUrls = ['http://ocsp.example.com'];
-			await freshOcspModule.verifyOCSP(Buffer.from('cert'), Buffer.from('issuer'), {
-				enabled: true,
-				failureMode: 'fail-open',
-			}, ocspUrls);
+			await freshOcspModule.verifyOCSP(
+				Buffer.from('cert'),
+				Buffer.from('issuer'),
+				{
+					enabled: true,
+					failureMode: 'fail-open',
+				},
+				ocspUrls
+			);
 
 			assert.ok(mockTable.get.calledOnce);
 			const context = mockTable.get.firstCall.args[1];
