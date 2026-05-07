@@ -88,9 +88,25 @@ describe('test MQTT connections and commands', function () {
 
 	it('subscribe to retained/persisted record', async function () {
 		let path = 'VariedProps/' + available_records[1];
-		const payload = await clientV4.subscribeAsync(path);
-		assert.equal(payload.length, 1, 'Got more than one message for retained record');
-		assert.equal(payload[0].topic, path);
+		await new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				clientV4.off('message', onMessage);
+				reject(new Error('Timeout waiting for retained message'));
+			}, 1000);
+			const onMessage = (topic, payload) => {
+				clearTimeout(timeout);
+				try {
+					assert.equal(topic, path);
+					const data = decode(payload);
+					assert.ok(data, 'Should have received a valid payload');
+					resolve();
+				} catch (e) {
+					reject(e);
+				}
+			};
+			clientV4.once('message', onMessage);
+			clientV4.subscribeAsync(path).catch(reject);
+		});
 	});
 	it('subscribe to retained/persisted record but with retain handling disabling retain messages', async function () {
 		let path = 'VariedProps/' + available_records[1];
