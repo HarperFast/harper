@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const sinon = require('sinon');
+const rewire = require('rewire');
 
 // First set up test environment
 const testUtils = require('../../testUtils.js');
@@ -244,6 +246,230 @@ describe('certificateVerification/ocspVerification.ts', function () {
 			assert.ok(typeof result === 'object');
 			assert.ok('status' in result);
 			assert.strictEqual(result.status, 'unknown');
+		});
+	});
+
+	// easy-ocsp exports are non-configurable, so sinon.stub won't work.
+	// rewire replaces the compiled module's internal easy_ocsp_1 binding instead.
+	describe('performOCSPCheck() with mocked getCertStatus', function () {
+		const OCSP_MODULE_PATH = '#src/security/certificateVerification/ocspVerification';
+		let rewiredModule;
+		let getCertStatusStub;
+
+		beforeEach(function () {
+			getCertStatusStub = sinon.stub();
+			rewiredModule = rewire(OCSP_MODULE_PATH);
+			rewiredModule.__set__('easy_ocsp_1', { getCertStatus: getCertStatusStub });
+		});
+
+		it('should return good status for a valid certificate', async function () {
+			getCertStatusStub.resolves({ status: 'good' });
+
+			const result = await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 5000 });
+
+			assert.deepStrictEqual(result, { status: 'good' });
+		});
+
+		it('should return revoked status with reason', async function () {
+			getCertStatusStub.resolves({
+				status: 'revoked',
+				revocationReason: 'keyCompromise',
+			});
+
+			const result = await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 5000 });
+
+			assert.strictEqual(result.status, 'revoked');
+			assert.strictEqual(result.reason, 'keyCompromise');
+		});
+
+		it('should return revoked with unspecified reason when none given', async function () {
+			getCertStatusStub.resolves({
+				status: 'revoked',
+				revocationReason: undefined,
+			});
+
+			const result = await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 5000 });
+
+			assert.strictEqual(result.status, 'revoked');
+			assert.strictEqual(result.reason, 'unspecified');
+		});
+
+		it('should return unknown status for unknown certificate status', async function () {
+			getCertStatusStub.resolves({ status: 'unknown' });
+
+			const result = await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 5000 });
+
+			assert.deepStrictEqual(result, { status: 'unknown', reason: 'unknown-status' });
+		});
+
+		it('should return timeout reason for AbortError', async function () {
+			const abortError = new Error('The operation was aborted');
+			abortError.name = 'AbortError';
+			getCertStatusStub.rejects(abortError);
+
+			const result = await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 1 });
+
+			assert.deepStrictEqual(result, { status: 'unknown', reason: 'timeout' });
+		});
+
+		it('should return ocsp-error reason for non-abort failures', async function () {
+			getCertStatusStub.rejects(new Error('Network error'));
+
+			const result = await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 5000 });
+
+			assert.deepStrictEqual(result, { status: 'unknown', reason: 'ocsp-error' });
+		});
+
+		it('should pass timeout to getCertStatus', async function () {
+			getCertStatusStub.resolves({ status: 'good' });
+
+			await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 3000 });
+
+			assert.ok(getCertStatusStub.calledOnce);
+			assert.strictEqual(getCertStatusStub.firstCall.args[1].timeout, 3000);
+		});
+
+		it('should pass first provided OCSP URL to getCertStatus', async function () {
+			getCertStatusStub.resolves({ status: 'good' });
+			// eslint-disable-next-line sonarjs/no-clear-text-protocols
+			const ocspUrls = ['http://ocsp.example.com/check'];
+
+			await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 5000 }, ocspUrls);
+
+			assert.ok(getCertStatusStub.calledOnce);
+			assert.strictEqual(getCertStatusStub.firstCall.args[1].ocspUrl, 'http://ocsp.example.com/check');
+		});
+
+		it('should not include ocspUrl when no URLs provided', async function () {
+			getCertStatusStub.resolves({ status: 'good' });
+
+			await rewiredModule.performOCSPCheck('cert-pem', 'issuer-pem', { timeout: 5000 });
+
+			assert.ok(getCertStatusStub.calledOnce);
+			assert.strictEqual(getCertStatusStub.firstCall.args[1].ocspUrl, undefined);
+		});
+	});
+
+	describe('verifyOCSP() with mocked cache table', function () {
+		const OCSP_MODULE_PATH = '#src/security/certificateVerification/ocspVerification';
+		let sandbox;
+		let freshOcspModule;
+		let verificationUtils;
+
+		beforeEach(function () {
+			sandbox = sinon.createSandbox();
+			// Clear the cached module so certCacheTable is reset to undefined
+			delete require.cache[require.resolve(OCSP_MODULE_PATH)];
+			verificationUtils = require('#src/security/certificateVerification/verificationUtils');
+		});
+
+		afterEach(function () {
+			sandbox.restore();
+			delete require.cache[require.resolve(OCSP_MODULE_PATH)];
+		});
+
+		function makeMockTable(entry, wasFromSource) {
+			return {
+				get: sandbox.stub().resolves(
+					entry
+						? Object.assign({}, entry, { wasLoadedFromSource: () => wasFromSource })
+						: null
+				),
+				sourcedFrom: sandbox.stub(),
+			};
+		}
+
+		it('should return valid:true with good status on a cache hit', async function () {
+			const mockTable = makeMockTable({ status: 'good', method: 'ocsp' }, false);
+			sandbox.stub(verificationUtils, 'getCertificateCacheTable').returns(mockTable);
+			freshOcspModule = require(OCSP_MODULE_PATH);
+
+			const result = await freshOcspModule.verifyOCSP(Buffer.from('cert'), Buffer.from('issuer'), {
+				enabled: true,
+				failureMode: 'fail-open',
+			});
+
+			assert.strictEqual(result.valid, true);
+			assert.strictEqual(result.status, 'good');
+			assert.strictEqual(result.cached, true);
+			assert.strictEqual(result.method, 'ocsp');
+		});
+
+		it('should return valid:false with revoked status on a cache hit', async function () {
+			const mockTable = makeMockTable({ status: 'revoked', method: 'ocsp' }, false);
+			sandbox.stub(verificationUtils, 'getCertificateCacheTable').returns(mockTable);
+			freshOcspModule = require(OCSP_MODULE_PATH);
+
+			const result = await freshOcspModule.verifyOCSP(Buffer.from('cert'), Buffer.from('issuer'), {
+				enabled: true,
+				failureMode: 'fail-closed',
+			});
+
+			assert.strictEqual(result.valid, false);
+			assert.strictEqual(result.status, 'revoked');
+			assert.strictEqual(result.cached, true);
+			assert.strictEqual(result.method, 'ocsp');
+		});
+
+		it('should mark cached:false when entry was loaded from source (cache miss)', async function () {
+			const mockTable = makeMockTable({ status: 'good', method: 'ocsp' }, true);
+			sandbox.stub(verificationUtils, 'getCertificateCacheTable').returns(mockTable);
+			freshOcspModule = require(OCSP_MODULE_PATH);
+
+			const result = await freshOcspModule.verifyOCSP(Buffer.from('cert'), Buffer.from('issuer'), {
+				enabled: true,
+				failureMode: 'fail-open',
+			});
+
+			assert.strictEqual(result.cached, false);
+		});
+
+		it('should return error with valid:false in fail-closed when cache returns null', async function () {
+			const mockTable = makeMockTable(null, false);
+			sandbox.stub(verificationUtils, 'getCertificateCacheTable').returns(mockTable);
+			freshOcspModule = require(OCSP_MODULE_PATH);
+
+			const result = await freshOcspModule.verifyOCSP(Buffer.from('cert'), Buffer.from('issuer'), {
+				enabled: true,
+				failureMode: 'fail-closed',
+			});
+
+			assert.strictEqual(result.valid, false);
+			assert.strictEqual(result.status, 'error');
+			assert.strictEqual(result.method, 'ocsp');
+		});
+
+		it('should return error-allowed with valid:true in fail-open when cache returns null', async function () {
+			const mockTable = makeMockTable(null, false);
+			sandbox.stub(verificationUtils, 'getCertificateCacheTable').returns(mockTable);
+			freshOcspModule = require(OCSP_MODULE_PATH);
+
+			const result = await freshOcspModule.verifyOCSP(Buffer.from('cert'), Buffer.from('issuer'), {
+				enabled: true,
+				failureMode: 'fail-open',
+			});
+
+			assert.strictEqual(result.valid, true);
+			assert.strictEqual(result.status, 'error-allowed');
+		});
+
+		it('should pass certPem, issuerPem, and ocspUrls context to cache get()', async function () {
+			const mockTable = makeMockTable({ status: 'good', method: 'ocsp' }, false);
+			sandbox.stub(verificationUtils, 'getCertificateCacheTable').returns(mockTable);
+			freshOcspModule = require(OCSP_MODULE_PATH);
+
+			// eslint-disable-next-line sonarjs/no-clear-text-protocols
+			const ocspUrls = ['http://ocsp.example.com'];
+			await freshOcspModule.verifyOCSP(Buffer.from('cert'), Buffer.from('issuer'), {
+				enabled: true,
+				failureMode: 'fail-open',
+			}, ocspUrls);
+
+			assert.ok(mockTable.get.calledOnce);
+			const context = mockTable.get.firstCall.args[1];
+			assert.ok(typeof context.certPem === 'string');
+			assert.ok(typeof context.issuerPem === 'string');
+			assert.deepStrictEqual(context.ocspUrls, ocspUrls);
 		});
 	});
 });
