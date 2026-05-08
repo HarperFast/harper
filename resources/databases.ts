@@ -656,14 +656,11 @@ export function resetDatabases() {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			store.close();
 			lmdbDatabaseEnvs.delete(path);
-			const db = databases[store.databaseName];
-			for (const tableName in db) {
-				const table = db[tableName];
-				if (table.primaryStore.path === path) {
-					delete databases[store.databaseName];
-					databaseEventsEmitter.emit('dropDatabase', store.databaseName);
-					break;
-				}
+			// Remove the database entry so that the next getDatabases() call re-creates it
+			// with the current storage engine (e.g. RocksDB after migrateOnStart).
+			if (store.databaseName && databases[store.databaseName]) {
+				delete databases[store.databaseName];
+				databaseEventsEmitter.emit('dropDatabase', store.databaseName);
 			}
 		}
 	}

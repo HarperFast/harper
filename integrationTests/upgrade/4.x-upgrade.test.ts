@@ -12,6 +12,7 @@ import {
 } from '@harperfast/integration-testing';
 import { ok } from 'node:assert';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 
 const legacyPath = process.env.HARPER_LEGACY_VERSION_PATH;
 suite('Start 4.x server and test upgrade', { skip: !legacyPath }, (ctx: ContextWithHarper) => {
@@ -70,7 +71,31 @@ suite('Start 4.x server and test upgrade', { skip: !legacyPath }, (ctx: ContextW
 		ok(response.length > 10);
 	});
 
-	test('migrate LMDB to RocksDB', async () => {
+	test('downgrade and start', async () => {
+		// can we downgrade?
+		await killHarper(ctx); // kill 5.x harper
+		await startHarper(ctx, {
+			config: {},
+			env: {
+				CONFIRM_DOWNGRADE: 'yes',
+			},
+			harperBinPath: join(legacyPath, 'bin', 'harperdb.js'),
+		}); // start on 4.x again
+		let response = await sendOperation(ctx.harper, {
+			operation: 'search_by_conditions',
+			table: 'test',
+			conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
+		});
+		ok(response.length > 4);
+		response = await sendOperation(ctx.harper, {
+			operation: 'read_audit_log',
+			schema: 'data',
+			table: 'test',
+		});
+		ok(response.length > 10);
+	});
+
+	test('upgrade and migrate LMDB to RocksDB', async () => {
 		await killHarper(ctx);
 		// restart with migrateOnStart enabled
 		await startHarper(ctx, {
@@ -88,5 +113,7 @@ suite('Start 4.x server and test upgrade', { skip: !legacyPath }, (ctx: ContextW
 			conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
 		});
 		ok(response.length > 4);
+		ok(existsSync(join(ctx.harper.dataRootDir, 'database', 'data', 'CURRENT')));
+		ok(existsSync(join(ctx.harper.dataRootDir, 'database', 'system', 'CURRENT'))); // marker for rocksdb
 	});
 });
