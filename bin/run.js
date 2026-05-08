@@ -35,7 +35,7 @@ let skipExitListeners = false;
 const UPGRADE_COMPLETE_MSG = 'Upgrade complete. Starting Harper.';
 const UPGRADE_ERR = 'Got an error while trying to upgrade your Harper instance. Exiting Harper.';
 const HDB_NOT_FOUND_MSG = 'Harper not found, starting install process.';
-const INSTALL_ERR = 'There was an error during install, check install_log.log for more details. Exiting.';
+const INSTALL_ERR = 'There was an error during install. Exiting.';
 const HDB_STARTED = 'Harper successfully started.';
 
 function addUnhandleRejectionListener() {

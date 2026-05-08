@@ -8,11 +8,8 @@ const fs = require('fs-extra');
 const { once } = require('events');
 const { getConfigPath } = require('../../config/configUtils.js');
 const { handleHDBError, hdbErrors } = require('../errors/hdbError.js');
-const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { server } = require('../../server/Server.ts');
 
-// Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
-const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
 const DEFAULT_READ_LOG_LIMIT = 1000;
 const ESTIMATED_AVERAGE_ENTRY_SIZE = 200;
 
@@ -40,11 +37,9 @@ async function readLog(request) {
 	let whenReplicatedResponse = server.replication.replicateOperation(request);
 
 	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-	const logName = request.log_name === undefined ? hdbTerms.LOG_NAMES.HDB : request.log_name;
-	const readLogPath =
-		logName === hdbTerms.LOG_NAMES.INSTALL
-			? path.join(INSTALL_LOG_LOCATION, hdbTerms.LOG_NAMES.INSTALL)
-			: path.join(logPath, logName);
+	const rawLogName = request.log_name === undefined ? hdbTerms.LOG_NAMES.HDB : request.log_name;
+	const logName = path.extname(rawLogName) === '.log' ? rawLogName : `${rawLogName}.log`;
+	const readLogPath = path.join(logPath, logName);
 
 	// support 'until' attribute for backwards compatibility
 	if (request.to === undefined && request.until !== undefined) {
