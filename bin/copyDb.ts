@@ -289,7 +289,7 @@ function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: b
 	}
 	let db;
 	if (options.dupSort) {
-		db = RocksDatabase.open(new RocksIndexStore(path, options));
+		db = new RocksIndexStore(path, options).open();
 	} else {
 		db = RocksDatabase.open(path, options);
 		db.encoder.name = options.name;
