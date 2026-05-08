@@ -710,6 +710,61 @@ describe('Test configUtils module', () => {
 			expect(logger_trace_stub.called).to.be.true;
 			expect(logger_trace_stub.args[0][0]).to.equal('No changes detected in config parameters, skipping update');
 		});
+
+		it('Test string env values matching typed config values are detected as equal', () => {
+			// Env vars are always strings, but flatConfigObj has typed values.
+			// Without casting, 'true' != true would fire updates on every boot.
+			config_utils_rw.__set__('flatConfigObj', {
+				logging_stdstreams: true,
+				logging_rotation_compress: false,
+				operationsapi_network_port: 9925,
+				http_corsaccesslist: ['https://example.com'],
+			});
+
+			config_utils_rw.updateConfigValue(undefined, undefined, {
+				logging_stdstreams: 'true',
+				logging_rotation_compress: 'false',
+				operationsapi_network_port: '9925',
+				http_corsaccesslist: '["https://example.com"]',
+			});
+
+			expect(logger_trace_stub.called).to.be.true;
+			expect(logger_trace_stub.args[0][0]).to.equal('No changes detected in config parameters, skipping update');
+		});
+
+		it('Test string env value differing from typed config value triggers update', () => {
+			const set_in_stub = sandbox.stub();
+			const get_in_stub = sandbox.stub().callsFake((path) => {
+				if (Array.isArray(path) && path[0] === 'rootPath') return HDB_ROOT;
+				return undefined;
+			});
+			const fake_config_doc = { setIn: set_in_stub, getIn: get_in_stub, errors: [] };
+			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
+			const parse_yaml_doc_rw = config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
+			const get_config_value_stub = sandbox.stub().returns(HDB_ROOT);
+			const get_config_value_rw = config_utils_rw.__set__('getConfigValue', get_config_value_stub);
+			const fs_exists_stub = sandbox.stub(fs, 'existsSync').returns(true);
+			const atomic_write_stub = sandbox.stub();
+			const atomic_write_rw = config_utils_rw.__set__('atomicWriteFile', atomic_write_stub);
+
+			try {
+				config_utils_rw.__set__('flatConfigObj', { logging_stdstreams: true });
+
+				config_utils_rw.updateConfigValue(undefined, undefined, { logging_stdstreams: 'false' });
+
+				expect(
+					logger_trace_stub.args.some(
+						(callArgs) => callArgs[0] === 'No changes detected in config parameters, skipping update'
+					)
+				).to.be.false;
+				expect(set_in_stub.called).to.be.true;
+			} finally {
+				parse_yaml_doc_rw();
+				get_config_value_rw();
+				fs_exists_stub.restore();
+				atomic_write_rw();
+			}
+		});
 	});
 
 	describe('Test castConfigValue function', () => {

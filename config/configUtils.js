@@ -517,11 +517,17 @@ function updateConfigValue(
 	let schemasArgs;
 
 	// Don't do the update if the values are the same.
+	// Env vars arrive as strings ('true', '9925', '["x"]'); flatConfigObj has
+	// typed values (true, 9925, ['x']). Run the env value through castConfigValue
+	// — the same coercion the write path applies below — and deep-compare. Plain
+	// loose equality (the previous approach) handled string<->number but not
+	// string<->boolean or string<->array, which made the check fire spuriously
+	// every boot for any non-string env var.
 	if (parsedArgs && flatConfigObj) {
 		let doUpdate = false;
 		for (const arg in parsedArgs) {
-			// Using no-strict here because we might need to compare string to number
-			if (parsedArgs[arg] != flatConfigObj[arg.toLowerCase()]) {
+			const castedValue = castConfigValue(arg, parsedArgs[arg]);
+			if (!_.isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
 				doUpdate = true;
 				break;
 			}
