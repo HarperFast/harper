@@ -136,6 +136,67 @@ describe('Test configUtils module', () => {
 		});
 	});
 
+	describe('Test atomicWriteFile function', () => {
+		const atomicWriteFile = config_utils_rw.__get__('atomicWriteFile');
+		const ATOMIC_TEST_DIR = path.join(DIRNAME, 'yaml');
+		const ATOMIC_TEST_PATH = path.join(ATOMIC_TEST_DIR, 'atomic-write-test.yaml');
+
+		before(() => {
+			fs.ensureDirSync(ATOMIC_TEST_DIR);
+		});
+
+		afterEach(() => {
+			try {
+				fs.unlinkSync(ATOMIC_TEST_PATH);
+			} catch {}
+			// Clean up any stray temp files from a failed run
+			for (const entry of fs.readdirSync(ATOMIC_TEST_DIR)) {
+				if (entry.startsWith('atomic-write-test.yaml.') && entry.endsWith('.tmp')) {
+					fs.unlinkSync(path.join(ATOMIC_TEST_DIR, entry));
+				}
+			}
+		});
+
+		it('writes content to the target path', () => {
+			atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /tmp/hdb');
+			expect(fs.readFileSync(ATOMIC_TEST_PATH, 'utf8')).to.equal('rootPath: /tmp/hdb');
+		});
+
+		it('overwrites an existing file', () => {
+			fs.writeFileSync(ATOMIC_TEST_PATH, 'rootPath: /old');
+			atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /new');
+			expect(fs.readFileSync(ATOMIC_TEST_PATH, 'utf8')).to.equal('rootPath: /new');
+		});
+
+		it('writes via temp file then rename so target is never truncated mid-write', () => {
+			const writeStub = sandbox.stub(fs, 'writeFileSync');
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			try {
+				atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+				expect(writeStub.calledOnce).to.be.true;
+				expect(renameStub.calledOnce).to.be.true;
+				const tempPath = writeStub.firstCall.args[0];
+				expect(tempPath).to.not.equal(ATOMIC_TEST_PATH);
+				expect(tempPath.startsWith(`${ATOMIC_TEST_PATH}.`)).to.be.true;
+				expect(tempPath.endsWith('.tmp')).to.be.true;
+				expect(path.dirname(tempPath)).to.equal(path.dirname(ATOMIC_TEST_PATH));
+				expect(renameStub.firstCall.args).to.deep.equal([tempPath, ATOMIC_TEST_PATH]);
+				expect(writeStub.calledBefore(renameStub)).to.be.true;
+			} finally {
+				writeStub.restore();
+				renameStub.restore();
+			}
+		});
+
+		it('leaves no temp file behind after a successful write', () => {
+			atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+			const stragglers = fs
+				.readdirSync(path.dirname(ATOMIC_TEST_PATH))
+				.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
+			expect(stragglers).to.be.empty;
+		});
+	});
+
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
 			analytics_aggregateperiod: 60,

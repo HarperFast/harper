@@ -88,6 +88,14 @@ function getConfigPath(param) {
 	if (!rootPath) return value;
 	return path.resolve(rootPath, value);
 }
+
+// Write atomically via temp file + rename so readers don't observe a truncated/empty file
+function atomicWriteFile(filePath, content) {
+	const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+	fs.writeFileSync(tempPath, content);
+	fs.renameSync(tempPath, filePath);
+}
+
 /**
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
@@ -164,7 +172,7 @@ function createConfigFile(args, skipFsValidation = false) {
 			true
 		);
 	}
-	fs.writeFileSync(configFilePath, String(configDoc));
+	atomicWriteFile(configFilePath, String(configDoc));
 	logger.trace(`Config file written to ${configFilePath}`);
 }
 
@@ -389,7 +397,7 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		fs.writeFileSync(configFilePath, String(configDoc));
+		atomicWriteFile(configFilePath, String(configDoc));
 	}
 }
 
@@ -633,7 +641,7 @@ function updateConfigValue(
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 		);
 	}
-	fs.writeFileSync(configFileLocation, String(configDoc));
+	atomicWriteFile(configFileLocation, String(configDoc));
 	if (update_config_obj) {
 		flatConfigObj = flattenConfig(configDoc.toJSON());
 	}
@@ -895,7 +903,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		fs.writeFileSync(configFilePath, String(configDoc));
+		atomicWriteFile(configFilePath, String(configDoc));
 		logger.debug('Config file updated with runtime env var values');
 	} catch (error) {
 		logger.error(`Failed to write config file after applying runtime env vars: ${error.message}`);
@@ -956,7 +964,7 @@ async function addConfig(topLevelElement, values) {
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 		);
 	}
-	await fs.writeFile(getConfigFilePath(), String(configDoc));
+	atomicWriteFile(getConfigFilePath(), String(configDoc));
 }
 
 function deleteConfigFromFile(param) {
@@ -965,7 +973,7 @@ function deleteConfigFromFile(param) {
 	configDoc.deleteIn(param);
 	const hdbRoot = configDoc.getIn(['rootPath']);
 	const configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	fs.writeFileSync(configFileLocation, String(configDoc));
+	atomicWriteFile(configFileLocation, String(configDoc));
 }
 
 function getConfigObj() {
