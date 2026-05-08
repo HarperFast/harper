@@ -3,6 +3,7 @@ import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.js';
 import type { Id } from '../../resources/ResourceInterface.ts';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 const logger = loggerWithTag('HNSW');
 /**
@@ -636,7 +637,9 @@ export class HierarchicalNavigableSmallWorld {
 	 * @returns
 	 */
 	estimateCountAsSort() {
-		return Math.sqrt(this.indexStore.getStats().entryCount * this.efConstructionSearch);
+		const count =
+			this.indexStore instanceof RocksDatabase ? this.indexStore.getKeysCount() : this.indexStore.getStats().entryCount;
+		return Math.sqrt(count * this.efConstructionSearch);
 	}
 
 	/**

@@ -7,6 +7,7 @@ import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
 import { recordAction } from './analytics/write';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -1294,7 +1295,7 @@ function estimatedEntryCount(store) {
 	const now = Date.now();
 	if ((store.estimatedEntryCountExpires || 0) < now) {
 		// use getStats for LMDB because it is fast path, otherwise RocksDB can handle fast path on its own
-		store.estimatedEntryCount = store.readerCheck ? store.getStats().entryCount : store.getKeysCount();
+		store.estimatedEntryCount = store instanceof RocksDatabase ? store.getKeysCount() : store.getStats().entryCount;
 		store.estimatedEntryCountExpires = now + 10000;
 	}
 	return store.estimatedEntryCount;

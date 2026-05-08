@@ -957,7 +957,8 @@ export function makeTable(options) {
 					records: './', // an href to the records themselves
 					name: tableName,
 					database: databaseName,
-					auditSize: auditStore?.getStats().entryCount,
+					auditSize:
+						auditStore instanceof RocksDatabase ? auditStore.getKeysCount() : auditStore?.getStats().entryCount,
 					attributes,
 					recordCount: undefined,
 					estimatedRecordRange: undefined,
@@ -3173,13 +3174,13 @@ export function makeTable(options) {
 		}
 		static async getRecordCount(options?: any) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
+			const exactCount = options?.exactCount;
 			const entryCount = isRocksDB
-				? (primaryStore.getDBIntProperty('rocksdb.estimate-num-keys') ?? 0)
+				? primaryStore.getKeysCount({ start: exactCount ? null : undefined })
 				: primaryStore.getStats().entryCount;
 			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
 			const start = performance.now();
 			const halfway = Math.floor(entryCount / 2);
-			const exactCount = options?.exactCount;
 			let recordCount = 0;
 			let entriesScanned = 0;
 			let limit: number;
