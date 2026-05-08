@@ -46,7 +46,7 @@ suite('Local application deployment', (ctx: ContextWithHarper) => {
 		strictEqual(response.status, 200);
 		const body = await response.json();
 		deepStrictEqual(body, { message: 'Successfully deployed: test-application, restarting Harper' });
-		await sleep(5000);
+		await sleep(10000);
 		ok(existsSync(join(ctx.harper.dataRootDir, 'components', project)));
 		ok(existsSync(join(ctx.harper.dataRootDir, 'harper-application-lock.json')));
 	});
