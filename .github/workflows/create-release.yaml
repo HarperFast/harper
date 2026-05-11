@@ -89,9 +89,9 @@ jobs:
             echo "## What's Changed"
             echo ""
             if [ -n "$PREV_TAG" ]; then
-              git log --format="- %s" "${PREV_TAG}..HEAD" | grep -v "^- Release v"
+              git log --format="- %s" "${PREV_TAG}..HEAD" | { grep -v "^- Release v" || true; }
             else
-              git log --format="- %s" | grep -v "^- Release v" | head -50
+              git log --format="- %s" | { grep -v "^- Release v" || true; } | head -50
             fi
             echo ""
             if [ -n "$PREV_TAG" ]; then
