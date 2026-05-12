@@ -24,11 +24,7 @@ const minimist = require('minimist');
 const keys = require('../security/keys.js');
 const { startHTTPThreads } = require('../server/threads/socketRouter.ts');
 const hdbInfoController = require('../dataLayer/hdbInfoController.js');
-<<<<<<< HEAD
-=======
-const { isReadOnlyMode } = require('../resources/databases.ts');
 const { getThisNodeName } = require('../server/nodeName.ts');
->>>>>>> edaca7d (fix: Lookup hostname in logs properly)
 const hdbTerms = require('../utility/hdbTerms.ts');
 const { getHdbPid, isProcessRunning } = require('../utility/processManagement/processManagement.js');
 const { PACKAGE_ROOT } = require('../utility/packageUtils');
@@ -260,15 +256,7 @@ function startupLog(portResolutions) {
 	const pad = (param) => param.padEnd(padding);
 	let logMsg = '\n';
 
-<<<<<<< HEAD
-	logMsg += `${pad('Hostname:')}${env.get(CONFIG_PARAMS.NODE_HOSTNAME)}\n`;
-=======
-	if (isReadOnlyMode()) {
-		logMsg += `${pad('Mode:')}${chalk.yellow('READ-ONLY')}\n`;
-	}
-
 	logMsg += `${pad('Hostname:')}${getThisNodeName()}\n`;
->>>>>>> edaca7d (fix: Lookup hostname in logs properly)
 
 	logMsg += `${pad('Worker Threads:')}${env.get(CONFIG_PARAMS.THREADS_COUNT)}\n`;
 
