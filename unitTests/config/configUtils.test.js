@@ -196,11 +196,13 @@ describe('Test configUtils module', () => {
 			expect(stragglers).to.be.empty;
 		});
 
-		it('generates a unique temp path on every call so concurrent writers cannot collide', () => {
-			// Worker threads share process.pid, so a pid+timestamp scheme can collide within
-			// the same millisecond. This guards against that regression.
+		it('generates a unique temp path even when pid and timestamp are identical', () => {
+			// Worker threads share process.pid, and worker arrivals cluster within the
+			// same millisecond — a pid+timestamp scheme would collide. Pin Date.now()
+			// so this test fails if uniqueness ever stops depending on randomness.
 			const writeStub = sandbox.stub(fs, 'writeFileSync');
 			const renameStub = sandbox.stub(fs, 'renameSync');
+			const dateStub = sandbox.stub(Date, 'now').returns(1234567890);
 			try {
 				const tempPaths = new Set();
 				for (let i = 0; i < 100; i++) {
@@ -211,6 +213,7 @@ describe('Test configUtils module', () => {
 			} finally {
 				writeStub.restore();
 				renameStub.restore();
+				dateStub.restore();
 			}
 		});
 	});
