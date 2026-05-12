@@ -25,6 +25,7 @@ const keys = require('../security/keys.js');
 const { startHTTPThreads } = require('../server/threads/socketRouter.ts');
 const hdbInfoController = require('../dataLayer/hdbInfoController.js');
 const { isReadOnlyMode } = require('../resources/databases.ts');
+const { getThisNodeName } = require('../server/nodeName.ts');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const { getHdbPid, isProcessRunning } = require('../utility/processManagement/processManagement.js');
 const { PACKAGE_ROOT } = require('../utility/packageUtils');
@@ -266,7 +267,7 @@ function startupLog(portResolutions) {
 		logMsg += `${pad('Mode:')}${chalk.yellow('READ-ONLY')}\n`;
 	}
 
-	logMsg += `${pad('Hostname:')}${env.get(CONFIG_PARAMS.NODE_HOSTNAME)}\n`;
+	logMsg += `${pad('Hostname:')}${getThisNodeName()}\n`;
 
 	logMsg += `${pad('Worker Threads:')}${env.get(CONFIG_PARAMS.THREADS_COUNT)}\n`;
 
@@ -306,20 +307,14 @@ function startupLog(portResolutions) {
 	}`;
 	logMsg += `, unix socket: ${configUtils.getConfigPath(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)}\n`;
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)) {
-		logMsg +=
-			pad('') +
-			'http://' +
-			env.get(CONFIG_PARAMS.NODE_HOSTNAME) +
-			':' +
-			env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) +
-			'/\n';
+		logMsg += pad('') + 'http://' + getThisNodeName() + ':' + env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) + '/\n';
 	}
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)) {
 		logMsg +=
 			'\n' +
 			pad('') +
 			'https://' +
-			env.get(CONFIG_PARAMS.NODE_HOSTNAME) +
+			getThisNodeName() +
 			':' +
 			env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) +
 			'/\n';
@@ -374,7 +369,7 @@ function startupLog(portResolutions) {
 			if (!restLog.includes(pair) && name === 'rest') {
 				restLog += pair;
 				if (value.protocol_name === 'HTTP' || value.protocol_name === 'HTTPS') {
-					restHostnames.push(`${value.protocol_name.toLowerCase()}://${env.get(CONFIG_PARAMS.NODE_HOSTNAME)}:${key}/`);
+					restHostnames.push(`${value.protocol_name.toLowerCase()}://${getThisNodeName()}:${key}/`);
 				}
 			}
 
