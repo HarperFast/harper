@@ -195,6 +195,24 @@ describe('Test configUtils module', () => {
 				.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
 			expect(stragglers).to.be.empty;
 		});
+
+		it('generates a unique temp path on every call so concurrent writers cannot collide', () => {
+			// Worker threads share process.pid, so a pid+timestamp scheme can collide within
+			// the same millisecond. This guards against that regression.
+			const writeStub = sandbox.stub(fs, 'writeFileSync');
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			try {
+				const tempPaths = new Set();
+				for (let i = 0; i < 100; i++) {
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+					tempPaths.add(writeStub.lastCall.args[0]);
+				}
+				expect(tempPaths.size).to.equal(100);
+			} finally {
+				writeStub.restore();
+				renameStub.restore();
+			}
+		});
 	});
 
 	describe('Test getDefaultConfig function', () => {
