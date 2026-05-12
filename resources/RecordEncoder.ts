@@ -387,7 +387,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (entry.value.constructor === Object) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
-					entry.value = new this.encoder.structPrototype.constructor();
+					entry.value = new store.encoder.structPrototype.constructor();
 					Object.assign(entry.value, originalValue);
 				}
 				entryMap.set(entry.value, entry); // allow the record to access the entry
@@ -445,7 +445,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (entry.value.constructor === Object) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
-					entry.value = new this.encoder.structPrototype.constructor();
+					entry.value = new store.encoder.structPrototype.constructor();
 					for (const key in originalValue) entry.value[key] = originalValue[key];
 				}
 			}
