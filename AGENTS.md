@@ -59,19 +59,20 @@ The plugin/application loader. Applications export a `handleApplication(scope)` 
 Files within a component are discovered via micromatch glob patterns and automatically mapped to URL paths.
 
 **Server** (`server/`)  
-Two HTTP stacks coexist:
+Multiple HTTP entry points coexist:
 
-- **Native layer** (`server/http.ts`) — direct socket handling for HTTP/1.1, HTTPS, HTTP/2, and WebSockets in one path; highest performance
-- **Fastify layer** (`server/fastifyRoutes.ts`) — used for legacy custom functions; wraps Fastify with autoload
+- **Native layer** (`server/http.ts`) — direct socket handling for application-level HTTP/1.1, HTTPS, HTTP/2, and WebSockets in one path; highest performance. Most user traffic goes through here.
+- **Operations API** (`server/operationsServer.ts`) — Fastify-based JSON operations API (`{operation: 'create_table', ...}`); internal/admin surface.
+- **Custom Functions (legacy)** (`server/fastifyRoutes.ts`) — legacy Fastify autoload for user-defined routes. Don't add new code here.
 
-All inbound protocols (REST, GraphQL, MQTT, NATS, WebSockets) eventually resolve to the same **Resource interface**.
+All inbound protocols (REST, GraphQL, MQTT, NATS, WebSockets) eventually resolve to the same **Resource interface**. See `server/DESIGN.md` for the file-by-file map and the `http.ts` section index.
 
 **Resources** (`resources/`)  
 The universal abstraction. Everything that can be queried or mutated — database tables, caches, message topics, custom endpoints — extends `Resource` (`resources/Resource.ts`).
 
 Static methods (`Resource.get`, `Resource.put`, `Resource.post`, `Resource.delete`, `Resource.patch`, `Resource.subscribe`) are the entry points and are automatically wrapped with `transactional()` for transaction management. Override instance methods (`get`, `put`, etc.) for custom behavior.
 
-`Table.ts` is the database table implementation (~177KB) — the most complex file in the codebase.
+`Table.ts` is the database table implementation (4744 lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Use `resources/DESIGN.md` as a section index instead of reading top-to-bottom.**
 
 **Data Layer** (`dataLayer/`)  
 Legacy translation modules plus SQL translation (`sqlTranslator/`) via AlaSQL; these should be avoided. The storage engine is selectable via `HARPER_STORAGE_ENGINE=lmdb`.
@@ -80,7 +81,62 @@ Legacy translation modules plus SQL translation (`sqlTranslator/`) via AlaSQL; t
 YAML-based. `configUtils.js` parses config; `RootConfigWatcher.ts` enables hot reload. Environment variables override YAML values.
 
 **Utility** (`utility/`)  
-Logging, error types, helpers, async utilities.
+Logging, error types, helpers, async utilities. Most-used: `utility/hdbTerms.ts` (global constants), `utility/logging/harper_logger.js`, `utility/errors/hdbError.js`.
+
+---
+
+## Repository map
+
+Use this to land in the right folder before grepping. Every top-level folder is listed; deeper docs are noted where they exist.
+
+### Source — covered above
+
+- **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. Tests: `unitTests/components/`.
+- **`server/`** — HTTP/WS/MQTT/etc. Entry: `operationsServer.ts` (boot), `http.ts` (native HTTP). **See [server/DESIGN.md](server/DESIGN.md).** Tests: `unitTests/server/`.
+- **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/DESIGN.md](resources/DESIGN.md).** Tests: `unitTests/resources/`.
+- **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Tests: `unitTests/dataLayer/`.
+- **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. Tests: `unitTests/config/`.
+- **`utility/`** — logging, errors, helpers. Tests: `unitTests/utility/`.
+
+### Other source folders
+
+- **`bin/`** — CLI entry points. `harper.js` is the executable; `run.js` initializes and runs the server; `cliOperations.js` translates CLI args → API operations. Tests: `unitTests/bin/`. **Don't look here for** business logic.
+- **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. Tests: `unitTests/security/`.
+- **`sqlTranslator/`** — SQL → internal operations via AlaSQL AST. Entry: `sqlTranslator/index.js` exports `evaluateSQL`, `processAST`, `convertSQLToAST`, `checkASTPermissions`. **Legacy — avoid for new code.** Tests: `unitTests/sqlTranslator/`.
+- **`validation/`** — input shape validation (Joi + `validate.js`). Entry: `validationWrapper.js`. **Not authorization** — that's in `security/`. Tests: `unitTests/validation/`.
+- **`upgrade/`** — version-upgrade orchestration. Entry: `directivesManager.js` exports `processDirectives()`. Per-version logic in `directives/`. Tests: `integrationTests/upgrade/`.
+- **`launchServiceScripts/`** — thin launchers that delegate to `server/operationsServer.ts`. `checkNodeVersion.js` is the pre-flight Node version check.
+- **`json/`** — system schema definitions. `systemSchema.json` defines built-in tables (`hdb_user`, `hdb_role`, `hdb_permission`). Loaded at startup; no code.
+
+### Non-source
+
+- **`bin/`** — covered above (it's source).
+- **`benchmarks/`** — HNSW vector-search benchmark only (`hnsw-search.js`). Stand-alone; not part of CI.
+- **`build-tools/`** — shell scripts for the build pipeline (`build.sh`, `build-studio.sh`, `download-prebuilds.js`). No tests.
+- **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
+- **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
+- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.
+- **`static/`** — assets only: `defaultConfig.yaml`, `ascii_logo.txt`.
+
+### Top-level docs to consult
+
+- **[DESIGN.md](DESIGN.md)** — running list of non-obvious internals (RecordObject prototype, getFromSource timing, blob orphan cleanup). Read this before debugging anything record-store-related.
+- **[dependencies.md](dependencies.md)** — rationale for every npm dependency. Required reading before adding a new package.
+- **[storage-format.md](storage-format.md)** — on-disk layout (RocksDB/LMDB).
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — contribution workflow.
+
+---
+
+## Detailed navigation
+
+For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
+
+| If you are touching…                                   | Read first                                 |
+| ------------------------------------------------------ | ------------------------------------------ |
+| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md) |
+| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)       |
+| Record-store internals (commit timing, blobs, encoder) | [DESIGN.md](DESIGN.md)                     |
+| Adding a dependency                                    | [dependencies.md](dependencies.md)         |
 
 ---
 
