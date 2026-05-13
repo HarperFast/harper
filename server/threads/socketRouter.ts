@@ -47,6 +47,8 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				return Promise.resolve([]);
 			}
 			await loadRootComponents();
+			const { listenOnPorts } = require('./threadServer.js');
+			await listenOnPorts();
 		}
 		for (let i = 0; i < threadCount; i++) {
 			startHTTPWorker(i, threadCount);

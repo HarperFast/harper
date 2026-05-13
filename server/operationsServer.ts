@@ -37,7 +37,7 @@ const { CONFIG_PARAMS } = terms;
 let server;
 
 export { operationsServer as hdbServer };
-export { operationsServer as start };
+export { operationsServer as startOnMainThread };
 
 /**
  * Builds a Harper server.

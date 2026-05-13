@@ -6,6 +6,7 @@
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
+import { Script } from 'node:vm';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
@@ -100,6 +101,7 @@ export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
+const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -958,7 +960,8 @@ export function makeTable(options) {
 					records: './', // an href to the records themselves
 					name: tableName,
 					database: databaseName,
-					auditSize: auditStore?.getStats().entryCount,
+					auditSize:
+						auditStore instanceof RocksDatabase ? auditStore.getKeysCount() : auditStore?.getStats().entryCount,
 					attributes,
 					recordCount: undefined,
 					estimatedRecordRange: undefined,
@@ -1299,14 +1302,17 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				beforeIntermediate: preCommitBlobsForRecordBefore(partialRecord),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
+					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
+						write.skipped = true;
+						return;
+					}
 					partialRecord ??= null;
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
@@ -1335,7 +1341,9 @@ export function makeTable(options) {
 					);
 					// TODO: recordDeletion?
 				},
-			});
+			};
+			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, partialRecord);
+			transaction.addWrite(write);
 		}
 		_writeRelocate(id: Id, options: any) {
 			const context = this.getContext();
@@ -1602,7 +1610,7 @@ export function makeTable(options) {
 				}
 			};
 
-			const write = {
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
@@ -1654,8 +1662,8 @@ export function makeTable(options) {
 					}
 				},
 				before: writeToSource(),
-				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -1735,6 +1743,7 @@ export function makeTable(options) {
 													'The transaction time is equal to the existing version, treating as duplicate',
 													id
 												);
+												write.skipped = true;
 												return; // treat a tie as a duplicate and drop it
 											}
 											if (precedesExisting > 0) {
@@ -1751,6 +1760,7 @@ export function makeTable(options) {
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
 										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
 											// There is newer full record update, so this incremental update is completely superseded
+											write.skipped = true;
 											return;
 										}
 									}
@@ -1812,7 +1822,9 @@ export function makeTable(options) {
 							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
-							// was the same type. Assuming a full update this record update loses and there are no changes
+							// was the same type. Assuming a full update this record update loses and there are no changes —
+							// without audit no record references the pre-saved blobs, so they have to be cleaned up.
+							write.skipped = true;
 							return writeCommit(false);
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
@@ -1924,6 +1936,7 @@ export function makeTable(options) {
 				},
 			};
 			this.#savingOperation = write;
+			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
 			return transaction.addWrite(write);
 		}
 
@@ -2514,6 +2527,10 @@ export function makeTable(options) {
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
+									// Use the target table's own read transaction; each table's readTxn is
+									// scoped to its RocksDB column family and cannot read another table's store.
+									const targetReadTxn =
+										targetTable === TableResource ? readTxn : targetTable._readTxnForContext(context);
 									const transform =
 										transformCache[attribute_name] ||
 										(transformCache[attribute_name] = targetTable.transformEntryForSelect(
@@ -2523,7 +2540,7 @@ export function makeTable(options) {
 												? null
 												: attribute.select || (Array.isArray(attribute) ? attribute : null),
 											context,
-											readTxn,
+											targetReadTxn,
 											filterMap,
 											ensure_loaded
 										));
@@ -2535,7 +2552,7 @@ export function makeTable(options) {
 												attribute.select,
 												typeof attribute.sort === 'object' && attribute.sort,
 												context,
-												readTxn,
+												targetReadTxn,
 												transform
 											)
 											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
@@ -2627,12 +2644,21 @@ export function makeTable(options) {
 			}
 			if (!request) request = {};
 			const getFullRecord = !request.rawEvents;
-			let pendingRealTimeQueue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
+			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
+			// messages from the listener accumulate here and are drained at the end of the IIFE so they
+			// arrive after the replayed history, in order. The startTime branch sets this to null and
+			// uses dropDuringReplay instead — its snapshot:false cursor picks up the live tail directly.
+			let pendingRealTimeQueue: any[] | null = [];
+			// Set during the startTime audit-log replay. The cursor iterates the audit log forward with
+			// snapshot:false, which catches any commits that land during yield points; dropping in the
+			// listener avoids duplicate delivery.
+			let dropDuringReplay = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
 				function (id: Id, auditRecord: any, localTime: number, beginTxn: boolean) {
+					if (dropDuringReplay) return;
 					try {
 						let type = auditRecord.type;
 						let value;
@@ -2675,6 +2701,11 @@ export function makeTable(options) {
 				request.startTime || 0,
 				request
 			);
+			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
+			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
+			// in subscription.queue. Without this, the IIFE can fill the queue past
+			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
+			if (request.listener) subscription!.on('data', request.listener);
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
@@ -2685,42 +2716,59 @@ export function makeTable(options) {
 				let count = request.previousCount;
 				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 				let startTime = request.startTime;
+				let recordsSinceYield = 0;
+
 				if (isCollection) {
 					// a collection should retrieve all descendant ids
 					if (startTime) {
 						if (count)
 							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
-						// start time specified, get the audit history for this time range
-						for (const auditRecord of auditStore.getRange({
-							start: startTime,
-							exclusiveStart: true,
-							snapshot: false, // no need for a snapshot, audits don't change
-						})) {
-							if (auditRecord.tableId !== tableId) continue;
-							const id = auditRecord.recordId;
-							if (thisId == null || isDescendantId(thisId, id)) {
-								const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
-								send({
-									id,
-									localTime: auditRecord.localTime,
-									value,
-									version: auditRecord.version,
-									type: auditRecord.type,
-									size: auditRecord.size,
-								});
-								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-									// if we have too many messages, we need to pause and let the client catch up
-									if ((await subscription.waitForDrain()) === false) return;
+						// start time specified, get the audit history for this time range. We drop real-time
+						// messages during this loop because the snapshot:false cursor will pick them up itself.
+						pendingRealTimeQueue = null;
+						dropDuringReplay = true;
+
+						try {
+							for (const auditRecord of auditStore.getRange({
+								start: startTime,
+								exclusiveStart: true,
+								snapshot: false, // no need for a snapshot, audits don't change
+							})) {
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
 								}
+								if (auditRecord.tableId !== tableId) continue;
+								const id = auditRecord.recordId;
+								if (thisId == null || isDescendantId(thisId, id)) {
+									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
+									send({
+										id,
+										localTime: auditRecord.localTime,
+										value,
+										version: auditRecord.version,
+										type: auditRecord.type,
+										size: auditRecord.size,
+									});
+									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+										// if we have too many messages, we need to pause and let the client catch up
+										if ((await subscription.waitForDrain()) === false) return;
+									}
+								}
+								subscription!.startTime = auditRecord.localTime ?? auditRecord.version; // update so we don't double send
 							}
-							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-							//await rest(); // yield for fairness
-							subscription.startTime = auditRecord.localTime; // update so we don't double send
+						} finally {
+							// replay is done, we can start sending real-time messages again
+							dropDuringReplay = false;
 						}
 					} else if (count) {
 						const history = [];
 						// we are collecting the history in reverse order to get the right count, then reversing to send
 						for (const auditRecord of auditStore.getRange({ start: 'z', end: false, reverse: true })) {
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+							}
 							try {
 								if (auditRecord.tableId !== tableId) continue;
 								const id = auditRecord.recordId;
@@ -2738,26 +2786,66 @@ export function makeTable(options) {
 							} catch (error) {
 								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
-							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-							//await rest(); // yield for fairness
 						}
 						for (let i = history.length; i > 0; ) {
 							send(history[--i]);
 						}
-						if (history[0]) subscription.startTime = history[0].localTime; // update so don't double send
+						// Use the latest record cursor saw (history[0] = most recent due to reverse
+						// iteration) as the gate. This is in the audit log's own time domain (works for
+						// both lmdb's localTime and rocksdb's transaction-derived version) — a JS-side
+						// `getNextMonotonicTime()` would not be comparable to rocksdb's native
+						// transaction timestamps.
+						const cursorMaxTime = history[0]?.localTime ?? history[0]?.version ?? 0;
+						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
+						// In-flight pre-subscribe 'committed' callbacks may have queued duplicates of
+						// records the cursor saw while subscription.startTime was still 0. Filter them.
+						if (pendingRealTimeQueue && cursorMaxTime) {
+							pendingRealTimeQueue = pendingRealTimeQueue.filter(
+								(event) => (event.localTime ?? event.version) > cursorMaxTime
+							);
+						}
 					} else if (!request.omitCurrent) {
+						// Track the latest record-time the cursor saw — including deletion tombstones
+						// (entries with null value). Used after iteration to gate out any pre-subscribe
+						// 'committed' callbacks that fired during cursor yields (e.g., late
+						// notifications for deletes/updates done before subscribing). This is in the
+						// audit log's time domain — works on both backends, where a JS-side
+						// `getNextMonotonicTime()` would not be comparable to rocksdb's native
+						// transaction timestamps.
+						let cursorMaxTime = 0;
+						// Retained-message semantics: subscriber may legitimately receive a record twice
+						// if a post-subscribe write hits a key the cursor also visits. This is
+						// idempotent for "current state then live updates" — both deliveries land at
+						// the same final state. We don't dedupe.
 						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
 							start: thisId ?? false,
 							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 							versions: true,
 							snapshot: false, // no need for a snapshot, just want the latest data
 						})) {
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+							}
+							// Update cursorMaxTime BEFORE the !value check so deletion tombstones
+							// (which have null value but a real localTime/version) still raise the gate.
+							const t = localTime ?? version;
+							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
 							send({ id, localTime, value, version, type: 'put', size });
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
 							}
+						}
+						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
+						// Filter the queue to drop in-flight pre-subscribe events the listener queued
+						// while subscription.startTime was still 0. Anything strictly newer than what
+						// the cursor saw is a real post-subscribe commit and is kept.
+						if (pendingRealTimeQueue && cursorMaxTime) {
+							pendingRealTimeQueue = pendingRealTimeQueue.filter(
+								(event) => (event.localTime ?? event.version) > cursorMaxTime
+							);
 						}
 					}
 				} else {
@@ -2777,13 +2865,19 @@ export function makeTable(options) {
 					}
 					logger.trace?.('Subscription from', startTime, 'from', thisId, localTime);
 					if (startTime < localTime) {
-						// start time specified, get the audit history for this record
+						// start time specified, get the audit history for this record. Set startTime up
+						// front so the listener gate skips any in-flight 'committed' for this version
+						// during the yields below — otherwise that event would be queued and drained as a
+						// duplicate of the entry send.
+						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
 						let nextTime = localTime;
 						let nodeId = entry?.nodeId;
 						do {
-							//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
-							//await auditStore.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
+							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+								recordsSinceYield = 0;
+								await rest();
+							}
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
 							if (auditRecord) {
 								if (startTime < nextTime) {
@@ -2805,7 +2899,6 @@ export function makeTable(options) {
 						for (let i = history.length; i > 0; ) {
 							send(history[--i]);
 						}
-						subscription.startTime = localTime; // make sure we don't re-broadcast the current version that we already sent
 					}
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
@@ -2817,10 +2910,12 @@ export function makeTable(options) {
 					}
 				}
 				// now send any queued messages
-				for (const event of pendingRealTimeQueue) {
-					send(event);
+				if (pendingRealTimeQueue) {
+					for (const event of pendingRealTimeQueue) {
+						send(event);
+					}
+					pendingRealTimeQueue = null;
 				}
-				pendingRealTimeQueue = null;
 			})();
 			result.catch((error) => {
 				harperLogger.error?.('Error in real-time subscription:', error);
@@ -2832,7 +2927,6 @@ export function makeTable(options) {
 				}
 				subscription.send(event);
 			}
-			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}
 
@@ -2880,7 +2974,7 @@ export function makeTable(options) {
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry: this.#entry,
@@ -2895,11 +2989,6 @@ export function makeTable(options) {
 					this.constructor.source?.publish && !context?.source
 						? this.constructor.source.publish.bind(this.constructor.source, id, message, context)
 						: undefined,
-				beforeIntermediate: preCommitBlobsForRecordBefore(
-					message,
-					undefined,
-					true // because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
-				),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -2932,7 +3021,10 @@ export function makeTable(options) {
 						message
 					);
 				},
-			});
+			};
+			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
+			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
+			transaction.addWrite(write);
 		}
 		validate(record: any, patch?: boolean) {
 			let validationErrors;
@@ -3162,11 +3254,13 @@ export function makeTable(options) {
 		}
 		static async getRecordCount(options?: any) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
-			const entryCount = primaryStore.getStats().entryCount;
-			const TIME_LIMIT = 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
+			const exactCount = options?.exactCount;
+			const entryCount = isRocksDB
+				? primaryStore.getKeysCount({ start: exactCount ? null : undefined })
+				: primaryStore.getStats().entryCount;
+			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
 			const start = performance.now();
 			const halfway = Math.floor(entryCount / 2);
-			const exactCount = options?.exactCount;
 			let recordCount = 0;
 			let entriesScanned = 0;
 			let limit: number;
@@ -3342,6 +3436,15 @@ export function makeTable(options) {
 				} else if (computed) {
 					if (typeof computed.from === 'function') {
 						this.setComputedAttribute(attribute.name, computed.from);
+					} else if (attribute.computedFromExpression) {
+						// build a fallback scope object with all attribute names set to undefined,
+						// matching the behavior in graphql.ts to prevent ReferenceErrors
+						const attributesFallback: Record<string, undefined> = {};
+						for (const attr of this.attributes) attributesFallback[attr.name] = undefined;
+						this.setComputedAttribute(
+							attribute.name,
+							createComputedFrom(attribute.computedFromExpression, attributesFallback)
+						);
 					}
 					propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
 						const value = typeof computed.from === 'string' ? object[computed.from] : object;
@@ -4149,15 +4252,16 @@ export function makeTable(options) {
 						return;
 					}
 					const dbTxn = txnForContext(sourceContext);
-					dbTxn.addWrite({
+					const sourceWrite: any = {
 						key: id,
 						store: primaryStore,
 						entry: existingEntry,
 						nodeName: 'source',
-						before: preCommitBlobsForRecordBefore(updatedRecord),
 						commit: (txnTime, existingEntry, _retry, transaction: any) => {
+							sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
 							if (existingEntry?.version !== existingVersion) {
 								// don't do anything if the version has changed
+								sourceWrite.skipped = true;
 								return;
 							}
 							updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
@@ -4260,7 +4364,9 @@ export function makeTable(options) {
 								}
 							}
 						},
-					});
+					};
+					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
+					dbTxn.addWrite(sourceWrite);
 				}),
 				() => {
 					primaryStore.unlock(id);
@@ -4474,12 +4580,15 @@ export function makeTable(options) {
 		}
 	}
 	function preCommitBlobsForRecordBefore(
+		write: any,
 		record: any,
 		before?: () => Promise<void>,
 		saveInRecord?: boolean
 	): Promise<void> | void {
-		const blobCompletion = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord);
-		if (blobCompletion) {
+		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord);
+		if (preCommit) {
+			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
+			write.savedBlobs = preCommit.blobs;
 			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
 			// them to finish and we return a new callback for the before phase of the commit
 			const callSources = before;
@@ -4487,9 +4596,9 @@ export function makeTable(options) {
 				? async () => {
 						// if we are calling the sources first and waiting for blobs, do those in order
 						await callSources();
-						await blobCompletion();
+						await preCommit.complete();
 					}
-				: () => blobCompletion();
+				: () => preCommit.complete();
 		}
 		return before;
 	}
@@ -4507,6 +4616,20 @@ function attributesAsObject(attribute_permissions, type) {
 }
 function noop() {
 	// prefetch callback
+}
+
+/**
+ * Recreate a computed "from" function from a stored expression string. This is used when a table
+ * is loaded from metadata on a thread that hasn't loaded the GraphQL schema, so the computed
+ * function needs to be reconstructed from the persisted expression.
+ */
+function createComputedFrom(computedFromExpression: string, attributesFallback?: any) {
+	const script = new Script(
+		attributesFallback
+			? `function computed(attributes) { return function(record) { with(attributes) { with (record) { return ${computedFromExpression}; } } } } computed;`
+			: `function computed() { return function(record) { with (record) { return ${computedFromExpression}; } } } computed;`
+	);
+	return script.runInThisContext()(attributesFallback);
 }
 
 const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;

@@ -71,6 +71,61 @@ env.initSync();
 exports.globals = globals;
 exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
+exports.closeServers = closeServers;
+
+function closeServers() {
+	const promises = [];
+	for (let port in SERVERS) {
+		const server = SERVERS[port];
+		if (server.closeIdleConnections) {
+			// Here we attempt to gracefully close all outstanding keep-alive connections,
+			// repeatedly closing any connections that are idle. This allows any active requests
+			// to finish sending their response, then we close their connections.
+			let symbols = Object.getOwnPropertySymbols(server);
+			let connectionsSymbol = symbols.find((symbol) => symbol.description.includes('connections'));
+			let closeAttempts = 0;
+			let timer = setInterval(() => {
+				closeAttempts++;
+				const forceClose = closeAttempts >= 100;
+				if (!server[connectionsSymbol]) {
+					if (forceClose) server.closeAllConnections?.();
+					clearInterval(timer);
+					return;
+				}
+				const connections = server[connectionsSymbol][forceClose ? 'all' : 'idle']?.() || [];
+				if (connections.length === 0) {
+					if (forceClose) clearInterval(timer);
+					return;
+				}
+				if (closeAttempts === 1) harperLogger.info(`Closing ${connections.length} idle connections`);
+				else if (forceClose) harperLogger.warn(`Forcefully closing ${connections.length} active connections`);
+				for (let i = 0, l = connections.length; i < l; i++) {
+					const socket = connections[i].socket;
+					if (socket._httpMessage && !socket._httpMessage.finished && !forceClose) {
+						continue;
+					}
+					if (forceClose) socket.destroySoon();
+					else socket.end('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n');
+				}
+			}, 25).unref();
+		}
+		// And we tell the server not to accept any more incoming connections
+		promises.push(
+			new Promise((resolve) => {
+				server.close?.(() => {
+					resolve();
+				});
+				// We hope for a graceful exit once all connections have been closed, and no
+				// more incoming connections are accepted, but if we need to, we eventually will exit
+				setTimeout(() => {
+					if (!server.cantCleanupProperly) harperLogger.warn('Had to forcefully exit the server', port, threadId);
+					resolve();
+				}, 5000).unref();
+			})
+		);
+	}
+	return Promise.all(promises);
+}
 
 function startServers() {
 	const rootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
@@ -98,55 +153,9 @@ function startServers() {
 						harperLogger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 						// close connections as possible, then let the event loop complete
-						for (let port in SERVERS) {
-							const server = SERVERS[port];
-							let closeAllTimer;
-							if (server.closeIdleConnections) {
-								// Here we attempt to gracefully close all outstanding keep-alive connections,
-								// repeatedly closing any connections that are idle. This allows any active requests
-								// to finish sending their response, then we close their connections.
-								let symbols = Object.getOwnPropertySymbols(server);
-								let connectionsSymbol = symbols.find((symbol) => symbol.description.includes('connections'));
-								let closeAttempts = 0;
-								let timer = setInterval(() => {
-									closeAttempts++;
-									const forceClose = closeAttempts >= 100;
-									if (!server[connectionsSymbol]) {
-										if (forceClose) server.closeAllConnections?.();
-										clearInterval(timer);
-										return;
-									}
-									const connections = server[connectionsSymbol][forceClose ? 'all' : 'idle']?.() || [];
-									if (connections.length === 0) {
-										if (forceClose) clearInterval(timer);
-										return;
-									}
-									if (closeAttempts === 1) harperLogger.info(`Closing ${connections.length} idle connections`);
-									else if (forceClose) harperLogger.warn(`Forcefully closing ${connections.length} active connections`);
-									for (let i = 0, l = connections.length; i < l; i++) {
-										const socket = connections[i].socket;
-										if (socket._httpMessage && !socket._httpMessage.finished && !forceClose) {
-											continue;
-										}
-										if (forceClose) socket.destroySoon();
-										else socket.end('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n');
-									}
-								}, 25).unref();
-							}
-							// And we tell the server not to accept any more incoming connections
-							server.close?.(() => {
-								clearInterval(closeAllTimer);
-								// We hope for a graceful exit once all connections have been closed, and no
-								// more incoming connections are accepted, but if we need to, we eventually will exit
-								setTimeout(() => {
-									console.log('forced close server', port, threadId);
-									if (!server.cantCleanupProperly) harperLogger.warn('Had to forcefully exit the thread', threadId);
-									process.exit(0);
-								}, 5000).unref();
-							});
-						}
-						// Clean up per-thread UDS socket and metadata files
-						httpComponent.cleanupUdsFiles();
+						closeServers().then(() => {
+							process.exit(0);
+						});
 						if (debugThreads || process.env.DEV_MODE) {
 							try {
 								require('inspector').close();
@@ -179,8 +188,10 @@ function startServers() {
 	process.on('exit', () => httpComponent.cleanupUdsFiles());
 	return loaded;
 }
+let listening;
 function listenOnPorts() {
-	const listening = [];
+	if (listening) return Promise.all(listening); // already set up
+	listening = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
 

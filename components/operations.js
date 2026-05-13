@@ -396,15 +396,12 @@ async function deployComponent(req) {
 
 	await prepareApplication(application);
 
-	// the main thread should never actually load component, just do a deploy
-	if (isMainThread) return;
-
 	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report
-	const pseudoResources = new Resources();
-	pseudoResources.isWorker = true;
+	// an error we can immediately detect and report, but app code should not run on the main thread
+	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
+		const pseudoResources = new Resources();
+		pseudoResources.isWorker = true;
 
-	if (!process.env.HARPER_SAFE_MODE) {
 		const componentLoader = require('./componentLoader.ts');
 		let lastError;
 		componentLoader.setErrorReporter((error) => (lastError = error));

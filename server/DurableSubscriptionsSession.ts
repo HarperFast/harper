@@ -84,6 +84,7 @@ export async function getSession({
 	clientId: sessionId,
 	user,
 	clean: nonDurable,
+	properties,
 	will,
 	keepalive,
 }: {
@@ -91,10 +92,12 @@ export async function getSession({
 	user;
 	listener: Function;
 	clean?: boolean;
+	properties?: any;
 	will: any;
 	keepalive?: number;
 }) {
 	let session;
+	if (properties?.sessionExpiryInterval > 0) nonDurable = false;
 	if (sessionId && !nonDurable) {
 		const sessionResource = await DurableSession.get(sessionId, { returnNonexistent: true });
 		session = new DurableSubscriptionsSession(sessionId, user, sessionResource);
@@ -479,13 +482,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async addSubscription(subscription, needsAck) {
 		await this.resumeSubscription(subscription, needsAck);
 		const { qos, startTime } = subscription;
-		if (qos > 0 && !startTime) this.saveSubscriptions();
-		return subscription.qos;
+		if (qos > 0 && !startTime) await this.saveSubscriptions();
+		return subscription;
 	}
-	removeSubscription(topic) {
+	async removeSubscription(topic) {
 		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		const result = super.removeSubscription(topic);
-		if (existingSubscription.qos > 0) this.saveSubscriptions();
+		if (existingSubscription.qos > 0) await this.saveSubscriptions();
 		return result;
 	}
 	saveSubscriptions() {
@@ -499,6 +502,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				startTime,
 			};
 		});
-		DurableSession.put(this.sessionRecord);
+		return DurableSession.put(this.sessionRecord);
 	}
 }

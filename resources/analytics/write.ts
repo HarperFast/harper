@@ -1,6 +1,6 @@
 import { parentPort, threadId } from 'worker_threads';
 import { onMessageByType } from '../../server/threads/manageThreads.js';
-import { getDatabases, table } from '../databases.ts';
+import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.js';
 import { stat, readdir } from 'node:fs/promises';
@@ -37,7 +37,19 @@ interface Action {
 
 let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+
+// Check read-only mode lazily to avoid circular dependency at module load time
+function checkAnalyticsEnabled(): boolean {
+	if (!analyticsReadOnlyChecked) {
+		analyticsReadOnlyChecked = true;
+		if (isReadOnlyMode()) {
+			analyticsEnabled = false;
+		}
+	}
+	return analyticsEnabled;
+}
 
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
@@ -101,7 +113,7 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!analyticsEnabled) return;
+	if (!checkAnalyticsEnabled()) return;
 	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
@@ -214,6 +226,8 @@ function sendAnalytics() {
 }
 
 export async function recordHostname() {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const hostname = server.hostname;
 	log.trace?.('recordHostname server.hostname:', hostname);
 	const nodeId = stableNodeId(hostname);
@@ -244,6 +258,8 @@ function getHostNodeId(hostname: string) {
 }
 
 function storeMetric(table: Table, metric: Metric) {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const nodeId = getHostNodeId(server.hostname);
 	const metricValue = {
 		id: [getNextMonotonicTime(), nodeId],
@@ -622,6 +638,8 @@ let lastResourceUsage: ResourceUsage = {
 const rest = () => new Promise(setImmediate);
 
 async function cleanup(AnalyticsTable, expiration) {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const end = Date.now() - expiration;
 	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
 		AnalyticsTable.primaryStore.remove(key);
@@ -709,6 +727,8 @@ let totalBytesProcessed = 0;
 const lastUtilizations = new Map();
 const LOG_ANALYTICS = false; // TODO: Make this a config option if we really want this
 function recordAnalytics(message, worker?) {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const report = message.report;
 	report.threadId = worker?.threadId || threadId;
 	// Add system information stats as well

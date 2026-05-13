@@ -5,6 +5,7 @@ import {
 	type TransactionWrite,
 	type CommitResolution,
 } from './DatabaseTransaction';
+import { cleanupUnusedBlobs } from './blob.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import type { Context } from './ResourceInterface.ts';
@@ -253,6 +254,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 								)
 							);
 					}
+					// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
+					// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
+					for (const write of this.writes) {
+						if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+					}
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.writes = [];
 					this.timestamp = 0;
@@ -292,6 +298,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
+		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
+		for (const write of this.writes) {
+			if (write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+		}
 		// reset the transaction
 		this.writes = [];
 	}

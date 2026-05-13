@@ -68,7 +68,30 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
 		this.resources = applicationScope?.resources ?? resources;
-		this.server = applicationScope?.server ?? server;
+
+		const baseServer = applicationScope?.server ?? server;
+		const scopeRef = this;
+		// Wrap server so http/request/ws/upgrade calls automatically carry this plugin's name,
+		// urlPath, and host — enabling routing and before/after dependencies on named middleware.
+		this.server = new Proxy(baseServer, {
+			get(target, prop, receiver) {
+				if (prop === 'http' || prop === 'request' || prop === 'ws' || prop === 'upgrade') {
+					const method = Reflect.get(target, prop, receiver);
+					if (typeof method === 'function') {
+						return (listener: any, options?: any) => {
+							const scopeConfig = (scopeRef.options?.getAll() as any) ?? {};
+							return method.call(target, listener, {
+								name: pluginName,
+								urlPath: scopeConfig.urlPath || undefined,
+								host: scopeConfig.host || undefined,
+								...options,
+							});
+						};
+					}
+				}
+				return Reflect.get(target, prop, receiver);
+			},
+		}) as Server;
 
 		this.#entryHandlers = [];
 		this.#pendingInitialLoads = new Set();

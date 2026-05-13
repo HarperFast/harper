@@ -1,15 +1,16 @@
 name: Claude Issue to PR
 
-# Labeling an issue with `claude-fix:<type>` kicks Claude off to
-# investigate, make a focused change on a new branch, and open a PR
-# linking back to the issue. The label's suffix scopes the ask (typo
-# vs docs vs deps vs bug).
+# Thin caller of the reusable in HarperFast/ai-review-prompts. The
+# single `uses:` ref pin below controls everything that moves
+# together — workflow logic, auth script, agent prompt, allowed-
+# labels list. Bumping the pin is the entire upgrade motion.
 #
-# Gated to HarperFast org members/collaborators: even though GitHub's
-# permission model already restricts who can apply labels, we add an
-# explicit author_association check on the issue author so mislabeling
-# by an outsider can't trigger work. The action also performs its own
-# write-access check on the labeler as a fallback.
+# Pre-requisites (org-level secrets, configured once on HarperFast):
+#   - HARPERFAST_AI_CLIENT_ID
+#   - HARPERFAST_AI_APP_PRIVATE_KEY
+#
+# Plus the per-repo / inherited:
+#   - ANTHROPIC_API_KEY             (required)
 
 on:
   issues:
@@ -20,212 +21,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  authorize:
-    # Single source of truth for "is this label trigger allowed to
-    # spawn Claude on this repo?". The `work` job below has ONE `if:`
-    # that depends on this — no step-level guards, no individual user
-    # list.
-    #
-    # Cheap pre-filter at job level: explicit whitelist of allowed
-    # labels (NOT `startsWith('claude-fix:')`, which would match typoed
-    # variants like `claude-fix:typos`).
-    #
-    # We check the LABELER (`github.actor`), not the issue author. The
-    # labeler must already have at least triage permission to apply a
-    # label; a maintainer labeling an external-author issue is a
-    # legitimate way to invoke the agent on community reports.
-    #
-    # Trust set: the @HarperFast teams listed in this repo's
-    # `.github/CODEOWNERS`. Defaults to `@HarperFast/developers` if the
-    # file is missing, empty, or has no HarperFast handles. External-
-    # org handles are deliberately ignored.
-    #
-    # Required (organization-level) secrets:
-    #   - HARPERFAST_AI_CLIENT_ID       (the App's Client ID, like Iv23li…)
-    #   - HARPERFAST_AI_APP_PRIVATE_KEY (.pem file contents)
-    if: contains(fromJSON('["claude-fix:typo","claude-fix:docs","claude-fix:deps","claude-fix:bug"]'), github.event.label.name)
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    permissions:
-      contents: read # for the .github/CODEOWNERS fetch
-    outputs:
-      authorized: ${{ steps.check.outputs.authorized }}
-    steps:
-      - name: Mint org-read token
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        with:
-          client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
-          private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
-          owner: HarperFast
-
-      - name: Checkout (for CODEOWNERS read)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          sparse-checkout: |
-            .github/CODEOWNERS
-            .github/scripts/authorize-claude-workflow.sh
-          sparse-checkout-cone-mode: false
-
-      - name: Check labeler authorization
-        id: check
-        env:
-          DEFAULT_TOKEN: ${{ github.token }}
-          ORG_TOKEN: ${{ steps.app-token.outputs.token }}
-          ADMIT_CLAUDE_BOT: 'false'
-          USERS_TO_CHECK: ${{ github.actor }}
-        run: bash .github/scripts/authorize-claude-workflow.sh
-
   work:
-    needs: authorize
-    if: needs.authorize.outputs.authorized == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@6463b3da6326f0ca4646fb6b5139c2ecf92130f6 # main 2026-05-06 (post #11/#12/#14)
+    with:
+      # Same SHA as the `uses:` ref above. See the comment in
+      # claude-mention.yml for why the duplication is unavoidable.
+      ai-review-prompts-ref: 6463b3da6326f0ca4646fb6b5139c2ecf92130f6
+      repo-specific-conventions: |
+        ## Harper core notes
 
-    steps:
-      - name: Checkout
-        # Default shallow fetch (depth 1). The agent can commit and push on a
-        # shallow clone; `git log` / `git blame` aren't reached for by the
-        # current prompt. Bump to a deeper fetch only if we see the agent
-        # blocked on history lookups.
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Clone shared Harper skills
-        # Pinned to a SHA so agent behavior is reproducible across runs —
-        # updates require an explicit pin bump here.
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          repository: HarperFast/skills
-          ref: d2db99bb37a6dde868cbc5ac81ca4146be8956fb # 1.3.0 (2026-04-16)
-          path: .harper-skills
-
-      - name: Setup Node.js
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
-        with:
-          node-version-file: '.node-version'
-          cache: 'npm'
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Claude (agent mode)
-        id: claude-agent
-        uses: anthropics/claude-code-action@c3d45e8e941e1b2ad7b278c57482d9c5bf1f35b3 # v1.0.99
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          show_full_output: true
-          claude_args: |
-            --model claude-sonnet-4-6
-            --max-turns 72
-            # Tool allowlist is a security boundary — see the allowlist
-            # comment in claude-mention.yml for why `Bash(npx:*)` is
-            # absent and why `Bash(npm install)` (no-arg) is still
-            # partial mitigation only: the agent has `Write`/`Edit` on
-            # package.json, so an injected `postinstall` script + bare
-            # `npm install` is a viable RCE chain. Branch protection and
-            # the author_association gate are what actually bound blast
-            # radius here.
-            --allowedTools "Read,Write,Edit,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr create:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(git:*),Bash(npm install),Bash(npm ci:*),Bash(npm run:*),Bash(npm test:*)"
-          prompt: |
-            You were invoked because issue #${{ github.event.issue.number }}
-            on ${{ github.repository }} was labeled
-            `${{ github.event.label.name }}`.
-
-            ## The ask
-
-            Title: `${{ github.event.issue.title }}`
-
-            Body (verbatim, including any multi-line content):
-
-            ```
-            ${{ github.event.issue.body }}
-            ```
-
-            Source: ${{ github.event.issue.html_url }}
-
-            ## Label-scoped behavior
-
-            The label suffix tells you how much latitude you have:
-
-            - `claude-fix:typo` — a single-file typo, prose tweak, or
-              tiny doc fix. Should be one or two lines changed.
-            - `claude-fix:docs` — a documentation update. Code should
-              not be touched unless the doc is literally a code comment.
-            - `claude-fix:deps` — a dependency version bump. Update
-              `package.json` and regenerate the lockfile via
-              `npm install` + verify `npm ci` works. Update
-              `dependencies.md` too if a new runtime package is added.
-            - `claude-fix:bug` — a focused bug fix with at least one
-              test that fails before the fix and passes after.
-
-            Any ask that requires judgment beyond the label's scope —
-            new public API, architecture changes, cross-cutting
-            refactors — is OUT of scope. In that case, comment on the
-            issue explaining what you see and do NOT open a PR.
-
-            ## Conventions
-
-            Read the repo's agent context files first (commonly
-            `CLAUDE.md`, `AGENTS.md`, or similar at the repo root). Their
-            conventions and gotchas apply. Match the repo's style.
-
-            Harper-specific notes:
-            - Linter is **oxlint**, not eslint. `npm run lint` runs
-              oxlint. Don't add eslint config.
-            - Primary storage engine is RocksDB; LMDB is supported via
-              `HARPER_STORAGE_ENGINE=lmdb`. Changes affecting storage
-              should work on both.
-            - TypeStrip-compatible (`erasableSyntaxOnly`) — avoid
-              TypeScript features that break typestrip (non-type-only
-              type imports, parameter property initialization).
-            - `dependencies.md` documents all npm packages and their
-              justifications; keep it in sync with `package.json`.
-
-            For docs and deployment-related changes, consult the shared
-            Harper skills at `.harper-skills/harper-best-practices/rules/`.
-            In particular,
-            `.harper-skills/harper-best-practices/rules/deploying-to-harper-fabric.md`
-            is authoritative for Harper's deployment model. Do NOT invent
-            generic production patterns (systemd units, raw Kubernetes,
-            cloud secrets managers, arbitrary .env recommendations)
-            without first checking whether a Harper-specific path exists
-            in those rules.
-
-            ## Process
-
-            1. Create a branch named `claude/fix-${{ github.event.issue.number }}`
-               (or append `-<short-desc>` if useful).
-            2. Make the change scoped to the label.
-            3. Validate, scaling to the kind of change you made.
-
-               - `claude-fix:typo` / `claude-fix:docs` (doc-only changes
-                 to `*.md` — e.g. `README.md`, `CLAUDE.md`, `AGENTS.md`,
-                 `dependencies.md` — or `package.json` keyword/description
-                 fields): run `npm run format:check` and `npm run lint`.
-                 Skip `npm run build` / `npm run test:unit` — they are
-                 not affected and waste turns.
-               - `claude-fix:deps` / `claude-fix:bug` or any change that
-                 touches code: run
-                 `npm run build && npm run lint && npm run format:check && npm run test:unit`.
-                 Fix anything that fails. Integration tests
-                 (`npm run test:integration`) are slow — run only if the
-                 change plausibly affects integration behavior.
-
-               When in doubt, err toward the fuller validation.
-            4. Commit with a descriptive message.
-            5. Push the branch and open a PR via `gh pr create` with a
-               body that says `Closes #${{ github.event.issue.number }}`.
-            6. Post a comment on the original issue linking to the PR.
-
-            ## Must NOT
-
-            - Do NOT push to `main` or any `release_*` / `v*.x` branch.
-            - Do NOT use REQUEST_CHANGES or APPROVE on any PR.
-            - Do NOT open a PR when the ask is out of scope — comment
-              and stop.
-            - Do NOT commit secrets, credentials, or large generated
-              artifacts (e.g. `node_modules/`, coverage output).
+        - Linter is **oxlint**, not eslint. `npm run lint` runs
+          oxlint. Don't add eslint config or invoke `eslint` directly.
+        - Primary storage engine is **RocksDB**; LMDB is supported
+          via `HARPER_STORAGE_ENGINE=lmdb`. Changes affecting storage
+          should work on both.
+        - **TypeStrip-compatible** (`erasableSyntaxOnly`) — avoid
+          TypeScript features that break typestrip (non-type-only
+          type imports, parameter property initialization).
+        - **`dependencies.md`** documents all npm packages. For
+          `claude-fix:deps` work, update this file too if a new
+          runtime package is added.
+        - **Build tolerance (`tsc || true`)** is NOT used here —
+          Harper core's build should pass cleanly. Treat type errors
+          as real failures.
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      HARPERFAST_AI_CLIENT_ID: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+      HARPERFAST_AI_APP_PRIVATE_KEY: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}

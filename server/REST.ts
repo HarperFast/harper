@@ -290,98 +290,107 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	resources = scope.resources;
 	if (started) return;
 	started = true;
-	scope.server.http(async (request: Request, nextHandler) => {
-		if (request.isWebSocket) return;
-		return http(request, nextHandler);
-	}, httpOptions);
+	scope.server.http(
+		async (request: Request, nextHandler) => {
+			if (request.isWebSocket) return;
+			return http(request, nextHandler);
+		},
+		{ after: 'authentication', ...httpOptions }
+	);
 	if ((httpOptions as any).webSocket === false) return;
-	scope.server.ws(async (ws, request, chainCompletion) => {
-		connectionCount++;
-		const incomingMessages = new IterableEventQueue();
-		if (!addedMetrics) {
-			addedMetrics = true;
-			addAnalyticsListener((metrics) => {
-				if (connectionCount > 0)
-					metrics.push({
-						metric: 'ws-connections',
-						connections: connectionCount,
-						byThread: true,
-					});
-			});
-		}
-		// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
-		let hasError;
-		ws.on('error', (error) => {
-			hasError = true;
-			harperLogger.warn(error);
-		});
-		let deserializer;
-		ws.on('message', function message(body) {
-			if (!deserializer)
-				deserializer = getDeserializer(request.requestedContentType ?? request.headers.asObject['content-type'], false);
-			const data = deserializer(body);
-			recordAction(body.length, 'bytes-received', request.handlerPath, 'message', 'ws');
-			incomingMessages.push(data);
-		});
-		let iterator;
-		ws.on('close', () => {
-			connectionCount--;
-			recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
-			incomingMessages.emit('close');
-			if (iterator) iterator.return();
-		});
-		try {
-			await chainCompletion;
-			const url = request.url.slice(1);
-			const entry = resources.getMatch(url, 'ws');
-			recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
-			if (!entry) {
-				// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
-				return ws.close(1011, `No resource was found to handle ${request.pathname}`);
-			} else {
-				request.handlerPath = entry.path;
-				recordAction(
-					(action) => ({
-						count: action.count,
-						total: connectionCount,
-					}),
-					'connections',
-					request.handlerPath,
-					'connect',
-					'ws'
-				);
-				request.authorize = true;
-				const resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
-				resourceRequest.checkPermission = request.user?.role?.permission ?? {};
-				const resource = entry.Resource;
-				const responseStream = await transaction(request, () => {
-					return resource.connect(resourceRequest, incomingMessages, request);
+	scope.server.ws(
+		async (ws, request, chainCompletion) => {
+			connectionCount++;
+			const incomingMessages = new IterableEventQueue();
+			if (!addedMetrics) {
+				addedMetrics = true;
+				addAnalyticsListener((metrics) => {
+					if (connectionCount > 0)
+						metrics.push({
+							metric: 'ws-connections',
+							connections: connectionCount,
+							byThread: true,
+						});
 				});
-				iterator = responseStream[Symbol.asyncIterator]();
+			}
+			// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
+			let hasError;
+			ws.on('error', (error) => {
+				hasError = true;
+				harperLogger.warn(error);
+			});
+			let deserializer;
+			ws.on('message', function message(body) {
+				if (!deserializer)
+					deserializer = getDeserializer(
+						request.requestedContentType ?? request.headers.asObject['content-type'],
+						false
+					);
+				const data = deserializer(body);
+				recordAction(body.length, 'bytes-received', request.handlerPath, 'message', 'ws');
+				incomingMessages.push(data);
+			});
+			let iterator;
+			ws.on('close', () => {
+				connectionCount--;
+				recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
+				incomingMessages.emit('close');
+				if (iterator) iterator.return();
+			});
+			try {
+				await chainCompletion;
+				const url = request.url.slice(1);
+				const entry = resources.getMatch(url, 'ws');
+				recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
+				if (!entry) {
+					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
+					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
+				} else {
+					request.handlerPath = entry.path;
+					recordAction(
+						(action) => ({
+							count: action.count,
+							total: connectionCount,
+						}),
+						'connections',
+						request.handlerPath,
+						'connect',
+						'ws'
+					);
+					request.authorize = true;
+					const resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+					resourceRequest.checkPermission = request.user?.role?.permission ?? {};
+					const resource = entry.Resource;
+					const responseStream = await transaction(request, () => {
+						return resource.connect(resourceRequest, incomingMessages, request);
+					});
+					iterator = responseStream[Symbol.asyncIterator]();
 
-				let result;
-				while (!(result = await iterator.next()).done) {
-					const messageBinary = await serializeMessage(result.value, request);
-					ws.send(messageBinary);
-					recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
-					if (ws._socket.writableNeedDrain) {
-						await new Promise((resolve) => ws._socket.once('drain', resolve));
+					let result;
+					while (!(result = await iterator.next()).done) {
+						const messageBinary = await serializeMessage(result.value, request);
+						ws.send(messageBinary);
+						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
+						if (ws._socket.writableNeedDrain) {
+							await new Promise((resolve) => ws._socket.once('drain', resolve));
+						}
 					}
 				}
+			} catch (error) {
+				if (error.statusCode) {
+					if (error.statusCode === 500) harperLogger.warn(error);
+					else harperLogger.info(error);
+				} else harperLogger.error(error);
+				ws.close(
+					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
+						1011, // otherwise generic internal error
+					errorToString(error)
+				);
 			}
-		} catch (error) {
-			if (error.statusCode) {
-				if (error.statusCode === 500) harperLogger.warn(error);
-				else harperLogger.info(error);
-			} else harperLogger.error(error);
-			ws.close(
-				HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
-					1011, // otherwise generic internal error
-				errorToString(error)
-			);
-		}
-		ws.close();
-	}, httpOptions);
+			ws.close();
+		},
+		{ after: 'authentication', ...httpOptions }
+	);
 }
 const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
 	401: 3000,

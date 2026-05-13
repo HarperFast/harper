@@ -3,8 +3,62 @@ import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.js';
 import type { Id } from '../../resources/ResourceInterface.ts';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 const logger = loggerWithTag('HNSW');
+
+class MinHeap {
+	private data: Candidate[] = [];
+	get size() {
+		return this.data.length;
+	}
+	push(item: Candidate) {
+		this.data.push(item);
+		let i = this.data.length - 1;
+		while (i > 0) {
+			const p = (i - 1) >> 1;
+			if (this.data[p].distance <= this.data[i].distance) break;
+			const tmp = this.data[p];
+			this.data[p] = this.data[i];
+			this.data[i] = tmp;
+			i = p;
+		}
+	}
+	pop(): Candidate | undefined {
+		if (this.data.length === 0) return undefined;
+		const top = this.data[0];
+		const last = this.data.pop()!;
+		if (this.data.length > 0) {
+			this.data[0] = last;
+			let i = 0;
+			for (;;) {
+				const l = 2 * i + 1,
+					r = l + 1;
+				let min = i;
+				if (l < this.data.length && this.data[l].distance < this.data[min].distance) min = l;
+				if (r < this.data.length && this.data[r].distance < this.data[min].distance) min = r;
+				if (min === i) break;
+				const tmp = this.data[min];
+				this.data[min] = this.data[i];
+				this.data[i] = tmp;
+				i = min;
+			}
+		}
+		return top;
+	}
+}
+
+function bisectInsert(arr: Candidate[], distance: number): number {
+	let lo = 0,
+		hi = arr.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (arr[mid].distance <= distance) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
 /**
  * Implementation of a vector index for Harper, using hierarchical navigable small world graphs.
  */
@@ -17,6 +71,7 @@ type Connection = {
 };
 type Node = {
 	vector: number[];
+	invMag?: number; // cached 1/|vector| for cosine distance; undefined on legacy nodes
 	level?: number;
 	primaryKey: string;
 	[level: number]: Connection[];
@@ -112,11 +167,19 @@ export class HierarchicalNavigableSmallWorld {
 			oldNode = { ...this.safeGetSync(nodeId, options) };
 		} else oldNode = {} as Node;
 		if (vector) {
-			let entryPoint = entryPointId ? this.safeGetSync(entryPointId, options) : undefined;
+			// Pre-compute 1/|vector| for cosine distance so searchLayer can skip sqrt per neighbor
+			let invMag: number | undefined;
+			if (this.distance === cosineDistance) {
+				let magSq = 0;
+				for (const v of vector) magSq += v * v;
+				invMag = 1 / (Math.sqrt(magSq) || 1);
+			}
+			let entryPoint = entryPointId && this.safeGetSync(entryPointId, options);
 			if (entryPoint == null) {
 				const level = Math.floor(-Math.log(Math.random()) * this.mL);
 				const node = {
 					vector,
+					invMag,
 					level,
 					primaryKey,
 				};
@@ -272,6 +335,7 @@ export class HierarchicalNavigableSmallWorld {
 				nodeId,
 				{
 					vector,
+					invMag,
 					level,
 					primaryKey,
 					...connections,
@@ -396,50 +460,57 @@ export class HierarchicalNavigableSmallWorld {
 		options: { transaction?: any } = {},
 		distanceFunction = this.distance
 	): SearchResults {
+		// Pre-compute query magnitude for cosine; use cached invMag on stored nodes to skip sqrt per neighbor
+		let computeDistance: (b: number[], invMagB?: number) => number;
+		if (distanceFunction === cosineDistance) {
+			let magASq = 0;
+			for (const v of queryVector) magASq += v * v;
+			const invMagA = 1 / (Math.sqrt(magASq) || 1);
+			computeDistance = (b: number[], invMagB?: number) => {
+				let dot = 0;
+				for (let i = 0; i < b.length; i++) dot += queryVector[i] * b[i];
+				if (invMagB !== undefined) return 1 - dot * invMagA * invMagB;
+				let magBSq = 0;
+				for (let i = 0; i < b.length; i++) magBSq += b[i] * b[i];
+				return 1 - (dot * invMagA) / (Math.sqrt(magBSq) || 1);
+			};
+		} else {
+			computeDistance = (b: number[]) => distanceFunction(queryVector, b);
+		}
+
 		const visited = new Set([entryPointId]);
-		const candidates = [
-			{
-				id: entryPointId,
-				distance: distanceFunction(queryVector, entryPoint.vector),
-				node: entryPoint,
-			},
-		];
-		const results = [...candidates] as SearchResults;
+		const initialCandidate: Candidate = {
+			id: entryPointId,
+			distance: computeDistance(entryPoint.vector, entryPoint.invMag),
+			node: entryPoint,
+		};
 
-		while (candidates.length > 0) {
-			// Get closest unvisited element
-			candidates.sort((a, b) => a.distance - b.distance);
-			const current = candidates.shift();
+		const candidates = new MinHeap();
+		candidates.push(initialCandidate);
+		const results = [initialCandidate] as SearchResults;
 
-			// Get least result distance
+		while (candidates.size > 0) {
+			const current = candidates.pop()!;
 			const furthestDistance = results[results.length - 1].distance;
 
-			// If current candidate is less similar than our worst result, we're done
 			if (current.distance > furthestDistance) break;
 
-			// Check neighbors of current point
-			const currentNode = current.node;
-			for (const { id: neighborId } of currentNode[level] || []) {
+			for (const { id: neighborId } of current.node[level] || []) {
 				if (visited.has(neighborId) || neighborId === undefined) continue;
 				visited.add(neighborId);
 
 				const neighbor = this.safeGetSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
-				const distance = distanceFunction(queryVector, neighbor.vector);
+				const distance = computeDistance(neighbor.vector, neighbor.invMag);
 
 				if (distance < furthestDistance || results.length < ef) {
-					const candidate = {
-						id: neighborId,
-						distance,
-						node: neighbor,
-					};
+					const candidate: Candidate = { id: neighborId, distance, node: neighbor };
 					candidates.push(candidate);
-					results.push(candidate);
+					results.splice(bisectInsert(results, distance), 0, candidate);
+					if (results.length > ef) results.pop();
 				}
 			}
-			results.sort((a, b) => a.distance - b.distance);
-			if (results.length > ef) results.splice(ef, results.length - ef);
 		}
 		results.visited = visited.size;
 		return results;
@@ -655,7 +726,9 @@ export class HierarchicalNavigableSmallWorld {
 	 * @returns
 	 */
 	estimateCountAsSort() {
-		return Math.sqrt(this.indexStore.getStats().entryCount * this.efConstructionSearch);
+		const count =
+			this.indexStore instanceof RocksDatabase ? this.indexStore.getKeysCount() : this.indexStore.getStats().entryCount;
+		return Math.sqrt(count * this.efConstructionSearch);
 	}
 
 	/**

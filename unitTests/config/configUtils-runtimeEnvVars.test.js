@@ -11,6 +11,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	let mockConfigDoc;
 	let applyRuntimeEnvConfigStub;
 	let fsWriteFileSyncStub;
+	let fsRenameSyncStub;
 	let loggerStub;
 	let YAMLStub;
 
@@ -18,6 +19,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		// Create stubs for dependencies
 		applyRuntimeEnvConfigStub = sinon.stub();
 		fsWriteFileSyncStub = sinon.stub();
+		fsRenameSyncStub = sinon.stub();
 		loggerStub = {
 			debug: sinon.stub(),
 			warn: sinon.stub(),
@@ -32,7 +34,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		// Inject stubs
 		configUtils.__set__('logger', loggerStub);
-		configUtils.__set__('fs', { writeFileSync: fsWriteFileSyncStub });
+		configUtils.__set__('fs', { writeFileSync: fsWriteFileSyncStub, renameSync: fsRenameSyncStub });
 		configUtils.__set__('YAML', YAMLStub);
 
 		// Mock harperConfigEnvVars module
@@ -48,6 +50,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		// Reset stubs
 		applyRuntimeEnvConfigStub.reset();
 		fsWriteFileSyncStub.reset();
+		fsRenameSyncStub.reset();
 		loggerStub.debug.reset();
 		loggerStub.warn.reset();
 		loggerStub.error.reset();
@@ -140,8 +143,13 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
+		// Atomic write: writeFileSync writes to a temp path, then renameSync moves it over the target
 		assert.strictEqual(fsWriteFileSyncStub.called, true);
-		assert.strictEqual(fsWriteFileSyncStub.firstCall.args[0], '/test/config.yaml');
+		const writeTarget = fsWriteFileSyncStub.firstCall.args[0];
+		assert.ok(writeTarget.startsWith('/test/config.yaml.'), `expected temp path, got ${writeTarget}`);
+		assert.ok(writeTarget.endsWith('.tmp'), `expected .tmp suffix, got ${writeTarget}`);
+		assert.strictEqual(fsRenameSyncStub.calledOnce, true);
+		assert.deepStrictEqual(fsRenameSyncStub.firstCall.args, [writeTarget, '/test/config.yaml']);
 		assert.strictEqual(loggerStub.debug.called, true);
 		assert.match(loggerStub.debug.firstCall.args[0], /Config file updated/);
 

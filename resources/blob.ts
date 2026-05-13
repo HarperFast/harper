@@ -80,9 +80,6 @@ let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 // the header is 8 bytes
-// this is a reusable buffer for reading and writing to the header (without having to create new allocations)
-const HEADER = new Uint8Array(8);
-const headerView = new DataView(HEADER.buffer);
 const FILE_READ_TIMEOUT = 60000;
 // We want FileBackedBlob instances to be an instanceof Blob, but we don't want to actually extend the class and call Blob's constructor, which is quite expensive because it has to set it up as a transferrable.
 function InstanceOfBlobWithNoConstructor() {}
@@ -167,8 +164,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			try {
 				rawBytes = await readFile(filePath);
 				if (rawBytes.length >= HEADER_SIZE) {
-					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
-					const headerValue = headerView.getBigUint64(0);
+					const headerValue = new DataView(rawBytes.buffer, rawBytes.byteOffset, 8).getBigUint64(0);
 					if (Number(headerValue >> 48n) === ERROR_TYPE) {
 						throw new Error('Error in blob: ' + rawBytes.subarray(HEADER_SIZE));
 					}
@@ -316,8 +312,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								// else throw new Error();
 								return;
 							}
-							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-							const headerValue = headerView.getBigUint64(0);
+							const headerValue = new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0);
 							if (Number(headerValue >> 48n) === ERROR_TYPE) {
 								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead)));
 							}
@@ -334,41 +329,62 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							const buffer = Buffer.allocUnsafe(8);
 							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
 								if (error) return onError(error);
-								HEADER.set(buffer);
-								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+								size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
 									if (checkIfIsBeingWritten()) {
+										// detects the race where the writer finished between our last async read
+										// and the watcher being set up (or the watcher missing the final write event)
+										const resumeIfWriterFinished = (): boolean => {
+											if (readSync(fd, buffer, 0, HEADER_SIZE, 0) < HEADER_SIZE) return false;
+											const updatedSize = Number(
+												new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn
+											);
+											if (updatedSize === UNKNOWN_SIZE) return false;
+											size = updatedSize;
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+											}
+											readMore(resolve, reject);
+											return true;
+										};
 										// the file is not finished being written, watch the file for changes to resume reading
 										// set up a watcher to be notified of file changes
 										watcher = watch(filePath, { persistent: false }, () => {
-											watcher.close();
-											watcher = null;
-											clearTimeout(timer); // clear it
-											readMore(resolve, reject);
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+												clearTimeout(timer); // clear it
+												readMore(resolve, reject);
+											}
 										});
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
 											// never mind with the watcher, let's read more data
-											watcher.close();
-											watcher = null;
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+											}
 											readMore(resolve, reject);
-										} else {
+										} else if (!resumeIfWriterFinished()) {
 											// set a timer for the watcher too
 											timer = setTimeout(() => {
-												if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
-													// finally try to read one more time to see if it was a watcher failure
-													onError(
-														new Error(
-															`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
-														)
-													);
-												} else {
-													onError(
-														new Error(
-															`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
-														)
-													);
+												if (!resumeIfWriterFinished()) {
+													if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
+														// finally try to read one more time to see if it was a watcher failure
+														onError(
+															new Error(
+																`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															)
+														);
+													} else {
+														onError(
+															new Error(
+																`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															)
+														);
+													}
 												}
 											}, FILE_READ_TIMEOUT).unref();
 										}
@@ -986,13 +1002,22 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	}
 }
 
+export interface PreCommitBlobs {
+	blobs: Blob[];
+	complete: () => Promise<void[]>;
+}
+
 /**
  * Do a shallow/fast search for blobs on the record and start saving them if they are supposed to be saved before a commit
  * @param record
  * @param store
  */
-export function startPreCommitBlobsForRecord(record: any, store: LMDBStore | RocksDatabase, saveInRecord?: boolean) {
-	let blobsNeedingSaving = [];
+export function startPreCommitBlobsForRecord(
+	record: any,
+	store: LMDBStore | RocksDatabase,
+	saveInRecord?: boolean
+): PreCommitBlobs | undefined {
+	const blobsNeedingSaving: Blob[] = [];
 	for (const key in record) {
 		const value = record[key];
 		if (value instanceof FileBackedBlob && (saveInRecord || value.saveBeforeCommit)) {
@@ -1004,16 +1029,43 @@ export function startPreCommitBlobsForRecord(record: any, store: LMDBStore | Roc
 		}
 	}
 	if (blobsNeedingSaving.length > 0) {
-		// we do have blobs, start saving once the returned function is called
-		return () => {
-			currentStore = store;
-			return Promise.all(
-				blobsNeedingSaving.map((blob) => {
-					return saveBlob(blob, true).saving ?? Promise.resolve();
-				})
-			);
+		// we do have blobs, start saving once complete() is called
+		return {
+			blobs: blobsNeedingSaving,
+			complete: () => {
+				currentStore = store;
+				return Promise.all(
+					blobsNeedingSaving.map((blob) => {
+						return saveBlob(blob, true).saving ?? Promise.resolve();
+					})
+				);
+			},
 		};
 	}
+}
+
+/**
+ * Clean up blob files that were pre-saved as part of a transaction that ended up not committing
+ * (e.g. transaction aborted, optimistic-lock retry where the commit handler skipped the update).
+ *
+ * Waits for any in-flight save to settle before unlinking, so we don't race with the writer
+ * and leave a half-written file. Errors are swallowed — the blob may have already been
+ * cleaned up by deleteOnFailure on the save path.
+ * @param blobs blobs that were registered via {@link startPreCommitBlobsForRecord}
+ */
+export function cleanupUnusedBlobs(blobs: Blob[] | undefined): void {
+	if (!blobs?.length) return;
+	for (const blob of blobs) {
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
+		const settle = storageInfo.saving ?? Promise.resolve();
+		settle.then(
+			() => deleteBlob(blob),
+			() => deleteBlob(blob) // even on save failure, attempt cleanup in case a partial file remains
+		);
+	}
+	// idempotent: subsequent calls (e.g. from abort after commit-handler already cleaned up) are no-ops
+	blobs.length = 0;
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
@@ -1090,8 +1142,7 @@ addExtension({
 			try {
 				const buffer = readFileSync(getFilePath(storageInfo));
 				if (buffer.length >= HEADER_SIZE) {
-					buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-					const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+					const size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 					if (size === buffer.length - HEADER_SIZE) {
 						// the file is there and complete, we can return the encoding
 						return Buffer.concat([pack([options]), buffer]);

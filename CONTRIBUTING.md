@@ -38,6 +38,16 @@ This is configured in the `renovate.json` file in the project root. Renovate wil
 Harper staff will review these and merge them on a case-by-case basis. But contributors should feel free to comment on any pull requests
 they have feedback on. But in general, manually opening PRs to update dependencies is not necessary thanks to this automation.
 
+### Reducing package-lock.json merge conflicts
+
+The repository includes a `.gitattributes` entry that registers `npm-merge-driver` as the merge strategy for `package-lock.json`. To enable automatic conflict resolution when merging or rebasing locally, install it once:
+
+```bash
+npx npm-merge-driver install --global
+```
+
+This is optional — contributors who skip it will see standard merge conflict behavior. The driver is not used for server-side PR merges on GitHub.
+
 ## Repository Structure
 
 Most of the content within this repo is source files. The exceptions are `static` and `test` directories, and various configuration files (such as `eslint.config.mjs`, `prettier.config.mjs`, and `tsconfig.json`).

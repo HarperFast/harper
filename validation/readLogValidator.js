@@ -5,13 +5,11 @@ const validator = require('./validationWrapper.js');
 const moment = require('moment');
 const fs = require('fs-extra');
 const path = require('path');
-const _ = require('lodash');
 const { getConfigPath } = require('../config/configUtils.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const { LOG_LEVELS } = require('../utility/hdbTerms.ts');
 
 const LOG_DATE_FORMAT = 'YYYY-MM-DD hh:mm:ss';
-const INSTALL_LOG_LOCATION = path.resolve(__dirname, `../logs`);
 
 module.exports = function (object) {
 	return validator.validateBySchema(object, readLogSchema);
@@ -44,21 +42,21 @@ function validateDatetime(value, helpers) {
 }
 
 function validateReadLogPath(value, helpers) {
-	const processLogName = _.invert(hdbTerms.LOG_NAMES);
-	if (processLogName[value] === undefined) {
+	if (path.posix.basename(value) !== value || path.win32.basename(value) !== value) {
 		return helpers.message(`'log_name' '${value}' is invalid.`);
 	}
 
-	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-	const logName = value === undefined ? hdbTerms.LOG_NAMES.HDB : value;
-	const readLogPath =
-		logName === hdbTerms.LOG_NAMES.INSTALL
-			? path.join(INSTALL_LOG_LOCATION, hdbTerms.LOG_NAMES.INSTALL)
-			: path.join(logPath, logName);
+	const ext = path.extname(value);
+	if (ext && ext !== '.log') {
+		return helpers.message(`'log_name' '${value}' is invalid.`);
+	}
 
-	let exists = fs.existsSync(readLogPath);
-	if (exists) {
-		return null;
+	const logName = ext === '.log' ? value : `${value}.log`;
+	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+	const readLogPath = path.join(logPath, logName);
+
+	if (fs.existsSync(readLogPath)) {
+		return value;
 	}
 	return helpers.message(`'log_name' '${value}' does not exist.`);
 }

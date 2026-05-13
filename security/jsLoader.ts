@@ -246,7 +246,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		const runOptions = {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
-				const resolvedUrl = resolveModule(specifier, script.sourceURL);
+				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url);
 				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
 				return dynamicModule;
@@ -499,6 +499,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				context,
 				initializeImportMeta(meta) {
 					meta.url = url;
+					if (url.startsWith('file:')) {
+						meta.filename = fileURLToPath(url);
+						meta.dirname = dirname(meta.filename);
+					}
+					meta.resolve = (specifier: string) => resolveModule(specifier, url);
 				},
 				importModuleDynamically(specifier: string) {
 					const resolvedUrl = resolveModule(specifier, url);

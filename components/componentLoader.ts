@@ -1,5 +1,14 @@
 import { onMessageByType } from '../server/threads/manageThreads.js';
-import { readdirSync, readFileSync, existsSync, realpathSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import {
+	readdirSync,
+	readFileSync,
+	existsSync,
+	lstatSync,
+	realpathSync,
+	mkdirSync,
+	rmSync,
+	symlinkSync,
+} from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
@@ -12,7 +21,6 @@ import * as roles from '../resources/roles.ts';
 import * as jsHandler from '../resources/jsResource.ts';
 import * as login from '../resources/login.ts';
 import * as REST from '../server/REST.ts';
-import * as fastifyRoutesHandler from '../server/fastifyRoutes.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
@@ -25,7 +33,6 @@ import { Resources } from '../resources/Resources.ts';
 import { table } from '../resources/databases.ts';
 import { startSocketServer } from '../server/threads/socketRouter.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.js';
-import * as operationsServer from '../server/operationsServer.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, getConfigPath } from '../config/configUtils.js';
@@ -90,10 +97,11 @@ export const TRUSTED_RESOURCE_PLUGINS = {
 	graphqlSchema: graphqlHandler,
 	roles,
 	jsResource: jsHandler,
-	fastifyRoutes: fastifyRoutesHandler,
+	get fastifyRoutes() {
+		return require('../server/fastifyRoutes');
+	},
 	login,
 	static: staticFiles,
-	operationsApi: operationsServer,
 	customFunctions: {},
 	http: httpComponent,
 	authentication: auth,
@@ -106,6 +114,19 @@ export const TRUSTED_RESOURCE_PLUGINS = {
 	login: ...
 	 */
 };
+if (isMainThread) {
+	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
+} else {
+	// The HTTP operations API itself only binds in the main thread, but worker threads still
+	// dispatch operations — most notably, the replication WebSocket handler in workers receives
+	// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
+	// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
+	// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
+	// `server.registerOperation?.({...})` at their module top level. Requiring serverUtilities
+	// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
+	// workers while still installing the dispatch machinery.
+	require('../server/serverHelpers/serverUtilities');
+}
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
@@ -151,23 +172,26 @@ function symlinkHarperModule(componentDirectory: string) {
 
 				// validate harper module
 				const harperModule = join(nodeModulesDir, 'harper');
-				if (existsSync(harperModule)) {
-					if (realpathSync(harperModule) !== realpathSync(PACKAGE_ROOT)) {
-						// if it exists but is incorrectly linked, fix it
-						rmSync(harperModule, { recursive: true, force: true });
-						// create link to harper module
-						symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
-					}
-				} else {
-					// create link to harper module
+				let harperModuleLinked = false;
+				try {
+					lstatSync(harperModule); // throws ENOENT if absent; succeeds even for dangling symlinks
+					harperModuleLinked = realpathSync(harperModule) === realpathSync(PACKAGE_ROOT);
+				} catch {}
+				if (!harperModuleLinked) {
+					rmSync(harperModule, { recursive: true, force: true });
 					symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
 				}
 				// if there is a harperdb module, fix that too
 				const harperdbModule = join(nodeModulesDir, 'harperdb');
-				if (existsSync(harperdbModule) && realpathSync(harperdbModule) !== realpathSync(PACKAGE_ROOT)) {
-					// if it exists but is incorrectly linked, fix it
+				let harperdbModulePresent = false;
+				let harperdbModuleLinked = false;
+				try {
+					lstatSync(harperdbModule);
+					harperdbModulePresent = true;
+					harperdbModuleLinked = realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
+				} catch {}
+				if (harperdbModulePresent && !harperdbModuleLinked) {
 					rmSync(harperdbModule, { recursive: true, force: true });
-					// create link to harper module
 					symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
 				}
 

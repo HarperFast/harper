@@ -359,6 +359,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	const { port, securePort } = scope.options.getAll() as { port?: number; securePort?: number };
 	scope.server.http(authentication, port || securePort ? { port, securePort } : { port: 'all' });
 }
+
 // operations
 export async function login(loginObject) {
 	if (!loginObject.baseRequest?.login) throw new Error('No session for login');

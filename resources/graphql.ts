@@ -132,6 +132,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 							for (const arg of directive.arguments || []) {
 								if (arg.name.value === 'from') {
 									const computedFromExpression = (arg.value as StringValueNode).value;
+									property.computedFromExpression = computedFromExpression;
 									property.computed = {
 										from: createComputedFrom(computedFromExpression, arg, attributesObject),
 									};

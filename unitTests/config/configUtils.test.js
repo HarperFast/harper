@@ -136,6 +136,88 @@ describe('Test configUtils module', () => {
 		});
 	});
 
+	describe('Test atomicWriteFile function', () => {
+		const atomicWriteFile = config_utils_rw.__get__('atomicWriteFile');
+		const ATOMIC_TEST_DIR = path.join(DIRNAME, 'yaml');
+		const ATOMIC_TEST_PATH = path.join(ATOMIC_TEST_DIR, 'atomic-write-test.yaml');
+
+		before(() => {
+			fs.ensureDirSync(ATOMIC_TEST_DIR);
+		});
+
+		afterEach(() => {
+			try {
+				fs.unlinkSync(ATOMIC_TEST_PATH);
+			} catch {}
+			// Clean up any stray temp files from a failed run
+			for (const entry of fs.readdirSync(ATOMIC_TEST_DIR)) {
+				if (entry.startsWith('atomic-write-test.yaml.') && entry.endsWith('.tmp')) {
+					fs.unlinkSync(path.join(ATOMIC_TEST_DIR, entry));
+				}
+			}
+		});
+
+		it('writes content to the target path', () => {
+			atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /tmp/hdb');
+			expect(fs.readFileSync(ATOMIC_TEST_PATH, 'utf8')).to.equal('rootPath: /tmp/hdb');
+		});
+
+		it('overwrites an existing file', () => {
+			fs.writeFileSync(ATOMIC_TEST_PATH, 'rootPath: /old');
+			atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /new');
+			expect(fs.readFileSync(ATOMIC_TEST_PATH, 'utf8')).to.equal('rootPath: /new');
+		});
+
+		it('writes via temp file then rename so target is never truncated mid-write', () => {
+			const writeStub = sandbox.stub(fs, 'writeFileSync');
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			try {
+				atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+				expect(writeStub.calledOnce).to.be.true;
+				expect(renameStub.calledOnce).to.be.true;
+				const tempPath = writeStub.firstCall.args[0];
+				expect(tempPath).to.not.equal(ATOMIC_TEST_PATH);
+				expect(tempPath.startsWith(`${ATOMIC_TEST_PATH}.`)).to.be.true;
+				expect(tempPath.endsWith('.tmp')).to.be.true;
+				expect(path.dirname(tempPath)).to.equal(path.dirname(ATOMIC_TEST_PATH));
+				expect(renameStub.firstCall.args).to.deep.equal([tempPath, ATOMIC_TEST_PATH]);
+				expect(writeStub.calledBefore(renameStub)).to.be.true;
+			} finally {
+				writeStub.restore();
+				renameStub.restore();
+			}
+		});
+
+		it('leaves no temp file behind after a successful write', () => {
+			atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+			const stragglers = fs
+				.readdirSync(path.dirname(ATOMIC_TEST_PATH))
+				.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
+			expect(stragglers).to.be.empty;
+		});
+
+		it('generates a unique temp path even when pid and timestamp are identical', () => {
+			// Worker threads share process.pid, and worker arrivals cluster within the
+			// same millisecond — a pid+timestamp scheme would collide. Pin Date.now()
+			// so this test fails if uniqueness ever stops depending on randomness.
+			const writeStub = sandbox.stub(fs, 'writeFileSync');
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const dateStub = sandbox.stub(Date, 'now').returns(1234567890);
+			try {
+				const tempPaths = new Set();
+				for (let i = 0; i < 100; i++) {
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+					tempPaths.add(writeStub.lastCall.args[0]);
+				}
+				expect(tempPaths.size).to.equal(100);
+			} finally {
+				writeStub.restore();
+				renameStub.restore();
+				dateStub.restore();
+			}
+		});
+	});
+
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
 			analytics_aggregateperiod: 60,
@@ -648,6 +730,61 @@ describe('Test configUtils module', () => {
 
 			expect(logger_trace_stub.called).to.be.true;
 			expect(logger_trace_stub.args[0][0]).to.equal('No changes detected in config parameters, skipping update');
+		});
+
+		it('Test string env values matching typed config values are detected as equal', () => {
+			// Env vars are always strings, but flatConfigObj has typed values.
+			// Without casting, 'true' != true would fire updates on every boot.
+			config_utils_rw.__set__('flatConfigObj', {
+				logging_stdstreams: true,
+				logging_rotation_compress: false,
+				operationsapi_network_port: 9925,
+				http_corsaccesslist: ['https://example.com'],
+			});
+
+			config_utils_rw.updateConfigValue(undefined, undefined, {
+				logging_stdstreams: 'true',
+				logging_rotation_compress: 'false',
+				operationsapi_network_port: '9925',
+				http_corsaccesslist: '["https://example.com"]',
+			});
+
+			expect(logger_trace_stub.called).to.be.true;
+			expect(logger_trace_stub.args[0][0]).to.equal('No changes detected in config parameters, skipping update');
+		});
+
+		it('Test string env value differing from typed config value triggers update', () => {
+			const set_in_stub = sandbox.stub();
+			const get_in_stub = sandbox.stub().callsFake((path) => {
+				if (Array.isArray(path) && path[0] === 'rootPath') return HDB_ROOT;
+				return undefined;
+			});
+			const fake_config_doc = { setIn: set_in_stub, getIn: get_in_stub, errors: [] };
+			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
+			const parse_yaml_doc_rw = config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
+			const get_config_value_stub = sandbox.stub().returns(HDB_ROOT);
+			const get_config_value_rw = config_utils_rw.__set__('getConfigValue', get_config_value_stub);
+			const fs_exists_stub = sandbox.stub(fs, 'existsSync').returns(true);
+			const atomic_write_stub = sandbox.stub();
+			const atomic_write_rw = config_utils_rw.__set__('atomicWriteFile', atomic_write_stub);
+
+			try {
+				config_utils_rw.__set__('flatConfigObj', { logging_stdstreams: true });
+
+				config_utils_rw.updateConfigValue(undefined, undefined, { logging_stdstreams: 'false' });
+
+				expect(
+					logger_trace_stub.args.some(
+						(callArgs) => callArgs[0] === 'No changes detected in config parameters, skipping update'
+					)
+				).to.be.false;
+				expect(set_in_stub.called).to.be.true;
+			} finally {
+				parse_yaml_doc_rw();
+				get_config_value_rw();
+				fs_exists_stub.restore();
+				atomic_write_rw();
+			}
 		});
 	});
 

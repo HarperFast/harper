@@ -26,6 +26,7 @@ import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, Upgr
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
+import { makeCallbackChain as buildCallbackChain } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
 
 const { errorToString } = harperLogger;
@@ -36,7 +37,15 @@ server.upgrade = onUpgrade;
 const websocketServers = {};
 const httpServers = {},
 	httpChain = {},
-	httpResponders = [];
+	httpResponders: {
+		listener: Function;
+		port: number | string;
+		name?: string;
+		before?: string;
+		after?: string;
+		urlPath?: string;
+		host?: string;
+	}[] = [];
 let httpOptions: HttpOptions = {};
 export const universalHeaders: [string, string][] = [];
 const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
@@ -268,7 +277,16 @@ export function httpServer(listener, options) {
 	for (const { port, secure } of getPorts(options)) {
 		servers.push(getHTTPServer(port, secure, options));
 		if (typeof listener === 'function') {
-			httpResponders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
+			const entry = {
+				listener,
+				port: options?.port || port,
+				name: options?.name ?? getComponentName(),
+				before: options?.before,
+				after: options?.after,
+				urlPath: options?.urlPath || undefined,
+				host: options?.host || undefined,
+			};
+			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
@@ -561,21 +579,18 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	return httpServers[port];
 }
 
-function makeCallbackChain(responders, portNum) {
-	let nextCallback = unhandled;
-	// go through the listeners in reverse order so each callback can be passed to the one before
-	// and then each middleware layer can call the next middleware layer
-	for (let i = responders.length; i > 0; ) {
-		const { listener, port } = responders[--i];
-		if (port === portNum || port === 'all') {
-			const callback = nextCallback;
-			nextCallback = (...args) => {
-				// for listener only layers, the response through
-				return listener(...args, callback);
-			};
-		}
-	}
-	return nextCallback;
+function makeCallbackChain(responders: typeof httpResponders, portNum: number | string, requestArgIndex: number = 0) {
+	return buildCallbackChain(
+		responders,
+		portNum,
+		unhandled,
+		() => {
+			harperLogger.warn(
+				`Cycle detected in middleware before/after ordering on port ${portNum}; falling back to registration order.`
+			);
+		},
+		requestArgIndex
+	);
 }
 function unhandled(request) {
 	if (request.user) {
@@ -609,7 +624,16 @@ const upgradeListeners = [],
 
 function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 	for (const { port } of getPorts(options)) {
-		upgradeListeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		const entry = {
+			listener,
+			port: options?.port || port,
+			name: options?.name ?? getComponentName(),
+			before: options?.before,
+			after: options?.after,
+			urlPath: options?.urlPath || undefined,
+			host: options?.host || undefined,
+		};
+		upgradeListeners[options?.runFirst ? 'unshift' : 'push'](entry);
 		upgradeChains[port] = makeCallbackChain(upgradeListeners, port);
 	}
 }
@@ -620,6 +644,12 @@ type OnWebSocketOptions = {
 	maxPayload?: number;
 	usageType?: string;
 	mtls?: boolean;
+	runFirst?: boolean;
+	name?: string;
+	before?: string;
+	after?: string;
+	urlPath?: string;
+	host?: string;
 };
 const websocketListeners = [],
 	websocketChains = {};
@@ -688,8 +718,17 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		servers.push(server);
 
-		websocketListeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
-		websocketChains[port] = makeCallbackChain(websocketListeners, port);
+		const wsEntry = {
+			listener,
+			port: options?.port || port,
+			name: options?.name ?? getComponentName(),
+			before: options?.before,
+			after: options?.after,
+			urlPath: options?.urlPath || undefined,
+			host: options?.host || undefined,
+		};
+		websocketListeners[options?.runFirst ? 'unshift' : 'push'](wsEntry);
+		websocketChains[port] = makeCallbackChain(websocketListeners, port, 1);
 
 		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
 		httpChain[port] = makeCallbackChain(httpResponders, port);

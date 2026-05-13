@@ -75,7 +75,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					mqttLog.info?.('WebSocket error', error);
 				});
 			},
-			{ ...webSocket }
+			{ ...webSocket, after: 'authentication' }
 		); // if there is no port, we are piggy-backing off of default app http server
 	// standard TCP socket
 	if (port || securePort) {
@@ -209,7 +209,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 	}
 
-	parser.on('packet', async (packet) => {
+	parser.on('packet', async (packet: any) => {
 		try {
 			if (user?.then) user = await user;
 		} catch (error) {
@@ -285,7 +285,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
 						if (packet.will) {
 							const deserialize =
-								socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
+								socket.deserialize ||
+								(socket.deserialize = getDeserializer(request?.headers.get?.('content-type'), false));
 							packet.will.data = packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
 							delete packet.will.payload;
 						}
@@ -413,7 +414,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
 					// deserialize
 					const deserialize =
-						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
+						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type'), false));
 					const messageLength = packet.payload?.length || 0;
 					const data = messageLength > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
 					let published;

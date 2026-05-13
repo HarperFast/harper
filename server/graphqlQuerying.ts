@@ -696,6 +696,6 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				throw error;
 			}
 		},
-		{ port, securePort }
+		{ port, securePort, after: 'authentication' }
 	);
 }

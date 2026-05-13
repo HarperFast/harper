@@ -7,6 +7,7 @@ import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
 import { recordAction } from './analytics/write';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -357,7 +358,11 @@ export function searchByIndex(
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
-					const loadedEntry = Table.primaryStore.getEntry(key);
+					if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+					const loadedEntry = Table.primaryStore.getEntry(key, {
+						transaction: context && Table._readTxnForContext(context),
+					});
+					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 					Object.freeze(loadedEntry?.value);
 					recordRead(loadedEntry);
 					return { ...otherProps, ...loadedEntry };
@@ -1290,7 +1295,7 @@ function estimatedEntryCount(store) {
 	const now = Date.now();
 	if ((store.estimatedEntryCountExpires || 0) < now) {
 		// use getStats for LMDB because it is fast path, otherwise RocksDB can handle fast path on its own
-		store.estimatedEntryCount = store.readerCheck ? store.getStats().entryCount : store.getKeysCount();
+		store.estimatedEntryCount = store instanceof RocksDatabase ? store.getKeysCount() : store.getStats().entryCount;
 		store.estimatedEntryCountExpires = now + 10000;
 	}
 	return store.estimatedEntryCount;
