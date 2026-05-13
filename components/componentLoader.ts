@@ -116,6 +116,16 @@ export const TRUSTED_RESOURCE_PLUGINS = {
 };
 if (isMainThread) {
 	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
+} else {
+	// The HTTP operations API itself only binds in the main thread, but worker threads still
+	// dispatch operations — most notably, the replication WebSocket handler in workers receives
+	// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
+	// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
+	// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
+	// `server.registerOperation?.({...})` at their module top level. Requiring serverUtilities
+	// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
+	// workers while still installing the dispatch machinery.
+	require('../server/serverHelpers/serverUtilities');
 }
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
