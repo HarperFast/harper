@@ -109,7 +109,7 @@ export class HierarchicalNavigableSmallWorld {
 		if (existingVector) {
 			// If we are updating an existing entry, we need to update the entry point
 			// if the new entry is closer to the entry point than the old one
-			oldNode = { ...this.indexStore.getSync(nodeId, options) };
+			oldNode = { ...this.safeGetSync(nodeId, options) };
 		} else oldNode = {} as Node;
 		if (vector) {
 			let entryPoint = entryPointId ? this.safeGetSync(entryPointId, options) : undefined;
