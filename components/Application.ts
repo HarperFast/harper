@@ -600,6 +600,10 @@ export function nonInteractiveSpawn(
 			env.GIT_SSH_COMMAND = gitSSHCommand;
 		}
 
+		if (process.platform === 'win32' && command === 'npm') {
+			command = 'npm.cmd';
+		}
+
 		const childProcess = spawn(command, args, {
 			shell: true,
 			cwd,
