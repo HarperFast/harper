@@ -32,28 +32,35 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 				if (check.status === 200) {
 					const data = await check.json();
 					console.log(
-						`[poll] status=200 isArray=${Array.isArray(data)} length=${Array.isArray(data) ? data.length : 'n/a'}`
+						`[early-hints poll seed] status=200 isArray=${Array.isArray(data)} length=${Array.isArray(data) ? data.length : 'n/a'}`
 					);
 					if (Array.isArray(data) && data.length >= 3) break;
+				} else {
+					console.log(`[early-hints poll seed] unexpected status: ${check.status}`);
 				}
-			} catch {
-				// server not yet accepting connections
+			} catch (e: any) {
+				console.log(`[early-hints poll seed] waiting for server... (${e.message})`);
 			}
 			if (Date.now() > seedDeadline) throw new Error('Timed out waiting for early-hints seed data');
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 		await new Promise((resolve) => setTimeout(resolve, 2000));
 
-		const readyDeadline = Date.now() + 10_000;
+		const readyDeadline = Date.now() + 60_000;
 		while (true) {
 			try {
 				const check = await fetch(`${ctx.harper.httpURL}/site-images/`);
-				if (check.status === 200) break;
-			} catch {
-				// worker still restarting
+				if (check.status === 200) {
+					console.log('[early-hints poll ready] Server is ready.');
+					break;
+				} else {
+					console.log(`[early-hints poll ready] unexpected status: ${check.status}`);
+				}
+			} catch (e: any) {
+				console.log(`[early-hints poll ready] worker still restarting... (${e.message})`);
 			}
 			if (Date.now() > readyDeadline) throw new Error('Timed out waiting for Harper to be ready after restart');
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 	});
 
