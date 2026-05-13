@@ -54,7 +54,7 @@
 		"build:watch": "npm run build -- --watch --incremental",
 		"package": "./build-tools/build.sh",
 		"lint": "oxlint --format stylish --deny-warnings .",
-		"lint:required": "oxlint --quiet .",
+		"lint:required": "oxlint --format stylish --quiet .",
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",

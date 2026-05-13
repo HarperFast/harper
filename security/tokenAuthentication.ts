@@ -226,3 +226,30 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 }
+
+/**
+ * Decodes a JWT and returns its payload.
+ * @param {string} token The JWT token to decode.
+ * @returns {Object|null} The decoded payload or null if invalid.
+ */
+export function decodeJWT(token: string): null | { exp: number; iat: number } {
+	try {
+		const parts = token.split('.');
+		if (parts.length !== 3) return null;
+		const payload = parts[1];
+		const decoded = Buffer.from(payload, 'base64').toString('utf8');
+		return JSON.parse(decoded);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Decodes a JWT and checks if it has expired or is going to expire soon (based on the buffer seconds).
+ */
+export function isJWTExpired(token: string, bufferSeconds = 300): boolean {
+	const payload = decodeJWT(token);
+	if (!payload || !payload.exp) return true;
+	const now = Math.floor(Date.now() / 1000);
+	return payload.exp < now + bufferSeconds;
+}

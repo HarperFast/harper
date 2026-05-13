@@ -752,12 +752,12 @@ export function noBootFile() {
 	}
 }
 
-export function httpRequest(options: any, data: any) {
+export function httpRequest(options: any, data: any): Promise<http.IncomingMessage & { body?: string }> {
 	let client;
 	if (options.protocol === 'http:') client = http;
 	else client = https;
 	return new Promise((resolve, reject) => {
-		const req = client.request(options, (response) => {
+		const req = client.request(options, (response: http.IncomingMessage & { body?: string }) => {
 			response.setEncoding('utf8');
 			response.body = '';
 			response.on('data', (chunk) => {

@@ -25,6 +25,8 @@ copy-db <source> <target>       - Copies a database from source path to target p
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
 <api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
+login [target] [username]       - Login to a remote or local Harper instance
+logout [target]                 - Logout from Harper and clear saved JWT
 register                        - Register harperdb
 renew-certs                     - Generate a new set of self-signed certificates
 restart                         - Restart the harperdb background process
@@ -81,6 +83,17 @@ async function harper() {
 				.then(() => 'Your instance of Harper is up to date!');
 		case SERVICE_ACTIONS_ENUM.STATUS:
 			return (require('./status').default || require('./status'))();
+		case SERVICE_ACTIONS_ENUM.LOGIN: {
+			const target = process.argv[3];
+			const username = process.argv[4];
+			const { login } = require('./login');
+			return login(target, username);
+		}
+		case SERVICE_ACTIONS_ENUM.LOGOUT: {
+			const target = process.argv[3];
+			const { logout } = require('./logout');
+			return logout(target);
+		}
 		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
 			return require('../security/keys')
 				.renewSelfSigned()

@@ -1,5 +1,7 @@
 'use strict';
 
+import { loadCredentials, saveCredentials, normalizeTarget } from './cliCredentials.ts';
+import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
@@ -57,14 +59,31 @@ function buildRequest(): any {
 }
 
 /**
+ * Resolves the target URL from various sources.
+ * @param {Object} req The request object.
+ * @param {Object} allCredentials Stored credentials.
+ * @returns {string|null} The resolved target URL.
+ */
+function resolveTarget(req, allCredentials) {
+	return (
+		req.target ||
+		process.env.HARPER_CLI_TARGET ||
+		process.env.CLI_TARGET ||
+		(allCredentials && allCredentials.last_target)
+	);
+}
+
+/**
  * Using a unix domain socket will send a request to hdb operations API server
  * @param req
+ * @param skipResponseLog By default, the response is logged to the console. Set this to true to skip logging it, which can be useful for sensitive responses like login calls!
  * @returns {Promise<void>}
  */
-async function cliOperations(req: any) {
-	if (!req.target) {
-		req.target = process.env.HARPER_CLI_TARGET || process.env.CLI_TARGET;
-	}
+async function cliOperations(req: any, skipResponseLog = false) {
+	require('dotenv').config();
+
+	const allCredentials = loadCredentials();
+	req.target = normalizeTarget(resolveTarget(req, allCredentials));
 	let target;
 	if (req.target) {
 		try {
@@ -76,6 +95,7 @@ async function cliOperations(req: any) {
 				throw error;
 			}
 		}
+		const resolvedTarget = req.target;
 		target = {
 			protocol: target.protocol,
 			hostname: target.hostname,
@@ -83,8 +103,9 @@ async function cliOperations(req: any) {
 			username: req.username || target.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME,
 			password: req.password || target.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
 			rejectUnauthorized: req.rejectUnauthorized,
+			resolvedTarget,
 		};
-		console.error(`Connecting to ${target.protocol}//${target.hostname}:${target.port}`);
+		console.error(`Connecting to ${resolvedTarget}`);
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
@@ -110,6 +131,47 @@ async function cliOperations(req: any) {
 		options.headers = { 'Content-Type': 'application/json' };
 		if (target?.username) {
 			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
+		} else if (allCredentials) {
+			let tokens = null;
+			let lookupKey = null;
+			if (target && allCredentials.targets) {
+				lookupKey = target.resolvedTarget;
+				tokens = allCredentials.targets[lookupKey] ?? null;
+			}
+
+			if (tokens?.operation_token) {
+				if (tokens.refresh_token && isJWTExpired(tokens.operation_token)) {
+					console.error('Operation token expired, attempting to refresh...');
+					try {
+						const refreshOptions = { ...options };
+						refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
+						const refreshResponse = await httpRequest(refreshOptions, {
+							operation: 'refresh_operation_token',
+						});
+						if (refreshResponse.statusCode === 200) {
+							const refreshData = JSON.parse(refreshResponse.body);
+							if (refreshData.operation_token) {
+								tokens.operation_token = refreshData.operation_token;
+								saveCredentials(lookupKey || target?.resolvedTarget, {
+									operation_token: tokens.operation_token,
+									refresh_token: tokens.refresh_token,
+								});
+								console.error('Operation token refreshed successfully.');
+								// Update the original request's authorization header with the new token
+								options.headers.Authorization = `Bearer ${tokens.operation_token}`;
+							}
+						} else if (refreshResponse.statusCode === 401) {
+							console.error('Refresh token expired or invalid. Please run harper login again.');
+							process.exit(1);
+						} else {
+							console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
+						}
+					} catch (refreshErr) {
+						console.error(`Error refreshing operation token: ${refreshErr.message}`);
+					}
+				}
+				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
+			}
 		}
 		if (req.cborEncode) {
 			options.headers['Content-Type'] = 'application/cbor';
@@ -141,7 +203,13 @@ async function cliOperations(req: any) {
 			process.exit(1);
 		}
 
-		console.log(responseLog);
+		if (!skipResponseLog) {
+			console.log(responseLog);
+		}
+
+		if (target) {
+			responseData.resolvedTarget = target.resolvedTarget;
+		}
 
 		return responseData;
 	} catch (err) {
