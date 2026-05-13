@@ -26,7 +26,7 @@ export async function verifyFilesDoNotExist(folderPath) {
 		try {
 			files = await fs.readdir(folderPath);
 		} catch (err) {
-			assert.ok(err.toString().includes(`no such file or directory, scandir '${folderPath}'`));
+			assert.ok(err.code === 'ENOENT', `expected ENOENT, got ${err.code}: ${err.message}`);
 			console.log('Checked: folder does not exist');
 		}
 		if (files !== undefined) {

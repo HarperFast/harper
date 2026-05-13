@@ -312,14 +312,16 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Create schema for wildcard test', () => {
+	it('Create schema for wildcard test', function (t) {
+		if (process.platform === 'win32') return t.skip('Windows does not allow * in directory names');
 		return req()
 			.send({ operation: 'create_schema', schema: 'h*rper%1' })
 			.expect((r) => assert.equal(r.body.message, "database 'h*rper%1' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('Drop wildcard schema', () => {
+	it('Drop wildcard schema', function (t) {
+		if (process.platform === 'win32') return t.skip('Windows does not allow * in directory names');
 		return req()
 			.send({ operation: 'drop_schema', schema: 'h*rper%1' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'h*rper%1'", r.text))
