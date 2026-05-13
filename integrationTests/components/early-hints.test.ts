@@ -6,7 +6,11 @@
  * conversion, empty hints handling, and response length limits.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -19,7 +23,7 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		const deployBody = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'early-hints',
-			package: 'https://github.com/ldt1996/template-early-hints',
+			package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
 			restart: true,
 		});
 		deepStrictEqual(deployBody, { message: 'Successfully deployed: early-hints, restarting Harper' });

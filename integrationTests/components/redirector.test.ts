@@ -7,6 +7,10 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -34,7 +38,7 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 		const deployBody = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'redirector',
-			package: 'https://github.com/HarperFast/template-redirector',
+			package: join(__dirname, '../fixtures/template-redirector-3.0.1.tgz'),
 			restart: true,
 		});
 		deepStrictEqual(deployBody, { message: 'Successfully deployed: redirector, restarting Harper' });
