@@ -287,6 +287,7 @@ function listenOnPorts() {
 }
 
 async function listenOnPortsBun() {
+	const isMac = process.platform === 'darwin';
 	const bunServeConfigs = httpComponent.bunServeConfigs;
 	for (let port in bunServeConfigs) {
 		const config = bunServeConfigs[port];
@@ -309,7 +310,6 @@ async function listenOnPortsBun() {
 			} else {
 				portNumber = +port;
 			}
-			const isMac = process.platform === 'darwin';
 			const serveOptions = {
 				port: portNumber,
 				reusePort: !isWindows && !isMac,
@@ -424,7 +424,7 @@ async function listenOnPortsBun() {
 				listening.push(
 					new Promise((resolve, reject) => {
 						server
-							.listen({ port: portNum, host: rawHostname || '0.0.0.0' }, () => {
+							.listen({ port: portNum, host: rawHostname || (isMac ? '0.0.0.0' : '::') }, () => {
 								resolve({ port });
 								harperLogger.trace('Listening on port ' + port, threadId);
 							})
