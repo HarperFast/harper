@@ -195,7 +195,7 @@ jobs:
           if-no-files-found: ignore
 
   run-integration-apiTests-windows:
-    name: Integration API Tests (Windows, Node.js v22)
+    name: Integration API Tests (Windows, Node.js v24)
     needs: [build-windows]
     runs-on: windows-latest
     timeout-minutes: 15
@@ -204,10 +204,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22
+          node-version: 24
           package-manager-cache: false
 
       - name: Download build artifacts
@@ -303,17 +303,17 @@ jobs:
           if-no-files-found: ignore
 
   build-windows:
-    name: Build Harper (Windows, Node.js v22)
+    name: Build Harper (Windows, Node.js v24)
     runs-on: windows-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 22
+          node-version: 24
           package-manager-cache: false
 
       - name: Install dependencies
@@ -335,7 +335,7 @@ jobs:
           retention-days: 1
 
   run-integration-tests-windows:
-    name: Integration Tests ${{matrix.shard}}/4 (Windows, Node.js v22)
+    name: Integration Tests ${{matrix.shard}}/4 (Windows, Node.js v24)
     runs-on: windows-latest
     needs: [build-windows]
     strategy:
@@ -347,10 +347,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 22
+          node-version: 24
           package-manager-cache: false
 
       - name: Download build artifacts

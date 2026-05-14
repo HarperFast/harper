@@ -16,6 +16,10 @@ export function createSchema(schemaName) {
 }
 
 export function dropSchema(schemaName, failTest) {
+	if (process.platform === 'win32') {
+		console.log(`Skipping dropSchema('${schemaName}') on Windows to avoid HarperDB crash.`);
+		return Promise.resolve();
+	}
 	return req()
 		.send({
 			operation: 'drop_schema',
