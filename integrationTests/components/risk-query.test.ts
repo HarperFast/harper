@@ -6,6 +6,10 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -13,11 +17,11 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
-		// Deploy risk-query from GitHub
+		// Deploy risk-query from local fixture
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'risk-query',
-			package: 'https://github.com/HarperFast/risk-query',
+			package: join(__dirname, '../fixtures/risq-1.0.0.tgz'),
 			restart: true,
 		});
 		deepStrictEqual(body, { message: 'Successfully deployed: risk-query, restarting Harper' });
