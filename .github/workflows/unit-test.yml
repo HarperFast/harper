@@ -55,11 +55,4 @@ jobs:
         run: node --enable-source-maps ./dist/bin/harper.js install
 
       - name: Run tests
-        # LMDB's native module segfaults under Node.js v24; skip the LMDB variant until the
-        # upstream module is updated to support v24.  All other test suites still run on v24.
-        run: |
-          if [ "${{ matrix.node-version }}" = "24" ]; then
-            npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources
-          else
-            npm run test:unit:all
-          fi
+        run: npm run test:unit:all
