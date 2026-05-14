@@ -272,7 +272,14 @@ function listenOnPorts() {
 						resolve({ port, name: server.name, protocol_name: server.protocol_name });
 						harperLogger.trace('Listening on port ' + port, threadId);
 					})
-					.on('error', reject);
+					.on('error', (err) => {
+						// Node.js before v20.11.1 does not properly support reusePort for net.Server —
+						// workers receive EADDRINUSE even though the main thread bound with reusePort: true.
+						// Resolve rather than reject so the worker can proceed, matching the same graceful
+						// handling already present in listenOnPortsBun().
+						if (err.code === 'EADDRINUSE') resolve({ port, name: server.name, protocol_name: server.protocol_name });
+						else reject(err);
+					});
 			})
 		);
 	}
