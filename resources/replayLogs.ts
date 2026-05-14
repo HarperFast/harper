@@ -6,6 +6,7 @@ import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';
 import { RequestTarget } from './RequestTarget.ts';
+import { classifyAuditEntryForReplay } from './replayLogsGuards.ts';
 
 let warnedReplayHappening = false;
 export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void> {
@@ -24,11 +25,16 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let transaction: DatabaseTransaction;
 		let lastTimestamp = 0;
 		let writes = 0;
+		let skipped = 0;
 		const txnLog: RocksTransactionLogStore = rootStore.auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true })) {
 			const { type, tableId, nodeId, recordId, version, residencyId, expiresAt, originatingOperation, username } =
 				auditRecord;
 			try {
+				if (classifyAuditEntryForReplay(type, tableId, true) === 'corrupt-header') {
+					skipped++;
+					continue;
+				}
 				const Table = tableById.get(tableId);
 				if (!Table) continue;
 				const context: Context = { nodeId, alreadyLogged: true, version, expiresAt, user: { name: username } };
@@ -42,7 +48,22 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					warnedReplayHappening = true;
 					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
 				}
-				const record = auditRecord.getValue(primaryStore);
+				let record: any;
+				try {
+					record = auditRecord.getValue(primaryStore);
+				} catch {
+					// msgpack/structure decode failed for this entry's value. Skip rather than
+					// fall through to a guaranteed downstream crash, and intentionally drop the
+					// error: every corrupt entry would otherwise log a stack trace per iteration
+					// (millions of these were observed in prod). The total skip count is logged
+					// once at the end of replay.
+					skipped++;
+					continue;
+				}
+				if (classifyAuditEntryForReplay(type, tableId, record !== undefined) === 'missing-record') {
+					skipped++;
+					continue;
+				}
 				if (lastTimestamp !== version) {
 					lastTimestamp = version;
 					try {
@@ -127,6 +148,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 			logger.error('Error committing replay transaction', error);
 		}
 		if (writes > 0) logger.warn(`Replayed ${writes} records in ${rootStore.databaseName} database`);
+		if (skipped > 0)
+			logger.warn(`Skipped ${skipped} unrecoverable audit entries in ${rootStore.databaseName} database during replay`);
 		// we never actually release the lock because we only want to ever run one time
 		// rootStore.unlock('replayLogs');
 	});
