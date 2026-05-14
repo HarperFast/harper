@@ -1103,6 +1103,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
 					changed ||
+					attributeDescriptor.indexingFailed ||
 					(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
 					attributeDescriptor.restartNumber < workerData?.restartNumber
 				) {
@@ -1111,6 +1112,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					attributeDescriptor = attributesDbi.getSync(dbiKey);
 					if (
 						changed ||
+						attributeDescriptor.indexingFailed ||
 						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
 						attributeDescriptor.restartNumber < workerData?.restartNumber
 					) {
@@ -1124,14 +1126,21 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						if (hasExistingData) {
 							attribute.lastIndexedKey = attributeDescriptor?.lastIndexedKey ?? undefined;
 							attribute.indexingPID = process.pid;
+							delete attribute.indexingFailed; // clear failure flag for the new run
+							delete attribute.indexingAttempt; // reset attempt counter
 							dbi.isIndexing = true;
-							Object.defineProperty(attribute, 'dbi', { value: dbi });
+							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
 							attributesToIndex.push(attribute);
 						}
 					}
 					attributesDbi.put(dbiKey, attribute);
 				}
+				// If a migration is in progress (indexingPID set), any newly opened dbi must also
+				// reflect isIndexing = true. A resetDatabases() during an active runIndexing creates
+				// a new dbi object; without this, queries could use the new dbi (isIndexing = false)
+				// and return incomplete results while the backfill is still running.
+				if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
 				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 				dbi.indexNulls = attribute.indexNulls;
 				indices[attribute.name] = dbi;
@@ -1202,6 +1211,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			lastResolution = index.drop();
 		}
 		let interrupted;
+		let hadIndexingErrors = false;
 		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
@@ -1255,6 +1265,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 							}
 						}
 					} catch (error) {
+						hadIndexingErrors = true;
 						if (!attributeErrorReported[property]) {
 							// just report an indexing error once per attribute so we don't spam the logs
 							attributeErrorReported[property] = true;
@@ -1267,6 +1278,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					() => outstanding--,
 					(error) => {
 						outstanding--;
+						hadIndexingErrors = true;
 						logger.error(error);
 					}
 				);
@@ -1284,20 +1296,64 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
 				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
 			}
+		}
+		// Await the last pending put. If it rejects, that's also an indexing error.
+		try {
+			await lastResolution;
+		} catch (error) {
+			hadIndexingErrors = true;
+			logger.error(error);
+		}
+		// Yield one more event turn so any queued when() error callbacks (which fire as
+		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
+		// before we decide whether to mark indexing as complete.
+		await new Promise((resolve) => setImmediate(resolve));
+		if (hadIndexingErrors) {
+			// Some records failed to index. Persist the failure marker in the descriptor so
+			// the next call to table() (including after a restart with a fresh PID) re-triggers
+			// the backfill from the last checkpoint. Do NOT clear indexingPID or isIndexing —
+			// leave the index in its incomplete state so queries return 503 "not indexed yet"
+			// rather than silently returning partial results. This is the key fix for the
+			// serent-canopy issue #135 fingerprint: a completed migration with transient errors
+			// (e.g. ERR_BUSY from RocksDB under load) leaving gaps while appearing successful.
+			for (const attribute of attributes) {
+				attribute.indexingFailed = true;
+				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
+				lastResolution = Table.dbisDB.put(attribute.key, attribute);
+				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
+				// in Table.indices (which may differ if resetDatabases() ran during this pass).
+				attribute.dbi.isIndexing = true;
+				const activeDbi = Table.indices[attribute.name];
+				if (activeDbi) activeDbi.isIndexing = true;
+			}
+			await lastResolution;
+			logger.warn(
+				`Indexing of ${Table.tableName} encountered errors on some records — index will remain incomplete. ` +
+					`On next restart the migration will be retried from the last checkpoint (indexingFailed=true). ` +
+					`Affected attributes: ${attributes.map((a) => a.name).join(', ')}`
+			);
+		} else {
 			// update the attributes to indicate that we are finished
 			for (const attribute of attributes) {
 				delete attribute.lastIndexedKey;
 				delete attribute.indexingPID;
+				delete attribute.indexingFailed;
+				delete attribute.indexingAttempt;
 				attribute.dbi.isIndexing = false;
+				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
+				// differ from attribute.dbi if a resetDatabases() call during this migration
+				// opened a new dbi and registered it there.
+				const activeDbi = Table.indices[attribute.name];
+				if (activeDbi) activeDbi.isIndexing = false;
 				lastResolution = Table.dbisDB.put(attribute.key, attribute);
 			}
+			await lastResolution;
+			// now notify all the threads that we are done and the index is ready to use
+			await signalling.signalSchemaChange(
+				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
+			);
+			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 		}
-		await lastResolution;
-		// now notify all the threads that we are done and the index is ready to use
-		await signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
-		);
-		logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 	} catch (error) {
 		logger.error('Error in indexing', error);
 	}
