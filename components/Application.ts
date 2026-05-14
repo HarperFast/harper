@@ -131,6 +131,8 @@ export async function extractApplication(application: Application) {
 	// Resolve the tarball from the input
 	let tarballPath: string;
 	let tarball: Readable;
+	let shouldDeleteTarball = false;
+
 	if (application.payload) {
 		// Given a payload, create a Readable from the Buffer or string
 		tarball = Readable.from(
@@ -196,6 +198,7 @@ export async function extractApplication(application: Application) {
 			}
 
 			tarballPath = join(parentDirPath, packResult[0].filename);
+			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
 		}
 	}
@@ -237,7 +240,7 @@ export async function extractApplication(application: Application) {
 	}
 
 	// Clean up the original tarball
-	if (tarballPath) {
+	if (shouldDeleteTarball && tarballPath) {
 		await rm(tarballPath, { force: true });
 	}
 }
