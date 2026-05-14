@@ -87,7 +87,8 @@ describe('20. REST tests', () => {
 			.expect(200);
 	});
 
-	it('[rest] Request POST with too large of body', () => {
+	it('[rest] Request POST with too large of body', function (t) {
+		if (process.platform === 'win32') return t.skip('Windows: Connection gets reset instead of 413');
 		const bigProperty = Array(1000000).fill('this is a test');
 		return request(envUrlRest).post('/Related/').set(headers).send({ bigProperty }).expect(413);
 	});
