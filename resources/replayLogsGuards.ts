@@ -8,23 +8,35 @@
 // running over potentially millions of entries, pinning CPU. These guards classify each
 // entry up front so the loop can skip cleanly.
 
-// Types whose replay requires a decoded record value. Missing records on any of these
-// crashes inside validate() on the first attribute dereference.
-export const REQUIRES_RECORD = new Set(['put', 'patch', 'message', 'invalidate']);
+// Mirrors `HAS_RECORD` (16) | `HAS_PARTIAL_RECORD` (32) from auditStore.ts — the action
+// bits the writer sets when an entry carries (or should carry) a record body. Redeclared
+// here so this module stays free of the Harper module graph for unit testing; a lock
+// test pins the value against auditStore so silent drift is caught.
+export const RECORD_BEARING_FLAGS = 16 | 32;
 
 /**
- * Returns `null` if the entry is safe to replay, or a short reason string otherwise.
+ * Decide whether an audit entry pulled from the unflushed log is safe to replay.
+ * Returns `null` if the entry should be replayed, or a short reason string if it should
+ * be skipped (the loop logs the aggregate skip count once at the end).
  *
- * @param type        `auditRecord.type` — `undefined` when readAuditEntry caught a header decode error
- * @param tableId     `auditRecord.tableId` — `undefined` for the same reason
+ * Operates on the raw integer `action` field rather than the decoded type string: when
+ * `readAuditEntry` catches a header decode error it returns `{}`, so both `action` and
+ * `tableId` are `undefined` — the same signal — and matching the record-bearing flags
+ * directly against the action mirrors how the writer set them in `auditStore.ts`.
+ *
+ * @param action      `auditRecord.extendedType` — the variable-length action field with
+ *                    the event type in the low nibble and HAS_* flags above it
+ * @param tableId     `auditRecord.tableId`
  * @param hasRecord   `true` if `auditRecord.getValue(...)` produced a non-undefined value
  */
 export function classifyAuditEntryForReplay(
-	type: string | undefined,
+	action: number | undefined,
 	tableId: number | undefined,
 	hasRecord: boolean
 ): 'corrupt-header' | 'missing-record' | null {
-	if (type === undefined || tableId === undefined) return 'corrupt-header';
-	if (REQUIRES_RECORD.has(type) && !hasRecord) return 'missing-record';
+	if (action === undefined || tableId === undefined) return 'corrupt-header';
+	// If the action advertises a record body but the decoded record is undefined, the
+	// downstream write path will crash inside validate() on the first attribute deref.
+	if ((action & RECORD_BEARING_FLAGS) !== 0 && !hasRecord) return 'missing-record';
 	return null;
 }
