@@ -111,6 +111,7 @@ source tree — which permanently shadows git's config file. Every subsequent ag
 `fatal: unknown error occurred while reading the configuration files` and the cycle repeats.
 
 **Rules to prevent recurrence:**
+
 - Never run `git submodule deinit core` + re-init from the `harper-pro` parent — it regenerates
   the module config without the required `core.worktree` setting.
 - Never run `git checkout` or `git reset` while your working directory is inside
