@@ -261,7 +261,14 @@ export class DatabaseTransaction implements Transaction {
 						if (this.writes.length > 0) {
 							commitResolution = transaction.commit();
 						} else {
-							commitResolution = transaction.abort();
+							try {
+								commitResolution = transaction.abort();
+							} catch {
+								// The transaction has uncommitted writes that were already cleared from
+								// this.writes by a concurrent immediate-commit path (e.g. writes made with
+								// an explicitly-reused closed transaction). Those writes are handled by the
+								// concurrent commit, so there is nothing left to do here.
+							}
 						}
 					}
 				}
