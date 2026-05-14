@@ -272,7 +272,12 @@ function listenOnPorts() {
 						resolve({ port, name: server.name, protocol_name: server.protocol_name });
 						harperLogger.trace('Listening on port ' + port, threadId);
 					})
-					.on('error', reject);
+					.on('error', (err) => {
+						// Another worker (or the main thread) already bound this port — that's fine,
+						// matching the same graceful handling in listenOnPortsBun().
+						if (err.code === 'EADDRINUSE') resolve({ port, name: server.name, protocol_name: server.protocol_name });
+						else reject(err);
+					});
 			})
 		);
 	}
