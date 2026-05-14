@@ -52,10 +52,14 @@ describe('Audit log', () => {
 		setAuditRetention(0.001, 1);
 		AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		results = [];
-		for await (let entry of AuditedTable.getHistory()) {
-			results.push(entry);
+		// Poll until cleanup completes (was a fixed 20ms which is too short on a loaded CI runner)
+		for (let i = 0; i < 20; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			results = [];
+			for await (let entry of AuditedTable.getHistory()) {
+				results.push(entry);
+			}
+			if (results.length === 0) break;
 		}
 
 		assert.equal(results.length, 0);
