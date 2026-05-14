@@ -28,10 +28,20 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let skipped = 0;
 		const txnLog: RocksTransactionLogStore = rootStore.auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true })) {
-			const { type, tableId, nodeId, recordId, version, residencyId, expiresAt, originatingOperation, username } =
-				auditRecord;
+			const {
+				type,
+				tableId,
+				nodeId,
+				recordId,
+				version,
+				residencyId,
+				expiresAt,
+				originatingOperation,
+				username,
+				extendedType,
+			} = auditRecord;
 			try {
-				if (classifyAuditEntryForReplay(type, tableId, true) === 'corrupt-header') {
+				if (classifyAuditEntryForReplay(extendedType, tableId, true) === 'corrupt-header') {
 					skipped++;
 					continue;
 				}
@@ -60,7 +70,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					skipped++;
 					continue;
 				}
-				if (classifyAuditEntryForReplay(type, tableId, record !== undefined) === 'missing-record') {
+				if (classifyAuditEntryForReplay(extendedType, tableId, record !== undefined) === 'missing-record') {
 					skipped++;
 					continue;
 				}
