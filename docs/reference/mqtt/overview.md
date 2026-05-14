@@ -49,13 +49,39 @@ Harper supports multi-level topics for both publishing and subscribing:
 ### Sessions
 
 - **Clean sessions** — Subscriptions and queued messages are discarded on disconnect.
-- **Durable sessions** — Subscriptions and queued messages are persisted across reconnects.
+- **Durable sessions** — Subscriptions and queued messages are persisted across reconnects. See [Durable Sessions](#durable-sessions) below.
+
+### Durable Sessions
+
+A durable session retains a client's subscription list and any unacknowledged messages across disconnects. When the client reconnects with the same client ID, it picks up from where it left off — including any messages published while it was offline.
+
+Durable sessions in Harper are persisted as records in the `hdb_durable_session` system table, indexed by client ID. The session record holds the list of subscriptions (topic + QoS) and the timestamp of the last delivered message per topic. Because durable sessions are records rather than in-memory state, an abandoned session sits idle with no runtime cost until the client reconnects or the record is deleted.
+
+**Establishing a durable session** — Connect with a stable client ID and `cleanSession: false` (MQTT v3.1.1) or `cleanStart: false` (MQTT v5):
+
+```javascript
+// MQTT v5 with the `mqtt` npm package
+mqtt.connect('mqtts://harper.example.com:8883', {
+    clientId: 'sensor-42',
+    clean: false, // request a durable session
+    protocolVersion: 5,
+    properties: {
+        sessionExpiryInterval: 86400, // keep session for 24h after disconnect
+    },
+});
+```
+
+**Catch-up on reconnect** — When the client reconnects, Harper replays missed messages on subscribed topics by reading the audit log. For this to work, audit logging must be enabled on the tables backing the subscribed topics. See [Transaction Logging](../database/transaction.md) and [`logging.auditLog`](../logging/configuration.md#loggingauditlog).
+
+**Session expiry** — In MQTT v5, the `sessionExpiryInterval` property on `CONNECT` controls how long the session is retained after the client disconnects. With `sessionExpiryInterval: 0` (or a clean session connect), Harper deletes the session record at disconnect. Connecting with the same client ID and `clean: true` also explicitly deletes any existing durable session.
+
+**Distributed durable sessions** — Harper does not currently maintain a single logical durable session across multiple cluster nodes; a durable session record lives on the node where it was created. Clients that may reconnect to different nodes (e.g., behind a load balancer with round-robin DNS) should use sticky routing or terminate on a fixed node.
 
 ### Last Will
 
 <VersionBadge version="v4.3.0" />
 
-Harper supports the MQTT Last Will and Testament feature. If a client disconnects unexpectedly, the broker publishes the configured will message on its behalf.
+Harper supports the MQTT Last Will and Testament feature. If a client disconnects unexpectedly, the broker publishes the configured will message on its behalf. Will messages are persisted in the `hdb_session_will` system table at CONNECT time, so they survive a broker restart and fire reliably on unexpected disconnect.
 
 ## Content Negotiation
 

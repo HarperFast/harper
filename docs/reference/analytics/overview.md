@@ -196,9 +196,40 @@ Applications can record custom metrics using the `server.recordAnalytics()` API.
 
 ## Analytics Configuration
 
-The `analytics.aggregatePeriod` configuration option controls how frequently aggregate summaries are written. See [Configuration Overview](../configuration/overview.md) for details.
+The `analytics` configuration section controls aggregation, replication, and storage-volume sampling. All options are optional.
 
-Per-component analytics logging can be configured via `analytics.logging`. See [Logging Configuration](../logging/configuration.md) for details.
+```yaml
+analytics:
+  aggregatePeriod: 60
+  storageInterval: 10
+  replicate: false
+  logging:
+    level: info
+```
+
+### `analytics.aggregatePeriod`
+
+Type: `number` (seconds) &nbsp;•&nbsp; Default: `60`
+
+How frequently Harper aggregates raw per-second entries into the `hdb_analytics` summary table. Lowering this gives higher-resolution aggregate data at the cost of more frequent aggregation work and more rows in `hdb_analytics`.
+
+### `analytics.storageInterval`
+
+Type: `number` &nbsp;•&nbsp; Default: `10`
+
+Number of aggregation cycles between disk-volume measurements. With the default `aggregatePeriod` of `60` and `storageInterval` of `10`, Harper records `database-size`, `table-size`, and `storage-volume` metrics every 10 minutes. Set to `0` to disable storage-volume sampling entirely — useful when running on systems where `statfs` is expensive or unavailable (e.g., some FUSE mounts).
+
+### `analytics.replicate`
+
+Type: `boolean` &nbsp;•&nbsp; Default: `false`
+
+When enabled, aggregate analytics entries are replicated across the cluster so a single peer can answer aggregate queries for the whole topology. Raw per-thread entries (`hdb_raw_analytics`) are always node-local. Enable when running a centralized analytics consumer; leave disabled in large clusters to avoid replication overhead for high-cardinality metrics.
+
+### `analytics.logging`
+
+Type: `object`
+
+Per-subsystem logging override for the analytics writer. See [Logging Configuration — `analytics.logging`](../logging/configuration.md#analyticslogging).
 
 ## Related
 

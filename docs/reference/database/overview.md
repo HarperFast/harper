@@ -110,6 +110,7 @@ For deeper coverage of each database feature, see the dedicated pages in this se
 - **[API](./api.md)** — The `tables`, `databases`, `transaction()`, and `createBlob()` globals for interacting with the database from code
 - **[Data Loader](./data-loader.md)** — Loading seed or initial data into tables as part of component deployment
 - **[Storage Algorithm](./storage-algorithm.md)** — How Harper stores data using LMDB with universal indexing and ACID compliance
+- **[Storage Tuning](./storage-tuning.md)** — Tuning `storage.*` options for production: durability vs. throughput, compression, blob paths, reclamation
 - **[Jobs](./jobs.md)** — Asynchronous bulk data operations (CSV import/export, S3 import/export)
 - **[System Tables](./system-tables.md)** — Harper internal tables for analytics, data loader state, and other system features
 - **[Compaction](./compaction.md)** — Reducing database file size by eliminating fragmentation and free space

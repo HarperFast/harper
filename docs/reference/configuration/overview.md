@@ -246,3 +246,10 @@ Safe mode skips:
 - Loading package-based extensions defined in component configs
 
 Built-in plugins (REST, HTTP, operations API, etc.) and the core database are unaffected.
+
+## See Also
+
+- [Configuration Options](./options.md) — complete reference for every `harper-config.yaml` key
+- [Worker Thread Debugging](./debugging.md) — attaching Node.js inspector to Harper's worker threads
+- [Storage Tuning](../database/storage-tuning.md) — production tuning of `storage.*` options
+- [Logging Configuration](../logging/configuration.md) — main and per-subsystem log settings

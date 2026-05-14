@@ -63,8 +63,8 @@ threads:
 
 - `count` — Number of worker threads; _Default_: CPU count minus one
 - `maxHeapMemory` — Heap limit per thread (MB)
-- `heapSnapshotNearLimit` — Take heap snapshot when approaching limit
-- `debug` — Enable debugging; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`
+- `heapSnapshotNearLimit` — Write a `.heapsnapshot` file when a thread nears its heap limit (loadable in Chrome DevTools Memory tab); _Default_: `false`. See [Worker Thread Debugging](./debugging.md#heap-snapshots-near-the-limit)
+- `debug` — Enable Node.js inspector; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`. See [Worker Thread Debugging](./debugging.md)
 
 ---
 
@@ -212,7 +212,7 @@ replication:
 
 ## `storage`
 
-Database storage configuration. See [Database Overview](../database/overview.md) and [Compaction](../database/compaction.md).
+Database storage configuration. See [Storage Tuning](../database/storage-tuning.md) for guidance on tuning these options for production workloads, [Database Overview](../database/overview.md) for general database concepts, and [Compaction](../database/compaction.md) for reclaiming space inside existing files.
 
 ```yaml
 storage:
@@ -235,7 +235,9 @@ storage:
 - `path` — Database files directory; _Default_: `<rootPath>/database`
 - `blobPaths` — Blob storage directory or directories; _Default_: `<rootPath>/blobs` (Added in: v4.5.0)
 - `pageSize` — Database page size (bytes); _Default_: OS default
-- `reclamation.threshold` / `reclamation.interval` / `reclamation.evictionFactor` — Background storage reclamation settings (Added in: v4.5.0)
+- `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables; _Default_: `0.4` (Added in: v4.5.0)
+- `reclamation.interval` — Free-space check interval; _Default_: `1h`
+- `reclamation.evictionFactor` — Heuristic factor for early eviction under disk pressure; _Default_: `100000`. See [Storage Tuning — Reclamation](../database/storage-tuning.md#storage-reclamation)
 
 ---
 
@@ -270,7 +272,9 @@ analytics:
 ```
 
 - `aggregatePeriod` — Aggregation interval (seconds); _Default_: `60` (Added in: v4.5.0)
+- `storageInterval` — Aggregation cycles between storage-volume measurements (`0` disables); _Default_: `10`
 - `replicate` — Replicate analytics data across cluster; _Default_: `false`
+- `logging` — Per-subsystem logger override for analytics writes. See [Logging Configuration](../logging/configuration.md#analyticslogging)
 
 ---
 
