@@ -663,37 +663,43 @@ function readPEM(path) {
 	return readFileSync(path, 'utf8');
 }
 // this horrifying hack is brought to you by https://github.com/nodejs/node/issues/36655
-const origCreateSecureContext = tls.createSecureContext;
-(tls as any).createSecureContext = function (options: any) {
-	if (!options.cert || !options.key) {
-		return origCreateSecureContext(options);
-	}
-	let lessOptions = { ...options };
-	delete lessOptions.key;
-	delete lessOptions.cert;
-	let ctx = origCreateSecureContext(lessOptions);
-	ctx.context.setCert(options.cert);
-	ctx.context.setKey(options.key, undefined);
-	return ctx;
-};
-// Node.js SNI callbacks _add_ the certificate and don't replace it, and so we can't have a default certificate,
-// so we have to assign the default certificate during the cert callback, because the default SNI callback isn't
-// consistently called for all TLS connections (isn't called if no SNI server name is provided).
-// first we have interrupt the socket initialization to add our own cert callback
-const originalInit = (TLSSocket as any).prototype._init;
-(TLSSocket as any).prototype._init = function (socket: any, wrap: any) {
-	originalInit.call(this, socket, wrap);
-	let tlsSocket = this;
-	this._handle.oncertcb = function (info) {
-		const servername = info.servername;
-		tlsSocket._SNICallback(servername, (err, context) => {
-			this.sni_context = context?.context || context;
-			// note that this skips the checks for multiple callbacks and entirely skips OCSP, so if we ever need that, we
-			// need to call the original oncertcb
-			this.certCbDone();
-		});
+if (typeof globalThis.Bun === 'undefined') {
+	const origCreateSecureContext = tls.createSecureContext;
+	(tls as any).createSecureContext = function (options: any) {
+		if (!options.cert || !options.key) {
+			return origCreateSecureContext(options);
+		}
+		let lessOptions = { ...options };
+		delete lessOptions.key;
+		delete lessOptions.cert;
+		let ctx = origCreateSecureContext(lessOptions);
+		if (typeof ctx.context?.setCert !== 'function') {
+			// setCert is a Node.js internal — not available in all environments; fall back to default
+			return origCreateSecureContext(options);
+		}
+		ctx.context.setCert(options.cert);
+		ctx.context.setKey(options.key, undefined);
+		return ctx;
 	};
-};
+	// Node.js SNI callbacks _add_ the certificate and don't replace it, and so we can't have a default certificate,
+	// so we have to assign the default certificate during the cert callback, because the default SNI callback isn't
+	// consistently called for all TLS connections (isn't called if no SNI server name is provided).
+	// first we have interrupt the socket initialization to add our own cert callback
+	const originalInit = (TLSSocket as any).prototype._init;
+	(TLSSocket as any).prototype._init = function (socket: any, wrap: any) {
+		originalInit.call(this, socket, wrap);
+		let tlsSocket = this;
+		this._handle.oncertcb = function (info) {
+			const servername = info.servername;
+			tlsSocket._SNICallback(servername, (err, context) => {
+				this.sni_context = context?.context || context;
+				// note that this skips the checks for multiple callbacks and entirely skips OCSP, so if we ever need that, we
+				// need to call the original oncertcb
+				this.certCbDone();
+			});
+		};
+	};
+}
 
 let caCerts = new Map();
 
