@@ -1,3 +1,6 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req, reqRest } from '../utils/request.mjs';
@@ -22,7 +25,7 @@ describe('23. Blob', () => {
 
 	it('Add component for blobs', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'blobs' })
+			.send({ operation: 'add_component', project: 'blobs', template: join(__dirname, '../../fixtures/application-template-1.0.0.tgz') })
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: blobs'), r.text))
 			.expect(200);
 	});
