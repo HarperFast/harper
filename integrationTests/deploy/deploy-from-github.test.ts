@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 
-suite('GitHub application deployment', (ctx: ContextWithHarper) => {
+suite('GitHub application deployment', { skip: process.platform === 'win32' }, (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 	});

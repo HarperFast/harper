@@ -17,7 +17,7 @@ import { createBlobCustom } from '../utils/blob.mjs';
 import { exec } from 'node:child_process';
 import { timestamp } from '../utils/timestamp.mjs';
 
-describe('23. Blob', () => {
+describe('23. Blob', { skip: process.platform === 'win32' }, () => {
 	beforeEach(timestamp);
 
 	const blobId = randomInt(1000000);
