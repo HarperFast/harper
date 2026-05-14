@@ -8,6 +8,7 @@ import analytics from '#src/resources/analytics/write';
 import { bypassAuth } from '#src/security/auth';
 import { bypassAuth as bypassAuthMQTT } from '#src/server/mqtt';
 import environmentManager from '#js/utility/environment/environmentManager';
+import { getDatabases } from '#src/resources/databases';
 const { setProperty } = environmentManager;
 const config = {};
 
@@ -60,6 +61,11 @@ export async function setupTestApp() {
 
 	// exit if it is already setup or we are running in the browser
 	if (typeof process === 'undefined') return createdRecords;
+	// Ensure the system database (hdb_role, hdb_user, etc.) is loaded from the
+	// installed Harper path before setupTestDBPath() overrides HDB_ROOT_KEY to the
+	// test PID dir. Without this, the system path preservation logic in
+	// setupTestDBPath() has nothing to preserve and setUp() later can't find hdb_role.
+	getDatabases();
 	let path = setupTestDBPath();
 	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
 	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
