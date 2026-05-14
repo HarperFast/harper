@@ -40,8 +40,16 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 				auditLogIterator = auditStore.getRange({});
 			}
 			auditStore.hasSubscriptionCommitListener = true;
+			// Coalesce 'committed' bursts: instead of iterating the audit log synchronously inside the
+			// commit microtask (which pegs the event loop during replication backlog catch-up), defer
+			// to setImmediate. Multiple commits within the same turn collapse into one notify pass.
+			// notifyScheduled stays true for the full drain — including yield-and-resume — so new
+			// 'committed' events that fire mid-drain don't spawn an overlapping notify pass.
 			auditStore.on('committed', () => {
-				notifyFromTransactionData(databaseSubscriptions, auditLogIterator);
+				if (!databaseSubscriptions.activeCount) return; // no listeners; iterator advances lazily
+				if (databaseSubscriptions.notifyScheduled) return;
+				databaseSubscriptions.notifyScheduled = true;
+				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditLogIterator, true));
 			});
 		}
 	}
@@ -72,6 +80,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		subscriptions.key = key;
 	}
 	subscription.subscriptions = subscriptions;
+	databaseSubscriptions.activeCount = (databaseSubscriptions.activeCount || 0) + 1;
 	return subscription;
 }
 
@@ -94,20 +103,20 @@ class Subscription extends IterableEventQueue {
 	end() {
 		// cleanup
 		if (!this.subscriptions) return;
+		const tableSubscriptions = this.subscriptions.tables;
+		const envSubscriptions = tableSubscriptions?.envs;
 		this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
 		if (this.subscriptions.length === 0) {
-			const tableSubscriptions = this.subscriptions.tables;
 			if (tableSubscriptions) {
 				// TODO: Handle cleanup of wildcard
 				const key = this.subscriptions.key;
 				tableSubscriptions.delete(key);
 				if (tableSubscriptions.size === 0) {
-					const envSubscriptions = tableSubscriptions.envs;
-					const dbi = tableSubscriptions.dbi;
-					delete envSubscriptions[dbi];
+					delete envSubscriptions[tableSubscriptions.tableId];
 				}
 			}
 		}
+		if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
 		this.subscriptions = null;
 	}
 	toJSON() {
@@ -115,12 +124,25 @@ class Subscription extends IterableEventQueue {
 	}
 }
 const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
-function notifyFromTransactionData(subscriptions, auditLogIterable) {
+// Maximum audit records processed per synchronous turn before yielding back to the event loop.
+// Sized to keep per-batch wall time within a few ms on commodity hardware while keeping the
+// scheduling overhead amortized; tune if profiling shows different shapes.
+const NOTIFY_BATCH_SIZE = 256;
+function notifyFromTransactionData(subscriptions, auditLogIterable, allowYield = false) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
+	// If no real subscribers are attached, skip the iteration. The reusable iterator preserves its
+	// position and will pick up from where we left it once a subscriber is added.
+	if (!subscriptions.activeCount) {
+		subscriptions.pendingTxnSubscribers = null; // discard any carry-over from a yielded run
+		if (allowYield) subscriptions.notifyScheduled = false;
+		return;
+	}
 	const auditStore = subscriptions.auditStore;
 	auditStore.resetReadTxn?.();
-	nextTransaction(subscriptions.auditStore);
-	let subscribersWithTxns;
+	nextTransaction(auditStore);
+	// subscribersWithTxns is carried across batches so the end_txn signal fires only once the
+	// iterator truly drains, not at each yield point.
+	let subscribersWithTxns = subscriptions.pendingTxnSubscribers;
 	if (!auditLogIterable) {
 		// rocksdb will pass this in, but with lmdb, we have to re-create the iterable
 		auditLogIterable = auditStore.getRange({
@@ -128,70 +150,97 @@ function notifyFromTransactionData(subscriptions, auditLogIterable) {
 			exclusiveStart: true,
 		});
 	}
-	for (const auditRecord of auditLogIterable) {
-		const timestamp: number = auditRecord.localTime ?? auditRecord.version;
-		subscriptions.lastTxnTime = timestamp;
-		if (!ACTIONS_OF_INTEREST.includes(auditRecord.type)) continue;
-		const tableSubscriptions = subscriptions[auditRecord.tableId];
-		if (!tableSubscriptions) continue;
-		const recordId = auditRecord.recordId;
-		// TODO: How to handle invalidation
-		let matchingKey = keyArrayToString(recordId);
-		let ancestorLevel = 0;
-		do {
-			// we iterate through the key hierarchy, notifying all subscribers for each key,
-			// so for an id like resource/foo/bar, we notify subscribers for resource/foo/bar, resource/foo/, resource/foo, resource/, and resource
-			// this allows for efficient subscriptions to children ids/topics
-			const keySubscriptions = tableSubscriptions.get(matchingKey);
-			if (keySubscriptions) {
-				for (const subscription of keySubscriptions) {
-					if (
-						ancestorLevel > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
-						!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
-					)
-						continue;
-					if (subscription.startTime >= timestamp) {
-						continue;
-					}
-					try {
-						let beginTxn;
-						if (subscription.supportsTransactions && subscription.txnInProgress !== auditRecord.version) {
-							// if the subscriber supports transactions, we mark this as the beginning of a new transaction
-							// tracking the subscription so that we can delimit the transaction on next transaction
-							// (with a beginTxn flag, which may be on an endTxn event)
-							beginTxn = true;
-							if (!subscription.txnInProgress) {
-								// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
-								if (!subscribersWithTxns) subscribersWithTxns = [subscription];
-								else subscribersWithTxns.push(subscription);
+	const iterator = auditLogIterable[Symbol.iterator]?.() ?? auditLogIterable;
+	let processed = 0;
+	let yielded = false;
+	try {
+		while (true) {
+			const result = iterator.next();
+			if (result.done) break;
+			const auditRecord = result.value;
+			const timestamp: number = auditRecord.localTime ?? auditRecord.version;
+			subscriptions.lastTxnTime = timestamp;
+			if (ACTIONS_OF_INTEREST.includes(auditRecord.type)) {
+				const tableSubscriptions = subscriptions[auditRecord.tableId];
+				if (tableSubscriptions) {
+					const recordId = auditRecord.recordId;
+					// TODO: How to handle invalidation
+					let matchingKey = keyArrayToString(recordId);
+					let ancestorLevel = 0;
+					do {
+						// we iterate through the key hierarchy, notifying all subscribers for each key,
+						// so for an id like resource/foo/bar, we notify subscribers for resource/foo/bar, resource/foo/, resource/foo, resource/, and resource
+						// this allows for efficient subscriptions to children ids/topics
+						const keySubscriptions = tableSubscriptions.get(matchingKey);
+						if (keySubscriptions) {
+							for (const subscription of keySubscriptions) {
+								if (
+									ancestorLevel > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
+									!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
+								)
+									continue;
+								if (subscription.startTime >= timestamp) {
+									continue;
+								}
+								try {
+									let beginTxn;
+									if (subscription.supportsTransactions && subscription.txnInProgress !== auditRecord.version) {
+										// if the subscriber supports transactions, we mark this as the beginning of a new transaction
+										// tracking the subscription so that we can delimit the transaction on next transaction
+										// (with a beginTxn flag, which may be on an endTxn event)
+										beginTxn = true;
+										if (!subscription.txnInProgress) {
+											// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
+											if (!subscribersWithTxns) subscribersWithTxns = [subscription];
+											else subscribersWithTxns.push(subscription);
+										}
+										// the version defines the extent of a transaction, all audit records with the same version
+										// are part of the same transaction, and when the version changes, we know it is a new
+										// transaction
+										subscription.txnInProgress = auditRecord.version;
+									}
+									subscription.listener(recordId, auditRecord, timestamp, beginTxn);
+								} catch (error) {
+									warn(error);
+								}
 							}
-							// the version defines the extent of a transaction, all audit records with the same version
-							// are part of the same transaction, and when the version changes, we know it is a new
-							// transaction
-							subscription.txnInProgress = auditRecord.version;
 						}
-						subscription.listener(recordId, auditRecord, timestamp, beginTxn);
-					} catch (error) {
-						warn(error);
-					}
+						if (matchingKey == null) break;
+						const lastSlash = matchingKey.lastIndexOf?.('/', matchingKey.length - 2);
+						if (lastSlash !== matchingKey.length - 1) {
+							ancestorLevel++; // don't increase the ancestor level for this going from resource/ to resource
+						}
+						if (lastSlash > -1) {
+							matchingKey = matchingKey.slice(0, lastSlash + 1);
+						} else matchingKey = null;
+					} while (true);
 				}
 			}
-			if (matchingKey == null) break;
-			const lastSlash = matchingKey.lastIndexOf?.('/', matchingKey.length - 2);
-			if (lastSlash !== matchingKey.length - 1) {
-				ancestorLevel++; // don't increase the ancestor level for this going from resource/ to resource
+			if (allowYield && ++processed >= NOTIFY_BATCH_SIZE) {
+				// Yield the event loop. Save in-progress txn state so the next batch can resume.
+				// Reusable iterables (rocksdb) can be passed back in directly; LMDB-style iterables
+				// are recreated from the advanced lastTxnTime. The same-thread aftercommit path does not
+				// set allowYield because it holds an inter-thread lock that must not span event-loop turns.
+				subscriptions.pendingTxnSubscribers = subscribersWithTxns;
+				yielded = true;
+				setImmediate(() =>
+					notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditLogIterable : null, true)
+				);
+				return;
 			}
-			if (lastSlash > -1) {
-				matchingKey = matchingKey.slice(0, lastSlash + 1);
-			} else matchingKey = null;
-		} while (true);
-	}
-	if (subscribersWithTxns) {
-		// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
-		for (const subscription of subscribersWithTxns) {
-			subscription.txnInProgress = null; // clean up
-			subscription.listener(null, { type: 'end_txn' }, subscriptions.lastTxnTime, true);
 		}
+		subscriptions.pendingTxnSubscribers = null;
+		if (subscribersWithTxns) {
+			// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
+			for (const subscription of subscribersWithTxns) {
+				subscription.txnInProgress = null; // clean up
+				subscription.listener(null, { type: 'end_txn' }, subscriptions.lastTxnTime, true);
+			}
+		}
+	} finally {
+		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
+		// must clear it here so a stuck flag doesn't permanently silence future commits.
+		if (allowYield && !yielded) subscriptions.notifyScheduled = false;
 	}
 }
 /**
