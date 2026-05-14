@@ -17,7 +17,10 @@ const manageThreads = require('../server/threads/manageThreads.js');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication } = require('./Application.ts');
+const { stagePayloadToTempFile } = require('./payloadStaging.ts');
 const { server } = require('../server/Server.ts');
+const { Readable } = require('node:stream');
+const { createReadStream } = require('node:fs');
 
 /**
  * Read the settings.js file and return the
@@ -389,6 +392,21 @@ async function deployComponent(req) {
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
+	// Stage streamed payloads to a temp file when replication is needed. The payload
+	// Readable is consumed once by local extraction; without staging, replicas would have
+	// nothing to relay. Skipped when there are no peers (the only-local-deploy case keeps
+	// its zero-disk-copy property) or when the deploy is package-identifier-based.
+	let stagedPayload;
+	const needsReplication = req.replicated !== false && (server.nodes?.length ?? 0) > 0;
+	if (req.payload instanceof Readable && needsReplication) {
+		stagedPayload = await stagePayloadToTempFile(req.payload, req.project);
+		// Re-source the local extraction from the staged file. The Application sees a regular
+		// fs Readable rather than the original chunked HTTP body, which keeps backpressure
+		// behavior of extract identical to the non-replicated case.
+		req.payload = createReadStream(stagedPayload.path);
+		req._stagedPayloadPath = stagedPayload.path;
+	}
+
 	const application = new Application({
 		name: req.project,
 		payload: req.payload,
@@ -405,6 +423,8 @@ async function deployComponent(req) {
 		await prepareApplication(application);
 	} catch (err) {
 		progress?.emit('phase', { phase: 'extract_or_install', status: 'error', message: err?.message ?? String(err) });
+		// Clean up the staged payload on early failure so we don't leak disk.
+		stagedPayload?.cleanup().catch(() => {});
 		throw err;
 	}
 	progress?.emit('phase', { phase: 'install', status: 'done' });
@@ -439,7 +459,15 @@ async function deployComponent(req) {
 	// if doing a rolling restart set restart to false so that other nodes don't also restart.
 	req.restart = rollingRestart ? false : req.restart;
 	progress?.emit('phase', { phase: 'replicate', status: 'start' });
-	let response = await server.replication.replicateOperation(req);
+	let response;
+	try {
+		response = await server.replication.replicateOperation(req);
+	} finally {
+		// Whether replication succeeded, failed, or didn't run, the staged payload has served
+		// its purpose. Best-effort cleanup; if the rm fails (e.g. file already gone on a retry
+		// path) we don't surface that to the deploy caller.
+		await stagedPayload?.cleanup().catch(() => {});
+	}
 	progress?.emit('phase', { phase: 'replicate', status: 'done' });
 	if (req.restart === true) {
 		progress?.emit('phase', { phase: 'restart', status: 'start' });
