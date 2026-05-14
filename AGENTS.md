@@ -98,6 +98,34 @@ Logging, error types, helpers, async utilities.
 
 ---
 
+## Git / Worktree Setup — Read Before Any Git Operation
+
+This repo lives as a submodule of `harper-pro`. The submodule's git data directory is at
+`../harper-pro/.git/modules/core/` (relative to this repo's root). That directory must contain
+**only git metadata** — `objects/`, `refs/`, `config`, `HEAD`, etc.
+
+**Known recurring failure mode:** If `../harper-pro/.git/modules/core/config` is ever absent or
+replaced by a directory, git silently treats the git data dir as its own work tree. The next
+`git checkout` deposits source files there — including a `config/` directory from the harper
+source tree — which permanently shadows git's config file. Every subsequent agent then hits
+`fatal: unknown error occurred while reading the configuration files` and the cycle repeats.
+
+**Rules to prevent recurrence:**
+- Never run `git submodule deinit core` + re-init from the `harper-pro` parent — it regenerates
+  the module config without the required `core.worktree` setting.
+- Never run `git checkout` or `git reset` while your working directory is inside
+  `harper-pro/.git/modules/core/`.
+- If you ever recreate `../harper-pro/.git/modules/core/config` from scratch, it **must** include:
+  ```
+  [core]
+      worktree = ../../../core
+  ```
+- If you see source-tree files (e.g. `server/`, `resources/`, `config/`) appearing inside
+  `../harper-pro/.git/modules/core/`, stop immediately and remove them — they are corrupting the
+  git data directory.
+
+---
+
 ## Non-Obvious Constraints
 
 - `Resource` static methods must stay wrapped with `transactional()` — removing this breaks transaction isolation.
