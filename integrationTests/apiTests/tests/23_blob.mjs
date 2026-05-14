@@ -25,7 +25,14 @@ describe('23. Blob', { skip: process.platform === 'win32' }, () => {
 
 	it('Add component for blobs', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'blobs', template: process.platform === 'win32' ? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz') : undefined })
+			.send({
+				operation: 'add_component',
+				project: 'blobs',
+				template:
+					process.platform === 'win32'
+						? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz')
+						: undefined,
+			})
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: blobs'), r.text))
 			.expect(200);
 	});
