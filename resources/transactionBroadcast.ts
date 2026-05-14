@@ -46,7 +46,13 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			// notifyScheduled stays true for the full drain — including yield-and-resume — so new
 			// 'committed' events that fire mid-drain don't spawn an overlapping notify pass.
 			auditStore.on('committed', () => {
-				if (!databaseSubscriptions.activeCount) return; // no listeners; iterator advances lazily
+				if (!databaseSubscriptions.activeCount) {
+					// No per-key listeners; skip the expensive audit-log iteration entirely. But still
+					// rotate the nextTransaction promise so any whenNextTransaction() waiter (used by
+					// outbound replication on databases with no local subscribers) wakes up.
+					if (auditStore.nextTransaction) nextTransaction(auditStore);
+					return;
+				}
 				if (databaseSubscriptions.notifyScheduled) return;
 				databaseSubscriptions.notifyScheduled = true;
 				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditLogIterator, true));

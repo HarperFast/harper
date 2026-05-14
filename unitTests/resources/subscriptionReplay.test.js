@@ -902,6 +902,31 @@ describe('Subscription replay', () => {
 			assert.equal(new Set(pairs).size, pairs.length, 'duplicate (id,version) emitted during burst');
 		});
 
+		it('whenNextTransaction resolves on commit even when no per-key subscribers exist', async () => {
+			// Regression for the activeCount short-circuit: whenNextTransaction sets up a
+			// scope: 'full-database' subscription that intentionally does not increment activeCount.
+			// The 'committed' listener must still rotate the nextTransaction promise so the waiter
+			// wakes — otherwise outbound replication hangs whenever a database has no local
+			// per-key subscriptions.
+			const { whenNextTransaction } = require('#src/resources/transactionBroadcast');
+			const T = table({
+				table: 'WhenNextTxnIdle',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			// no Table.subscribe() — only the full-database waiter
+			const wake = whenNextTransaction(T.auditStore);
+			let resolved = false;
+			wake.then(() => {
+				resolved = true;
+			});
+			await T.put(40000, { name: 'wake_me' });
+			// give the committed listener + microtask a tick to resolve
+			await delay(50);
+			assert.equal(resolved, true, 'whenNextTransaction should resolve when a commit lands with no per-key subscribers');
+		});
+
 		it('resumes delivery after a subscribe/end/subscribe cycle with writes in between', async () => {
 			// regression for the activeCount short-circuit: when no subscribers exist, the audit
 			// notify loop skips iteration. A new subscription after a quiescent period must still
