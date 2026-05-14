@@ -98,7 +98,7 @@ describe('15. Custom Functions & components', () => {
 
 	it('add_component', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'add-test', template: join(__dirname, '../../fixtures/application-template-1.0.0.tgz') })
+			.send({ operation: 'add_component', project: 'add-test', template: 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz') })
 			.expect((r) => assert.equal(r.body.message, 'Successfully added project: add-test', r.text))
 			.expect(200);
 	});

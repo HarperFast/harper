@@ -25,7 +25,7 @@ describe('23. Blob', () => {
 
 	it('Add component for blobs', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'blobs', template: join(__dirname, '../../fixtures/application-template-1.0.0.tgz') })
+			.send({ operation: 'add_component', project: 'blobs', template: 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz') })
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: blobs'), r.text))
 			.expect(200);
 	});
