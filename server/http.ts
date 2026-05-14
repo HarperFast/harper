@@ -455,7 +455,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.isSecure = true;
 		}
 		registerServer(server, port);
-		if (isOperationsServer) server.noReusePort = true;
+		// macOS doesn't support SO_REUSEPORT on all socket types; operations API also doesn't need it
+		if (isOperationsServer || process.platform === 'darwin') server.noReusePort = true;
 
 		// Operations API domain socket connections bypass auth (equivalent to local access)
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
@@ -655,7 +656,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		// Store the config for Bun.serve() — will be started by threadServer.js listenOnPorts()
 		const config: any = {
 			fetch: fetchHandler,
-			reusePort: true,
+			reusePort: process.platform !== 'darwin' && process.platform !== 'win32',
 		};
 		if (secure) {
 			// TLS config for Bun

@@ -302,9 +302,10 @@ async function listenOnPortsBun() {
 			} else {
 				portNumber = +port;
 			}
+			const isMac = process.platform === 'darwin';
 			const serveOptions = {
 				port: portNumber,
-				reusePort: !isWindows,
+				reusePort: !isWindows && !isMac,
 				fetch: config.fetch,
 			};
 			if (portHostname) serveOptions.hostname = portHostname;
@@ -416,7 +417,7 @@ async function listenOnPortsBun() {
 				listening.push(
 					new Promise((resolve, reject) => {
 						server
-							.listen({ port: portNum, host: rawHostname || '::' }, () => {
+							.listen({ port: portNum, host: rawHostname || '0.0.0.0' }, () => {
 								resolve({ port });
 								harperLogger.trace('Listening on port ' + port, threadId);
 							})
@@ -463,6 +464,7 @@ function onSocket(listener, options) {
 			listener
 		);
 		SNICallback.initialize(socketServer);
+		socketServer.noReusePort = true;
 		SERVERS[options.securePort] = socketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
@@ -495,6 +497,7 @@ function onSocket(listener, options) {
 			keepAlive: true,
 			keepAliveInitialDelay: 600,
 		});
+		socketServer.noReusePort = true;
 		SERVERS[options.port] = socketServer;
 	}
 	return socketServer;
