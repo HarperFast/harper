@@ -101,6 +101,29 @@ mediaTypes.set('text/yaml', {
 	q: 0.7,
 });
 
+const ndjsonHandler = {
+	serializeStream(data: any) {
+		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
+			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
+		}
+		return JSONStringify(data) + '\n';
+	},
+	serialize(data: any) {
+		return JSONStringify(data) + '\n';
+	},
+	deserialize(data: Buffer) {
+		return data
+			.toString()
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map(JSONParse);
+	},
+	q: 0.7,
+};
+mediaTypes.set('application/x-ndjson', ndjsonHandler);
+mediaTypes.set('application/ndjson', ndjsonHandler);
+
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
