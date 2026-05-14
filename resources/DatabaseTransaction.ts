@@ -157,7 +157,13 @@ export class DatabaseTransaction implements Transaction {
 		this.writes.push(operation);
 		if (!operation.deferSave) {
 			// Setting saved to false means to defer saving
-			this.save(operation);
+			const saveResult = this.save(operation);
+			if (saveResult?.then) {
+				// When the transaction is already committed (immediateCommit path), save() returns
+				// the commit promise. Propagate it so callers can await the actual write being
+				// committed rather than resolving before it is durable.
+				return saveResult.then(() => operation);
+			}
 		}
 		return operation;
 	}
