@@ -9,10 +9,18 @@ const fs = require('fs-extra');
 const YAML = require('yaml');
 const { streamPackagedDirectory } = require('../components/packageComponent.ts');
 const { buildMultipartBody } = require('./multipartBuilder.ts');
+const { parseSSE, renderDeployProgress } = require('./sseConsumer.ts');
 const { getHdbPid } = require('../utility/processManagement/processManagement.js');
 const { initConfig, getConfigPath } = require('../config/configUtils.js');
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
+
+// Operations whose responses should be consumed as text/event-stream so live phase events
+// (extract, install, load, replicate, restart) render as they happen instead of after the
+// whole deploy completes. Add an operation here only after wiring its server-side
+// SSE_PROGRESS_OPERATIONS entry — otherwise the server returns the buffered JSON path and
+// the SSE parser sees no events.
+const SSE_OPERATIONS = new Set(['deploy_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
 // They never get serialized into the request body.
@@ -129,6 +137,11 @@ async function cliOperations(req) {
 		if (target?.username) {
 			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
 		}
+		const useSse = SSE_OPERATIONS.has(req.operation);
+		if (useSse) {
+			options.headers.Accept = 'text/event-stream';
+			options.streamResponse = true;
+		}
 		let body;
 		if (req._multipart) {
 			const packageStream = req._packageStream;
@@ -154,13 +167,43 @@ async function cliOperations(req) {
 		let response = await httpRequest(options, body);
 
 		let responseData;
-		try {
-			responseData = JSON.parse(response.body);
-		} catch {
-			responseData = {
-				status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
-				body: response.body,
-			};
+		if (useSse && response.headers['content-type']?.startsWith('text/event-stream')) {
+			// Consume SSE: render phase events live, capture the final result from the `done`
+			// event (or the error message from the `error` event). The HTTP status stays 200
+			// until end-of-stream; failures are signaled in-band.
+			const state = {};
+			let finalResult;
+			let sseError;
+			for await (const message of parseSSE(response)) {
+				renderDeployProgress(message, state, process.stderr);
+				if (message.event === 'done') {
+					try {
+						finalResult = JSON.parse(message.data)?.result;
+					} catch {
+						finalResult = message.data;
+					}
+				} else if (message.event === 'error') {
+					try {
+						sseError = JSON.parse(message.data);
+					} catch {
+						sseError = { message: message.data };
+					}
+				}
+			}
+			if (sseError) {
+				console.error(`error: ${sseError.message ?? sseError}`);
+				process.exit(1);
+			}
+			responseData = finalResult ?? { message: 'Deploy completed (no result payload).' };
+		} else {
+			try {
+				responseData = JSON.parse(response.body);
+			} catch {
+				responseData = {
+					status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
+					body: response.body,
+				};
+			}
 		}
 
 		let responseLog;

@@ -431,6 +431,10 @@ export class Application {
 	dirPath: string;
 	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
+	// Optional progress emitter for SSE-style reporting. Set by the operations API when the
+	// caller requested `Accept: text/event-stream`. Undefined for the historical
+	// single-response code path; phase-event emissions are all optional-chained off this.
+	progress?: { emit(event: string, data: unknown): void };
 
 	constructor({ name, payload, packageIdentifier, install }: ApplicationOptions) {
 		this.name = name;
@@ -473,7 +477,14 @@ export function derivePackageIdentifier(packageIdentifier: string) {
  * @returns A promise that resolves when all preparation steps complete.
  */
 export function prepareApplication(application: Application) {
-	return extractApplication(application).then(() => installApplication(application));
+	return extractApplication(application).then(() => {
+		// extractApplication finished; the next phase is install. We emit the boundary here so
+		// the SSE consumer sees `extract done → install start` in order even though Application
+		// itself isn't aware of which phase comes next.
+		application.progress?.emit('phase', { phase: 'extract', status: 'done' });
+		application.progress?.emit('phase', { phase: 'install', status: 'start' });
+		return installApplication(application);
+	});
 }
 
 /**

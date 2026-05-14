@@ -348,6 +348,11 @@ async function packageComponent(req) {
  * @returns {Promise<string>}
  */
 async function deployComponent(req) {
+	// `req.progress` is a ProgressEmitter set by handlePostRequest when the client sends
+	// `Accept: text/event-stream`. Non-SSE callers leave it undefined; the optional-chained
+	// calls below are no-ops in that case, keeping the historical single-response path intact.
+	const progress = req.progress;
+
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	} else if (req.package) {
@@ -393,12 +398,21 @@ async function deployComponent(req) {
 			timeout: req.install_timeout,
 		},
 	});
+	if (progress) application.progress = progress;
 
-	await prepareApplication(application);
+	progress?.emit('phase', { phase: 'extract', status: 'start' });
+	try {
+		await prepareApplication(application);
+	} catch (err) {
+		progress?.emit('phase', { phase: 'extract_or_install', status: 'error', message: err?.message ?? String(err) });
+		throw err;
+	}
+	progress?.emit('phase', { phase: 'install', status: 'done' });
 
 	// now we attempt to actually load the component in case there is
 	// an error we can immediately detect and report, but app code should not run on the main thread
 	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
+		progress?.emit('phase', { phase: 'load', status: 'start' });
 		const pseudoResources = new Resources();
 		pseudoResources.isWorker = true;
 
@@ -415,16 +429,24 @@ async function deployComponent(req) {
 			req.project
 		);
 
-		if (lastError) throw lastError;
+		if (lastError) {
+			progress?.emit('phase', { phase: 'load', status: 'error', message: lastError?.message ?? String(lastError) });
+			throw lastError;
+		}
+		progress?.emit('phase', { phase: 'load', status: 'done' });
 	}
 	const rollingRestart = req.restart === 'rolling';
 	// if doing a rolling restart set restart to false so that other nodes don't also restart.
 	req.restart = rollingRestart ? false : req.restart;
+	progress?.emit('phase', { phase: 'replicate', status: 'start' });
 	let response = await server.replication.replicateOperation(req);
+	progress?.emit('phase', { phase: 'replicate', status: 'done' });
 	if (req.restart === true) {
+		progress?.emit('phase', { phase: 'restart', status: 'start' });
 		manageThreads.restartWorkers('http');
 		response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 	} else if (rollingRestart) {
+		progress?.emit('phase', { phase: 'restart', status: 'start', rolling: true });
 		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
 		const jobResponse = await serverUtilities.executeJob({
 			operation: 'restart_service',

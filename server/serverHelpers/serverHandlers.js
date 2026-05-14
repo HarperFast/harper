@@ -15,6 +15,13 @@ const pAuthorize = util.promisify(auth.authorize);
 const serverUtilities = require('./serverUtilities.ts');
 const { applyImpersonation } = require('../../security/impersonation.ts');
 const { createGzip, constants } = require('zlib');
+const { ProgressEmitter, createSSEResponseStream } = require('./progressEmitter.ts');
+
+// Operations that support `Accept: text/event-stream` for live progress reporting.
+// Adding an operation here means its handler may read `req.body.progress` (a ProgressEmitter)
+// and emit phase/install/replicate events; non-SSE clients still get the historical
+// single-response behavior because the emitter is undefined on that path.
+const SSE_PROGRESS_OPERATIONS = new Set([terms.OPERATIONS_ENUM.DEPLOY_COMPONENT]);
 
 const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
@@ -119,6 +126,21 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 		if (req.body.bypass_auth) delete req.body.bypass_auth;
 
 		operation_function = serverUtilities.chooseOperation(req.body);
+
+		// SSE progress branch — when the client asks for `text/event-stream` on an operation
+		// that supports it, run the operation in the background and stream events back as they
+		// happen. The progress emitter is attached to req.body so the operation handler can
+		// emit without changing its return signature; non-SSE callers leave `progress`
+		// undefined and the handler stays on its synchronous result path.
+		if (req.headers.accept === 'text/event-stream' && SSE_PROGRESS_OPERATIONS.has(req.body.operation)) {
+			const emitter = new ProgressEmitter();
+			req.body.progress = emitter;
+			res.header('Content-Type', 'text/event-stream');
+			res.header('Cache-Control', 'no-cache');
+			res.header('X-Accel-Buffering', 'no'); // disable proxy buffering so events flush in real time
+			return createSSEResponseStream(emitter, () => serverUtilities.processLocalTransaction(req, operation_function));
+		}
+
 		let result = await serverUtilities.processLocalTransaction(req, operation_function);
 		if (result instanceof Readable && result.headers) {
 			for (let [name, value] of result.headers) {

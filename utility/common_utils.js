@@ -806,8 +806,24 @@ function httpRequest(options, data) {
 	let client;
 	if (options.protocol === 'http:') client = http;
 	else client = https;
+	// `streamResponse` opts into a non-buffered response shape: the promise resolves as soon
+	// as headers arrive, with `response` itself as a Readable. Used by the CLI for SSE
+	// (text/event-stream) deploys so progress events render live instead of after the deploy
+	// finishes. Strip the flag from `options` before handing it to http.request so it doesn't
+	// end up as an unknown header/option.
+	const streamResponse = options.streamResponse === true;
+	if (streamResponse) {
+		options = { ...options };
+		delete options.streamResponse;
+	}
 	return new Promise((resolve, reject) => {
 		const req = client.request(options, (response) => {
+			if (streamResponse) {
+				// Hand the raw stream to the caller; do not setEncoding so binary-safe consumers
+				// (or SSE parsers that prefer Buffers) still work.
+				resolve(response);
+				return;
+			}
 			response.setEncoding('utf8');
 			response.body = '';
 			response.on('data', (chunk) => {
