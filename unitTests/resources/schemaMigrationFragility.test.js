@@ -123,24 +123,55 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
 
-		// Sum the per-value search counts and compare to the primary store.
+		// With the fix, the index must NOT be silently complete when errors occurred.
+		// The fix leaves isIndexing = true and sets indexingFailed = true so:
+		//   (a) queries return 503 "not indexed yet" instead of a partial result set, and
+		//   (b) the next restart (new PID) detects indexingFailed and re-triggers from checkpoint.
+		//
+		// Verify (a): search must throw, not silently return fewer rows.
+		let caughtError;
+		try {
+			for (const v of VALUES) {
+				await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: v }] }));
+			}
+		} catch (err) {
+			caughtError = err;
+		}
+		assert.ok(
+			caughtError,
+			`Expected search to throw "not indexed yet" (503) after a partial migration with errors. ` +
+				`Without the fix this returns a silent subset, making the bug invisible to callers.`
+		);
+		assert.ok(
+			caughtError.message?.includes('not indexed yet') || caughtError.statusCode === 503,
+			`Expected 503 "not indexed yet", got: ${caughtError.message}`
+		);
+
+		// Verify (b): indexingFailed is persisted so a restart-simulated re-call to table() retries.
+		resetDatabases();
+		// Re-open the same table — this time without any put mock, simulating a fresh process.
+		// The indexingFailed flag on disk triggers a re-migration from the last checkpoint.
+		const Tbl2 = table({
+			table: TABLE2,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(
+			Tbl2.indexingOperation,
+			`After restart, table() should have detected indexingFailed and re-triggered runIndexing`
+		);
+		if (Tbl2.indexingOperation) await Tbl2.indexingOperation;
+
+		// After the clean retry, all rows should be found.
 		let viaIndex = 0;
 		for (const v of VALUES) {
-			const rows = await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: v }] }));
+			const rows = await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: v }] }));
 			viaIndex += rows.length;
 		}
-		let viaPrimary = 0;
-		for (const entry of Tbl.primaryStore.getRange({ start: true })) {
-			if (entry.value) viaPrimary++;
-		}
-		// If F2 manifests, viaIndex < viaPrimary because some records were skipped
-		// in the index when the put failed, but the records still exist in primary store.
-		assert.equal(
-			viaIndex,
-			viaPrimary,
-			`indexed search saw ${viaIndex} rows but primary store has ${viaPrimary}. ` +
-				`F2 fingerprint: per-record indexing errors leave silent gaps in the new index.`
-		);
+		assert.equal(viaIndex, N, `After restart-triggered retry, all ${N} rows should be indexed. Got ${viaIndex}.`);
 	});
 });
 
