@@ -689,6 +689,10 @@ if (typeof globalThis.Bun === 'undefined') {
 		delete lessOptions.key;
 		delete lessOptions.cert;
 		let ctx = origCreateSecureContext(lessOptions);
+		if (typeof ctx.context?.setCert !== 'function') {
+			// setCert is a Node.js internal — not available in all environments; fall back to default
+			return origCreateSecureContext(options);
+		}
 		ctx.context.setCert(options.cert);
 		ctx.context.setKey(options.key, undefined);
 		return ctx;
