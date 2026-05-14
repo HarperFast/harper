@@ -1127,7 +1127,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							attribute.lastIndexedKey = attributeDescriptor?.lastIndexedKey ?? undefined;
 							attribute.indexingPID = process.pid;
 							delete attribute.indexingFailed; // clear failure flag for the new run
-							delete attribute.indexingAttempt; // reset attempt counter
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
@@ -1297,7 +1296,13 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
 			}
 		}
-		// Await the last pending put. If it rejects, that's also an indexing error.
+		// Await the last pending put. If it rejects, that is also an indexing error.
+		// Note: the when() calls above already attach rejection handlers to each record's
+		// last-put promise; this try-catch specifically handles the case where lastResolution
+		// itself rejects (i.e. the very last put in the loop failed) which would otherwise
+		// throw past the hadIndexingErrors check to the outer catch. The broader issue of
+		// unhandled rejections from non-last puts in multi-value attributes is pre-existing
+		// and out of scope for this fix.
 		try {
 			await lastResolution;
 		} catch (error) {
@@ -1328,7 +1333,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			}
 			await lastResolution;
 			logger.warn(
-				`Indexing of ${Table.tableName} encountered errors on some records — index will remain incomplete. ` +
+				`Indexing of ${Table.tableName} encountered errors on some records - index will remain incomplete. ` +
 					`On next restart the migration will be retried from the last checkpoint (indexingFailed=true). ` +
 					`Affected attributes: ${attributes.map((a) => a.name).join(', ')}`
 			);
@@ -1338,7 +1343,6 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				delete attribute.lastIndexedKey;
 				delete attribute.indexingPID;
 				delete attribute.indexingFailed;
-				delete attribute.indexingAttempt;
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
