@@ -257,9 +257,9 @@ function listenOnPorts() {
 				listen_on = {
 					host: port.slice(0, lastColon).replace(/[[\]]/g, ''),
 					port: +port.slice(lastColon + 1),
-					reusePort: !isWindows,
+					reusePort: !isWindows && !server.noReusePort,
 				};
-			else listen_on = { port: +port, host: '::', reusePort: !isWindows };
+			else listen_on = { port: +port, host: '::', reusePort: !isWindows && !server.noReusePort };
 			if (isNaN(listen_on.port)) continue;
 		} catch (error) {
 			harperLogger.error(`Unable to bind to port ${port}`, error);
