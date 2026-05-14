@@ -98,7 +98,14 @@ describe('15. Custom Functions & components', () => {
 
 	it('add_component', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'add-test', template: process.platform === 'win32' ? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz') : undefined })
+			.send({
+				operation: 'add_component',
+				project: 'add-test',
+				template:
+					process.platform === 'win32'
+						? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz')
+						: undefined,
+			})
 			.expect((r) => assert.equal(r.body.message, 'Successfully added project: add-test', r.text))
 			.expect(200);
 	});
