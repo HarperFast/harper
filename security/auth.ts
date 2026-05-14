@@ -24,15 +24,12 @@ const appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
 const operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
 const operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
 
-let _sessionTable: any;
+const _sessionTable = table({
+	table: 'hdb_session',
+	database: 'system',
+	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
+});
 function getSessionTable() {
-	if (!_sessionTable) {
-		_sessionTable = table({
-			table: 'hdb_session',
-			database: 'system',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
-		});
-	}
 	return _sessionTable;
 }
 const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
