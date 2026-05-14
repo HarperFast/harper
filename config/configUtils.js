@@ -113,7 +113,7 @@ function atomicWriteFile(filePath, content) {
 			// if it fails we should clean up the tmp file
 			try {
 				fs.unlinkSync(tempPath);
-			} catch (cleanupErr) {
+			} catch {
 				// ignore cleanup errors
 			}
 			throw err;
