@@ -29,6 +29,7 @@ describe('Test keys module', () => {
 	let actual_cert;
 	let actual_ca;
 	let ca_key;
+	let savedCerts = null;
 	let root_path;
 
 	before(async function () {
@@ -83,6 +84,10 @@ describe('Test keys module', () => {
 		await mountHdb(test_dir);
 
 		if (databases.system?.hdb_certificate) {
+			savedCerts = [];
+			for await (const cert of databases.system.hdb_certificate.search([])) {
+				savedCerts.push({ ...cert });
+			}
 			await databases.system.hdb_certificate.clear();
 			console.log('COUNT BEFORE LOAD CERT:', Array.from(await databases.system.hdb_certificate.search([])).length);
 		}
@@ -120,6 +125,15 @@ describe('Test keys module', () => {
 	after(async () => {
 		sandbox.restore();
 		await fs.remove(test_dir);
+		if (savedCerts !== null) {
+			const { databases: dbs } = require('#js/resources/databases');
+			if (dbs.system?.hdb_certificate) {
+				await dbs.system.hdb_certificate.clear();
+				for (const cert of savedCerts) {
+					await dbs.system.hdb_certificate.put(cert);
+				}
+			}
+		}
 	});
 
 	it('Test loadCertificates loads certs from config file', async () => {
