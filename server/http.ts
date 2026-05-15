@@ -49,6 +49,8 @@ const httpServers = {},
 	}[] = [];
 let httpOptions: HttpOptions = {};
 export const universalHeaders: [string, string][] = [];
+// Required by threadServer.js to identify which SERVERS entries are Bun-native servers
+export const bunServeConfigs: Record<string | number, any> = {};
 const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
