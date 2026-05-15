@@ -17,7 +17,7 @@ import { createBlobCustom } from '../utils/blob.mjs';
 import { exec } from 'node:child_process';
 import { timestamp } from '../utils/timestamp.mjs';
 
-describe('23. Blob', { skip: process.platform === 'win32' }, () => {
+describe('23. Blob', () => {
 	beforeEach(timestamp);
 
 	const blobId = randomInt(1000000);
@@ -196,7 +196,7 @@ describe('23. Blob', { skip: process.platform === 'win32' }, () => {
 			assert.ok(await fs.pathExists(blobsPath), 'blobs path does not exist');
 			const files = await fs.readdir(blobsPath);
 			for (const file of files) {
-				const filePath = blobsPath + '/' + file;
+				const filePath = path.join(blobsPath, file);
 				const data = await fs.readFile(filePath);
 				assert.ok(data.length >= 75000 && data.length <= 120000, 'read file content length not as expected');
 				const stats = await fs.stat(filePath);
