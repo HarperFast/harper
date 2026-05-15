@@ -71,8 +71,8 @@ This is how CI captures logs for failed jobs — the log directory is uploaded a
 ### Requirements
 
 - Files must use the Node.js `node:test` API (`suite`, `test`, `before`, `after`, etc.) with assertions from `node:assert/strict`
-- Files must end in `.test.ts`
-- Files must be implemented in ESM TypeScript
+- Files must end in `.test.ts` or `.test.mjs` (both extensions are picked up by `test:integration:all`)
+- Files must be implemented as ESM (TypeScript or JavaScript)
 - Each file must begin with a JSDoc comment describing exactly what it tests — include relevant GitHub issue or PR links if they exist
 - File names should be short, hyphen-separated words: `install.test.ts`, `application-restart.test.ts`
 

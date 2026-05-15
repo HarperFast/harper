@@ -60,7 +60,7 @@
 		"format:write": "prettier --write .",
 		"test:integration:api-tests": "node --test integrationTests/apiTests/tests/testSuite.mjs",
 		"test:integration": "harper-integration-test-run",
-		"test:integration:all": "npm run test:integration -- integrationTests/**/*.test.ts",
+		"test:integration:all": "npm run test:integration -- \"integrationTests/**/*.test.ts\" \"integrationTests/**/*.test.mjs\"",
 		"test:integration:bun": "HARPER_RUNTIME=bun harper-integration-test-run",
 		"test:unit": "mocha",
 		"test:unit:main": "mocha \"unitTests/**/*test.*js\" --exclude \"unitTests/apiTests/**/*\" --exclude \"unitTests/dataLayer/harperBridge/**/*\" --exclude \"unitTests/resources/**/*\"",
