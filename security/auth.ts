@@ -171,7 +171,9 @@ export async function authentication(request, nextHandler) {
 		}
 
 		let newUser;
-		if (request.user) {
+		if (AUTHORIZE_LOCAL && bypassUser && !request.user) {
+			request.user = bypassUser;
+		} else if (request.user) {
 			// already authenticated
 		} else if (authorization) {
 			const cachedUser = authorizationCache.get(authorization);
