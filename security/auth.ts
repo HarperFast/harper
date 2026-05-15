@@ -171,9 +171,7 @@ export async function authentication(request, nextHandler) {
 		}
 
 		let newUser;
-		if (AUTHORIZE_LOCAL && bypassUser && !request.user) {
-			request.user = bypassUser;
-		} else if (request.user) {
+		if (request.user) {
 			// already authenticated
 		} else if (authorization) {
 			const cachedUser = authorizationCache.get(authorization);
@@ -249,6 +247,7 @@ export async function authentication(request, nextHandler) {
 			// or should this be cached in the session?
 			request.user = await server.getUser(session.user, null, request);
 		} else if (
+			(AUTHORIZE_LOCAL && bypassUser) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
 			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
 			(request?._nodeRequest?.socket?.server?._pipeName &&
 				request?._nodeRequest?.socket?.server?.bypassLocalAuth &&
