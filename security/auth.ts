@@ -364,7 +364,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	if (started) return;
 	started = true;
 	const { port, securePort }: any = scope.options.getAll() as { port?: number; securePort?: number };
-	scope.server.http(authentication, port || securePort ? ({ port, securePort } as any) : ({ port: 'all' } as any));
+	const httpOpts = port || securePort ? ({ port, securePort } as any) : ({ port: 'all' } as any);
+	scope.server.http(authentication, httpOpts);
 }
 
 // operations

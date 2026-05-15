@@ -297,7 +297,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	scope.server.http(async (request: any, nextHandler) => {
 		if (request.isWebSocket) return;
 		return http(request, nextHandler);
-	}, httpOptions as any);
+	}, { after: 'authentication', ...(httpOptions as any) });
 	if ((httpOptions as any).webSocket === false) return;
 	scope.server.ws(async (ws, request: any, chainCompletion) => {
 		connectionCount++;
@@ -385,7 +385,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			);
 		}
 		ws.close();
-	}, httpOptions as any);
+	}, { after: 'authentication', ...(httpOptions as any) });
 }
 const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
 	401: 3000,
