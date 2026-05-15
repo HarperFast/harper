@@ -2,7 +2,7 @@ import { getSuperUser } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.ts';
-import { table } from '../resources/databases.ts';
+import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
@@ -24,7 +24,7 @@ const appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
 const operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
 const operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
 
-const _sessionTable = table({
+const _sessionTable = table<Table>({
 	table: 'hdb_session',
 	database: 'system',
 	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
@@ -48,8 +48,10 @@ server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
 	authorizationCache = new Map();
 });
+let bypassUser: any;
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
+	bypassUser = { username: 'bypass', role: { role: 'super_user', permission: { super_user: true } } };
 }
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
@@ -250,7 +252,7 @@ export async function authentication(request, nextHandler) {
 				request?._nodeRequest?.socket?.server?.bypassLocalAuth &&
 				request.ip === undefined) // allow operations API domain socket
 		) {
-			request.user = await getSuperUser();
+			request.user = bypassUser ?? (await getSuperUser());
 		}
 		if (ENABLE_SESSIONS) {
 			request.session.update = function (updatedSession) {
