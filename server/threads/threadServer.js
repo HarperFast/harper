@@ -31,13 +31,16 @@ if (!isBun) {
 		let port;
 		if (isMainThread) {
 			port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_PORT) ?? 9229;
-			process.on(['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit'], () => {
+			const closeInspector = () => {
 				try {
 					require('inspector').close();
 				} catch (error) {
 					harperLogger.info('Could not close debugger', error);
 				}
-			});
+			};
+			for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit']) {
+				process.on(signal, closeInspector);
+			}
 		} else {
 			const startingPort = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT);
 			if (startingPort && getWorkerIndex() >= 0) {
