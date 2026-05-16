@@ -1,6 +1,7 @@
 'use strict';
 
-export const schemaDescribe = require('../dataLayer/schemaDescribe');
+import * as schemaDescribe from '../dataLayer/schemaDescribe.ts';
+export { schemaDescribe };
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 

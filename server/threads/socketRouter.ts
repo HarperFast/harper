@@ -7,7 +7,7 @@ import {
 	setRunningIsolatedApplicationsGetter,
 	workersForApplication,
 	stopWorker,
-} from './manageThreads.js';
+} from './manageThreads.ts';
 import {
 	presentIsolatedApplicationNames,
 	isolatedApplicationRefusal,
@@ -82,14 +82,14 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			workerSlots.push(slot);
 			poolSlots.push(slot);
 		} else {
-			const { loadRootComponents } = require('../loadRootComponents.js');
+			const { loadRootComponents } = await import('../loadRootComponents.ts');
 			if (threadCount === 0) {
 				if (configuredReplicationThreads() > 0)
 					harperLogger.warn(
 						'replication.threads is ignored because threads.count is 0: replication runs on the main thread'
 					);
 				setMainIsWorker(true);
-				const threadServer = require('./threadServer.js');
+				const threadServer = await import('./threadServer.ts');
 				await threadServer.startServers();
 				// startServers() schedules listener startup after loading components; await its cached
 				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
@@ -101,7 +101,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				setActiveWorkerPools(dedicatedPools.map((pool) => pool.type));
 			}
 			await loadRootComponents();
-			const { listenOnPorts } = require('./threadServer.js');
+			const { listenOnPorts } = await import('./threadServer.ts');
 			await listenOnPorts();
 			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
 			if (process.platform === 'win32') threadCount = 1;

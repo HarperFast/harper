@@ -29,7 +29,7 @@ import type { User } from '../security/user.ts';
 import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentinel } from './typeParity.ts';
 import type { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Contract, SchemaClass } from './defineResource.ts';
-import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
+import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.ts';
 import { Resource, SEARCH_AUTHORIZATION, transformForSelect, defaultAllowReads } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
@@ -80,7 +80,7 @@ import {
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
 import { isDedicatedPoolWorker } from '../server/threads/workerPools.ts';
 import {
 	databases,
@@ -132,7 +132,7 @@ import {
 	ownsStoreExpiration,
 	runsApplicationCodeSingletons,
 	isDedicatedWorker,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
 import {
 	HAS_BLOBS,
 	LOCAL_ONLY,
@@ -185,7 +185,7 @@ import {
 	removeEntry,
 	PENDING_LOCAL_TIME,
 	VERSION_REUSED,
-	RecordObject,
+	type RecordObject,
 	type Entry,
 	type StructureCounts,
 	entryMap,
@@ -213,8 +213,8 @@ import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
-import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
-import { contentTypes } from '../server/serverHelpers/contentTypes';
+import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction.ts';
+import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
 import {
 	persistedFullTextIndexNames,
@@ -223,7 +223,6 @@ import {
 } from './fullTextSchema.ts';
 
 const { validateAttribute } = lmdbProcessRows;
-
 export type Attribute = {
 	name: string;
 	type: 'ID' | 'Int' | 'Float' | 'Long' | 'String' | 'Boolean' | 'Date' | 'Bytes' | 'Any' | 'BigInt' | 'Blob' | string;
@@ -306,7 +305,6 @@ function usableCount(estimate: any): number {
 		return 0;
 	return count;
 }
-envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
@@ -7148,7 +7146,7 @@ export function makeTable(options): TableResourceClass {
 								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
 							}
 						}
-						for (let i = history.length; i > 0;) {
+						for (let i = history.length; i > 0; ) {
 							if (!send(history[--i], true)) return;
 						}
 						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
@@ -7282,7 +7280,7 @@ export function makeTable(options): TableResourceClass {
 							// a first version may be a record recreated after retention pruned its tombstone
 							if (!(nextTime > 0) && !checkResume()) return;
 						}
-						for (let i = history.length; i > 0;) {
+						for (let i = history.length; i > 0; ) {
 							if (!send(history[--i], true)) return;
 						}
 						// with no entry, a pruned tombstone may have taken the history with it
@@ -7791,10 +7789,12 @@ export function makeTable(options): TableResourceClass {
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a number`);
 								break;
 							case 'ID':
-								if (!(
-									typeof value === 'string' ||
-									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
-								))
+								if (
+									!(
+										typeof value === 'string' ||
+										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
+									)
+								)
 									addError(
 										name,
 										'type',

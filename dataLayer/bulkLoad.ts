@@ -8,12 +8,13 @@ import { HTTP_STATUS_CODES, HDB_ERROR_MSGS, CHECK_LOGS_WRAPPER } from '../utilit
 
 import logger from '../utility/logging/harper_logger.ts';
 import * as papaParse from 'papaparse';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'path';
-import { chain } from 'stream-chain';
-import StreamArray from 'stream-json/streamers/StreamArray';
-import Batch from 'stream-json/utils/Batch';
-import comp from 'stream-chain/utils/comp';
+import streamChain from 'stream-chain';
+const chain = (streamChain as any).chain ?? streamChain;
+import StreamArray from 'stream-json/streamers/StreamArray.js';
+import Batch from 'stream-json/utils/Batch.js';
+import comp from 'stream-chain/utils/comp.js';
 import { finished } from 'stream';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as opFuncCaller from '../utility/OperationFunctionCaller.ts';

@@ -11,7 +11,7 @@
  * These are rare enough for it not to be worth creating wrapper functions for those as well.
  */
 
-const validate = require('validate.js');
+import validate from 'validate.js';
 
 //This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
 // we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule

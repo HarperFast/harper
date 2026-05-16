@@ -1,9 +1,6 @@
 'use strict';
 
 import { ResourceBridge } from './ResourceBridge.ts';
-import * as envMngr from '../../utility/environment/environmentManager.ts';
-envMngr.initSync();
-
 let harperBridge; // ResourceBridge
 
 /**

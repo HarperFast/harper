@@ -28,7 +28,7 @@ import {
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
-import { RequestTarget } from '../resources/RequestTarget';
+import { RequestTarget } from '../resources/RequestTarget.ts';
 import { entryMap } from '../resources/RecordEncoder.ts';
 
 const { errorToString, errorForLog } = harperLogger;

@@ -1654,7 +1654,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (!operation.saved && operation.pendingPriorWrite) {
 			const pendingWrites = [];
-			for (let pending = operation.pendingPriorWrite; pending;) {
+			for (let pending = operation.pendingPriorWrite; pending; ) {
 				if (!pending.saved && this.ownedWrites?.has(pending)) pendingWrites.push(pending);
 				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
 			}

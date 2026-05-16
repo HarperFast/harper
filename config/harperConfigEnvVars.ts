@@ -23,7 +23,7 @@
  */
 
 import type { Logger } from '../utility/logging/logger.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';

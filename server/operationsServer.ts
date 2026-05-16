@@ -2,7 +2,6 @@
 import cluster from 'cluster';
 import zlib from 'node:zlib';
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
@@ -10,7 +9,7 @@ import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOp
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
-import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.ts';
 import guidePath from 'path';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as globalSchema from '../utility/globalSchema.ts';
@@ -24,7 +23,7 @@ import {
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-} from './serverHelpers/serverHandlers.js';
+} from './serverHelpers/serverHandlers.ts';
 import { registerFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
 import { getConfigObj } from '../config/configUtils.ts';
@@ -34,8 +33,8 @@ type ParsedSqlObject = any;
 import { generateJsonApi } from '../resources/openApi.ts';
 import { Resources } from '../resources/Resources.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
-import { sendItcEvent } from './threads/itc.js';
-import { onMessageByType } from './threads/manageThreads.js';
+import { sendItcEvent } from './threads/itc.ts';
+import { onMessageByType } from './threads/manageThreads.ts';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE) ?? 1024 * 1024 * 1024; //this defaults to 1GB in bytes

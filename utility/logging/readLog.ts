@@ -4,7 +4,7 @@ import * as hdbTerms from '../hdbTerms.ts';
 import hdbLogger from './harper_logger.ts';
 import validator from '../../validation/readLogValidator.ts';
 import * as path from 'path';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import { once } from 'events';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { handleHDBError, hdbErrors } from '../errors/hdbError.ts';

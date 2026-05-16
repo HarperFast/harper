@@ -12,7 +12,7 @@ import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { atomicWriteFile, getConfigPath } from '../config/configUtils.ts';
-import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
+import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.ts';
 import {
 	applicationSocketName,
 	isolatedApplicationRoute,
@@ -43,18 +43,15 @@ import { recordAction, recordActionBinary } from '../resources/analytics/write.t
 import { Readable, Writable, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
+import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
+import { onStartup } from '../utility/lifecycle.ts';
 
 const { errorToString, errorForLog } = harperLogger;
-server.http = httpServer;
-server.request = onRequest;
-server.ws = onWebSocket;
-server.upgrade = onUpgrade;
 const websocketServers = {};
 const httpServers = {},
 	httpChain = {},
@@ -2103,3 +2100,11 @@ export function getRequestId() {
 	}
 	return Number(Atomics.add(nextRequestId, 0, 1n));
 }
+
+// Wire server singletons during the startup phase
+onStartup(() => {
+	server.http = httpServer;
+	server.request = onRequest;
+	server.ws = onWebSocket;
+	server.upgrade = onUpgrade;
+});

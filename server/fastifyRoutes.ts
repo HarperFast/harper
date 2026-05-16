@@ -4,19 +4,19 @@ import { deriveRoutePrefix } from './fastifyRoutes/helpers/deriveRoutePrefix.ts'
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
-import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.ts';
 import autoload from '@fastify/autoload';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
-import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
+import * as hdbCore from './fastifyRoutes/plugins/hdbCore.ts';
 // installs server.getUser/authenticateUser
 import '../security/user.ts';
-import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
-import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
+import getServerOptions from './fastifyRoutes/helpers/getServerOptions.ts';
+import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.ts';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
-import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.js';
+import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.ts';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
 import { registerFastifyInstance } from './http.ts';

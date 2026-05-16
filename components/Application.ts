@@ -26,7 +26,7 @@ import {
 	processIncarnation,
 	registerProcessGroup,
 	unregisterProcessGroup,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
 import {
 	certificationPinsOf,
 	liveCertification,

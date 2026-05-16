@@ -19,7 +19,7 @@ import { rm, unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
-} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import {
 	makeTable,
 	ignoreAlreadyDropped,
@@ -42,11 +42,11 @@ import { ClientError, DatabaseClosingError, TableGenerationDroppedError } from '
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
 import { workerData } from 'worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
-import * as manageThreads from '../server/threads/manageThreads.js';
+import * as manageThreads from '../server/threads/manageThreads.ts';
 import {
 	establishAuditFloor,
 	openAuditStore,
@@ -94,7 +94,7 @@ import {
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
-import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import {
 	compileFullTextDefinitions,
 	compileFullTextFields,
@@ -143,7 +143,7 @@ import {
  * - --readonly CLI flag
  * - storage.readOnly config setting
  */
-let _isReadOnlyMode: boolean | undefined;
+var _isReadOnlyMode: boolean | undefined;
 export function __setReadOnlyModeForTest(value: boolean | undefined): void {
 	_isReadOnlyMode = value;
 }
@@ -185,13 +185,12 @@ function markInternalDbiNonVersioned(dbisDb: any): any {
 	if (dbisDb?.encoder) dbisDb.encoder.useVersions = false;
 	return dbisDb;
 }
-const logger = forComponent('storage');
+var logger = forComponent('storage');
 
-const DEFAULT_DATABASE_NAME = 'data';
-const DEFINED_TABLES = Symbol('defined-tables');
+var DEFAULT_DATABASE_NAME = 'data';
+var DEFINED_TABLES = Symbol('defined-tables');
 const CATALOG_RELATIONSHIP = Symbol('catalog-relationship');
-const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
-initSync();
+var DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 
 type RelationshipTarget = { database: string; table: string };
 type PersistedRelationship = {
@@ -333,7 +332,7 @@ function readRocksCompressionConfig(): string | undefined {
 
 // I don't know if this is the best place for this, but somewhere we need to specify which tables
 // replicate by default:
-export const NON_REPLICATING_SYSTEM_TABLES = [
+export var NON_REPLICATING_SYSTEM_TABLES = [
 	'hdb_temp',
 	'hdb_certificate',
 	'hdb_raw_analytics',
@@ -404,10 +403,10 @@ export type DatabaseWatcherEventMap = {
 	dropDatabase: [databaseName: string];
 };
 
-export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>();
+export var databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>();
 
-export const tables: Tables = Object.create(null);
-export const databases: Databases = Object.create(null);
+export var tables: Tables = Object.create(null);
+export var databases: Databases = Object.create(null);
 
 /**
  * Codec used to honor an "enabled, unspecified" compression setting, or `undefined` where the
@@ -503,8 +502,8 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 	return db;
 }
 
-const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
-const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
+var lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
+var rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 type IncompleteDatabaseClose = {
 	databaseNames: Set<string>;
 	rootPaths: string[];
@@ -524,7 +523,7 @@ function databaseRootUnavailable(rootPath: string): boolean {
 _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
-const NEXT_TABLE_ID = Symbol.for('next-table-id');
+var NEXT_TABLE_ID = Symbol.for('next-table-id');
 const warnedFullTextStates = new Map<string, string>();
 // Restore every field used by `commonChanged`, plus `indexed` and `indexNulls`,
 // from the durable descriptor. In particular, preserve `indexNulls: false` so
@@ -1002,11 +1001,11 @@ function setInterruptedDropAttempts(
 function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
-let loadedDatabases; // indicates if we have loaded databases from the file system yet
+var loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
-let definedDatabases: Map<string, Set<string>>;
+var definedDatabases: Map<string, Set<string>>;
 
 /**
  * This gets the set of tables from the default database ("data").
@@ -5268,8 +5267,8 @@ export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 // version resumes as uncertified (full rebuild) rather than being trusted, and a completed index keeps
 // the stamp of the build that wrote it.
 export const CHECKPOINT_ALGORITHM = 2;
-const MAX_OUTSTANDING_INDEXING = 1000;
-const MIN_OUTSTANDING_INDEXING = 10;
+var MAX_OUTSTANDING_INDEXING = 1000;
+var MIN_OUTSTANDING_INDEXING = 10;
 const INDEXING_YIELD_INTERVAL = 100;
 // A resumable checkpoint is written only after a flush (see flushIndexStores), at most once per period
 // and never before this many more records: the flush seals every column family in the database, so a
