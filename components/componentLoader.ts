@@ -1,4 +1,5 @@
-import { onMessageByType } from '../server/threads/manageThreads.js';
+import { onMessageByType } from '../server/threads/manageThreads.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import {
 	readdirSync,
 	readFileSync,
@@ -28,7 +29,7 @@ import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import * as scheduler from '../resources/scheduler/scheduler.ts';
-import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
@@ -61,7 +62,7 @@ import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
-import { PluginModule } from './PluginModule.ts';
+import { type PluginModule } from './PluginModule.ts';
 import {
 	getEnvBuiltInComponents,
 	recoverInterruptedActivations,
@@ -412,7 +413,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	roles,
 	jsResource: jsHandler,
 	get fastifyRoutes() {
-		return require('../server/fastifyRoutes');
+		return _fastifyRoutes;
 	},
 	login,
 	// String entry: the loader `await import()`s these lazily when the component is actually
@@ -440,22 +441,24 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	login: ...
 	 */
 };
-if (isMainThread) {
-	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
-	// Built-in agent component (#626). Only loads if the root config carries an `agent:` block;
-	// the block's `enabled: false` default keeps it inert even when the key is present.
-	TRUSTED_RESOURCE_PLUGINS.agent = require('../agent/agent');
-} else {
-	// The HTTP operations API itself only binds in the main thread, but worker threads still
-	// dispatch operations — most notably, the replication WebSocket handler in workers receives
-	// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
-	// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
-	// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
-	// `server.registerOperation?.({...})` at their module top level. Requiring serverUtilities
-	// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
-	// workers while still installing the dispatch machinery.
-	require('../server/serverHelpers/serverUtilities');
-}
+let _fastifyRoutes: any;
+onStartup(async () => {
+	_fastifyRoutes = await import('../server/fastifyRoutes.ts');
+	if (isMainThread) {
+		TRUSTED_RESOURCE_PLUGINS.operationsApi = await import('../server/operationsServer.ts');
+		TRUSTED_RESOURCE_PLUGINS.agent = await import('../agent/agent.ts');
+	} else {
+		// The HTTP operations API itself only binds in the main thread, but worker threads still
+		// dispatch operations — most notably, the replication WebSocket handler in workers receives
+		// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
+		// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
+		// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
+		// `server.registerOperation?.({...})` at their module top level. Loading serverUtilities
+		// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
+		// workers while still installing the dispatch machinery.
+		await import('../server/serverHelpers/serverUtilities.ts');
+	}
+});
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;

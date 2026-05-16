@@ -19,7 +19,7 @@ export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
 /** Name of the Harper Process Script */
 export const HDB_PROC_NAME = 'harper.js';
 /** Name of the Harper Restart Script */
-export const HDB_RESTART_SCRIPT = 'restartHdb.js';
+export const HDB_RESTART_SCRIPT = 'restartHdb.ts';
 
 /** Harper Process Descriptor */
 const HDB_PROC_DESCRIPTOR = 'Harper';

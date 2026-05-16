@@ -1,11 +1,11 @@
 'use strict';
 
 // Note - do not import/use commonUtils.js in this module, it will cause circular dependencies.
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import { workerData, threadId, isMainThread } from 'worker_threads';
 import * as pathModule from 'path';
 import * as YAML from 'yaml';
-const PropertiesReader = require('properties-reader');
+import PropertiesReader from 'properties-reader';
 import * as hdbTerms from '../hdbTerms.ts';
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
 import * as os from 'os';
@@ -27,7 +27,6 @@ let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
 	: (process.stdout as any).nativeWrite || ((process.stdout as any).nativeWrite = process.stdout.write);
 let fileLoggers = new Map();
 const { join } = pathModule;
-
 const MAX_LOG_BUFFER = 10000;
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -196,6 +195,9 @@ function resolveLogPath(configPath: string, rootPath: string) {
 }
 async function updateLogSettings() {
 	if (!rootConfig) {
+		// Lazy-load to avoid a circular dependency at module evaluation time
+		// (RootConfigWatcher imports configUtils which imports this logger).
+		const { getSharedRootConfigWatcher } = await import('../../config/RootConfigWatcher.ts');
 		// set up the initial watcher
 		rootConfig = getSharedRootConfigWatcher();
 		// wait for it to be ready
@@ -416,43 +418,45 @@ class HarperLogger extends Console {
 
 if (hdbProperties === undefined) initLogSettings();
 
-module.exports = {
-	notify,
-	fatal,
-	error,
-	warn,
-	info,
-	debug,
-	trace,
-	logLevel,
-	loggerWithTag,
-	suppressLogging,
-	initLogSettings,
-	logCustomLevel,
-	closeLogFile,
-	createLogger,
-	logsAtLevel,
-	getLogFilePath: () => logFilePath,
-	forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
-	setMainLogger,
-	setLogLevel,
-	OUTPUTS,
-	AuthAuditLog,
-	// for now these functions at least notify us of when the component system is ready so
-	// we can start using the RootConfigWatcher
-	start: updateLogSettings,
-	startOnMainThread: updateLogSettings,
-	// Test-only: applies a config without the process-wide watcher `updateLogSettings` builds.
-	_applyLogSettingsForTests: applyLogSettings,
-	errorToString,
-	errorForLog,
-	inspectForLog,
-	isErrorLike,
-	disableStdio,
-	isStdioBrokenError,
-	externalLogger,
-	updateLogger,
-};
+if (typeof module !== 'undefined') {
+	module.exports = {
+		notify,
+		fatal,
+		error,
+		warn,
+		info,
+		debug,
+		trace,
+		logLevel,
+		loggerWithTag,
+		suppressLogging,
+		initLogSettings,
+		logCustomLevel,
+		closeLogFile,
+		createLogger,
+		logsAtLevel,
+		getLogFilePath: () => logFilePath,
+		forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
+		setMainLogger,
+		setLogLevel,
+		OUTPUTS,
+		AuthAuditLog,
+		// for now these functions at least notify us of when the component system is ready so
+		// we can start using the RootConfigWatcher
+		start: updateLogSettings,
+		startOnMainThread: updateLogSettings,
+		// Test-only: applies a config without the process-wide watcher `updateLogSettings` builds.
+		_applyLogSettingsForTests: applyLogSettings,
+		errorToString,
+		errorForLog,
+		inspectForLog,
+		isErrorLike,
+		disableStdio,
+		isStdioBrokenError,
+		externalLogger,
+		updateLogger,
+	};
+}
 
 // Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
 // text back into the file logger this is the fallback for, and swallows a broken pipe - there is
@@ -908,7 +912,7 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 		reconfigured = true;
 	}
 	if (isMainThread && reconfigured) {
-		setTimeout(() => {
+		setTimeout(async () => {
 			// Everything inside the try: a throw from a timer callback is unhandled, and neither
 			// require('./logRotator') (which reaches environmentManager's synchronous init) nor a
 			// rotator teardown may take the process down over log rotation (#847).
@@ -917,7 +921,7 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 				logger.rotator = undefined;
 				previousRotator?.end();
 				if (!rotation) return;
-				const { logRotator } = require('./logRotator');
+				const { logRotator } = await import('./logRotator.ts');
 				logger.rotator = logRotator({
 					logger,
 					...rotation,
@@ -2063,7 +2067,6 @@ export function AuthAuditLog(
 	this.path = path;
 }
 // we have to load this at the end to avoid circular dependencies problems
-import { getSharedRootConfigWatcher } from '../../config/RootConfigWatcher.ts';
 
 export const getLogFilePath = () => logFilePath;
 export const forComponent = (name: string, isExternal?: boolean) => mainLogger.forComponent(name, isExternal);

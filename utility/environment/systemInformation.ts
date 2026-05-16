@@ -5,13 +5,11 @@ import logger from '../logging/harper_logger.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 import { getQuotaStatus } from '../../server/storageReclamation.ts';
 import { lmdbGetTableSize } from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize.ts';
-import { getThreadInfo } from '../../server/threads/manageThreads.js';
+import { getThreadInfo } from '../../server/threads/manageThreads.ts';
 import * as env from './environmentManager.ts';
 import { getDatabases, type Table } from '../../resources/databases.ts';
 import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts';
-import { RocksDatabase, StatsHistogramData } from '@harperfast/rocksdb-js';
-
-env.initSync();
+import { RocksDatabase, type StatsHistogramData } from '@harperfast/rocksdb-js';
 
 //this will hold the system_information which is static to improve performance
 let systemInformationCache = undefined;

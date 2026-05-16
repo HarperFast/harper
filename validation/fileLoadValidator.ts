@@ -7,7 +7,6 @@ import joi from 'joi';
 const { string } = joi.types();
 import { hdbErrors, handleHDBError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 import { commonValidators } from './common_validators.ts';
 
 const isRequiredString = ' is required';

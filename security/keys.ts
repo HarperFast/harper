@@ -1,7 +1,7 @@
 'use strict';
 
 import * as path from 'path';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as forge from 'node-forge';
 import * as net from 'net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
@@ -39,7 +39,7 @@ export const getPrivateKeys = () => {
 };
 
 import { readFileSync, statSync, watchFile } from 'node:fs';
-import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
+import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.ts';
 import { isMainThread } from 'worker_threads';
 import {
 	POLLING_FALLBACK_OPTIONS,
@@ -82,12 +82,15 @@ export function generateSerialNumber() {
 	return bytes.toString('hex');
 }
 
-onMessageFromWorkers(async (message) => {
-	if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
-		envManager.initSync(true);
-		// This will also call loadCertificates
-		await reviewSelfSignedCert();
-	}
+// Defer registration to setImmediate so manageThreads internal state is initialized
+setImmediate(() => {
+	onMessageFromWorkers(async (message) => {
+		if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
+			envManager.initSync(true);
+			// This will also call loadCertificates
+			await reviewSelfSignedCert();
+		}
+	});
 });
 
 let certificateTable;

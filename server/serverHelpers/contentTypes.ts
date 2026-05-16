@@ -18,9 +18,19 @@ import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest } from './multipartParser.ts';
-const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
-const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
-const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
+// Resolve lazily: reading config at module-load time would TDZ under ESM
+// because configUtils.ts is mid-evaluation when this module is imported.
+let _serializationBigint: boolean | undefined;
+function getSerializationBigint(): boolean {
+	if (_serializationBigint === undefined) {
+		_serializationBigint = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+	}
+	return _serializationBigint;
+}
+const JSONStringify = ((value: any, ...rest: any[]) =>
+	(getSerializationBigint() ? stringify : JSON.stringify)(value, ...rest)) as typeof JSON.stringify;
+const JSONParse = ((text: string, ...rest: any[]) =>
+	(getSerializationBigint() ? parse : JSON.parse)(text, ...rest)) as typeof JSON.parse;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
 
@@ -71,7 +81,11 @@ const mediaTypes = new Map<
 >();
 
 export const contentTypes = mediaTypes;
-server.contentTypes = contentTypes as any;
+// Defer attachment to `server` because under ESM cycles Server.ts may still
+// be mid-evaluation when this module is loaded.
+setImmediate(() => {
+	server.contentTypes = contentTypes as any;
+});
 _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
 mediaTypes.set('application/json', {
@@ -416,7 +430,10 @@ export function findBestSerializer(incomingMessage) {
 	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
-const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+let _compressionThreshold: number | undefined;
+function COMPRESSION_THRESHOLD() {
+	return (_compressionThreshold ??= envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD));
+}
 const brotliParams = (mode: number) => ({
 	params: { [constants.BROTLI_PARAM_MODE]: mode, [constants.BROTLI_PARAM_QUALITY]: 2 },
 });
@@ -435,7 +452,7 @@ export function brotliOptions(contentType: string) {
 export function serialize(responseData, request, responseObject) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
+	let canCompress = COMPRESSION_THRESHOLD() && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
 	let contentType: string;
 	if (responseData?.contentType != null && responseData.data != null) {
@@ -496,7 +513,7 @@ export function serialize(responseData, request, responseObject) {
 			}
 		} else responseBody = serializer.serializer.serialize(responseData, responseObject);
 	}
-	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
+	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD()) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		responseObject.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call

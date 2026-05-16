@@ -13,7 +13,6 @@ import { v4 as uuidv4 } from 'uuid';
 import * as lmdb from 'lmdb';
 import { handleHDBError, hdbErrors } from '../errors/hdbError.ts';
 import * as envMngr from '../environment/environmentManager.ts';
-envMngr.initSync();
 
 const LMDB_PREFETCH_WRITES = envMngr.get(hdbTerms.CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 

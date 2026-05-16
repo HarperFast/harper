@@ -1,5 +1,5 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
-import { Transaction as LMDBTransaction } from 'lmdb';
+import { type Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import {
 	DatabaseClosingError,
@@ -15,7 +15,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
+import { type Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -1489,7 +1489,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (!operation.saved && operation.pendingPriorWrite) {
 			const pendingWrites = [];
-			for (let pending = operation.pendingPriorWrite; pending;) {
+			for (let pending = operation.pendingPriorWrite; pending; ) {
 				if (!pending.saved && this.ownedWrites?.has(pending)) pendingWrites.push(pending);
 				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
 			}

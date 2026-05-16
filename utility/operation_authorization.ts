@@ -31,12 +31,12 @@ import {
 	registerGrantableOperation,
 	unregisterGrantableOperation,
 } from './operationPermissions.ts';
-import * as permsTranslator from '../security/permissionsTranslator.js';
+import * as permsTranslator from '../security/permissionsTranslator.ts';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
 import * as configUtils from '../config/configUtils.ts';
-import * as functionsOperations from '../components/operations.js';
+import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
@@ -462,15 +462,6 @@ requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new permission(false, [
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new permission(false, [READ_PERM], null));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new permission(false, [INSERT_PERM], null));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, [UPDATE_PERM], null));
-
-module.exports = {
-	verifyPerms,
-	verifyPermsAST,
-	verifyOperationsAllowlist,
-	verifyBulkLoadAttributePerms,
-	registerOperationPermission,
-	unregisterOperationPermission,
-};
 
 /**
  * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.

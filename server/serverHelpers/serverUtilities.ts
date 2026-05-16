@@ -6,7 +6,7 @@ import * as delete_ from '../../dataLayer/delete.ts';
 import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
-import customFunctionOperations from '../../components/operations.js';
+import customFunctionOperations from '../../components/operations.ts';
 import { setMcpQuotaHandler } from '../../components/mcp/quota.ts';
 import { isDeployValidating } from './deployValidationState.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -73,6 +73,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 };
 
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -180,7 +181,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-server.operation = operation;
 export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
@@ -206,7 +206,7 @@ const declaredPermissionNames = new Set<string>();
  * Register an operation function with the server.
  * @param operationDefinition
  */
-server.registerOperation = (operationDefinition: OperationDefinition) => {
+function registerOperation(operationDefinition: OperationDefinition) {
 	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
 	if (isDeployValidating()) return;
 	const { name, execute, requiresSuperUser } = operationDefinition;
@@ -236,7 +236,7 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
 	// registerOperationPermission above made only in this thread's scope.
 	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
-};
+}
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
 // like the tool dispatch that consults it, so no cross-thread announcement is needed. Skipped during
@@ -822,3 +822,9 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 
 	return opFuncMap;
 }
+
+// Wire server singletons during the startup phase
+onStartup(() => {
+	server.operation = operation;
+	server.registerOperation = registerOperation;
+});

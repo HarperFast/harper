@@ -6,7 +6,7 @@ const {
 	handlePostRequest,
 	authHandler,
 	reqBodyValidationHandler,
-} = require('../../../server/serverHelpers/serverHandlers.js');
+} = require('../../../server/serverHelpers/serverHandlers.ts');
 
 /**
  * Generates a fastify plugin containing three core methods

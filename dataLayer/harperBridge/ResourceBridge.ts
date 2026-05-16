@@ -14,7 +14,7 @@ import {
 	claimDatabaseDropPreparations,
 	releaseDatabaseDropPreparations,
 } from '../../resources/databaseDropPreparation.ts';
-import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
+import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.ts';
 import SearchObject from '../SearchObject.ts';
 import {
 	OPERATIONS_ENUM,
@@ -23,7 +23,7 @@ import {
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 } from '../../utility/hdbTerms.ts';
 import * as signalling from '../../utility/signalling.ts';
-import { SchemaEventMsg } from '../../server/threads/itc.js';
+import { SchemaEventMsg } from '../../server/threads/itc.ts';
 import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
 import type {
@@ -40,7 +40,7 @@ import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
-import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
+import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.ts';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';

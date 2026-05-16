@@ -23,11 +23,12 @@
  */
 
 import type { Logger } from '../utility/logging/logger.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';
-import { cloneDeep } from 'lodash';
+import _lodash from 'lodash';
+const { cloneDeep } = _lodash;
 import { getBackupDirPath } from './configHelpers.ts';
 import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';

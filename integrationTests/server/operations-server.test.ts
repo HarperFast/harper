@@ -11,7 +11,6 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { pack, unpack } from 'msgpackr';
 import { encode, decode } from 'cbor-x';
-
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 suite('Operations Server', (ctx: ContextWithHarper) => {

@@ -1,3 +1,4 @@
+import { onStartup } from '../../utility/lifecycle.ts';
 /**
  * CRL (Certificate Revocation List) verification
  */
@@ -57,53 +58,56 @@ function getCertificateCacheTable() {
 /**
  * CRL fetching and validation source
  */
-class CertificateRevocationListSource extends Resource {
-	async get(id: string) {
-		const context = this.getContext() as SourceContext<CRLVerificationContext>;
-		const requestContext = context?.requestContext;
+let CertificateRevocationListSource: any;
+onStartup(() => {
+	CertificateRevocationListSource = class CertificateRevocationListSource extends Resource {
+		async get(id: string) {
+			const context = this.getContext() as SourceContext<CRLVerificationContext>;
+			const requestContext = context?.requestContext;
 
-		if (!requestContext?.distributionPoint || !requestContext?.issuerPem) {
-			throw new Error(`No CRL data provided for cache key: ${id}`);
-		}
-
-		const { distributionPoint, issuerPem: issuerPemStr, config } = requestContext;
-
-		try {
-			const { entry } = await downloadAndParseCRLOnce(distributionPoint, issuerPemStr, config);
-
-			// Set expiration - use the CRL's nextUpdate time or configured TTL, whichever is sooner
-			context.expiresAt = Math.min(entry.next_update, Date.now() + config.cacheTtl);
-
-			return entry;
-		} catch (error) {
-			logger.error?.(`CRL fetch error for: ${distributionPoint} - ${error}`);
-
-			if (error instanceof CRLSignatureVerificationError) {
-				throw error;
+			if (!requestContext?.distributionPoint || !requestContext?.issuerPem) {
+				throw new Error(`No CRL data provided for cache key: ${id}`);
 			}
 
-			// Check failure mode
-			if (config.failureMode === 'fail-closed') {
-				// Cache the error for faster recovery
-				context.expiresAt = Date.now() + ERROR_CACHE_TTL;
+			const { distributionPoint, issuerPem: issuerPemStr, config } = requestContext;
 
-				return {
-					crl_id: id,
-					distribution_point: distributionPoint,
-					issuer_dn: 'unknown',
-					crl_blob: Buffer.alloc(0),
-					this_update: Date.now(),
-					next_update: context.expiresAt,
-					signature_valid: false,
-				};
+			try {
+				const { entry } = await downloadAndParseCRLOnce(distributionPoint, issuerPemStr, config);
+
+				// Set expiration - use the CRL's nextUpdate time or configured TTL, whichever is sooner
+				context.expiresAt = Math.min(entry.next_update, Date.now() + config.cacheTtl);
+
+				return entry;
+			} catch (error) {
+				logger.error?.(`CRL fetch error for: ${distributionPoint} - ${error}`);
+
+				if (error instanceof CRLSignatureVerificationError) {
+					throw error;
+				}
+
+				// Check failure mode
+				if (config.failureMode === 'fail-closed') {
+					// Cache the error for faster recovery
+					context.expiresAt = Date.now() + ERROR_CACHE_TTL;
+
+					return {
+						crl_id: id,
+						distribution_point: distributionPoint,
+						issuer_dn: 'unknown',
+						crl_blob: Buffer.alloc(0),
+						this_update: Date.now(),
+						next_update: context.expiresAt,
+						signature_valid: false,
+					};
+				}
+
+				// Fail open - return null to not cache
+				logger.warn?.('CRL fetch failed, not caching (fail-open mode)');
+				return null;
 			}
-
-			// Fail open - return null to not cache
-			logger.warn?.('CRL fetch failed, not caching (fail-open mode)');
-			return null;
 		}
-	}
-}
+	};
+});
 
 // Lazy-load Harper tables
 let crlCacheTable: ReturnType<typeof declareCRLCacheTable>;

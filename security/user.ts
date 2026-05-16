@@ -95,10 +95,10 @@ import * as validate from 'validate.js';
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'util';
 import * as env from '../utility/environment/environmentManager.ts';
-import systemSchema from '../json/systemSchema.json';
+import systemSchema from '../json/systemSchema.json' with { type: 'json' };
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
-import * as _ from 'lodash';
+import _ from 'lodash';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 // Need to use `.js` even for other TS files since TS compiler won't replace requires.
@@ -113,14 +113,15 @@ import { databases, getDatabases, onUpdatedTable } from '../resources/databases.
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
 import { writeKey } from 'ordered-binary';
+import { onStartup } from '../utility/lifecycle.ts';
 
-server.getUser = (username: string, password?: string | null): Promise<User> => {
+function getUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password, password != null);
-};
+}
 
-server.authenticateUser = (username: string, password?: string | null): Promise<User> => {
+function authenticateUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password);
-};
+}
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -705,7 +706,7 @@ function notifyUserChangeListeners(): void {
 }
 
 let invalidateCallbacks = [];
-(server as any).invalidateUser = function (user: User | any) {
+function invalidateUserImpl(user: User | any) {
 	for (let callback of invalidateCallbacks) {
 		try {
 			callback(user);
@@ -713,8 +714,16 @@ let invalidateCallbacks = [];
 			harperLogger.error('Error invalidating user', error);
 		}
 	}
-};
+}
 
-server.onInvalidatedUser = function (callback) {
+function onInvalidatedUserImpl(callback) {
 	invalidateCallbacks.push(callback);
-};
+}
+
+// Wire server singletons during the startup phase
+onStartup(() => {
+	server.getUser = getUserImpl;
+	server.authenticateUser = authenticateUserImpl;
+	server.onInvalidatedUser = onInvalidatedUserImpl;
+	(server as any).invalidateUser = invalidateUserImpl;
+});

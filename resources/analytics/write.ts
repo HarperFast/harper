@@ -1,5 +1,5 @@
 import { parentPort, threadId } from 'worker_threads';
-import { onMessageByType } from '../../server/threads/manageThreads.js';
+import { onMessageByType } from '../../server/threads/manageThreads.ts';
 import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -20,8 +20,6 @@ import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js'
 
 const log = forComponent('analytics').conditional;
 const isBun = typeof globalThis.Bun !== 'undefined';
-
-initSync();
 
 type ActionCallback = (action: Action) => void;
 export type Value = number | boolean | ActionCallback;
@@ -129,8 +127,6 @@ export function recordAction(value: Value, metric: string, path?: string, method
 	}
 	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
-
-server.recordAnalytics = recordAction;
 
 // Let the storage layer emit write-commit latency without statically depending on this module.
 setCommitLatencyRecorder((durationMs) => recordAction(durationMs, METRIC.TRANSACTION_COMMIT_TIME));
@@ -1225,7 +1221,7 @@ function getAnalyticsTable() {
 	);
 }
 
-if (!parentPort) onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
+if (!parentPort) setImmediate(() => onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics));
 let scheduledTasksRunning;
 function startScheduledTasks() {
 	scheduledTasksRunning = true;
@@ -1384,3 +1380,8 @@ function rebalance({ counts, values, totalCount }, resetCounts: boolean) {
 	else counts.set(targetCounts);
 }
 */
+
+// Wire server singletons during the startup phase
+onStartup(() => {
+	server.recordAnalytics = recordAction;
+});

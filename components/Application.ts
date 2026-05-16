@@ -24,7 +24,7 @@ import {
 	isProcessGroupAlive,
 	registerProcessGroup,
 	unregisterProcessGroup,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,

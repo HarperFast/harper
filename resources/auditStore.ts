@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { readKey, writeKey } from 'ordered-binary';
-import { initSync, get as envGet } from '../utility/environment/environmentManager.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.js';
+import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
@@ -33,7 +33,6 @@ import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
  * username
  * remaining bytes (optional, not included for deletes/invalidation): the record itself, using the same encoding as its primary store
  */
-initSync();
 
 export type AuditRecord = {
 	version: number; // the record's own version: LWW ordering, @updatedTime, ETag

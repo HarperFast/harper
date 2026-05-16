@@ -5,7 +5,8 @@ import { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
-import { cloneDeep } from 'lodash';
+import _typestrip_lodash from 'lodash';
+const { cloneDeep } = _typestrip_lodash;
 import {
 	POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,

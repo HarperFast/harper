@@ -5,7 +5,7 @@ import * as AWSConnector from '../utility/AWS/AWSConnector.js';
 import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.ts';
 import * as stream from 'stream';
 import * as hdbUtils from '../utility/common_utils.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'path';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'util';

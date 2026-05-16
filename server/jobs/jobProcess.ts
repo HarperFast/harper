@@ -14,8 +14,8 @@ import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizat
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
 import moment from 'moment';
 import * as jobs from './jobs.ts';
-import { cloneDeep } from 'lodash';
-
+import _lodash from 'lodash';
+const { cloneDeep } = _lodash;
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';

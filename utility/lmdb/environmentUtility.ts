@@ -1,7 +1,7 @@
 'use strict';
 
 import * as lmdb from 'lmdb';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'path';
 import * as common from './commonUtility.ts';
 import log from '../logging/harper_logger.ts';

@@ -8,12 +8,19 @@ import { defineResource, t, schemaOf, projectTableFragment } from '../resources/
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
+import * as _vm from 'node:vm';
+import { createContext, runInContext, runInThisContext } from 'node:vm';
+// SourceTextModule and SyntheticModule require `--experimental-vm-modules`. Pull
+// them off the vm namespace at runtime so the named ESM import doesn't fail when
+// the flag isn't passed (e.g. CLI paths that never touch the JS loader).
+const { SourceTextModule, SyntheticModule } = _vm as any;
+type SourceTextModule = any;
+type SyntheticModule = any;
 import { ApplicationScope } from '../components/ApplicationScope.ts';
 import { getSecretsForComponent, runWithComponentBinding } from '../components/componentSecrets.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
-import * as env from '../utility/environment/environmentManager';
+import * as env from '../utility/environment/environmentManager.ts';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 
@@ -33,7 +40,7 @@ import {
 	withFileRetry,
 	writePidRecord,
 } from './spawnPidFile.ts';
-import { whenComponentsLoaded, bootLoadsComponents } from '../server/threads/threadServer.js';
+import { whenComponentsLoaded, bootLoadsComponents } from '../server/threads/threadServer.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';

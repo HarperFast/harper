@@ -1,6 +1,6 @@
 'use strict';
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import Joi from 'joi';
 import * as os from 'os';
 const { boolean, string, number, array } = Joi.types();
