@@ -1,11 +1,9 @@
-import { startWorker, setMonitorListener, setMainIsWorker, threadsHaveStarted } from './manageThreads.js';
+import { startWorker, setMonitorListener, setMainIsWorker, threadsHaveStarted } from './manageThreads.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { isMainThread } from 'worker_threads';
-import { join } from 'path';
-
 const workers = [];
 const workersReady = [];
 
@@ -36,14 +34,14 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			// external-conflict detection in listenOnPorts() assumes the main thread binds first.
 			startHTTPWorker(0, 1);
 		} else {
-			const { loadRootComponents } = require('../loadRootComponents.js');
+			const { loadRootComponents } = await import('../loadRootComponents.ts');
 			if (threadCount === 0) {
 				setMainIsWorker(true);
-				await require('./threadServer.js').startServers();
+				await require('./threadServer.ts').startServers();
 				return Promise.resolve([]);
 			}
 			await loadRootComponents();
-			const { listenOnPorts } = require('./threadServer.js');
+			const { listenOnPorts } = await import('./threadServer.ts');
 			await listenOnPorts();
 			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
 			if (process.platform === 'win32') threadCount = 1;
@@ -58,7 +56,10 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 }
 
 function startHTTPWorker(index, threadCount = 1) {
-	startWorker(join(__dirname, './threadServer.js'), {
+	// Worker entry path is resolved by startWorker() against PACKAGE_ROOT,
+	// which differs between source (`core/server/threads/...`) and dist
+	// (`core/dist/server/threads/...`). startWorker handles the rewrite.
+	startWorker('server/threads/threadServer', {
 		name: hdbTerms.THREAD_TYPES.HTTP,
 		workerIndex: index,
 		threadCount,

@@ -1,6 +1,7 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
-import { parser as makeParser, generate } from 'mqtt-packet';
+import _mqtt_packet from 'mqtt-packet';
+const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes.ts';

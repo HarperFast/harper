@@ -4,7 +4,7 @@ import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 let serverItcHandlers;
-import { sendItcEvent } from '../server/threads/itc.js';
+import { sendItcEvent } from '../server/threads/itc.ts';
 
 // Await BOTH the local handler and the cross-worker broadcast. The local handler is what
 // rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
@@ -15,7 +15,7 @@ import { sendItcEvent } from '../server/threads/itc.js';
 export async function signalSchemaChange(message: any) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
 	} catch (err) {
@@ -31,7 +31,7 @@ export async function signalSchemaChange(message: any) {
  */
 export function signalResourcesRegistered() {
 	try {
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
 		serverItcHandlers.resourceHandler();
 	} catch (err) {
 		hdbLogger.error(err);
@@ -41,7 +41,7 @@ export function signalResourcesRegistered() {
 export async function signalUserChange(message: any) {
 	try {
 		hdbLogger.trace('signalUserChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
 		const itcEventUser = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.USER, message);
 		await Promise.all([serverItcHandlers.user(itcEventUser), sendItcEvent(itcEventUser)]);
 	} catch (err) {

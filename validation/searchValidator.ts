@@ -1,4 +1,4 @@
-import * as _ from 'lodash';
+import _ from 'lodash';
 import * as validator from './validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -7,7 +7,6 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 const searchByValueSchema = Joi.object({
 	database: hdbDatabase,
 	schema: hdbDatabase,

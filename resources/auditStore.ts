@@ -1,8 +1,8 @@
 import { readKey, writeKey } from 'ordered-binary';
-import { initSync, get as envGet } from '../utility/environment/environmentManager.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
@@ -30,7 +30,6 @@ import { isReadOnlyMode } from './databases.ts';
  * username
  * remaining bytes (optional, not included for deletes/invalidation): the record itself, using the same encoding as its primary store
  */
-initSync();
 
 export type AuditRecord = {
 	version: number;

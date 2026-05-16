@@ -5,9 +5,8 @@ import {
 	type StoreRemoveOptions,
 	RocksDatabase,
 } from '@harperfast/rocksdb-js';
-import { Id } from './ResourceInterface.ts';
+import { type Id } from './ResourceInterface.ts';
 import { MAXIMUM_KEY } from 'ordered-binary';
-
 declare module '@harperfast/rocksdb-js' {
 	interface DBI<T> {
 		getValuesCount(indexedValue: any): number;

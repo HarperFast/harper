@@ -17,7 +17,7 @@ import SearchByHashObject from '../dataLayer/SearchByHashObject.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
-import { UserEventMsg } from '../server/threads/itc.js';
+import { UserEventMsg } from '../server/threads/itc.ts';
 
 function scrubRoleDetails(role) {
 	try {

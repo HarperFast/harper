@@ -2,7 +2,7 @@
 
 import * as os from 'os';
 import inquirer from 'inquirer';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import PropertiesReader from 'properties-reader';
 import chalk from 'chalk';
 import * as path from 'path';
@@ -22,7 +22,7 @@ import mountHdb from '../mount_hdb.ts';
 import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
-import checkJwtTokens from './checkJWTTokensExist.js';
+import checkJwtTokens from './checkJWTTokensExist.ts';
 import * as globalSchema from '../globalSchema.ts';
 import { promisify } from 'util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);

@@ -6,7 +6,7 @@ import * as delete_ from '../../dataLayer/delete.ts';
 import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
-import customFunctionOperations from '../../components/operations.js';
+import * as customFunctionOperations from '../../components/operations.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -66,6 +66,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 };
 
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -147,7 +148,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-server.operation = operation;
 export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
@@ -169,7 +169,7 @@ export type OperationDefinition = {
  * Register an operation function with the server.
  * @param operationDefinition
  */
-server.registerOperation = (operationDefinition: OperationDefinition) => {
+function registerOperation(operationDefinition: OperationDefinition) {
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
 	if (requiresSuperUser !== undefined) {
@@ -188,7 +188,7 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
 	// so the main thread can forward calls to this worker (#1736).
 	if (!isMainThread) announceRegisteredOperation(name);
-};
+}
 
 export function chooseOperation(json: OperationRequestBody) {
 	let getOpResult: OperationFunctionObject;
@@ -574,3 +574,9 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 
 	return opFuncMap;
 }
+
+// Wire server singletons during the startup phase
+onStartup(() => {
+	server.operation = operation;
+	server.registerOperation = registerOperation;
+});

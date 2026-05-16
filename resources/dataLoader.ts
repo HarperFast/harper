@@ -1,13 +1,13 @@
 import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
-import { Databases, databases, table, Tables, tables } from './databases.ts';
-import { getWorkerIndex } from '../server/threads/manageThreads';
+import { type Databases, databases, table, type Tables, tables } from './databases.ts';
+import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { Attribute } from './Table.ts';
-import { FileEntry } from '../components/EntryHandler.ts';
+import { type Attribute } from './Table.ts';
+import { type FileEntry } from '../components/EntryHandler.ts';
 
 const dataLoaderLogger = harperLogger.forComponent('dataLoader');
 

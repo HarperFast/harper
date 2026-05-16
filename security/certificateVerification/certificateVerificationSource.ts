@@ -3,6 +3,7 @@
  */
 
 import { Resource } from '../../resources/Resource.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 import type { SourceContext, Query } from '../../resources/ResourceInterface.ts';
 import type { CertificateVerificationContext } from './types.ts';
 
@@ -23,62 +24,70 @@ async function loadVerificationFunctions() {
 }
 
 /**
- * Certificate Verification Source that can handle both CRL and OCSP
+ * Certificate Verification Source that can handle both CRL and OCSP.
+ *
+ * Late-bound via `onStartup` because this module is loaded inside Resource.ts's
+ * own static-graph SCC (via the auth.ts → server-utilities chain), so a
+ * class-extends declaration at module-top would TDZ on `Resource`.
  */
-export class CertificateVerificationSource extends Resource {
-	async get(query: Query) {
-		const id = query.id as string;
+export let CertificateVerificationSource: any;
 
-		// Get the certificate data from requestContext
-		const context = this.getContext() as SourceContext<CertificateVerificationContext>;
-		const requestContext = context?.requestContext;
+onStartup(() => {
+	CertificateVerificationSource = class CertificateVerificationSource extends Resource {
+		async get(query: Query) {
+			const id = query.id as string;
 
-		if (!requestContext || !requestContext.certPem || !requestContext.issuerPem) {
-			// Likely a source request for an expired entry - we can't verify without cert and issuer data
-			return null;
+			// Get the certificate data from requestContext
+			const context = this.getContext() as SourceContext<CertificateVerificationContext>;
+			const requestContext = context?.requestContext;
+
+			if (!requestContext || !requestContext.certPem || !requestContext.issuerPem) {
+				// Likely a source request for an expired entry - we can't verify without cert and issuer data
+				return null;
+			}
+
+			const { certPem: certPemStr, issuerPem: issuerPemStr, ocspUrls, config } = requestContext;
+
+			// Determine method from cache key
+			let method: string;
+			if (id.startsWith('crl:')) {
+				method = 'crl';
+			} else if (id.startsWith('ocsp:')) {
+				method = 'ocsp';
+			} else {
+				method = 'unknown';
+			}
+
+			// Load verification functions
+			await loadVerificationFunctions();
+
+			// Perform verification based on method
+			let result;
+			let methodConfig;
+
+			if (method === 'crl') {
+				methodConfig = config.crl;
+				// Pass distributionPoint as an array if available (for CRL fetch)
+				const crlUrls = requestContext.distributionPoint ? [requestContext.distributionPoint] : undefined;
+				result = await performCRLCheck(certPemStr, issuerPemStr, methodConfig, crlUrls);
+			} else if (method === 'ocsp') {
+				methodConfig = config.ocsp;
+				result = await performOCSPCheck(certPemStr, issuerPemStr, methodConfig, ocspUrls);
+			} else {
+				throw new Error(`Unsupported verification method: ${method} for ID: ${id}`);
+			}
+
+			// Handle result consistently
+			const expiresAt = Date.now() + methodConfig.cacheTtl;
+
+			return {
+				certificate_id: id,
+				status: result.status,
+				reason: result.reason,
+				checked_at: Date.now(),
+				expiresAt,
+				method,
+			};
 		}
-
-		const { certPem: certPemStr, issuerPem: issuerPemStr, ocspUrls, config } = requestContext;
-
-		// Determine method from cache key
-		let method: string;
-		if (id.startsWith('crl:')) {
-			method = 'crl';
-		} else if (id.startsWith('ocsp:')) {
-			method = 'ocsp';
-		} else {
-			method = 'unknown';
-		}
-
-		// Load verification functions
-		await loadVerificationFunctions();
-
-		// Perform verification based on method
-		let result;
-		let methodConfig;
-
-		if (method === 'crl') {
-			methodConfig = config.crl;
-			// Pass distributionPoint as an array if available (for CRL fetch)
-			const crlUrls = requestContext.distributionPoint ? [requestContext.distributionPoint] : undefined;
-			result = await performCRLCheck(certPemStr, issuerPemStr, methodConfig, crlUrls);
-		} else if (method === 'ocsp') {
-			methodConfig = config.ocsp;
-			result = await performOCSPCheck(certPemStr, issuerPemStr, methodConfig, ocspUrls);
-		} else {
-			throw new Error(`Unsupported verification method: ${method} for ID: ${id}`);
-		}
-
-		// Handle result consistently
-		const expiresAt = Date.now() + methodConfig.cacheTtl;
-
-		return {
-			certificate_id: id,
-			status: result.status,
-			reason: result.reason,
-			checked_at: Date.now(),
-			expiresAt,
-			method,
-		};
-	}
-}
+	};
+});

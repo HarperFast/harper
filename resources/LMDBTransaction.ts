@@ -4,7 +4,7 @@ import {
 	type CommitOptions,
 	type TransactionWrite,
 	type CommitResolution,
-} from './DatabaseTransaction';
+} from './DatabaseTransaction.ts';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';

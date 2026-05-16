@@ -1,11 +1,11 @@
 'use strict';
 
 // Note - do not import/use commonUtils.js in this module, it will cause circular dependencies.
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import { workerData, threadId, isMainThread } from 'worker_threads';
 import * as pathModule from 'path';
 import * as YAML from 'yaml';
-const PropertiesReader = require('properties-reader');
+import PropertiesReader from 'properties-reader';
 import * as hdbTerms from '../hdbTerms.ts';
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
 import * as os from 'os';
@@ -25,7 +25,6 @@ let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
 	: (process.stdout as any).nativeWrite || ((process.stdout as any).nativeWrite = process.stdout.write);
 let fileLoggers = new Map();
 const { join } = pathModule;
-
 const MAX_LOG_BUFFER = 10000;
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -144,6 +143,9 @@ function resolveLogPath(configPath: string, rootPath: string) {
 }
 async function updateLogSettings() {
 	if (!rootConfig) {
+		// Lazy-load to avoid a circular dependency at module evaluation time
+		// (RootConfigWatcher imports configUtils which imports this logger).
+		const { RootConfigWatcher } = await import('../../config/RootConfigWatcher.ts');
 		// set up the initial watcher
 		rootConfig = new RootConfigWatcher();
 		// wait for it to be ready
@@ -316,37 +318,42 @@ class HarperLogger extends Console {
 
 if (hdbProperties === undefined) initLogSettings();
 
-module.exports = {
-	notify,
-	fatal,
-	error,
-	warn,
-	info,
-	debug,
-	trace,
-	logLevel,
-	loggerWithTag,
-	suppressLogging,
-	initLogSettings,
-	logCustomLevel,
-	closeLogFile,
-	createLogger,
-	logsAtLevel,
-	getLogFilePath: () => logFilePath,
-	forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
-	setMainLogger,
-	setLogLevel,
-	OUTPUTS,
-	AuthAuditLog,
-	// for now these functions at least notify us of when the component system is ready so
-	// we can start using the RootConfigWatcher
-	start: updateLogSettings,
-	startOnMainThread: updateLogSettings,
-	errorToString,
-	errorForLog,
-	disableStdio,
-	externalLogger,
-};
+// Under tsc CJS emit, expose the same CommonJS shape historical consumers
+// (`const logger = require('./harper_logger')`) depend on. Skipped when this
+// file is loaded as ESM (Node type-strip), where `module` is undefined.
+if (typeof module !== 'undefined') {
+	module.exports = {
+		notify,
+		fatal,
+		error,
+		warn,
+		info,
+		debug,
+		trace,
+		logLevel,
+		loggerWithTag,
+		suppressLogging,
+		initLogSettings,
+		logCustomLevel,
+		closeLogFile,
+		createLogger,
+		logsAtLevel,
+		getLogFilePath: () => logFilePath,
+		forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
+		setMainLogger,
+		setLogLevel,
+		OUTPUTS,
+		AuthAuditLog,
+		// for now these functions at least notify us of when the component system is ready so
+		// we can start using the RootConfigWatcher
+		start: updateLogSettings,
+		startOnMainThread: updateLogSettings,
+		errorToString,
+		errorForLog,
+		disableStdio,
+		externalLogger,
+	};
+}
 
 /**
  * We call this if stdio is not functional
@@ -683,15 +690,21 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		setTimeout(() => {
 			logger.rotator?.end();
 			if (!rotation) return;
-			const { logRotator } = require('./logRotator');
-			try {
-				logger.rotator = logRotator({
-					logger,
-					...rotation,
+			import('./logRotator.ts')
+				.then((mod) => {
+					try {
+						const logRotator: any = mod.default ?? mod;
+						logger.rotator = logRotator({
+							logger,
+							...rotation,
+						});
+					} catch (error) {
+						logger('Error initializing log rotator', error);
+					}
+				})
+				.catch((error) => {
+					logger('Error initializing log rotator', error);
 				});
-			} catch (error) {
-				logger(`Error initializing log rotator (log rotation disabled): ${error.message}`);
-			}
 		}, 100);
 	}
 	return logger;
@@ -1068,9 +1081,6 @@ export function AuthAuditLog(
 	this.request_method = requestMethod;
 	this.path = path;
 }
-// we have to load this at the end to avoid circular dependencies problems
-import { RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
-
 export const getLogFilePath = () => logFilePath;
 export const forComponent = (name: string, isExternal?: boolean) => mainLogger.forComponent(name, isExternal);
 export default {

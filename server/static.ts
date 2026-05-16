@@ -1,9 +1,10 @@
 import { realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { Scope } from '../components/Scope';
+import { Scope } from '../components/Scope.ts';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-import { isMatch } from 'micromatch';
+import _micromatch from 'micromatch';
+const { isMatch } = _micromatch;
 import send from 'send';
 
 /**

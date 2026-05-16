@@ -1,14 +1,15 @@
 import { table } from '../resources/databases.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import { keyArrayToString, resources } from '../resources/Resources.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { warn, trace } from '../utility/logging/harper_logger.ts';
 import { transaction } from '../resources/transaction.ts';
-import { getWorkerIndex } from '../server/threads/manageThreads.js';
-import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { getWorkerIndex } from '../server/threads/manageThreads.ts';
+import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 import { server } from '../server/Server.ts';
-import { RequestTarget } from '../resources/RequestTarget';
-import { cloneDeep } from 'lodash';
-
+import { RequestTarget } from '../resources/RequestTarget.ts';
+import _lodash from 'lodash';
+const { cloneDeep } = _lodash;
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 let _DurableSession: any;
 function getDurableSession() {
@@ -49,7 +50,10 @@ function getLastWill() {
 	}
 	return _LastWill;
 }
-if (getWorkerIndex() === 0) {
+// Defer to startup so `whenComponentsLoaded` (an `export const` in threadServer.ts)
+// is past TDZ — this module is loaded inside threadServer's static-graph SCC.
+onStartup(() => {
+	if (getWorkerIndex() !== 0) return;
 	(async () => {
 		await whenComponentsLoaded;
 		await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -65,7 +69,7 @@ if (getWorkerIndex() === 0) {
 			getLastWill().delete(will.id);
 		}
 	})();
-}
+});
 
 /**
  * This is used for durable sessions, that is sessions in MQTT that are not "clean" sessions (and with QoS >= 1

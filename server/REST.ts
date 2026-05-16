@@ -10,7 +10,7 @@ import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
-import { RequestTarget } from '../resources/RequestTarget';
+import { RequestTarget } from '../resources/RequestTarget.ts';
 import { entryMap } from '../resources/RecordEncoder.ts';
 
 const { errorToString, errorForLog } = harperLogger;

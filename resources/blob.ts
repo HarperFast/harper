@@ -36,7 +36,8 @@ import {
 import type { StatsFs } from 'node:fs';
 import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, pipeline } from 'node:stream';
-import { ensureDirSync } from 'fs-extra';
+import _fs_extra from 'fs-extra';
+const { ensureDirSync } = _fs_extra;
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';

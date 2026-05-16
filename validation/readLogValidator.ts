@@ -3,7 +3,7 @@
 import Joi from 'joi';
 import * as validator from './validationWrapper.ts';
 import moment from 'moment';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'path';
 import { getConfigPath } from '../config/configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';

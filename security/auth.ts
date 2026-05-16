@@ -8,31 +8,33 @@ import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent, AuthAuditLog } = harperLogger;
-import serverHandlers from '../server/itc/serverHandlers.js';
+import serverHandlers from '../server/itc/serverHandlers.ts';
 const { user } = serverHandlers;
 import { Headers, addVaryHeader } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
 const authEventLog = authLogger.withTag('auth-event');
-env.initSync();
 
-const appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
-const appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
-const operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
-const operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+// Config-derived state is populated during startup, after the environment is
+// initialized and the module graph is fully linked. Reading config here at
+// module-load would either TDZ inside an ESM cycle or pick up stale defaults.
+let appsCorsAccesslist: any;
+let appsCors: any;
+let operationsCorsAccesslist: any;
+let operationsCors: any;
+let _sessionTable: Table | undefined;
+let ENABLE_SESSIONS: boolean = true;
+let AUTHORIZE_LOCAL: any = process.env.AUTHENTICATION_AUTHORIZELOCAL ?? process.env.DEV_MODE;
+let LOG_AUTH_SUCCESSFUL: boolean = false;
+let LOG_AUTH_FAILED: boolean = false;
 
-const _sessionTable = table<Table>({
-	table: 'hdb_session',
-	database: 'system',
-	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
-});
 function getSessionTable() {
 	return _sessionTable;
 }
-const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
 // env-var strings need boolean parsing: a raw 'false'/'0' string is truthy, which would turn
 // AUTHENTICATION_AUTHORIZELOCAL=false into an *enabled* auth bypass
 function envFlag(value: string | undefined): boolean | undefined {
@@ -40,13 +42,6 @@ function envFlag(value: string | undefined): boolean | undefined {
 	const normalized = value.trim().toLowerCase();
 	return normalized !== 'false' && normalized !== '0' && normalized !== '';
 }
-// check the environment for a flag to bypass authentication (for testing) since it doesn't necessarily get set on child threads
-let AUTHORIZE_LOCAL =
-	envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
-	env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
-	envFlag(process.env.DEV_MODE);
-const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
-const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
@@ -55,9 +50,28 @@ const SHARED_CACHE_OPTIN = /(^|[,\s])(public|s-maxage)($|[\s,;=])/i;
 const PRIVATE_SCOPE = /(^|[,\s])(private|no-store)($|[\s,;=])/i;
 
 let authorizationCache = new Map();
-server.onInvalidatedUser(() => {
-	// TODO: Eventually we probably want to be able to invalidate individual users
-	authorizationCache = new Map();
+
+onStartup(() => {
+	appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
+	appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
+	operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
+	operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+	ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
+	AUTHORIZE_LOCAL =
+		envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
+		env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
+		envFlag(process.env.DEV_MODE);
+	LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
+	LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
+	_sessionTable = table<Table>({
+		table: 'hdb_session',
+		database: 'system',
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
+	});
+	server.onInvalidatedUser(() => {
+		// TODO: Eventually we probably want to be able to invalidate individual users
+		authorizationCache = new Map();
+	});
 });
 let bypassUser: any;
 export function bypassAuth() {

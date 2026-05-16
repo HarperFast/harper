@@ -1,13 +1,13 @@
 import type { User } from '../security/user.ts';
 import type { RecordObject } from './RecordEncoder.ts';
 import {
-	ResourceInterface,
-	SubscriptionRequest,
-	Id,
-	Context,
-	Query,
-	SourceContext,
-	RequestTargetOrId,
+	type ResourceInterface,
+	type SubscriptionRequest,
+	type Id,
+	type Context,
+	type Query,
+	type SourceContext,
+	type RequestTargetOrId,
 } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
 import { DatabaseTransaction, TRANSACTION_STATE, type Transaction } from './DatabaseTransaction.ts';

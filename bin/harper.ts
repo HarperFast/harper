@@ -4,7 +4,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
-import * as cliOperations from './cliOperations.ts';
 import { packageJson } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
@@ -43,6 +42,23 @@ version                         - Print the version
 deploy                          - Deploy the application locally or remotely with target=<remote url>
 `;
 
+/**
+ * Initialize the environment manager. Call before dynamically importing the
+ * subcommand module so any module-load reads of `env.get(…)` see a populated
+ * configuration. Side-effectful initialization is deferred to `onStartup(…)`
+ * hooks; call `runServerStartup()` once the subcommand module has finished
+ * loading to drain them.
+ */
+async function initEnv() {
+	const env = await import('../utility/environment/environmentManager.ts');
+	env.initSync();
+}
+
+async function runServerStartup() {
+	const lifecycle = await import('../utility/lifecycle.ts');
+	await lifecycle.runStartup();
+}
+
 async function harper() {
 	let nodeResults = checkNode();
 
@@ -66,51 +82,58 @@ async function harper() {
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.HELP:
 			return HELP;
-		case SERVICE_ACTIONS_ENUM.START:
-			return require('./run').launch();
-		case SERVICE_ACTIONS_ENUM.INSTALL:
-			return (require('./install').default || require('./install'))();
-		case SERVICE_ACTIONS_ENUM.STOP:
-			return (require('./stop').default || require('./stop'))().then(() => {
+		case SERVICE_ACTIONS_ENUM.START: {
+			await initEnv();
+			const mod = await import('./run.ts');
+			await runServerStartup();
+			return mod.launch();
+		}
+		case SERVICE_ACTIONS_ENUM.INSTALL: {
+			const mod: any = await import('./install.ts');
+			return (mod.default || mod)();
+		}
+		case SERVICE_ACTIONS_ENUM.STOP: {
+			const mod: any = await import('./stop.ts');
+			return (mod.default || mod)().then(() => {
 				process.exit(0);
 			});
+		}
 		case SERVICE_ACTIONS_ENUM.RESTART:
-			return require('./restart').restart({});
+			return (await import('./restart.ts')).restart({});
 		case SERVICE_ACTIONS_ENUM.VERSION:
 			return packageJson.version;
 		case SERVICE_ACTIONS_ENUM.UPGRADE:
 			logger.setLogLevel(hdbTerms.LOG_LEVELS.INFO);
-			// The require is here to better control the flow of imports when this module is called.
-			return require('./upgrade.js')
-				.upgrade(null)
-				.then(() => 'Your instance of Harper is up to date!');
-		case SERVICE_ACTIONS_ENUM.STATUS:
-			return (require('./status').default || require('./status'))();
+			return (await import('./upgrade.ts')).upgrade(null).then(() => 'Your instance of Harper is up to date!');
+		case SERVICE_ACTIONS_ENUM.STATUS: {
+			const mod: any = await import('./status.ts');
+			return (mod.default || mod)();
+		}
 		case SERVICE_ACTIONS_ENUM.LOGIN: {
 			const target = process.argv[3];
 			const username = process.argv[4];
-			const { login } = require('./login');
+			const { login } = await import('./login.ts');
 			return login(target, username);
 		}
 		case SERVICE_ACTIONS_ENUM.LOGOUT: {
 			const target = process.argv[3];
-			const { logout } = require('./logout');
+			const { logout } = await import('./logout.ts');
 			return logout(target);
 		}
 		case SERVICE_ACTIONS_ENUM.MCP: {
-			const { runMcpCli } = require('./mcp');
+			const { runMcpCli } = await import('./mcp/index.ts');
 			const code = await runMcpCli(process.argv.slice(3));
 			process.exit(code);
 		}
 		// eslint-disable-next-line no-fallthrough
 		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
-			return require('../security/keys')
+			return (await import('../security/keys.ts'))
 				.renewSelfSigned()
 				.then(() => 'Successfully renewed self-signed certificates');
 		case SERVICE_ACTIONS_ENUM.COPYDB: {
 			let sourceDb = process.argv[3];
 			let targetDbPath = process.argv[4];
-			return require('./copyDb').copyDb(sourceDb, targetDbPath);
+			return (await import('./copyDb.ts')).copyDb(sourceDb, targetDbPath);
 		}
 		case SERVICE_ACTIONS_ENUM.DEV:
 			process.env.DEV_MODE = 'true';
@@ -149,17 +172,27 @@ async function harper() {
 			}
 		}
 		// fall through
-		case undefined: // run harperdb in the foreground in standard mode
-			return require('./run').main();
-		default:
+		case undefined: {
+			// run harperdb in the foreground in standard mode
+			await initEnv();
+			const mod = await import('./run.ts');
+			await runServerStartup();
+			return mod.main();
+		}
+		default: {
+			const cliOperations = await import('./cliOperations.ts');
 			const cliApiOp = cliOperations.buildRequest();
 			logger.trace('calling cli operations with:', cliApiOp);
 			await cliOperations.cliOperations(cliApiOp);
 			return;
+		}
 	}
 }
 export { harper };
-if (require.main === module) {
+// In CJS (dist), `module` is defined and we check the entry. In ESM (typestrip),
+// `module` is undefined; this file is only run directly as a CLI, so treat as main.
+const isEntry = typeof module === 'undefined' || require.main === module;
+if (isEntry) {
 	harper()
 		.then((message) => {
 			if (message) {
