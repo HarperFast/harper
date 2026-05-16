@@ -1,4 +1,5 @@
-import { onMessageByType } from '../server/threads/manageThreads.js';
+import { onMessageByType } from '../server/threads/manageThreads.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import {
 	readdirSync,
 	readFileSync,
@@ -25,7 +26,7 @@ import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
-import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
@@ -34,7 +35,7 @@ import { table } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { getConfigObj, getConfigPath } from '../config/configUtils.js';
+import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -43,7 +44,7 @@ import * as httpComponent from '../server/http.ts';
 import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
-import { PluginModule } from './PluginModule.ts';
+import { type PluginModule } from './PluginModule.ts';
 import { getEnvBuiltInComponents } from './Application.ts';
 import { pathToFileURL } from 'node:url';
 
@@ -96,7 +97,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	roles,
 	jsResource: jsHandler,
 	get fastifyRoutes() {
-		return require('../server/fastifyRoutes');
+		return _fastifyRoutes;
 	},
 	login,
 	static: staticFiles,
@@ -112,19 +113,23 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	login: ...
 	 */
 };
-if (isMainThread) {
-	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
-} else {
-	// The HTTP operations API itself only binds in the main thread, but worker threads still
-	// dispatch operations — most notably, the replication WebSocket handler in workers receives
-	// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
-	// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
-	// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
-	// `server.registerOperation?.({...})` at their module top level. Requiring serverUtilities
-	// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
-	// workers while still installing the dispatch machinery.
-	require('../server/serverHelpers/serverUtilities');
-}
+let _fastifyRoutes: any;
+onStartup(async () => {
+	_fastifyRoutes = await import('../server/fastifyRoutes.ts');
+	if (isMainThread) {
+		TRUSTED_RESOURCE_PLUGINS.operationsApi = await import('../server/operationsServer.ts');
+	} else {
+		// The HTTP operations API itself only binds in the main thread, but worker threads still
+		// dispatch operations — most notably, the replication WebSocket handler in workers receives
+		// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
+		// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
+		// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
+		// `server.registerOperation?.({...})` at their module top level. Loading serverUtilities
+		// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
+		// workers while still installing the dispatch machinery.
+		await import('../server/serverHelpers/serverUtilities.ts');
+	}
+});
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;

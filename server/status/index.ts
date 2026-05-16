@@ -14,7 +14,6 @@ export type { StatusId, StatusRecord, StatusValueMap } from './definitions.ts';
 export { STATUS_IDS, DEFAULT_STATUS_ID } from './definitions.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 // For direct function calls, we don't need the operation fields
 type StatusRequestBody = {
 	id: StatusId;

@@ -5,11 +5,18 @@ import { tables, databases } from '../resources/databases.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
+import * as _vm from 'node:vm';
+import { createContext, runInContext, runInThisContext } from 'node:vm';
+// SourceTextModule and SyntheticModule require `--experimental-vm-modules`. Pull
+// them off the vm namespace at runtime so the named ESM import doesn't fail when
+// the flag isn't passed (e.g. CLI paths that never touch the JS loader).
+const { SourceTextModule, SyntheticModule } = _vm as any;
+type SourceTextModule = any;
+type SyntheticModule = any;
 import { ApplicationScope } from '../components/ApplicationScope.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
-import * as env from '../utility/environment/environmentManager';
+import * as env from '../utility/environment/environmentManager.ts';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
@@ -26,7 +33,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);

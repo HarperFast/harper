@@ -1,5 +1,5 @@
 import { parentPort, threadId } from 'worker_threads';
-import { onMessageByType } from '../../server/threads/manageThreads.js';
+import { onMessageByType } from '../../server/threads/manageThreads.ts';
 import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -8,18 +8,17 @@ const { getLogFilePath, forComponent } = harperLogger;
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
-import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.ts';
+import { get as envGet, getHdbBasePath } from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { onStartup } from '../../utility/lifecycle.ts';
 
 const log = forComponent('analytics').conditional;
 const isBun = typeof globalThis.Bun !== 'undefined';
-
-initSync();
 
 type ActionCallback = (action: Action) => void;
 export type Value = number | boolean | ActionCallback;
@@ -127,8 +126,6 @@ export function recordAction(value: Value, metric: string, path?: string, method
 	}
 	if (!sendAnalyticsTimeout) sendAnalytics();
 }
-
-server.recordAnalytics = recordAction;
 
 export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(Boolean(value), metric, path, method, type);
@@ -708,7 +705,7 @@ function getAnalyticsTable() {
 	);
 }
 
-if (!parentPort) onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
+if (!parentPort) setImmediate(() => onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics));
 let scheduledTasksRunning;
 function startScheduledTasks() {
 	scheduledTasksRunning = true;
@@ -862,3 +859,8 @@ function rebalance({ counts, values, totalCount }, resetCounts: boolean) {
 	else counts.set(targetCounts);
 }
 */
+
+// Wire server singletons during the startup phase
+onStartup(() => {
+	server.recordAnalytics = recordAction;
+});

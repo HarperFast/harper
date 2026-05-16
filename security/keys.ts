@@ -2,7 +2,7 @@
 
 import * as path from 'path';
 import { watch } from 'chokidar';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as forge from 'node-forge';
 import * as net from 'net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
@@ -17,11 +17,11 @@ import * as envManager from '../utility/environment/environmentManager.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 import * as certificatesTerms from '../utility/terms/certificates.js';
-const tls = require('node:tls');
+import tls from 'node:tls';
 import { relative, join } from 'node:path';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
 const logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
@@ -31,7 +31,7 @@ import { getThisNodeName, getThisNodeUrl, urlToNodeName, clearThisNodeName } fro
 export const getPrivateKeys = () => privateKeys;
 
 import { readFileSync, statSync } from 'node:fs';
-import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
+import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.ts';
 import { isMainThread } from 'worker_threads';
 import { TLSSocket } from 'node:tls';
 
@@ -58,12 +58,15 @@ export function generateSerialNumber() {
 	return bytes.toString('hex');
 }
 
-onMessageFromWorkers(async (message) => {
-	if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
-		envManager.initSync(true);
-		// This will also call loadCertificates
-		await reviewSelfSignedCert();
-	}
+// Defer registration to setImmediate so manageThreads internal state is initialized
+setImmediate(() => {
+	onMessageFromWorkers(async (message) => {
+		if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
+			envManager.initSync(true);
+			// This will also call loadCertificates
+			await reviewSelfSignedCert();
+		}
+	});
 });
 
 let certificateTable;

@@ -5,10 +5,14 @@ import * as env from '../utility/environment/environmentManager.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { server } from './Server.ts';
 
-Object.defineProperty(server, 'hostname', {
-	get() {
-		return getThisNodeName();
-	},
+// Defer to next tick so `server` (from Server.ts) is fully evaluated
+// even when modules are loaded via an ESM cycle.
+setImmediate(() => {
+	Object.defineProperty(server, 'hostname', {
+		get() {
+			return getThisNodeName();
+		},
+	});
 });
 
 let commonNameFromCert: string | undefined;

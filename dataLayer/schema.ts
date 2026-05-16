@@ -9,11 +9,11 @@ import { v4 as uuidV4 } from 'uuid';
 import * as signalling from '../utility/signalling.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as util from 'util';
-const harperBridge = require('./harperBridge/harperBridge').default;
+import harperBridge from './harperBridge/harperBridge.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
-import { SchemaEventMsg } from '../server/threads/itc.js';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
 import { getDatabases, dropTableMeta } from '../resources/databases.ts';
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';

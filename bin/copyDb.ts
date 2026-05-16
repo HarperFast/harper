@@ -1,7 +1,8 @@
 import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
 import { join } from 'path';
-import { move, remove } from 'fs-extra';
+import _fs_extra from 'fs-extra';
+const { move, remove } = _fs_extra;
 import { existsSync, mkdirSync } from 'node:fs';
 import { get } from '../utility/environment/environmentManager.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
@@ -10,7 +11,7 @@ import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
-import { updateConfigValue } from '../config/configUtils.js';
+import { updateConfigValue } from '../config/configUtils.ts';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';

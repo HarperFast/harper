@@ -4,12 +4,12 @@ import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 let serverItcHandlers;
-import { sendItcEvent } from '../server/threads/itc.js';
+import { sendItcEvent } from '../server/threads/itc.ts';
 
 export function signalSchemaChange(message: any) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		serverItcHandlers.schema(itcEventSchema);
 		return sendItcEvent(itcEventSchema);
@@ -21,7 +21,7 @@ export function signalSchemaChange(message: any) {
 export function signalUserChange(message: any) {
 	try {
 		hdbLogger.trace('signalUserChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
 		const itcEventUser = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.USER, message);
 		serverItcHandlers.user(itcEventUser);
 		return sendItcEvent(itcEventUser);

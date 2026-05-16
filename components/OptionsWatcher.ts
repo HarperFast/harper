@@ -6,8 +6,8 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
-import { cloneDeep } from 'lodash';
-
+import _lodash from 'lodash';
+const { cloneDeep } = _lodash;
 export interface Config {
 	[key: string]: ConfigValue;
 }

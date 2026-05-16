@@ -1,6 +1,6 @@
 import chokidar, { FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
-import { getConfigFilePath } from './configUtils.js';
+import { getConfigFilePath } from './configUtils.ts';
 import { EventEmitter, once } from 'node:events';
 import { parse } from 'yaml';
 

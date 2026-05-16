@@ -10,11 +10,11 @@ import log from '../../utility/logging/harper_logger.ts';
 import * as jobs from './jobs.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
-import * as threadsStart from '../threads/manageThreads.js';
+import * as threadsStart from '../threads/manageThreads.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as restart from '../../bin/restart.ts';
 import { parentPort, isMainThread } from 'worker_threads';
-import { onMessageByType } from '../threads/manageThreads.js';
+import { onMessageByType } from '../threads/manageThreads.ts';
 
 class RunnerMessage {
 	job: any;

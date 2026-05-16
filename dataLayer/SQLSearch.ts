@@ -6,7 +6,7 @@
  * process and return results by passing the raw values into the alasql SQL parser
  */
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 import * as alasql from 'alasql';
 alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
@@ -14,7 +14,7 @@ import clone from 'clone';
 import RecursiveIterator from 'recursive-iterator';
 import log from '../utility/logging/harper_logger.ts';
 import * as commonUtils from '../utility/common_utils.ts';
-const harperBridge = require('./harperBridge/harperBridge').default;
+import harperBridge from './harperBridge/harperBridge.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';

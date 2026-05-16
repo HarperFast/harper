@@ -26,12 +26,12 @@ import * as commonUtils from './common_utils.ts';
 import * as restart from '../bin/restart.ts';
 import * as terms from './hdbTerms.ts';
 import { expandOperationsPerms } from './operationPermissions.ts';
-import * as permsTranslator from '../security/permissionsTranslator.js';
+import * as permsTranslator from '../security/permissionsTranslator.ts';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
-import * as configUtils from '../config/configUtils.js';
-import * as functionsOperations from '../components/operations.js';
+import * as configUtils from '../config/configUtils.ts';
+import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
@@ -285,12 +285,6 @@ requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new (permission as any)
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new (permission as any)(false, [READ_PERM]));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new (permission as any)(false, [INSERT_PERM]));
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new (permission as any)(false, [UPDATE_PERM]));
-
-module.exports = {
-	verifyPerms,
-	verifyPermsAST,
-	verifyBulkLoadAttributePerms,
-};
 
 /**
  * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.

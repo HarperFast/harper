@@ -7,7 +7,6 @@ import { pipeline } from 'stream';
 const pipe = promisify(pipeline);
 import * as path from 'path';
 import * as envMgr from '../environment/environmentManager.ts';
-envMgr.initSync();
 import hdbLogger from './harper_logger.ts';
 import { CONFIG_PARAMS } from '../hdbTerms.ts';
 import { convertToMS } from '../common_utils.ts';

@@ -8,8 +8,8 @@ import * as user from '../../security/user.ts';
 import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import moment from 'moment';
 import * as jobs from './jobs.ts';
-import { cloneDeep } from 'lodash';
-
+import _lodash from 'lodash';
+const { cloneDeep } = _lodash;
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';

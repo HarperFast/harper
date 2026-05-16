@@ -1,5 +1,5 @@
 import { cleanupUnusedBlobs } from './blob.ts';
-import { Transaction as LMDBTransaction } from 'lmdb';
+import { type Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';

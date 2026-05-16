@@ -109,6 +109,6 @@ exports.transaction = undefined;
 // And finally assign globals to exports.
 // These values are populated at runtime by `_assignPackageExport()` in their respective modules
 // (e.g. Resource.ts, databases.ts, Server.ts, etc.)
-import { globals } from './server/threads/threadServer.js';
+import { globals } from './server/threads/threadServer.ts';
 
 Object.assign(exports, globals);

@@ -2,7 +2,7 @@ import { Socket } from 'net';
 import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
 import type { Resources } from '../resources/Resources.ts';
-import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
+import { type OperationDefinition } from './serverHelpers/serverUtilities.ts';
 import { Duplex } from 'stream';
 import { Request } from './serverHelpers/Request.ts';
 

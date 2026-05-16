@@ -3,12 +3,12 @@ import fg from 'fast-glob';
 import { Resources } from '../resources/Resources.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
-import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions.ts';
+import { deriveGlobOptions, type FastGlobOptions, type FilesOption } from './deriveGlobOptions.ts';
 import { basename, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { deriveURLPath } from './deriveURLPath.ts';
-import { scan } from 'micromatch';
-
+import _micromatch from 'micromatch';
+const { scan } = _micromatch;
 interface ComponentV1Config {
 	files: string | string[] | FilesOption;
 	/** @deprecated */ path?: string;
