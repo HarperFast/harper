@@ -55,6 +55,19 @@ async function runServerStartup() {
 	await lifecycle.runStartup();
 }
 
+/**
+ * Resolve a default-exported function from a dynamically-imported module that
+ * may have been loaded from a .ts source (ESM: `mod.default` is the function)
+ * or a tsc-compiled .js (CJS-wrapped: `mod.default` is the CJS exports object
+ * and `mod.default.default` is the function).
+ */
+function getDefaultExport(mod: any): any {
+	if (typeof mod === 'function') return mod;
+	if (typeof mod.default === 'function') return mod.default;
+	if (typeof mod.default?.default === 'function') return mod.default.default;
+	return mod.default ?? mod;
+}
+
 async function harper() {
 	let nodeResults = checkNode();
 
@@ -89,12 +102,10 @@ async function harper() {
 			return mod.launch();
 		}
 		case SERVICE_ACTIONS_ENUM.INSTALL: {
-			const mod: any = await import('./install.ts');
-			return (mod.default || mod)();
+			return getDefaultExport(await import('./install.ts'))();
 		}
 		case SERVICE_ACTIONS_ENUM.STOP: {
-			const mod: any = await import('./stop.ts');
-			return (mod.default || mod)().then(() => {
+			return getDefaultExport(await import('./stop.ts'))().then(() => {
 				process.exit(0);
 			});
 		}
@@ -106,9 +117,9 @@ async function harper() {
 			logger.setLogLevel(hdbTerms.LOG_LEVELS.INFO);
 			// The require is here to better control the flow of imports when this module is called.
 			return (await import('./upgrade.ts')).upgrade(null).then(() => 'Your instance of Harper is up to date!');
-		case SERVICE_ACTIONS_ENUM.STATUS:
-			const statusModule = await import('./status.ts');
-			return (statusModule.default as any)();
+		case SERVICE_ACTIONS_ENUM.STATUS: {
+			return getDefaultExport(await import('./status.ts'))();
+		}
 		case SERVICE_ACTIONS_ENUM.LOGIN: {
 			const args = process.argv.slice(3);
 			const forCi = args.includes('--for-ci');
