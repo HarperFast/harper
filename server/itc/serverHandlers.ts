@@ -1,0 +1,374 @@
+/* global threads */
+import hdbLogger from '../../utility/logging/harper_logger.ts';
+import * as hdbTerms from '../../utility/hdbTerms.ts';
+import cleanLmdbMap from '../../utility/lmdb/cleanLMDBMap.ts';
+import { validateEvent } from '../threads/itc.ts';
+import {
+	FULL_TEXT_QUERY_PAUSE_OPERATION,
+	FULL_TEXT_QUERY_RESUME_OPERATION,
+} from '../../resources/indexes/fullTextQueryProtocol.ts';
+import { isMainThread, threadId, workerData } from 'node:worker_threads';
+import {
+	databases,
+	resetDatabases,
+	closeDatabase,
+	prepareDatabaseDrop,
+	completeDatabaseDropPreparation,
+	reloadBranchAt,
+	markDropInProgress,
+} from '../../resources/databases.ts';
+import { blockBlobSavesForRestore, resumeBlobSavesAfterRestore } from '../../resources/blob.ts';
+
+/**
+ * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
+ * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*)}}
+ */
+const serverItcHandlers = {
+	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
+	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
+	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
+	[hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST]: middlewareChainsRequestHandler,
+	// #1736 cross-thread registered-operation bridge. Lazy require: this module loads on every
+	// thread via itc.js, and registeredOperations pulls in the serverUtilities module graph.
+	[hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED]: (event) =>
+		require('../serverHelpers/registeredOperations.ts').operationRegisteredHandler(event),
+	[hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST]: (event) =>
+		require('../serverHelpers/registeredOperations.ts').operationExecuteRequestHandler(event),
+};
+
+/**
+ * Updates the global hdbSchema object.
+ * @param event
+ * @returns {Promise<void>}
+ */
+const schemaListeners = [];
+async function schemaHandler(event) {
+	const validate = validateEvent(event);
+	if (validate) {
+		hdbLogger.error(validate);
+		return;
+	}
+	if (
+		event.message?.operation === FULL_TEXT_QUERY_PAUSE_OPERATION ||
+		event.message?.operation === FULL_TEXT_QUERY_RESUME_OPERATION
+	) {
+		if (typeof event.message.path !== 'string' || event.message.path.length === 0)
+			throw new Error('Full-text query reader coordination requires an index path');
+		if (typeof event.message.readinessId !== 'string' || event.message.readinessId.length === 0)
+			throw new Error('Full-text query reader coordination requires a readiness id');
+		if (typeof event.message.ownerEpoch !== 'string' || !/^(?:0|[1-9]\d*)$/.test(event.message.ownerEpoch))
+			throw new Error('Full-text query reader coordination requires an owner epoch');
+		if (
+			event.message.allowUnregisteredReadiness !== undefined &&
+			typeof event.message.allowUnregisteredReadiness !== 'boolean'
+		)
+			throw new Error('Full-text query reader coordination requires a boolean unregistered-readiness flag');
+		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
+		const ownerEpoch = BigInt(event.message.ownerEpoch);
+		if (event.message.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
+			await fullTextQueries.pauseNativeFullTextQueryReaders(
+				event.message.path,
+				event.message.readinessId,
+				ownerEpoch,
+				event.message.allowUnregisteredReadiness === true
+			);
+		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
+		return;
+	}
+
+	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
+	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
+		if (event.message.prepareDrop) {
+			if (!event.message.dropPreparationId) throw new Error('Drop-schema preparation is missing its id');
+			if (!Number.isInteger(event.message.dropPreparationOwnerThreadId))
+				throw new Error('Drop-schema preparation is missing its owner thread id');
+			await prepareDatabaseDrop(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationOwnerThreadId,
+				event.message.dropPreparationRootPaths
+			);
+			return;
+		}
+		if (event.message.dropPreparationId)
+			await completeDatabaseDropPreparation(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationRootPaths
+			);
+	}
+	// restore_backup: this thread must release its store handles so the restore can purge and
+	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
+	// the restoring marker is present, and reloads it on the completion signal (marker gone).
+	let resumeBlobSavesFor;
+	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
+		if (event.message.restorePhase === 'reload') {
+			resumeBlobSavesFor = {
+				database: event.message.schema,
+				token: event.message.restoreToken,
+				generationReplaced: event.message.generationReplaced !== false,
+			};
+		} else {
+			// Stop and drain blob writes before releasing the handles: closing a database is not a
+			// write barrier on its own, because a save's file pipeline outlives the handle it started from.
+			await blockBlobSavesForRestore(event.message.schema, event.message.restoreToken);
+			try {
+				await closeDatabase(event.message.schema);
+			} catch (error) {
+				// Let the originator's process-wide closure check fail the restore immediately instead of
+				// withholding this worker's acknowledgement until the broadcast timeout.
+				hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+			}
+		}
+	}
+	try {
+		await cleanLmdbMap(event.message);
+		await syncSchemaMetadata(event.message);
+	} finally {
+		if (resumeBlobSavesFor)
+			resumeBlobSavesAfterRestore(
+				resumeBlobSavesFor.database,
+				resumeBlobSavesFor.token,
+				resumeBlobSavesFor.generationReplaced
+			);
+	}
+	for (let listener of schemaListeners) {
+		try {
+			listener(event?.message);
+		} catch (err) {
+			hdbLogger.error(err);
+		}
+	}
+}
+
+schemaHandler.addListener = function (listener) {
+	schemaListeners.push(listener);
+	return () => {
+		const index = schemaListeners.indexOf(listener);
+		if (index !== -1) schemaListeners.splice(index, 1);
+	};
+};
+
+/**
+ * Switch statement to handle schema-related messages from other forked processes - i.e. if another process completes an
+ * operation that updates schema and, therefore, requires that we update the global schema value for the process
+ *
+ * @param msg
+ * @returns {Promise<void>}
+ */
+async function syncSchemaMetadata(msg) {
+	try {
+		// A change to a scope-private branch is not a change to any database in the global map, so the
+		// rescan below has nothing to find; a thread holding that branch open reloads it instead.
+		if (msg.branchPath) {
+			// No write barrier here: the symbol-keyed put below has never been one (harper#2522).
+			reloadBranchAt(msg.branchPath);
+			return;
+		}
+		if (msg.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE && msg.table) {
+			const releaseDropMark = msg.dropGeneration ? markDropInProgress(msg.dropGeneration) : undefined;
+			try {
+				const dropped = databases[msg.schema]?.[msg.table];
+				if (
+					dropped &&
+					(msg.dropTableId == null ? dropped.tableId == null : dropped.tableId === msg.dropTableId) &&
+					(!msg.dropGeneration || !dropped.storageGeneration || dropped.storageGeneration === msg.dropGeneration)
+				) {
+					const derivedIndexRuntime = dropped.derivedIndexRuntime;
+					dropped.derivedIndexRuntime = undefined;
+					delete databases[msg.schema][msg.table];
+					dropped.cleanup?.();
+					try {
+						await derivedIndexRuntime?.close();
+					} catch (error) {
+						hdbLogger.warn(`Derived index shutdown failed for dropped table ${msg.schema}.${msg.table}`, error);
+					}
+				}
+				resetDatabases();
+			} finally {
+				releaseDropMark?.();
+			}
+			return;
+		}
+		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
+		const rescanned = resetDatabases();
+		if (msg.table && msg.database)
+			// wait for a write to finish to ensure all writes have been written
+			await rescanned[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+	} catch (e) {
+		hdbLogger.error(e);
+	}
+}
+
+const resourceListeners = [];
+/**
+ * Local-only fan-out for "JS resources just registered" (resources.js loaded via the jsResource
+ * plugin). Unlike schema/user changes this is NOT an ITC event: each worker loads and registers
+ * its own JS resources, so a listener (e.g. the MCP application-tool rebuild) only needs to run in
+ * the worker where the registration happened. Surfaces author opt-ins (`static mcpTools`/
+ * `mcpPrompts`) that land on the resource registry after the MCP component's boot scan (#1448).
+ */
+function resourceHandler() {
+	for (const listener of resourceListeners) {
+		try {
+			listener();
+		} catch (err) {
+			hdbLogger.error(err);
+		}
+	}
+}
+resourceHandler.addListener = function (listener) {
+	resourceListeners.push(listener);
+};
+// Test seam: drop registered listeners so a unit suite doesn't leak fakes into later suites.
+resourceHandler._resetListenersForTest = function () {
+	resourceListeners.length = 0;
+};
+
+/**
+ * Handles incoming requests for component status from inter-thread communication (ITC).
+ * Validates the event, retrieves the current thread's component statuses, and sends a response
+ * back to the originator thread with the requested information.
+ *
+ * @async
+ * @function componentStatusRequestHandler
+ * @param {Object} event - The event object containing the request details.
+ * @param {Object} event.message - The message object within the event.
+ * @param {string} event.message.originator - The identifier of the thread that originated the request.
+ * @param {string} event.message.requestId - The unique identifier for the request.
+ * @returns {Promise<void>} Sends a response back to the originator thread or logs an error if validation fails.
+ */
+async function componentStatusRequestHandler(event) {
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdbLogger.error(validate);
+			return;
+		}
+
+		hdbLogger.trace(`ITC componentStatusRequestHandler received request:`, event);
+
+		// Get current thread's component status
+		const { internal } = require('../../components/status/index.ts');
+		const { getWorkerIndex } = require('../threads/manageThreads.js');
+		const componentStatuses = internal.componentStatusRegistry.getAllStatuses();
+
+		// Convert Map to array for serialization
+		const statusArray = Array.from(componentStatuses.entries());
+
+		// Get worker index and determine if this is the main thread
+		const workerIndex = getWorkerIndex();
+		const isMainThread = workerIndex === undefined;
+
+		// Send response directly back to the originating thread. validateEvent already
+		// ensures originator is present.
+		const originatorThreadId = event.message.originator;
+		const responseMessage = {
+			type: hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_RESPONSE,
+			message: {
+				requestId: event.message.requestId,
+				statuses: statusArray,
+				threadId,
+				workerIndex: workerIndex,
+				isMainThread: isMainThread,
+			},
+		};
+
+		if (threads.sendToThread(originatorThreadId, responseMessage)) {
+			hdbLogger.trace(`Sent component status response directly to thread ${originatorThreadId}`);
+		} else {
+			// Originator's port is no longer in connectedPorts (thread exited / disconnected
+			// during the request). Dropping the response is correct — the originator is
+			// unreachable, and the collector's own timeout will handle the missing reply.
+			hdbLogger.trace(
+				`Dropping component status response for request ${event.message.requestId}: originator thread ${originatorThreadId} is unreachable`
+			);
+		}
+	} catch (error) {
+		hdbLogger.error('Error handling component status request:', error);
+	}
+}
+
+/**
+ * Handles incoming requests for the REST OpenAPI spec from the main thread.
+ * Generates the spec from the local resources (which are only registered on worker threads)
+ * and sends it back to the requesting thread.
+ */
+async function resourceOpenApiRequestHandler(event) {
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdbLogger.error(validate);
+			return;
+		}
+
+		hdbLogger.trace(`ITC resourceOpenApiRequestHandler received request:`, event);
+
+		const { resources } = require('../../resources/Resources.ts');
+		// Only respond if this thread has registered resources. Job-type workers with an empty
+		// resources map must stay silent so that an app worker with real resources replies first.
+		// If no worker has resources the main thread gets a 503 after the timeout, which is a
+		// more honest response than silently returning an empty spec.
+		if (!resources || resources.size === 0) return;
+		const { generateJsonApi } = require('../../resources/openApi.ts');
+		const openapi = generateJsonApi(resources, event.message.serverHttpURL);
+
+		const originatorThreadId = event.message.originator;
+		const responseMessage = {
+			type: hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE,
+			message: {
+				requestId: event.message.requestId,
+				openapi,
+			},
+		};
+
+		if (!threads.sendToThread(originatorThreadId, responseMessage)) {
+			hdbLogger.trace(
+				`Dropping resource OpenAPI response for request ${event.message.requestId}: originator thread ${originatorThreadId} is unreachable`
+			);
+		}
+	} catch (error) {
+		hdbLogger.error('Error handling resource OpenAPI request:', error);
+	}
+}
+
+/**
+ * Handles the main thread's request for the resolved HTTP/upgrade/WebSocket middleware chains (#1573).
+ * Only HTTP workers reply: the main thread carries just the operations-API middleware (so it stays
+ * silent even though it has responders), and job workers have none. HTTP workers answer even when
+ * they have no middleware (empty chains) so get_status doesn't wait out the request timeout. First
+ * worker to answer wins — all HTTP workers register identically, so any one is representative.
+ */
+async function middlewareChainsRequestHandler(event) {
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdbLogger.error(validate);
+			return;
+		}
+
+		if (isMainThread || workerData?.name !== hdbTerms.THREAD_TYPES.HTTP) return;
+		const { describeMiddlewareChains } = require('../http.ts');
+
+		const responseMessage = {
+			type: hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE,
+			message: {
+				requestId: event.message.requestId,
+				chains: describeMiddlewareChains(),
+			},
+		};
+
+		if (!threads.sendToThread(event.message.originator, responseMessage)) {
+			hdbLogger.trace(
+				`Dropping middleware chains response for request ${event.message.requestId}: originator thread ${event.message.originator} is unreachable`
+			);
+		}
+	} catch (error) {
+		hdbLogger.error('Error handling middleware chains request:', error);
+	}
+}
+
+export default serverItcHandlers;
+// Named exports so consumers (e.g., MCP listChanged) can subscribe via `schemaHandler.addListener(fn)`.
+export { schemaHandler };
+export { resourceHandler };
