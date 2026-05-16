@@ -815,23 +815,23 @@ export function makeTable(options) {
 		/**
 		 * Set TTL expiration for records in this table. On retrieval, record timestamps are checked for expiration.
 		 * This also informs the scheduling for record eviction.
-		 * @param expirationTime Time in seconds until records expire (are stale)
-		 * @param evictionTime Time in seconds until records are evicted (removed)
+		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
+		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
+		 * eviction/scanInterval; object form replaces all three.
 		 */
-		static setTTLExpiration(expiration: number | { expiration: number; eviction?: number; scanInterval?: number }) {
-			// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
-			// so we use the first one
-			if (typeof expiration === 'number') {
-				expirationMs = expiration * 1000;
-				if (!evictionMs) evictionMs = 0; // by default, no extra time for eviction
-			} else if (expiration && typeof expiration === 'object') {
-				// an object with expiration times/options specified
-				expirationMs = expiration.expiration * 1000;
-				evictionMs = (expiration.eviction || 0) * 1000;
-				cleanupInterval = expiration.scanInterval * 1000;
-			} else throw new Error('Invalid expiration value type');
+		static setTTLExpiration(opts: number | { expiration?: number; eviction?: number; scanInterval?: number }) {
+			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
+				throw new Error('Invalid expiration value type');
+			if (typeof opts === 'number') {
+				expirationMs = opts * 1000;
+			} else {
+				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
+				expirationMs = (opts.expiration ?? 0) * 1000;
+				evictionMs = (opts.eviction ?? 0) * 1000;
+				cleanupInterval = (opts.scanInterval ?? 0) * 1000;
+			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
-			// default to one quarter of the total eviction time, and make sure it fits into a 32-bit signed integer
+			// default to one quarter of the total expiration+eviction window
 			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
 			scheduleCleanup();
 		}
@@ -4354,6 +4354,8 @@ export function makeTable(options) {
 									Boolean(invalidated),
 									auditRecord
 								);
+								// arm the eviction scanner, mirroring the .put() path
+								if (sourceContext.expiresAt) scheduleCleanup();
 							} else if (existingEntry) {
 								logger.trace?.(
 									`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
