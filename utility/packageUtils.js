@@ -43,4 +43,22 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
  */
 const PACKAGE_ROOT = dirname(packageJsonPath);
 
-module.exports = { packageJson, PACKAGE_ROOT };
+/**
+ * The directory that holds source files at runtime: `PACKAGE_ROOT` in
+ * type-strip mode (where `node bin/harper.ts` runs the .ts sources directly)
+ * and `PACKAGE_ROOT/dist` in dist mode (where transpiled .js files live).
+ *
+ * `__dirname` of this CJS file resolves to either `<PACKAGE_ROOT>/utility`
+ * (source) or `<PACKAGE_ROOT>/dist/utility` (dist), so we can detect the mode
+ * just by looking at this file's own location.
+ */
+const RUNTIME_SRC_ROOT = __dirname.startsWith(join(PACKAGE_ROOT, 'dist')) ? join(PACKAGE_ROOT, 'dist') : PACKAGE_ROOT;
+
+/**
+ * File extension of the running modules: `.ts` in type-strip mode, `.js` in
+ * dist mode. Use this when constructing file paths for `new Worker(...)` or
+ * similar APIs that need the on-disk filename.
+ */
+const RUNTIME_FILE_EXT = RUNTIME_SRC_ROOT === PACKAGE_ROOT ? '.ts' : '.js';
+
+module.exports = { packageJson, PACKAGE_ROOT, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT };
