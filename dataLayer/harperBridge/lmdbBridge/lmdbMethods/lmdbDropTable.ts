@@ -1,7 +1,9 @@
 import SearchObject from '../../../SearchObject.ts';
 import DeleteObject from '../../../DeleteObject.ts';
-import searchByValue from './lmdbSearchByValue.ts';
-import deleteRecords from './lmdbDeleteRecords.ts';
+import _searchByValue from './lmdbSearchByValue.ts';
+const searchByValue = _searchByValue;
+import _deleteRecords from './lmdbDeleteRecords.ts';
+const deleteRecords = _deleteRecords;
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as hdbUtils from '../../../../utility/common_utils.ts';
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';

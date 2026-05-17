@@ -2,7 +2,8 @@
 const UpsertObject =
 	require('../../../dataObjects/UpsertObject.ts').default || require('../../../dataObjects/UpsertObject.ts');
 import insertUpdateValidate from '../../bridgeUtility/insertUpdateValidate.ts';
-import lmdbProcessRows from '../lmdbUtility/lmdbProcessRows.ts';
+import _lmdbProcessRows from '../lmdbUtility/lmdbProcessRows.ts';
+const lmdbProcessRows = _lmdbProcessRows;
 import lmdbCheckNewAttributes from '../lmdbUtility/lmdbCheckForNewAttributes.ts';
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import { upsertRecords as lmdb_upsert_records } from '../../../../utility/lmdb/writeUtility.ts';

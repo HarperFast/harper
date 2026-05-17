@@ -6,7 +6,8 @@ import { ClientError, handleHDBError, hdbErrors } from '../../utility/errors/hdb
 import { isMainThread } from 'node:worker_threads';
 import { Readable } from 'node:stream';
 
-import * as os from 'node:os';
+import * as _os from 'node:os';
+const os = _os;
 
 import * as auth from '../../security/fastifyAuth.ts';
 

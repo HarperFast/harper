@@ -11,7 +11,8 @@
  * These are rare enough for it not to be worth creating wrapper functions for those as well.
  */
 
-import validate from 'validate.js';
+import _validate from 'validate.js';
+const validate = _validate;
 
 //This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
 // we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule

@@ -1,6 +1,7 @@
 'use strict';
 
-import * as schemaDescribe from '../dataLayer/schemaDescribe.ts';
+import * as _schemaDescribe from '../dataLayer/schemaDescribe.ts';
+const schemaDescribe = _schemaDescribe;
 export { schemaDescribe };
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';

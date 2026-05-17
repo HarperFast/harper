@@ -1,5 +1,6 @@
 import validate from 'validate.js';
-import * as validator from './validationWrapper.ts';
+import * as _validator from './validationWrapper.ts';
+const validator = _validator;
 import * as terms from '../utility/hdbTerms.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
