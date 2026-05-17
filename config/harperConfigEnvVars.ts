@@ -32,6 +32,7 @@ const { cloneDeep } = _lodash;
 import { getBackupDirPath } from './configHelpers.ts';
 import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 // Staged beside the confirmed state while a config-file write is in flight, then renamed over it.
@@ -47,12 +48,7 @@ const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDI
 // it, short enough that leaked wreckage does not suspend drift detection indefinitely.
 const PENDING_STATE_STALE_MS = 60 * 60 * 1000;
 
-/**
- * Get logger instance with tag - lazy loaded to avoid circular dependencies
- * and ensure logger is initialized before use
- */
 function getLogger(): Logger {
-	const { loggerWithTag } = require('../utility/logging/harper_logger');
 	return loggerWithTag('env-config');
 }
 
