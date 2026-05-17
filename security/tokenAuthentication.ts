@@ -20,7 +20,11 @@ import UpdateObject from '../dataLayer/UpdateObject.ts';
 import * as signalling from '../utility/signalling.ts';
 import { UserEventMsg } from '../server/threads/itc.ts';
 import * as env from '../utility/environment/environmentManager.ts';
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 type StringValue = SignOptions['expiresIn'];
 const OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
 const REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';

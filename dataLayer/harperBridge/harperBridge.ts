@@ -1,6 +1,11 @@
 'use strict';
 
 import { ResourceBridge } from './ResourceBridge.ts';
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 let harperBridge; // ResourceBridge
 
 /**

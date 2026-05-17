@@ -2,6 +2,11 @@
 import cluster from 'cluster';
 import zlib from 'node:zlib';
 import * as env from '../utility/environment/environmentManager.ts';
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import fastify, {

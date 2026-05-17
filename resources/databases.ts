@@ -76,7 +76,11 @@ var DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4
 // configUtils without otherwise calling initSync, so without this the
 // flat config object stays uninitialised and downstream code paths
 // (e.g. installApplications -> getConfigPath(COMPONENTSROOT)) see null.
-initSync();
+try {
+	initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 // I don't know if this is the best place for this, but somewhere we need to specify which tables
 // replicate by default:
 export var NON_REPLICATING_SYSTEM_TABLES = [

@@ -9,7 +9,11 @@ import { packageDirectory } from '../components/packageComponent.ts';
 import { encode } from 'cbor-x';
 import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
-
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
 export { cliOperations, buildRequest };

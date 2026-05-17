@@ -9,7 +9,11 @@ import * as env from './environmentManager.ts';
 import { getDatabases, type Table } from '../../resources/databases.ts';
 import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts';
 import { RocksDatabase, type StatsHistogramData } from '@harperfast/rocksdb-js';
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 //this will hold the system_information which is static to improve performance
 let systemInformationCache = undefined;
 

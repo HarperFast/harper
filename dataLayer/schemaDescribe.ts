@@ -11,7 +11,11 @@ import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonError
 import { getDatabases as _getDatabases } from '../resources/databases.ts';
 const getDatabases = _getDatabases;
 import fs from 'fs-extra';
-
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 /**
  * This method is exposed to the API and internally for system operations.  If the op is being made internally, the `opObj`
  * argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.

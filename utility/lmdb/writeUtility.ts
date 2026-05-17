@@ -13,7 +13,11 @@ import { v4 as uuidv4 } from 'uuid';
 import * as lmdb from 'lmdb';
 import { handleHDBError, hdbErrors } from '../errors/hdbError.ts';
 import * as envMngr from '../environment/environmentManager.ts';
-
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const LMDB_PREFETCH_WRITES = envMngr.get(hdbTerms.CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const CREATED_TIME_ATTRIBUTE_NAME = hdbTerms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
