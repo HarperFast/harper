@@ -42,6 +42,8 @@ import * as httpComponent from '../http.ts';
 import { withProxyProtocol } from '../serverHelpers/proxyProtocol.ts';
 import * as globals from '../../globals.js';
 import { whenScopesClosed } from '../../components/scopeShutdown.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
+import { getComponentName } from '../../components/componentLoader.ts';
 
 const debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 const isWindows = process.platform === 'win32';
@@ -721,8 +723,7 @@ if (!isMainThread && !workerData?.noServerStart) {
  * @param listener
  * @param options
  */
-async function onSocket(listener, options) {
-	let getComponentName = (await import('../../components/componentLoader.ts')).getComponentName;
+function onSocket(listener, options) {
 	let socketServer;
 	const { threadType } = options;
 	for (const port of [options.securePort, options.port]) {
