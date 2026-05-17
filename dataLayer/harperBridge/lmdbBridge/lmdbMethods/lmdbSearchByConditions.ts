@@ -1,6 +1,3 @@
-// eslint-disable-next-line no-unused-vars
-const { SearchByConditionsObject, SearchCondition } =
-	require('../../../SearchByConditionsObject.ts').default || require('../../../SearchByConditionsObject.ts');
 import SearchObject from '../../../SearchObject.ts';
 import searchValidator from '../../../../validation/searchValidator.ts';
 import * as searchUtility from '../../../../utility/lmdb/searchUtility.ts';
