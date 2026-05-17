@@ -22,6 +22,7 @@ import { SERVERS, setPortServerMap, portServer } from '../serverRegistry.ts';
 import * as httpComponent from '../http.ts';
 import * as globals from '../../globals.js';
 import { onStartup } from '../../utility/lifecycle.ts';
+import { getComponentName } from '../../components/componentLoader.ts';
 const debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 const isWindows = process.platform === 'win32';
 
@@ -458,8 +459,7 @@ if (!isMainThread && !workerData?.noServerStart) {
  * @param listener
  * @param options
  */
-async function onSocket(listener, options) {
-	let getComponentName = (await import('../../components/componentLoader.ts')).getComponentName;
+function onSocket(listener, options) {
 	let socketServer;
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
