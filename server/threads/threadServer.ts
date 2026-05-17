@@ -159,7 +159,7 @@ function startServers() {
 			// ignore any errors with this; just a best effort for now
 		}
 	}
-	loaded.loadRootComponents(true).then(() => {
+	const loadedPromise = loaded.loadRootComponents(true).then(async () => {
 		parentPort
 			?.on('message', (message) => {
 				if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
@@ -181,21 +181,20 @@ function startServers() {
 				}
 			})
 			.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-		const listening = listenOnPorts();
-
-		// notify that we are now ready to start receiving requests
-		Promise.resolve(listening).then(() => {
-			if (getWorkerIndex() === 0) {
-				try {
-					startupLog(portServer);
-				} catch (err) {
-					console.error('Error displaying start-up log', err);
-				}
+		// Await listenOnPorts so the loaded promise (and whenComponentsLoaded with it)
+		// only resolves once HTTP/HTTPS sockets are actually bound. Callers that await
+		// whenComponentsLoaded (notably api-test setup) need this guarantee.
+		await listenOnPorts();
+		if (getWorkerIndex() === 0) {
+			try {
+				startupLog(portServer);
+			} catch (err) {
+				console.error('Error displaying start-up log', err);
 			}
-			parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
-		});
+		}
+		parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 	});
-	componentsLoadedResolve(loaded);
+	componentsLoadedResolve(loadedPromise);
 	// Clean up UDS files and force-close Bun server connections on unexpected exit.
 	// Without the stop(true) call, clients holding keep-alive connections to a dead Bun
 	// worker never receive a FIN/RST and hang indefinitely waiting for a response.
