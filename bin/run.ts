@@ -216,6 +216,12 @@ async function main(calledByInstall = false) {
 
 		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
 
+		// Drain onStartup hooks after install/initialize so server.X singletons
+		// (server.http, server.getUser, etc.) and auth.ts's onStartup table()
+		// call see the populated env / installed hdbBasePath.
+		const lifecycle = await import('../utility/lifecycle.ts');
+		await lifecycle.runStartup();
+
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_MIGRATEONSTART)) await migrateOnStart();
 

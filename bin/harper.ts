@@ -98,7 +98,9 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.START: {
 			await initEnv();
 			const mod = await import('./run.ts');
-			await runServerStartup();
+			// runStartup() is drained inside run.ts main() after initialize()
+			// completes, so server.X singletons and auth's table() resolution
+			// see a populated env / installed hdbBasePath.
 			return mod.launch();
 		}
 		case SERVICE_ACTIONS_ENUM.INSTALL: {
@@ -184,10 +186,10 @@ async function harper() {
 		}
 		// fall through
 		case undefined: {
-			// run harperdb in the foreground in standard mode
+			// run harperdb in the foreground in standard mode.
+			// runStartup() is drained inside run.ts main() after initialize().
 			await initEnv();
 			const mod = await import('./run.ts');
-			await runServerStartup();
 			return mod.main();
 		}
 		default: {
