@@ -13,7 +13,7 @@ import turfDistance from '@turf/distance';
 import turfBooleanContains from '@turf/boolean-contains';
 import turfBooleanEqual from '@turf/boolean-equal';
 import turfBooleanDisjoint from '@turf/boolean-disjoint';
-import turfHelpers from '@turf/helpers';
+import * as turfHelpers from '@turf/helpers';
 import * as hdbTerms from '../hdbTerms.ts';
 import * as commonUtils from '../common_utils.ts';
 import hdbLog from '../logging/harper_logger.ts';
@@ -44,7 +44,7 @@ function geoArea(geoJSON) {
 		geoJSON = commonUtils.autoCastJSON(geoJSON);
 	}
 	try {
-		return turfArea.default(geoJSON);
+		return turfArea(geoJSON);
 	} catch (err) {
 		hdbLog.trace(err, geoJSON);
 		return NaN;
@@ -67,7 +67,7 @@ function geoLength(geoJSON, units) {
 	}
 
 	try {
-		return turfLength.default(geoJSON, { units: units ? units : 'kilometers' });
+		return turfLength(geoJSON, { units: units ? units : 'kilometers' });
 	} catch (err) {
 		hdbLog.trace(err, geoJSON);
 		return NaN;
@@ -95,7 +95,7 @@ function geoCircle(point, radius, units) {
 	}
 
 	try {
-		return turfCircle.default(point, radius, { units: units ? units : 'kilometers' });
+		return turfCircle(point, radius, { units: units ? units : 'kilometers' });
 	} catch (err) {
 		hdbLog.trace(err, point, radius);
 		return NaN;
@@ -157,7 +157,7 @@ function geoDistance(point1, point2, units) {
 	}
 
 	try {
-		return turfDistance.default(point1, point2, { units: units ? units : 'kilometers' });
+		return turfDistance(point1, point2, { units: units ? units : 'kilometers' });
 	} catch (err) {
 		hdbLog.trace(err, point1, point2);
 		return NaN;
@@ -236,7 +236,7 @@ function geoContains(geo1, geo2) {
 	}
 
 	try {
-		return turfBooleanContains.default(geo1, geo2);
+		return turfBooleanContains(geo1, geo2);
 	} catch (err) {
 		hdbLog.trace(err, geo1, geo2);
 		return false;
@@ -274,7 +274,7 @@ function geoEqual(geo1, geo2) {
 	}
 
 	try {
-		return turfBooleanEqual.default(geo1, geo2);
+		return turfBooleanEqual(geo1, geo2);
 	} catch (err) {
 		hdbLog.trace(err, geo1, geo2);
 		return false;
@@ -313,7 +313,7 @@ function geoCrosses(geo1, geo2) {
 
 	try {
 		//need to do ! as this checks for non-intersections of geometries
-		return !turfBooleanDisjoint.default(geo1, geo2);
+		return !turfBooleanDisjoint(geo1, geo2);
 	} catch (err) {
 		hdbLog.trace(err, geo1, geo2);
 		return false;
