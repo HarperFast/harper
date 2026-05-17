@@ -121,7 +121,13 @@ export function initSync(force: boolean = false) {
 				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
 			}
 		}
-	} catch (err) {
+	} catch (err: any) {
+		// During typestrip ESM evaluation, module-load callers of initSync may
+		// reach this before configUtils has finished its own top-level evaluation,
+		// producing a ReferenceError (TDZ) on a module-scope binding. Don't exit
+		// the process for that — the same module-load chain will retry once
+		// evaluation completes, or bin/harper.ts will re-call initSync().
+		if (err?.name === 'ReferenceError') return;
 		log.error(INIT_ERR);
 		log.error(err);
 		console.error(err);

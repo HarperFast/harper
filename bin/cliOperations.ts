@@ -14,7 +14,11 @@ import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
-
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
 // Shown for any local-instance connection failure (missing pid, missing/stale domain

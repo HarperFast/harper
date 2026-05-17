@@ -18,7 +18,11 @@ import { onStartup } from '../utility/lifecycle.ts';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
 const authEventLog = authLogger.withTag('auth-event');
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 // Config-derived state is populated during startup, after the environment is
 // initialized and the module graph is fully linked. Reading config here at
 // module-load would either TDZ inside an ESM cycle or pick up stale defaults.
