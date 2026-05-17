@@ -1,5 +1,4 @@
 import { Resource } from './Resource.ts';
-import { onStartup } from '../utility/lifecycle.ts';
 import type { Context } from './ResourceInterface.ts';
 
 /**
@@ -7,62 +6,81 @@ import type { Context } from './ResourceInterface.ts';
  * to access endpoints/resources that had an internal error in their configuration or setup. This helps ensure that
  * if there is a problem with a resource, it is immediately apparent and can be fixed.
  *
- * Late-bound via `onStartup` to dodge an ESM cycle: ErrorResource sits in the
- * static graph reached during Resource.ts's own load, so a class-extends
- * declaration at module-top would TDZ on `Resource`.
+ * The class is constructed lazily on first use, not at module load. ErrorResource
+ * sits inside Resource.ts's own static-graph SCC, so a class-extends declaration
+ * at module-top would TDZ on `Resource`. The Proxy here lets `new ErrorResource(x)`
+ * and `ErrorResource.staticMember` work whenever they're called, even when this
+ * module is loaded directly (unit tests, scripts) without the lifecycle hooks running.
  */
-export let ErrorResource: any;
+let _ErrorResource: any;
+function getErrorResource(): any {
+	if (!_ErrorResource) {
+		_ErrorResource = class ErrorResource extends Resource {
+			error: Error;
+			constructor(error: Error) {
+				super(null as any, null);
+				this.error = error;
+			}
+			isError = true;
+			allowRead(): never {
+				throw this.error;
+			}
+			allowUpdate(): never {
+				throw this.error;
+			}
+			allowCreate(): never {
+				throw this.error;
+			}
+			allowDelete(): never {
+				throw this.error;
+			}
+			getId(): never {
+				throw this.error;
+			}
+			getContext(): Context {
+				throw this.error;
+			}
+			get(): never {
+				throw this.error;
+			}
+			post(): never {
+				throw this.error;
+			}
+			put(): never {
+				throw this.error;
+			}
+			delete(): never {
+				throw this.error;
+			}
+			connect(): never {
+				throw this.error;
+			}
+			getResource() {
+				// all child paths resolve back to reporting this error
+				return this;
+			}
+			publish(): never {
+				throw this.error;
+			}
+			subscribe(): never {
+				throw this.error;
+			}
+		};
+	}
+	return _ErrorResource;
+}
 
-onStartup(() => {
-	ErrorResource = class ErrorResource extends Resource {
-		error: Error;
-		constructor(error: Error) {
-			super(null as any, null);
-			this.error = error;
-		}
-		isError = true;
-		allowRead(): never {
-			throw this.error;
-		}
-		allowUpdate(): never {
-			throw this.error;
-		}
-		allowCreate(): never {
-			throw this.error;
-		}
-		allowDelete(): never {
-			throw this.error;
-		}
-		getId(): never {
-			throw this.error;
-		}
-		getContext(): Context {
-			throw this.error;
-		}
-		get(): never {
-			throw this.error;
-		}
-		post(): never {
-			throw this.error;
-		}
-		put(): never {
-			throw this.error;
-		}
-		delete(): never {
-			throw this.error;
-		}
-		connect(): never {
-			throw this.error;
-		}
-		getResource() {
-			// all child paths resolve back to reporting this error
-			return this;
-		}
-		publish(): never {
-			throw this.error;
-		}
-		subscribe(): never {
-			throw this.error;
-		}
-	};
+export const ErrorResource: any = new Proxy(function () {} as any, {
+	construct(_target, args) {
+		return Reflect.construct(getErrorResource(), args);
+	},
+	get(_target, prop) {
+		return getErrorResource()[prop];
+	},
+	has(_target, prop) {
+		return prop in getErrorResource();
+	},
+	getPrototypeOf() {
+		return getErrorResource().prototype;
+	},
 });

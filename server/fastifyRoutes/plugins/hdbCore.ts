@@ -1,12 +1,10 @@
-'use strict';
+import fp from 'fastify-plugin';
 
-const fp = require('fastify-plugin');
-
-const {
+import {
 	handlePostRequest,
 	authHandler,
 	reqBodyValidationHandler,
-} = require('../../../server/serverHelpers/serverHandlers.ts');
+} from '../../../server/serverHelpers/serverHandlers.ts';
 
 /**
  * Generates a fastify plugin containing three core methods
@@ -36,4 +34,4 @@ async function convertAsyncIterators(response) {
 	return response;
 }
 
-module.exports = fp(hdbCore);
+export default fp(hdbCore);
