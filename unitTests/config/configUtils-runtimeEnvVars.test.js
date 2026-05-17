@@ -26,10 +26,9 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 	before(function () {
 		// Stub the dependencies on their shared module objects. configUtils calls
-		// harperConfigEnvVars.applyRuntimeEnvConfig / .hasPersistedEnvConfigState,
-		// fs.writeFileSync / .renameSync, the logger methods, and YAML.parse/stringify
-		// via these same cached modules, so stubbing here intercepts those calls.
-		applyRuntimeEnvConfigStub = sinon.stub(harperConfigEnvVars, 'applyRuntimeEnvConfig');
+		// harperConfigEnvVars.hasPersistedEnvConfigState, fs.writeFileSync / .renameSync,
+		// the logger methods, and YAML.parse/stringify via these same cached modules, so
+		// stubbing here intercepts those calls.
 		hasPersistedEnvConfigStateStub = sinon.stub(harperConfigEnvVars, 'hasPersistedEnvConfigState');
 		fsWriteFileSyncStub = sinon.stub(fs, 'writeFileSync');
 		fsRenameSyncStub = sinon.stub(fs, 'renameSync');
@@ -44,6 +43,13 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 			parseDocument: sinon.stub(YAML, 'parseDocument').returns({ errors: [] }),
 			stringify: sinon.stub(YAML, 'stringify').returns('yaml: content'),
 		};
+
+		// configUtils imports applyRuntimeEnvConfig into a local top-level binding (aliased
+		// specifically so rewire can reach it), rather than reading it off harperConfigEnvVars at
+		// call time — so stubbing the shared harperConfigEnvVars object wouldn't be observed here.
+		// Inject via rewire instead.
+		applyRuntimeEnvConfigStub = sinon.stub();
+		configUtils.__set__('applyRuntimeEnvConfig', applyRuntimeEnvConfigStub);
 	});
 
 	beforeEach(function () {
