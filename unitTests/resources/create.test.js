@@ -65,7 +65,17 @@ describe('Create records', () => {
 		let id_after = CreateTest.getNewId();
 		assert(Math.abs(id_before - id_after) > 1000000);
 	});
-	after(() => {
-		test_thread.terminate();
+	after(async () => {
+		// Graceful shutdown — let the worker close its rocksdb handles on its own
+		// event loop rather than relying on Worker.terminate(), which under
+		// rocksdb-js triggers a native finalizer crash during the next test's
+		// process-wide handle setup.
+		await new Promise((resolve) => {
+			test_thread.once('exit', resolve);
+			test_thread.postMessage({ type: 'shutdown' });
+			setTimeout(() => {
+				test_thread.terminate().then(resolve);
+			}, 1000).unref();
+		});
 	});
 });
