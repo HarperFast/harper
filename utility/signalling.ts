@@ -10,7 +10,9 @@ let serverItcHandlers;
 // Preload server-itc-handlers during the startup phase so signalSchemaChange
 // and signalUserChange can stay synchronous (their callers and tests assume so).
 onStartup(async () => {
-	serverItcHandlers = await import('../server/itc/serverHandlers.ts');
+	const mod: any = await import('../server/itc/serverHandlers.ts');
+	// CJS dist double-wraps default: namespace.default is `exports`, exports.default is the real value.
+	serverItcHandlers = mod.default?.default ?? mod.default ?? mod;
 });
 
 function ensureServerItcHandlers() {
