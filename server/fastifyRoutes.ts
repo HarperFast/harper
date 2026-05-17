@@ -9,7 +9,7 @@ import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
-import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
+import * as hdbCore from './fastifyRoutes/plugins/hdbCore.ts';
 import * as userSchema from '../security/user.ts';
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.ts';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.ts';

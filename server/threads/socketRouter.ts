@@ -37,7 +37,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			const { loadRootComponents } = await import('../loadRootComponents.ts');
 			if (threadCount === 0) {
 				setMainIsWorker(true);
-				await require('./threadServer.ts').startServers();
+				await (await import('./threadServer.ts')).startServers();
 				return Promise.resolve([]);
 			}
 			await loadRootComponents();

@@ -15,7 +15,7 @@ import { sendItcEvent } from '../server/threads/itc.ts';
 export async function signalSchemaChange(message: any) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
+		serverItcHandlers = serverItcHandlers || (await import('../server/itc/serverHandlers.ts'));
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
 	} catch (err) {
@@ -29,9 +29,9 @@ export async function signalSchemaChange(message: any) {
  * so the dependent rebuild (MCP application tools) belongs in the worker where the registration
  * happened. See `resourceHandler` in server/itc/serverHandlers.js and issue #1448.
  */
-export function signalResourcesRegistered() {
+export async function signalResourcesRegistered() {
 	try {
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
+		serverItcHandlers = serverItcHandlers || (await import('../server/itc/serverHandlers.ts'));
 		serverItcHandlers.resourceHandler();
 	} catch (err) {
 		hdbLogger.error(err);
@@ -41,7 +41,7 @@ export function signalResourcesRegistered() {
 export async function signalUserChange(message: any) {
 	try {
 		hdbLogger.trace('signalUserChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
+		serverItcHandlers = serverItcHandlers || (await import('../server/itc/serverHandlers.ts'));
 		const itcEventUser = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.USER, message);
 		await Promise.all([serverItcHandlers.user(itcEventUser), sendItcEvent(itcEventUser)]);
 	} catch (err) {

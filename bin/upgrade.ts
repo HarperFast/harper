@@ -32,7 +32,7 @@ async function upgrade(upgradeObj) {
 
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 	// pm2 env vars before that is done.
-	if (pm2Utils === undefined) pm2Utils = require('../utility/processManagement/processManagement.ts');
+	if (pm2Utils === undefined) pm2Utils = await import('../utility/processManagement/processManagement.ts');
 
 	//We have to make sure HDB is installed before doing anything else
 	const installed = installation.isHdbInstalled(env, hdbLogger);
