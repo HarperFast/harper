@@ -10,8 +10,6 @@ import * as env from '../utility/environment/environmentManager.ts';
 import * as configUtils from '../config/configUtils.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
-import { TRUSTED_RESOURCE_PLUGINS } from './componentLoader.ts';
-import * as componentLoader from './componentLoader.ts';
 import * as serverUtilities from '../server/serverHelpers/serverUtilities.ts';
 import { internal as statusInternal } from './status/index.ts';
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
@@ -366,7 +364,11 @@ async function deployComponent(req) {
 	// TODO: how can we keep record of the `payload`? Its often too large to stuff into a config file; especially the root config. Maybe we can write it to a file and reference that way?
 	if (req.package) {
 		// Check if trying to overwrite a core component (requires force)
-		// Lazy-load to avoid circular dependency with componentLoader
+		// Lazy-load to avoid circular dependency with componentLoader.
+		// (Also keeps componentLoader/dataLoader out of the test-time module graph
+		// when callers only require this file for unrelated exports — pulling
+		// dataLoader in transitively defeats dataLoader.test.js's forComponent stub.)
+		const { TRUSTED_RESOURCE_PLUGINS } = await import('./componentLoader.ts');
 		if (TRUSTED_RESOURCE_PLUGINS[req.project] && !req.force) {
 			throw handleHDBError(
 				new Error(),
@@ -405,6 +407,7 @@ async function deployComponent(req) {
 		pseudoResources.isWorker = true;
 
 		let lastError;
+		const componentLoader = await import('./componentLoader.ts');
 		componentLoader.setErrorReporter((error) => (lastError = error));
 		await componentLoader.loadComponent(
 			application.dirPath,

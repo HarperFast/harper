@@ -9,7 +9,23 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { type Attribute } from './Table.ts';
 import { type FileEntry } from '../components/EntryHandler.ts';
 
-const dataLoaderLogger = harperLogger.forComponent('dataLoader');
+// Resolve the logger lazily so unit tests can stub `forComponent` between
+// module load and first use (otherwise transitive importers — componentLoader
+// pulled in via http.ts / threadServer.ts / operations.ts — capture the real
+// logger before dataLoader.test.js installs its stub).
+let _dataLoaderLogger: any;
+function getDataLoaderLogger() {
+	if (!_dataLoaderLogger) _dataLoaderLogger = harperLogger.forComponent('dataLoader');
+	return _dataLoaderLogger;
+}
+const dataLoaderLogger = new Proxy(
+	{},
+	{
+		get(_t, prop) {
+			return getDataLoaderLogger()[prop];
+		},
+	}
+) as any;
 
 /** System table name for storing data loader hashes */
 const DATA_LOADER_HASH_TABLE = 'hdb_dataloader_hash';
