@@ -1,4 +1,3 @@
-import { onStartup } from '../../utility/lifecycle.ts';
 /**
  * CRL (Certificate Revocation List) verification
  */
@@ -58,9 +57,10 @@ function getCertificateCacheTable() {
 /**
  * CRL fetching and validation source
  */
-let CertificateRevocationListSource: any;
-onStartup(() => {
-	CertificateRevocationListSource = class CertificateRevocationListSource extends Resource {
+let _CertificateRevocationListSource: any;
+function getCertificateRevocationListSource(): any {
+	if (!_CertificateRevocationListSource) {
+	_CertificateRevocationListSource = class CertificateRevocationListSource extends Resource {
 		async get(id: string) {
 			const context = this.getContext() as SourceContext<CRLVerificationContext>;
 			const requestContext = context?.requestContext;
@@ -107,6 +107,23 @@ onStartup(() => {
 			}
 		}
 	};
+	}
+	return _CertificateRevocationListSource;
+}
+
+const CertificateRevocationListSource: any = new Proxy(function () {} as any, {
+	construct(_target, args) {
+		return Reflect.construct(getCertificateRevocationListSource(), args);
+	},
+	get(_target, prop) {
+		return getCertificateRevocationListSource()[prop];
+	},
+	has(_target, prop) {
+		return prop in getCertificateRevocationListSource();
+	},
+	getPrototypeOf() {
+		return getCertificateRevocationListSource().prototype;
+	},
 });
 
 // Lazy-load Harper tables
