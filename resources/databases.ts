@@ -183,6 +183,7 @@ var DEFAULT_DATABASE_NAME = 'data';
 var DEFINED_TABLES = Symbol('defined-tables');
 const CATALOG_RELATIONSHIP = Symbol('catalog-relationship');
 var DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
+initSync();
 
 type RelationshipTarget = { database: string; table: string };
 type PersistedRelationship = {
