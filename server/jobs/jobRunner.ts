@@ -1,6 +1,5 @@
 'use strict';
 
-import { join } from 'node:path';
 
 import * as hdbUtil from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
@@ -133,7 +132,7 @@ async function runJob(runnerMessage: any, operation: any) {
 async function launchJobThread(job_id: any) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
-		threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+		threadsStart.startWorker('server/jobs/jobProcess', {
 			autoRestart: false,
 			name: 'job',
 			env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
@@ -148,7 +147,7 @@ async function launchJobThread(job_id: any) {
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.START_JOB, async (message) => {
 		try {
-			threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+			threadsStart.startWorker('server/jobs/jobProcess', {
 				autoRestart: false,
 				name: 'job',
 				env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },
