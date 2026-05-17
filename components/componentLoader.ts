@@ -362,6 +362,11 @@ export async function loadComponent(
 		} else {
 			config = DEFAULT_CONFIG;
 		}
+		// getConfigObj() can return undefined when the harper config has not yet been
+		// initialised (e.g. test paths that touch the loader without going through
+		// bin/harper.ts). Treat that the same as a missing config rather than crashing
+		// on `config.extensionModule` below.
+		config ??= DEFAULT_CONFIG;
 		applicationScope.config ??= config;
 
 		// For non-root components with empty/null config (e.g., comment-only YAML),
