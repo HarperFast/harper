@@ -13,6 +13,11 @@ const getDatabases = _getDatabases;
 import fs from 'fs-extra';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 /**
  * This method is exposed to the API and internally for system operations.  If the op is being made internally, the `opObj`
  * argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.

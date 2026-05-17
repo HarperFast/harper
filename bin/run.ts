@@ -1,7 +1,11 @@
 'use strict';
 
 import * as env from '../utility/environment/environmentManager.ts';
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 // This unused restart import is here so that main thread loads ITC event listener defined in restart file. Do not remove.
 import './restart.ts';
 import * as terms from '../utility/hdbTerms.ts';

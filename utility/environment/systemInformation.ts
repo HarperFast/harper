@@ -12,8 +12,11 @@ import { TableSizeObject } from '../../dataLayer/harperBridge/TableSizeObject.ts
 import { RocksDatabase, type StatsHistogramData } from '@harperfast/rocksdb-js';
 
 const loadSi = () => require('systeminformation') as typeof import('systeminformation');
-
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 //this will hold the system_information which is static to improve performance
 let systemInformationCache = undefined;
 
