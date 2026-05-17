@@ -25,6 +25,11 @@ import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const RESTART_RESPONSE = `Restarting Harper. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;

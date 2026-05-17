@@ -285,6 +285,11 @@ function usableCount(estimate: any): number {
 		return 0;
 	return count;
 }
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;

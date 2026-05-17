@@ -3,6 +3,11 @@
 import { existsSync, mkdirSync, statSync, promises as fsProm } from 'fs';
 import * as path from 'path';
 import * as envMgr from '../environment/environmentManager.ts';
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 import hdbLogger from './harper_logger.ts';
 import { CONFIG_PARAMS } from '../hdbTerms.ts';
 import { convertToMS } from '../common_utils.ts';

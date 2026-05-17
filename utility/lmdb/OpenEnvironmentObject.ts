@@ -7,7 +7,11 @@ const MAX_DBS = 10000;
 const MAX_READERS = 2048;
 import * as envMngr from '../environment/environmentManager.ts';
 import * as terms from '../../utility/hdbTerms.ts';
-
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 export default class OpenEnvironmentObject {
 	[key: string]: any;
 	static MAX_DBS = MAX_DBS;

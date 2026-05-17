@@ -11,6 +11,11 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as installation from '../utility/installation.ts';
 import { prettyDuration } from '../utility/common_utils.ts';
 
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const STATUSES = {
 	RUNNING: 'running',
 	STOPPED: 'stopped',
