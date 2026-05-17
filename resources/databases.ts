@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
+import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
 import { join, extname, basename } from 'path';
@@ -71,6 +71,12 @@ var logger = forComponent('storage');
 var DEFAULT_DATABASE_NAME = 'data';
 var DEFINED_TABLES = Symbol('defined-tables');
 var DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
+// Initialise env on module load to mirror main-branch behaviour. Tests
+// (and the api-test setup in particular) reach env.get(...) through
+// configUtils without otherwise calling initSync, so without this the
+// flat config object stays uninitialised and downstream code paths
+// (e.g. installApplications -> getConfigPath(COMPONENTSROOT)) see null.
+initSync();
 // I don't know if this is the best place for this, but somewhere we need to specify which tables
 // replicate by default:
 export var NON_REPLICATING_SYSTEM_TABLES = [
