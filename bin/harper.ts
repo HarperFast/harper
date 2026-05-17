@@ -102,6 +102,7 @@ async function harper() {
 			return getDefaultExport(await import('./install.ts'))();
 		}
 		case SERVICE_ACTIONS_ENUM.STOP: {
+			await initEnv();
 			return getDefaultExport(await import('./stop.ts'))().then(() => {
 				process.exit(0);
 			});
