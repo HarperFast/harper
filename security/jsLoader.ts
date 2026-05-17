@@ -17,6 +17,7 @@ import { ApplicationScope } from '../components/ApplicationScope.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager.ts';
+import { getDefaultConfig } from '../config/configUtils.ts';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
@@ -886,9 +887,15 @@ function acquirePidFileLock(
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
 		// Resolved lazily because jsLoader may be evaluated before the environment
-		// is initialized (e.g. component loading paths in unit tests).
+		// is initialized (e.g. component loading paths in unit tests). Fall back to
+		// the static defaults when no harper config has been loaded yet so the
+		// allow-list matches defaultConfig.yaml rather than being empty.
 		const basePath = env.getHdbBasePath();
-		const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
+		const allowedSpawn =
+			env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ??
+			getDefaultConfig(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ??
+			[];
+		const ALLOWED_COMMANDS = new Set(allowedSpawn);
 		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
 			throw new Error(`Command ${command} is not allowed`);
 		}
