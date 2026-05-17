@@ -56,66 +56,85 @@ function getCertificateCacheTable() {
 /**
  * CRL fetching and validation source.
  *
- * Late-bound via `onStartup` because this module sits inside Resource.ts's
+ * Late-bound via a Proxy because this module sits inside Resource.ts's
  * static-graph SCC, so a class-extends declaration at module-top would TDZ on
- * `Resource`.
+ * `Resource`. The Proxy defers the `extends Resource` evaluation to first
+ * construct/access — same pattern as resources/ErrorResource.ts and
+ * security/certificateVerification/certificateVerificationSource.ts.
  */
-let CertificateRevocationListSource: any;
-import { onStartup as _onStartupCrl } from '../../utility/lifecycle.ts';
-_onStartupCrl(() => {
-	CertificateRevocationListSource = class CertificateRevocationListSource extends Resource {
-		async get(id: string) {
-			const context = this.getContext() as SourceContext<CRLVerificationContext>;
-			const requestContext = context?.requestContext;
+let _CertificateRevocationListSource: any;
+function getCertificateRevocationListSource(): any {
+	if (!_CertificateRevocationListSource) {
+		_CertificateRevocationListSource = class CertificateRevocationListSource extends Resource {
+			async get(id: string) {
+				const context = this.getContext() as SourceContext<CRLVerificationContext>;
+				const requestContext = context?.requestContext;
 
-			if (!requestContext?.distributionPoint || !requestContext?.issuerPem) {
-				throw new Error(`No CRL data provided for cache key: ${id}`);
-			}
-
-			const { distributionPoint, issuerPem: issuerPemStr, config } = requestContext;
-
-			try {
-				const result = await downloadAndParseCRL(distributionPoint, issuerPemStr, config.timeout);
-
-				// Set expiration - use the CRL's nextUpdate time or configured TTL, whichever is sooner
-				const crlExpiry = result.next_update;
-				const configExpiry = Date.now() + config.cacheTtl;
-				const expiresAt = Math.min(crlExpiry, configExpiry);
-
-				return {
-					...result,
-					expiresAt,
-				};
-			} catch (error) {
-				logger.error?.(`CRL fetch error for: ${distributionPoint} - ${error}`);
-
-				if (error instanceof CRLSignatureVerificationError) {
-					throw error;
+				if (!requestContext?.distributionPoint || !requestContext?.issuerPem) {
+					throw new Error(`No CRL data provided for cache key: ${id}`);
 				}
 
-				// Check failure mode
-				if (config.failureMode === 'fail-closed') {
-					// Cache the error for faster recovery
-					const expiresAt = Date.now() + ERROR_CACHE_TTL;
+				const { distributionPoint, issuerPem: issuerPemStr, config } = requestContext;
+
+				try {
+					const result = await downloadAndParseCRL(distributionPoint, issuerPemStr, config.timeout);
+
+					// Set expiration - use the CRL's nextUpdate time or configured TTL, whichever is sooner
+					const crlExpiry = result.next_update;
+					const configExpiry = Date.now() + config.cacheTtl;
+					const expiresAt = Math.min(crlExpiry, configExpiry);
 
 					return {
-						crl_id: id,
-						distribution_point: distributionPoint,
-						issuer_dn: 'unknown',
-						crl_blob: Buffer.alloc(0),
-						this_update: Date.now(),
-						next_update: expiresAt,
-						signature_valid: false,
+						...result,
 						expiresAt,
 					};
-				}
+				} catch (error) {
+					logger.error?.(`CRL fetch error for: ${distributionPoint} - ${error}`);
 
-				// Fail open - return null to not cache
-				logger.warn?.('CRL fetch failed, not caching (fail-open mode)');
-				return null;
+					if (error instanceof CRLSignatureVerificationError) {
+						throw error;
+					}
+
+					// Check failure mode
+					if (config.failureMode === 'fail-closed') {
+						// Cache the error for faster recovery
+						const expiresAt = Date.now() + ERROR_CACHE_TTL;
+
+						return {
+							crl_id: id,
+							distribution_point: distributionPoint,
+							issuer_dn: 'unknown',
+							crl_blob: Buffer.alloc(0),
+							this_update: Date.now(),
+							next_update: expiresAt,
+							signature_valid: false,
+							expiresAt,
+						};
+					}
+
+					// Fail open - return null to not cache
+					logger.warn?.('CRL fetch failed, not caching (fail-open mode)');
+					return null;
+				}
 			}
-		}
-	};
+		};
+	}
+	return _CertificateRevocationListSource;
+}
+
+const CertificateRevocationListSource: any = new Proxy(function () {} as any, {
+	construct(_target, args) {
+		return Reflect.construct(getCertificateRevocationListSource(), args);
+	},
+	get(_target, prop) {
+		return getCertificateRevocationListSource()[prop];
+	},
+	has(_target, prop) {
+		return prop in getCertificateRevocationListSource();
+	},
+	getPrototypeOf() {
+		return getCertificateRevocationListSource().prototype;
+	},
 });
 
 // Lazy-load Harper tables
