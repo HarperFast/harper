@@ -232,7 +232,7 @@ function started() {
 async function launch(exit = true) {
 	skipExitListeners = !exit;
 	try {
-		if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.ts');
+		if (pmUtils === undefined) pmUtils = await import('../utility/processManagement/processManagement.ts');
 		hdbLogger.debug('initializing processManagement...');
 		await initialize();
 		hdbLogger.debug('Starting new main process');
