@@ -7,7 +7,8 @@
 import * as env from '../utility/environment/environmentManager.ts';
 
 import chalk from 'chalk';
-import hdbLogger from '../utility/logging/harper_logger.ts';
+import _hdbLogger from '../utility/logging/harper_logger.ts';
+const hdbLogger = _hdbLogger;
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as directivesManager from '../upgrade/directivesManager.ts';
 import * as installation from '../utility/installation.ts';

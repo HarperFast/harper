@@ -25,13 +25,14 @@ import { packageDirectory, scanPackageDirectory, streamPackagedDirectory } from 
 import { Resources } from '../resources/Resources.ts';
 import {
 	Application,
-	prepareApplication,
+	prepareApplication as _prepareApplication,
 	componentPreparationBudgetMs,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	dropComponentDirectory,
 	retireComponentDirectory,
 } from './Application.ts';
+const prepareApplication = _prepareApplication;
 import { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } from './componentPreparationLock.ts';
 import { DEPLOYMENT_PROVENANCE_FILE } from './deploymentProvenance.ts';
 import { compareInstallFingerprints, describeInstallDrift } from './installFingerprint.ts';
