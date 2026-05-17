@@ -1,6 +1,5 @@
 // eslint-disable-next-line no-unused-vars
-const UpsertObject =
-	require('../../../dataObjects/UpsertObject.ts').default || require('../../../dataObjects/UpsertObject.ts');
+import UpsertObject from '../../../dataObjects/UpsertObject.ts';
 import insertUpdateValidate from '../../bridgeUtility/insertUpdateValidate.ts';
 import _lmdbProcessRows from '../lmdbUtility/lmdbProcessRows.ts';
 const lmdbProcessRows = _lmdbProcessRows;

@@ -3,10 +3,7 @@ import * as environmentUtility from '../../../../utility/lmdb/environmentUtility
 import { getTransactionAuditStorePath } from '../lmdbUtility/initializePaths.ts';
 import * as lmdbTerms from '../../../../utility/lmdb/terms.ts';
 // eslint-disable-next-line no-unused-vars
-const CreateTableObject =
-	require('../../../CreateTableObject.ts').default ||
-	require('../../../CreateTableObject.ts').default ||
-	require('../../../CreateTableObject.ts');
+import CreateTableObject from '../../../CreateTableObject.ts';
 
 export default createTransactionsAuditEnvironment;
 

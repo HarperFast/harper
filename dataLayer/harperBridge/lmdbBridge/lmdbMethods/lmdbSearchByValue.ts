@@ -1,7 +1,6 @@
 // eslint-disable-next-line no-unused-vars
 import SearchObject from '../../../SearchObject.ts';
-const searchValidator =
-	require('../../../../validation/searchValidator.ts').default || require('../../../../validation/searchValidator.ts');
+import searchValidator from '../../../../validation/searchValidator.ts';
 import * as commonUtils from '../../../../utility/common_utils.ts';
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as lmdb_search from '../lmdbUtility/lmdbSearch.ts';
