@@ -1,23 +1,21 @@
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
-import logger from '../utility/logging/harper_logger.ts';
-import { configValidator } from '../validation/configValidator.ts';
-import fs from 'fs-extra';
-import YAML from 'yaml';
+import _logger from '../utility/logging/harper_logger.ts';
+const logger = _logger;
+import { configValidator as _configValidator } from '../validation/configValidator.ts';
+const configValidator = _configValidator;
+import _fs from 'fs-extra';
+const fs = _fs;
+import _YAML from 'yaml';
+const YAML = _YAML;
 import path from 'path';
 import { threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import isNumber from 'is-number';
-import propertiesReaderModule from 'properties-reader';
+import _PropertiesReader from 'properties-reader';
+const PropertiesReader = _PropertiesReader;
 import _ from 'lodash';
-
-// Aliased to a mutable, module-scoped binding so unit tests can swap the
-// implementation via rewire. The compiled default-import binding is otherwise
-// not addressable by name, and a default-exported CJS callable cannot be stubbed
-// through its shared module object the way named exports can.
-// eslint-disable-next-line prefer-const
-let PropertiesReader = propertiesReaderModule;
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES, HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
 import { server } from '../server/Server.ts';

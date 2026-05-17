@@ -8,7 +8,8 @@ import * as util from 'util';
 import * as userFunctions from './user.ts';
 const cbFindValidateUsers = util.callbackify(userFunctions.findAndValidateUser);
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import * as tokenAuthentication from './tokenAuthentication.ts';
+import * as _tokenAuthentication from './tokenAuthentication.ts';
+const tokenAuthentication = _tokenAuthentication;
 import { AccessViolation } from '../utility/errors/hdbError.ts';
 import { authentication } from './auth.ts';
 
