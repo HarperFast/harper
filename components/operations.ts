@@ -18,8 +18,6 @@ import {
 	removeEnvKeys,
 } from '../utility/envFile.ts';
 import { handleHDBError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
-import { TRUSTED_RESOURCE_PLUGINS } from './componentLoader.ts';
-import * as componentLoader from './componentLoader.ts';
 import * as serverUtilities from '../server/serverHelpers/serverUtilities.ts';
 import { internal as statusInternal } from './status/index.ts';
 import { ingestCredentials, resolveCredentials } from './secretOperations.ts';
@@ -388,7 +386,11 @@ async function deployComponent(req) {
 	// Write to root config if the request contains a package identifier
 	if (req.package) {
 		// Check if trying to overwrite a core component (requires force)
-		// Lazy-load to avoid circular dependency with componentLoader
+		// Lazy-load to avoid circular dependency with componentLoader.
+		// (Also keeps componentLoader/dataLoader out of the test-time module graph
+		// when callers only require this file for unrelated exports — pulling
+		// dataLoader in transitively defeats dataLoader.test.js's forComponent stub.)
+		const { TRUSTED_RESOURCE_PLUGINS } = await import('./componentLoader.ts');
 		if (TRUSTED_RESOURCE_PLUGINS[req.project] && !req.force) {
 			throw handleHDBError(
 				new Error(),
@@ -526,6 +528,7 @@ async function deployComponent(req) {
 			pseudoResources.isWorker = true;
 
 			let lastError;
+			const componentLoader = await import('./componentLoader.ts');
 			componentLoader.setErrorReporter((error) => (lastError = error));
 			emit('phase', { phase: 'load', status: 'start' });
 			// This load exists only to surface load-time errors early; the Scopes it creates are
