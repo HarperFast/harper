@@ -6,21 +6,17 @@ import { onMessageFromWorkers, broadcastWithAcknowledgement } from './manageThre
 
 export { sendItcEvent, validateEvent, SchemaEventMsg, UserEventMsg };
 let serverItcHandlers;
-// Defer registration so manageThreads.ts is fully evaluated when we read from
-// it (ESM cycle would otherwise leave its internal state uninitialized).
-setImmediate(() => {
-	onMessageFromWorkers(async (event, sender) => {
-		serverItcHandlers = serverItcHandlers || (await import('../itc/serverHandlers.ts'));
-		validateEvent(event);
-		if (serverItcHandlers[event.type]) {
-			await serverItcHandlers[event.type](event);
-		}
-		if (event.requestId && sender)
-			sender.postMessage({
-				type: 'ack',
-				id: event.requestId,
-			});
-	});
+onMessageFromWorkers(async (event, sender) => {
+	serverItcHandlers = serverItcHandlers || (await import('../itc/serverHandlers.ts'));
+	validateEvent(event);
+	if (serverItcHandlers[event.type]) {
+		await serverItcHandlers[event.type](event);
+	}
+	if (event.requestId && sender)
+		sender.postMessage({
+			type: 'ack',
+			id: event.requestId,
+		});
 });
 
 /**
