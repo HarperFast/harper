@@ -6,6 +6,15 @@ import crypto from 'crypto';
 import { v4 as uuid } from 'uuid';
 
 export default checkJWTTokenExist;
+
+// Preserve the CJS-callable shape consumers/tests expect — under tsc CJS emit
+// this replaces the `exports` object with the function itself, so
+// `require('./checkJWTTokenExist')(...)` works. No-op under typestrip ESM.
+declare const module: any;
+if (typeof module !== 'undefined') {
+	module.exports = checkJWTTokenExist;
+	module.exports.default = checkJWTTokenExist;
+}
 /**
  * checks that the RSA keys exist for JWT generation, if not we create them
  */
