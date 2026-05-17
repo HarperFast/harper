@@ -30,15 +30,11 @@ import _lodash from 'lodash';
 const { cloneDeep } = _lodash;
 import { getBackupDirPath } from './configHelpers.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 
-/**
- * Get logger instance with tag - lazy loaded to avoid circular dependencies
- * and ensure logger is initialized before use
- */
 function getLogger(): Logger {
-	const { loggerWithTag } = require('../utility/logging/harper_logger');
 	return loggerWithTag('env-config');
 }
 
