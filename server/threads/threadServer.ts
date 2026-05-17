@@ -657,7 +657,21 @@ async function listenOnPortsBun() {
 	return Promise.all(listening);
 }
 if (!isMainThread && !workerData?.noServerStart) {
-	startServers();
+	// Workers start with an empty environment manager. Run the same init+startup
+	// sequence as the main entry (bin/harper.ts) before bringing up servers.
+	// startServers schedules its loadRootComponents().then(...) chain internally
+	// and notifies the parent via parentPort.postMessage(CHILD_STARTED) once the
+	// HTTP port is bound — don't await it here, otherwise the worker IIFE blocks
+	// on the same chain that main is waiting on, deadlocking the startup.
+	(async () => {
+		env.initSync();
+		const { runStartup } = await import('../../utility/lifecycle.ts');
+		await runStartup();
+		startServers();
+	})().catch((err) => {
+		harperLogger.fatal('Worker failed to start', err);
+		process.exit(1);
+	});
 }
 
 /**
