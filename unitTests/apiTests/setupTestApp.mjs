@@ -49,6 +49,16 @@ function makeString() {
 let createdRecords;
 let serverStarted;
 export async function setupTestApp() {
+	// Drain onStartup hooks first so server-singleton wiring (server.http, server.getUser,
+	// server.operation, etc.) is installed before we override server.getUser below.
+	// Production runs this from bin/harper.ts; the API-test setup needs the same effect.
+	// Without this, the override below is later clobbered when user.ts's onStartup hook
+	// fires inside startHTTPThreads, and auth checks fall through to the real getUser.
+	if (typeof process !== 'undefined' && !serverStarted) {
+		const { runStartup } = await import('#src/utility/lifecycle');
+		await runStartup();
+	}
+
 	analytics.setAnalyticsEnabled(false);
 	bypassAuth();
 	bypassAuthMQTT();
@@ -121,11 +131,6 @@ export async function setupTestApp() {
 		tables.Related.clear();
 		tables.SubObject.clear();
 	} else {
-		// Drain onStartup hooks so server-singleton wiring (server.http, server.getUser,
-		// server.operation, etc.) is installed before any component loading. Production
-		// runs this from bin/harper.ts; the API-test setup needs the same effect.
-		const { runStartup } = await import('#src/utility/lifecycle');
-		await runStartup();
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
 	}
