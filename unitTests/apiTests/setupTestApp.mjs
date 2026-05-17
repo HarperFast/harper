@@ -128,12 +128,6 @@ export async function setupTestApp() {
 		await runStartup();
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
-		// startServers() fires loadRootComponents().then(listenOnPorts) without awaiting,
-		// so the caller of startHTTPThreads sees a resolved promise before the HTTP
-		// port is actually bound. Block here on the shared promise so the test's first
-		// axios call doesn't race the listen.
-		const { whenComponentsLoaded } = await import('#src/server/threads/threadServer');
-		await whenComponentsLoaded;
 	}
 	try {
 		seed = 0; // reset the seed to make sure we are deterministic here
