@@ -133,6 +133,11 @@ export async function setupTestApp() {
 	} else {
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
+		// startServers() schedules its loadRootComponents().then(listenOnPorts) chain
+		// internally without returning the resolved promise. Block on the shared
+		// `whenComponentsLoaded` so the test's first axios call sees a bound socket.
+		const { whenComponentsLoaded } = await import('#src/server/threads/threadServer');
+		await whenComponentsLoaded;
 	}
 	try {
 		seed = 0; // reset the seed to make sure we are deterministic here

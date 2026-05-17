@@ -209,8 +209,10 @@ function startServers() {
 			.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
 		const listening = listenOnPorts();
 
-		// notify that we are now ready to start receiving requests
-		Promise.resolve(listening).then(() => {
+		// notify that we are now ready to start receiving requests. Chained with
+		// `return` so the outer loadedPromise / whenComponentsLoaded only fulfils
+		// once HTTP/HTTPS sockets are actually bound — apitests await that.
+		return Promise.resolve(listening).then(() => {
 			if (getWorkerIndex() === 0) {
 				try {
 					startupLog(portServer);
@@ -545,11 +547,15 @@ async function listenOnPortsBun() {
 if (!isMainThread && !workerData?.noServerStart) {
 	// Workers start with an empty environment manager. Run the same init+startup
 	// sequence as the main entry (bin/harper.ts) before bringing up servers.
+	// startServers schedules its loadRootComponents().then(...) chain internally
+	// and notifies the parent via parentPort.postMessage(CHILD_STARTED) once the
+	// HTTP port is bound — don't await it here, otherwise the worker IIFE blocks
+	// on the same chain that main is waiting on, deadlocking the startup.
 	(async () => {
 		env.initSync();
 		const { runStartup } = await import('../../utility/lifecycle.ts');
 		await runStartup();
-		await startServers();
+		startServers();
 	})().catch((err) => {
 		harperLogger.fatal('Worker failed to start', err);
 		process.exit(1);
