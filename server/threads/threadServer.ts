@@ -185,7 +185,7 @@ function startServers() {
 		const listening = listenOnPorts();
 
 		// notify that we are now ready to start receiving requests
-		return Promise.resolve(listening).then(() => {
+		Promise.resolve(listening).then(() => {
 			if (getWorkerIndex() === 0) {
 				try {
 					startupLog(portServer);
@@ -197,7 +197,6 @@ function startServers() {
 		});
 	});
 	componentsLoadedResolve(loadedPromise);
-	return loadedPromise;
 	// Clean up UDS files and force-close Bun server connections on unexpected exit.
 	// Without the stop(true) call, clients holding keep-alive connections to a dead Bun
 	// worker never receive a FIN/RST and hang indefinitely waiting for a response.
@@ -214,7 +213,6 @@ function startServers() {
 		}
 		httpComponent.cleanupUdsFiles();
 	});
-	return loaded;
 }
 let listening;
 function listenOnPorts() {
