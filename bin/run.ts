@@ -202,6 +202,12 @@ async function main(calledByInstall = false) {
 		}
 		await initialize(calledByInstall, true);
 
+		// Drain onStartup hooks after install/initialize so server.X singletons
+		// (server.http, server.getUser, etc.) and auth.ts's onStartup table()
+		// call see the populated env / installed hdbBasePath.
+		const lifecycle = await import('../utility/lifecycle.ts');
+		await lifecycle.runStartup();
+
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_MIGRATEONSTART)) await migrateOnStart();
 
