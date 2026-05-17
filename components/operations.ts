@@ -692,7 +692,7 @@ async function deployComponent(req) {
 	if (req.package) {
 		// Check if trying to overwrite a core component (requires force)
 		// Lazy-load to avoid circular dependency with componentLoader
-		const { TRUSTED_RESOURCE_PLUGINS } = require('./componentLoader.ts');
+		const { TRUSTED_RESOURCE_PLUGINS } = await import('./componentLoader.ts');
 		if (TRUSTED_RESOURCE_PLUGINS[req.project] && !req.force) {
 			throw handleHDBError(
 				new Error(),
