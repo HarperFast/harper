@@ -164,64 +164,63 @@ function startServers() {
 			// ignore any errors with this; just a best effort for now
 		}
 	}
-	loaded.loadRootComponents(true).then(() => {
-			parentPort
-				?.on('message', (message) => {
-					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-						harperLogger.trace('received shutdown request', threadId);
-						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-						// close connections as possible, then let the event loop complete.
-						// First, gracefully drain any in-flight work registered by components — notably a
-						// replication blob *send* streaming to a peer, which is cheaper to finish than to interrupt
-						// (interrupting leaves the peer's copy diverged until it re-requests). The drain waits only
-						// on work still making progress, bounded by an absolute deadline. When there is real work to
-						// drain we push the termination backstops out to that deadline first so the drain isn't cut
-						// short, then restore the normal short backstop once draining is done — so any later hang
-						// (closeServers / scope disposal) is still force-killed on the normal timeout, and a worker
-						// with no such work is never affected.
-						const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
-						const extendedForDrain = shutdownDrainsHaveWork();
-						if (extendedForDrain) extendShutdownDeadline(drainDeadline);
-						// Wait for application scopes to finish closing before exiting — some dispose a native
-						// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
-						// worker while that runtime is still live crashes the process. The manageThreads backstop
-						// timers still bound this if a scope's disposal hangs.
-						runShutdownDrains(drainDeadline)
-							.then(() => {
-								if (extendedForDrain) restoreShutdownDeadline();
-							})
-							.then(() => closeServers())
-							.then(() => whenScopesClosed())
-							.then(() => {
-								realExit(0);
-							});
-						// Clean up per-thread UDS socket and metadata files
-						httpComponent.cleanupUdsFiles();
-						if (!isBun && (debugThreads || process.env.DEV_MODE)) {
-							try {
-								inspector.close();
-							} catch (error) {
-								harperLogger.info('Could not close debugger', error);
-							}
+	const loadedPromise = loaded.loadRootComponents(true).then(async () => {
+		parentPort
+			?.on('message', (message) => {
+				if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+					harperLogger.trace('received shutdown request', threadId);
+					// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
+					// close connections as possible, then let the event loop complete.
+					// First, gracefully drain any in-flight work registered by components — notably a
+					// replication blob *send* streaming to a peer, which is cheaper to finish than to interrupt
+					// (interrupting leaves the peer's copy diverged until it re-requests). The drain waits only
+					// on work still making progress, bounded by an absolute deadline. When there is real work to
+					// drain we push the termination backstops out to that deadline first so the drain isn't cut
+					// short, then restore the normal short backstop once draining is done — so any later hang
+					// (closeServers / scope disposal) is still force-killed on the normal timeout, and a worker
+					// with no such work is never affected.
+					const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
+					const extendedForDrain = shutdownDrainsHaveWork();
+					if (extendedForDrain) extendShutdownDeadline(drainDeadline);
+					// Wait for application scopes to finish closing before exiting — some dispose a native
+					// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
+					// worker while that runtime is still live crashes the process. The manageThreads backstop
+					// timers still bound this if a scope's disposal hangs.
+					runShutdownDrains(drainDeadline)
+						.then(() => {
+							if (extendedForDrain) restoreShutdownDeadline();
+						})
+						.then(() => closeServers())
+						.then(() => whenScopesClosed())
+						.then(() => {
+							realExit(0);
+						});
+					// Clean up per-thread UDS socket and metadata files
+					httpComponent.cleanupUdsFiles();
+					if (!isBun && (debugThreads || process.env.DEV_MODE)) {
+						try {
+							inspector.close();
+						} catch (error) {
+							harperLogger.info('Could not close debugger', error);
 						}
 					}
-				})
-				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-			const listening = listenOnPorts();
-
-			// notify that we are now ready to start receiving requests
-			Promise.resolve(listening).then(() => {
-				if (getWorkerIndex() === 0) {
-					try {
-						startupLog(portServer);
-					} catch (err) {
-						console.error('Error displaying start-up log', err);
-					}
 				}
-				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
-			});
-		});
-	componentsLoadedResolve(loaded);
+			})
+			.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+		// Await listenOnPorts so the loaded promise (and whenComponentsLoaded with it)
+		// only resolves once HTTP/HTTPS sockets are actually bound. Callers that await
+		// whenComponentsLoaded (notably api-test setup) need this guarantee.
+		await listenOnPorts();
+		if (getWorkerIndex() === 0) {
+			try {
+				startupLog(portServer);
+			} catch (err) {
+				console.error('Error displaying start-up log', err);
+			}
+		}
+		parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+	});
+	componentsLoadedResolve(loadedPromise);
 	// Clean up UDS files and force-close Bun server connections on unexpected exit.
 	// Without the stop(true) call, clients holding keep-alive connections to a dead Bun
 	// worker never receive a FIN/RST and hang indefinitely waiting for a response.
