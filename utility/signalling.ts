@@ -1,3 +1,4 @@
+import * as serverItcHandlersModule from '../server/itc/serverHandlers.ts';
 'use strict';
 
 import * as hdbTerms from './hdbTerms.ts';
@@ -23,7 +24,7 @@ export async function signalSchemaChange(
 ) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.ts');
+		serverItcHandlers = serverItcHandlers || serverItcHandlersModule.default;
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		if (peersFirst) {
 			await sendItcEvent(itcEventSchema, includeJobWorkers);
@@ -63,8 +64,7 @@ export async function signalSchemaChangeToPeers(message: any): Promise<void> {
  */
 export function signalResourcesRegistered() {
 	try {
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
-		serverItcHandlers.resourceHandler();
+		serverItcHandlersModule.resourceHandler();
 	} catch (err) {
 		hdbLogger.error(err);
 	}
