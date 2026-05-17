@@ -3,7 +3,8 @@
 import * as os from 'os';
 import inquirer from 'inquirer';
 import fs from 'fs-extra';
-import PropertiesReader from 'properties-reader';
+import _PropertiesReader from 'properties-reader';
+const PropertiesReader = _PropertiesReader;
 import chalk from 'chalk';
 import * as path from 'path';
 let ora; // Will be loaded dynamically as it's an ES module
@@ -17,12 +18,15 @@ import * as hdbInfoController from '../../dataLayer/hdbInfoController.ts';
 import { packageJson } from '../packageUtils.js';
 import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
-import installValidator from '../../validation/installValidator.ts';
-import mountHdb from '../mount_hdb.ts';
+import _installValidator from '../../validation/installValidator.ts';
+const installValidator = _installValidator;
+import _mountHdb from '../mount_hdb.ts';
+const mountHdb = _mountHdb;
 import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
-import checkJwtTokens from './checkJWTTokensExist.ts';
+import _checkJwtTokens from './checkJWTTokensExist.ts';
+const checkJwtTokens = _checkJwtTokens;
 import * as globalSchema from '../globalSchema.ts';
 import { promisify } from 'util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
