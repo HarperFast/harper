@@ -1,5 +1,4 @@
-const searchValidator =
-	require('../../../../validation/searchValidator.ts').default || require('../../../../validation/searchValidator.ts');
+import searchValidator from '../../../../validation/searchValidator.ts';
 import * as commonUtils from '../../../../utility/common_utils.ts';
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as lmdbSearch from '../lmdbUtility/lmdbSearch.ts';
