@@ -729,7 +729,6 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 				return true;
 			},
 		};
-const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
@@ -885,8 +884,11 @@ function acquirePidFileLock(
 }
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
-	const basePath = env.getHdbBasePath();
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
+		// Resolved lazily because jsLoader may be evaluated before the environment
+		// is initialized (e.g. component loading paths in unit tests).
+		const basePath = env.getHdbBasePath();
+		const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
 		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
 			throw new Error(`Command ${command} is not allowed`);
 		}
