@@ -5,10 +5,10 @@
 
 import isEqual from 'lodash/isEqual.js';
 import uniqWith from 'lodash/uniqWith.js';
-import mathjs from 'mathjs';
+import * as mathjs from 'mathjs';
 import jsonata from 'jsonata';
 import * as hdbUtils from '../../common_utils.ts';
-module.exports = {
+export default {
 	/***
 	 * distinctArray takes in an array an dedupes its values using lodash. this works on complex as well as simple datatypes
 	 * @param array
