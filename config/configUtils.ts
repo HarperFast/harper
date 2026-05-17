@@ -22,7 +22,8 @@ import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 
 import * as env from '../utility/environment/environmentManager.ts';
-import { applyRuntimeEnvConfig } from './harperConfigEnvVars.ts';
+import { applyRuntimeEnvConfig as _applyRuntimeEnvConfig } from './harperConfigEnvVars.ts';
+const applyRuntimeEnvConfig = _applyRuntimeEnvConfig;
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 var UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 var CONFIG_INIT_MSG = 'Config successfully initialized';
