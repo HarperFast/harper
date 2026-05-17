@@ -121,6 +121,11 @@ export async function setupTestApp() {
 		tables.Related.clear();
 		tables.SubObject.clear();
 	} else {
+		// Drain onStartup hooks so server-singleton wiring (server.http, server.getUser,
+		// server.operation, etc.) is installed before any component loading. Production
+		// runs this from bin/harper.ts; the API-test setup needs the same effect.
+		const { runStartup } = await import('#src/utility/lifecycle');
+		await runStartup();
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
 	}
