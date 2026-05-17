@@ -12,7 +12,8 @@ const hdbUtils = _hdbUtils;
 import * as util from 'util';
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
 import _harperBridge from './harperBridge/harperBridge.ts';
-const harperBridge = _harperBridge;
+// Lazy access to handle import cycle (insert.ts and harperBridge.ts both import each other transitively).
+const harperBridge: any = new Proxy({}, { get: (_, p) => (_harperBridge as any)[p] });
 import * as globalSchema from '../utility/globalSchema.ts';
 import log from '../utility/logging/harper_logger.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
