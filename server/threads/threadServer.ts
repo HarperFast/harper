@@ -1,3 +1,4 @@
+import * as inspector from 'node:inspector';
 import { isMainThread, parentPort, threadId, workerData } from 'node:worker_threads';
 import { createServer as createSocketServer } from 'node:net';
 import { unlinkSync, existsSync, mkdirSync } from 'fs';
@@ -35,7 +36,7 @@ if (!isBun) {
 			port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_PORT) ?? 9229;
 			const closeInspector = () => {
 				try {
-					require('inspector').close();
+					inspector.close();
 				} catch (error) {
 					harperLogger.info('Could not close debugger', error);
 				}
@@ -53,14 +54,14 @@ if (!isBun) {
 			const host = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_HOST);
 			const waitForDebugger = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_WAITFORDEBUGGER);
 			try {
-				require('inspector').open(port, host, waitForDebugger);
+				inspector.open(port, host, waitForDebugger);
 			} catch (error) {
 				harperLogger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
 			}
 		}
 	} else if (process.env.DEV_MODE && isMainThread) {
 		try {
-			require('inspector').open(9229);
+			inspector.open(9229);
 		} catch (error) {
 			if (restartNumber <= 1)
 				harperLogger.trace('Could not start debugging on port 9229, you may already be debugging:', error.message);
@@ -198,7 +199,7 @@ function startServers() {
 						httpComponent.cleanupUdsFiles();
 						if (!isBun && (debugThreads || process.env.DEV_MODE)) {
 							try {
-								require('inspector').close();
+								inspector.close();
 							} catch (error) {
 								harperLogger.info('Could not close debugger', error);
 							}
@@ -561,8 +562,8 @@ if (!isMainThread && !workerData?.noServerStart) {
  * @param listener
  * @param options
  */
-function onSocket(listener, options) {
-	let getComponentName = require('../../components/componentLoader.ts').getComponentName;
+async function onSocket(listener, options) {
+	let getComponentName = (await import('../../components/componentLoader.ts')).getComponentName;
 	let socketServer;
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
