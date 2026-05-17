@@ -7,41 +7,20 @@ import _ from 'lodash';
 import * as mathjs from 'mathjs';
 import jsonata from 'jsonata';
 import * as hdbUtils from '../../common_utils.ts';
-export default {
-	/***
-	 * distinctArray takes in an array an dedupes its values using lodash. this works on complex as well as simple datatypes
-	 * @param array
-	 * @returns array
-	 */
-	distinct_array: (array) => {
-		if (Array.isArray(array) && array.length > 1) {
-			return _.uniqWith(array, _.isEqual);
-		}
+export const distinct_array = (array) => {
+	if (Array.isArray(array) && array.length > 1) {
+		return _.uniqWith(array, _.isEqual);
+	}
 
-		return array;
-	},
-	searchJSON,
-	/***
-	 * median absolute deviation aggregate function based on http://mathjs.org/docs/reference/functions/mad.html
-	 */
-	mad: aggregateFunction.bind(null, mathjs.mad),
-	/***
-	 * mean aggregate function based on http://mathjs.org/docs/reference/functions/mean.html
-	 */
-	mean: aggregateFunction.bind(null, mathjs.mean),
-	/***
-	 * computes the mode of values on http://mathjs.org/docs/reference/functions/mode.html
-	 */
-	mode: aggregateFunction.bind(null, mathjs.mode),
-	/***
-	 * compute the product based on http://mathjs.org/docs/reference/functions/prod.html
-	 */
-	prod: aggregateFunction.bind(null, mathjs.prod),
-	/***
-	 * compute the median based on http://mathjs.org/docs/reference/functions/median.html
-	 */
-	median: aggregateFunction.bind(null, mathjs.median),
+	return array;
 };
+export const mad = aggregateFunction.bind(null, mathjs.mad);
+export const mean = aggregateFunction.bind(null, mathjs.mean);
+export const mode = aggregateFunction.bind(null, mathjs.mode);
+export const prod = aggregateFunction.bind(null, mathjs.prod);
+export const median = aggregateFunction.bind(null, mathjs.median);
+export { searchJSON };
+export default { distinct_array, searchJSON, mad, mean, mode, prod, median };
 
 /***
  * handles the 3 pass loop for aggregates and executes the final calc with the passed in aggregator function
