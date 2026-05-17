@@ -222,6 +222,7 @@ function startServers() {
 		});
 	});
 	componentsLoadedResolve(loadedPromise);
+	return loadedPromise;
 	// Clean up UDS files and force-close Bun server connections on unexpected exit.
 	// Without the stop(true) call, clients holding keep-alive connections to a dead Bun
 	// worker never receive a FIN/RST and hang indefinitely waiting for a response.
