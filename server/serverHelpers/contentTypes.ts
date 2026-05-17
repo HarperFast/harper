@@ -183,6 +183,28 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
+const ndjsonHandler = {
+	serializeStream(data: any) {
+		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
+			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
+		}
+		return JSONStringify(data) + '\n';
+	},
+	serialize(data: any) {
+		return JSONStringify(data) + '\n';
+	},
+	deserialize(data: Buffer) {
+		return data
+			.toString()
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map(JSONParse);
+	},
+	q: 0.7,
+};
+mediaTypes.set('application/x-ndjson', ndjsonHandler);
+mediaTypes.set('application/ndjson', ndjsonHandler);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {
