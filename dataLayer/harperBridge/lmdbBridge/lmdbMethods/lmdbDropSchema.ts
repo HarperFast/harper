@@ -1,7 +1,6 @@
 import fs from 'fs-extra';
 import SearchObject from '../../../SearchObject.ts';
-const SearchByHashObject =
-	require('../../../SearchByHashObject.ts').default || require('../../../SearchByHashObject.ts');
+import SearchByHashObject from '../../../SearchByHashObject.ts';
 import DeleteObject from '../../../DeleteObject.ts';
 import dropTable from './lmdbDropTable.ts';
 import deleteRecords from './lmdbDeleteRecords.ts';

@@ -1,6 +1,4 @@
-const CreateAttributeObject =
-	require('../../../CreateAttributeObject.ts').default || require('../../../CreateAttributeObject.ts');
-
+import CreateAttributeObject from '../../../CreateAttributeObject.ts';
 class LMDBCreateAttributeObject extends CreateAttributeObject {
 	/**
 	 *

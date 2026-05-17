@@ -2,8 +2,7 @@
 const { SearchByConditionsObject, SearchCondition } =
 	require('../../../SearchByConditionsObject.ts').default || require('../../../SearchByConditionsObject.ts');
 import SearchObject from '../../../SearchObject.ts';
-const searchValidator =
-	require('../../../../validation/searchValidator.ts').default || require('../../../../validation/searchValidator.ts');
+import searchValidator from '../../../../validation/searchValidator.ts';
 import * as searchUtility from '../../../../utility/lmdb/searchUtility.ts';
 import * as lmdbTerms from '../../../../utility/lmdb/terms.ts';
 import * as lmdb_search from '../lmdbUtility/lmdbSearch.ts';

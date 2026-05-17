@@ -1,8 +1,7 @@
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';
 import { getTransactionAuditStorePath } from '../lmdbUtility/initializePaths.ts';
 // eslint-disable-next-line no-unused-vars
-const DeleteBeforeObject =
-	require('../../../DeleteBeforeObject.ts').default || require('../../../DeleteBeforeObject.ts');
+import DeleteBeforeObject from '../../../DeleteBeforeObject.ts';
 import * as lmdbTerms from '../../../../utility/lmdb/terms.ts';
 import * as hdbUtils from '../../../../utility/common_utils.ts';
 import DeleteAuditLogsBeforeResults from './DeleteAuditLogsBeforeResults.js';

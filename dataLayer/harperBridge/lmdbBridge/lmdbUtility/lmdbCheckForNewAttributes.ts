@@ -2,8 +2,7 @@ import * as hUtils from '../../../../utility/common_utils.ts';
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import logger from '../../../../utility/logging/harper_logger.ts';
 import lmdbCreateAttribute from '../lmdbMethods/lmdbCreateAttribute.ts';
-const LMDBCreateAttributeObject =
-	require('./LMDBCreateAttributeObject.ts').default || require('./LMDBCreateAttributeObject.ts');
+import LMDBCreateAttributeObject from './LMDBCreateAttributeObject.ts';
 import * as signalling from '../../../../utility/signalling.ts';
 import { SchemaEventMsg } from '../../../../server/threads/itc.ts';
 

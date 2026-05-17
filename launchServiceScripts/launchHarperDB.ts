@@ -1,1 +1,1 @@
-require('../server/operationsServer.ts').hdbServer();
+import('../server/operationsServer.ts').then((m) => m.hdbServer());

@@ -1,6 +1,5 @@
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';
-const searchValidator =
-	require('../../../../validation/searchValidator.ts').default || require('../../../../validation/searchValidator.ts');
+import searchValidator from '../../../../validation/searchValidator.ts';
 import { getSchemaPath } from './initializePaths.ts';
 
 export default initialize;
