@@ -1,4 +1,3 @@
-import { onStartup } from '../../utility/lifecycle.ts';
 /**
  * Certificate verification source that handles both CRL and OCSP methods
  */
@@ -26,9 +25,10 @@ async function loadVerificationFunctions() {
 /**
  * Certificate Verification Source that can handle both CRL and OCSP
  */
-export let CertificateVerificationSource: any;
-onStartup(() => {
-	CertificateVerificationSource = class CertificateVerificationSource extends Resource {
+let _CertificateVerificationSource: any;
+function getCertificateVerificationSource(): any {
+	if (!_CertificateVerificationSource) {
+	_CertificateVerificationSource = class CertificateVerificationSource extends Resource {
 		async get(query: Query) {
 			const id = query.id as string;
 
@@ -84,4 +84,20 @@ onStartup(() => {
 			};
 		}
 	};
+	}
+	return _CertificateVerificationSource;
+}
+export const CertificateVerificationSource: any = new Proxy(function () {} as any, {
+	construct(_target, args) {
+		return Reflect.construct(getCertificateVerificationSource(), args);
+	},
+	get(_target, prop) {
+		return getCertificateVerificationSource()[prop];
+	},
+	has(_target, prop) {
+		return prop in getCertificateVerificationSource();
+	},
+	getPrototypeOf() {
+		return getCertificateVerificationSource().prototype;
+	},
 });
