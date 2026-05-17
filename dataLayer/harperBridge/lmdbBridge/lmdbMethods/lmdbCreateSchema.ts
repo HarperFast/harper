@@ -1,5 +1,6 @@
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
-import lmdbCreateRecords from './lmdbCreateRecords.ts';
+import _lmdbCreateRecords from './lmdbCreateRecords.ts';
+const lmdbCreateRecords = _lmdbCreateRecords;
 import InsertObject from '../../../InsertObject.ts';
 import fs from 'fs-extra';
 import { getSchemaPath } from '../lmdbUtility/initializePaths.ts';

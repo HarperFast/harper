@@ -1,6 +1,7 @@
 'use strict';
 
-import * as schemaMetadataValidator from '../validation/schemaMetadataValidator.ts';
+import * as _schemaMetadataValidator from '../validation/schemaMetadataValidator.ts';
+const schemaMetadataValidator = _schemaMetadataValidator;
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import Joi from 'joi';
@@ -14,7 +15,8 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { SchemaEventMsg } from '../server/threads/itc.ts';
-import { getDatabases, dropTableMeta } from '../resources/databases.ts';
+import { getDatabases as _getDatabases, dropTableMeta } from '../resources/databases.ts';
+const getDatabases = _getDatabases;
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';

@@ -5,7 +5,8 @@ import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
 import { isMainThread } from 'worker_threads';
 import { Readable } from 'stream';
 
-import os from 'os';
+import _os from 'os';
+const os = _os;
 import util from 'util';
 
 import * as auth from '../../security/fastifyAuth.ts';

@@ -13,7 +13,8 @@ import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { streamAsJSON } from '../server/serverHelpers/JSONStream.ts';
-import { Upload } from '@aws-sdk/lib-storage';
+import { Upload as _Upload } from '@aws-sdk/lib-storage';
+const Upload = _Upload;
 import { toCsvStream } from '../server/serverHelpers/contentTypes.ts';
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql', 'search_by_conditions'];

@@ -1,6 +1,7 @@
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';
-import * as writeUtility from '../../../../utility/lmdb/writeUtility.ts';
+import * as _writeUtility from '../../../../utility/lmdb/writeUtility.ts';
+const writeUtility = _writeUtility;
 import { getSystemSchemaPath, getSchemaPath } from '../lmdbUtility/initializePaths.ts';
 import lmdbCreateAttribute from './lmdbCreateAttribute.ts';
 const LMDBCreateAttributeObject =

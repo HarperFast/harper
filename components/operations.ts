@@ -18,7 +18,8 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 import * as manageThreads from '../server/threads/manageThreads.ts';
 import { packageDirectory } from '../components/packageComponent.ts';
 import { Resources } from '../resources/Resources.ts';
-import { Application, prepareApplication } from './Application.ts';
+import { Application, prepareApplication as _prepareApplication } from './Application.ts';
+const prepareApplication = _prepareApplication;
 import { server } from '../server/Server.ts';
 
 /**

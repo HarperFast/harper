@@ -8,7 +8,8 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
-import { getDatabases } from '../resources/databases.ts';
+import { getDatabases as _getDatabases } from '../resources/databases.ts';
+const getDatabases = _getDatabases;
 import fs from 'fs-extra';
 
 /**
