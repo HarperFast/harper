@@ -4,9 +4,7 @@ import * as _writeUtility from '../../../../utility/lmdb/writeUtility.ts';
 const writeUtility = _writeUtility;
 import { getSystemSchemaPath, getSchemaPath } from '../lmdbUtility/initializePaths.ts';
 import lmdbCreateAttribute from './lmdbCreateAttribute.ts';
-const LMDBCreateAttributeObject =
-	require('../lmdbUtility/LMDBCreateAttributeObject.ts').default ||
-	require('../lmdbUtility/LMDBCreateAttributeObject.ts');
+import LMDBCreateAttributeObject from '../lmdbUtility/LMDBCreateAttributeObject.ts';
 import log from '../../../../utility/logging/harper_logger.ts';
 import createTxnEnvironments from '../lmdbUtility/lmdbCreateTransactionsAuditEnvironment.ts';
 

@@ -1,8 +1,7 @@
 import SearchObject from '../../../SearchObject.ts';
 import DeleteObject from '../../../DeleteObject.ts';
 // eslint-disable-next-line no-unused-vars
-const DropAttributeObject =
-	require('../../../DropAttributeObject.ts').default || require('../../../DropAttributeObject.ts');
+import DropAttributeObject from '../../../DropAttributeObject.ts';
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as commonUtils from '../../../../utility/common_utils.ts';
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';

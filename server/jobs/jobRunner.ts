@@ -1,6 +1,5 @@
 'use strict';
 
-
 import * as hdbUtil from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import moment from 'moment';

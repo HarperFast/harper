@@ -4,9 +4,7 @@ import * as writeUtility from '../../../../utility/lmdb/writeUtility.ts';
 import { getSystemSchemaPath, getSchemaPath } from '../lmdbUtility/initializePaths.ts';
 import { validateBySchema } from '../../../../validation/validationWrapper.ts';
 import Joi from 'joi';
-const LMDBCreateAttributeObject =
-	require('../lmdbUtility/LMDBCreateAttributeObject.ts').default ||
-	require('../lmdbUtility/LMDBCreateAttributeObject.ts');
+import LMDBCreateAttributeObject from '../lmdbUtility/LMDBCreateAttributeObject.ts';
 import returnObject from '../../bridgeUtility/insertUpdateReturnObj.js';
 import { handleHDBError, hdbErrors, ClientError } from '../../../../utility/errors/hdbError.ts';
 import * as hdbUtils from '../../../../utility/common_utils.ts';
