@@ -6,42 +6,26 @@ import { onMessageFromWorkers, broadcastWithAcknowledgement } from './manageThre
 
 export { sendItcEvent, validateEvent, SchemaEventMsg, UserEventMsg };
 let serverItcHandlers;
-// Kick off serverHandlers resolution at module load so it's likely settled by
-// the time the first worker broadcast arrives. itc.ts and serverHandlers.ts
-// have a static-graph cycle (serverHandlers re-imports sendItcEvent from
-// here), so we resolve it through a dynamic import that suspends the loader
-// task until both modules' top-level bodies have completed.
-const serverItcHandlersReady = import('../itc/serverHandlers.ts').then((m: any) => {
-	// Dynamic import returns the namespace { default: handlersObj }. In CJS-dist
-	// it may also be double-wrapped as { default: { default: handlersObj } }, so
-	// pick the deepest non-namespace shape.
-	serverItcHandlers = m.default?.default ?? m.default ?? m;
-});
-// Register the ack listener at module load (not via setImmediate) so the very
-// first worker broadcast — which may land before any event-loop yield in main
-// — sees a registered listener. Ack synchronously on receipt so the worker's
-// broadcastWithAcknowledgement unblocks regardless of how slow the handler is
-// (schema sync writes to LMDB which can stall while a sibling worker still
-// holds a transaction on the same table). The handler runs best-effort in the
-// background; schema state re-syncs on every subsequent event anyway.
-onMessageFromWorkers((event, sender) => {
-	if (event.requestId && sender) {
-		sender.postMessage({
-			type: 'ack',
-			id: event.requestId,
-		});
-	}
-	(async () => {
-		try {
-			if (!serverItcHandlers) await serverItcHandlersReady;
-			validateEvent(event);
-			if (serverItcHandlers[event.type]) {
-				await serverItcHandlers[event.type](event);
-			}
-		} catch {
-			// best-effort — ack already sent
+// Defer registration so manageThreads.ts is fully evaluated when we read from
+// it (ESM cycle would otherwise leave its internal state uninitialized).
+setImmediate(() => {
+	onMessageFromWorkers(async (event, sender) => {
+		if (!serverItcHandlers) {
+			const m: any = await import('../itc/serverHandlers.ts');
+			// Dynamic import returns the namespace { default: handlersObj }; in
+			// CJS-dist it can be double-wrapped as { default: { default: ... } }.
+			serverItcHandlers = m.default?.default ?? m.default ?? m;
 		}
-	})();
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+		if (event.requestId && sender)
+			sender.postMessage({
+				type: 'ack',
+				id: event.requestId,
+			});
+	});
 });
 
 /**
