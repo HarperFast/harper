@@ -49,7 +49,12 @@ export type AuditRecord = {
 	previousNodeId?: number;
 	previousAdditionalAuditRefs?: Array<{ version: number; nodeId: number }>;
 	endTxn?: boolean;
+<<<<<<< HEAD
 	structureVersion?: number;
+=======
+	getBinaryRecordId?: any;
+	corrupt?: boolean;
+>>>>>>> b84fbbd (fix: skip corrupt audit entries during iteration instead of throwing)
 };
 
 const ENTRY_HEADER = Buffer.alloc(2816); // this is sized to be large enough for the maximum key size (1976) plus large usernames. We may want to consider some limits on usernames to ensure this all fits
@@ -73,6 +78,16 @@ export const transactionKeyEncoder = {
 		if (buffer[start] === 66) {
 			const dataView =
 				buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+			// Without this bounds check, a truncated key buffer escapes as RangeError up
+			// through lmdb-js's iterator and lands as an uncaughtException on a later tick,
+			// stalling outgoing replication for the affected (peer, db) pair.
+			if (start + 8 > buffer.byteLength) {
+				harperLogger.warn('Audit key buffer too short for float64 read; returning NaN sentinel', {
+					start,
+					byteLength: buffer.byteLength,
+				});
+				return NaN;
+			}
 			return dataView.getFloat64(start);
 		} else {
 			return readKey(buffer, start, end);
@@ -439,6 +454,15 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const nodeId = decoder.readInt();
 		const tableId = decoder.readInt();
 		let length = decoder.readInt();
+		// A corrupt length field (e.g., a 0xff-prefixed uint32) would otherwise push
+		// decoder.position hundreds of megabytes past the buffer; the next readFloat64
+		// then throws with the bogus position in the message. Failing fast here keeps
+		// the throw inside this try/catch so we surface a sentinel instead.
+		if (length < 0 || decoder.position + length > buffer.byteLength) {
+			throw new RangeError(
+				`Audit entry recordId length ${length} exceeds remaining buffer (position ${decoder.position}, byteLength ${buffer.byteLength})`
+			);
+		}
 		const recordIdStart = decoder.position;
 		const recordIdEnd = (decoder.position += length);
 		// TODO: Once we support multiple format versions, we can conditionally read the version (and the previousResidencyId)
@@ -469,6 +493,11 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			}
 		}
 		length = decoder.readInt();
+		if (length < 0 || decoder.position + length > buffer.byteLength) {
+			throw new RangeError(
+				`Audit entry username length ${length} exceeds remaining buffer (position ${decoder.position}, byteLength ${buffer.byteLength})`
+			);
+		}
 		const usernameStart = decoder.position;
 		const usernameEnd = (decoder.position += length);
 		let value: any;
@@ -477,8 +506,17 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			tableId,
 			nodeId,
 			get recordId() {
-				// use a subarray to protect against the underlying buffer being modified
-				return readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd);
+				// The recordId is decoded lazily and lives outside readAuditEntry's try/catch,
+				// so a corrupt recordId region would otherwise escape as an uncaught RangeError
+				// on property access. Catch and return undefined; callers already treat missing
+				// recordId as a skip-eligible entry.
+				try {
+					// use a subarray to protect against the underlying buffer being modified
+					return readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd);
+				} catch (error) {
+					harperLogger.warn('Failed to decode audit recordId; treating as corrupt', error);
+					return undefined;
+				}
 			},
 			getBinaryRecordId() {
 				return buffer.subarray(recordIdStart, recordIdEnd);
@@ -486,9 +524,14 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			version,
 			previousVersion,
 			get user() {
-				return usernameEnd > usernameStart
-					? readKey(buffer.subarray(0, usernameEnd), usernameStart, usernameEnd)
-					: undefined;
+				try {
+					return usernameEnd > usernameStart
+						? readKey(buffer.subarray(0, usernameEnd), usernameStart, usernameEnd)
+						: undefined;
+				} catch (error) {
+					harperLogger.warn('Failed to decode audit username; treating as corrupt', error);
+					return undefined;
+				}
 			},
 			get encoded() {
 				return start ? buffer.subarray(start, end) : buffer;
@@ -523,8 +566,53 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		};
 	} catch (error) {
 		harperLogger.error('Reading audit entry error', error, buffer);
+<<<<<<< HEAD
 		return {};
+=======
+		return createCorruptAuditSentinel(buffer, start, end);
+>>>>>>> b84fbbd (fix: skip corrupt audit entries during iteration instead of throwing)
 	}
+}
+
+/**
+ * Build a structurally complete audit record for an entry that failed to decode. The fields
+ * mirror the happy-path shape so downstream consumers that access (e.g.) `getValue` or the
+ * `recordId` getter don't blow up with a `TypeError: not a function` / `undefined.is(...)`
+ * after the header decode already failed. Marked with `corrupt: true` so consumers that
+ * want to count or branch on the skip can do so.
+ */
+function createCorruptAuditSentinel(buffer: Uint8Array, start: number, end: number | undefined): AuditRecord {
+	return {
+		corrupt: true,
+		type: undefined,
+		tableId: undefined,
+		nodeId: undefined,
+		recordId: undefined,
+		version: undefined,
+		previousVersion: undefined,
+		user: undefined,
+		extendedType: undefined,
+		residencyId: undefined,
+		previousResidencyId: undefined,
+		expiresAt: undefined,
+		originatingOperation: undefined,
+		previousAdditionalAuditRefs: undefined,
+		get encoded() {
+			return start ? buffer.subarray(start, end) : buffer;
+		},
+		get size() {
+			return start !== undefined && end !== undefined ? end - start : buffer.byteLength;
+		},
+		getBinaryRecordId() {
+			return undefined;
+		},
+		getValue() {
+			return undefined;
+		},
+		getBinaryValue() {
+			return undefined;
+		},
+	} as any;
 }
 
 export class Decoder extends DataView<ArrayBufferLike> {
