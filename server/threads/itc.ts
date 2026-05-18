@@ -19,20 +19,29 @@ const serverItcHandlersReady = import('../itc/serverHandlers.ts').then((m: any) 
 });
 // Register the ack listener at module load (not via setImmediate) so the very
 // first worker broadcast — which may land before any event-loop yield in main
-// — sees a registered listener. The handler awaits serverItcHandlersReady
-// before dispatching, but the ack itself is sent in the same async function
-// body so it fires as soon as the import settles, not after handler work.
-onMessageFromWorkers(async (event, sender) => {
-	if (!serverItcHandlers) await serverItcHandlersReady;
-	validateEvent(event);
-	if (serverItcHandlers[event.type]) {
-		await serverItcHandlers[event.type](event);
-	}
-	if (event.requestId && sender)
+// — sees a registered listener. Ack synchronously on receipt so the worker's
+// broadcastWithAcknowledgement unblocks regardless of how slow the handler is
+// (schema sync writes to LMDB which can stall while a sibling worker still
+// holds a transaction on the same table). The handler runs best-effort in the
+// background; schema state re-syncs on every subsequent event anyway.
+onMessageFromWorkers((event, sender) => {
+	if (event.requestId && sender) {
 		sender.postMessage({
 			type: 'ack',
 			id: event.requestId,
 		});
+	}
+	(async () => {
+		try {
+			if (!serverItcHandlers) await serverItcHandlersReady;
+			validateEvent(event);
+			if (serverItcHandlers[event.type]) {
+				await serverItcHandlers[event.type](event);
+			}
+		} catch {
+			// best-effort — ack already sent
+		}
+	})();
 });
 
 /**
