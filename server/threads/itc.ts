@@ -8,9 +8,14 @@ export { sendItcEvent, validateEvent, SchemaEventMsg, UserEventMsg };
 let serverItcHandlers;
 // Defer registration so manageThreads.ts is fully evaluated when we read from
 // it (ESM cycle would otherwise leave its internal state uninitialized).
-setImmediate(() => {
+// The serverHandlers import is also deferred here — at the time itc.ts loads,
+// serverHandlers.ts has imported back from this module mid-evaluation (cycle),
+// so a top-level static import would observe a half-initialised export. The
+// setImmediate guarantees both modules' top-level bodies have finished before
+// we resolve the cycle reference.
+setImmediate(async () => {
+	serverItcHandlers = await import('../itc/serverHandlers.ts');
 	onMessageFromWorkers(async (event, sender) => {
-		serverItcHandlers = serverItcHandlers || (await import('../itc/serverHandlers.ts'));
 		validateEvent(event);
 		if (serverItcHandlers[event.type]) {
 			await serverItcHandlers[event.type](event);
