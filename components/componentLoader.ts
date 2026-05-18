@@ -365,9 +365,16 @@ export async function loadComponent(
 		// getConfigObj() can return undefined when the harper config has not yet been
 		// initialised (e.g. test paths that touch the loader without going through
 		// bin/harper.ts). Treat that the same as a missing config rather than crashing
-		// on `config.extensionModule` below.
-		config ??= DEFAULT_CONFIG;
+		// on `config.extensionModule` below. For non-root components, an empty/null
+		// parse result means an intentionally-empty config file — do NOT fall back to
+		// DEFAULT_CONFIG, otherwise OptionsWatcher waits forever for plugins that the
+		// file doesn't actually declare and the worker hangs on scope.ready.
+		if (isRoot) config ??= DEFAULT_CONFIG;
 		applicationScope.config ??= config;
+		if (!config) {
+			// Empty/comment-only config file on a non-root component: nothing to load.
+			return undefined;
+		}
 
 		// For non-root components with empty/null config (e.g., comment-only YAML),
 		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing
