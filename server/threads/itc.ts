@@ -11,8 +11,11 @@ let serverItcHandlers;
 // have a static-graph cycle (serverHandlers re-imports sendItcEvent from
 // here), so we resolve it through a dynamic import that suspends the loader
 // task until both modules' top-level bodies have completed.
-const serverItcHandlersReady = import('../itc/serverHandlers.ts').then((m) => {
-	serverItcHandlers = m;
+const serverItcHandlersReady = import('../itc/serverHandlers.ts').then((m: any) => {
+	// Dynamic import returns the namespace { default: handlersObj }. In CJS-dist
+	// it may also be double-wrapped as { default: { default: handlersObj } }, so
+	// pick the deepest non-namespace shape.
+	serverItcHandlers = m.default?.default ?? m.default ?? m;
 });
 // Register the ack listener at module load (not via setImmediate) so the very
 // first worker broadcast — which may land before any event-loop yield in main
