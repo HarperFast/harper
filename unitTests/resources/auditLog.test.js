@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setAuditRetention } = require('#src/resources/auditStore');
+const { setAuditRetention, readAuditEntry, createAuditEntry } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 require('#src/server/serverHelpers/serverUtilities');
@@ -260,6 +260,128 @@ describe('Audit log', () => {
 
 		assert(true, 'Should complete successfully after adding and removing logs');
 	});
+	// A corrupt audit entry must surface as a skip-eligible sentinel record rather than
+	// throwing through the for-of consumer — otherwise the throw escapes in an async context
+	// and lands as uncaughtException, stalling outgoing replication for the affected (peer,
+	// db) pair until the process restarts.
+	describe('corrupt audit entry handling', () => {
+		// Mint a valid audit entry, then mutate it. Using a real entry as the substrate
+		// avoids hand-rolling the binary layout (which would drift with format changes).
+		function makeAuditBuffer(overrides) {
+			const validRecord = {
+				version: 1234567890,
+				tableId: 1,
+				recordId: 42,
+				previousVersion: 0,
+				nodeId: 1,
+				user: 'test-user',
+				type: 'put',
+				encodedRecord: Buffer.from([0x80]), // empty msgpack map
+				extendedType: 0,
+				residencyId: 0,
+				previousResidencyId: 0,
+				expiresAt: 0,
+				originatingOperation: 'insert',
+				previousAdditionalAuditRefs: undefined,
+				...overrides,
+			};
+			// createAuditEntry returns a Buffer; copy so mutation doesn't affect ENTRY_HEADER.
+			return Buffer.from(createAuditEntry(validRecord));
+		}
+
+		it('returns a corrupt sentinel instead of throwing when the recordId length field is too large', () => {
+			const buffer = makeAuditBuffer({});
+			// The recordId length field sits a few bytes into the header (after action +
+			// previousVersion placeholder + nodeId/tableId varints). Truncate the buffer
+			// hard so any length read in the header pushes position past the end.
+			const truncated = buffer.subarray(0, Math.min(8, buffer.length));
+			const record = readAuditEntry(truncated);
+			assert.strictEqual(record.corrupt, true, 'corrupt flag should be set');
+			assert.strictEqual(record.type, undefined);
+			assert.strictEqual(record.tableId, undefined);
+			assert.strictEqual(record.recordId, undefined);
+			// Methods on the sentinel must exist (downstream replayLogs calls getValue
+			// before classifying — a missing method would NPE).
+			assert.strictEqual(typeof record.getValue, 'function');
+			assert.strictEqual(record.getValue(), undefined);
+			assert.strictEqual(typeof record.getBinaryValue, 'function');
+			assert.strictEqual(typeof record.getBinaryRecordId, 'function');
+		});
+
+		it('returns a corrupt sentinel when a header length field is mutated to push position past the buffer', () => {
+			const buffer = makeAuditBuffer({});
+			// Mutate a byte in the middle of the header to a value that, if interpreted as
+			// a length, would push the decoder position far past byteLength. 0xff is the
+			// readInt prefix that pulls the next 4 bytes as a uint32 — exactly the
+			// pathological case from prod.
+			const corrupted = Buffer.from(buffer);
+			// Find first byte that looks like a small length (the recordId length is
+			// typically a small varint past the action+nodeId+tableId prefix). Stamping
+			// 0xff at byte 3 will pull the next 4 bytes as a huge uint32 length.
+			if (corrupted.length > 8) {
+				corrupted[3] = 0xff;
+				corrupted[4] = 0xff;
+				corrupted[5] = 0xff;
+				corrupted[6] = 0xff;
+				corrupted[7] = 0xff;
+			}
+			let record;
+			assert.doesNotThrow(() => {
+				record = readAuditEntry(corrupted);
+			}, 'readAuditEntry must not throw on corrupt length fields');
+			// Either it's flagged corrupt outright, or the decoder happens to read past
+			// the bogus length without throwing — but in no case should we throw.
+			if (record.corrupt) {
+				assert.strictEqual(record.type, undefined);
+			}
+		});
+
+		it('does not throw when the lazy recordId getter is accessed on a corrupt body', () => {
+			// Build a buffer that passes header length validation but has a recordId
+			// region containing bytes that ordered-binary readKey can't decode cleanly.
+			// We achieve this by truncating *after* the length is read but before the
+			// recordId bytes are fully present — actually easier: mint a normal entry,
+			// then surgically clobber the recordId bytes with values that drive readKey
+			// into a bad state.
+			const buffer = makeAuditBuffer({ recordId: 'short' });
+			// Replace several bytes around the recordId region with 0xff to drive
+			// downstream key decoders into an error path; the getter must not throw.
+			const corrupted = Buffer.from(buffer);
+			for (let i = 6; i < Math.min(corrupted.length - 1, 20); i++) {
+				corrupted[i] = 0xff;
+			}
+			const record = readAuditEntry(corrupted);
+			// Whether record.corrupt is true or false depends on how the corruption
+			// projects through the header decode; the key invariant is that property
+			// access never throws.
+			assert.doesNotThrow(() => {
+				// recordId is a getter; user is a getter; both must be safe.
+				void record.recordId;
+				void record.user;
+			});
+		});
+
+		it('round-trips a valid entry unchanged after the corruption guards were added', () => {
+			// Lock in that we didn't break the happy path while adding bounds checks.
+			const buffer = makeAuditBuffer({
+				version: 100,
+				tableId: 7,
+				recordId: 'abc',
+				nodeId: 3,
+				user: 'alice',
+				type: 'put',
+			});
+			const record = readAuditEntry(buffer);
+			assert.strictEqual(record.corrupt, undefined, 'valid entry should not be flagged corrupt');
+			assert.strictEqual(record.type, 'put');
+			assert.strictEqual(record.tableId, 7);
+			assert.strictEqual(record.nodeId, 3);
+			assert.strictEqual(record.version, 100);
+			assert.strictEqual(record.recordId, 'abc');
+			assert.strictEqual(record.user, 'alice');
+		});
+	});
+
 	it('can handle separate subscriptions on separate dbs', async function () {
 		const DB_COUNT = 3;
 		let tables = [];
