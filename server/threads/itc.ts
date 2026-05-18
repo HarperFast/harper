@@ -6,26 +6,30 @@ import { onMessageFromWorkers, broadcastWithAcknowledgement } from './manageThre
 
 export { sendItcEvent, validateEvent, SchemaEventMsg, UserEventMsg };
 let serverItcHandlers;
-// Defer registration so manageThreads.ts is fully evaluated when we read from
-// it (ESM cycle would otherwise leave its internal state uninitialized).
-// The serverHandlers import is also deferred here — at the time itc.ts loads,
-// serverHandlers.ts has imported back from this module mid-evaluation (cycle),
-// so a top-level static import would observe a half-initialised export. The
-// setImmediate guarantees both modules' top-level bodies have finished before
-// we resolve the cycle reference.
-setImmediate(async () => {
-	serverItcHandlers = await import('../itc/serverHandlers.ts');
-	onMessageFromWorkers(async (event, sender) => {
-		validateEvent(event);
-		if (serverItcHandlers[event.type]) {
-			await serverItcHandlers[event.type](event);
-		}
-		if (event.requestId && sender)
-			sender.postMessage({
-				type: 'ack',
-				id: event.requestId,
-			});
-	});
+// Kick off serverHandlers resolution at module load so it's likely settled by
+// the time the first worker broadcast arrives. itc.ts and serverHandlers.ts
+// have a static-graph cycle (serverHandlers re-imports sendItcEvent from
+// here), so we resolve it through a dynamic import that suspends the loader
+// task until both modules' top-level bodies have completed.
+const serverItcHandlersReady = import('../itc/serverHandlers.ts').then((m) => {
+	serverItcHandlers = m;
+});
+// Register the ack listener at module load (not via setImmediate) so the very
+// first worker broadcast — which may land before any event-loop yield in main
+// — sees a registered listener. The handler awaits serverItcHandlersReady
+// before dispatching, but the ack itself is sent in the same async function
+// body so it fires as soon as the import settles, not after handler work.
+onMessageFromWorkers(async (event, sender) => {
+	if (!serverItcHandlers) await serverItcHandlersReady;
+	validateEvent(event);
+	if (serverItcHandlers[event.type]) {
+		await serverItcHandlers[event.type](event);
+	}
+	if (event.requestId && sender)
+		sender.postMessage({
+			type: 'ack',
+			id: event.requestId,
+		});
 });
 
 /**
