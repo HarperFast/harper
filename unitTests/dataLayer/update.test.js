@@ -91,7 +91,7 @@ describe('Test update module', () => {
 		});
 
 		afterEach(() => {
-			sinon.resetHistory();
+			sandbox.resetHistory();
 		});
 
 		it('Tests update function with simple where query', async () => {
