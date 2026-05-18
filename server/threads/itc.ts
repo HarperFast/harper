@@ -6,37 +6,25 @@ import { onMessageFromWorkers, broadcastWithAcknowledgement } from './manageThre
 
 export { sendItcEvent, validateEvent, SchemaEventMsg, UserEventMsg };
 let serverItcHandlers;
-// Eagerly resolve serverHandlers (cycle-safe — both modules' top-level bodies
-// have to complete before this promise's executor runs anyway, since dynamic
-// import suspends the calling task on the loader microtask queue). Capturing
-// the promise at module load lets the ack-listener await it cheaply (it's
-// already settled by the time any worker broadcast arrives).
-const serverItcHandlersReady = import('../itc/serverHandlers.ts').then((m) => {
-	serverItcHandlers = m;
-});
-
-// Defer onMessageFromWorkers registration into setImmediate so manageThreads
-// is fully evaluated when we read from it (ESM cycle protection).
-setImmediate(() => {
+// Defer registration so manageThreads.ts is fully evaluated when we read from
+// it (ESM cycle would otherwise leave its internal state uninitialized).
+// The serverHandlers import is also deferred here — at the time itc.ts loads,
+// serverHandlers.ts has imported back from this module mid-evaluation (cycle),
+// so a top-level static import would observe a half-initialised export. The
+// setImmediate guarantees both modules' top-level bodies have finished before
+// we resolve the cycle reference.
+setImmediate(async () => {
+	serverItcHandlers = await import('../itc/serverHandlers.ts');
 	onMessageFromWorkers(async (event, sender) => {
-		// Ack first so the broadcaster (worker schema events during component
-		// loading) isn't blocked behind the handler's potentially-slow LMDB
-		// schema-sync work. Schema state will re-sync on the next event.
-		if (event.requestId && sender) {
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+		if (event.requestId && sender)
 			sender.postMessage({
 				type: 'ack',
 				id: event.requestId,
 			});
-		}
-		try {
-			if (!serverItcHandlers) await serverItcHandlersReady;
-			validateEvent(event);
-			if (serverItcHandlers[event.type]) {
-				await serverItcHandlers[event.type](event);
-			}
-		} catch {
-			// best-effort — ack already sent
-		}
 	});
 });
 
