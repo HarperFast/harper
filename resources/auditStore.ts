@@ -57,7 +57,6 @@ export type AuditRecord = {
 	structureVersion?: number;
 	endTxn?: boolean;
 	getBinaryRecordId?: any;
-	corrupt?: boolean;
 };
 
 const ENTRY_HEADER = Buffer.alloc(2816); // this is sized to be large enough for the maximum key size (1976) plus large usernames. We may want to consider some limits on usernames to ensure this all fits
@@ -580,12 +579,13 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
  * Build a structurally complete audit record for an entry that failed to decode. The fields
  * mirror the happy-path shape so downstream consumers that access (e.g.) `getValue` or the
  * `recordId` getter don't blow up with a `TypeError: not a function` / `undefined.is(...)`
- * after the header decode already failed. Marked with `corrupt: true` so consumers that
- * want to count or branch on the skip can do so.
+ * after the header decode already failed. Consumers identify these by the undefined
+ * `tableId`/`type` (the same signal lmdb has produced from this catch since before this
+ * change) and skip them — `classifyAuditEntryForReplay` calls them out as `corrupt-header`,
+ * and the dispatch loops in Table.ts / transactionBroadcast.ts filter via tableId guards.
  */
 function createCorruptAuditSentinel(buffer: Uint8Array, start: number, end: number | undefined): AuditRecord {
 	return {
-		corrupt: true,
 		type: undefined,
 		tableId: undefined,
 		nodeId: undefined,

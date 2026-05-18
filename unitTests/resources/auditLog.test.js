@@ -1,7 +1,13 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setAuditRetention, readAuditEntry, createAuditEntry } = require('#src/resources/auditStore');
+const {
+	setAuditRetention,
+	readAuditEntry,
+	createAuditEntry,
+	transactionKeyEncoder,
+} = require('#src/resources/auditStore');
+const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 require('#src/server/serverHelpers/serverUtilities');
@@ -289,35 +295,32 @@ describe('Audit log', () => {
 			return Buffer.from(createAuditEntry(validRecord));
 		}
 
-		it('returns a corrupt sentinel instead of throwing when the recordId length field is too large', () => {
+		// The downstream skip signal consumers (replayLogs, transactionBroadcast, Table.ts)
+		// branch on is `tableId === undefined` / `type === undefined`. Assertions below
+		// check exactly that signal — not an internal flag — so the contract these tests
+		// pin is what consumers actually rely on.
+		it('returns a sentinel with undefined tableId/type when the buffer is truncated mid-header', () => {
 			const buffer = makeAuditBuffer({});
-			// The recordId length field sits a few bytes into the header (after action +
-			// previousVersion placeholder + nodeId/tableId varints). Truncate the buffer
-			// hard so any length read in the header pushes position past the end.
+			// Truncate so any length read in the header pushes position past the end.
 			const truncated = buffer.subarray(0, Math.min(8, buffer.length));
 			const record = readAuditEntry(truncated);
-			assert.strictEqual(record.corrupt, true, 'corrupt flag should be set');
 			assert.strictEqual(record.type, undefined);
 			assert.strictEqual(record.tableId, undefined);
 			assert.strictEqual(record.recordId, undefined);
-			// Methods on the sentinel must exist (downstream replayLogs calls getValue
-			// before classifying — a missing method would NPE).
+			// Methods on the sentinel must exist — downstream replayLogs calls getValue
+			// before classifying, so a missing method would NPE.
 			assert.strictEqual(typeof record.getValue, 'function');
 			assert.strictEqual(record.getValue(), undefined);
 			assert.strictEqual(typeof record.getBinaryValue, 'function');
 			assert.strictEqual(typeof record.getBinaryRecordId, 'function');
 		});
 
-		it('returns a corrupt sentinel when a header length field is mutated to push position past the buffer', () => {
+		it('does not throw when a header length field is mutated to push position past the buffer', () => {
 			const buffer = makeAuditBuffer({});
-			// Mutate a byte in the middle of the header to a value that, if interpreted as
-			// a length, would push the decoder position far past byteLength. 0xff is the
-			// readInt prefix that pulls the next 4 bytes as a uint32 — exactly the
-			// pathological case from prod.
+			// 0xff is the Decoder.readInt prefix that pulls the next 4 bytes as a uint32 —
+			// the pathological case from prod where a corrupt length value pushed the
+			// decoder position hundreds of MB past byteLength.
 			const corrupted = Buffer.from(buffer);
-			// Find first byte that looks like a small length (the recordId length is
-			// typically a small varint past the action+nodeId+tableId prefix). Stamping
-			// 0xff at byte 3 will pull the next 4 bytes as a huge uint32 length.
 			if (corrupted.length > 8) {
 				corrupted[3] = 0xff;
 				corrupted[4] = 0xff;
@@ -325,44 +328,29 @@ describe('Audit log', () => {
 				corrupted[6] = 0xff;
 				corrupted[7] = 0xff;
 			}
-			let record;
 			assert.doesNotThrow(() => {
-				record = readAuditEntry(corrupted);
+				readAuditEntry(corrupted);
 			}, 'readAuditEntry must not throw on corrupt length fields');
-			// Either it's flagged corrupt outright, or the decoder happens to read past
-			// the bogus length without throwing — but in no case should we throw.
-			if (record.corrupt) {
-				assert.strictEqual(record.type, undefined);
-			}
 		});
 
-		it('does not throw when the lazy recordId getter is accessed on a corrupt body', () => {
-			// Build a buffer that passes header length validation but has a recordId
-			// region containing bytes that ordered-binary readKey can't decode cleanly.
-			// We achieve this by truncating *after* the length is read but before the
-			// recordId bytes are fully present — actually easier: mint a normal entry,
-			// then surgically clobber the recordId bytes with values that drive readKey
-			// into a bad state.
+		it('does not throw when the lazy recordId / user getters are accessed on a corrupt body', () => {
 			const buffer = makeAuditBuffer({ recordId: 'short' });
-			// Replace several bytes around the recordId region with 0xff to drive
-			// downstream key decoders into an error path; the getter must not throw.
+			// Clobber bytes around the recordId region with 0xff to drive ordered-binary
+			// readKey into an error path; the lazy getters live outside readAuditEntry's
+			// outer try/catch so prior to the fix this was the escape route.
 			const corrupted = Buffer.from(buffer);
 			for (let i = 6; i < Math.min(corrupted.length - 1, 20); i++) {
 				corrupted[i] = 0xff;
 			}
 			const record = readAuditEntry(corrupted);
-			// Whether record.corrupt is true or false depends on how the corruption
-			// projects through the header decode; the key invariant is that property
-			// access never throws.
 			assert.doesNotThrow(() => {
-				// recordId is a getter; user is a getter; both must be safe.
 				void record.recordId;
 				void record.user;
 			});
 		});
 
-		it('round-trips a valid entry unchanged after the corruption guards were added', () => {
-			// Lock in that we didn't break the happy path while adding bounds checks.
+		it('round-trips a valid entry unchanged after the bounds-check guards were added', () => {
+			// Lock the happy path — assert valid entries decode identically post-fix.
 			const buffer = makeAuditBuffer({
 				version: 100,
 				tableId: 7,
@@ -372,13 +360,97 @@ describe('Audit log', () => {
 				type: 'put',
 			});
 			const record = readAuditEntry(buffer);
-			assert.strictEqual(record.corrupt, undefined, 'valid entry should not be flagged corrupt');
 			assert.strictEqual(record.type, 'put');
 			assert.strictEqual(record.tableId, 7);
 			assert.strictEqual(record.nodeId, 3);
 			assert.strictEqual(record.version, 100);
 			assert.strictEqual(record.recordId, 'abc');
 			assert.strictEqual(record.user, 'alice');
+		});
+
+		// LMDB key decode path. The keyEncoder runs inside lmdb-js's iterator and is not
+		// wrapped in any caller-side try/catch — pre-fix, a truncated key buffer that
+		// started with 0x42 (the "this is a float64" marker) threw RangeError straight
+		// out through the iterator.
+		it('returns NaN instead of throwing when transactionKeyEncoder.readKey hits a truncated float64 buffer', () => {
+			// 0x42 at byte 0 triggers the float64 branch; only 4 bytes total leaves the
+			// read short by 4 bytes (getFloat64 needs 8).
+			const truncated = Buffer.from([0x42, 0x00, 0x00, 0x00]);
+			let result;
+			assert.doesNotThrow(() => {
+				result = transactionKeyEncoder.readKey(truncated, 0, truncated.length);
+			});
+			assert.ok(Number.isNaN(result), 'should return NaN sentinel');
+		});
+
+		it('decodes a normal float64 key when the buffer has enough bytes', () => {
+			// The 0x42 branch is taken for millisecond-precision timestamps (Date.now()
+			// values land in this range, which is why the comment in auditStore calls it
+			// "the first byte in a date double"). Confirm the bounds check didn't break
+			// that happy path.
+			const timestamp = 1747000000000; // ~Date.now()
+			const buffer = Buffer.alloc(8);
+			buffer.writeDoubleBE(timestamp, 0);
+			assert.strictEqual(buffer[0], 0x42, 'sanity: timestamp-range double starts with 0x42');
+			const result = transactionKeyEncoder.readKey(buffer, 0, buffer.length);
+			assert.strictEqual(result, timestamp);
+		});
+
+		// Rocks-prelude path. The throw in the field stack trace was at
+		// RocksTransactionLogStore.ts:294 — `decoder.getUint32(0)` on a too-short
+		// TransactionEntry.data buffer. Build a fake iterable so we can run the map
+		// callback against a synthetic short entry without standing up real rocks.
+		it("does not throw when the rocks .map() callback's prelude decode fails on a short buffer", () => {
+			// Synthesize a minimum-viable rootStore stub. RocksTransactionLogStore needs
+			// only useLog() to be callable in its constructor; nothing else is touched
+			// for the path we're exercising.
+			const fakeLog = {
+				query: () => null,
+				addEntry: () => null,
+				on: () => null,
+			};
+			const fakeRoot = {
+				useLog: () => fakeLog,
+				on: () => null,
+				listLogs: () => [],
+			};
+			const store = new RocksTransactionLogStore(fakeRoot);
+
+			// Bypass loadLogs(): inject a one-element nodeLogs whose query() yields a
+			// single corrupt TransactionEntry. The map callback runs on every entry we
+			// pull, so this is the precise path that threw in prod.
+			const corruptEntry = {
+				timestamp: 42,
+				data: new Uint8Array([0x00, 0x01]), // 2 bytes — too short for getUint32(0)
+				endTxn: false,
+			};
+			let yielded = false;
+			fakeRoot.useLog = () => ({
+				...fakeLog,
+				query: () => ({
+					next() {
+						if (yielded) return { done: true, value: undefined };
+						yielded = true;
+						return { done: false, value: corruptEntry };
+					},
+					[Symbol.iterator]() {
+						return this;
+					},
+				}),
+			});
+			store.nodeLogs = [fakeRoot.useLog()];
+
+			const results = [];
+			assert.doesNotThrow(() => {
+				for (const record of store.getRange({})) {
+					results.push(record);
+				}
+			}, 'iteration must complete without throwing on a corrupt prelude');
+			assert.strictEqual(results.length, 1);
+			const sentinel = results[0];
+			assert.strictEqual(sentinel.tableId, undefined);
+			assert.strictEqual(sentinel.type, undefined);
+			assert.strictEqual(sentinel.version, 42, 'timestamp from the log entry is preserved so lastTxnTime advances');
 		});
 	});
 

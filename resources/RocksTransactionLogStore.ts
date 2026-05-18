@@ -293,9 +293,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// throw a raw `RangeError: Offset is outside the bounds of the DataView` out
 			// through `iterable.map`, escape the for-of consumer, and land as an
 			// uncaughtException on a later tick — stalling outgoing replication at the
-			// failing offset on every catch-up attempt. On error, yield a corrupt-marker
-			// record with the timestamp preserved so iteration advances past the bad
-			// entry; downstream consumers already skip records with no `tableId`/`type`.
+			// failing offset on every catch-up attempt. On error, yield a sentinel record
+			// with the timestamp preserved so iteration advances past the bad entry;
+			// downstream consumers already skip records with no `tableId`/`type`.
 			try {
 				const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
 				(data as any).dataView = decoder;
@@ -326,7 +326,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 					byteLength: data?.byteLength,
 				});
 				return {
-					corrupt: true,
 					version: timestamp,
 					endTxn,
 					type: undefined,
