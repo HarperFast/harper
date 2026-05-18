@@ -199,20 +199,23 @@ export class RecordEncoder extends Encoder {
 		const superGetStructures = this.getStructures;
 		this.saveStructures = function (structures, isCompatible): boolean | undefined {
 			if (this.isRocksDB) {
-				return this.rootStore.transactionSync((txn) => {
-					const sharedStructuresKey = [Symbol.for('structures'), this.name];
-					const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
-					const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
-					if (typeof isCompatible == 'function') {
-						if (!isCompatible(existingStructures)) {
+				return this.rootStore.transactionSync(
+					(txn) => {
+						const sharedStructuresKey = [Symbol.for('structures'), this.name];
+						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
+						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
+						if (typeof isCompatible == 'function') {
+							if (!isCompatible(existingStructures)) {
+								return false;
+							}
+						} else if (existingStructures && existingStructures.length !== isCompatible) {
 							return false;
 						}
-					} else if (existingStructures && existingStructures.length !== isCompatible) {
-						return false;
-					}
-					txn.putSync(sharedStructuresKey, structures);
-					this.structureUpdate = structures;
-				});
+						txn.putSync(sharedStructuresKey, structures);
+						this.structureUpdate = structures;
+					},
+					{ retryOnBusy: true }
+				);
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
