@@ -122,8 +122,7 @@ describe('23. Blob', { skip: process.platform === 'win32' }, () => {
 			.expect(200);
 	});
 
-	it('Restart Service: http workers and wait', function (t) {
-		if (process.platform === 'win32') return t.skip('Windows: Skipping restart_service to avoid crash');
+	it('Restart Service: http workers and wait', () => {
 		return restartServiceHttpWorkersWithTimeout(testData.restartHttpWorkersTimeout);
 	});
 
@@ -250,8 +249,7 @@ describe('23. Blob', { skip: process.platform === 'win32' }, () => {
 		await verifyFilesDoNotExist(blobsPath);
 	});
 
-	it('Restart Service: http workers and wait', function (t) {
-		if (process.platform === 'win32') return t.skip('Windows: Skipping restart_service to avoid crash');
+	it('Restart Service: http workers and wait', () => {
 		return restartServiceHttpWorkersWithTimeout(testData.restartHttpWorkersTimeout);
 	});
 
