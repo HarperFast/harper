@@ -369,6 +369,10 @@ jobs:
           HARPER_INTEGRATION_TEST_LOG_DIR: ${{ runner.temp }}/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: ${{ runner.temp }}/harperdb-legacy/node_modules/harperdb
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          # Windows runners are noticeably slower than the Linux pool — the
+          # default 60s startHarper timeout is not enough for the per-test
+          # install + start sequence (see CRL fail-closed-timeout suite).
+          HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS: 180000
         run: npm run test:integration:all -- --shard=${{ matrix.shard }}/4
 
       - name: Upload Harper server logs
