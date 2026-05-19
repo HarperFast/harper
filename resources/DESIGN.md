@@ -6,183 +6,86 @@ The Resource layer is Harper's universal abstraction: all queryable/mutable thin
 
 See also: `../DESIGN.md` for cross-cutting non-obvious internals (RecordObject prototype, `getFromSource` timing, blob orphan cleanup).
 
+> **Navigation convention.** This guide references code by **symbol name** (e.g. `_writeUpdate`) and by **section marker** (e.g. `// #section: write-path-internals`). Jump in your editor via go-to-symbol, or `grep` for the section marker. Line numbers drift; symbols and section markers don't.
+
 ---
 
 ## File overview
 
-| File                      | Purpose                                                                                                                            |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `Resource.ts` (800 lines) | Base class; `transactional()` wrapper; method routing                                                                              |
-| `Table.ts` (4744 lines)   | Table-as-Resource implementation. Factory `makeTable()` returns a `TableResource` subclass per table. **See section index below.** |
-| `Resources.ts`            | Registry mapping URL paths → Resource classes                                                                                      |
-| `RequestTarget.ts`        | Parses path/query into a structured target                                                                                         |
-| `ResourceInterface.ts`    | Type definitions (`Context`, `Record`, etc.)                                                                                       |
-| `RecordEncoder.ts`        | msgpack encoding + `entryMap` (record → storage entry)                                                                             |
-| `IterableEventQueue.ts`   | Async iterable used for subscriptions and streaming responses                                                                      |
-| `transaction.ts`          | Per-request transaction object stored in `contextStorage`                                                                          |
-| `auditStore.ts`           | Append-only audit log records                                                                                                      |
-| `nodeIdMapping.ts`        | Maps node IDs ↔ timestamps for replication ordering                                                                                |
-| `openApi.ts`              | Generates OpenAPI/JSON Schema from `@export` schemas                                                                               |
-| `analytics/`              | Telemetry recording (separate from monitoring)                                                                                     |
+| File                    | Purpose                                                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `Resource.ts`           | Base class; `transactional()` wrapper; method routing                                                                                |
+| `Table.ts`              | Table-as-Resource implementation. Factory `makeTable()` returns a `TableResource` subclass per table. **See section markers below.** |
+| `Resources.ts`          | Registry mapping URL paths → Resource classes                                                                                        |
+| `RequestTarget.ts`      | Parses path/query into a structured target                                                                                           |
+| `ResourceInterface.ts`  | Type definitions (`Context`, `Record`, etc.)                                                                                         |
+| `RecordEncoder.ts`      | msgpack encoding + `entryMap` (record → storage entry)                                                                               |
+| `IterableEventQueue.ts` | Async iterable used for subscriptions and streaming responses                                                                        |
+| `transaction.ts`        | Per-request transaction object stored in `contextStorage`                                                                            |
+| `auditStore.ts`         | Append-only audit log records                                                                                                        |
+| `nodeIdMapping.ts`      | Maps node IDs ↔ timestamps for replication ordering                                                                                  |
+| `openApi.ts`            | Generates OpenAPI/JSON Schema from `@export` schemas                                                                                 |
+| `analytics/`            | Telemetry recording (separate from monitoring)                                                                                       |
 
 ---
 
 ## `Resource.ts` — base class
 
-The class itself spans **lines 41–461**.
+Static methods are protocol entry points (each wrapped in `transactional()`); instance methods are the per-resource behavior hooks subclasses override.
 
-| Member                                                      | Line                  | Notes                                                                |
-| ----------------------------------------------------------- | --------------------- | -------------------------------------------------------------------- |
-| `Resource` class declaration                                | 41                    | Generic over `Record extends object`                                 |
-| `constructor(identifier, source)`                           | 48                    |                                                                      |
-| `static get` (transactional)                                | 57                    | Entry point — wraps instance `get()`                                 |
-| `static put`                                                | 91                    |                                                                      |
-| `static patch`                                              | 117                   |                                                                      |
-| `static delete`                                             | 129                   |                                                                      |
-| `static getNewId`                                           | 139                   |                                                                      |
-| `static create` (overloads)                                 | 150–192               |                                                                      |
-| `static invalidate`                                         | 192                   |                                                                      |
-| `static post`                                               | 199                   |                                                                      |
-| `static update`                                             | 207                   |                                                                      |
-| `static connect`                                            | 214                   | WebSocket-like persistent connection                                 |
-| `static subscribe`                                          | 225                   |                                                                      |
-| `static publish`                                            | 232                   |                                                                      |
-| `static search`                                             | 244                   |                                                                      |
-| `static query`                                              | 257                   |                                                                      |
-| `static copy` / `static move`                               | 268 / 279             |                                                                      |
-| `static parsePath`                                          | 320                   | URL → `RequestTarget`                                                |
-| `static getResource`                                        | 351                   | Path → Resource class lookup                                         |
-| `allowRead` / `allowUpdate` / `allowCreate` / `allowDelete` | 393 / 397 / 401 / 405 | Default permission hooks — override per resource                     |
-| `getId` / `getContext` / `getCurrentUser`                   | 412 / 419 / 427       | Instance helpers                                                     |
-| `transactional()` wrapper                                   | 475                   | **Do not remove from static methods** — breaks transaction isolation |
-| `missingMethod` / `allowedMethods`                          | 688 / 698             | 405 response helpers                                                 |
-| `transformForSelect`                                        | 735                   | Select-clause expansion                                              |
+| Member                             | Notes                                                                                              |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `class Resource`                   | Generic over `Record extends object`                                                               |
+| `constructor(identifier, source)`  |                                                                                                    |
+| Static CRUD entry points           | `get`, `put`, `patch`, `delete`, `post`, `update`, `create`, `invalidate`                          |
+| Static pub/sub entry points        | `connect`, `subscribe`, `publish`                                                                  |
+| Static query entry points          | `search`, `query`                                                                                  |
+| Static path helpers                | `parsePath` (URL → `RequestTarget`), `getResource` (path → class)                                  |
+| Other statics                      | `getNewId`, `copy`, `move`                                                                         |
+| Authorization hooks                | `allowRead` / `allowUpdate` / `allowCreate` / `allowDelete` — default impls; override per resource |
+| Instance helpers                   | `getId`, `getContext`, `getCurrentUser`                                                            |
+| `transactional()` wrapper          | **Do not remove from static methods** — owns transaction context lifetime                          |
+| `missingMethod` / `allowedMethods` | 405 response helpers                                                                               |
+| `transformForSelect`               | Select-clause expansion                                                                            |
 
 ---
 
-## `Table.ts` — section index
+## `Table.ts` — section map
 
-4744 lines, one giant `makeTable()` factory (line 136 → 4607) that returns a `TableResource extends Resource` class. Jump by responsibility:
+One giant `makeTable()` factory that returns a `TableResource extends Resource` class. The file is divided into the sections below; each is anchored by a `// #section: <name>` marker — grep for the marker (or use VS Code's go-to-symbol within the section) to land directly.
 
-### Setup & factory (lines 136–218)
-
-- `makeTable(options)` opens at **136**
-- Attribute parsing & primary key detection: **155–175**
-- Replication wiring: **185–195**
-- `class Updatable` (RecordObject prototype): **200–218** — provides `getUpdatedTime`/`getExpiresAt`, `addTo`/`subtractFrom`
-
-### `TableResource` class begins: line **220**
-
-### Static configuration (228–274)
-
-Properties: `name`, `primaryStore`, `auditStore`, `primaryKey`, `indices`, `audit`, `databasePath`, `attributes`, `replicate`, `sealed`, `splitSegments`, `getResidencyById`, `dbisDB`, `schemaDefined`.
-
-### Resource registry / sub-class resolution (263–639)
-
-- `static sourcedFrom(source, options)` — **263–527** (the largest static; sets up cache/source hierarchy)
-- `static get isCaching` / `shouldRevalidateEvents` — **528 / 534**
-- `static getResource(...)` — **546–614** (path-to-class lookup)
-- `static _updateResource` — **615**
-- `ensureLoaded()` — **625**
-
-### Lifecycle / admin (640–941)
-
-- `static getNewId()` — **640–813** (id generation strategies: UUID, autoincrement, prefix, time-based)
-- `static setTTLExpiration` — **814**
-- Residency: `static getResidencyRecord` (**832**), `setResidency` (**836**), `setResidencyById` (**848**), `getResidency` (**860**)
-- `static enableAuditing` — **897**
-- `static coerceId` — **908**
-- `static async dropTable` — **913**
-
-### Read path (942–1055)
-
-- `get()` overloads & impl — **942–1055**
-
-### Authorization hooks (1056–1165)
-
-- `allowRead` — **1056**
-- `allowUpdate` — **1104**
-- `allowCreate` — **1131**
-- `allowDelete` — **1158**
-
-### Write path — public API (1167–1588)
-
-- `update()` overloads & impl — **1167–1239**
-- `save()` — **1240**
-- `addTo()` / `subtractFrom()` — **1253 / 1264**
-- `getMetadata` / `getRecord` / `getChanges` / `_setChanges` / `setRecord` — **1271–1286**
-- `invalidate()` — **1287**
-- `static operation()` — **1484**
-- `put()` — **1494**
-- `create()` — **1533**
-- `patch()` — **1571**
-
-### Write path — internals (1589–2021)
-
-- **`_writeUpdate()` — 1589–1942** (the central write routine, ~353 lines). Handles versioning, conflict resolution, audit, residency, replication metadata, and blob orphan tracking. The `write.skipped` flag mentioned in `../DESIGN.md` is set in this method's early-return paths.
-- `_writeInvalidate()` — **1301**
-- `_writeRelocate()` — **1348**
-- `static _recordRelocate()` — **1408**
-- `static evict()` — **1439**
-- `lock()` — **1481**
-- `async delete()` — **1943**
-- `_writeDelete()` — **1970**
-
-### Search & query (2022–2639)
-
-- `search()` — **2022–2271** (the query engine; index selection, filter evaluation)
-- `static transformToOrderedSelect` — **2272–2439** (select-clause ordering)
-- `static transformEntryForSelect` — **2440–2639** (record → response shape)
-
-### Pub/Sub (2640–3028)
-
-- `async subscribe()` — **2640–2937** (~297 lines — subscription request handling, replay, cursor management)
-- `static subscribeOnThisThread` — **2938**
-- `doesExist()` — **2941**
-- `publish()` — **2952**
-- `_writePublish()` — **2972**
-
-### Validation (3029–3197)
-
-- `validate(record, patch?)` — **3029–3197** (~168 lines — schema enforcement, computed attributes, attribute coercion)
-
-### Stats & admin (3198–3501)
-
-- `getUpdatedTime` — **3198**
-- `static async addAttributes` — **3201**
-- `static async removeAttributes` — **3218**
-- `static getSize` / `getAuditSize` / `getStorageStats` — **3232 / 3239 / 3247**
-- `static async getRecordCount` — **3255**
-- `static updatedAttributes` — **3318–3501** (~183 lines — schema diff machinery)
-
-### Computed / history / cleanup (3502–3598)
-
-- `static setComputedAttribute` — **3502**
-- `static async deleteHistory` — **3514**
-- `static async *getHistory` — **3537** (generator)
-- `static async getHistoryOfRecord` — **3555**
-- `static clear` / `cleanup` / `_readTxnForContext` — **3589 / 3592 / 3595**
-
-### After the class
-
-- `async function getFromSource()` — **4062–~4400** (cache miss → source load; see `../DESIGN.md` for the resolve-before-commit timing trap)
-- Helpers (`coerceType`, `isDescendantId`, etc.) — **4607+**
+| Section marker                   | Contents                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#section: setup-and-factory`    | `makeTable(options)` entry, attribute parsing & primary-key detection, replication wiring, `class Updatable` (RecordObject prototype: `getUpdatedTime`, `getExpiresAt`, `addTo`, `subtractFrom`). Ends where `class TableResource` opens.                                                                                                                         |
+| `#section: static-config`        | Static configuration properties: `name`, `primaryStore`, `auditStore`, `primaryKey`, `indices`, `audit`, `databasePath`, `attributes`, `replicate`, `sealed`, `splitSegments`, `getResidencyById`, `dbisDB`, `schemaDefined`, `expirationMS`.                                                                                                                     |
+| `#section: resource-registry`    | `sourcedFrom()` (cache/source hierarchy — the largest static), `isCaching`, `shouldRevalidateEvents`, `getResource()`, `_updateResource`, `ensureLoaded()`.                                                                                                                                                                                                       |
+| `#section: lifecycle-admin`      | `getNewId()` (UUID / autoincrement / prefix / time-based strategies), `setTTLExpiration`, residency (`getResidencyRecord`, `setResidency`, `setResidencyById`, `getResidency`), `enableAuditing`, `coerceId`, `dropTable`.                                                                                                                                        |
+| `#section: read-path`            | `get()` overloads & impl.                                                                                                                                                                                                                                                                                                                                         |
+| `#section: authz-hooks`          | `allowRead`, `allowUpdate`, `allowCreate`, `allowDelete`.                                                                                                                                                                                                                                                                                                         |
+| `#section: write-path-public`    | `update()`, `save()`, `addTo()`, `subtractFrom()`, `getMetadata`, `getRecord`, `getChanges`, `_setChanges`, `setRecord`, `invalidate()`, `operation()`, `put()`, `create()`, `patch()`.                                                                                                                                                                           |
+| `#section: write-path-internals` | **`_writeUpdate()` — the central write routine** (versioning, conflict resolution, audit, residency, replication metadata, blob orphan tracking). The `write.skipped` flag mentioned in `../DESIGN.md` is set in this method's early-return paths. Also `_writeInvalidate`, `_writeRelocate`, `_recordRelocate`, `evict()`, `lock()`, `delete()`, `_writeDelete`. |
+| `#section: search-query`         | `search()` (the query engine — index selection, filter evaluation), `transformToOrderedSelect` (select-clause ordering), `transformEntryForSelect` (record → response shape).                                                                                                                                                                                     |
+| `#section: pub-sub`              | `subscribe()` (subscription request handling, replay, cursor management), `subscribeOnThisThread`, `doesExist()`, `publish()`, `_writePublish()`.                                                                                                                                                                                                                 |
+| `#section: validation`           | `validate(record, patch?)` — schema enforcement, computed attributes, attribute coercion.                                                                                                                                                                                                                                                                         |
+| `#section: stats-admin`          | `getUpdatedTime`, `addAttributes`, `removeAttributes`, `getSize`, `getAuditSize`, `getStorageStats`, `getRecordCount`, `updatedAttributes` (schema diff machinery).                                                                                                                                                                                               |
+| `#section: computed-history`     | `setComputedAttribute`, `deleteHistory`, `getHistory` (generator), `getHistoryOfRecord`, `clear`, `cleanup`, `_readTxnForContext`.                                                                                                                                                                                                                                |
+| _(after the class)_              | `getFromSource()` — cache miss → source load (see `../DESIGN.md` for the resolve-before-commit timing trap); local helpers (`coerceType`, `isDescendantId`, etc.).                                                                                                                                                                                                |
 
 ---
 
 ## "Where is X" cheat sheet
 
-| Question                                            | File:line                                                                               |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| How is a CRUD request authorized?                   | `Table.ts:1056–1165` (allowRead/Update/Create/Delete), `Resource.ts:393–410` (defaults) |
-| Where does versioning / conflict resolution happen? | `Table.ts:1589` (`_writeUpdate`)                                                        |
-| How does `search()` choose an index?                | `Table.ts:2022`                                                                         |
-| How are subscriptions replayed?                     | `Table.ts:2640`                                                                         |
-| How is the response body shaped (select clause)?    | `Table.ts:2440` (`transformEntryForSelect`)                                             |
-| Where is record-level TTL evaluated?                | `Table.ts:814` (`setTTLExpiration`), `Updatable.getExpiresAt` (`Table.ts:206`)          |
-| How are residencies enforced (replication)?         | `Table.ts:832–895`                                                                      |
-| How is the RecordObject prototype applied?          | `RecordEncoder.ts` (see `../DESIGN.md`)                                                 |
-| Where is the per-request transaction stored?        | `transaction.ts` + `contextStorage` (AsyncLocalStorage)                                 |
+| Question                                            | Where                                                                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| How is a CRUD request authorized?                   | `Table.ts → #section: authz-hooks`; defaults in `Resource.ts` (`allowRead` etc.)                                                   |
+| Where does versioning / conflict resolution happen? | `Table.ts → _writeUpdate` (`#section: write-path-internals`)                                                                       |
+| How does `search()` choose an index?                | `Table.ts → search` (`#section: search-query`)                                                                                     |
+| How are subscriptions replayed?                     | `Table.ts → subscribe` (`#section: pub-sub`)                                                                                       |
+| How is the response body shaped (select clause)?    | `Table.ts → transformEntryForSelect` (`#section: search-query`)                                                                    |
+| Where is record-level TTL evaluated?                | `Table.ts → setTTLExpiration` (`#section: lifecycle-admin`); `Updatable.getExpiresAt` (`#section: setup-and-factory`)              |
+| How are residencies enforced (replication)?         | `Table.ts → #section: lifecycle-admin` (residency block: `getResidencyRecord`, `setResidency`, `setResidencyById`, `getResidency`) |
+| How is the RecordObject prototype applied?          | `RecordEncoder.ts` (see `../DESIGN.md`)                                                                                            |
+| Where is the per-request transaction stored?        | `transaction.ts` + `contextStorage` (AsyncLocalStorage)                                                                            |
 
 ---
 
@@ -191,4 +94,5 @@ Properties: `name`, `primaryStore`, `auditStore`, `primaryKey`, `indices`, `audi
 - **Never** remove `transactional()` from a static method on `Resource` — it owns transaction context lifetime.
 - New `Resource` subclasses should override **instance** methods (`get`, `put`, ...) for behavior; static methods are the protocol entry points and stay generic.
 - When adding a new early-return path inside a commit handler in `_writeUpdate`, follow the blob-cleanup protocol documented in `../DESIGN.md` ("Blob orphan cleanup").
+- If you add a new top-level section to `Table.ts`, drop a `// #section: <name>` marker at its start and add a row to the section map above.
 - Tests for this layer live in `../unitTests/resources/`.
