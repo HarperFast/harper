@@ -2,12 +2,12 @@
 
 const assert = require('assert');
 const sinon = require('sinon');
-const system_information = require('#js/utility/environment/systemInformation');
-const env_mgr = require('#js/utility/environment/environmentManager');
+const system_information = require('#src/utility/environment/systemInformation');
+const env_mgr = require('#src/utility/environment/environmentManager');
 
 const { SystemInformationRequest } = system_information;
 
-const { TableSizeObject } = require('#js/dataLayer/harperBridge/TableSizeObject');
+const { TableSizeObject } = require('#src/dataLayer/harperBridge/TableSizeObject');
 
 const PROCESS_INFO = {
 	core: [

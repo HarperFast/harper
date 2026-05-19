@@ -1,8 +1,8 @@
 'use strict';
 
 const hdbTerms = require('../../../../utility/hdbTerms.ts');
-const hdbUtils = require('../../../../utility/common_utils.js');
-const env = require('../../../../utility/environment/environmentManager.js');
+const hdbUtils = require('../../../../utility/common_utils.ts');
+const env = require('../../../../utility/environment/environmentManager.ts');
 const path = require('path');
 const minimist = require('minimist');
 const fs = require('fs-extra');

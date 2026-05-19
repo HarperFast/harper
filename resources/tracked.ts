@@ -1,4 +1,4 @@
-import { ClientError } from '../utility/errors/hdbError.js';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
 
@@ -193,12 +193,12 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 				configurable: true, // we need to be able to reconfigure these as schemas change (attributes can be added/removed at runtime)
 			};
 		}
-		descriptor.get.isAttribute = true;
+		(descriptor.get as any).isAttribute = true;
 		descriptors[name] = descriptor;
 		if (
 			!(name in prototype) ||
 			// this means that we are re-defining an attribute accessor (which is fine)
-			Object.getOwnPropertyDescriptor(prototype, name)?.get?.isAttribute
+			(Object.getOwnPropertyDescriptor(prototype, name)?.get as any)?.isAttribute
 		) {
 			Object.defineProperty(prototype, name, descriptor);
 		}
@@ -339,7 +339,7 @@ export class GenericTrackedObject<T extends object = any> {
 	constructor(sourceObject?: GenericTrackedObject<T> | T) {
 		if ((sourceObject as GenericTrackedObject<T>)?.getRecord)
 			throw new Error('Can not track an already tracked object, check for circular references');
-		this.#record = sourceObject;
+		this.#record = sourceObject as any;
 	}
 	getRecord(): T {
 		return this.#record;
@@ -486,11 +486,11 @@ class TrackedArray extends Array {
 	}
 	splice(...args) {
 		this[HAS_ARRAY_CHANGES] = true;
-		return super.splice(...args);
+		return (super.splice as any)(...args);
 	}
 	push(...args) {
 		this[HAS_ARRAY_CHANGES] = true;
-		return super.push(...args);
+		return (super.push as any)(...args);
 	}
 	pop() {
 		this[HAS_ARRAY_CHANGES] = true;
@@ -498,7 +498,7 @@ class TrackedArray extends Array {
 	}
 	unshift(...args) {
 		this[HAS_ARRAY_CHANGES] = true;
-		return super.unshift(...args);
+		return (super.unshift as any)(...args);
 	}
 	shift() {
 		this[HAS_ARRAY_CHANGES] = true;
@@ -508,7 +508,7 @@ class TrackedArray extends Array {
 TrackedArray.prototype.constructor = Array; // this makes type checks easier/faster (and we want it to be Array like too)
 
 // Copy a record into a resource, using copy-on-write for nested objects/arrays
-export function copyRecord(record, targetResource, attributes) {
+export function copyRecord(record, targetResource, attributes = Object.keys(record)) {
 	targetResource.setRecord(record);
 	for (const attribute of attributes) {
 		// do not override existing methods

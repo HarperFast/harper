@@ -2,6 +2,7 @@
  * Represents the table size entry for a RocksDB or LMDB table.
  */
 export class TableSizeObject {
+	[key: string]: any;
 	schema: string;
 	table: string;
 	tableSize: number;

@@ -1,6 +1,6 @@
 'use strict';
 
-const env = require('../../utility/environment/environmentManager.js');
+const env = require('../../utility/environment/environmentManager.ts');
 env.initSync();
 const fs = require('fs-extra');
 const path = require('path');

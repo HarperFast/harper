@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 // Afterwards root is set back to original value and temp test folder is deleted.
 // This needs to be done before schema.js is called by rewire.
 const HDB_ROOT_TEST = '../unitTests/dataLayer';
-const env = require('#js/utility/environment/environmentManager');
+const env = require('#src/utility/environment/environmentManager');
 const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
 env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
 
@@ -15,17 +15,17 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai').default;
 const { expect } = chai;
 chai.use(sinon_chai);
-const signalling = require('#js/utility/signalling');
-let insert = require('#js/dataLayer/insert');
-const logger = require('#js/utility/logging/harper_logger');
-const schema_metadata_validator = require('#js/validation/schemaMetadataValidator');
+const signalling = require('#src/utility/signalling');
+let insert = require('#src/dataLayer/insert');
+const logger = require('#src/utility/logging/harper_logger');
+const schema_metadata_validator = require('#src/validation/schemaMetadataValidator');
 const { cloneDeep } = require('lodash');
-const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
+const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 
 // Rewire is used at times as stubbing alone doesn't work when stubbing a function
 // being called inside another function declared within the same file.
 const rewire = require('rewire');
-let schema = rewire('#js/dataLayer/schema');
+let schema = rewire('#src/dataLayer/schema');
 
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool';
@@ -95,7 +95,7 @@ describe.skip('Test schema module', function () {
 	});
 
 	after(function () {
-		schema = rewire('#js/dataLayer/schema');
+		schema = rewire('#src/dataLayer/schema');
 		sinon.restore();
 		testUtils.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
 		testUtils.cleanUpDirectories(TRASH_PATH_TEST);

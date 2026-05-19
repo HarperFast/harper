@@ -1,7 +1,7 @@
 import type { Logger } from '../components/Logger.ts';
-import * as terms from './hdbTerms.js';
+import * as terms from './hdbTerms.ts';
 import fs from 'node:fs';
-import { noBootFile, getPropsFilePath } from './common_utils.js';
+import { noBootFile, getPropsFilePath } from './common_utils.ts';
 
 interface Env {
 	get(key: string): string;

@@ -11,21 +11,21 @@ const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
 
-const { handleHDBError } = require('#js/utility/errors/hdbError');
+const { handleHDBError } = require('#src/utility/errors/hdbError');
 
 const test_data = require('../../../testData.json');
 
 const rewire = require('rewire');
-const lmdb_terms = require('#js/utility/lmdb/terms');
-const { SearchByConditionsObject, SearchCondition } = require('#js/dataLayer/SearchByConditionsObject');
-const { searchByConditions: search_by_conditions } = rewire('#js/dataLayer/harperBridge/harperBridge');
+const lmdb_terms = require('#src/utility/lmdb/terms');
+const { SearchByConditionsObject, SearchCondition } = require('#src/dataLayer/SearchByConditionsObject');
+const { searchByConditions: search_by_conditions } = rewire('#src/dataLayer/harperBridge/harperBridge');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../json/systemSchema.json');
 const { sortBy } = require('lodash');
-const environmentUtility = require('#js/utility/lmdb/environmentUtility');
-const writeUtility = require('#js/utility/lmdb/writeUtility');
+const environmentUtility = require('#src/utility/lmdb/environmentUtility');
+const writeUtility = require('#src/utility/lmdb/writeUtility');
 
 const TIMESTAMP = Date.now();
 

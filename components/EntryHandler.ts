@@ -1,13 +1,13 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
-import { Component, FileAndURLPathConfig } from './Component.js';
+import { Component, FileAndURLPathConfig } from './Component.ts';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { FilesOption } from './deriveGlobOptions.js';
-import { deriveURLPath } from './deriveURLPath.js';
+import { FilesOption } from './deriveGlobOptions.ts';
+import { deriveURLPath } from './deriveURLPath.ts';
 import { isMatch } from 'micromatch';
 
 export interface BaseEntry {

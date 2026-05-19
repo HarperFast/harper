@@ -5,12 +5,12 @@ testUtils.preTestPrep();
 
 const assert = require('assert');
 const rewire = require('rewire');
-const jobs_runner = rewire('#js/server/jobs/jobRunner');
-const jobs = require('#js/server/jobs/jobs');
+const jobs_runner = rewire('#src/server/jobs/jobRunner');
+const jobs = require('#src/server/jobs/jobs');
 const sinon = require('sinon');
 const hdb_term = require('#src/utility/hdbTerms');
-const bulk_load = require('#js/dataLayer/bulkLoad');
-const JobObject = require('#js/server/jobs/JobObject');
+const bulk_load = require('#src/dataLayer/bulkLoad');
+const JobObject = require('#src/server/jobs/JobObject').default;
 const threads_start = require('#js/server/threads/manageThreads');
 
 const DATA_LOAD_MESSAGE = {

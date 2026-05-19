@@ -1,11 +1,11 @@
 'use strict';
 
-const hdbUtils = require('../../../../utility/common_utils.js');
-const deleteUtility = require('../../../../utility/lmdb/deleteUtility.js');
-const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const hdbUtils = require('../../../../utility/common_utils.ts');
+const deleteUtility = require('../../../../utility/lmdb/deleteUtility.ts');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
 const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');
 const writeTransaction = require('../lmdbUtility/lmdbWriteTransaction.js');
-const logger = require('../../../../utility/logging/harper_logger.js');
+const logger = require('../../../../utility/logging/harper_logger.ts');
 
 module.exports = lmdbDeleteRecords;
 

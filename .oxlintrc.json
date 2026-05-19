@@ -9,7 +9,25 @@
 		"no-constant-condition": "off",
 		"prefer-const": "off",
 		"typescript/no-explicit-any": "off",
-		"typescript/no-var-requires": "off"
+		"typescript/no-var-requires": "off",
+		"no-unused-expressions": "off",
+		"no-unreachable": "off",
+		"no-useless-catch": "off",
+		"unicorn/no-new-array": "off",
+		"unicorn/no-thenable": "off",
+		"typescript/no-this-alias": "off",
+		"no-async-promise-executor": "off",
+		"no-useless-escape": "off",
+		"no-unsafe-finally": "off",
+		"no-unassigned-vars": "off",
+		"no-unused-private-class-members": "off",
+		"no-loss-of-precision": "off",
+		"no-ex-assign": "off",
+		"no-eval": "off",
+		"no-dupe-keys": "off",
+		"unicorn/no-useless-spread": "off",
+		"unicorn/no-invalid-fetch-options": "off",
+		"oxc/const-comparisons": "off"
 	},
 	"settings": {
 		"jsdoc": {

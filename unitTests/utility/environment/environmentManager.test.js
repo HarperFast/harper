@@ -4,11 +4,11 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const config_utils = require('#js/config/configUtils');
-const common_utils = require('#js/utility/common_utils');
+const common_utils = require('#src/utility/common_utils');
 const rewire = require('rewire');
 const fs = require('fs');
-const env_rw = rewire('#js/utility/environment/environmentManager');
-const log = require('#js/utility/logging/harper_logger');
+const env_rw = rewire('#src/utility/environment/environmentManager');
+const log = require('#src/utility/logging/harper_logger');
 
 const TEST_PROP_1_NAME = 'root';
 const TEST_PROP_2_NAME = 'path';

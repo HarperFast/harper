@@ -1,11 +1,11 @@
 /**
  * Fast implementation of standard Headers
  */
-export class Headers extends Map<string, string | string[]> {
+export class Headers extends Map<string, [string, string | string[]]> {
 	constructor(init?: Headers | HeadersInit) {
 		if (init) {
-			if (init[Symbol.iterator]) {
-				super(init);
+			if ((init as any)[Symbol.iterator]) {
+				super(init as any);
 			} else {
 				super();
 				for (const name in init) this.set(name, init[name]);
@@ -22,6 +22,7 @@ export class Headers extends Map<string, string | string[]> {
 		}
 		return super.set(name.toLowerCase(), [name, value]);
 	}
+	// @ts-ignore
 	get(name) {
 		if (typeof name !== 'string') name = '' + name;
 		return super.get(name.toLowerCase())?.[1];
@@ -36,7 +37,7 @@ export class Headers extends Map<string, string | string[]> {
 		const lowerName = name.toLowerCase();
 		if (!super.has(lowerName)) return super.set(lowerName, [name, value]);
 	}
-	append(name, value, commaDelimited) {
+	append(name: any, value: any, commaDelimited?: any) {
 		if (typeof name !== 'string') name = '' + name;
 		if (typeof value !== 'string') value = '' + value;
 		const lowerName = name.toLowerCase();
@@ -44,15 +45,16 @@ export class Headers extends Map<string, string | string[]> {
 		if (existing) {
 			const existingValue = existing[1];
 			if (commaDelimited)
-				value = (typeof existingValue === 'string' ? existingValue : existingValue.join(', ')) + ', ' + value;
+				value = (typeof existingValue === 'string' ? existingValue : (existingValue as any).join(', ')) + ', ' + value;
 			else if (typeof existingValue === 'string') value = [existingValue, value];
 			else {
-				existingValue.push(value);
+				(existingValue as any).push(value);
 				return;
 			}
 		}
 		return super.set(lowerName, [name, value]);
 	}
+	// @ts-expect-error return type differs from Map
 	[Symbol.iterator]() {
 		return super.values()[Symbol.iterator]();
 	}
@@ -65,10 +67,10 @@ export function appendHeader(headers, name, value, commaDelimited) {
 		const existingValue = headers.get(name);
 		if (existingValue) {
 			if (commaDelimited)
-				value = (typeof existingValue === 'string' ? existingValue : existingValue.join(', ')) + ', ' + value;
+				value = (typeof existingValue === 'string' ? existingValue : (existingValue as any).join(', ')) + ', ' + value;
 			else if (typeof existingValue === 'string') value = [existingValue, value];
 			else {
-				existingValue.push(value);
+				(existingValue as any).push(value);
 				return;
 			}
 		}

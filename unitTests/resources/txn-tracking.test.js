@@ -36,6 +36,14 @@ describe('Txn Expiration', () => {
 		let trackedTxns =
 			SlowResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(20) : setLMDBTxnExpiration(20);
 		await delay(50);
+		// Any transactions from previous tests that were expired may still be completing their
+		// async commit callbacks. Poll briefly until the set stabilizes so the baseline count
+		// is accurate and doesn't include in-flight removals.
+		let prevSize = -1;
+		while (prevSize !== trackedTxns.size) {
+			prevSize = trackedTxns.size;
+			await delay(5);
+		}
 		let existingTxns = trackedTxns.size;
 		let result = SlowResource.get(3);
 		assert.equal(trackedTxns.size, existingTxns + 1);

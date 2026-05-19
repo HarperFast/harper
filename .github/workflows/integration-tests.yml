@@ -146,7 +146,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -187,10 +187,66 @@ jobs:
 
       - name: Upload Harper logs
         if: failure()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-integration-api-test-logs-bun
           path: /tmp/hdb/log/
+          retention-days: 3
+          if-no-files-found: ignore
+
+  run-integration-apiTests-windows:
+    name: Integration API Tests (Windows, Node.js v24)
+    needs: [build-windows]
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: harper-build-artifacts-windows
+
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: ${{ runner.temp }}/hdb
+          OPERATIONSAPI_NETWORK_PORT: 9925
+          LOGGING_LEVEL: 'debug'
+          LOGGING_STDSTREAMS: true
+          THREADS_COUNT: 1
+          THREADS_DEBUG: false
+          NODE_HOSTNAME: 'localhost'
+        run: |
+          New-Item -ItemType Directory -Force -Path ${{ runner.temp }}/hdb/log
+          node ./dist/bin/harper.js install > ${{ runner.temp }}/hdb/log/install-stdout.log 2> ${{ runner.temp }}/hdb/log/install-stderr.log
+          sleep 10
+          Start-Process node -ArgumentList "./dist/bin/harper.js start" -RedirectStandardOutput "${{ runner.temp }}/hdb/log/start-stdout.log" -RedirectStandardError "${{ runner.temp }}/hdb/log/start-stderr.log" -PassThru
+          sleep 10
+
+      - name: Run API Tests
+        id: run-api-tests
+        env:
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+        run: npm run test:integration:api-tests
+
+      - name: Upload Harper logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harper-integration-api-test-logs-windows
+          path: ${{ runner.temp }}/hdb/log/
           retention-days: 3
           if-no-files-found: ignore
 
@@ -247,17 +303,17 @@ jobs:
           if-no-files-found: ignore
 
   build-windows:
-    name: Build Harper (Windows, Node.js v22)
+    name: Build Harper (Windows, Node.js v24)
     runs-on: windows-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      - name: Setup Node.js 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22
+          node-version: 24
           package-manager-cache: false
 
       - name: Install dependencies
@@ -268,7 +324,7 @@ jobs:
         continue-on-error: true # we currently have type errors so just ignore that
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-build-artifacts-windows
           path: |
@@ -279,7 +335,7 @@ jobs:
           retention-days: 1
 
   run-integration-tests-windows:
-    name: Integration Tests ${{matrix.shard}}/4 (Windows, Node.js v22)
+    name: Integration Tests ${{matrix.shard}}/4 (Windows, Node.js v24)
     runs-on: windows-latest
     needs: [build-windows]
     strategy:
@@ -291,10 +347,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      - name: Setup Node.js 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22
+          node-version: 24
           package-manager-cache: false
 
       - name: Download build artifacts
@@ -317,7 +373,7 @@ jobs:
 
       - name: Upload Harper server logs
         if: failure()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-server-logs-windows-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/harper-integration-test-logs/
@@ -338,7 +394,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -364,7 +420,7 @@ jobs:
 
       - name: Upload Harper server logs
         if: failure()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-server-logs-bun-shard-${{ matrix.shard }}
           path: /tmp/harper-integration-test-logs/

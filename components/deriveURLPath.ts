@@ -1,5 +1,5 @@
-import type { Component } from './Component.js';
-import type { ComponentV1 } from './ComponentV1.js';
+import type { Component } from './Component.ts';
+import type { ComponentV1 } from './ComponentV1.ts';
 
 function pathStartsWithBase(base: string, path: string) {
 	const re = new RegExp(`^${base}(/|$)`);

@@ -8,12 +8,12 @@ const path = require('path');
 const fs = require('fs-extra');
 const config_utils_rw = rewire('#js/config/configUtils');
 const YAML = require('yaml');
-const logger = require('#js/utility/logging/harper_logger');
-const common_utils = require('#js/utility/common_utils');
+const logger = require('#src/utility/logging/harper_logger');
+const common_utils = require('#src/utility/common_utils');
 const testUtils = require('../testUtils.js');
 const hdbTerms = require('#src/utility/hdbTerms');
-const { handleHDBError } = require('#js/utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = require('#js/utility/errors/commonErrors');
+const { handleHDBError } = require('#src/utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = require('#src/utility/errors/commonErrors');
 
 const DIRNAME = __dirname;
 const HDB_ROOT = path.join(DIRNAME, 'yaml');

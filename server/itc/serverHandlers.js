@@ -1,12 +1,15 @@
 'use strict';
 
 /* global threads */
-const hdbLogger = require('../../utility/logging/harper_logger.js');
+const hdbLogger = require('../../utility/logging/harper_logger.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
-const cleanLmdbMap = require('../../utility/lmdb/cleanLMDBMap.js');
+const cleanLmdbMap =
+	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const userSchema = require('../../security/user.ts');
 const { validateEvent } = require('../threads/itc.js');
-const harperBridge = require('../../dataLayer/harperBridge/harperBridge.js');
+const harperBridge =
+	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
+	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { resetDatabases } = require('../../resources/databases.ts');
 

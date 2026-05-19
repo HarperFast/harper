@@ -6,10 +6,10 @@ import { getSuperUser } from '../security/user.ts';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes.ts';
 import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
 import { server } from '../server/Server.ts';
-import { get } from '../utility/environment/environmentManager.js';
+import { get } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
-import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.js';
+import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.ts';
 import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 const authEventLog = loggerWithTag('auth-event');
@@ -32,16 +32,16 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	const server = scope.server;
 	const { port, securePort } = network ?? {};
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
-	if (!server.mqtt) {
-		server.mqtt = {
+	if (!(server as any).mqtt) {
+		(server as any).mqtt = {
 			requireAuthentication,
 			sessions: new Set(),
 			events: new EventEmitter(),
 		};
 		// a no-op error handler to prevent unhandled error events from being rethrown
-		server.mqtt.events.on('error', () => {});
+		(server as any).mqtt.events.on('error', () => {});
 	}
-	const mqttSettings = server.mqtt;
+	const mqttSettings = (server as any).mqtt;
 	function emitEvent(type: string, ...args: any[]) {
 		try {
 			mqttSettings.events.emit(type, ...args);
@@ -52,8 +52,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	let serverInstances = [];
 	const mtls = network?.mtls;
 	if (webSocket)
-		serverInstances = server.ws(
-			(ws, request, chainCompletion, next) => {
+		serverInstances = (server as any).ws(
+			(ws, request, chainCompletion, next: any) => {
 				if (request.headers.get('sec-websocket-protocol') !== 'mqtt') {
 					return next(ws, request, chainCompletion);
 				}
@@ -85,13 +85,13 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					let user;
 					emitEvent('connection', socket);
 					mqttLog.debug?.(
-						`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
+						`Received ${(socket as any).getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
 					);
 					if (mtls) {
-						if (socket.authorized) {
+						if ((socket as any).authorized) {
 							try {
 								// Perform certificate verification
-								const peerCertificate = socket.getPeerCertificate(true);
+								const peerCertificate = (socket as any).getPeerCertificate(true);
 								if (peerCertificate?.subject) {
 									const verificationResult = await verifyCertificate(peerCertificate, mtls);
 									if (!verificationResult.valid) {
@@ -109,7 +109,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 								if (username !== null) {
 									// null means no user is defined from certificate, need regular authentication as well
 									if (username === undefined || username === 'Common Name' || username === 'CN')
-										username = socket.getPeerCertificate().subject.CN;
+										username = (socket as any).getPeerCertificate().subject.CN;
 									try {
 										user = await server.getUser(username, null, null);
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
@@ -146,7 +146,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 							}
 						} else if (mtls.required) {
 							mqttLog.info?.(
-								`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
+								`Unauthorized connection attempt, no authorized client certificate provided, error: ${(socket as any).authorizationError}`
 							);
 							return socket.end();
 						}
@@ -201,7 +201,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		numberOfConnections--;
 		if (!disconnected) {
 			disconnected = true;
-			session?.disconnect?.();
+			session?.disconnect?.(false);
 			emitEvent('disconnected', session, socket);
 			mqttSettings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
@@ -219,14 +219,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 		const command = packet.cmd;
 		if (session) {
-			if (session.then) await session;
+			if ((session as any).then) await session;
 		} else if (command !== 'connect') {
 			mqttLog.info?.('Received packet before connection was established, closing connection');
 			if (socket?.destroy) socket.destroy();
 			else socket?.terminate();
 			return;
 		}
-		const topic = packet.topic;
+		const topic = (packet as any).topic;
 		const slashIndex = topic?.indexOf('/', 1);
 		const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
 		recordAction(packet.length, 'bytes-received', generalTopic, packetMethodName(packet), 'mqtt');
@@ -286,14 +286,15 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						if (packet.will) {
 							const deserialize =
 								socket.deserialize ||
-								(socket.deserialize = getDeserializer(request?.headers.get?.('content-type'), false));
-							packet.will.data = packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
+								(socket.deserialize = getDeserializer(request?.headers.get?.('content-type') as string, false));
+							(packet.will as any).data =
+								packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
 							delete packet.will.payload;
 						}
 						session = getSession({
 							user,
 							...packet,
-						});
+						} as any) as any;
 						session = await session;
 						// the session is used in the context, and we want to make sure we can access this
 						session.socket = socket;
@@ -345,12 +346,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							return !rawSocket.closed;
 						} catch (error) {
 							mqttLog.error?.(error);
-							session?.disconnect();
+							session?.disconnect(false);
 							mqttSettings.sessions.delete(session);
 							return false;
 						}
 					};
-					session.setListener(listener);
+					session.setListener(listener as any);
 					if (session.sessionWasPresent) await session.resume();
 					break;
 				case 'subscribe':
@@ -414,7 +415,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
 					// deserialize
 					const deserialize =
-						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type'), false));
+						socket.deserialize ||
+						(socket.deserialize = getDeserializer(request?.headers.get?.('content-type') as string, false));
 					const messageLength = packet.payload?.length || 0;
 					const data = messageLength > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
 					let published;

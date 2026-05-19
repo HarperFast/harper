@@ -5,8 +5,8 @@ testUtils.preTestPrep();
 const path = require('path');
 const assert = require('assert');
 const fs = require('fs-extra');
-const env_util = require('#js/utility/lmdb/environmentUtility');
-const { lmdbGetTableSize } = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
+const env_util = require('#src/utility/lmdb/environmentUtility');
+const { lmdbGetTableSize } = require('#src/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 
 describe('Test getLMDBStats function', function () {
 	let env = undefined;

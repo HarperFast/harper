@@ -21,6 +21,10 @@
 			"groupName": "alasql"
 		},
 		{
+			"matchPackageNames": ["sinon"],
+			"groupName": "sinon"
+		},
+		{
 			"groupName": "all non-major dependencies",
 			"groupSlug": "all-minor-patch",
 			"matchUpdateTypes": ["minor", "patch"],

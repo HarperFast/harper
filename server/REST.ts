@@ -1,14 +1,14 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
-import * as harperLogger from '../utility/logging/harper_logger.js';
-import { ServerError, ClientError } from '../utility/errors/hdbError.js';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { Resources } from '../resources/Resources.ts';
 import { Resource, missingMethod, allowedMethods } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
-import type { Context } from '../resources/ResourceInterface.ts';
+
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 
@@ -19,7 +19,7 @@ let httpOptions = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
-async function http(request: Context & Request, nextHandler) {
+async function http(request: Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
 	const method = isSse ? 'CONNECT' : request.method;
@@ -40,13 +40,13 @@ async function http(request: Context & Request, nextHandler) {
 			request.handlerPath = entry.path;
 			target = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
 
-			target.async = true;
+			(target as any).async = true;
 			resource = entry.Resource;
 		}
-		if (resource?.isCaching) {
+		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {
-				const cacheControlParts = parseHeaderValue(cacheControl);
+				const cacheControlParts = parseHeaderValue(cacheControl as any);
 				for (const part of cacheControlParts) {
 					switch (part.name) {
 						case 'max-age':
@@ -73,7 +73,7 @@ async function http(request: Context & Request, nextHandler) {
 		}
 		const replicateTo = headersObject['x-replicate-to'];
 		if (replicateTo) {
-			const parsed = parseHeaderValue(replicateTo).map((node: { name: string }) => {
+			const parsed = parseHeaderValue(replicateTo as any).map((node: any) => {
 				// we can use a component argument to indicate that number that should be confirmed
 				// for example, to replicate to three nodes and wait for confirmation from two: X-Replicate-To: 3;confirm=2
 				// or to specify nodes with confirm: X-Replicate-To: node-1, node-2, node-3;confirm=2
@@ -93,7 +93,10 @@ async function http(request: Context & Request, nextHandler) {
 			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
 				try {
-					request.data = getDeserializer(headersObject['content-type'], true)(request.body, request.headers);
+					request.data = (getDeserializer(headersObject['content-type'] as any, true) as any)(
+						request.body,
+						request.headers
+					);
 				} catch (error) {
 					throw new ClientError(error, 400);
 				}
@@ -101,7 +104,7 @@ async function http(request: Context & Request, nextHandler) {
 			request.authorize = true;
 
 			if (url === OPENAPI_DOMAIN && method === 'GET') {
-				target = {};
+				target = {} as any;
 				if (request?.user?.role?.permission?.super_user) {
 					return generateJsonApi(resources, `${request.protocol}://${request.hostname}`);
 				} else {
@@ -156,7 +159,7 @@ async function http(request: Context & Request, nextHandler) {
 		if (responseData == undefined) {
 			status ??= method === 'GET' || method === 'HEAD' ? 404 : 204;
 			// deleted entries can have a timestamp of when they were deleted
-			if (httpOptions.lastModified && isFinite(lastModification))
+			if ((httpOptions as any).lastModified && isFinite(lastModification))
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object, use it as the response
@@ -213,7 +216,8 @@ async function http(request: Context & Request, nextHandler) {
 			} else {
 				headers.setIfNone('ETag', etag);
 			}
-			if (httpOptions.lastModified) headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
+			if ((httpOptions as any).lastModified)
+				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		}
 		if (request.createdResource) status = 201;
 		if (request.newLocation) headers.setIfNone('Location', request.newLocation);
@@ -226,7 +230,7 @@ async function http(request: Context & Request, nextHandler) {
 		const loadedFromSource = target.loadedFromSource;
 		if (loadedFromSource !== undefined) {
 			// this appears to be a caching table with a source
-			responseObject.wasCacheMiss = loadedFromSource; // indicate if it was a missed cache
+			(responseObject as any).wasCacheMiss = loadedFromSource; // indicate if it was a missed cache
 			if (!loadedFromSource && isFinite(lastModification)) {
 				headers.setIfNone('Age', Math.round((Date.now() - (request.lastRefreshed || lastModification)) / 1000));
 			}
@@ -285,21 +289,21 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	httpOptions = scope.options.getAll();
 	if ((httpOptions as any).includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
-		Request.prototype.includeExpensiveRecordCountEstimates = true;
+		(Request.prototype as any).includeExpensiveRecordCountEstimates = true;
 	}
 	resources = scope.resources;
 	if (started) return;
 	started = true;
 	scope.server.http(
-		async (request: Request, nextHandler) => {
+		async (request: any, nextHandler) => {
 			if (request.isWebSocket) return;
 			return http(request, nextHandler);
 		},
-		{ after: 'authentication', ...httpOptions }
+		{ after: 'authentication', ...(httpOptions as any) }
 	);
 	if ((httpOptions as any).webSocket === false) return;
 	scope.server.ws(
-		async (ws, request, chainCompletion) => {
+		async (ws, request: any, chainCompletion) => {
 			connectionCount++;
 			const incomingMessages = new IterableEventQueue();
 			if (!addedMetrics) {
@@ -315,12 +319,12 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			}
 			// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
 			let hasError;
-			ws.on('error', (error) => {
+			(ws as any).on('error', (error) => {
 				hasError = true;
 				harperLogger.warn(error);
 			});
 			let deserializer;
-			ws.on('message', function message(body) {
+			(ws as any).on('message', function message(body) {
 				if (!deserializer)
 					deserializer = getDeserializer(
 						request.requestedContentType ?? request.headers.asObject['content-type'],
@@ -331,7 +335,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				incomingMessages.push(data);
 			});
 			let iterator;
-			ws.on('close', () => {
+			(ws as any).on('close', () => {
 				connectionCount--;
 				recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
 				incomingMessages.emit('close');
@@ -371,8 +375,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						const messageBinary = await serializeMessage(result.value, request);
 						ws.send(messageBinary);
 						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
-						if (ws._socket.writableNeedDrain) {
-							await new Promise((resolve) => ws._socket.once('drain', resolve));
+						if ((ws as any)._socket.writableNeedDrain) {
+							await new Promise((resolve) => (ws as any)._socket.once('drain', resolve));
 						}
 					}
 				}
@@ -389,7 +393,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			}
 			ws.close();
 		},
-		{ after: 'authentication', ...httpOptions }
+		{ after: 'authentication', ...(httpOptions as any) }
 	);
 }
 const HTTP_TO_WEBSOCKET_CLOSE_CODES = {

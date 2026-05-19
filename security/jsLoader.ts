@@ -7,13 +7,13 @@ import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
 import { ApplicationScope } from '../components/ApplicationScope.ts';
-import logger from '../utility/logging/harper_logger.js';
+import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
-import type { CompartmentOptions } from 'ses';
+import type {} from 'ses';
 import {
 	mkdirSync,
 	readFileSync,
@@ -95,6 +95,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 			// is hidden behind a private symbol (arrowMessagePrivateSymbol)
 			// on the error object and the only way to access it is to use the
 			// internal util.decorateErrorStack() function
+			// @ts-ignore
 			const util = await import('internal/util');
 			util.default.decorateErrorStack(err);
 		} catch {
@@ -549,7 +550,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 async function getCompartment(scope: ApplicationScope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
 	require('ses');
-	const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
+	const compartment: any = new (Compartment as any)(
 		globals,
 		{
 			//harperdb: { Resource, tables, databases }
@@ -722,7 +723,7 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 			},
 		};
 const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
-const child_processConstrained = {
+const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
 	fork: createSpawn(child_process.fork, true), // this is launching node, so deemed safe
@@ -967,7 +968,7 @@ export function getUser() {
 	return contextStorage.getStore()?.user;
 }
 export function getResponse() {
-	return contextStorage.getStore()?.response;
+	return (contextStorage.getStore() as any)?.response;
 }
 
 export function preventFunctionConstructor() {
@@ -1008,7 +1009,7 @@ function freezeIntrinsics() {
 		FinalizationRegistry,
 	]) {
 		Object.freeze(Intrinsic);
-		Object.freeze(Intrinsic.prototype);
+		Object.freeze((Intrinsic as any).prototype);
 	}
 	Object.freeze(Function);
 }

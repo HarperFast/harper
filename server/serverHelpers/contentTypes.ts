@@ -2,11 +2,11 @@ import { streamAsJSON, stringify, parse } from './JSONStream.ts';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
-import { ClientError } from '../../utility/errors/hdbError.js';
+import { ClientError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
 import { _assignPackageExport } from '../../globals.js';
-import envMgr from '../../utility/environment/environmentManager.js';
+import * as envMgr from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
 import { logger } from '../../utility/logging/logger.ts';
@@ -36,14 +36,14 @@ const mediaTypes = new Map<
 >();
 
 export const contentTypes = mediaTypes;
-server.contentTypes = contentTypes;
+server.contentTypes = contentTypes as any;
 _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
 mediaTypes.set('application/json', {
 	serializeStream: streamAsJSON,
 	serialize: JSONStringify,
 	deserialize(data) {
-		return JSONParse(data);
+		return JSONParse(data as any);
 	},
 	q: 0.8,
 });
@@ -60,7 +60,7 @@ mediaTypes.set('application/cbor', {
 mediaTypes.set('application/x-msgpack', {
 	serializeStream(data: any) {
 		if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
+			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
 		}
 		return pack(data);
 	},
@@ -100,6 +100,29 @@ mediaTypes.set('text/yaml', {
 
 	q: 0.7,
 });
+
+const ndjsonHandler = {
+	serializeStream(data: any) {
+		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
+			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
+		}
+		return JSONStringify(data) + '\n';
+	},
+	serialize(data: any) {
+		return JSONStringify(data) + '\n';
+	},
+	deserialize(data: Buffer) {
+		return data
+			.toString()
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map(JSONParse);
+	},
+	q: 0.7,
+};
+mediaTypes.set('application/x-ndjson', ndjsonHandler);
+mediaTypes.set('application/ndjson', ndjsonHandler);
 
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
@@ -196,7 +219,7 @@ export function registerContentHandlers(app) {
 				regex: /^application\/(x-)?msgpack$/,
 				serializer: function (data) {
 					if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-						return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
+						return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
 					}
 					return pack(data);
 				},
@@ -299,7 +322,7 @@ export function findBestSerializer(incomingMessage) {
 			const quality = (serializer.q || 1) * clientQuality;
 			if (quality > bestQuality) {
 				bestSerializer = serializer;
-				bestType = serializer.type || type;
+				bestType = (serializer as any).type || type;
 				bestQuality = quality;
 				bestParameters = parameters;
 			}
@@ -421,11 +444,11 @@ export function serializeMessage(
 	try {
 		let serialized: Buffer | string;
 		if (request) {
-			let serialize = request.serialize;
+			let serialize = (request as any).serialize;
 			if (serialize) serialized = serialize(message);
 			else {
 				const serializer = findBestSerializer(request);
-				serialize = request.serialize = serializer.serializer.serialize;
+				serialize = (request as any).serialize = serializer.serializer.serialize;
 				serialized = serialize(message);
 			}
 		} else {
@@ -573,7 +596,7 @@ function deserializerUnknownType(contentType: ContentType): Deserialize {
 				// try to parse as JSON if no content type
 				try {
 					// if the first byte is `{` then it is likely JSON
-					if (data?.[0] === 123) return JSONParse(data);
+					if (data?.[0] === 123) return JSONParse(data as any);
 				} catch {
 					// continue if cannot parse as JSON
 				}
@@ -618,7 +641,7 @@ function transformIterable(iterable, transform) {
  * @param data
  * @returns stream
  */
-export function toCsvStream(data, columns) {
+export function toCsvStream(data, columns?) {
 	// ensure that we pass it an iterable
 	const readStream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
 

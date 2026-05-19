@@ -5,6 +5,7 @@ import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry 
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { asBinary } from 'lmdb';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
 	// we want to be able to test log replay
@@ -288,29 +289,53 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterable.iterate = () => aggregateIterator;
 		}
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
-			const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
-			data.dataView = decoder;
-			// This represents the data that shouldn't be transferred for replication
-			let structureVersion = decoder.getUint32(0);
-			let position = 4;
-			let previousResidencyId: number;
-			let previousVersion: number;
-			if (structureVersion & HAS_PREVIOUS_RESIDENCY_ID) {
-				previousResidencyId = decoder.getUint32(position);
-				position += 4;
+			// Per-entry try/catch: a corrupt rocks prelude (first 4-16 bytes) would otherwise
+			// throw a raw `RangeError: Offset is outside the bounds of the DataView` out
+			// through `iterable.map`, escape the for-of consumer, and land as an
+			// uncaughtException on a later tick — stalling outgoing replication at the
+			// failing offset on every catch-up attempt. On error, yield a sentinel record
+			// with the timestamp preserved so iteration advances past the bad entry;
+			// downstream consumers already skip records with no `tableId`/`type`.
+			try {
+				const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
+				(data as any).dataView = decoder;
+				// This represents the data that shouldn't be transferred for replication
+				let structureVersion = decoder.getUint32(0);
+				let position = 4;
+				let previousResidencyId: number;
+				let previousVersion: number;
+				if (structureVersion & HAS_PREVIOUS_RESIDENCY_ID) {
+					previousResidencyId = decoder.getUint32(position);
+					position += 4;
+				}
+				if (structureVersion & HAS_PREVIOUS_VERSION) {
+					// does previous residency id and version actually require separate flags?
+					previousVersion = decoder.getFloat64(position);
+					position += 8;
+				}
+				const auditRecord = readAuditEntry(data, position, undefined);
+				auditRecord.version = timestamp;
+				auditRecord.endTxn = endTxn;
+				auditRecord.previousResidencyId = previousResidencyId;
+				auditRecord.previousVersion = previousVersion;
+				auditRecord.structureVersion = structureVersion & 0x00ffffff;
+				return auditRecord;
+			} catch (error) {
+				harperLogger.error('Failed to decode rocks transaction log entry; skipping', error, {
+					timestamp,
+					byteLength: data?.byteLength,
+				});
+				return {
+					version: timestamp,
+					endTxn,
+					type: undefined,
+					tableId: undefined,
+					recordId: undefined,
+					getValue: () => undefined,
+					getBinaryValue: () => undefined,
+					getBinaryRecordId: () => undefined,
+				} as unknown as AuditRecord;
 			}
-			if (structureVersion & HAS_PREVIOUS_VERSION) {
-				// does previous residency id and version actually require separate flags?
-				previousVersion = decoder.getFloat64(position);
-				position += 8;
-			}
-			const auditRecord = readAuditEntry(data, position, undefined, true);
-			auditRecord.version = timestamp;
-			auditRecord.endTxn = endTxn;
-			auditRecord.previousResidencyId = previousResidencyId;
-			auditRecord.previousVersion = previousVersion;
-			auditRecord.structureVersion = structureVersion & 0x00ffffff;
-			return auditRecord;
 		});
 		// Add methods to the mapped iterable if we have an aggregate iterator
 		if (aggregateIterator?.addLog) {
@@ -342,7 +367,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	getUserSharedBuffer(key: string | symbol, defaultBuffer: ArrayBuffer, options?: { callback?: () => void }) {
 		return this.rootStore.getUserSharedBuffer(key, defaultBuffer, options);
 	}
-	on(eventName: string, listener: any) {
+	on(eventName: string, listener: any): any {
 		if (eventName === 'aftercommit') {
 			return super.on('aftercommit', listener);
 		} else {

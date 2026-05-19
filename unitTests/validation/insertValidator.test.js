@@ -4,7 +4,7 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 const chai = require('chai');
 const { expect } = chai;
-const insertValidator = require('#js/validation/insertValidator');
+const insertValidator = require('#src/validation/insertValidator').default;
 
 /**
  *  Unit tests for validation/insertValidator.js

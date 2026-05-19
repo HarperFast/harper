@@ -1,6 +1,6 @@
 'use strict';
 
-const searchUtility = require('../../../../utility/lmdb/searchUtility.js');
+const searchUtility = require('../../../../utility/lmdb/searchUtility.ts');
 const hashSearchInit = require('../lmdbUtility/initializeHashSearch.js');
 
 module.exports = lmdbSearchByHash;

@@ -2,9 +2,9 @@
 
 const _ = require('lodash');
 const terms = require('../utility/hdbTerms.ts');
-const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-const logger = require('../utility/logging/harper_logger.js');
+const logger = require('../utility/logging/harper_logger.ts');
 
 module.exports = {
 	getRolePermissions,

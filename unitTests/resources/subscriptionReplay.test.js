@@ -870,6 +870,96 @@ describe('Subscription replay', () => {
 			assert.ok(events.length >= 0, `events array exists`);
 		});
 
+		it('delivers all live events when a single committed burst exceeds the notify batch size', async () => {
+			// transactionBroadcast yields back to the event loop every NOTIFY_BATCH_SIZE (256)
+			// audit records during a drain. A subscription receiving a burst larger than that must
+			// still see every event with no duplicates.
+			const T = table({
+				table: 'BurstNotify',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			const startTime = Date.now();
+			const subscription = await T.subscribe({ startTime: startTime - 100, isCollection: true });
+			// give the live-listener wiring a microtask to attach before we start writing
+			await delay(10);
+			// queue a burst of writes large enough to span multiple notify batches
+			const N = 600;
+			for (let i = 0; i < N; i++) {
+				await T.put(20000 + i, { name: 'burst' + i });
+			}
+			const events = await collect(subscription, 300);
+			subscription.return?.();
+
+			const ids = new Set(events.map((e) => e.id));
+			let missing = 0;
+			for (let i = 0; i < N; i++) {
+				if (!ids.has(20000 + i)) missing++;
+			}
+			assert.equal(missing, 0, `missing ${missing} of ${N} burst ids`);
+			const pairs = events.map((e) => `${e.id}:${e.version}`);
+			assert.equal(new Set(pairs).size, pairs.length, 'duplicate (id,version) emitted during burst');
+		});
+
+		it('whenNextTransaction resolves on commit even when no per-key subscribers exist', async () => {
+			// Regression for the activeCount short-circuit: whenNextTransaction sets up a
+			// scope: 'full-database' subscription that intentionally does not increment activeCount.
+			// The 'committed' listener must still rotate the nextTransaction promise so the waiter
+			// wakes — otherwise outbound replication hangs whenever a database has no local
+			// per-key subscriptions.
+			const { whenNextTransaction } = require('#src/resources/transactionBroadcast');
+			const T = table({
+				table: 'WhenNextTxnIdle',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			// no Table.subscribe() — only the full-database waiter
+			const wake = whenNextTransaction(T.auditStore);
+			let resolved = false;
+			wake.then(() => {
+				resolved = true;
+			});
+			await T.put(40000, { name: 'wake_me' });
+			// give the committed listener + microtask a tick to resolve
+			await delay(50);
+			assert.equal(
+				resolved,
+				true,
+				'whenNextTransaction should resolve when a commit lands with no per-key subscribers'
+			);
+		});
+
+		it('resumes delivery after a subscribe/end/subscribe cycle with writes in between', async () => {
+			// regression for the activeCount short-circuit: when no subscribers exist, the audit
+			// notify loop skips iteration. A new subscription after a quiescent period must still
+			// pick up subsequent commits.
+			const T = table({
+				table: 'ResubscribeAfterIdle',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			const startTime = Date.now();
+			const s1 = await T.subscribe({ startTime: startTime - 1, isCollection: true });
+			await T.put(30000, { name: 'first' });
+			await delay(50);
+			s1.return?.();
+			// commits land while no subscriber is attached
+			await T.put(30001, { name: 'orphan_a' });
+			await T.put(30002, { name: 'orphan_b' });
+
+			const reSubStart = Date.now();
+			const s2 = await T.subscribe({ startTime: reSubStart - 1, isCollection: true });
+			await T.put(30003, { name: 'after_resub' });
+			const events = await collect(s2, 150);
+			s2.return?.();
+
+			const ids = new Set(events.map((e) => e.id));
+			assert.ok(ids.has(30003), 'event after re-subscribe was not delivered');
+		});
+
 		it('audit records of types not in ACTIONS_OF_INTEREST are still delivered by cursor', async () => {
 			// verifies pre-existing behavior: the cursor doesn't filter by audit type, but the
 			// listener does (notifyFromTransactionData has ACTIONS_OF_INTEREST gate). For

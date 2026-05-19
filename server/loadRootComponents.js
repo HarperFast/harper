@@ -4,7 +4,7 @@ const { loadComponentDirectories, loadComponent } = require('../components/compo
 const { resetResources } = require('../resources/Resources.ts');
 const configUtils = require('../config/configUtils.js');
 const { dirname } = require('path');
-const { loadCertificates } = require('../security/keys.js');
+const { loadCertificates } = require('../security/keys.ts');
 const { installApplications } = require('../components/Application.ts');
 
 let loadedComponents = new Map();

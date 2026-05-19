@@ -7,7 +7,7 @@ const {
 	ComponentStatusOperationError,
 	CrossThreadCollectionError,
 } = require('#src/components/status/errors');
-const { HTTP_STATUS_CODES } = require('#js/utility/errors/commonErrors');
+const { HTTP_STATUS_CODES } = require('#src/utility/errors/commonErrors');
 
 describe('Component Status Errors', function () {
 	describe('ComponentStatusError', function () {

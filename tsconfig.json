@@ -5,7 +5,7 @@
 		"config/**/*",
 		"dataLayer/**/*",
 		"json/**/*",
-		"launchServiceSCripts/**/*",
+		"launchServiceScripts/**/*",
 		"resources/**/*",
 		"security/**/*",
 		"server/**/*",
@@ -37,6 +37,8 @@
 		"allowImportingTsExtensions": true,
 
 		// Enforce erasable syntax only so we can use Node.js type-stripping
-		"erasableSyntaxOnly": true
+		"erasableSyntaxOnly": true,
+		// Required: third-party type declarations (alasql, mathjs, msgpackr) have incompatible type errors
+		"skipLibCheck": true
 	}
 }

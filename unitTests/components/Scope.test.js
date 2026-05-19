@@ -12,7 +12,7 @@ const { EntryHandler } = require('#src/components/EntryHandler');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { writeFile } = require('node:fs/promises');
 const { waitFor } = require('./waitFor.js');
-const { ApplicationScope } = require('#js/components/ApplicationScope');
+const { ApplicationScope } = require('#src/components/ApplicationScope');
 
 describe('Scope', () => {
 	beforeEach(() => {

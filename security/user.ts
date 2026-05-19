@@ -82,29 +82,29 @@ export interface CRUDPermissions {
 }
 
 //requires must be declared after module.exports to avoid cyclical dependency
-const insert = require('../dataLayer/insert.js');
-const delete_ = require('../dataLayer/delete.js');
-const validation = require('../validation/user_validation.js');
-const search = require('../dataLayer/search.js');
-const signalling = require('../utility/signalling.js');
-const hdbUtility = require('../utility/common_utils.js');
-const validate = require('validate.js');
-const logger = require('../utility/logging/harper_logger.js');
-const { promisify } = require('util');
-const env = require('../utility/environment/environmentManager.js');
-const systemSchema = require('../json/systemSchema.json');
-const { hdbErrors, ClientError } = require('../utility/errors/hdbError.js');
+import * as insert from '../dataLayer/insert.ts';
+import * as delete_ from '../dataLayer/delete.ts';
+import * as validation from '../validation/user_validation.ts';
+import * as search from '../dataLayer/search.ts';
+import * as signalling from '../utility/signalling.ts';
+import * as hdbUtility from '../utility/common_utils.ts';
+import * as validate from 'validate.js';
+import * as logger from '../utility/logging/harper_logger.ts';
+import { promisify } from 'util';
+import * as env from '../utility/environment/environmentManager.ts';
+import systemSchema from '../json/systemSchema.json';
+import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
 const { UserEventMsg } = require('../server/threads/itc.js');
-const _ = require('lodash');
-const harperLogger = require('../utility/logging/harper_logger.js');
+import * as _ from 'lodash';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 // Need to use `.js` even for other TS files since TS compiler won't replace requires.
 // Whenever we can fix the cyclical dependency issue in this file (and switch to imports) we can use the correct file extensions.
-const password = require('../utility/password.js');
-const { server } = require('../server/Server.js');
-const terms = require('../utility/hdbTerms.js');
-const { expandOperationsPerms } = require('../utility/operationPermissions.js');
+import * as password from '../utility/password.ts';
+import { server } from '../server/Server.ts';
+import * as terms from '../utility/hdbTerms.ts';
+import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -121,7 +121,7 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 	password: true,
 };
 const passwordHashCache = new Map();
-const promiseDelete = promisify(delete_.delete);
+const promiseDelete = promisify(delete_.delete_);
 const configuredHashFunction =
 	env.get(terms.CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION) ?? password.HASH_FUNCTION.SHA256;
 let usersWithRolesMap;
@@ -416,9 +416,13 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 		if (passwordHashCache.get(pw) === userTmp.password) return user;
 		// if validates, cache the password
 		else {
-			let validated = password.validate(userTmp.password, pw, userTmp.hash_function || password.HASH_FUNCTION.MD5); // if no hashFunction default to legacy MD5
+			let validated: boolean | Promise<boolean> = password.validate(
+				userTmp.password,
+				pw,
+				userTmp.hash_function || password.HASH_FUNCTION.MD5
+			); // if no hashFunction default to legacy MD5
 			// argon2id hash validation is async so await it if it is a promise
-			if (validated?.then) validated = await validated;
+			if (typeof validated === 'object' && (validated as Promise<boolean>)?.then) validated = await validated;
 			if (validated === true) passwordHashCache.set(pw, userTmp.password);
 			else throw new ClientError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
@@ -436,7 +440,7 @@ async function getSuperUser(): Promise<User | undefined> {
 }
 
 let invalidateCallbacks = [];
-server.invalidateUser = function (user: User | any) {
+(server as any).invalidateUser = function (user: User | any) {
 	for (let callback of invalidateCallbacks) {
 		try {
 			callback(user);

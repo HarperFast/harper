@@ -1,15 +1,18 @@
+// @ts-nocheck
 /**
  * This module represents the HTTP component for Harper, and receives the HTTP options and uses them to configure
  * HTTP servers
  */
 import { currentThreadId } from '@harperfast/rocksdb-js';
 import { Scope } from '../components/Scope.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
-import env from '../utility/environment/environmentManager.js';
+import { Socket } from 'node:net';
+import harperLogger from '../utility/logging/harper_logger.ts';
+import { parentPort } from 'node:worker_threads';
+import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.js';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
-import { createTLSSelector } from '../security/keys.js';
+import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
@@ -133,6 +136,93 @@ export function getHttpOptions() {
 	return httpOptions;
 }
 
+export function deliverSocket(fdOrSocket, port, data) {
+	// Create a socket and deliver it to the HTTP server
+	// HTTP server likes to allow half open sockets
+	const socket = fdOrSocket?.read
+		? fdOrSocket
+		: new Socket({ fd: fdOrSocket, readable: true, writable: true, allowHalfOpen: true });
+	// for each socket, deliver the connection to the HTTP server handler/parser
+	const server = SERVERS[port];
+	if (server.isSecure) {
+		socket.startTime = performance.now();
+	}
+	if (server) {
+		if (typeof server === 'function') server(socket);
+		else server.emit('connection', socket);
+		if (data) socket.emit('data', data);
+	} else {
+		const retry = (retries) => {
+			// in case the server hasn't registered itself yet
+			setTimeout(() => {
+				const server = SERVERS[port];
+				if (server) {
+					if (typeof server === 'function') server(socket);
+					else server.emit('connection', socket);
+					if (data) socket.emit('data', data);
+				} else if (retries < 5) retry(retries + 1);
+				else {
+					harperLogger.error(`Server on port ${port} was not registered`);
+					socket.destroy();
+				}
+			}, 1000);
+		};
+		retry(1);
+	}
+	return socket;
+}
+
+const requestMap = new Map();
+export function proxyRequest(message) {
+	const { port, event, data, requestId } = message;
+	let socket;
+	socket = requestMap.get(requestId);
+	switch (event) {
+		case 'connection':
+			socket = deliverSocket(undefined, port);
+			requestMap.set(requestId, socket);
+			socket.write = (data, encoding, callback) => {
+				parentPort.postMessage({
+					requestId,
+					event: 'data',
+					data: data.toString('latin1'),
+				});
+				if (callback) callback();
+				return true;
+			};
+			socket.end = (data, encoding, callback) => {
+				parentPort.postMessage({
+					requestId,
+					event: 'end',
+					data: data?.toString('latin1'),
+				});
+				if (callback) callback();
+				return true;
+			};
+			const originalDestroy = socket.destroy;
+			socket.destroy = () => {
+				originalDestroy.call(socket);
+				parentPort.postMessage({
+					requestId,
+					event: 'destroy',
+				});
+			};
+			break;
+		case 'data':
+			if (!socket._readableState.destroyed) socket.emit('data', Buffer.from(data, 'latin1'));
+			break;
+		case 'drain':
+			if (!socket._readableState.destroyed) socket.emit('drain', {});
+			break;
+		case 'end':
+			if (!socket._readableState.destroyed) socket.emit('end', {});
+			break;
+		case 'error':
+			if (!socket._readableState.destroyed) socket.emit('error', {});
+			break;
+	}
+}
+
 export function registerServer(server, port, checkPort = true) {
 	if (!port) {
 		// if no port is provided, default to custom functions port
@@ -205,7 +295,6 @@ export function httpServer(listener, options) {
 			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
 		} else if (isBun) {
 			// On Bun, store non-function listeners (e.g. Fastify's http.Server) for fallback delegation
-			// when the httpChain returns unhandled (status -1)
 			bunFallbackServers[port] = listener;
 		} else {
 			listener.isSecure = secure;
@@ -455,6 +544,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.isSecure = true;
 		}
 		registerServer(server, port);
+		// macOS doesn't support SO_REUSEPORT on all socket types; operations API also doesn't need it
+		if (isOperationsServer || process.platform === 'darwin') server.noReusePort = true;
 
 		// Operations API domain socket connections bypass auth (equivalent to local access)
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
@@ -654,7 +745,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		// Store the config for Bun.serve() — will be started by threadServer.js listenOnPorts()
 		const config: any = {
 			fetch: fetchHandler,
-			reusePort: true,
+			reusePort: process.platform !== 'darwin' && process.platform !== 'win32',
 		};
 		if (secure) {
 			// TLS config for Bun
@@ -749,7 +840,7 @@ function makeCallbackChain(responders: typeof httpResponders, portNum: number | 
 	);
 }
 function unhandled(request) {
-	if (request.user && request._nodeRequest) {
+	if (request.user) {
 		// pass on authentication information to the next server
 		request._nodeRequest.user = request.user;
 	}
@@ -763,19 +854,17 @@ function onRequest(listener, options) {
 	httpServer(listener, { requestOnly: true, ...options });
 }
 // workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
-if (!isBun) {
-	Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
-		get() {
-			return (
-				'connection' in this.headers &&
-				'upgrade' in this.headers &&
-				this.headers.connection.toLowerCase().includes('upgrade') &&
-				this.headers.upgrade.toLowerCase() == 'websocket'
-			);
-		},
-		set(_v) {},
-	});
-}
+Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
+	get() {
+		return (
+			'connection' in this.headers &&
+			'upgrade' in this.headers &&
+			this.headers.connection.toLowerCase().includes('upgrade') &&
+			this.headers.upgrade.toLowerCase() == 'websocket'
+		);
+	},
+	set(_v) {},
+});
 
 const upgradeListeners = [],
 	upgradeChains = {};
@@ -826,101 +915,52 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			name: getComponentName(),
 		});
 
-		const getServer = isBun ? getBunHTTPServer : getHTTPServer;
-		const server = getServer(port, secure, options);
+		const server = getHTTPServer(port, secure, options);
 
-		if (isBun) {
-			// For Bun, WebSocket upgrade is handled inside the fetch handler via server.upgrade()
-			// and the websocket callbacks are set on the Bun.serve() config
-			if (!websocketServers[port]) {
-				websocketServers[port] = true; // sentinel to prevent re-registration
-				const config = bunServeConfigs[port];
-				if (config) {
-					config.websocket = {
-						maxPayloadLength: options.maxPayload ?? 100 * 1024 * 1024,
-						open(ws) {
-							try {
-								const request = ws.data?.request;
-								if (request) {
-									harperLogger.debug('Received WS connection via Bun, calling listeners', websocketListeners);
-									websocketChains[port](ws, request, ws.data?.chainCompletion);
-								}
-							} catch (error) {
-								harperLogger.warn('Error in handling WS connection', error);
-							}
-						},
-						message(ws, message) {
-							// Bun delivers messages via this callback; emit as 'message' event for ws-compatible code
-							ws.emit?.('message', message);
-						},
-						close(ws, code, reason) {
-							ws.emit?.('close', code, reason);
-						},
-					};
-					// Wrap the original fetch to handle WebSocket upgrades
-					const originalFetch = config.fetch;
-					config.fetch = async (webRequest: globalThis.Request, bunServer: any) => {
-						// Check for WebSocket upgrade
-						if (webRequest.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-							const request = new BunRequest(webRequest, bunServer, secure) as any;
-							request.isWebSocket = true;
-							const chainCompletion = httpChain[port](request);
-							const upgraded = bunServer.upgrade(webRequest, {
-								data: { request, chainCompletion },
-							});
-							if (upgraded) return undefined; // Bun handles the response
-							return new Response('WebSocket upgrade failed', { status: 400 });
-						}
-						return originalFetch(webRequest, bunServer);
-					};
+		if (!websocketServers[port]) {
+			websocketServers[port] = new WebSocketServer({
+				noServer: true,
+				// TODO: this should be a global config and not per ws listener
+				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
+			});
+
+			websocketServers[port].on('connection', (ws, incomingMessage) => {
+				try {
+					const request = new Request(incomingMessage);
+					request.isWebSocket = true;
+					const chainCompletion = httpChain[port](request);
+					harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
+					websocketChains[port](ws, request, chainCompletion);
+				} catch (error) {
+					harperLogger.warn('Error in handling WS connection', error);
 				}
-			}
-		} else {
-			if (!websocketServers[port]) {
-				websocketServers[port] = new WebSocketServer({
-					noServer: true,
-					// TODO: this should be a global config and not per ws listener
-					maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
-				});
+			});
 
-				websocketServers[port].on('connection', (ws, incomingMessage) => {
-					try {
-						const request = new Request(incomingMessage);
-						request.isWebSocket = true;
-						const chainCompletion = httpChain[port](request);
-						harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
-						websocketChains[port](ws, request, chainCompletion);
-					} catch (error) {
-						harperLogger.warn('Error in handling WS connection', error);
+			// Add the default upgrade handler if it doesn't exist.
+			onUpgrade(
+				(request, socket, head, next) => {
+					// If the request has already been upgraded, continue without upgrading
+					if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
+						return next(request, socket, head);
 					}
-				});
 
-				// Add the default upgrade handler if it doesn't exist.
-				onUpgrade(
-					(request, socket, head, next) => {
-						// If the request has already been upgraded, continue without upgrading
-						if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
-							return next(request, socket, head);
-						}
+					// Otherwise, upgrade the socket and then continue
+					return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
+						request.__harperdbRequestUpgraded = true;
+						request.__harperRequestUpgraded = true;
+						next(request, socket, head);
+						websocketServers[port].emit('connection', ws, request);
+					});
+				},
+				{ port }
+			);
 
-						// Otherwise, upgrade the socket and then continue
-						return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
-							request.__harperdbRequestUpgraded = true;
-							request.__harperRequestUpgraded = true;
-							next(request, socket, head);
-							websocketServers[port].emit('connection', ws, request);
-						});
-					},
-					{ port }
-				);
-
-				// Call the upgrade middleware chain
-				server.on('upgrade', (request, socket, head) => {
-					if (upgradeChains[port]) {
-						upgradeChains[port](request, socket, head);
-					}
-				});
-			}
+			// Call the upgrade middleware chain
+			server.on('upgrade', (request, socket, head) => {
+				if (upgradeChains[port]) {
+					upgradeChains[port](request, socket, head);
+				}
+			});
 		}
 
 		servers.push(server);
@@ -1038,7 +1078,7 @@ export function logRequest(nodeRequest: IncomingMessage, status: number, request
 		}
 		const level = status < 400 ? 'info' : status === 500 ? 'error' : 'warn';
 		httpLogger[level]?.(
-			`${nodeRequest.method} ${nodeRequest.url} ${nodeRequest.socket.encrypted ? 'HTTPS' : 'HTTP'}/${nodeRequest.httpVersion}${
+			`${nodeRequest.method} ${nodeRequest.url} ${(nodeRequest.socket as any).encrypted ? 'HTTPS' : 'HTTP'}/${nodeRequest.httpVersion}${
 				logging.headers ? ' ' + headersToString(nodeRequest.headers) : ''
 			} ${status}${logging.timing && executionTime ? ' ' + executionTime.toFixed(2) + 'ms' : ''}${requestId ? ' id: ' + requestId : ''}`
 		);

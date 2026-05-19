@@ -6,16 +6,16 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const assert = require('assert');
 // Need to rewire this since we have a promisified data member for search.  Remove rewire when search is asyncified.
-const hdb_info_controller_rw = rewire('#js/dataLayer/hdbInfoController');
-const insert = require('#js/dataLayer/insert');
-const { packageJson } = require('#js/utility/packageUtils');
-const harper_logger = require('#js/utility/logging/harper_logger');
+const hdb_info_controller_rw = rewire('#src/dataLayer/hdbInfoController');
+const insert = require('#src/dataLayer/insert');
+const { packageJson } = require('#src/utility/packageUtils');
+const harper_logger = require('#src/utility/logging/harper_logger');
 const hdb_terms = require('#src/utility/hdbTerms');
-const directiveManager = require('#js/upgrade/directives/directivesController');
+const directiveManager = require('#src/upgrade/directives/directivesController');
 const os = require('os');
 const chalk = require('chalk');
 const util = require('util');
-const global_schema = require('#js/utility/globalSchema');
+const global_schema = require('#src/utility/globalSchema');
 
 let sandbox;
 let search_stub;
@@ -65,7 +65,7 @@ describe.skip('Test hdbInfoController module ', function () {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#js/dataLayer/hdbInfoController');
+		rewire('#src/dataLayer/hdbInfoController');
 	});
 
 	describe('Test insertHdbInstallInfo() ', () => {

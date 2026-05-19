@@ -1,6 +1,6 @@
 'use strict';
 const fs = require('fs-extra');
-const hdb_utils = require('#js/utility/common_utils');
+const hdb_utils = require('#src/utility/common_utils');
 
 const TEST_SETTINGS_FILE = 'settings.test';
 const TEST_SETTINGS_FILE_PATH = `${__dirname}/${TEST_SETTINGS_FILE}`;
