@@ -59,9 +59,12 @@ connectedPorts.sendToThread = function (threadId, message) {
 	try {
 		port.postMessage(message);
 		return true;
-	} catch {
+	} catch (err) {
 		// Port may have closed between find() and postMessage() — treat as unreachable.
-		return false;
+		// Only swallow the documented "closed port" race; let serialization bugs
+		// (DataCloneError) and other unexpected errors surface to the caller.
+		if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') return false;
+		throw err;
 	}
 };
 module.exports.whenThreadsStarted = new Promise((resolve) => {

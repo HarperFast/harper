@@ -183,7 +183,6 @@ describe('Test hdbChildIpcHandler module', () => {
 			expect(log_trace_stub).to.have.been.called;
 		});
 
-		// Tests direct-response path: when sendToThread succeeds, log a trace and do not broadcast
 		it('Test componentStatusRequestHandler sends response directly when originator is reachable', async () => {
 			sandbox.resetHistory();
 			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
@@ -204,7 +203,6 @@ describe('Test hdbChildIpcHandler module', () => {
 			sendToThreadStub.restore();
 		});
 
-		// Tests race-condition path: when the originator's port is gone, drop silently — no broadcast
 		it('Test componentStatusRequestHandler drops response silently when originator is unreachable', async () => {
 			sandbox.resetHistory();
 			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(false);
