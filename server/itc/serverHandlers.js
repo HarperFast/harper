@@ -118,7 +118,6 @@ async function componentStatusRequestHandler(event) {
 		// Get current thread's component status
 		const { internal } = require('../../components/status/index.ts');
 		const { getWorkerIndex } = require('../threads/manageThreads.js');
-		const { sendItcEvent } = require('../threads/itc.js');
 		const componentStatuses = internal.componentStatusRegistry.getAllStatuses();
 
 		// Convert Map to array for serialization
@@ -128,7 +127,8 @@ async function componentStatusRequestHandler(event) {
 		const workerIndex = getWorkerIndex();
 		const isMainThread = workerIndex === undefined;
 
-		// Send response directly back to the originating thread
+		// Send response directly back to the originating thread. validateEvent already
+		// ensures originator is present.
 		const originatorThreadId = event.message.originator;
 		const responseMessage = {
 			type: hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_RESPONSE,
@@ -140,17 +140,15 @@ async function componentStatusRequestHandler(event) {
 			},
 		};
 
-		// Use global threads (connectedPorts) to send directly to originator
-		if (originatorThreadId !== undefined && threads.sendToThread(originatorThreadId, responseMessage)) {
+		if (threads.sendToThread(originatorThreadId, responseMessage)) {
 			hdbLogger.trace(`Sent component status response directly to thread ${originatorThreadId}`);
 		} else {
-			// Fallback to broadcast if direct send fails or originator is missing
-			if (originatorThreadId === undefined) {
-				hdbLogger.debug('No originator threadId, falling back to broadcast');
-			} else {
-				hdbLogger.debug(`Failed to send direct response to thread ${originatorThreadId}, falling back to broadcast`);
-			}
-			await sendItcEvent(responseMessage);
+			// Originator's port is no longer in connectedPorts (thread exited / disconnected
+			// during the request). Dropping the response is correct — the originator is
+			// unreachable, and the collector's own timeout will handle the missing reply.
+			hdbLogger.trace(
+				`Dropping component status response for request ${event.message.requestId}: originator thread ${originatorThreadId} is unreachable`
+			);
 		}
 	} catch (error) {
 		hdbLogger.error('Error handling component status request:', error);

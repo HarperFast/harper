@@ -55,9 +55,13 @@ connectedPorts.onMessageByType = onMessageByType;
 connectedPorts.sendToThread = function (threadId, message) {
 	if (!message?.type) throw new Error('A message with a type must be provided');
 	const port = connectedPorts.find((port) => port.threadId === threadId);
-	if (port) {
+	if (!port) return false;
+	try {
 		port.postMessage(message);
 		return true;
+	} catch {
+		// Port may have closed between find() and postMessage() — treat as unreachable.
+		return false;
 	}
 };
 module.exports.whenThreadsStarted = new Promise((resolve) => {
@@ -499,6 +503,9 @@ function startMonitoring() {
 const REPORTING_INTERVAL = 1000;
 
 if (parentPort && workerData?.addPorts) {
+	// Main thread always has threadId 0 (worker_threads convention). Stamp it on
+	// parentPort so sendToThread(0, ...) and similar lookups can route back to main.
+	parentPort.threadId = 0;
 	addPort(parentPort);
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];

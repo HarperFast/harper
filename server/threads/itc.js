@@ -3,7 +3,7 @@
 const hdbUtils = require('../../utility/common_utils.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors.ts');
-const { threadId, isMainThread } = require('worker_threads');
+const { threadId } = require('worker_threads');
 const { onMessageFromWorkers, broadcastWithAcknowledgement } = require('./manageThreads.js');
 
 module.exports = {
@@ -31,7 +31,10 @@ onMessageFromWorkers(async (event, sender) => {
  * @param event
  */
 function sendItcEvent(event) {
-	if (!isMainThread && event.message) event.message.originator = threadId;
+	// Always stamp originator so handlers can send direct responses back.
+	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
+	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
+	if (event.message) event.message.originator = threadId;
 	return broadcastWithAcknowledgement(event);
 }
 

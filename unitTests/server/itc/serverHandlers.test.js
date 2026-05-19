@@ -182,5 +182,45 @@ describe('Test hdbChildIpcHandler module', () => {
 			// Trace log confirms handler received and started processing the event
 			expect(log_trace_stub).to.have.been.called;
 		});
+
+		// Tests direct-response path: when sendToThread succeeds, log a trace and do not broadcast
+		it('Test componentStatusRequestHandler sends response directly when originator is reachable', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			const test_event = {
+				type: 'component_status_request',
+				message: { originator: 7, requestId: 'req-789' },
+			};
+			await component_status_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			expect(sendToThreadStub.firstCall.args[0]).to.equal(7);
+			const responseMessage = sendToThreadStub.firstCall.args[1];
+			expect(responseMessage.type).to.equal('component_status_response');
+			expect(responseMessage.message.requestId).to.equal('req-789');
+			// Should have a trace confirming direct send (no error/debug fallback)
+			expect(log_error_stub).to.not.have.been.called;
+			sendToThreadStub.restore();
+		});
+
+		// Tests race-condition path: when the originator's port is gone, drop silently — no broadcast
+		it('Test componentStatusRequestHandler drops response silently when originator is unreachable', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(false);
+
+			const test_event = {
+				type: 'component_status_request',
+				message: { originator: 42, requestId: 'req-dropped' },
+			};
+			await component_status_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			// No error, no fallback broadcast — just a trace acknowledging the drop
+			expect(log_error_stub).to.not.have.been.called;
+			const traceCalls = log_trace_stub.getCalls().map((call) => String(call.args[0]));
+			expect(traceCalls.some((msg) => msg.includes('Dropping component status response'))).to.be.true;
+			sendToThreadStub.restore();
+		});
 	});
 });
