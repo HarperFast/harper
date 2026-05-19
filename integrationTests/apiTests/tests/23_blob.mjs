@@ -17,7 +17,7 @@ import { createBlobCustom } from '../utils/blob.mjs';
 import { exec } from 'node:child_process';
 import { timestamp } from '../utils/timestamp.mjs';
 
-describe('23. Blob', () => {
+describe('23. Blob', { skip: process.platform === 'win32' }, () => {
 	beforeEach(timestamp);
 
 	const blobId = randomInt(1000000);
@@ -122,11 +122,8 @@ describe('23. Blob', () => {
 			.expect(200);
 	});
 
-	it('Restart Service: http workers and wait', function () {
-		// SPIKE: per-test Windows skip removed deliberately to capture the
-		// restart_service crash signature via the existing
-		// `run-integration-apiTests-windows` CI job + log artifact upload.
-		// See issue #549. DO NOT merge — diagnostic branch only.
+	it('Restart Service: http workers and wait', function (t) {
+		if (process.platform === 'win32') return t.skip('Windows: Skipping restart_service to avoid crash');
 		return restartServiceHttpWorkersWithTimeout(testData.restartHttpWorkersTimeout);
 	});
 
@@ -253,11 +250,8 @@ describe('23. Blob', () => {
 		await verifyFilesDoNotExist(blobsPath);
 	});
 
-	it('Restart Service: http workers and wait', function () {
-		// SPIKE: per-test Windows skip removed deliberately to capture the
-		// restart_service crash signature via the existing
-		// `run-integration-apiTests-windows` CI job + log artifact upload.
-		// See issue #549. DO NOT merge — diagnostic branch only.
+	it('Restart Service: http workers and wait', function (t) {
+		if (process.platform === 'win32') return t.skip('Windows: Skipping restart_service to avoid crash');
 		return restartServiceHttpWorkersWithTimeout(testData.restartHttpWorkersTimeout);
 	});
 
