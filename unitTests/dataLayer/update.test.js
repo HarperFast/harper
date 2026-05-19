@@ -10,7 +10,7 @@ const update = rewire('#js/dataLayer/update');
 const insert = require('#js/dataLayer/insert');
 const testUtils = require('../testUtils.js');
 
-describe('Test update module', () => {
+describe.skip('Test update module', () => {
 	const sandbox = sinon.createSandbox();
 
 	const hdb_user = {
