@@ -263,7 +263,37 @@ export class RocksTransactionLogStore extends EventEmitter {
 							value: onlyKeys ? earliest.timestamp : earliest,
 							done: false,
 						};
-					} // else we are done
+					}
+					// Every entry in nextEntries is done. Before declaring "no more data", give the
+					// iterators one fresh round: each per-log iterator picks up new entries when its
+					// log file has grown since the last `.next()` returned done, and updateIterators
+					// also picks up any new logs (e.g. a peer's log created by replication). Without
+					// this retry, a `{ done: true }` slot in nextEntries carried over from a previous
+					// call can persist across a burst of commits that all coalesce into a single
+					// notifyFromTransactionData wake-up — the loop above keeps skipping the stale
+					// done slot, never re-polls the underlying iterator, and the entire burst is
+					// silently dropped (no further 'committed' arrives to unstick us). This was the
+					// fingerprint of the cloneNode topology bug where peer rows landed in hdb_nodes
+					// via system-DB replication but subscribeToNodeUpdates never received the events,
+					// so onNodeUpdate never opened replication connections to those peers.
+					nextEntries.length = 0;
+					updateIterators();
+					for (let i = 0; i < nextEntries.length; i++) {
+						const result = nextEntries[i];
+						if (result.done) continue;
+						const next = result.value;
+						if (!earliest || earliest.timestamp > next.timestamp) {
+							earliest = next;
+							earliestIndex = i;
+						}
+					}
+					if (earliestIndex >= 0) {
+						nextEntries[earliestIndex] = iterators[earliestIndex].next();
+						return {
+							value: onlyKeys ? earliest.timestamp : earliest,
+							done: false,
+						};
+					}
 					nextEntries.length = 0; // reset so if this iterator is restarted, we can re-query
 					return { value: undefined, done: true };
 				},
