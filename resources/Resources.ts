@@ -1,12 +1,10 @@
-import { Resource } from './Resource.ts';
 import { transaction } from './transaction.ts';
-import { ErrorResource } from './ErrorResource.ts';
-import logger from '../utility/logging/harper_logger.js';
-import { ServerError } from '../utility/errors/hdbError.js';
+import logger from '../utility/logging/harper_logger.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
 import { server } from '../server/Server.ts';
 
 interface ResourceEntry {
-	Resource: typeof Resource;
+	Resource: any;
 	path: string;
 	exportTypes: any;
 	hasSubPaths: boolean;
@@ -18,11 +16,12 @@ interface ResourceEntry {
  */
 export class Resources extends Map<string, ResourceEntry> {
 	isWorker = true;
-	loginPath?: (request) => string;
+	loginPath?: (request: any) => string;
 
 	allTypes: Map<any, any> = new Map();
 
-	set(path, resource, exportTypes?: { [key: string]: boolean }, force?: boolean): void {
+	// @ts-expect-error override with different signature
+	set(path: string, resource: any, exportTypes?: { [key: string]: boolean }, force?: boolean): void {
 		if (!resource) throw new Error('Must provide a resource');
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
@@ -45,6 +44,7 @@ export class Resources extends Map<string, ResourceEntry> {
 			// don't provide anything more descriptive.
 			const error = new ServerError(`Conflicting paths for ${path}`);
 			logger.error(error);
+			const { ErrorResource } = require('./ErrorResource');
 			entry.Resource = new ErrorResource(error);
 		}
 		super.set(path, entry);
@@ -131,7 +131,7 @@ export class Resources extends Map<string, ResourceEntry> {
 		const entry = this.getMatch(path);
 		if (entry) {
 			path = entry.relativeURL;
-			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resourceInfo);
+			return entry.Resource.getResource((this as any).pathToId(path, entry.Resource), resourceInfo);
 		}
 	}
 	call(path: string, request, callback: Function) {

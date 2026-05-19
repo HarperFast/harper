@@ -5,7 +5,7 @@ const sinon = require('sinon');
 const fs = require('fs-extra');
 const { expect } = chai;
 const rewire = require('rewire');
-const env_mangr = require('#js/utility/environment/environmentManager');
+const env_mangr = require('#src/utility/environment/environmentManager');
 const validator = rewire('#js/components/operationsValidation');
 
 describe('Test operationsValidation module', () => {

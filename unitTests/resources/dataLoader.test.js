@@ -6,7 +6,7 @@ const { join } = require('node:path');
 const sinon = require('sinon');
 
 // Set up logger stub before importing dataLoader
-const harperLogger = require('#js/utility/logging/harper_logger');
+const harperLogger = require('#src/utility/logging/harper_logger');
 const loggerStub = {
 	info: sinon.stub(),
 	error: sinon.stub(),

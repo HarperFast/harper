@@ -1,6 +1,6 @@
 import { startWorker, setMonitorListener, setMainIsWorker, threadsHaveStarted } from './manageThreads.js';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
-import * as harperLogger from '../../utility/logging/harper_logger.js';
+import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { isMainThread } from 'worker_threads';
 import { join } from 'path';
@@ -11,8 +11,8 @@ const workersReady = [];
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
 		// TODO: Maybe we should try to log the first of each type of error
-		if (error.code === 'ECONNRESET') return; // that's what network connections do
-		if (error.code === 'EIO') {
+		if ((error as any).code === 'ECONNRESET') return; // that's what network connections do
+		if ((error as any).code === 'EIO') {
 			// that means the terminal is closed
 			harperLogger.disableStdio();
 			return;
@@ -44,7 +44,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		}
 		await Promise.all(workersReady);
 	} finally {
-		threadsHaveStarted();
+		threadsHaveStarted(undefined as any);
 	}
 }
 

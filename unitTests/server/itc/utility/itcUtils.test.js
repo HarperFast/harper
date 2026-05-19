@@ -3,7 +3,7 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
-const hdb_logger = require('#js/utility/logging/harper_logger');
+const hdb_logger = require('#src/utility/logging/harper_logger');
 const itc_utils = require('#js/server/threads/itc');
 
 describe('Test itcUtils module', () => {

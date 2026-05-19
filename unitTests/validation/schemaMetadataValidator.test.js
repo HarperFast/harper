@@ -1,7 +1,7 @@
 'use strict';
 
 const rewire = require('rewire');
-const schema_meta_validator = rewire('#js/validation/schemaMetadataValidator');
+const schema_meta_validator = rewire('#src/validation/schemaMetadataValidator');
 const assert = require('assert');
 
 const FAKE_SCHEMA = {

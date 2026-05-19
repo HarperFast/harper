@@ -5,7 +5,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 
 const { preTestPrep } = require('../testUtils.js');
-const env = require('#js/utility/environment/environmentManager');
+const env = require('#src/utility/environment/environmentManager');
 
 const STORAGE_RECLAMATION_PATH = '#js/server/storageReclamation';
 

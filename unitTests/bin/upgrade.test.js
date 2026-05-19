@@ -7,11 +7,11 @@ const { expect } = chai;
 const rewire = require('rewire');
 let upgrade_rw;
 
-const hdbInfoController = require('#js/dataLayer/hdbInfoController');
-const updatePrompt = require('#js/upgrade/upgradePrompt');
-const directivesManager = require('#js/upgrade/directivesManager');
-const { packageJson } = require('#js/utility/packageUtils');
-const { UpgradeObject } = require('#js/upgrade/UpgradeObjects');
+const hdbInfoController = require('#src/dataLayer/hdbInfoController');
+const updatePrompt = require('#src/upgrade/upgradePrompt');
+const directivesManager = require('#src/upgrade/directivesManager');
+const { packageJson } = require('#src/utility/packageUtils');
+const { UpgradeObject } = require('#src/upgrade/UpgradeObjects');
 const fs = require('fs-extra');
 
 const TEST_CURR_VERS = '3.0.0';

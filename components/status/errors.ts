@@ -5,7 +5,7 @@
  * providing better diagnostics and error handling capabilities.
  */
 
-import { HTTP_STATUS_CODES } from '../../utility/errors/commonErrors.js';
+import { HTTP_STATUS_CODES } from '../../utility/errors/commonErrors.ts';
 
 /**
  * Base error class for component status system

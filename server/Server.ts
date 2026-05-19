@@ -37,6 +37,8 @@ export interface Server {
 	shards: Map<number, string[]>;
 	hostname: string;
 	resources: Resources;
+	knownGraphQLDirectives?: string[];
+	onInvalidatedUser(callback: () => void): void;
 	replication: {
 		replicateOperation(operation: {
 			replicated: boolean;
@@ -74,7 +76,15 @@ interface WebSocketOptions extends ServerOptions {
 }
 export interface UpgradeOptions extends ServerOptions {}
 
-export interface HttpOptions extends ServerOptions {}
+export interface HttpOptions extends ServerOptions {
+	runFirst?: boolean;
+	logging?: {
+		id?: boolean;
+		timing?: boolean;
+		headers?: boolean;
+	};
+	lastModified?: boolean;
+}
 export interface ContentTypeHandler {
 	serialize(data: any): Buffer | string;
 	serializeStream(data: any): Buffer | string;
@@ -89,12 +99,12 @@ export const server: Server = {
 				? Promise.reject(new Error('Replication not implemented.'))
 				: Promise.resolve({ message: '' });
 		},
-		monitorNodeCAs(_listener: () => void) {
+		monitorNodeCAs(_listener) {
 			throw new Error('Replication not implemented.');
 		},
 		sendOperationToNode() {
 			return Promise.reject(new Error('Replication not implemented.'));
 		},
 	},
-};
+} as any;
 _assignPackageExport('server', server);

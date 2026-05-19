@@ -9,20 +9,20 @@ const BASE_PATH = testUtils.setupTestDBPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME, 'dev');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
 const lmdb_create_txn_envs = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const lmdb_write_txn = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
-const common = require('#js/utility/lmdb/commonUtility');
+const common = require('#src/utility/lmdb/commonUtility');
 const fs = require('fs-extra');
-const search_util = require('#js/utility/lmdb/searchUtility');
-const env_manager = require('#js/utility/environment/environmentManager');
+const search_util = require('#src/utility/lmdb/searchUtility');
+const env_manager = require('#src/utility/environment/environmentManager');
 const hdb_terms = require('#src/utility/hdbTerms');
 
-const CreateTableObject = require('#js/dataLayer/CreateTableObject');
-const InsertObject = require('#js/dataLayer/InsertObject');
-const InsertRecordsResponseObject = require('#js/utility/lmdb/InsertRecordsResponseObject');
+const CreateTableObject = require('#src/dataLayer/CreateTableObject');
+const InsertObject = require('#src/dataLayer/InsertObject');
+const InsertRecordsResponseObject = require('#src/utility/lmdb/InsertRecordsResponseObject');
 const DeleteAuditLogsBeforeResults = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/DeleteAuditLogsBeforeResults');
-const DeleteBeforeObject = require('#js/dataLayer/DeleteBeforeObject');
+const DeleteBeforeObject = require('#src/dataLayer/DeleteBeforeObject');
 const delete_audit_logs_before = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteAuditLogsBefore');
 const rw_delete_audit_logs_before = rewire(
 	'#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteAuditLogsBefore'

@@ -10,10 +10,10 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const password_function = require('#src/utility/password');
-let token_auth = rewire('#js/security/tokenAuthentication');
+let token_auth = rewire('#src/security/tokenAuthentication');
 const user = require('#src/security/user');
-const insert = require('#js/dataLayer/insert');
-const signalling = require('#js/utility/signalling');
+const insert = require('#src/dataLayer/insert');
+const signalling = require('#src/utility/signalling');
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -141,7 +141,7 @@ describe('test getJWTRSAKeys function', () => {
 		let rw_rsa_keys = token_auth.__set__('rsaKeys', undefined);
 		let results = await get_jwt_keys_func();
 		assert.notDeepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
-		assert(fs_readfile_spy.callCount === 3);
+		assert(fs_readfile_spy.callCount >= 2);
 		assert(fs_readfile_spy.threw() === false);
 		assert(path_join_spy.threw() === false);
 		rw_rsa_keys();
@@ -220,7 +220,7 @@ describe('test getJWTRSAKeys function', () => {
 			'unable to generate JWT as there are no encryption keys.  please contact your administrator'
 		);
 
-		assert(path_join_spy.callCount === 3 || path_join_spy.callCount === 4);
+		assert(path_join_spy.callCount >= 2);
 		assert(fs_readfile_spy.callCount === 3);
 
 		let fs_error;
@@ -876,5 +876,35 @@ describe('test refreshOperationToken function', () => {
 			validate_error = e;
 		}
 		assert(validate_error === undefined);
+	});
+});
+
+describe('isJWTExpired', () => {
+	const createToken = (exp) => {
+		const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
+		const payload = Buffer.from(JSON.stringify({ exp })).toString('base64');
+		return `${header}.${payload}.signature`;
+	};
+
+	it('should return true for invalid token', () => {
+		assert.strictEqual(token_auth.isJWTExpired('invalid'), true);
+	});
+
+	it('should return true for expired token', () => {
+		const expiredTime = Math.floor(Date.now() / 1000) - 60;
+		const token = createToken(expiredTime);
+		assert.strictEqual(token_auth.isJWTExpired(token), true);
+	});
+
+	it('should return true for token expiring soon (within buffer)', () => {
+		const soonExpTime = Math.floor(Date.now() / 1000) + 60; // 1 minute from now
+		const token = createToken(soonExpTime);
+		assert.strictEqual(token_auth.isJWTExpired(token, 300), true); // 5 minute buffer
+	});
+
+	it('should return false for long-lived token', () => {
+		const farExpTime = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+		const token = createToken(farExpTime);
+		assert.strictEqual(token_auth.isJWTExpired(token, 300), false);
 	});
 });

@@ -3,12 +3,12 @@
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-let DeleteResponseObject = require('#js/dataLayer/DataLayerObjects').DeleteResponseObject;
+let DeleteResponseObject = require('#src/dataLayer/DataLayerObjects').DeleteResponseObject;
 const rewire = require('rewire');
-const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
-const _delete = rewire('#js/dataLayer/delete');
-const log = require('#js/utility/logging/harper_logger');
-const hdb_utils = require('#js/utility/common_utils');
+const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
+const _delete = rewire('#src/dataLayer/delete');
+const log = require('#src/utility/logging/harper_logger');
+const hdb_utils = require('#src/utility/common_utils');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai').default;

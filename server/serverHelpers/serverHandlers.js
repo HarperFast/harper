@@ -1,16 +1,16 @@
 'use strict';
 
 const terms = require('../../utility/hdbTerms.ts');
-const hdbUtil = require('../../utility/common_utils.js');
-const harperLogger = require('../../utility/logging/harper_logger.js');
-const { handleHDBError, hdbErrors } = require('../../utility/errors/hdbError.js');
+const hdbUtil = require('../../utility/common_utils.ts');
+const harperLogger = require('../../utility/logging/harper_logger.ts');
+const { handleHDBError, hdbErrors } = require('../../utility/errors/hdbError.ts');
 const { isMainThread } = require('worker_threads');
 const { Readable } = require('stream');
 
 const os = require('os');
 const util = require('util');
 
-const auth = require('../../security/fastifyAuth.js');
+const auth = require('../../security/fastifyAuth.ts');
 const pAuthorize = util.promisify(auth.authorize);
 const serverUtilities = require('./serverUtilities.ts');
 const { applyImpersonation } = require('../../security/impersonation.ts');

@@ -13,18 +13,18 @@ const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
 let test_data = require('../../../../testData');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
-const write_utility = require('#js/utility/lmdb/writeUtility');
-const SearchObject = require('#js/dataLayer/SearchObject');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const write_utility = require('#src/utility/lmdb/writeUtility');
+const SearchObject = require('#src/dataLayer/SearchObject');
 const lmdb_search = rewire('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbSearch');
-const lmdb_terms = require('#js/utility/lmdb/terms');
+const lmdb_terms = require('#src/utility/lmdb/terms');
 const hdb_terms = require('#src/utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
-const common_utils = require('#js/utility/common_utils');
-const common = require('#js/utility/lmdb/commonUtility');
+const common_utils = require('#src/utility/common_utils');
+const common = require('#src/utility/lmdb/commonUtility');
 const { orderedArray } = testUtils;
 const TIMESTAMP = Date.now();
 

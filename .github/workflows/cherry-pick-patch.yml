@@ -1,5 +1,18 @@
 name: Cherry-pick patch PRs to release branch
 
+# Pre-merge flow for PRs labeled `patch`:
+#   1. labeled / synchronize  → (re)create `cherry-pick/<release>/pr-<N>` off
+#                               the release branch, cherry-pick the PR's
+#                               commits, run integration tests, post a sticky
+#                               comment on the original PR.
+#   2. unlabeled              → tear the branch down, mark sticky comment
+#                               cancelled.
+#   3. closed && merged       → re-pick from the final merge SHA and push the
+#                               release branch.
+#
+# Conflicts are pushed with markers and a sticky comment @-mentions Claude
+# asking for a suggested resolution patch (handled by claude-mention.yml).
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,147 +20,212 @@ on:
         description: 'PR number to cherry-pick onto the release branch'
         required: true
         type: string
-  pull_request:
-    types: [closed]
+  # `pull_request_target` (not `pull_request`) so the workflow definition is
+  # always loaded from `main` regardless of what's on the PR's head ref. With
+  # `pull_request`, PRs branched off `main` before this workflow landed still
+  # use their own (outdated) copy and won't trigger on label events. The token
+  # has write scope; we mitigate the usual `pull_request_target` risk by
+  # pinning checkout to `main` and only running `git` against PR commits (no
+  # npm install or PR-controlled scripts executed in this workflow).
+  pull_request_target:
+    types: [labeled, unlabeled, synchronize, closed]
     branches: [main]
-  issues:
-    types: [labeled]
 
 permissions:
   contents: write
   pull-requests: write
   actions: write
 
+concurrency:
+  group: cherry-pick-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
 jobs:
   cherry-pick:
     name: Cherry-pick onto ${{ vars.RELEASE_BRANCH || 'v5.0' }}
     runs-on: ubuntu-latest
-    # Run when a PR with the patch label is merged into main.
-    # Handles two triggering paths:
-    #   pull_request/closed — PR merged with patch label already present
-    #   issues/labeled      — patch label added to an already-merged PR
-    #                         (GitHub fires 'issues' not 'pull_request' for label
-    #                          changes on closed/merged PRs)
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.merged == true &&
-       contains(github.event.pull_request.labels.*.name, 'patch')) ||
-      (github.event_name == 'issues' &&
-       github.event.label.name == 'patch' &&
-       github.event.issue.pull_request.merged_at != '')
+      (github.event_name == 'pull_request_target' && (
+        (github.event.action == 'labeled' && github.event.label.name == 'patch') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'patch')) ||
+        (github.event.action == 'unlabeled' && github.event.label.name == 'patch') ||
+        (github.event.action == 'closed' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'patch'))
+      ))
 
     env:
       RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH || 'v5.0' }}
+      STICKY_MARKER: '<!-- patch-ci -->'
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
 
     steps:
+      # Pin to `main` so the helper script (.github/scripts/...) is always
+      # present in the working tree. For `pull_request` events the default
+      # checkout is the PR head — if the PR branched off before this script
+      # landed on main, the script is missing and the workflow fails.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Configure git
         run: |
           git config user.email "noreply@harperdb.io"
           git config user.name "Harperfast"
 
-      - name: Cherry-pick onto ${{ env.RELEASE_BRANCH }}
+      # ── Unlabeled: tear down branch + cancel sticky comment ─────────────
+      - name: Handle unlabel
+        if: github.event.action == 'unlabeled'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+          BODY=$(printf '%s\n## Patch cherry-pick: cancelled\n\nThe `patch` label was removed; cherry-pick branch `%s` was deleted.\n' "$STICKY_MARKER" "$BRANCH")
+          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+
+      # ── Main path: labeled / synchronize / merged / dispatch ────────────
+      - name: Cherry-pick
+        if: github.event.action != 'unlabeled'
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTION: ${{ github.event.action }}
+          EVENT: ${{ github.event_name }}
           MERGE_SHA_FROM_EVENT: ${{ github.event.pull_request.merge_commit_sha }}
-          PR_TITLE_FROM_EVENT: ${{ github.event.pull_request.title || github.event.issue.title }}
         run: |
           set -euo pipefail
 
-          # For workflow_dispatch/issues events, some fields aren't in the payload; fetch them.
-          if [ -n "$MERGE_SHA_FROM_EVENT" ]; then
-            MERGE_SHA="$MERGE_SHA_FROM_EVENT"
-            PR_TITLE="$PR_TITLE_FROM_EVENT"
-          else
-            PR_DATA=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '{sha: .merge_commit_sha, title: .title, state: .state}')
-            MERGE_SHA=$(echo "$PR_DATA" | jq -r '.sha')
-            PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
-            STATE=$(echo "$PR_DATA" | jq -r '.state')
-            if [ "$STATE" != "closed" ] || [ -z "$MERGE_SHA" ] || [ "$MERGE_SHA" = "null" ]; then
-              echo "PR #$PR_NUMBER is not yet merged — aborting."
-              exit 1
-            fi
+          PR_DATA=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            --jq '{title: .title, head_sha: .head.sha, base_sha: .base.sha, merge_sha: .merge_commit_sha, merged: .merged, state: .state}')
+          PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
+          HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head_sha')
+          BASE_SHA=$(echo "$PR_DATA" | jq -r '.base_sha')
+          MERGED=$(echo "$PR_DATA" | jq -r '.merged')
+          MERGE_SHA=$(echo "$PR_DATA" | jq -r '.merge_sha')
+
+          # Trust the API's merged field, not the event action — covers the
+          # case where `patch` is labeled onto an already-merged PR (action =
+          # `labeled`) and workflow_dispatch on a merged PR.
+          IS_MERGED=false
+          if [ "$MERGED" = "true" ] && [ -n "$MERGE_SHA" ] && [ "$MERGE_SHA" != "null" ]; then
+            IS_MERGED=true
           fi
 
-          # Fetch enough history for subject-match checks and ancestor lookups
-          # (cherry-pick needs MERGE_SHA^ to compute the diff; rebase merges need
-          # up to COMMIT_COUNT ancestors). Full unshallow fetches both branches.
-          git fetch --depth=200 origin main "$RELEASE_BRANCH"
+          BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
+          echo "is_merged=$IS_MERGED" >> "$GITHUB_OUTPUT"
 
-          # Skip if this commit is already in the release branch.
-          # Subject matching handles cherry-picks whose patch-id changed due to
-          # conflict resolution (e.g. package-lock.json merges).
-          SUBJECT=$(git log -1 --format=%s "$MERGE_SHA")
-          if git log "origin/$RELEASE_BRANCH" --format=%s | grep -qxF "$SUBJECT"; then
-            echo "PR #$PR_NUMBER already applied to $RELEASE_BRANCH — skipping."
+          git fetch origin main "$RELEASE_BRANCH" "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}"
+
+          # ── Determine commits to pick ───────────────────────────────────
+          if [ "$IS_MERGED" = "true" ]; then
+            # Merged: pick the merge commit (squash/rebase/merge all work)
+            PARENT_COUNT=$(git cat-file -p "$MERGE_SHA" | grep -c "^parent ")
+            if [ "$PARENT_COUNT" -gt 1 ]; then
+              PICK_FLAGS="-m 1"
+              PICK_SHAS="$MERGE_SHA"
+            else
+              PICK_FLAGS=""
+              PICK_SHAS="$MERGE_SHA"
+            fi
+          else
+            # Open PR: pick the commit range merge_base..HEAD
+            MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+            PICK_FLAGS=""
+            PICK_SHAS=$(git rev-list --reverse "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+            if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
+              echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
+              exit 0
+            fi
+          fi
+          echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
+          echo "pick_shas=$PICK_SHAS" >> "$GITHUB_OUTPUT"
+
+          # ── Create / reset cherry-pick branch off release branch ────────
+          git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
+
+          # ── Apply commits, tracking which conflicted ────────────────────
+          CONFLICTS=""
+          for SHA in $PICK_SHAS; do
+            # shellcheck disable=SC2086
+            if ! git cherry-pick $PICK_FLAGS "$SHA"; then
+              CONFLICTS="${CONFLICTS:+$CONFLICTS }$SHA"
+              # Stage conflict markers and commit so reviewer sees the state
+              git add -A
+              GIT_EDITOR=true git cherry-pick --continue || git cherry-pick --skip || true
+            fi
+          done
+          echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
+
+          # Force-push (we rewrite this branch on each push to the PR)
+          git push --force origin "$BRANCH"
+
+      # ── Merged path: fast-forward release branch ────────────────────────
+      - name: Merge into release branch
+        if: github.event.action != 'unlabeled' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="${{ steps.pick.outputs.branch }}"
+          git checkout "$RELEASE_BRANCH"
+          git merge --ff-only "$BRANCH"
+          git push origin "$RELEASE_BRANCH"
+          git push origin --delete "$BRANCH" || true
+          BODY=$(printf '%s\n## Patch cherry-pick: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH")
+          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+
+      # ── Conflict path: post sticky comment, @-mention Claude ────────────
+      - name: Report conflict
+        if: github.event.action != 'unlabeled' && steps.pick.outputs.conflicts != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="${{ steps.pick.outputs.branch }}"
+          CONFLICTS="${{ steps.pick.outputs.conflicts }}"
+          BODY=$(printf '%s\n## Patch cherry-pick: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
+          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+
+      # ── Success path (open PR): trigger integration tests ───────────────
+      - name: Trigger integration tests
+        if: github.event.action != 'unlabeled' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="${{ steps.pick.outputs.branch }}"
+          WORKFLOW_CHANGES=$(git diff "origin/${RELEASE_BRANCH}".."${BRANCH}" --name-only | grep '^\.github/workflows/' || true)
+          if [ -n "$WORKFLOW_CHANGES" ]; then
+            BODY=$(printf '%s\n## Patch cherry-pick: workflow files modified\n\nThe cherry-pick branch modifies CI workflow files — automated tests were **not** dispatched to prevent running PR-controlled workflows with write permissions.\n\nModified files:\n```\n%s\n```\nPlease review and trigger tests manually if safe.\n' "$STICKY_MARKER" "$WORKFLOW_CHANGES")
+            node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 0
           fi
+          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
+          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
 
-          # ── Determine pick strategy ────────────────────────────────────────────
-          PARENT_COUNT=$(git cat-file -p "$MERGE_SHA" | grep -c "^parent ")
-          PICK_FLAGS=""
-          PICK_SHAS="$MERGE_SHA"
-
-          if [ "$PARENT_COUNT" -gt 1 ]; then
-            # True merge commit → cherry-pick combined diff
-            PICK_FLAGS="-m 1"
-          else
-            COMMIT_COUNT=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" --jq '. | length')
-            if [ "$COMMIT_COUNT" -gt 1 ]; then
-              LAST_BRANCH_SUBJECT=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" \
-                --jq '.[-1].commit.message | split("\n")[0]')
-              # Rebase merge: subject equals last branch commit subject with no "(#N)" suffix.
-              # Squash merge: either has "(#N)" suffix, or subject differs from last branch commit.
-              if ! echo "$SUBJECT" | grep -qF "(#$PR_NUMBER)" && [ "$SUBJECT" = "$LAST_BRANCH_SUBJECT" ]; then
-                # Rebase merge — reconstruct commit list oldest→newest
-                PICK_SHAS=""
-                for i in $(seq $((COMMIT_COUNT - 1)) -1 0); do
-                  SHA=$([ "$i" -eq 0 ] && echo "$MERGE_SHA" || git rev-parse "${MERGE_SHA}~${i}")
-                  PICK_SHAS="${PICK_SHAS:+$PICK_SHAS }$SHA"
-                done
-              fi
-              # else: squash — PICK_SHAS stays as $MERGE_SHA
+          # Best-effort: find the dispatched integration-tests run id (poll briefly)
+          RUN_URL=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 3
+            RUN_ID=$(gh run list --workflow=integration-tests.yml --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+            if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
+              RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
+              break
             fi
-          fi
+          done
 
-          # ── Cherry-pick ────────────────────────────────────────────────────────
-          git checkout "$RELEASE_BRANCH"
-
-          # shellcheck disable=SC2086
-          if git cherry-pick $PICK_FLAGS $PICK_SHAS; then
-            git push origin "$RELEASE_BRANCH"
-            echo "✅ Cherry-picked PR #$PR_NUMBER onto $RELEASE_BRANCH"
-            gh workflow run integration-tests.yml --ref "$RELEASE_BRANCH" --repo "$GITHUB_REPOSITORY"
-            gh workflow run unit-test.yml --ref "$RELEASE_BRANCH" --repo "$GITHUB_REPOSITORY"
+          if [ -n "$RUN_URL" ]; then
+            RUN_LINE="Integration tests: $RUN_URL"
           else
-            echo "⚠️ Cherry-pick conflict — creating resolution branch"
-            git cherry-pick --abort 2>/dev/null || true
-
-            CONFLICT_BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
-            git checkout -b "$CONFLICT_BRANCH"
-
-            # Re-apply each commit individually so partial successes are preserved.
-            # Conflict markers are staged and committed for the reviewer to resolve.
-            for SHA in $PICK_SHAS; do
-              # shellcheck disable=SC2086
-              git cherry-pick $PICK_FLAGS "$SHA" || {
-                git add -A
-                git cherry-pick --continue --no-edit || git cherry-pick --skip
-              }
-            done
-
-            git push origin "$CONFLICT_BRANCH"
-
-            PR_BODY=$(printf '## Resolve cherry-pick conflicts\n\nPR #%s (_%s_) conflicted when cherry-picking onto `%s`.\n\nConflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) have been committed to this branch. Please check out the branch, resolve all conflicts, push, and merge.\n\n**Source PR:** #%s\n**Commit(s):** `%s`' \
-              "$PR_NUMBER" "$PR_TITLE" "$RELEASE_BRANCH" "$PR_NUMBER" "$PICK_SHAS")
-            gh pr create \
-              --title "cherry-pick: \`${PR_TITLE}\` → \`${RELEASE_BRANCH}\` (conflict)" \
-              --body "$PR_BODY" \
-              --base "$RELEASE_BRANCH" \
-              --head "$CONFLICT_BRANCH"
+            RUN_LINE="Integration tests dispatched; the report-cherry-pick-tests workflow will update this comment on completion."
           fi
+
+          BODY=$(printf '%s\n## Patch cherry-pick: tests running\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
+            "$STICKY_MARKER" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$RUN_LINE" "$RELEASE_BRANCH")
+          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"

@@ -4,7 +4,7 @@ const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 const fs = require('fs-extra');
 const path = require('path');
-const logger = require('#js/utility/logging/harper_logger');
+const logger = require('#src/utility/logging/harper_logger');
 const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();

@@ -5,7 +5,7 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const system_schema = require('../../json/systemSchema.json');
 const rewire = require('rewire');
-const global_schema = rewire('#js/utility/globalSchema');
+const global_schema = rewire('#src/utility/globalSchema');
 
 const TEST_DATA_BIRD = [
 	{

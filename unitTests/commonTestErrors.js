@@ -1,7 +1,7 @@
 'use strict';
 
-const lmdb_terms = require('#js/utility/lmdb/terms');
-const { isHDBError, hdbErrors } = require('#js/utility/errors/hdbError');
+const lmdb_terms = require('#src/utility/lmdb/terms');
+const { isHDBError, hdbErrors } = require('#src/utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdbErrors;
 /**
  * the purpose of this is to hold the expected errors to check from our functions being tested

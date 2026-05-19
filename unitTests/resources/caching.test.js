@@ -44,7 +44,6 @@ describe('Caching', () => {
 		Source = class extends Resource {
 			get() {
 				let expiresAt = Date.now() + 2;
-				console.log('Expiration at: ' + expiresAt);
 				this.getContext().expiresAt = expiresAt;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
@@ -210,6 +209,15 @@ describe('Caching', () => {
 		assert(!result); // should be evicted and no longer exist in database
 	});
 
+	it('Handles eviction-only config without expiration:', async function () {
+		// { eviction: N } alone schedules the scanner and reaps records past their per-record expiresAt
+		CachingTable.setTTLExpiration({ eviction: 0.02 });
+		await CachingTable.put(99, { id: 99, name: 'expires soon' }, { expiresAt: Date.now() + 20 });
+		await new Promise((resolve) => setTimeout(resolve, 80));
+		const result = CachingTable.primaryStore.getSync(99);
+		assert(!result); // should be evicted
+	});
+
 	it('Allows stale-while-revalidate', async function () {
 		CachingTable.setTTLExpiration({
 			expiration: 0.005,
@@ -316,6 +324,7 @@ describe('Caching', () => {
 		IndexedCachingTable.setTTLExpiration(0.005);
 		let result = await IndexedCachingTable.get(23);
 		assert.equal(result.id, 23);
+		events = [];
 		assert.equal(result.name, 'name ' + 23);
 		assert.equal(sourceRequests, 1);
 		await new Promise((resolve) => setTimeout(resolve, 10));

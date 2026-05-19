@@ -3,10 +3,10 @@ import { _assignPackageExport } from '../globals.js';
 import { DatabaseTransaction, type Transaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 
-export function transaction<T>(context: Context, callback: (transaction: Transaction) => T): T;
-export function transaction<T>(callback: (transaction: Transaction) => T): T;
 export const contextStorage = new AsyncLocalStorage<Context>();
 
+export function transaction<T>(context: Context, callback: (transaction: Transaction) => T): T;
+export function transaction<T>(callback: (transaction: Transaction) => T): T;
 /**
  * Start and run a new transaction. This can be called with a request to hold the transaction, or a new request object will be created
  * @param ctx
@@ -43,15 +43,15 @@ export function transaction<T>(
 	transaction.setContext(context);
 
 	// create a resource cache so that multiple requests to the same resource return the same resource
-	if (!context.resourceCache) context.resourceCache = [];
+	if (!context.resourceCache) context.resourceCache = new Map();
 	let result;
 	try {
 		result =
-			context.isExplicit || asyncStorageContext
+			(context as any).isExplicit || asyncStorageContext
 				? callback(transaction)
 				: contextStorage.run(context, () => callback(transaction));
-		if (result?.then) {
-			return result.then(onComplete, onError);
+		if ((result as any)?.then) {
+			return (result as any).then(onComplete, onError);
 		}
 	} catch (error) {
 		onError(error);
@@ -60,8 +60,8 @@ export function transaction<T>(
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
 		const committed = transaction.commit({ doneWriting: true });
-		if (committed.then) {
-			return committed.then(() => {
+		if ((committed as any).then) {
+			return (committed as any).then(() => {
 				return result;
 			});
 		} else {

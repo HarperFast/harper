@@ -1,7 +1,7 @@
 import busboy from 'busboy';
 import type { FastifyRequest } from 'fastify';
 import type { Readable } from 'node:stream';
-import { ClientError } from '../../utility/errors/hdbError.js';
+import { ClientError } from '../../utility/errors/hdbError.ts';
 import { logger } from '../../utility/logging/logger.ts';
 
 interface MultipartBody {

@@ -2,12 +2,12 @@
 
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate.js');
 // eslint-disable-next-line no-unused-vars
-const InsertObject = require('../../../InsertObject.js');
+const InsertObject = require('../../../InsertObject.ts').default || require('../../../InsertObject.ts');
 const hdbTerms = require('../../../../utility/hdbTerms.ts');
 const lmdbProcessRows = require('../lmdbUtility/lmdbProcessRows.js');
-const lmdbInsertRecords = require('../../../../utility/lmdb/writeUtility.js').insertRecords;
-const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
-const logger = require('../../../../utility/logging/harper_logger.js');
+const lmdbInsertRecords = require('../../../../utility/lmdb/writeUtility.ts').insertRecords;
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
+const logger = require('../../../../utility/logging/harper_logger.ts');
 
 const lmdbCheckNewAttributes = require('../lmdbUtility/lmdbCheckForNewAttributes.js');
 const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');

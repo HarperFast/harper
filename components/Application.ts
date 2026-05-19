@@ -1,7 +1,7 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.js';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
-import logger from '../utility/logging/harper_logger.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import logger from '../utility/logging/harper_logger.ts';
 
 import { dirname, extname, join } from 'node:path';
 import {
@@ -131,6 +131,8 @@ export async function extractApplication(application: Application) {
 	// Resolve the tarball from the input
 	let tarballPath: string;
 	let tarball: Readable;
+	let shouldDeleteTarball = false;
+
 	if (application.payload) {
 		const payload = application.payload;
 		if (payload instanceof Readable) {
@@ -141,7 +143,7 @@ export async function extractApplication(application: Application) {
 			// base64 string payload
 			tarball = Readable.from(Buffer.from(payload, 'base64'));
 		} else {
-			tarball = Readable.from(payload);
+			tarball = Readable.from(payload as Buffer);
 		}
 	} else {
 		// Given a package, there are a a couple options
@@ -203,6 +205,7 @@ export async function extractApplication(application: Application) {
 			}
 
 			tarballPath = join(parentDirPath, packResult[0].filename);
+			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
 		}
 	}
@@ -244,7 +247,7 @@ export async function extractApplication(application: Application) {
 	}
 
 	// Clean up the original tarball
-	if (tarballPath) {
+	if (shouldDeleteTarball && tarballPath) {
 		await rm(tarballPath, { force: true });
 	}
 }
@@ -616,6 +619,10 @@ export function nonInteractiveSpawn(
 		const gitSSHCommand = getGitSSHCommand();
 		if (gitSSHCommand) {
 			env.GIT_SSH_COMMAND = gitSSHCommand;
+		}
+
+		if (process.platform === 'win32' && command === 'npm') {
+			command = 'npm.cmd';
 		}
 
 		const childProcess = spawn(command, args, {

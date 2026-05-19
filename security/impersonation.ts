@@ -2,9 +2,9 @@ import type { User } from './user.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
 import { getUsersWithRolesCache } from './user.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
-import { ClientError } from '../utility/errors/hdbError.js';
-import harperLogger from '../utility/logging/harper_logger.js';
-import { getRoleByName } from './role.js';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
+import { getRoleByName } from './role.ts';
 
 /**
  * Applies impersonation to a request. The authenticated user must be a super_user.

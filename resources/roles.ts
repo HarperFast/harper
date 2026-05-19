@@ -1,5 +1,5 @@
 import { getDatabases } from './databases.ts';
-import { alterRole, addRole } from '../security/role.js';
+import { alterRole, addRole } from '../security/role.ts';
 import { parseDocument } from 'yaml';
 import { isEqual } from 'lodash';
 
@@ -12,7 +12,7 @@ const USERS_NOT_DBS = ['super_user', 'structure_user'];
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	scope.handleEntry(async (entry) => {
 		if (entry.eventType === 'unlink') return;
-		return handleFile(entry.contents);
+		return handleFile((entry as any).contents);
 	});
 }
 
@@ -22,7 +22,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
  * @param rolesContent
  */
 async function handleFile(rolesContent) {
-	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true }).toJSON();
+	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true } as any).toJSON();
 	for (let roleName in rolesToDefine) {
 		let role = rolesToDefine[roleName];
 		if (!role.permission) {
@@ -80,7 +80,7 @@ async function handleFile(rolesContent) {
 async function ensureRole(role) {
 	const roleTable = getDatabases().system.hdb_role;
 	// if the role already exists, we need to update it
-	for await (let existingRole of roleTable.search([{ attribute: 'role', value: role.role }])) {
+	for await (let existingRole of roleTable.search([{ attribute: 'role', value: role.role }] as any)) {
 		// use the existing role id so we can update in place. Legacy roles may have a UUID for the id instead of the role name
 		const { __createdtime__, __updatedtime__, ...existingRoleData } = existingRole;
 		if (isEqual(existingRoleData, role)) {

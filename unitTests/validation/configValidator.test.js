@@ -4,13 +4,13 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
-const config_val = rewire('#js/validation/configValidator');
+const config_val = rewire('#src/validation/configValidator');
 const { configValidator, routesValidator } = config_val;
 const path = require('path');
 const testUtils = require('../testUtils.js');
 const fs = require('fs-extra');
 const os = require('os');
-const logger = require('#js/utility/logging/harper_logger');
+const logger = require('#src/utility/logging/harper_logger');
 
 const HDB_ROOT = path.join(__dirname, 'carrot');
 

@@ -1,17 +1,17 @@
+import { cleanupUnusedBlobs } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
-import { ServerError } from '../utility/errors/hdbError.js';
-import * as harperLogger from '../utility/logging/harper_logger.js';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
-import * as envMngr from '../utility/environment/environmentManager.js';
+import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { convertToMS } from '../utility/common_utils.js';
+import { convertToMS } from '../utility/common_utils.ts';
 import { when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore } from '@harperfast/rocksdb-js';
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
-import { cleanupUnusedBlobs } from './blob.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
@@ -44,20 +44,26 @@ export type CommitOptions = {
 type ReadTransaction = (LMDBTransaction | RocksTransaction) & {
 	openTimer?: number;
 	retryRisk?: number;
+	isDone?: boolean;
+	isCommitted?: boolean;
 };
 
 export type TransactionWrite = {
 	key: Id;
-	store: RootDatabaseKind;
+	store: any; // using any here because of circular dependency and complex RootDatabaseKind
 	invalidated?: boolean;
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	commit?: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: RocksTransaction) => void;
+	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => void;
 	validate?: (txnTime: number) => void;
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
+	nodeName?: string;
+	nodeId?: number;
+	promise?: Promise<any>;
+	result?: any;
 	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
 	savedBlobs?: Blob[];
 	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
@@ -95,7 +101,7 @@ export class DatabaseTransaction implements Transaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.timeout = txnExpiration; // reset the timeout
 		if (this.transaction) {
-			if (this.transaction.openTimer) this.transaction.openTimer = 0;
+			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
@@ -110,7 +116,7 @@ export class DatabaseTransaction implements Transaction {
 		if (DEBUG_LONG_TXNS) {
 			this.stackTraces = [new StartedTransaction()];
 		}
-		if (this.transaction.openTimer) this.transaction.openTimer = 0;
+		if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 		trackedTxns.add(this);
 		return this.transaction;
 	}
@@ -157,7 +163,13 @@ export class DatabaseTransaction implements Transaction {
 		this.writes.push(operation);
 		if (!operation.deferSave) {
 			// Setting saved to false means to defer saving
-			this.save(operation);
+			const saveResult: any = this.save(operation);
+			if (saveResult?.then) {
+				// When the transaction is already committed (immediateCommit path), save() returns
+				// the commit promise. Propagate it so callers can await the actual write being
+				// committed rather than resolving before it is durable.
+				return saveResult.then(() => operation);
+			}
 		}
 		return operation;
 	}
@@ -184,7 +196,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (this.retries > 0) {
 			// This marks the Rocks transaction as a retry so we don't write the transaction log again
-			transaction.isRetry = true;
+			(transaction as any).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (reloadEntry || operation.entry === undefined) {
@@ -193,7 +205,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
-			if (operation.validate?.(txnTime) === false) {
+			if ((operation.validate?.(txnTime) as any) === false) {
 				operation.commit = () => {}; // noop if we try again
 				return;
 			}
@@ -215,7 +227,7 @@ export class DatabaseTransaction implements Transaction {
 		let transaction = options.transaction ?? this.transaction; // we need to preserve this transaction as we might to resurrect it if we have to retry
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
-			if (this.retries === 0 && operation.saved) continue;
+			if (!operation || (this.retries === 0 && operation.saved)) continue;
 			this.save(operation, transaction, i < this.validated);
 		}
 		this.validated = this.writes.length;
@@ -252,10 +264,18 @@ export class DatabaseTransaction implements Transaction {
 					trackedTxns.delete(this);
 					this.transaction = null; // clear transaction so any further operations operate immediately
 					if (transaction) {
+						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
 							commitResolution = transaction.commit();
 						} else {
-							commitResolution = transaction.abort();
+							try {
+								commitResolution = transaction.abort();
+							} catch {
+								// The transaction has uncommitted writes that were already cleared from
+								// this.writes by a concurrent immediate-commit path (e.g. writes made with
+								// an explicitly-reused closed transaction). Those writes are handled by the
+								// concurrent commit, so there is nothing left to do here.
+							}
 						}
 					}
 				}
@@ -276,7 +296,7 @@ export class DatabaseTransaction implements Transaction {
 					const completions = [];
 					return commitResolution.then(
 						() => {
-							transaction.onCommit?.();
+							(transaction as any).onCommit?.();
 							if (this.next) {
 								completions.push(this.next.commit(options));
 							}
@@ -292,7 +312,7 @@ export class DatabaseTransaction implements Transaction {
 									completions.push(
 										confirmReplication(
 											databaseName,
-											lastWrite.store.getEntry(lastWrite.key).version,
+											(lastWrite.store.getEntry(lastWrite.key) as any).version,
 											this.replicatedConfirmation
 										)
 									);
@@ -335,6 +355,11 @@ export class DatabaseTransaction implements Transaction {
 						}
 					);
 				}
+				for (const write of this.writes) {
+					if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+				}
+				this.writes = [];
+				if (this.#context?.resourceCache) this.#context.resourceCache = null;
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
@@ -342,18 +367,16 @@ export class DatabaseTransaction implements Transaction {
 					// now run any other transactions
 					options.timestamp = this.timestamp;
 					const nextResolution = this.next?.commit(options);
-					if (nextResolution?.then)
-						return nextResolution?.then((nextResolution) => ({
+					if ((nextResolution as any)?.then)
+						return (nextResolution as any)?.then((nextResolution) => ({
 							txnTime: this.timestamp,
 							next: nextResolution,
 						}));
-					txnResolution.next = nextResolution;
+					txnResolution.next = nextResolution as any;
 				}
 				return txnResolution;
 			},
 			(error) => {
-				// before/beforeIntermediate (e.g. blob save) failed; abort to clean up pre-saved blob files
-				// and the underlying transaction so it doesn't leak.
 				this.abort();
 				throw error;
 			}
@@ -362,7 +385,6 @@ export class DatabaseTransaction implements Transaction {
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
-		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
 		for (const write of this.writes) {
 			if (write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
 		}
@@ -396,10 +418,11 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		super();
 		this.db = db;
 	}
-	save(transaction: ImmediateTransaction) {
+	save(...args: any[]): any {
+		const transaction = args[0];
 		if (this.isCommitting) {
 			// if we are in the commit, do the save and force a reload so we get a read within the transaction
-			super.save(transaction, null, true);
+			super.save(transaction, null as any, true);
 		} else {
 			this.isCommitting = true;
 			return when(this.commit(), () => {
@@ -408,10 +431,15 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		}
 	}
 
+	declare _timestamp: number;
+	// @ts-expect-error accessor overriding property
 	get timestamp() {
 		return this._timestamp || (this._timestamp = getNextMonotonicTime());
 	}
-	getReadTxn() {
+	set timestamp(value: number) {
+		this._timestamp = value;
+	}
+	getReadTxn(): any {
 		return; // no transaction means read latest
 	}
 }
@@ -422,10 +450,10 @@ function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
-				const url = txn.getContext()?.url;
+				const url = (txn.getContext() as any)?.url;
 				harperLogger.error(
 					`Transaction was open too long and has been committed, from table: ${
-						txn.db?.name + (url ? ' path: ' + url : '')
+						(txn.db as any)?.name + (url ? ' path: ' + url : '')
 					}`,
 					...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
 					...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
@@ -433,8 +461,8 @@ function startMonitoringTxns() {
 				// reset the transaction
 				try {
 					const result = txn.commit();
-					if (result?.then) {
-						result.catch((error) => {
+					if ((result as any)?.then) {
+						(result as any).catch((error) => {
 							harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
 						});
 					}

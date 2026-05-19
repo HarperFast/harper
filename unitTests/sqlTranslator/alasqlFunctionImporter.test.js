@@ -9,7 +9,7 @@ const { expect } = chai;
 const moment = require('moment');
 
 const alasql = require('alasql');
-const alasql_function_importer = require('#js/sqlTranslator/alasqlFunctionImporter');
+const alasql_function_importer = require('#src/sqlTranslator/alasqlFunctionImporter').default;
 alasql_function_importer(alasql);
 
 const expected_formats = {

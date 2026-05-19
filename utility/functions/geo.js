@@ -17,8 +17,8 @@ const turfBooleanEqual = require('@turf/boolean-equal');
 const turfBooleanDisjoint = require('@turf/boolean-disjoint');
 const turfHelpers = require('@turf/helpers');
 const hdbTerms = require('../hdbTerms.ts');
-const commonUtils = require('../common_utils.js');
-const hdbLog = require('../logging/harper_logger.js');
+const commonUtils = require('../common_utils.ts');
+const hdbLog = require('../logging/harper_logger.ts');
 
 module.exports = {
 	geoArea,

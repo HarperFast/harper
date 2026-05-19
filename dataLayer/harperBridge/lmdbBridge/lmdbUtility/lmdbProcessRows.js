@@ -1,12 +1,12 @@
 'use strict';
 
 // eslint-disable-next-line no-unused-vars
-const InsertObject = require('../../../InsertObject.js');
+const InsertObject = require('../../../InsertObject.ts').default || require('../../../InsertObject.ts');
 const hdbTerms = require('../../../../utility/hdbTerms.ts');
-const hdbUtils = require('../../../../utility/common_utils.js');
-const log = require('../../../../utility/logging/harper_logger.js');
+const hdbUtils = require('../../../../utility/common_utils.ts');
+const log = require('../../../../utility/logging/harper_logger.ts');
 const uuid = require('uuid');
-const { handleHDBError, hdbErrors } = require('../../../../utility/errors/hdbError.js');
+const { handleHDBError, hdbErrors } = require('../../../../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 
 module.exports = processRows;

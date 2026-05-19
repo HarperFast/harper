@@ -6,17 +6,17 @@
  * config file, a data model change requires a re-indexing script is run, etc.
  */
 
-const env = require('../utility/environment/environmentManager.js');
+const env = require('../utility/environment/environmentManager.ts');
 env.initSync();
 
 const chalk = require('chalk');
-const hdbLogger = require('../utility/logging/harper_logger.js');
+const hdbLogger = require('../utility/logging/harper_logger.ts');
 const hdbTerms = require('../utility/hdbTerms.ts');
-const directivesManager = require('../upgrade/directivesManager.js');
+const directivesManager = require('../upgrade/directivesManager.ts');
 const installation = require('../utility/installation.ts');
-const hdbInfoController = require('../dataLayer/hdbInfoController.js');
-const upgradePrompt = require('../upgrade/upgradePrompt.js');
-const globalSchema = require('../utility/globalSchema.js');
+const hdbInfoController = require('../dataLayer/hdbInfoController.ts');
+const upgradePrompt = require('../upgrade/upgradePrompt.ts');
+const globalSchema = require('../utility/globalSchema.ts');
 const { packageJson } = require('../utility/packageUtils.js');
 const promisify = require('util').promisify;
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
