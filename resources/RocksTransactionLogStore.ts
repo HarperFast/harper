@@ -289,31 +289,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterable.iterate = () => aggregateIterator;
 		}
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
-<<<<<<< HEAD
-			const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
-			data.dataView = decoder;
-			// This represents the data that shouldn't be transferred for replication
-			let structureVersion = decoder.getUint32(0);
-			let position = 4;
-			let previousResidencyId: number;
-			let previousVersion: number;
-			if (structureVersion & HAS_PREVIOUS_RESIDENCY_ID) {
-				previousResidencyId = decoder.getUint32(position);
-				position += 4;
-			}
-			if (structureVersion & HAS_PREVIOUS_VERSION) {
-				// does previous residency id and version actually require separate flags?
-				previousVersion = decoder.getFloat64(position);
-				position += 8;
-			}
-			const auditRecord = readAuditEntry(data, position, undefined, true);
-			auditRecord.version = timestamp;
-			auditRecord.endTxn = endTxn;
-			auditRecord.previousResidencyId = previousResidencyId;
-			auditRecord.previousVersion = previousVersion;
-			auditRecord.structureVersion = structureVersion & 0x00ffffff;
-			return auditRecord;
-=======
 			// Per-entry try/catch: a corrupt rocks prelude (first 4-16 bytes) would otherwise
 			// throw a raw `RangeError: Offset is outside the bounds of the DataView` out
 			// through `iterable.map`, escape the for-of consumer, and land as an
@@ -361,7 +336,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 					getBinaryRecordId: () => undefined,
 				} as unknown as AuditRecord;
 			}
->>>>>>> b84fbbd (fix: skip corrupt audit entries during iteration instead of throwing)
 		});
 		// Add methods to the mapped iterable if we have an aggregate iterator
 		if (aggregateIterator?.addLog) {

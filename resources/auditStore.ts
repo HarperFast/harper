@@ -49,15 +49,8 @@ export type AuditRecord = {
 	previousNodeId?: number;
 	previousAdditionalAuditRefs?: Array<{ version: number; nodeId: number }>;
 	endTxn?: boolean;
-<<<<<<< HEAD
 	structureVersion?: number;
-=======
 	getBinaryRecordId?: any;
-<<<<<<< HEAD
-	corrupt?: boolean;
->>>>>>> b84fbbd (fix: skip corrupt audit entries during iteration instead of throwing)
-=======
->>>>>>> 6b6192c (test: cover lmdb keyEncoder and rocks-prelude paths; drop unused corrupt flag)
 };
 
 const ENTRY_HEADER = Buffer.alloc(2816); // this is sized to be large enough for the maximum key size (1976) plus large usernames. We may want to consider some limits on usernames to ensure this all fits
@@ -569,11 +562,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		};
 	} catch (error) {
 		harperLogger.error('Reading audit entry error', error, buffer);
-<<<<<<< HEAD
-		return {};
-=======
 		return createCorruptAuditSentinel(buffer, start, end);
->>>>>>> b84fbbd (fix: skip corrupt audit entries during iteration instead of throwing)
 	}
 }
 
