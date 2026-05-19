@@ -78,7 +78,13 @@ suite('Multipart streaming deploy_component', (ctx: ContextWithHarper) => {
 		// 4 MB keeps CI fast while still being well past the buffer→stream switchover that
 		// busboy's parser handles internally (default 64 KB chunks).
 		fixtureDir = mkdtempSync(join(tmpdir(), 'mp-deploy-fixture-'));
-		writeFileSync(join(fixtureDir, 'config.yaml'), 'rest: true\ngraphqlSchema:\n  files: schema.graphql\n');
+		// Match the existing deploy-from-source fixture's shape so the static-content
+		// reachability assertion below mirrors deploy-from-source's `access deployed
+		// application` test (just s/Hello, Harper/Hello, Multipart/ on the file body).
+		writeFileSync(
+			join(fixtureDir, 'config.yaml'),
+			'static:\n  files: web\ngraphqlSchema:\n  files: schema.graphql\nrest: true\n'
+		);
 		writeFileSync(join(fixtureDir, 'schema.graphql'), 'type Query { hello: String }\n');
 		mkdirSync(join(fixtureDir, 'web'), { recursive: true });
 		writeFileSync(join(fixtureDir, 'web', 'index.html'), '<h1>Hello, Multipart!</h1>');
