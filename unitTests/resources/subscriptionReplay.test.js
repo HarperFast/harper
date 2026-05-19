@@ -506,6 +506,36 @@ describe('Subscription replay', () => {
 			}
 		});
 
+		// Regression: subscribe to an empty table, then write a single record. Production
+		// repro: cloneNode peers not appearing in subscribeToNodeUpdates. The rocksdb-backed
+		// aggregate audit-log iterator (RocksTransactionLogStore.getRange with no specified
+		// log) was created when the only log was empty, so its initial
+		// `iterators.map(it => it.next())` populated `nextEntries` with `{ done: true }`. The
+		// inner `next()` loop kept skipping that stale done slot without re-polling the
+		// underlying iterator, so when the write's `'committed'` wake-up arrived and called
+		// `notifyFromTransactionData`, the aggregate iterator returned `done` immediately
+		// and the write was silently dropped — leaving the subscriber waiting forever.
+		it('!omitCurrent: subscribe-then-write on a fresh database delivers the write', async () => {
+			const T = table({
+				table: 'SubReplaySubThenOne',
+				database: 'subReplaySubThenOne', // fresh database — no prior subscriptions/iterator
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			const subscription = await T.subscribe({ isCollection: true });
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
+			// allow subscribe's IIFE to fully complete before issuing the write — this is
+			// the production timing: subscribe is established, then a live write arrives
+			await delay(50);
+			await T.put(50000, { name: 'single' });
+			await delay(300);
+			subscription.return?.();
+
+			assert.equal(events.length, 1, `expected 1 event for the post-subscribe write, got ${events.length}`);
+			assert.equal(events[0].id, 50000);
+		});
+
 		it('count: subscribe while writes are in flight does not duplicate history', async function () {
 			if (!isLMDB) return this.skip();
 			// pre-populate so we have history to capture

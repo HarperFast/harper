@@ -69,6 +69,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      # The Cherry-pick step below switches the working tree to the release
+      # branch (which may not contain this helper), so stash it under
+      # $RUNNER_TEMP and invoke it from there in all subsequent steps.
+      - name: Stash sticky-comment helper
+        run: cp .github/scripts/upsert-sticky-comment.js "$RUNNER_TEMP/upsert-sticky-comment.js"
+
       - name: Configure git
         run: |
           git config user.email "noreply@harperdb.io"
@@ -84,7 +90,7 @@ jobs:
           BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
           git push origin --delete "$BRANCH" 2>/dev/null || true
           BODY=$(printf '%s\n## Patch cherry-pick: cancelled\n\nThe `patch` label was removed; cherry-pick branch `%s` was deleted.\n' "$STICKY_MARKER" "$BRANCH")
-          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Main path: labeled / synchronize / merged / dispatch ────────────
       - name: Cherry-pick
@@ -177,7 +183,7 @@ jobs:
           git push origin "$RELEASE_BRANCH"
           git push origin --delete "$BRANCH" || true
           BODY=$(printf '%s\n## Patch cherry-pick: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH")
-          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Conflict path: post sticky comment, @-mention Claude ────────────
       - name: Report conflict
@@ -190,42 +196,74 @@ jobs:
           CONFLICTS="${{ steps.pick.outputs.conflicts }}"
           BODY=$(printf '%s\n## Patch cherry-pick: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
             "$STICKY_MARKER" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
-          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
-      # ── Success path (open PR): trigger integration tests ───────────────
-      - name: Trigger integration tests
+      # ── Success path (open PR): trigger tests, wait, report ─────────────
+      #
+      # We poll for completion inline instead of using a separate
+      # `workflow_run`-triggered workflow because `workflow_run` events do not
+      # fire for `workflow_dispatch`-triggered runs on non-default branches —
+      # so a downstream reporter never sees the cherry-pick run finish.
+      - name: Trigger tests and wait for completion
         if: github.event.action != 'unlabeled' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
+
+          post_sticky() {
+            local heading="$1"
+            local run_line="$2"
+            local body
+            body=$(printf '%s\n## Patch cherry-pick: %s\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
+              "$STICKY_MARKER" "$heading" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$run_line" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$body"
+          }
+
           WORKFLOW_CHANGES=$(git diff "origin/${RELEASE_BRANCH}".."${BRANCH}" --name-only | grep '^\.github/workflows/' || true)
           if [ -n "$WORKFLOW_CHANGES" ]; then
             BODY=$(printf '%s\n## Patch cherry-pick: workflow files modified\n\nThe cherry-pick branch modifies CI workflow files — automated tests were **not** dispatched to prevent running PR-controlled workflows with write permissions.\n\nModified files:\n```\n%s\n```\nPlease review and trigger tests manually if safe.\n' "$STICKY_MARKER" "$WORKFLOW_CHANGES")
-            node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 0
           fi
+
           gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
           gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
 
-          # Best-effort: find the dispatched integration-tests run id (poll briefly)
-          RUN_URL=""
+          # Locate the dispatched integration-tests run id (creation is async)
+          RUN_ID=""
           for _ in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
             RUN_ID=$(gh run list --workflow=integration-tests.yml --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId' || true)
-            if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
-              RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
-              break
-            fi
+            if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then break; fi
           done
 
-          if [ -n "$RUN_URL" ]; then
-            RUN_LINE="Integration tests: $RUN_URL"
-          else
-            RUN_LINE="Integration tests dispatched; the report-cherry-pick-tests workflow will update this comment on completion."
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            post_sticky "tests dispatched" "Integration tests dispatched; could not locate run id to wait on."
+            exit 0
           fi
 
-          BODY=$(printf '%s\n## Patch cherry-pick: tests running\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
-            "$STICKY_MARKER" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$RUN_LINE" "$RELEASE_BRANCH")
-          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
+          post_sticky "tests running" "Integration tests: $RUN_URL"
+
+          # Poll until completion (30s interval, ~30 min max)
+          STATUS=""
+          CONCLUSION=""
+          for _ in $(seq 1 60); do
+            sleep 30
+            RUN_JSON=$(gh run view "$RUN_ID" --json status,conclusion --repo "$GITHUB_REPOSITORY" 2>/dev/null || true)
+            STATUS=$(echo "$RUN_JSON" | jq -r '.status // empty')
+            CONCLUSION=$(echo "$RUN_JSON" | jq -r '.conclusion // empty')
+            if [ "$STATUS" = "completed" ]; then break; fi
+          done
+
+          case "$CONCLUSION" in
+            success) STATUS_LINE='✅ passed' ;;
+            failure) STATUS_LINE='❌ failed' ;;
+            cancelled) STATUS_LINE='⚪ cancelled' ;;
+            "") STATUS_LINE='⏱️ timed out waiting' ;;
+            *) STATUS_LINE="⚠️ $CONCLUSION" ;;
+          esac
+
+          post_sticky "tests $STATUS_LINE" "Integration tests: **$STATUS_LINE** — $RUN_URL"

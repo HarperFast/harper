@@ -613,8 +613,8 @@ function getLMDBStats(table: Table, dbStats: DBStats): void {
 		const { root: _root, ...stats } = table.primaryStore.rootStore.getStats();
 		Object.assign(dbStats, stats);
 		dbStats.readers = table.primaryStore.rootStore
-			.readerList()
-			.split(/\n\s+/)
+			.readerList?.()
+			?.split(/\n\s+/)
 			.slice(1)
 			.map((line) => {
 				const [pid, thread, txnid] = line.trim().split(' ');

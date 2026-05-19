@@ -35,9 +35,9 @@ const comments = JSON.parse(gh(`api "repos/${repo}/issues/${prNumber}/comments" 
 const existing = comments.find((c) => c.body && c.body.includes(marker));
 
 if (existing) {
-	gh(`api --method PATCH "repos/${repo}/issues/comments/${existing.id}" -f body=@-`, body);
+	gh(`api --method PATCH "repos/${repo}/issues/comments/${existing.id}" -F body=@-`, body);
 	console.log(`Updated comment ${existing.id}`);
 } else {
-	gh(`api --method POST "repos/${repo}/issues/${prNumber}/comments" -f body=@-`, body);
+	gh(`api --method POST "repos/${repo}/issues/${prNumber}/comments" -F body=@-`, body);
 	console.log('Created sticky comment');
 }
