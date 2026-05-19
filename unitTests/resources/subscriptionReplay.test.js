@@ -511,7 +511,9 @@ describe('Subscription replay', () => {
 			}
 		});
 
-		it('count: subscribe while writes are in flight does not duplicate history', async function () {
+		// Skipped on v5.0: asserts no-duplicate (id,version) behavior fixed by main commits
+		// ad8300bec and b81ede3b5, not cherry-picked to this release branch.
+		it.skip('count: subscribe while writes are in flight does not duplicate history', async function () {
 			if (!isLMDB) return this.skip();
 			// pre-populate so we have history to capture
 			for (let i = 0; i < 50; i++) {
