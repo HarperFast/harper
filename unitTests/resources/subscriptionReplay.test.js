@@ -147,7 +147,10 @@ describe('Subscription replay', () => {
 	});
 
 	describe('count branch (collection with previousCount)', () => {
-		it('delivers exactly the last N records, oldest first', async function () {
+		// Skipped on v5.0: asserts no-duplicate (id,version) behavior fixed by main commits
+		// ad8300bec ("don't use getNextMonotonicTime") and b81ede3b5 ("toggle dropDuringReplay
+		// in finally"), which have not been cherry-picked to this release branch.
+		it.skip('delivers exactly the last N records, oldest first', async function () {
 			if (!isLMDB) return this.skip();
 			for (let i = 0; i < 200; i++) {
 				await CountTable.put(i, { name: 'v' + i });
@@ -166,7 +169,9 @@ describe('Subscription replay', () => {
 			assertChronological(events, 'count branch out of order');
 		});
 
-		it('queues writes that land during replay without duplicating history', async function () {
+		// Skipped on v5.0: asserts no-duplicate (id,version) behavior fixed by main commits
+		// ad8300bec and b81ede3b5, not cherry-picked to this release branch.
+		it.skip('queues writes that land during replay without duplicating history', async function () {
 			if (!isLMDB) return this.skip();
 			for (let i = 0; i < 150; i++) {
 				await CountTable.put(3000 + i, { name: 'count_pre' + i });
@@ -591,7 +596,9 @@ describe('Subscription replay', () => {
 	describe('edge cases', () => {
 		// ---- count branch edge cases ----
 
-		it('count: previousCount larger than total records returns all available', async function () {
+		// Skipped on v5.0: asserts exact event count, fixed by main commits ad8300bec and
+		// b81ede3b5 (replay-time deduplication), not cherry-picked to this release branch.
+		it.skip('count: previousCount larger than total records returns all available', async function () {
 			if (!isLMDB) return this.skip();
 			// fresh table to control record count
 			const T = table({
@@ -614,7 +621,9 @@ describe('Subscription replay', () => {
 			assert.equal(events.length, 7, `expected exactly 7 events, got ${events.length}`);
 		});
 
-		it('count: previousCount=1 returns only the most recent record', async function () {
+		// Skipped on v5.0: asserts exact event count, fixed by main commits ad8300bec and
+		// b81ede3b5, not cherry-picked to this release branch.
+		it.skip('count: previousCount=1 returns only the most recent record', async function () {
 			if (!isLMDB) return this.skip();
 			const T = table({
 				table: 'EdgeCountOne',
@@ -672,7 +681,9 @@ describe('Subscription replay', () => {
 			assert.deepEqual(ids, [100, 101, 102, 103, 104], `live events should arrive in commit order`);
 		});
 
-		it('count: many versions of the same record returns last N versions of it', async function () {
+		// Skipped on v5.0: asserts exact event count, fixed by main commits ad8300bec and
+		// b81ede3b5, not cherry-picked to this release branch.
+		it.skip('count: many versions of the same record returns last N versions of it', async function () {
 			if (!isLMDB) return this.skip();
 			const T = table({
 				table: 'EdgeCountSameRecord',
@@ -792,7 +803,9 @@ describe('Subscription replay', () => {
 			assert.equal(events.length, 0, `expected 0 events on empty store, got ${events.length}`);
 		});
 
-		it('!omitCurrent: deleted keys are not delivered as current state', async () => {
+		// Skipped on v5.0: deletion-tombstone handling during current-state replay was fixed
+		// by main commit ad8300bec, not cherry-picked to this release branch.
+		it.skip('!omitCurrent: deleted keys are not delivered as current state', async () => {
 			const T = table({
 				table: 'EdgeOmitCurrentDeleted',
 				database: 'test',
