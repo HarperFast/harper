@@ -6,7 +6,7 @@
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
-import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
+import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
@@ -2726,52 +2726,40 @@ export function makeTable(options) {
 						pendingRealTimeQueue = null;
 						dropDuringReplay = true;
 
-						for (const auditRecord of auditStore.getRange({
-							start: startTime,
-							exclusiveStart: true,
-							snapshot: false, // no need for a snapshot, audits don't change
-						})) {
-							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
-								recordsSinceYield = 0;
-								await rest();
-							}
-							if (auditRecord.tableId !== tableId) continue;
-							const id = auditRecord.recordId;
-							if (thisId == null || isDescendantId(thisId, id)) {
-								const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
-								send({
-									id,
-									localTime: auditRecord.localTime,
-									value,
-									version: auditRecord.version,
-									type: auditRecord.type,
-									size: auditRecord.size,
-								});
-								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-									// if we have too many messages, we need to pause and let the client catch up
-									if ((await subscription.waitForDrain()) === false) return;
+						try {
+							for (const auditRecord of auditStore.getRange({
+								start: startTime,
+								exclusiveStart: true,
+								snapshot: false, // no need for a snapshot, audits don't change
+							})) {
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
 								}
+								if (auditRecord.tableId !== tableId) continue;
+								const id = auditRecord.recordId;
+								if (thisId == null || isDescendantId(thisId, id)) {
+									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
+									send({
+										id,
+										localTime: auditRecord.localTime,
+										value,
+										version: auditRecord.version,
+										type: auditRecord.type,
+										size: auditRecord.size,
+									});
+									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+										// if we have too many messages, we need to pause and let the client catch up
+										if ((await subscription.waitForDrain()) === false) return;
+									}
+								}
+								subscription!.startTime = auditRecord.localTime ?? auditRecord.version; // update so we don't double send
 							}
-							subscription!.startTime = auditRecord.localTime ?? auditRecord.version; // update so we don't double send
+						} finally {
+							// replay is done, we can start sending real-time messages again
+							dropDuringReplay = false;
 						}
-						// No catch-up sweep needed. With snapshot:false (lmdb), notifyFromTransactionData
-						// calls resetReadTxn before iterating, which bumps renewId; on the cursor's next
-						// .next() it renews to a fresh txn whose snapshot is at least as recent. With
-						// rocksdb, the audit-log iterator re-reads `_lastCommittedPosition` on each next()
-						// (live tail). Either way, at loop exit subscription.startTime is at or past
-						// lastTxnTime, and the gate in notifyFromTransactionData handles the handoff
-						// once dropDuringReplay flips back.
-						dropDuringReplay = false;
 					} else if (count) {
-						// Raise the listener's gate up front so that any in-flight 'committed' callbacks
-						// for records the cursor will capture in `history` get gated out of
-						// pendingRealTimeQueue rather than queued and re-emitted as duplicates after
-						// history is sent. getNextMonotonicTime() returns a strictly-greater value than
-						// any audit record's localTime issued so far — it's the same source Harper uses
-						// to assign localTimes — so this gates exactly the records the cursor's
-						// snapshot:true view can see. Anything committed strictly after this point will
-						// pass the gate and reach the queue.
-						subscription!.startTime = getNextMonotonicTime();
 						const history = [];
 						// we are collecting the history in reverse order to get the right count, then reversing to send
 						for (const auditRecord of auditStore.getRange({ start: 'z', end: false, reverse: true })) {
@@ -2800,16 +2788,29 @@ export function makeTable(options) {
 						for (let i = history.length; i > 0; ) {
 							send(history[--i]);
 						}
+						// Use the latest record cursor saw (history[0] = most recent due to reverse
+						// iteration) as the gate. This is in the audit log's own time domain (works for
+						// both lmdb's localTime and rocksdb's transaction-derived version) — a JS-side
+						// `getNextMonotonicTime()` would not be comparable to rocksdb's native
+						// transaction timestamps.
+						const cursorMaxTime = history[0]?.localTime ?? history[0]?.version ?? 0;
+						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
+						// In-flight pre-subscribe 'committed' callbacks may have queued duplicates of
+						// records the cursor saw while subscription.startTime was still 0. Filter them.
+						if (pendingRealTimeQueue && cursorMaxTime) {
+							pendingRealTimeQueue = pendingRealTimeQueue.filter(
+								(event) => (event.localTime ?? event.version) > cursorMaxTime
+							);
+						}
 					} else if (!request.omitCurrent) {
-						// Raise the listener's gate up front so that any in-flight 'committed' callbacks
-						// for pre-subscribe commits (which haven't yet advanced lastTxnTime when subscribe
-						// is called) get gated out of the queue. Otherwise the listener fires for them
-						// during cursor yields and emits stale events the cursor either covered (current
-						// state) or correctly skipped (e.g., deletes via `if (!value) continue`).
-						// getNextMonotonicTime() is the same source Harper uses to assign audit record
-						// localTimes, so the gate cuts at a precise instant in the same time domain.
-						subscription!.startTime = getNextMonotonicTime();
-
+						// Track the latest record-time the cursor saw — including deletion tombstones
+						// (entries with null value). Used after iteration to gate out any pre-subscribe
+						// 'committed' callbacks that fired during cursor yields (e.g., late
+						// notifications for deletes/updates done before subscribing). This is in the
+						// audit log's time domain — works on both backends, where a JS-side
+						// `getNextMonotonicTime()` would not be comparable to rocksdb's native
+						// transaction timestamps.
+						let cursorMaxTime = 0;
 						// Retained-message semantics: subscriber may legitimately receive a record twice
 						// if a post-subscribe write hits a key the cursor also visits. This is
 						// idempotent for "current state then live updates" — both deliveries land at
@@ -2824,12 +2825,25 @@ export function makeTable(options) {
 								recordsSinceYield = 0;
 								await rest();
 							}
+							// Update cursorMaxTime BEFORE the !value check so deletion tombstones
+							// (which have null value but a real localTime/version) still raise the gate.
+							const t = localTime ?? version;
+							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
 							send({ id, localTime, value, version, type: 'put', size });
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
 							}
+						}
+						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
+						// Filter the queue to drop in-flight pre-subscribe events the listener queued
+						// while subscription.startTime was still 0. Anything strictly newer than what
+						// the cursor saw is a real post-subscribe commit and is kept.
+						if (pendingRealTimeQueue && cursorMaxTime) {
+							pendingRealTimeQueue = pendingRealTimeQueue.filter(
+								(event) => (event.localTime ?? event.version) > cursorMaxTime
+							);
 						}
 					}
 				} else {
