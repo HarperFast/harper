@@ -1,3 +1,6 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req, reqRest } from '../utils/request.mjs';
@@ -22,7 +25,14 @@ describe('23. Blob', () => {
 
 	it('Add component for blobs', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'blobs' })
+			.send({
+				operation: 'add_component',
+				project: 'blobs',
+				template:
+					process.platform === 'win32'
+						? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz')
+						: undefined,
+			})
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: blobs'), r.text))
 			.expect(200);
 	});
@@ -112,7 +122,11 @@ describe('23. Blob', () => {
 			.expect(200);
 	});
 
-	it('Restart Service: http workers and wait', () => {
+	it('Restart Service: http workers and wait', function () {
+		// SPIKE: per-test Windows skip removed deliberately to capture the
+		// restart_service crash signature via the existing
+		// `run-integration-apiTests-windows` CI job + log artifact upload.
+		// See issue #549. DO NOT merge — diagnostic branch only.
 		return restartServiceHttpWorkersWithTimeout(testData.restartHttpWorkersTimeout);
 	});
 
@@ -239,7 +253,11 @@ describe('23. Blob', () => {
 		await verifyFilesDoNotExist(blobsPath);
 	});
 
-	it('Restart Service: http workers and wait', () => {
+	it('Restart Service: http workers and wait', function () {
+		// SPIKE: per-test Windows skip removed deliberately to capture the
+		// restart_service crash signature via the existing
+		// `run-integration-apiTests-windows` CI job + log artifact upload.
+		// See issue #549. DO NOT merge — diagnostic branch only.
 		return restartServiceHttpWorkersWithTimeout(testData.restartHttpWorkersTimeout);
 	});
 

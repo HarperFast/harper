@@ -2,7 +2,7 @@ import * as graphql from 'graphql';
 import type { RequestParams } from 'graphql-http';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import { resources } from '../resources/Resources.ts';
-import logger from '../utility/logging/harper_logger.js';
+import logger from '../utility/logging/harper_logger.ts';
 
 // This code makes heavy use of the word "node" to refer to a node in the GraphQL AST.
 
@@ -580,7 +580,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 
 			try {
 				// Await the `graphqlHandler` call here so that errors are caught.
-				return await graphqlQueryingHandler(request);
+				return await graphqlQueryingHandler(request as any);
 			} catch (error) {
 				logger.error(error);
 

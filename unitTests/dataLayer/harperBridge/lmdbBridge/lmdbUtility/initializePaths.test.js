@@ -5,7 +5,7 @@ const sinon = require('sinon');
 const { expect } = chai;
 const rewire = require('rewire');
 const fs = require('fs-extra');
-const env_mgr = require('#js/utility/environment/environmentManager');
+const env_mgr = require('#src/utility/environment/environmentManager');
 const hdb_terms = require('#src/utility/hdbTerms');
 const init_paths = rewire('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 

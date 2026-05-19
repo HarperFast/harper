@@ -1,12 +1,12 @@
 'use strict';
 
-const searchUtility = require('../../../../utility/lmdb/searchUtility.js');
-const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
-const commonUtils = require('../../../../utility/common_utils.js');
-const lmdbTerms = require('../../../../utility/lmdb/terms.js');
+const searchUtility = require('../../../../utility/lmdb/searchUtility.ts');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
+const commonUtils = require('../../../../utility/common_utils.ts');
+const lmdbTerms = require('../../../../utility/lmdb/terms.ts');
 const hdbTerms = require('../../../../utility/hdbTerms.ts');
 const systemSchema = require('../../../../json/systemSchema.json');
-const LMDB_ERRORS = require('../../../../utility/errors/commonErrors.js').LMDB_ERRORS_ENUM;
+const LMDB_ERRORS = require('../../../../utility/errors/commonErrors.ts').LMDB_ERRORS_ENUM;
 const { getSchemaPath } = require('./initializePaths.js');
 
 const WILDCARDS = hdbTerms.SEARCH_WILDCARDS;

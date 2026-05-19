@@ -19,8 +19,8 @@ export interface ResourceInterface<Record extends object = any>
 
 	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
 	create?(
-		newRecord: Partial<Record & RecordObject>,
-		target: RequestTargetOrId
+		target: RequestTargetOrId,
+		newRecord: Partial<Record & RecordObject>
 	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
 	post?(
 		target: RequestTargetOrId,
@@ -31,10 +31,6 @@ export interface ResourceInterface<Record extends object = any>
 	put?(
 		record: Record & RecordObject,
 		target?: RequestTargetOrId
-	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
-	patch?(
-		record: Partial<Record & RecordObject>,
-		target: RequestTargetOrId
 	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
 	update?(updates: Record & RecordObject, fullUpdate: true): ResourceInterface<Record & Partial<RecordObject>>;
 	update?(
@@ -101,6 +97,7 @@ export interface Context {
 	resourceCache?: Map<Id, any>;
 	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 	timestamp?: number;
+	includeExpensiveRecordCountEstimates?: boolean;
 }
 
 export interface SourceContext<TRequestContext = Context, Record extends object = any> {
@@ -134,8 +131,13 @@ export type Comparator =
 	| 'ends_with'
 	| 'eq'
 	| 'equals'
+	| 'gt'
+	| 'ge'
+	| 'lt'
+	| 'le'
 	| 'greater_than'
 	| 'greater_than_equal'
+	| 'in'
 	| 'less_than'
 	| 'less_than_equal'
 	| 'ne'
@@ -149,8 +151,13 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_attribute?: keyof Record | Array<keyof Record> | string | string[];
 	comparator?: Comparator;
 	search_type?: Comparator;
-	value?: Record[Property];
-	search_value?: Record[Property];
+	value?: Record[Property] | Record[Property][];
+	search_value?: Record[Property] | Record[Property][];
+	/**
+	 * If true, the condition is negated. Phase 1: filter-only — forces a
+	 * full scan unless paired with another indexed condition.
+	 */
+	negated?: boolean;
 }
 
 interface ConditionGroup<Record extends object = any> {

@@ -22,8 +22,11 @@ import { Readable } from 'node:stream';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
-import { streamPackagedDirectory } from '#src/components/packageComponent';
-import { buildMultipartBody } from '#src/bin/multipartBuilder';
+// The integrationTests/ package doesn't have the `#src/*` import map, so we reach into
+// the built dist directly. This mirrors how other integration tests pull in code under
+// test from `../../dist/...` when they need to.
+import { streamPackagedDirectory } from '../../dist/components/packageComponent.js';
+import { buildMultipartBody } from '../../dist/bin/multipartBuilder.js';
 
 /**
  * Post a multipart deploy_component request to the operations API by piping the body

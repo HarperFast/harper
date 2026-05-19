@@ -9,7 +9,7 @@ const sandbox = sinon.createSandbox();
 const { applyImpersonation } = require('#src/security/impersonation');
 const userModule = require('#src/security/user');
 const roleModule = require('#src/security/role');
-const harperLogger = require('#js/utility/logging/harper_logger');
+const harperLogger = require('#src/utility/logging/harper_logger');
 
 // Separate sandbox for per-test stubs (e.g. getUsersWithRolesCache in Mode B tests)
 // so we can restore them without killing the permanent logger stub.

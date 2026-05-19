@@ -9,15 +9,15 @@ exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
 });
 
-const harperLogger = require('../../utility/logging/harper_logger.js');
-const env = require('../../utility/environment/environmentManager.js');
+const harperLogger = require('../../utility/logging/harper_logger.ts');
+const env = require('../../utility/environment/environmentManager.ts');
 const terms = require('../../utility/hdbTerms.ts');
 const { server } = require('../Server.ts');
 let { createServer: createSecureSocketServer } = require('node:tls');
 const { restartNumber, getWorkerIndex } = require('./manageThreads.js');
 const { isBun } = require('../serverHelpers/Request.ts');
-const { createTLSSelector } = require('../../security/keys.js');
-const { startupLog } = require('../../bin/run.js');
+const { createTLSSelector } = require('../../security/keys.ts');
+const { startupLog } = require('../../bin/run.ts');
 const { SERVERS, setPortServerMap, portServer } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
 const globals = require('../../globals.js');
@@ -31,13 +31,16 @@ if (!isBun) {
 		let port;
 		if (isMainThread) {
 			port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_PORT) ?? 9229;
-			process.on(['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit'], () => {
+			const closeInspector = () => {
 				try {
 					require('inspector').close();
 				} catch (error) {
 					harperLogger.info('Could not close debugger', error);
 				}
-			});
+			};
+			for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit']) {
+				process.on(signal, closeInspector);
+			}
 		} else {
 			const startingPort = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT);
 			if (startingPort && getWorkerIndex() >= 0) {
@@ -257,9 +260,9 @@ function listenOnPorts() {
 				listen_on = {
 					host: port.slice(0, lastColon).replace(/[[\]]/g, ''),
 					port: +port.slice(lastColon + 1),
-					reusePort: !isWindows,
+					reusePort: !isWindows && !server.noReusePort,
 				};
-			else listen_on = { port: +port, host: '::', reusePort: !isWindows };
+			else listen_on = { port: +port, host: '::', reusePort: !isWindows && !server.noReusePort };
 			if (isNaN(listen_on.port)) continue;
 		} catch (error) {
 			harperLogger.error(`Unable to bind to port ${port}`, error);
@@ -272,7 +275,14 @@ function listenOnPorts() {
 						resolve({ port, name: server.name, protocol_name: server.protocol_name });
 						harperLogger.trace('Listening on port ' + port, threadId);
 					})
-					.on('error', reject);
+					.on('error', (err) => {
+						// Node.js before v20.11.1 does not properly support reusePort for net.Server —
+						// workers receive EADDRINUSE even though the main thread bound with reusePort: true.
+						// Resolve rather than reject so the worker can proceed, matching the same graceful
+						// handling already present in listenOnPortsBun().
+						if (err.code === 'EADDRINUSE') resolve({ port, name: server.name, protocol_name: server.protocol_name });
+						else reject(err);
+					});
 			})
 		);
 	}
@@ -280,6 +290,7 @@ function listenOnPorts() {
 }
 
 async function listenOnPortsBun() {
+	const isMac = process.platform === 'darwin';
 	const bunServeConfigs = httpComponent.bunServeConfigs;
 	for (let port in bunServeConfigs) {
 		const config = bunServeConfigs[port];
@@ -304,7 +315,7 @@ async function listenOnPortsBun() {
 			}
 			const serveOptions = {
 				port: portNumber,
-				reusePort: !isWindows,
+				reusePort: !isWindows && !isMac,
 				fetch: config.fetch,
 			};
 			if (portHostname) serveOptions.hostname = portHostname;
@@ -416,7 +427,7 @@ async function listenOnPortsBun() {
 				listening.push(
 					new Promise((resolve, reject) => {
 						server
-							.listen({ port: portNum, host: rawHostname || '::' }, () => {
+							.listen({ port: portNum, host: rawHostname || (isMac ? '0.0.0.0' : '::') }, () => {
 								resolve({ port });
 								harperLogger.trace('Listening on port ' + port, threadId);
 							})
@@ -463,6 +474,7 @@ function onSocket(listener, options) {
 			listener
 		);
 		SNICallback.initialize(socketServer);
+		socketServer.noReusePort = true;
 		SERVERS[options.securePort] = socketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
@@ -495,6 +507,7 @@ function onSocket(listener, options) {
 			keepAlive: true,
 			keepAliveInitialDelay: 600,
 		});
+		socketServer.noReusePort = true;
 		SERVERS[options.port] = socketServer;
 	}
 	return socketServer;

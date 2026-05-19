@@ -1,11 +1,11 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'events';
 import yaml from 'yaml';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
-import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.js';
+import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 
 export interface Config {

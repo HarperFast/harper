@@ -8,7 +8,7 @@ const sinon = require('sinon');
 const path = require('path');
 const fs = require('fs');
 
-const env = require('#js/utility/environment/environmentManager');
+const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const {
 	writeUdsMetadata,
@@ -163,7 +163,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		});
 
 		it('logs an error if the file cannot be written', () => {
-			const harperLogger = require('#js/utility/logging/harper_logger');
+			const harperLogger = require('#src/utility/logging/harper_logger');
 			const errorStub = sandbox.stub(harperLogger, 'error');
 			// Use an invalid path that cannot be written
 			writeUdsMetadata('/nonexistent-dir/missing/0-9926.yaml', 9926, makeSecureServer());

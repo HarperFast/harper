@@ -3,15 +3,15 @@ import { open, asBinary } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
-import { get } from '../utility/environment/environmentManager.js';
-import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
-import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
-import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.js';
+import { get } from '../utility/environment/environmentManager.ts';
+import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
+import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
+import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
-import { describeSchema } from '../dataLayer/schemaDescribe.js';
+import { describeSchema } from '../dataLayer/schemaDescribe.ts';
 import { updateConfigValue } from '../config/configUtils.js';
-import * as hdbLogger from '../utility/logging/harper_logger.js';
+import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
 import { encodeBlobsWithFilePath } from '../resources/blob.ts';
@@ -163,7 +163,7 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 	const sourceDbisDb = rootStore.dbisDb;
 	const sourceAuditStore = rootStore.auditStore;
 	const targetEnv = open(new OpenEnvironmentObject(targetDatabasePath));
-	const targetDbisDb = targetEnv.openDB(INTERNAL_DBIS_NAME);
+	const targetDbisDb = targetEnv.openDB({ name: INTERNAL_DBIS_NAME });
 	let written;
 	let outstandingWrites = 0;
 	// we use a single transaction to get a snapshot, also we can't use snapshot: false on dupsort dbs
@@ -196,8 +196,8 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 			sourceDbi.decoderCopies = false;
 			sourceDbi.encoding = 'binary';
 			dbiInit.compression = newCompression;
-			const targetDbi = targetEnv.openDB(key, dbiInit);
-			targetDbi.encoder = null;
+			const targetDbi = (targetEnv as any).openDB(key, dbiInit);
+			(targetDbi as any).encoder = null;
 			console.log('copying', key, 'from', sourceDatabase, 'to', targetDatabasePath);
 			await copyDbi(sourceDbi, targetDbi, isPrimary, transaction);
 		}
@@ -291,7 +291,7 @@ function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: b
 	}
 	let db;
 	if (options.dupSort) {
-		db = new RocksIndexStore(path, options).open();
+		db = new (RocksIndexStore as any)(path, options).open();
 	} else {
 		db = RocksDatabase.open(path, options);
 		db.encoder.name = options.name;
@@ -385,6 +385,16 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 		name: INTERNAL_DBIS_NAME,
 	});
 
+	const STRUCTURES_KEY = Symbol.for('structures');
+	const copyStructures = (sourceDbi, storeName: string) => {
+		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
+		if (buffer) {
+			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(buffer));
+		}
+	};
+
+	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME);
+
 	let written;
 	let outstandingWrites = 0;
 	const transaction = sourceDbisDb.useReadTransaction();
@@ -413,6 +423,8 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				existingEncoder.saveStructures = tempEncoder.saveStructures;
 				existingEncoder.getStructures = tempEncoder.getStructures;
 			}
+
+			copyStructures(sourceDbi, key);
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
 			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction);
@@ -457,6 +469,10 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 					} of sourceDbi.getRange({ start, transaction, versions: true })) {
 						try {
 							start = key;
+							if (typeof key === 'symbol') {
+								skippedRecord++;
+								continue;
+							}
 							if (value == null) {
 								skippedRecord++;
 								continue;
@@ -497,6 +513,9 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 					for (const { key, value } of sourceDbi.getRange({ start, transaction })) {
 						try {
 							start = key;
+							if (typeof key === 'symbol') {
+								continue;
+							}
 							written = targetDbi.put(key, value);
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;

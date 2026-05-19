@@ -2,16 +2,16 @@ const path = require('node:path');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const uuid = require('uuid').v4;
-const env = require('#js/utility/environment/environmentManager');
+const env = require('#src/utility/environment/environmentManager');
 const assert = require('node:assert');
 const COMMON_TEST_TERMS = require('./commonTestTerms.js');
 const systemSchema = require('../json/systemSchema.json');
 const { table: ensure_table, resetDatabases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
-const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
+const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const { isMainThread } = require('node:worker_threads');
 const { getDatabases, databases } = require('#src/resources/databases');
-const { handleHDBError } = require('#js/utility/errors/hdbError');
+const { handleHDBError } = require('#src/utility/errors/hdbError');
 
 let envMgrInitSyncStub;
 

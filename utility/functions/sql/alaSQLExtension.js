@@ -8,7 +8,7 @@
 const _ = require('lodash');
 const mathjs = require('mathjs');
 const jsonata = require('jsonata');
-const hdbUtils = require('../../common_utils.js');
+const hdbUtils = require('../../common_utils.ts');
 
 module.exports = {
 	/***

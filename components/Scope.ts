@@ -1,5 +1,5 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'node:events';
 import { databaseEventsEmitter } from '../resources/databases.ts';
 import { server, type Server } from '../server/Server.ts';

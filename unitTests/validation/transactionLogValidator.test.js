@@ -5,7 +5,7 @@ const { expect } = chai;
 const {
 	readTransactionLogValidator,
 	deleteTransactionLogsBeforeValidator,
-} = require('#js/validation/transactionLogValidator');
+} = require('#src/validation/transactionLogValidator');
 
 describe('Test transactionLogValidator', () => {
 	it('Test readTransactionLogValidator', () => {

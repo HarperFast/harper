@@ -16,10 +16,10 @@ const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 let test_data = require('../../../../testData');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
-const search_utility = require('#js/utility/lmdb/searchUtility');
-const SearchObject = require('#js/dataLayer/SearchObject');
-const DropAttributeObject = require('#js/dataLayer/DropAttributeObject');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const search_utility = require('#src/utility/lmdb/searchUtility');
+const SearchObject = require('#src/dataLayer/SearchObject');
+const DropAttributeObject = require('#src/dataLayer/DropAttributeObject');
 const lmdb_drop_attribute = rewire('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbDropAttribute');
 const search_by_value = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByValue');
 const lmdb_create_schema = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');

@@ -25,7 +25,7 @@ const STATE_FILE_NAME = '.harper-config-state.json';
  * and ensure logger is initialized before use
  */
 function getLogger(): Logger {
-	const { loggerWithTag } = require('../utility/logging/harper_logger.js');
+	const { loggerWithTag } = require('../utility/logging/harper_logger');
 	return loggerWithTag('env-config');
 }
 

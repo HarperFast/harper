@@ -1,13 +1,13 @@
 'use strict';
 
-const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
-const lmdbTerms = require('../../../../utility/lmdb/terms.js');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
+const lmdbTerms = require('../../../../utility/lmdb/terms.ts');
 const hdbTerms = require('../../../../utility/hdbTerms.ts');
-const hdbUtils = require('../../../../utility/common_utils.js');
+const hdbUtils = require('../../../../utility/common_utils.ts');
 const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths.js');
-const searchUtility = require('../../../../utility/lmdb/searchUtility.js');
+const searchUtility = require('../../../../utility/lmdb/searchUtility.ts');
 const LMDBTransactionObject = require('../lmdbUtility/LMDBTransactionObject.js');
-const log = require('../../../../utility/logging/harper_logger.js');
+const log = require('../../../../utility/logging/harper_logger.ts');
 
 module.exports = readAuditLog;
 

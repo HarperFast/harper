@@ -12,7 +12,7 @@ import {
 import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
-import * as env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import * as graphqlHandler from '../resources/graphql.ts';
@@ -23,7 +23,7 @@ import * as login from '../resources/login.ts';
 import * as REST from '../server/REST.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
@@ -31,7 +31,7 @@ import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
 import { table } from '../resources/databases.ts';
-import { getHdbBasePath } from '../utility/environment/environmentManager.js';
+import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, getConfigPath } from '../config/configUtils.js';
@@ -88,7 +88,7 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 	});
 }
 
-export const TRUSTED_RESOURCE_PLUGINS = {
+export const TRUSTED_RESOURCE_PLUGINS: any = {
 	REST, // for backwards compatibility with older configs
 	rest: REST,
 	graphql: graphqlQueryHandler,

@@ -1,10 +1,10 @@
 'use strict';
 
 const rewire = require('rewire');
-const read_audit_log = require('#js/dataLayer/readAuditLog');
-const rw_read_audit_log = rewire('#js/dataLayer/readAuditLog');
-const ReadAuditLogObject = require('#js/dataLayer/ReadAuditLogObject');
-const env_mgr = require('#js/utility/environment/environmentManager');
+const read_audit_log = require('#src/dataLayer/readAuditLog');
+const rw_read_audit_log = rewire('#src/dataLayer/readAuditLog');
+const ReadAuditLogObject = require('#src/dataLayer/ReadAuditLogObject');
+const env_mgr = require('#src/utility/environment/environmentManager');
 const hdb_terms = require('#src/utility/hdbTerms');
 
 const sinon = require('sinon');

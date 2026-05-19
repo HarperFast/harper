@@ -45,7 +45,7 @@ function createTempFixture(fixture) {
 describe('ComponentV1', () => {
 	const componentName = 'test-component';
 
-	const harperLogger = require('#js/utility/logging/harper_logger');
+	const harperLogger = require('#src/utility/logging/harper_logger');
 
 	beforeEach(() => {
 		replace(harperLogger, 'warn', fake());

@@ -1,5 +1,5 @@
 import { TableSizeObject } from '../../TableSizeObject.ts';
-import logger from '../../../../utility/logging/harper_logger.js';
+import logger from '../../../../utility/logging/harper_logger.ts';
 import type { Table } from '../../../../resources/databases.ts';
 
 /**

@@ -4,9 +4,9 @@ import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
 import autoload from '@fastify/autoload';
-import * as env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import * as harperLogger from '../utility/logging/harper_logger.js';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
 import * as userSchema from '../security/user.ts';
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
@@ -187,7 +187,7 @@ async function buildServer(isHttps) {
 	});
 
 	app.register(requestTimePlugin);
-	await app.register(hdbCore);
+	await app.register(hdbCore as any);
 	await app.after();
 	registerContentHandlers(app);
 

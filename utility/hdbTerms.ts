@@ -337,6 +337,8 @@ export const SERVICE_ACTIONS_ENUM = {
 	UPGRADE: 'upgrade',
 	HELP: 'help',
 	STATUS: 'status',
+	LOGIN: 'login',
+	LOGOUT: 'logout',
 	OPERATION: 'operation',
 	RENEWCERTS: 'renew-certs',
 	COPYDB: 'copy-db',

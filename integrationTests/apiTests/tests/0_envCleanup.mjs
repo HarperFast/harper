@@ -7,7 +7,8 @@ import { timestamp } from '../utils/timestamp.mjs';
 describe('0. Environment Cleanup', () => {
 	beforeEach(timestamp);
 
-	it('Environment Cleanup', async () => {
+	it('Environment Cleanup', async function (t) {
+		if (process.platform === 'win32') return t.skip('Skipping dropSchema on Windows to avoid HarperDB crash.');
 		const response = await req().send({
 			operation: 'describe_all',
 		});

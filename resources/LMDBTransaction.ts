@@ -1,4 +1,3 @@
-import { Transaction as LMDBNativeTransaction } from 'lmdb';
 import {
 	DatabaseTransaction,
 	type CommitOptions,
@@ -6,8 +5,8 @@ import {
 	type CommitResolution,
 } from './DatabaseTransaction';
 import { cleanupUnusedBlobs } from './blob.ts';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
-import * as harperLogger from '../utility/logging/harper_logger.js';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
 import { Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
 import type { RootDatabaseKind } from './databases.ts';
@@ -25,11 +24,6 @@ export function replicationConfirmation(callback) {
 	confirmReplication = callback;
 }
 
-type ReadTransaction = LMDBNativeTransaction & {
-	openTimer?: number;
-	retryRisk?: number;
-};
-
 export class LMDBTransaction extends DatabaseTransaction {
 	#context: Context;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
@@ -37,33 +31,33 @@ export class LMDBTransaction extends DatabaseTransaction {
 	_timestamp = 0;
 	declare next: DatabaseTransaction;
 	declare stale: boolean;
-	overloadChecked: boolean;
+	declare overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 
-	getReadTxn(): ReadTransaction {
+	getReadTxn(): any {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.timeout = txnExpiration; // reset the timeout
 		if (this.stale) this.stale = false;
 		if (this.readTxn) {
-			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
+			if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 			return this.readTxn;
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 
 		// Get a read transaction from lmdb-js; make sure we do this first, as it can fail, we don't want to leave the transaction in a bad state with readTxnsUsed > 0
-		this.readTxn = this.db.useReadTransaction();
+		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
-		if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
-		trackedTxns.add(this);
+		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
+		trackedTxns.add(this as any);
 		return this.readTxn;
 	}
 
 	useReadTxn() {
 		this.getReadTxn();
 		if (this.readTxn) {
-			(this.readTxn as LMDBTransaction).use();
+			(this.readTxn as any).use();
 			this.readTxnsUsed++;
 		}
 		return this.readTxn;
@@ -74,10 +68,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 		if (this.readTxn instanceof RocksTransaction) {
 			// TODO: Implement this for RocksDB
 		} else {
-			(this.readTxn as LMDBTransaction).done();
+			(this.readTxn as any).done();
 		}
 		if (--this.readTxnsUsed === 0) {
-			trackedTxns.delete(this);
+			trackedTxns.delete(this as any);
 			this.readTxn = null;
 		}
 	}
@@ -88,7 +82,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 	}
 
-	addWrite(operation: TransactionWrite) {
+	addWrite(operation: TransactionWrite): any {
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
@@ -97,7 +91,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
 			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
-			return immediateTxn.commit({});
+			const result = immediateTxn.commit({});
+			if (result?.then) {
+				operation.promise = result;
+			} else {
+				operation.result = result;
+			}
+			return result;
 		}
 
 		this.writes.push(operation); // standard path, add to current transaction
@@ -111,7 +111,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(options: CommitOptions = {}): Promise<CommitResolution> {
+	commit(options: CommitOptions = {}): any {
+		options = options || {};
 		let txnTime = this.timestamp;
 		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();
 		if (!options.timestamp) options.timestamp = txnTime;
@@ -190,7 +191,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 						write.entry = write.store.getEntry(write.key);
 					}
 
-					const conditionResolution = write.store.ifVersion(write.key, write.entry?.version ?? null, nextCondition);
+					const conditionResolution = (write.store as any).ifVersion(
+						write.key,
+						write.entry?.version ?? null,
+						nextCondition
+					);
 					resolution = resolution || conditionResolution;
 				} else {
 					nextCondition();
@@ -249,7 +254,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 							completions.push(
 								confirmReplication(
 									databaseName,
-									lastWrite.store.getEntry(lastWrite.key).localTime,
+									(lastWrite.store.getEntry(lastWrite.key) as any).localTime,
 									this.replicatedConfirmation
 								)
 							);
@@ -286,12 +291,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 		if (this.next) {
 			// now run any other transactions
 			const nextResolution = this.next?.commit(options);
-			if (nextResolution?.then)
-				return nextResolution?.then((nextResolution) => ({
+			if ((nextResolution as any)?.then)
+				return (nextResolution as any)?.then((nextResolution) => ({
 					txnTime,
 					next: nextResolution,
 				}));
-			txnResolution.next = nextResolution;
+			txnResolution.next = nextResolution as any;
 		}
 		return txnResolution;
 	}
@@ -305,7 +310,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		// reset the transaction
 		this.writes = [];
 	}
-	save() {
+	save(..._args: any[]): any {
 		// noop for LMDB
 	}
 }
@@ -315,11 +320,15 @@ export class ImmediateTransaction extends LMDBTransaction {
 		super();
 		this.db = db;
 	}
-	save(_transaction: ImmediateTransaction, _isRetry = false) {
+	save(..._args: any[]): any {
 		return this.commit();
 	}
+	// @ts-expect-error accessor overriding property
 	get timestamp() {
 		return this._timestamp || (this._timestamp = getNextMonotonicTime());
+	}
+	set timestamp(value: number) {
+		this._timestamp = value;
 	}
 	getReadTxn() {
 		return; // no transaction means read latest
@@ -333,10 +342,10 @@ function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
-				const url = txn.getContext()?.url;
+				const url = (txn.getContext() as any)?.url;
 				harperLogger.error(
 					`Transaction was open too long and has been committed, from table: ${
-						txn.db?.name + (url ? ' path: ' + url : '')
+						(txn.db as any)?.name + (url ? ' path: ' + url : '')
 					}`
 				);
 				// reset the transaction

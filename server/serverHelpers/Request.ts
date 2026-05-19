@@ -32,13 +32,33 @@ export class Request {
 	public method: string;
 	public url: string;
 	public headers: RequestHeaders;
+	public requestId?: number;
+	public isOperationsServer?: boolean;
+	public handlerPath?: string;
+	public __harperdbRequestUpgraded?: boolean;
+	public __harperRequestUpgraded?: boolean;
+	public createdResource?: boolean;
+	public newLocation?: string;
 	public isWebSocket?: boolean;
 	public user?: any; // User object can be attached during authentication
 	public response: {
 		status?: number;
 		headers: ResponseHeaders;
 	};
-	public __harperRequestUpgraded: boolean;
+	public responseHeaders?: any;
+	public expiresAt?: number;
+	public onlyIfCached?: boolean;
+	public noCache?: boolean;
+	public noCacheStore?: boolean;
+	public staleIfError?: boolean;
+	public mustRevalidate?: boolean;
+	public replicatedConfirmation?: number;
+	public replicateTo?: any;
+	public replicateFrom?: any;
+	public data?: any;
+	public authorize?: boolean;
+	public lastModified?: number;
+	public lastRefreshed?: number;
 
 	constructor(nodeRequest: IncomingMessage, nodeResponse: NodeServerResponse) {
 		this.method = nodeRequest.method;
@@ -395,14 +415,10 @@ class RequestBody {
 	}
 }
 
-/**
- * Body adapter for Bun requests. Converts the Web ReadableStream to a Node-compatible
- * event-based interface (.on('data'), .on('end')) and .pipe().
- */
 class BunRequestBody {
-	#webRequest: globalThis.Request;
+	#webRequest: any;
 	#readable: any; // lazily created Readable stream
-	constructor(webRequest: globalThis.Request) {
+	constructor(webRequest: any) {
 		this.#webRequest = webRequest;
 	}
 	#getReadable() {

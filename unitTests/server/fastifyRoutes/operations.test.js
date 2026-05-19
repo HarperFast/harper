@@ -9,7 +9,7 @@ const tar = require('tar-fs');
 const testUtils = require('../../testUtils.js');
 testUtils.getMockTestPath();
 const operations = rewire('#js/components/operations');
-const env = require('#js/utility/environment/environmentManager');
+const env = require('#src/utility/environment/environmentManager');
 const { expect } = chai;
 const configUtils = require('#js/config/configUtils');
 

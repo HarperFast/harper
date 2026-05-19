@@ -8,7 +8,7 @@ const BASE_PATH = testUtils.setupTestDBPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
 const lmdb_create_txn_envs = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const LMDB_ERRORS = require('../../../../commonTestErrors').LMDB_ERRORS_ENUM;
 const assert = require('assert');

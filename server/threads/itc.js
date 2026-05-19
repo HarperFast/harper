@@ -1,8 +1,8 @@
 'use strict';
 
-const hdbUtils = require('../../utility/common_utils.js');
+const hdbUtils = require('../../utility/common_utils.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
-const { ITC_ERRORS } = require('../../utility/errors/commonErrors.js');
+const { ITC_ERRORS } = require('../../utility/errors/commonErrors.ts');
 const { threadId, isMainThread } = require('worker_threads');
 const { onMessageFromWorkers, broadcastWithAcknowledgement } = require('./manageThreads.js');
 

@@ -9,10 +9,10 @@ const { expect } = chai;
 chai.use(sinon_chai);
 const fs = require('fs');
 const rewire = require('rewire');
-const validator = require('#js/validation/validationWrapper');
-let file_load_validator = rewire('#js/validation/fileLoadValidator');
-const common_utils = require('#js/utility/common_utils');
-const log = require('#js/utility/logging/harper_logger');
+const validator = require('#src/validation/validationWrapper').default || require('#src/validation/validationWrapper');
+let file_load_validator = rewire('#src/validation/fileLoadValidator');
+const common_utils = require('#src/utility/common_utils');
+const log = require('#src/utility/logging/harper_logger');
 const { getDatabases } = require('#src/resources/databases');
 
 const FAKE_FILE_PATH = '/thisfilepath/wont/exist.csv';
@@ -118,7 +118,7 @@ describe('Test fileLoadValidator module', () => {
 
 	after(() => {
 		delete global.hdb_schema['hats'];
-		file_load_validator = rewire('#js/validation/fileLoadValidator');
+		file_load_validator = rewire('#src/validation/fileLoadValidator');
 		sinon.restore();
 	});
 

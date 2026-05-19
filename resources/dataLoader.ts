@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import { Databases, databases, table, Tables, tables } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads';
-import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.js';
-import { ClientError } from '../utility/errors/hdbError.js';
-import harperLogger from '../utility/logging/harper_logger.js';
+import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import { Attribute } from './Table.ts';
 import { FileEntry } from '../components/EntryHandler.ts';
 
@@ -42,7 +42,7 @@ export function computeRecordHash(record: Record<string, any>): string {
  * Gets or creates the hash tracking table in the system database.
  * Lazy-initializes the table on first access.
  */
-function getHashTrackingTable(databasesRef: Databases) {
+function getHashTrackingTable(databasesRef: Databases): any {
 	// Always check databasesRef first (important for testing with mocks)
 	if (databasesRef.system && databasesRef.system[DATA_LOADER_HASH_TABLE]) {
 		return databasesRef.system[DATA_LOADER_HASH_TABLE];

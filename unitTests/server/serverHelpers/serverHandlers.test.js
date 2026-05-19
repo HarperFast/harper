@@ -9,8 +9,8 @@ const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const serverHandlers_rw = rewire('#js/server/serverHelpers/serverHandlers');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
-const logger = require('#js/utility/logging/harper_logger');
-const { hdbErrors } = require('#js/utility/errors/hdbError');
+const logger = require('#src/utility/logging/harper_logger');
+const { hdbErrors } = require('#src/utility/errors/hdbError');
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 

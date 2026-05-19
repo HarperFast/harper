@@ -18,7 +18,7 @@ describe('ComponentLoader Status Integration', function () {
 		tempDir = mkdtempSync(path.join(tmpdir(), 'harper-test-components-'));
 
 		// Mock environment to use our temp directory
-		const env = require('#js/utility/environment/environmentManager');
+		const env = require('#src/utility/environment/environmentManager');
 		sandbox.stub(env, 'get').callsFake((key) => {
 			if (key === 'COMPONENTSROOT') {
 				return tempDir;

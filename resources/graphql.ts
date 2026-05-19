@@ -44,7 +44,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			return;
 		}
 
-		await processGraphQLSchema(entry.contents, entry.urlPath, entry.absolutePath, scope.resources);
+		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
 	});
 	return once(entryHandler, 'initialLoadComplete');
 }
@@ -63,7 +63,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 				const typeName = definition.name.value;
 				// use type name as the default table
 				const properties = [];
-				const typeDef = { table: null, database: null, properties };
+				const typeDef: any = { table: null, database: null, properties };
 				types.set(typeName, typeDef);
 				resources.allTypes.set(typeName, typeDef);
 				for (const directive of definition.directives) {

@@ -1,5 +1,5 @@
 import { parse } from 'dotenv';
-import logger from '../utility/logging/harper_logger.js';
+import logger from '../utility/logging/harper_logger.ts';
 import { Scope } from '../components/Scope.ts';
 
 export function handleApplication(scope: Scope) {
