@@ -27,12 +27,12 @@ threads:
     waitForDebugger: false
 ```
 
-| Property          | Type      | Default       | Description                                                                                                                                                                  |
-| ----------------- | --------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `port`            | `integer` | `9229`        | Port for the main thread inspector. Use this when you only need to debug startup or main-thread behavior.                                                                    |
-| `startingPort`    | `integer` | _(none)_      | When set, each worker thread gets a sequential inspector port starting from this value. Thread N uses port `startingPort + N`. The main thread keeps `port`.                |
-| `host`            | `string`  | `127.0.0.1`   | Interface the inspector binds to. Leave on loopback in production; use `0.0.0.0` only when tunneling over SSH or operating in a trusted network.                              |
-| `waitForDebugger` | `boolean` | `false`       | Pause each thread at startup until a debugger attaches. Useful for catching bugs that occur during component initialization.                                                  |
+| Property          | Type      | Default     | Description                                                                                                                                                  |
+| ----------------- | --------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `port`            | `integer` | `9229`      | Port for the main thread inspector. Use this when you only need to debug startup or main-thread behavior.                                                    |
+| `startingPort`    | `integer` | _(none)_    | When set, each worker thread gets a sequential inspector port starting from this value. Thread N uses port `startingPort + N`. The main thread keeps `port`. |
+| `host`            | `string`  | `127.0.0.1` | Interface the inspector binds to. Leave on loopback in production; use `0.0.0.0` only when tunneling over SSH or operating in a trusted network.             |
+| `waitForDebugger` | `boolean` | `false`     | Pause each thread at startup until a debugger attaches. Useful for catching bugs that occur during component initialization.                                 |
 
 ## Attaching Chrome DevTools
 
@@ -48,15 +48,15 @@ Add an entry per thread to `.vscode/launch.json`. The example below attaches to 
 
 ```json
 {
-    "version": "0.2.0",
-    "configurations": [
-        { "type": "node", "request": "attach", "name": "Harper main", "port": 9229 },
-        { "type": "node", "request": "attach", "name": "Harper worker 1", "port": 9230 },
-        { "type": "node", "request": "attach", "name": "Harper worker 2", "port": 9231 }
-    ],
-    "compounds": [
-        { "name": "Harper (all threads)", "configurations": ["Harper main", "Harper worker 1", "Harper worker 2"] }
-    ]
+	"version": "0.2.0",
+	"configurations": [
+		{ "type": "node", "request": "attach", "name": "Harper main", "port": 9229 },
+		{ "type": "node", "request": "attach", "name": "Harper worker 1", "port": 9230 },
+		{ "type": "node", "request": "attach", "name": "Harper worker 2", "port": 9231 }
+	],
+	"compounds": [
+		{ "name": "Harper (all threads)", "configurations": ["Harper main", "Harper worker 1", "Harper worker 2"] }
+	]
 }
 ```
 
@@ -92,7 +92,9 @@ threads:
 
 ### `threads.heapSnapshotNearLimit`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `false`
+Type: `boolean`
+
+Default: `false`
 
 When the V8 heap approaches the limit set by `threads.maxHeapMemory`, the thread writes a `.heapsnapshot` file to the Harper root directory before the process exits with an out-of-memory error. The snapshot can be loaded into Chrome DevTools (Memory tab → **Load profile**) to identify retained objects responsible for the leak.
 

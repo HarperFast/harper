@@ -209,19 +209,25 @@ analytics:
 
 ### `analytics.aggregatePeriod`
 
-Type: `number` (seconds) &nbsp;•&nbsp; Default: `60`
+Type: `number` (seconds)
+
+Default: `60`
 
 How frequently Harper aggregates raw per-second entries into the `hdb_analytics` summary table. Lowering this gives higher-resolution aggregate data at the cost of more frequent aggregation work and more rows in `hdb_analytics`.
 
 ### `analytics.storageInterval`
 
-Type: `number` &nbsp;•&nbsp; Default: `10`
+Type: `number`
+
+Default: `10`
 
 Number of aggregation cycles between disk-volume measurements. With the default `aggregatePeriod` of `60` and `storageInterval` of `10`, Harper records `database-size`, `table-size`, and `storage-volume` metrics every 10 minutes. Set to `0` to disable storage-volume sampling entirely — useful when running on systems where `statfs` is expensive or unavailable (e.g., some FUSE mounts).
 
 ### `analytics.replicate`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `false`
+Type: `boolean`
+
+Default: `false`
 
 When enabled, aggregate analytics entries are replicated across the cluster so a single peer can answer aggregate queries for the whole topology. Raw per-thread entries (`hdb_raw_analytics`) are always node-local. Enable when running a centralized analytics consumer; leave disabled in large clusters to avoid replication overhead for high-cardinality metrics.
 

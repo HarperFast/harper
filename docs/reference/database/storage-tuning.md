@@ -12,7 +12,9 @@ For a quick reference of every option, see [Configuration Options — `storage`]
 
 ### `storage.writeAsync`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `false`
+Type: `boolean`
+
+Default: `false`
 
 Disables `fsync` on commit. Writes return as soon as data is queued to the page cache, dramatically increasing throughput on write-heavy workloads.
 
@@ -31,7 +33,9 @@ storage:
 
 ### `storage.maxTransactionQueueTime`
 
-Type: `duration string` &nbsp;•&nbsp; Default: `45s`
+Type: `string` (duration)
+
+Default: `45s`
 
 The maximum estimated time a write may wait in the commit queue before Harper rejects new writes with HTTP 503. Acts as backpressure when downstream disk I/O cannot keep up with incoming writes.
 
@@ -46,16 +50,18 @@ storage:
 
 ### `storage.compression`
 
-Type: `boolean | object` &nbsp;•&nbsp; Default: `true`
+Type: `boolean | object`
+
+Default: `true`
 
 LZ4 record compression is enabled by default. It typically reduces on-disk size by 2–4× for JSON-like records with modest CPU cost.
 
 For object form:
 
-| Property     | Type     | Description                                                                                                                  |
-| ------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Property     | Type     | Description                                                                                                                                                                        |
+| ------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dictionary` | `string` | Path to a [Zstd-style](https://github.com/facebook/zstd) compression dictionary. Training a dictionary on representative records improves the compression ratio for small records. |
-| `threshold`  | `number` | Records smaller than this many bytes are stored uncompressed. Useful when small records dominate and the overhead of compression headers outweighs gains. |
+| `threshold`  | `number` | Records smaller than this many bytes are stored uncompressed. Useful when small records dominate and the overhead of compression headers outweighs gains.                          |
 
 ```yaml
 storage:
@@ -75,7 +81,9 @@ storage:
 
 ### `storage.blobPaths`
 
-Type: `string | string[]` &nbsp;•&nbsp; Default: `<rootPath>/blobs`
+Type: `string | string[]`
+
+Default: `<rootPath>/blobs`
 
 Blob attributes (declared with `Blob` in `schema.graphql` or written via [`createBlob`](./api.md)) are stored outside the main database files. `blobPaths` accepts a single path or an array — Harper distributes blob writes across the listed paths.
 
@@ -98,7 +106,9 @@ Blobs are not relocated when `blobPaths` changes — only new blobs honor the up
 
 ### `storage.prefetchWrites`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `true`
+Type: `boolean`
+
+Default: `true`
 
 Before a write transaction commits, Harper loads the affected pages into memory if not already present. This avoids stalling the commit on a page fault.
 
@@ -106,19 +116,25 @@ Disable only when memory pressure makes the prefetch counterproductive — for e
 
 ### `storage.noReadAhead`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `false`
+Type: `boolean`
+
+Default: `false`
 
 Advises the OS via `posix_fadvise` not to read ahead beyond the requested pages. Useful for random-access workloads on rotational disks where speculative reads pollute the page cache. Leave at the default for sequential or scan-heavy workloads.
 
 ### `storage.pageSize`
 
-Type: `number` &nbsp;•&nbsp; Default: OS page size (typically 4096 bytes)
+Type: `number`
+
+Default: OS page size (typically 4096 bytes)
 
 Changes the database page size. Larger pages can reduce write amplification for large records but increase the minimum I/O unit. **Only set this on a fresh database** — existing files cannot be migrated to a different page size.
 
 ### `storage.caching`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `true`
+Type: `boolean`
+
+Default: `true`
 
 In-memory record caching of decoded records. Disable to reduce heap usage when records are large and unlikely to be re-read in the same process.
 
@@ -128,19 +144,25 @@ In-memory record caching of decoded records. Disable to reduce heap usage when r
 
 ### `storage.reclamation.threshold`
 
-Type: `number` (ratio) &nbsp;•&nbsp; Default: `0.4`
+Type: `number` (ratio)
+
+Default: `0.4`
 
 Minimum fraction of the volume that should remain free. When free space falls below this ratio, reclamation begins evicting expired and lightly-used entries from caching tables. A larger value reclaims earlier and more aggressively; a smaller value defers reclamation closer to the volume filling.
 
 ### `storage.reclamation.interval`
 
-Type: `duration string` &nbsp;•&nbsp; Default: `1h`
+Type: `string` (duration)
+
+Default: `1h`
 
 How often Harper checks free space against the threshold. Lower intervals catch fast-filling volumes sooner at the cost of more periodic I/O.
 
 ### `storage.reclamation.evictionFactor`
 
-Type: `number` &nbsp;•&nbsp; Default: `100000`
+Type: `number`
+
+Default: `100000`
 
 Tunes the heuristic used to evict entries early when reclamation priority is high. The heuristic considers each entry's remaining time-to-expiration, record size, and how long ago it was last refreshed. Lowering this evicts more aggressively when free space is critical; raising it preserves entries longer.
 
@@ -158,13 +180,17 @@ For a deeper discussion of how `sourcedFrom` interacts with reclamation, see [Re
 
 ### `storage.compactOnStart`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `false`
+Type: `boolean`
+
+Default: `false`
 
 Runs [compaction](./compaction.md) on all non-system databases at startup. Useful when deployments include scheduled restarts and you want to reclaim fragmented space as part of the maintenance window.
 
 ### `storage.compactOnStartKeepBackup`
 
-Type: `boolean` &nbsp;•&nbsp; Default: `false`
+Type: `boolean`
+
+Default: `false`
 
 Retains the pre-compaction backup files after `compactOnStart` runs. Recommended for the first few cycles in production while validating compaction behavior; the backups can be removed manually once confidence is established.
 

@@ -62,12 +62,12 @@ Durable sessions in Harper are persisted as records in the `hdb_durable_session`
 ```javascript
 // MQTT v5 with the `mqtt` npm package
 mqtt.connect('mqtts://harper.example.com:8883', {
-    clientId: 'sensor-42',
-    clean: false, // request a durable session
-    protocolVersion: 5,
-    properties: {
-        sessionExpiryInterval: 86400, // keep session for 24h after disconnect
-    },
+	clientId: 'sensor-42',
+	clean: false, // request a durable session
+	protocolVersion: 5,
+	properties: {
+		sessionExpiryInterval: 86400, // keep session for 24h after disconnect
+	},
 });
 ```
 
