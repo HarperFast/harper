@@ -15,6 +15,12 @@
  * a runtime behavior difference rather than a bug in mergeHeaders. The legacy
  * `test:integration:api-tests` skips Bun entirely, so this code path was
  * never previously exercised under Bun.
+ *
+ * Skipped on Windows: `restart_service http_workers` crashes the Harper
+ * instance on Windows (single-worker model + native-binding cleanup
+ * collision during overlapping restart). Tracked as HarperFast/harper#549.
+ * The legacy `27_headerTests.mjs` worked around the slow component install
+ * with a local fixture but ultimately depends on the same restart path.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -71,7 +77,11 @@ export class CookieWithExpiresTest extends Resource {
 
 const CONFIG_YAML = 'rest: true\njsResource:\n  files: resources.js';
 
-suite('HTTP Header / Set-Cookie handling', { skip: process.env.HARPER_RUNTIME === 'bun' }, (ctx) => {
+// Skipped on Windows: `restart_service http_workers` crashes the Harper instance
+// (HarperFast/harper#549). Matches the per-suite skip pattern in 23_blob.mjs.
+const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+
+suite('HTTP Header / Set-Cookie handling', { skip: skipSuite }, (ctx) => {
 	let client;
 
 	before(async () => {

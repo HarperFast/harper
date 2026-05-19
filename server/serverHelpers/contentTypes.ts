@@ -117,7 +117,7 @@ const ndjsonHandler = {
 			.split('\n')
 			.map((line) => line.trim())
 			.filter(Boolean)
-			.map(JSONParse);
+			.map((line) => JSONParse(line));
 	},
 	q: 0.7,
 };

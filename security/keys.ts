@@ -37,7 +37,7 @@ import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
-const CERT_ATTRIBUTES = [
+export const CERT_ATTRIBUTES = [
 	{ name: 'countryName', value: 'USA' },
 	{ name: 'stateOrProvinceName', value: 'Colorado' },
 	{ name: 'localityName', value: 'Denver' },
@@ -709,7 +709,7 @@ let caCerts = new Map();
  * @param mtlsOptions
  * @return {(function(*, *): (*|undefined))|*}
  */
-export function createTLSSelector(type, mtlsOptions) {
+export function createTLSSelector(type, mtlsOptions?): any {
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;

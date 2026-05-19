@@ -111,6 +111,7 @@ export type OperationDefinition = {
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
+	parametersSchema?: any[];
 };
 
 /**
