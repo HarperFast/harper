@@ -924,7 +924,11 @@ describe('Subscription replay', () => {
 			await T.put(40000, { name: 'wake_me' });
 			// give the committed listener + microtask a tick to resolve
 			await delay(50);
-			assert.equal(resolved, true, 'whenNextTransaction should resolve when a commit lands with no per-key subscribers');
+			assert.equal(
+				resolved,
+				true,
+				'whenNextTransaction should resolve when a commit lands with no per-key subscribers'
+			);
 		});
 
 		it('resumes delivery after a subscribe/end/subscribe cycle with writes in between', async () => {
