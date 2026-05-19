@@ -26,8 +26,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let lastTimestamp = 0;
 		let writes = 0;
 		let skipped = 0;
-		const txnLog: RocksTransactionLogStore = rootStore.auditStore;
-		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true })) {
+		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
+		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true }) as any) {
 			const {
 				type,
 				tableId,
@@ -47,11 +47,17 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				}
 				const Table = tableById.get(tableId);
 				if (!Table) continue;
-				const context: Context = { nodeId, alreadyLogged: true, version, expiresAt, user: { name: username } };
-				const { primaryStore } = Table;
+				const context: Context = {
+					nodeId,
+					alreadyLogged: true,
+					version,
+					expiresAt,
+					user: { username },
+				} as any;
+				const { primaryStore } = Table as any;
 				const target = new RequestTarget();
 				target.id = null;
-				const tableInstance = Table.getResource(target, context, {});
+				const tableInstance: any = Table.getResource(target, context, {});
 				// TODO: If this throws an error due to being unable to access structures, we need to iterate through
 				// other transaction logs to get the latest structure. Ultimately we may have to skip records
 				if (!warnedReplayHappening) {
@@ -157,9 +163,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		} catch (error) {
 			logger.error('Error committing replay transaction', error);
 		}
-		if (writes > 0) logger.warn(`Replayed ${writes} records in ${rootStore.databaseName} database`);
+		if (writes > 0) logger.warn(`Replayed ${writes} records in ${(rootStore as any).databaseName} database`);
 		if (skipped > 0)
-			logger.warn(`Skipped ${skipped} unrecoverable audit entries in ${rootStore.databaseName} database during replay`);
+			logger.warn(
+				`Skipped ${skipped} unrecoverable audit entries in ${(rootStore as any).databaseName} database during replay`
+			);
 		// we never actually release the lock because we only want to ever run one time
 		// rootStore.unlock('replayLogs');
 	});

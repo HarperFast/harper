@@ -709,7 +709,7 @@ let caCerts = new Map();
  * @param mtlsOptions
  * @return {(function(*, *): (*|undefined))|*}
  */
-export function createTLSSelector(type, mtlsOptions) {
+export function createTLSSelector(type, mtlsOptions?): any {
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;

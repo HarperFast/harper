@@ -77,7 +77,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
 	subscription.startTime = startTime;
-	let subscriptions: any[] = tableSubscriptions.get(key);
+	let subscriptions: any = tableSubscriptions.get(key);
 
 	if (subscriptions) subscriptions.push(subscription);
 	else {
@@ -96,7 +96,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
  */
 class Subscription extends IterableEventQueue {
 	listener: (recordId: Id, auditEntry: any, localTime: number, beginTxn: boolean) => void;
-	subscriptions: [];
+	subscriptions: any;
 	startTime?: number;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
@@ -134,7 +134,7 @@ const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
 // Sized to keep per-batch wall time within a few ms on commodity hardware while keeping the
 // scheduling overhead amortized; tune if profiling shows different shapes.
 const NOTIFY_BATCH_SIZE = 256;
-function notifyFromTransactionData(subscriptions, auditLogIterable, allowYield = false) {
+function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield = false) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
 	// If no real subscribers are attached, skip the iteration. The reusable iterator preserves its
 	// position and will pick up from where we left it once a subscriber is added.
