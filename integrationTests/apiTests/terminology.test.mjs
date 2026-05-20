@@ -18,7 +18,7 @@ import { createApiClient } from './utils/client.mjs';
 import { awaitJobCompleted } from './utils/operations.mjs';
 
 // Resolve the CSV fixture path relative to this file so Harper can read it.
-const SUPPLIERS_CSV = path.join(fileURLToPath(import.meta.url), '../../data/Suppliers.csv');
+const SUPPLIERS_CSV = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data/Suppliers.csv');
 
 suite('Terminology aliases (database / primary_key)', (ctx) => {
 	let client;
@@ -78,9 +78,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 		await client
 			.req()
 			.send({ operation: 'create_attribute', database: 'tuckerdoodle', table: 'todo', attribute: 'date' })
-			.expect((r) =>
-				assert.equal(r.body.message, "attribute 'tuckerdoodle.todo.date' successfully created.", r.text)
-			)
+			.expect((r) => assert.equal(r.body.message, "attribute 'tuckerdoodle.todo.date' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -385,9 +383,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 		await client
 			.req()
 			.send({ operation: 'drop_table', database: 'tuckerdoodle', table: 'todo' })
-			.expect((r) =>
-				assert.equal(r.body.message, "successfully deleted table 'tuckerdoodle.todo'", r.text)
-			)
+			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'tuckerdoodle.todo'", r.text))
 			.expect(200);
 	});
 
