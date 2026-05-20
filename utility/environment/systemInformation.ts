@@ -3,6 +3,7 @@ import path from 'node:path';
 import si from 'systeminformation';
 import logger from '../logging/harper_logger.ts';
 import * as hdbTerms from '../hdbTerms.ts';
+import { getFreeSpaceBasis, getQuotaInfo, getDirectoryUsageBytes } from '../../server/storageReclamation.ts';
 import { lmdbGetTableSize } from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize.ts';
 import { getThreadInfo } from '../../server/threads/manageThreads.js';
 import * as env from './environmentManager.ts';
@@ -264,6 +265,9 @@ type DiskInfo = {
 	io?: Pick<si.Systeminformation.DisksIoData, 'rIO' | 'wIO' | 'tIO'>;
 	read_write?: Pick<si.Systeminformation.FsStatsData, 'rx' | 'tx' | 'wx'>;
 	size?: si.Systeminformation.FsSizeData[];
+	free_space_basis?: 'quota' | 'filesystem';
+	quota_size_bytes?: number;
+	quota_used_bytes?: number;
 };
 
 /**
@@ -272,6 +276,16 @@ type DiskInfo = {
  */
 export async function getDiskInfo(): Promise<DiskInfo> {
 	const disk: DiskInfo = {};
+	disk.free_space_basis = getFreeSpaceBasis();
+	const quotaInfo = getQuotaInfo();
+	if (quotaInfo) {
+		disk.quota_size_bytes = quotaInfo.quotaSizeBytes;
+		try {
+			disk.quota_used_bytes = await getDirectoryUsageBytes(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
+		} catch (e) {
+			logger.error(`error measuring quota usage: ${e}`);
+		}
+	}
 	try {
 		if (!env.get(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_SYSINFO_DISK)) return disk;
 

@@ -393,4 +393,57 @@ describe('storageReclamation module', function () {
 			assert.ok(okPathHandler.calledOnce);
 		});
 	});
+
+	describe('quota mode', function () {
+		const QUOTA_100GB = 100 * 1024 * 1024 * 1024;
+
+		it('getFreeSpaceBasis returns filesystem when no quota configured', function () {
+			assert.equal(storageReclamation.getFreeSpaceBasis(), 'filesystem');
+		});
+
+		it('getFreeSpaceBasis returns quota when QUOTA_SIZE_BYTES is set', function () {
+			storageReclamation.__set__('QUOTA_SIZE_BYTES', QUOTA_100GB);
+			assert.equal(storageReclamation.getFreeSpaceBasis(), 'quota');
+			storageReclamation.__set__('QUOTA_SIZE_BYTES', undefined);
+		});
+
+		it('getQuotaInfo returns undefined when no quota configured', function () {
+			assert.equal(storageReclamation.getQuotaInfo(), undefined);
+		});
+
+		it('getQuotaInfo returns quota size when QUOTA_SIZE_BYTES is set', function () {
+			storageReclamation.__set__('QUOTA_SIZE_BYTES', QUOTA_100GB);
+			const info = storageReclamation.getQuotaInfo();
+			assert.deepEqual(info, { quotaSizeBytes: QUOTA_100GB });
+			storageReclamation.__set__('QUOTA_SIZE_BYTES', undefined);
+		});
+
+		it('quota-aware ratio triggers reclamation when usage exceeds threshold headroom', async function () {
+			// Quota: 100GB, used: 95GB → 5% available → below 40% threshold → should trigger
+			const customGetter = sandbox.stub().resolves(0.05);
+			storageReclamation.setAvailableSpaceRatioGetter(customGetter);
+
+			const handler = sandbox.stub().returns(Promise.resolve());
+			storageReclamation.onStorageReclamation('/test/path', handler, true);
+
+			await storageReclamation.runReclamationHandlers();
+
+			assert.ok(handler.calledOnce);
+			// priority = 0.4 / 0.05 = 8
+			assert.equal(handler.firstCall.args[0], 8);
+		});
+
+		it('quota-aware ratio does not trigger reclamation when headroom is healthy', async function () {
+			// Quota: 100GB, used: 50GB → 50% available → above 40% threshold → no reclamation
+			const customGetter = sandbox.stub().resolves(0.5);
+			storageReclamation.setAvailableSpaceRatioGetter(customGetter);
+
+			const handler = sandbox.stub();
+			storageReclamation.onStorageReclamation('/test/path', handler, true);
+
+			await storageReclamation.runReclamationHandlers();
+
+			assert.ok(handler.notCalled);
+		});
+	});
 });

@@ -798,6 +798,31 @@ export function transformReq(req: any) {
 	if (req.database) req.schema = req.database;
 }
 
+export function convertToBytes(size: any): number | undefined {
+	if (size == null) return undefined;
+	if (typeof size === 'number') return size;
+	if (typeof size === 'string') {
+		const num = parseFloat(size);
+		const suffix = size.replace(/^[\d.]+\s*/, '').toUpperCase();
+		switch (suffix) {
+			case 'K':
+			case 'KB':
+				return Math.floor(num * 1024);
+			case 'M':
+			case 'MB':
+				return Math.floor(num * 1024 * 1024);
+			case 'G':
+			case 'GB':
+				return Math.floor(num * 1024 * 1024 * 1024);
+			case 'T':
+			case 'TB':
+				return Math.floor(num * 1024 * 1024 * 1024 * 1024);
+			default:
+				return Math.floor(num);
+		}
+	}
+	return undefined;
+}
 export function convertToMS(interval: any) {
 	let seconds = 0;
 	if (typeof interval === 'number') seconds = interval;
