@@ -269,8 +269,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				}
 			}
 			if (sseError) {
-				const errMsg =
-					sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
+				const errMsg = sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
 				console.error(`error: ${errMsg}`);
 				process.exit(1);
 			}
