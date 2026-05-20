@@ -23,15 +23,23 @@ Resource classes have static methods that directly map to RESTful methods or HTT
 
 ## Resource Static Methods
 
-Static methods are defined on a Resource class and called when requests are routed to the resource. This is the preferred way to interact with tables and resources from application code. You can override these methods to define custom behavior for these methods and for HTTP requests.
+Static methods are defined on a Resource class and are the preferred way to interact with tables and resources from application code. They handle transaction setup, access checks, and request parsing automatically. These methods also map to RESTful HTTP verbs and can be overridden to define custom behavior for requests.
 
-### `get(target: RequestTarget | Id, context?: Resource | Context): Promise<object> | ExtendedIterable`
+### `get(target: RequestTarget | Id | Query, context?: Resource | Context): Promise<object> | ExtendedIterable`
 
-This can be called to retrieve a record by primary key.
+Retrieves a record by primary key, or queries for records when given a `Query` object or a collection `RequestTarget`.
 
 ```javascript
 // By primary key
 const product = await Product.get(34);
+
+// By query object with select
+const product = await Product.get({ id: 34, select: ['name', 'price'] });
+
+// Iterate a collection query
+for await (const record of Product.get({ conditions: [{ attribute: 'inStock', value: true }] })) {
+	// ...
+}
 ```
 
 The default `get` method returns a `RecordObject` — a frozen plain object with the record's properties plus `getUpdatedTime()` and `getExpiresAt()`. The record object is immutable because it represents the current state of the record in the database.
@@ -49,17 +57,14 @@ class MyResource extends Resource {
 }
 ```
 
-Again, the default `get` method (available through `super.get()` inside the `get` method) returns a frozen object. If you want a modified object from this record, you can copy the record and change properties. This is most conveniently done with the spread operator:
+If you want a modified object from this record, you can copy the record and change properties:
 
 ```javascript
 	static async get(target) {
 		const record = await super.get(target);
-		const alteredRecord = { ...record, changedProperty: 'value' };
-		return alteredRecord;
+		return { ...record, changedProperty: 'value' };
 	}
 ```
-
-The return value of `get` method on a `Table` is a `RecordObject`, which has the full state of the record as properties.
 
 #### RecordObject
 
@@ -70,51 +75,48 @@ The `get()` method returns a `RecordObject` — a frozen plain object with all r
 
 ---
 
-### `search(query: RequestTarget): ExtendedIterable`
+### `search(query: RequestTarget | Query, context?): ExtendedIterable`
 
-`search` performs a query on the resource or table. This is called by `get()` on collection requests and can be overridden to define custom query behavior. The default implementation on tables queries by the `conditions`, `limit`, `offset`, `select`, and `sort` properties parsed from the URL. See [Query Object](#query-object) below for available query options. See the [ExtendedIterable](#extendediterable) below for how to interact with the query results.
+Performs a query on the resource or table. This is called by `get()` on collection requests and can be overridden to define custom query behavior. The default implementation on tables queries by the `conditions`, `limit`, `offset`, `select`, and `sort` properties parsed from the URL or query object. See [Query Object](#query-object) below for available query options. See the [ExtendedIterable](#extendediterable) below for how to interact with the query results.
+
+---
 
 ### `put(target: RequestTarget | Id, data: Promise<object>, context?: Resource | Context): Promise<void> | Response`
+### `put(record: object, context?): Promise<void>`
 
-This writes the full record to the table, creating or replacing the existing record. This does _not_ merge the `data` into the existing record, but replaces it with the new data.
+Writes the full record to the table, creating or replacing the existing record. This does _not_ merge the `data` into the existing record — it replaces it. The second form reads the primary key from the record object.
 
 ```javascript
 await Product.put(34, { name: 'New Product Name' });
+// or with the primary key in the object:
+await Product.put({ id: 34, name: 'New Product Name' });
 ```
 
-This is called for HTTP PUT requests, and can be overridden to implement a custom `PUT` handler. For example:
+This is called for HTTP PUT requests, and can be overridden to implement a custom `PUT` handler:
 
 ```javascript
 class MyResource extends Resource {
 	static async put(target, data) {
-		// validate or transform before saving
 		return super.put(target, { ...(await data), status: data.status ?? 'active' });
 	}
 }
 ```
 
-### `put(data: object): Promise<void> | Response`
-
-The `put` method can also be called directly with a plain object/record, and it will write the record to the table if it has a primary key defined in the object.
-
-```javascript
-await Product.put({ id: 34, name: 'New Product Name' });
-```
+---
 
 ### `patch(target: RequestTarget | Id, data: Promise<object>, context?: Resource | Context): Promise<void> | Response`
 
-This writes a partial record to the table, creating or updating the existing record. This merges the `data` into the existing record.
+Writes a partial record to the table, merging `data` into the existing record.
 
 ```javascript
 await Product.patch(34, { description: 'Updated description' });
 ```
 
-This is called for HTTP PATCH requests, and can be overridden to implement a custom `PATCH` handler. For example:
+This is called for HTTP PATCH requests, and can be overridden to implement a custom `PATCH` handler:
 
 ```javascript
 class MyResource extends Resource {
 	static async patch(target, data) {
-		// validate or transform before saving
 		return super.patch(target, { ...(await data), status: data.status ?? 'active' });
 	}
 }
@@ -122,19 +124,19 @@ class MyResource extends Resource {
 
 <VersionBadge version="v4.3.0" /> (CRDT support for individual property updates via PATCH)
 
+---
+
 ### `post(target: RequestTarget, data: Promise<object>, context?: Resource | Context): Promise<void> | Response`
 
-This is called for HTTP POST requests. The default behavior creates a new record, but it can overridden to implement custom actions:
+Called for HTTP POST requests. The default behavior creates a new record, but it can be overridden to implement custom actions. Prefer more explicit methods like `create()` or `update()` over calling `post` directly.
 
 ```javascript
 class MyResource extends Resource {
 	static async post(target, promisedData) {
 		let data = await promisedData;
 		if (data.action === 'create') {
-			// create a new record
 			return this.create(target, data.content);
 		} else if (data.action === 'update') {
-			// update the referenced record
 			let resource = await this.update(target);
 			resource.set('status', data.status);
 			resource.save();
@@ -143,30 +145,52 @@ class MyResource extends Resource {
 }
 ```
 
-It is not recommended to call `post` directly, and prefer more explicit methods like `create()` or `update()`.
+---
 
-### `delete(target: RequestTarget | Id): void | Response`
+### `delete(target: RequestTarget | Id, context?): Promise<void>`
 
-This deletes a record from the table.
+Deletes a record from the table.
 
 ```javascript
 await Product.delete(34);
 ```
 
-This is called for HTTP DELETE requests, and can be overridden to implement a custom `DELETE` handler. For example:
+This is called for HTTP DELETE requests, and can be overridden to implement a custom `DELETE` handler:
 
 ```javascript
 class MyResource extends Resource {
 	static async delete(target) {
-		// validate or transform before deleting
 		return super.delete(target);
 	}
 }
 ```
 
-### `publish(target: RequestTarget, message: object, context?: Resource | Context): void | Response`
+---
 
-This is called to publish a message. Messages can be published through tables, using the same primary key structure as records.
+### `create(record: object, context?): Promise<Resource>`
+
+Creates a new record with an auto-generated primary key. Returns the created Resource instance. Do not include a primary key in the `record` argument.
+
+<VersionBadge version="v4.2.0" />
+
+---
+
+### `update(target: RequestTarget | Id, updates?: object): Promise<Resource>`
+
+Returns a mutable Resource instance for a given record. Property changes on the instance are written to the table when the transaction commits. This is the primary method for getting a Resource instance and accessing all instance methods.
+
+```javascript
+const product = await Product.update(32);
+product.status = 'active';
+product.subtractFrom('quantity', 1);
+product.save();
+```
+
+---
+
+### `publish(target: RequestTarget | Id, message: object, context?: Resource | Context): Promise<void>`
+
+Publishes a message to a record/topic using the same primary key structure as records.
 
 ```javascript
 await Product.publish(34, { event: 'product-purchased', purchasePrice: 100 });
@@ -174,7 +198,9 @@ await Product.publish(34, { event: 'product-purchased', purchasePrice: 100 });
 
 This is called for MQTT publish commands. The default behavior records the message and notifies subscribers without changing the record's stored data. This can be overridden to implement custom message handling.
 
-### `subscribe(subscriptionRequest?: SubscriptionRequest): Promise<Subscription>`
+---
+
+### `subscribe(subscriptionRequest?: SubscriptionRequest, context?): Promise<Subscription>`
 
 Called for MQTT subscribe commands. Returns a `Subscription` — an `AsyncIterable` of messages/changes.
 
@@ -189,134 +215,19 @@ All properties are optional:
 | `previousCount`      | Return the last N updates/messages. Cannot be used with `startTime`.                           |
 | `omitCurrent`        | Do not send the current/retained record as the first update.                                   |
 
+---
+
 ### `connect(target: RequestTarget, incomingMessages?: AsyncIterable): AsyncIterable`
 
 Called for WebSocket and Server-Sent Events connections. `incomingMessages` is provided for WebSocket connections (not SSE). Returns an `AsyncIterable` of messages to send to the client.
 
-### `invalidate(target: RequestTarget)`
+---
+
+### `invalidate(target: RequestTarget | Id, context?)`
 
 Marks the specified record as invalid in a caching table, so it will be reloaded from the source on next access.
 
-### `allowStaleWhileRevalidate(entry, id): boolean`
-
-For caching tables: return `true` to serve the stale entry while revalidation happens concurrently; `false` to wait for the fresh value.
-
-Entry properties:
-
-- `version` — Timestamp/version from the source
-- `localTime` — When the resource was last refreshed locally
-- `expiresAt` — When the entry became stale
-- `value` — The stale record value
-
-### `getUpdatedTime(): number`
-
-Returns the last updated time of the resource (milliseconds since epoch).
-
-### `wasLoadedFromSource(): boolean`
-
-For caching tables, indicates that this request was a cache miss and the data was loaded from the source resource.
-
-### `getContext(): Context`
-
-Returns the current context, which includes:
-
-- `user` — User object with username, role, and authorization information
-- `transaction` — The current transaction
-
-When triggered by HTTP, the context is the `Request` object with these additional properties:
-
-- `url` — Full local path including query string
-- `method` — HTTP method
-- `headers` — Request headers (access with `context.headers.get(name)`)
-- `responseHeaders` — Response headers (set with `context.responseHeaders.set(name, value)`)
-- `pathname` — Path without query string
-- `host` — Host from the `Host` header
-- `ip` — Client IP address
-- `body` — Raw Node.js `Readable` stream (if a request body exists)
-- `data` — Promise resolving to the deserialized request body
-- `lastModified` — Controls the `ETag`/`Last-Modified` response header
-- `requestContext` — (For source resources only) Context of the upstream resource making the data request
-
-### `operation(operationObject: object, authorize?: boolean): Promise<any>`
-
-Executes a Harper operations API call using this table as the target. Set `authorize` to `true` to enforce current-user authorization.
-
 ---
-
-## Resource Static Methods
-
-Static methods are the preferred way to interact with tables and resources from application code. They handle transaction setup, access checks, and request parsing automatically.
-
-All instance methods have static equivalents that accept an `id` or `RequestTarget` as the first argument:
-
-### `get(target: RequestTarget | Id | Query, context?: Resource | Context)`
-
-Retrieve a record by primary key, or query for records.
-
-```javascript
-// By primary key
-const product = await Product.get(34);
-
-// By query object
-const product = await Product.get({ id: 34, select: ['name', 'price'] });
-
-// Iterate a collection query
-for await (const record of Product.get({ conditions: [{ attribute: 'inStock', value: true }] })) {
-	// ...
-}
-```
-
-### `put(target: RequestTarget | Id, record: object, context?): Promise<void>`
-
-### `put(record: object, context?): Promise<void>`
-
-Save a record (create or replace). The second form reads the primary key from the `record` object.
-
-### `create(record: object, context?): Promise<Resource>`
-
-Create a new record with an auto-generated primary key. Returns the created record. Do not include a primary key in the `record` argument.
-
-<VersionBadge version="v4.2.0" />
-
-### `patch(target: RequestTarget | Id, updates: object, context?): Promise<void>`
-
-Apply partial updates to an existing record.
-
-### `post(target: RequestTarget | Id, data: object, context?): Promise<any>`
-
-Call the `post` instance method. Defaults to creating a new record.
-
-### `delete(target: RequestTarget | Id, context?): Promise<void>`
-
-Delete a record.
-
-### `publish(target: RequestTarget | Id, message: object, context?): Promise<void>`
-
-Publish a message to a record/topic.
-
-### `subscribe(subscriptionRequest?, context?): Promise<Subscription>`
-
-Subscribe to record changes or messages.
-
-### `search(query: RequestTarget | Query, context?): ExtendedIterable`
-
-Query the table. See [Query Object](#query-object) below for available query options.
-
-### `setComputedAttribute(name: string, computeFunction: (record) => any)`
-
-Define the compute function for a `@computed` schema attribute.
-
-<VersionBadge version="v4.4.0" />
-
-```javascript
-MyTable.setComputedAttribute('fullName', (record) => `${record.firstName} ${record.lastName}`);
-```
-
-### `getRecordCount({ exactCount?: boolean }): Promise<{ recordCount: number, estimatedRange?: [number, number] }>`
-
-Returns the number of records in the table. By default returns an approximate (fast) count. Pass `{ exactCount: true }` for a precise count.
-
-<VersionBadge version="v4.2.0" />
 
 ### `sourcedFrom(Resource, options?)`
 
@@ -499,19 +410,74 @@ class BlogSource extends Resource {
 Post.sourcedFrom(BlogSource);
 ```
 
+---
+
+### `wasLoadedFromSource(): boolean`
+
+For caching tables, indicates that this request was a cache miss and the data was loaded from the source resource.
+
+---
+
+### `getUpdatedTime(): number`
+
+Returns the last updated time of the resource (milliseconds since epoch).
+
+---
+
+### `getRecordCount({ exactCount?: boolean }): Promise<{ recordCount: number, estimatedRange?: [number, number] }>`
+
+Returns the number of records in the table. By default returns an approximate (fast) count. Pass `{ exactCount: true }` for a precise count.
+
+<VersionBadge version="v4.5.0" />
+
+---
+
 ### `primaryKey`
 
 The name of the primary key attribute for the table.
+
+---
+
+### `setComputedAttribute(name: string, computeFunction: (record) => any)`
+
+Define the compute function for a `@computed` schema attribute.
+
+<VersionBadge version="v4.4.0" />
+
+```javascript
+MyTable.setComputedAttribute('fullName', (record) => `${record.firstName} ${record.lastName}`);
+```
+
+---
+
+### `getContext(): Context`
+
+Returns the current context, which includes:
+
+- `user` — User object with username, role, and authorization information
+- `transaction` — The current transaction
+
+When triggered by HTTP, the context is the `Request` object with these additional properties:
+
+- `url` — Full local path including query string
+- `method` — HTTP method
+- `headers` — Request headers (access with `context.headers.get(name)`)
+- `responseHeaders` — Response headers (set with `context.responseHeaders.set(name, value)`)
+- `pathname` — Path without query string
+- `host` — Host from the `Host` header
+- `ip` — Client IP address
+- `body` — Raw Node.js `Readable` stream (if a request body exists)
+- `data` — Promise resolving to the deserialized request body
+- `lastModified` — Controls the `ETag`/`Last-Modified` response header
+- `requestContext` — (For source resources only) Context of the upstream resource making the data request
+
+---
 
 ### `operation(operationObject: object, authorize?: boolean): Promise<any>`
 
 Executes a Harper operations API call using this table as the target. Set `authorize` to `true` to enforce current-user authorization.
 
 ---
-
-### `update(target: RequestTarget, updates?: object): Promise<Resource>`
-
-This returns a promise to an instance of the Resource class that can be updated and saved. This has mutable property access to a record. Any property changes on the instance are written to the table when the transaction commits. This is primary method for getting an instance of a Resource and accessing all of the Resource instance methods.
 
 ## Resource Instance Methods
 
