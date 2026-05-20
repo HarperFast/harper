@@ -172,6 +172,11 @@ async function resourceOpenApiRequestHandler(event) {
 		hdbLogger.trace(`ITC resourceOpenApiRequestHandler received request:`, event);
 
 		const { resources } = require('../../resources/Resources.ts');
+		// Only respond if this thread has registered resources. Job-type workers with an empty
+		// resources map must stay silent so that an app worker with real resources replies first.
+		// If no worker has resources the main thread gets a 503 after the timeout, which is a
+		// more honest response than silently returning an empty spec.
+		if (!resources || resources.size === 0) return;
 		const { generateJsonApi } = require('../../resources/openApi.ts');
 		const openapi = generateJsonApi(resources, event.message.serverHttpURL);
 

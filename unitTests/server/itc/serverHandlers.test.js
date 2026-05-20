@@ -225,12 +225,15 @@ describe('Test hdbChildIpcHandler module', () => {
 
 	describe('Test resourceOpenApiRequestHandler function', () => {
 		let resource_openapi_handler;
+		let resources_instance;
 
 		before(() => {
 			resource_openapi_handler = server_itc_handlers.__get__('resourceOpenApiRequestHandler');
-			// Ensure the module-level `resources` export is an initialised Resources instance
-			// (not undefined) so generateJsonApi can iterate over it safely.
-			resetResources();
+			resources_instance = resetResources();
+		});
+
+		afterEach(() => {
+			resources_instance.clear();
 		});
 
 		// Tests validation: invalid events should be rejected and logged
@@ -261,8 +264,28 @@ describe('Test hdbChildIpcHandler module', () => {
 			expect(log_error_stub).to.have.been.called;
 		});
 
+		// Tests guard: a thread with no registered resources must stay silent so that an app
+		// worker (which has real resources) responds first and the caller gets the correct spec.
+		it('does not respond when this thread has no registered resources', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { originator: 5, requestId: 99, serverHttpURL: 'http://localhost:9925' },
+			};
+			await resource_openapi_handler(test_event);
+
+			expect(sendToThreadStub).to.not.have.been.called;
+			expect(log_error_stub).to.not.have.been.called;
+			sendToThreadStub.restore();
+		});
+
 		it('sends OpenAPI response directly when originator is reachable', async () => {
 			sandbox.resetHistory();
+			// Resources.set wraps the argument as entry.Resource; passing {isError:true} makes
+			// generateJsonApi skip the entry so the spec is minimal but the send path is exercised.
+			resources_instance.set('test', { isError: true });
 			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
 
 			const test_event = {
@@ -281,26 +304,9 @@ describe('Test hdbChildIpcHandler module', () => {
 			sendToThreadStub.restore();
 		});
 
-		it('sends OpenAPI response even when resources map is empty (no hang)', async () => {
-			sandbox.resetHistory();
-			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
-
-			const test_event = {
-				type: 'resource_openapi_request',
-				message: { originator: 5, requestId: 100, serverHttpURL: 'http://localhost:9925' },
-			};
-			await resource_openapi_handler(test_event);
-
-			// Worker always responds — caller gets a spec (possibly empty) rather than a 5s timeout
-			expect(sendToThreadStub).to.have.been.calledOnce;
-			expect((responseMessage) => responseMessage.message.openapi).to.be.a('function');
-			const responseMessage = sendToThreadStub.firstCall.args[1];
-			expect(responseMessage.message.openapi).to.be.an('object');
-			sendToThreadStub.restore();
-		});
-
 		it('drops response silently when originator is unreachable', async () => {
 			sandbox.resetHistory();
+			resources_instance.set('test', { isError: true });
 			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(false);
 
 			const test_event = {
