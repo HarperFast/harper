@@ -114,7 +114,9 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: resources.js'), r.text))
 			.expect(200);
 
-		await restartHttpWorkers(client, '/blobcache/probe-route');
+		// Probe /openapi, not a blobcache route — GET /blobcache/{id} triggers the source
+		// and creates a spurious record that breaks the single-record assertion below.
+		await restartHttpWorkers(client, '/openapi');
 	});
 
 	after(async () => {
@@ -245,7 +247,9 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('restart HTTP workers and create another blob for drop_schema test', async () => {
-		await restartHttpWorkers(client, '/blobcache/probe-route');
+		// Probe /openapi, not a blobcache route — GET /blobcache/{id} triggers the source
+		// and creates a spurious record that breaks the single-record assertion below.
+		await restartHttpWorkers(client, '/openapi');
 		await setTimeout(5000);
 		const id3 = randomInt(1000000);
 		await client.reqRest(`/blobcache/${id3}`).set('Accept', '*/*').expect(200);
