@@ -567,45 +567,4 @@ describe('Test common_utils module', () => {
 		expect(c).to.equal('52y 27d 20h 27m 14s');
 	});
 
-	describe('convertToBytes', () => {
-		it('returns undefined for null', () => {
-			assert.equal(cu.convertToBytes(null), undefined);
-		});
-
-		it('returns undefined for undefined', () => {
-			assert.equal(cu.convertToBytes(undefined), undefined);
-		});
-
-		it('passes through a bare number', () => {
-			assert.equal(cu.convertToBytes(1024), 1024);
-		});
-
-		it('converts GB string', () => {
-			assert.equal(cu.convertToBytes('100GB'), 100 * 1024 * 1024 * 1024);
-		});
-
-		it('converts G string', () => {
-			assert.equal(cu.convertToBytes('10G'), 10 * 1024 * 1024 * 1024);
-		});
-
-		it('converts string with space before suffix', () => {
-			assert.equal(cu.convertToBytes('1.5 GB'), Math.floor(1.5 * 1024 * 1024 * 1024));
-		});
-
-		it('converts KB string', () => {
-			assert.equal(cu.convertToBytes('512KB'), 512 * 1024);
-		});
-
-		it('converts TB string', () => {
-			assert.equal(cu.convertToBytes('2TB'), 2 * 1024 * 1024 * 1024 * 1024);
-		});
-
-		it('treats unrecognized suffix as raw bytes', () => {
-			assert.equal(cu.convertToBytes('100X'), 100);
-		});
-
-		it('converts bare numeric string', () => {
-			assert.equal(cu.convertToBytes('4096'), 4096);
-		});
-	});
 });

@@ -1,16 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
-import { convertToMS, convertToBytes } from '../utility/common_utils.ts';
+import { convertToMS } from '../utility/common_utils.ts';
 envMgr.initSync();
-
-const execFileAsync = promisify(execFile);
 
 const reclamationHandlers = new Map<
 	string,
@@ -19,11 +15,10 @@ const reclamationHandlers = new Map<
 
 const RECLAMATION_THRESHOLD = envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_THRESHOLD) ?? 0.4; // 40% remaining free space is the default
 const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_INTERVAL)) || 3600000; // 1 hour is the default
-let QUOTA_SIZE_BYTES: number | undefined = convertToBytes(envMgr.get(CONFIG_PARAMS.STORAGE_QUOTASIZE));
 
 // Written by host-manager every ~90s alongside the instance's hdb root
 const QUOTA_STATUS_FILE = 'quota-status.json';
-// Fall back to du if the file is older than this (host-manager outage, container start race, etc.)
+// Use statfs fallback if the file is older than this (host-manager outage, container start race, etc.)
 const QUOTA_STATUS_MAX_AGE_MS = 5 * 60 * 1000;
 
 export type QuotaStatusData = {
@@ -45,17 +40,6 @@ export async function getQuotaStatus(): Promise<QuotaStatusData | undefined> {
 	} catch {
 		return undefined;
 	}
-}
-
-/**
- * Returns the disk block usage (bytes) for a directory path.
- * Uses `du -sb` which is a GNU extension available on all Linux deployments.
- * The `--` separator guards against paths that start with `-`.
- * Used as fallback when the quota-status file is absent or stale.
- */
-export async function getDirectoryUsageBytes(dirPath: string): Promise<number> {
-	const { stdout } = await execFileAsync('du', ['-sb', '--', dirPath]);
-	return parseInt(stdout, 10);
 }
 
 /**
@@ -86,20 +70,12 @@ export function onStorageReclamation(
 }
 let reclamationTimer: NodeJS.Timeout;
 
-// Checked at call time so QUOTA_SIZE_BYTES changes (via setQuotaSizeBytes) take effect immediately.
-// In quota mode: prefer the host-manager-written quota-status file (O(1)); fall back to
-// `du` on the rootPath (O(inodes)) when the file is absent or stale.
-// The rootPath `du` covers ALL Harper files (logs, blobs, databases), matching how XFS
-// user quotas count usage — as opposed to per-table paths registered for reclamation.
+// If a fresh quota-status.json exists (written by host-manager every ~90s), use quota-based ratio.
+// Otherwise fall back to statfs for the registered path.
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
-	if (QUOTA_SIZE_BYTES) {
-		const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
-		const status = await getQuotaStatus();
-		const usedBytes =
-			status && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS
-				? status.usedBytes
-				: await getDirectoryUsageBytes(rootPath ?? path);
-		return Math.max(0, QUOTA_SIZE_BYTES - usedBytes) / QUOTA_SIZE_BYTES;
+	const status = await getQuotaStatus();
+	if (status?.quotaBytes && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS) {
+		return Math.max(0, status.quotaBytes - status.usedBytes) / status.quotaBytes;
 	}
 	const fsStats = await statfs(path);
 	return fsStats.bavail / fsStats.blocks;
@@ -141,24 +117,3 @@ export function setAvailableSpaceRatioGetter(newGetter?: (path: string) => Promi
 	getAvailableSpaceRatio = newGetter ?? defaultGetAvailableSpaceRatio;
 }
 
-/**
- * Override the quota size in bytes (for testing only).
- */
-export function setQuotaSizeBytes(n: number | undefined): void {
-	QUOTA_SIZE_BYTES = n;
-}
-
-/**
- * Returns which basis is used for free-space calculations: 'quota' when storage_quotaSize is
- * configured, 'filesystem' otherwise.
- */
-export function getFreeSpaceBasis(): 'quota' | 'filesystem' {
-	return QUOTA_SIZE_BYTES ? 'quota' : 'filesystem';
-}
-
-/**
- * Returns quota config info when storage_quotaSize is configured, undefined otherwise.
- */
-export function getQuotaInfo(): { quotaSizeBytes: number } | undefined {
-	return QUOTA_SIZE_BYTES ? { quotaSizeBytes: QUOTA_SIZE_BYTES } : undefined;
-}

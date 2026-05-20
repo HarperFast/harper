@@ -3,7 +3,7 @@ import path from 'node:path';
 import si from 'systeminformation';
 import logger from '../logging/harper_logger.ts';
 import * as hdbTerms from '../hdbTerms.ts';
-import { getFreeSpaceBasis, getQuotaInfo, getQuotaStatus } from '../../server/storageReclamation.ts';
+import { getQuotaStatus } from '../../server/storageReclamation.ts';
 import { lmdbGetTableSize } from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize.ts';
 import { getThreadInfo } from '../../server/threads/manageThreads.js';
 import * as env from './environmentManager.ts';
@@ -277,15 +277,14 @@ type DiskInfo = {
  */
 export async function getDiskInfo(): Promise<DiskInfo> {
 	const disk: DiskInfo = {};
-	disk.free_space_basis = getFreeSpaceBasis();
-	const quotaInfo = getQuotaInfo();
-	if (quotaInfo) {
-		disk.quota_size_bytes = quotaInfo.quotaSizeBytes;
-		const status = await getQuotaStatus();
-		if (status) {
-			disk.quota_used_bytes = status.usedBytes;
-			disk.quota_status_age_seconds = Math.floor((Date.now() - status.updatedAt) / 1000);
-		}
+	const quotaStatus = await getQuotaStatus();
+	if (quotaStatus?.quotaBytes) {
+		disk.free_space_basis = 'quota';
+		disk.quota_size_bytes = quotaStatus.quotaBytes;
+		disk.quota_used_bytes = quotaStatus.usedBytes;
+		disk.quota_status_age_seconds = Math.floor((Date.now() - quotaStatus.updatedAt) / 1000);
+	} else {
+		disk.free_space_basis = 'filesystem';
 	}
 	try {
 		if (!env.get(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_SYSINFO_DISK)) return disk;
