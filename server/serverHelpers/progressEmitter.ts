@@ -90,5 +90,9 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 
 function writeSSE(stream: PassThrough, event: ProgressEvent): void {
 	const data = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
-	stream.write(`event: ${event.event}\ndata: ${data}\n\n`);
+	stream.write(`event: ${event.event}\n`);
+	for (const line of data.split(/\r?\n/)) {
+		stream.write(`data: ${line}\n`);
+	}
+	stream.write('\n');
 }
