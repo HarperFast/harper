@@ -311,6 +311,8 @@ export function makeTable(options) {
 						ensureLoaded: false,
 						nodeId: event.nodeId,
 						viaNodeId: event.viaNodeId,
+						// use per-event expiresAt: batched txn context only holds the first event's expiration
+						expiresAt: event.expiresAt,
 						async: true,
 					};
 					const id = event.id;
@@ -1685,7 +1687,8 @@ export function makeTable(options) {
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
-					const expiresAt: number = context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
+					const expiresAt: number =
+						options?.expiresAt ?? context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 
 					if (precedesExisting <= 0) {
@@ -1902,7 +1905,7 @@ export function makeTable(options) {
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					writeCommit(true);
-					if (context.expiresAt) scheduleCleanup();
+					if (expiresAt >= 0) scheduleCleanup(); // arm for replicated writes too, not just local-context writes
 					function writeCommit(storeRecord: boolean) {
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
