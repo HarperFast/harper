@@ -21,6 +21,7 @@ const serverItcHandlers = {
 	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
 	[hdbTerms.ITC_EVENT_TYPES.USER]: userHandler,
 	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
+	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
 };
 
 /**
@@ -152,6 +153,48 @@ async function componentStatusRequestHandler(event) {
 		}
 	} catch (error) {
 		hdbLogger.error('Error handling component status request:', error);
+	}
+}
+
+/**
+ * Handles incoming requests for the REST OpenAPI spec from the main thread.
+ * Generates the spec from the local resources (which are only registered on worker threads)
+ * and sends it back to the requesting thread.
+ */
+async function resourceOpenApiRequestHandler(event) {
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdbLogger.error(validate);
+			return;
+		}
+
+		hdbLogger.trace(`ITC resourceOpenApiRequestHandler received request:`, event);
+
+		const { resources } = require('../../resources/Resources.ts');
+		if (!resources || resources.size === 0) {
+			// This thread has no registered resources — don't respond so another worker can.
+			return;
+		}
+		const { generateJsonApi } = require('../../resources/openApi.ts');
+		const openapi = generateJsonApi(resources, event.message.serverHttpURL);
+
+		const originatorThreadId = event.message.originator;
+		const responseMessage = {
+			type: hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE,
+			message: {
+				requestId: event.message.requestId,
+				openapi,
+			},
+		};
+
+		if (!threads.sendToThread(originatorThreadId, responseMessage)) {
+			hdbLogger.trace(
+				`Dropping resource OpenAPI response for request ${event.message.requestId}: originator thread ${originatorThreadId} is unreachable`
+			);
+		}
+	} catch (error) {
+		hdbLogger.error('Error handling resource OpenAPI request:', error);
 	}
 }
 

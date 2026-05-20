@@ -221,4 +221,94 @@ describe('Test hdbChildIpcHandler module', () => {
 			sendToThreadStub.restore();
 		});
 	});
+
+	describe('Test resourceOpenApiRequestHandler function', () => {
+		let resource_openapi_handler;
+
+		before(() => {
+			resource_openapi_handler = server_itc_handlers.__get__('resourceOpenApiRequestHandler');
+		});
+
+		// Tests validation: invalid events should be rejected and logged
+		it('logs error on invalid event (missing type)', async () => {
+			const test_event = {
+				message: { originator: 1, requestId: 42, serverHttpURL: 'http://localhost' },
+			};
+			await resource_openapi_handler(test_event);
+			expect(log_error_stub).to.have.been.called;
+		});
+
+		// Tests validation: invalid events should be rejected and logged
+		it('logs error on invalid event (missing message)', async () => {
+			const test_event = {
+				type: 'resource_openapi_request',
+			};
+			await resource_openapi_handler(test_event);
+			expect(log_error_stub).to.have.been.called;
+		});
+
+		// Tests validation: invalid events should be rejected and logged
+		it('logs error on invalid event (missing originator)', async () => {
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { requestId: 42, serverHttpURL: 'http://localhost' },
+			};
+			await resource_openapi_handler(test_event);
+			expect(log_error_stub).to.have.been.called;
+		});
+
+		it('sends OpenAPI response directly when originator is reachable', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+			// Inject a minimal mock for generateJsonApi and a non-empty resources Map
+			const mockOpenapi = { openapi: '3.0.3', paths: {} };
+			const mockResources = new Map([['test', { path: 'test', Resource: { isError: false } }]]);
+			server_itc_handlers.__set__('require', (path) => {
+				if (path.includes('Resources')) return { resources: mockResources };
+				if (path.includes('openApi')) return { generateJsonApi: () => mockOpenapi };
+				return require(path);
+			});
+
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { originator: 5, requestId: 99, serverHttpURL: 'http://localhost:9925' },
+			};
+			await resource_openapi_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			expect(sendToThreadStub.firstCall.args[0]).to.equal(5);
+			const responseMessage = sendToThreadStub.firstCall.args[1];
+			expect(responseMessage.type).to.equal('resource_openapi_response');
+			expect(responseMessage.message.requestId).to.equal(99);
+			expect(responseMessage.message.openapi).to.deep.equal(mockOpenapi);
+			expect(log_error_stub).to.not.have.been.called;
+			sendToThreadStub.restore();
+			// Restore original require
+			server_itc_handlers.__set__('require', require);
+		});
+
+		it('drops response silently when originator is unreachable', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(false);
+			const mockResources = new Map([['test', { path: 'test', Resource: { isError: false } }]]);
+			server_itc_handlers.__set__('require', (path) => {
+				if (path.includes('Resources')) return { resources: mockResources };
+				if (path.includes('openApi')) return { generateJsonApi: () => ({}) };
+				return require(path);
+			});
+
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { originator: 99, requestId: 7, serverHttpURL: 'http://localhost:9925' },
+			};
+			await resource_openapi_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			expect(log_error_stub).to.not.have.been.called;
+			const traceCalls = log_trace_stub.getCalls().map((call) => String(call.args[0]));
+			expect(traceCalls.some((msg) => msg.includes('Dropping resource OpenAPI response'))).to.be.true;
+			sendToThreadStub.restore();
+			server_itc_handlers.__set__('require', require);
+		});
+	});
 });

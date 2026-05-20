@@ -30,6 +30,8 @@ type ParsedSqlObject = any;
 import { generateJsonApi } from '../resources/openApi.ts';
 import { Resources } from '../resources/Resources.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
+import { sendItcEvent } from './threads/itc.js';
+import { onMessageByType } from './threads/manageThreads.js';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE) ?? 1024 * 1024 * 1024; //this defaults to 1GB in bytes
@@ -211,12 +213,55 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 	return app;
 }
 
+let nextOpenApiRequestId = 1;
+let openApiResponseListenerAttached = false;
+const pendingOpenApiRequests = new Map<number, (openapi: unknown) => void>();
+
+function attachOpenApiResponseListener() {
+	if (openApiResponseListenerAttached) return;
+	onMessageByType(terms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE, ({ message }: any) => {
+		const resolve = pendingOpenApiRequests.get(message.requestId);
+		if (resolve) {
+			pendingOpenApiRequests.delete(message.requestId);
+			resolve(message.openapi);
+		}
+	});
+	openApiResponseListenerAttached = true;
+}
+
+function queryWorkerForOpenApi(serverHttpURL: string): Promise<unknown> {
+	attachOpenApiResponseListener();
+	const requestId = nextOpenApiRequestId++;
+	return new Promise<unknown>((resolve, reject) => {
+		const timeoutHandle = setTimeout(() => {
+			pendingOpenApiRequests.delete(requestId);
+			reject(new ServerError('Timeout fetching OpenAPI spec from worker thread', 503));
+		}, 5000);
+		pendingOpenApiRequests.set(requestId, (openapi) => {
+			clearTimeout(timeoutHandle);
+			resolve(openapi);
+		});
+		sendItcEvent({
+			type: terms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST,
+			message: { requestId, serverHttpURL },
+		}).catch((err: unknown) => {
+			clearTimeout(timeoutHandle);
+			pendingOpenApiRequests.delete(requestId);
+			reject(err);
+		});
+	});
+}
+
 function restOpenAPIHandler(resources: Resources) {
 	const httpPort = env.get(terms.CONFIG_PARAMS.HTTP_PORT);
 	const httpSecurePort = env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT);
-	return (req: FastifyRequest & { hdb_user?: { role?: { permission?: { super_user: boolean } } } }) => {
+	return async (req: FastifyRequest & { hdb_user?: { role?: { permission?: { super_user: boolean } } } }) => {
 		if (req.hdb_user?.role?.permission?.super_user) {
-			return generateJsonApi(resources, calculateRestHttpURL(httpPort, httpSecurePort, req));
+			const serverHttpURL = calculateRestHttpURL(httpPort, httpSecurePort, req);
+			if (resources.size > 0) {
+				return generateJsonApi(resources, serverHttpURL);
+			}
+			return queryWorkerForOpenApi(serverHttpURL);
 		} else {
 			harperLogger.warn(
 				`{"ip":"${req.socket.remoteAddress}", "error":"attempt to access /api/openapi/rest without being super_user"`
