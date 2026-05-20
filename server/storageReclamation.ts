@@ -19,7 +19,6 @@ const reclamationHandlers = new Map<
 
 const RECLAMATION_THRESHOLD = envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_THRESHOLD) ?? 0.4; // 40% remaining free space is the default
 const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_INTERVAL)) || 3600000; // 1 hour is the default
-// let so tests can override via rewire; set once from env at startup
 let QUOTA_SIZE_BYTES: number | undefined = convertToBytes(envMgr.get(CONFIG_PARAMS.STORAGE_QUOTASIZE));
 
 // Written by host-manager every ~90s alongside the instance's hdb root
@@ -87,7 +86,7 @@ export function onStorageReclamation(
 }
 let reclamationTimer: NodeJS.Timeout;
 
-// Checked at call time so that tests can override QUOTA_SIZE_BYTES via rewire.
+// Checked at call time so QUOTA_SIZE_BYTES changes (via setQuotaSizeBytes) take effect immediately.
 // In quota mode: prefer the host-manager-written quota-status file (O(1)); fall back to
 // `du` on the rootPath (O(inodes)) when the file is absent or stale.
 // The rootPath `du` covers ALL Harper files (logs, blobs, databases), matching how XFS
@@ -140,6 +139,13 @@ export async function runReclamationHandlers() {
  */
 export function setAvailableSpaceRatioGetter(newGetter?: (path: string) => Promise<number>) {
 	getAvailableSpaceRatio = newGetter ?? defaultGetAvailableSpaceRatio;
+}
+
+/**
+ * Override the quota size in bytes (for testing only).
+ */
+export function setQuotaSizeBytes(n: number | undefined): void {
+	QUOTA_SIZE_BYTES = n;
 }
 
 /**
