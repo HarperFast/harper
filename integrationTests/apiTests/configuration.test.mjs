@@ -29,12 +29,10 @@ const TEST_PASS = 'TestPassword123!';
 
 suite('Configuration', (ctx) => {
 	let client;
-	let admin;
 
 	before(async () => {
 		await startHarper(ctx, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
-		admin = ctx.harper.admin;
 
 		// Seed schema and the AttributeDropTest table with a pre-existing attribute
 		// so the "Drop Attribute" test has something to drop.
@@ -73,11 +71,7 @@ suite('Configuration', (ctx) => {
 			.req()
 			.send({ operation: 'create_attribute', schema: SCHEMA, table: ATTR_TEST_TABLE, attribute: 'owner_id' })
 			.expect((r) =>
-				assert.equal(
-					r.body.message,
-					`attribute '${SCHEMA}.${ATTR_TEST_TABLE}.owner_id' successfully created.`,
-					r.text
-				)
+				assert.equal(r.body.message, `attribute '${SCHEMA}.${ATTR_TEST_TABLE}.owner_id' successfully created.`, r.text)
 			)
 			.expect(200);
 	});
@@ -183,9 +177,7 @@ suite('Configuration', (ctx) => {
 				table: DROP_ATTR_TABLE,
 				attribute: 'another_attribute',
 			})
-			.expect((r) =>
-				assert.equal(r.body.message, "successfully deleted attribute 'another_attribute'", r.text)
-			)
+			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'another_attribute'", r.text))
 			.expect(200);
 	});
 
@@ -258,11 +250,7 @@ suite('Configuration', (ctx) => {
 			.req()
 			.send({ operation: 'set_configuration', http_cors: 'spinach' })
 			.expect((r) =>
-				assert.equal(
-					r.body.error,
-					"Harper config file validation error: 'http.cors' must be a boolean",
-					r.text
-				)
+				assert.equal(r.body.error, "Harper config file validation error: 'http.cors' must be a boolean", r.text)
 			)
 			.expect(400);
 	});
