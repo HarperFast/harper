@@ -217,7 +217,7 @@ async function addComponent(req) {
 
 	log.trace(`adding component`);
 	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	const { project, install_command, install_timeout } = req;
+	const { project, install_command, install_timeout, install_allow_scripts } = req;
 
 	const template = req.template || 'https://github.com/harperdb/application-template';
 
@@ -230,6 +230,7 @@ async function addComponent(req) {
 			install: {
 				command: install_command,
 				timeout: install_timeout,
+				allowInstallScripts: install_allow_scripts,
 			},
 		});
 		await prepareApplication(application);
