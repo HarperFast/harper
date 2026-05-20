@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import type { Readable } from 'node:stream';
 
 export interface SSEMessage {
@@ -15,9 +16,10 @@ export interface SSEMessage {
  * Readable does not guarantee chunks align with SSE record boundaries.
  */
 export async function* parseSSE(stream: Readable): AsyncGenerator<SSEMessage> {
+	const decoder = new StringDecoder('utf8');
 	let buffer = '';
 	for await (const chunk of stream) {
-		buffer += chunk.toString('utf8');
+		buffer += typeof chunk === 'string' ? chunk : decoder.write(chunk);
 		while (true) {
 			const recordEnd = buffer.indexOf('\n\n');
 			const crlfEnd = buffer.indexOf('\r\n\r\n');
@@ -37,6 +39,7 @@ export async function* parseSSE(stream: Readable): AsyncGenerator<SSEMessage> {
 			if (msg) yield msg;
 		}
 	}
+	buffer += decoder.end();
 	// Any trailing record without a terminating blank line is treated as a final message,
 	// matching the looser behavior browsers exhibit on connection close.
 	if (buffer.trim()) {

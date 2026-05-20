@@ -269,7 +269,9 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				}
 			}
 			if (sseError) {
-				console.error(`error: ${sseError.message ?? sseError}`);
+				const errMsg =
+					sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
+				console.error(`error: ${errMsg}`);
 				process.exit(1);
 			}
 			responseData = finalResult ?? { message: 'Deploy completed (no result payload).' };
