@@ -375,10 +375,11 @@ async function deployComponent(req) {
 
 		const applicationConfig = { package: req.package };
 		// Avoid writing an empty `install:` block
-		if (req.install_command || req.install_timeout) {
+		if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
 			applicationConfig.install = {
 				command: req.install_command,
 				timeout: req.install_timeout,
+				allowInstallScripts: req.install_allow_scripts,
 			};
 		}
 		await configUtils.addConfig(req.project, applicationConfig);
@@ -391,6 +392,7 @@ async function deployComponent(req) {
 		install: {
 			command: req.install_command,
 			timeout: req.install_timeout,
+			allowInstallScripts: req.install_allow_scripts,
 		},
 	});
 
