@@ -99,10 +99,7 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 			.send({ operation: 'add_component', project: 'blobs' })
 			.expect((r) => {
 				const res = JSON.stringify(r.body);
-				assert.ok(
-					res.includes('Successfully added project') || res.includes('Project already exists'),
-					r.text
-				);
+				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'), r.text);
 			});
 
 		await client
@@ -131,10 +128,7 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 			.req()
 			.send({ operation: 'describe_all' })
 			.expect((r) => {
-				assert.ok(
-					JSON.stringify(r.body).includes('"blob":{"BlobCache":{"schema":"blob","name":"BlobCache"'),
-					r.text
-				);
+				assert.ok(JSON.stringify(r.body).includes('"blob":{"BlobCache":{"schema":"blob","name":"BlobCache"'), r.text);
 			})
 			.expect(200);
 	});
@@ -146,8 +140,7 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 			.set('Accept', '*/*')
 			.expect((r) => {
 				assert.ok(
-					parseInt(r.headers['content-length']) >= 80000 ||
-						parseInt(r.headers['content-length']) <= 120000,
+					parseInt(r.headers['content-length']) >= 80000 && parseInt(r.headers['content-length']) <= 120000,
 					'blob content-length out of expected range\n' + r.text
 				);
 			})
@@ -157,10 +150,7 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('blob record exists in DB with correct metadata', async () => {
-		const r = await client
-			.req()
-			.send({ operation: 'sql', sql: 'SELECT * FROM blob.BlobCache' })
-			.expect(200);
+		const r = await client.req().send({ operation: 'sql', sql: 'SELECT * FROM blob.BlobCache' }).expect(200);
 
 		assert.ok(Array.isArray(r.body), r.text);
 		const record = r.body.find((item) => item.cacheKey === blobId.toString());
@@ -199,8 +189,7 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 			.set('Accept', '*/*')
 			.expect((r) => {
 				assert.ok(
-					parseInt(r.headers['content-length']) >= 80000 ||
-						parseInt(r.headers['content-length']) <= 120000,
+					parseInt(r.headers['content-length']) >= 80000 && parseInt(r.headers['content-length']) <= 120000,
 					r.text
 				);
 			})
@@ -236,10 +225,7 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	test('create a second blob before drop_table', async () => {
 		await setTimeout(5000);
 		const id2 = randomInt(1000000);
-		await client
-			.reqRest(`/blobcache/${id2}`)
-			.set('Accept', '*/*')
-			.expect(200);
+		await client.reqRest(`/blobcache/${id2}`).set('Accept', '*/*').expect(200);
 	});
 
 	test('drop_table BlobCache removes blob files', async () => {
@@ -267,10 +253,7 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	});
 
 	test("drop_schema 'blob' removes blob files", async () => {
-		await client
-			.req()
-			.send({ operation: 'drop_schema', schema: 'blob' })
-			.expect(200);
+		await client.req().send({ operation: 'drop_schema', schema: 'blob' }).expect(200);
 
 		await setTimeout(21000);
 
