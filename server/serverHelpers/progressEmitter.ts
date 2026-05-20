@@ -48,25 +48,40 @@ export class ProgressEmitter {
 export function createSSEResponseStream(emitter: ProgressEmitter, operation: () => Promise<unknown>): Readable {
 	const stream = new PassThrough();
 
+	let active = true;
 	const unsubscribe = emitter.subscribe((event) => {
-		writeSSE(stream, event);
+		if (active) writeSSE(stream, event);
 	});
+
+	const cleanup = () => {
+		if (active) {
+			active = false;
+			unsubscribe();
+		}
+	};
+
+	// If the client disconnects (Ctrl-C, network drop) stop writing to the stream and
+	// release the emitter subscription so it doesn't accumulate for the operation lifetime.
+	stream.on('close', cleanup);
+	stream.on('end', cleanup);
 
 	operation()
 		.then((result) => {
-			writeSSE(stream, { event: 'done', data: { result } });
+			if (active) writeSSE(stream, { event: 'done', data: { result } });
 		})
 		.catch((err) => {
-			writeSSE(stream, {
-				event: 'error',
-				data: {
-					message: err?.message ?? String(err),
-					code: err?.statusCode ?? err?.code,
-				},
-			});
+			if (active) {
+				writeSSE(stream, {
+					event: 'error',
+					data: {
+						message: err?.message ?? String(err),
+						code: err?.statusCode ?? err?.code,
+					},
+				});
+			}
 		})
 		.finally(() => {
-			unsubscribe();
+			cleanup();
 			stream.end();
 		});
 
