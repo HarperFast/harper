@@ -566,5 +566,4 @@ describe('Test common_utils module', () => {
 		const c = cu_rewire.ms_to_time(1672345634534);
 		expect(c).to.equal('52y 27d 20h 27m 14s');
 	});
-
 });

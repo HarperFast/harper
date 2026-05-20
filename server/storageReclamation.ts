@@ -116,4 +116,3 @@ export async function runReclamationHandlers() {
 export function setAvailableSpaceRatioGetter(newGetter?: (path: string) => Promise<number>) {
 	getAvailableSpaceRatio = newGetter ?? defaultGetAvailableSpaceRatio;
 }
-

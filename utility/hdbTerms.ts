@@ -578,7 +578,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_RECLAMATION_THRESHOLD: 'storage_reclamation_threshold',
 	STORAGE_RECLAMATION_INTERVAL: 'storage_reclamation_interval',
 	STORAGE_RECLAMATION_EVICTIONFACTOR: 'storage_reclamation_evictionFactor',
-STORAGE_ENGINE: 'storage_engine',
+	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',

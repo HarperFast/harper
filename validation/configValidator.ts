@@ -194,7 +194,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			prefetchWrites: boolean.optional(),
 			maxFreeSpaceToLoad: number.optional(),
 			maxFreeSpaceToRetain: number.optional(),
-}).required(),
+		}).required(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});
