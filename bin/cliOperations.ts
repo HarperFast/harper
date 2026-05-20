@@ -9,9 +9,10 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
-import { streamPackagedDirectory } from '../components/packageComponent.ts';
+import { streamPackagedDirectory, getPackagedDirectorySize } from '../components/packageComponent.ts';
 import { buildMultipartBody } from './multipartBuilder.ts';
-import { parseSSE, renderDeployProgress } from './sseConsumer.ts';
+import { parseSSE } from './sseConsumer.ts';
+import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.js';
 
@@ -45,13 +46,20 @@ const PREPARE_OPERATION: any = {
 
 		const projectPath = process.cwd();
 		if (!req.project) req.project = path.basename(projectPath);
+		const pkgOptions = {
+			skip_node_modules: req.skip_node_modules !== false,
+			skip_symlinks: req.skip_symlinks === true,
+		};
+		// Compute the uncompressed source-tree total up front so the upload bar has a
+		// meaningful 100% target. Done before streaming begins; for very large trees this
+		// adds a one-time directory walk that's still much cheaper than the deploy itself.
+		// Best-effort: getPackagedDirectorySize swallows per-entry stat errors and returns
+		// whatever it could measure, so a permission glitch can't block the deploy.
+		req._uploadTotal = await getPackagedDirectorySize(projectPath, pkgOptions);
 		// Stream the tar+gzip directly to the server as the file part of a multipart body.
 		// This bypasses the Node Buffer 2 GB cap that the previous CBOR-encoded path was
 		// subject to, so large components can deploy without materializing in memory.
-		req._packageStream = streamPackagedDirectory(projectPath, {
-			skip_node_modules: req.skip_node_modules !== false,
-			skip_symlinks: req.skip_symlinks === true,
-		});
+		req._packageStream = streamPackagedDirectory(projectPath, pkgOptions);
 		req._multipart = true;
 	},
 };
@@ -205,6 +213,9 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			options.streamResponse = true;
 		}
 		let body;
+		// One renderer owns the upload bar and the SSE event rendering for a multipart deploy.
+		// Created here so the upload-stream tap and the SSE consumer below see the same instance.
+		const renderer = req._multipart ? new DeployRenderer({ uploadTotal: req._uploadTotal }) : null;
 		if (req._multipart) {
 			const packageStream = req._packageStream;
 			const fields = {};
@@ -222,22 +233,27 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			// Use chunked transfer-encoding: we don't know the total size up front because the
 			// payload is streamed from `tar.pack` and never fully buffered.
 			options.headers['Transfer-Encoding'] = 'chunked';
-			body = multipart.stream;
+			// Tap the body so bytes flowing into the HTTP request advance the upload bar.
+			// The renderer's Transform is identity — chunks pass through unmodified.
+			body = renderer ? renderer.tapUploadStream(multipart.stream) : multipart.stream;
 		} else {
 			body = req;
 		}
 		let response: any = await httpRequest(options, body);
+
+		// Upload is done by the time we get the response; tear the bar down before any SSE
+		// rendering so the bar and event lines don't fight for the same terminal row.
+		renderer?.endUpload();
 
 		let responseData;
 		if (useSse && response.headers['content-type']?.startsWith('text/event-stream')) {
 			// Consume SSE: render phase events live, capture the final result from the `done`
 			// event (or the error message from the `error` event). The HTTP status stays 200
 			// until end-of-stream; failures are signaled in-band.
-			const state = {};
 			let finalResult;
 			let sseError;
 			for await (const message of parseSSE(response)) {
-				renderDeployProgress(message, state, process.stderr);
+				renderer?.renderEvent(message);
 				if (message.event === 'done') {
 					try {
 						finalResult = JSON.parse(message.data)?.result;
