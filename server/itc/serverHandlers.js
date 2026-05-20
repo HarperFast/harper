@@ -172,10 +172,6 @@ async function resourceOpenApiRequestHandler(event) {
 		hdbLogger.trace(`ITC resourceOpenApiRequestHandler received request:`, event);
 
 		const { resources } = require('../../resources/Resources.ts');
-		if (!resources || resources.size === 0) {
-			// This thread has no registered resources — don't respond so another worker can.
-			return;
-		}
 		const { generateJsonApi } = require('../../resources/openApi.ts');
 		const openapi = generateJsonApi(resources, event.message.serverHttpURL);
 

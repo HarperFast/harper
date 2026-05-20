@@ -12,6 +12,7 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 // Note: rewire is used to access private functions (schemaHandler, userHandler, componentStatusRequestHandler)
 // for testing validation logic, not for replacing dependencies with mocks
 const server_itc_handlers = rewire('#js/server/itc/serverHandlers');
+const { resetResources } = require('#src/resources/Resources');
 
 describe('Test hdbChildIpcHandler module', () => {
 	const TEST_ERR = 'The roof is on fire';
@@ -227,6 +228,9 @@ describe('Test hdbChildIpcHandler module', () => {
 
 		before(() => {
 			resource_openapi_handler = server_itc_handlers.__get__('resourceOpenApiRequestHandler');
+			// Ensure the module-level `resources` export is an initialised Resources instance
+			// (not undefined) so generateJsonApi can iterate over it safely.
+			resetResources();
 		});
 
 		// Tests validation: invalid events should be rejected and logged
@@ -260,14 +264,6 @@ describe('Test hdbChildIpcHandler module', () => {
 		it('sends OpenAPI response directly when originator is reachable', async () => {
 			sandbox.resetHistory();
 			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
-			// Inject a minimal mock for generateJsonApi and a non-empty resources Map
-			const mockOpenapi = { openapi: '3.0.3', paths: {} };
-			const mockResources = new Map([['test', { path: 'test', Resource: { isError: false } }]]);
-			server_itc_handlers.__set__('require', (path) => {
-				if (path.includes('Resources')) return { resources: mockResources };
-				if (path.includes('openApi')) return { generateJsonApi: () => mockOpenapi };
-				return require(path);
-			});
 
 			const test_event = {
 				type: 'resource_openapi_request',
@@ -280,22 +276,32 @@ describe('Test hdbChildIpcHandler module', () => {
 			const responseMessage = sendToThreadStub.firstCall.args[1];
 			expect(responseMessage.type).to.equal('resource_openapi_response');
 			expect(responseMessage.message.requestId).to.equal(99);
-			expect(responseMessage.message.openapi).to.deep.equal(mockOpenapi);
+			expect(responseMessage.message.openapi).to.be.an('object');
 			expect(log_error_stub).to.not.have.been.called;
 			sendToThreadStub.restore();
-			// Restore original require
-			server_itc_handlers.__set__('require', require);
+		});
+
+		it('sends OpenAPI response even when resources map is empty (no hang)', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { originator: 5, requestId: 100, serverHttpURL: 'http://localhost:9925' },
+			};
+			await resource_openapi_handler(test_event);
+
+			// Worker always responds — caller gets a spec (possibly empty) rather than a 5s timeout
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			expect((responseMessage) => responseMessage.message.openapi).to.be.a('function');
+			const responseMessage = sendToThreadStub.firstCall.args[1];
+			expect(responseMessage.message.openapi).to.be.an('object');
+			sendToThreadStub.restore();
 		});
 
 		it('drops response silently when originator is unreachable', async () => {
 			sandbox.resetHistory();
 			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(false);
-			const mockResources = new Map([['test', { path: 'test', Resource: { isError: false } }]]);
-			server_itc_handlers.__set__('require', (path) => {
-				if (path.includes('Resources')) return { resources: mockResources };
-				if (path.includes('openApi')) return { generateJsonApi: () => ({}) };
-				return require(path);
-			});
 
 			const test_event = {
 				type: 'resource_openapi_request',
@@ -308,7 +314,6 @@ describe('Test hdbChildIpcHandler module', () => {
 			const traceCalls = log_trace_stub.getCalls().map((call) => String(call.args[0]));
 			expect(traceCalls.some((msg) => msg.includes('Dropping resource OpenAPI response'))).to.be.true;
 			sendToThreadStub.restore();
-			server_itc_handlers.__set__('require', require);
 		});
 	});
 });
