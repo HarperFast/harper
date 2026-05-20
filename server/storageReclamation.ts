@@ -1,5 +1,7 @@
+import { readFile } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
@@ -20,10 +22,37 @@ const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAM
 // let so tests can override via rewire; set once from env at startup
 let QUOTA_SIZE_BYTES: number | undefined = convertToBytes(envMgr.get(CONFIG_PARAMS.STORAGE_QUOTASIZE));
 
+// Written by host-manager every ~90s alongside the instance's hdb root
+const QUOTA_STATUS_FILE = 'quota-status.json';
+// Fall back to du if the file is older than this (host-manager outage, container start race, etc.)
+const QUOTA_STATUS_MAX_AGE_MS = 5 * 60 * 1000;
+
+export type QuotaStatusData = {
+	usedBytes: number;
+	quotaBytes?: number;
+	updatedAt: number;
+};
+
+/**
+ * Reads the quota-status.json file written by host-manager.
+ * Returns undefined if the file is absent or malformed; does not apply age filtering.
+ */
+export async function getQuotaStatus(): Promise<QuotaStatusData | undefined> {
+	const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
+	if (!rootPath) return undefined;
+	try {
+		const raw = await readFile(join(rootPath, QUOTA_STATUS_FILE), 'utf8');
+		return JSON.parse(raw) as QuotaStatusData;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Returns the disk block usage (bytes) for a directory path.
  * Uses `du -sb` which is a GNU extension available on all Linux deployments.
  * The `--` separator guards against paths that start with `-`.
+ * Used as fallback when the quota-status file is absent or stale.
  */
 export async function getDirectoryUsageBytes(dirPath: string): Promise<number> {
 	const { stdout } = await execFileAsync('du', ['-sb', '--', dirPath]);
@@ -58,10 +87,19 @@ export function onStorageReclamation(
 }
 let reclamationTimer: NodeJS.Timeout;
 
-// Checked at call time so that tests can override QUOTA_SIZE_BYTES via rewire
+// Checked at call time so that tests can override QUOTA_SIZE_BYTES via rewire.
+// In quota mode: prefer the host-manager-written quota-status file (O(1)); fall back to
+// `du` on the rootPath (O(inodes)) when the file is absent or stale.
+// The rootPath `du` covers ALL Harper files (logs, blobs, databases), matching how XFS
+// user quotas count usage — as opposed to per-table paths registered for reclamation.
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
 	if (QUOTA_SIZE_BYTES) {
-		const usedBytes = await getDirectoryUsageBytes(path);
+		const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
+		const status = await getQuotaStatus();
+		const usedBytes =
+			status && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS
+				? status.usedBytes
+				: await getDirectoryUsageBytes(rootPath ?? path);
 		return Math.max(0, QUOTA_SIZE_BYTES - usedBytes) / QUOTA_SIZE_BYTES;
 	}
 	const fsStats = await statfs(path);

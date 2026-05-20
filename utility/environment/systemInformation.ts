@@ -3,7 +3,7 @@ import path from 'node:path';
 import si from 'systeminformation';
 import logger from '../logging/harper_logger.ts';
 import * as hdbTerms from '../hdbTerms.ts';
-import { getFreeSpaceBasis, getQuotaInfo, getDirectoryUsageBytes } from '../../server/storageReclamation.ts';
+import { getFreeSpaceBasis, getQuotaInfo, getQuotaStatus } from '../../server/storageReclamation.ts';
 import { lmdbGetTableSize } from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize.ts';
 import { getThreadInfo } from '../../server/threads/manageThreads.js';
 import * as env from './environmentManager.ts';
@@ -268,6 +268,7 @@ type DiskInfo = {
 	free_space_basis?: 'quota' | 'filesystem';
 	quota_size_bytes?: number;
 	quota_used_bytes?: number;
+	quota_status_age_seconds?: number;
 };
 
 /**
@@ -280,10 +281,10 @@ export async function getDiskInfo(): Promise<DiskInfo> {
 	const quotaInfo = getQuotaInfo();
 	if (quotaInfo) {
 		disk.quota_size_bytes = quotaInfo.quotaSizeBytes;
-		try {
-			disk.quota_used_bytes = await getDirectoryUsageBytes(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
-		} catch (e) {
-			logger.error(`error measuring quota usage: ${e}`);
+		const status = await getQuotaStatus();
+		if (status) {
+			disk.quota_used_bytes = status.usedBytes;
+			disk.quota_status_age_seconds = Math.floor((Date.now() - status.updatedAt) / 1000);
 		}
 	}
 	try {
