@@ -274,12 +274,22 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			}
 			responseData = finalResult ?? { message: 'Deploy completed (no result payload).' };
 		} else {
+			// When useSse is true, httpRequest returns a raw IncomingMessage (streamResponse mode),
+			// so .body is undefined. Drain the stream to get the text (e.g. a 401 error body).
+			let bodyText: string;
+			if (useSse) {
+				const chunks: Buffer[] = [];
+				for await (const chunk of response as AsyncIterable<Buffer>) chunks.push(Buffer.from(chunk));
+				bodyText = Buffer.concat(chunks).toString('utf8');
+			} else {
+				bodyText = response.body;
+			}
 			try {
-				responseData = JSON.parse(response.body);
+				responseData = JSON.parse(bodyText);
 			} catch {
 				responseData = {
 					status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
-					body: response.body,
+					body: bodyText,
 				};
 			}
 		}
