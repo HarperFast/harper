@@ -282,6 +282,16 @@ export async function installApplication(application: Application) {
 		// If node_modules doesn't exist, we need to install dependencies
 	}
 
+	// Build a per-spawn `onLine` callback that forwards each complete stdout/stderr line as
+	// an `install` SSE event to the deploy progress emitter. The `manager` field is filled
+	// in lazily by each spawn site so the CLI can show "install: using npm/pnpm/yarn/<cmd>".
+	// Skipped entirely when there's no emitter (non-SSE callers).
+	const progress = application.progress;
+	const installEmitter = (manager: string) =>
+		progress
+			? (stream: 'stdout' | 'stderr', line: string) => progress.emit('install', { manager, stream, line })
+			: undefined;
+
 	// If custom install command is specified, run it
 	if (application.install?.command) {
 		const [command, ...args] = application.install.command.split(' ');
@@ -290,7 +300,8 @@ export async function installApplication(application: Application) {
 			command,
 			args,
 			application.dirPath,
-			application.install?.timeout
+			application.install?.timeout,
+			installEmitter(command)
 		);
 		// if it succeeds, return
 		if (code === 0) {
@@ -346,7 +357,8 @@ export async function installApplication(application: Application) {
 			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
 			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
 			application.dirPath,
-			application.install?.timeout
+			application.install?.timeout,
+			installEmitter(packageManager.name)
 		);
 
 		// if it succeeds, return
@@ -398,7 +410,8 @@ export async function installApplication(application: Application) {
 		(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + 'npm',
 		npmInstallArgs,
 		application.dirPath,
-		application.install?.timeout
+		application.install?.timeout,
+		installEmitter('npm')
 	);
 
 	// if it succeeds, return
@@ -607,7 +620,8 @@ export function nonInteractiveSpawn(
 	command: string,
 	args: string[],
 	cwd: string,
-	timeoutMs: number = 60 * 60 * 1000
+	timeoutMs: number = 60 * 60 * 1000,
+	onLine?: (stream: 'stdout' | 'stderr', line: string) => void
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
@@ -637,20 +651,36 @@ export function nonInteractiveSpawn(
 			reject(new Error(`Command\`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`));
 		}, timeoutMs);
 
+		// `onLine` forwards each complete line of stdout/stderr to the caller as it arrives,
+		// used by the deploy progress emitter to stream live install output back to the CLI.
+		// We buffer per stream until a newline so a chunk that splits mid-line doesn't fire
+		// a half-line; trailing partial lines are flushed on close.
+		let stdoutLineBuf = '';
+		let stderrLineBuf = '';
+		function flushLines(buf: string, stream: 'stdout' | 'stderr'): string {
+			if (!onLine) return '';
+			let idx;
+			while ((idx = buf.indexOf('\n')) !== -1) {
+				onLine(stream, buf.slice(0, idx));
+				buf = buf.slice(idx + 1);
+			}
+			return buf;
+		}
+
 		let stdout = '';
 		childProcess.stdout.on('data', (chunk) => {
-			// buffer stdout for later resolve
-			stdout += chunk.toString();
-			// log stdout lines immediately
-			// TODO: Technically nothing guarantees that a chunk will be a complete line so need to implement
-			// something here to buffer until a newline character, then log the complete line
-			logger.loggerWithTag(`${applicationName}:spawn:${command}:stdout`).debug?.(chunk.toString());
+			const text = chunk.toString();
+			stdout += text;
+			logger.loggerWithTag(`${applicationName}:spawn:${command}:stdout`).debug?.(text);
+			if (onLine) stdoutLineBuf = flushLines(stdoutLineBuf + text, 'stdout');
 		});
 
 		// buffer stderr
 		let stderr = '';
 		childProcess.stderr.on('data', (chunk) => {
-			stderr += chunk.toString();
+			const text = chunk.toString();
+			stderr += text;
+			if (onLine) stderrLineBuf = flushLines(stderrLineBuf + text, 'stderr');
 		});
 
 		childProcess.on('error', (error) => {
@@ -666,6 +696,12 @@ export function nonInteractiveSpawn(
 			clearTimeout(timeout);
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
+			}
+			// Flush any partial line buffered after the last newline (npm sometimes ends without
+			// a trailing \n, especially on error paths).
+			if (onLine) {
+				if (stdoutLineBuf) onLine('stdout', stdoutLineBuf);
+				if (stderrLineBuf) onLine('stderr', stderrLineBuf);
 			}
 			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug?.(`Process exited with code ${code}`);
 			resolve({
