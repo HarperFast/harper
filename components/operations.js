@@ -459,6 +459,11 @@ async function deployComponent(req) {
 	// if doing a rolling restart set restart to false so that other nodes don't also restart.
 	req.restart = rollingRestart ? false : req.restart;
 	progress?.emit('phase', { phase: 'replicate', status: 'start' });
+	// ProgressEmitter is local to the origin: its listeners are functions that can't survive
+	// the replication-channel serialization, and a peer node receiving `req.progress` as a
+	// plain `{listeners:[]}` object would still take the `if (progress)` branch and then
+	// throw `TypeError: progress.emit is not a function`. Strip it before fan-out.
+	delete req.progress;
 	let response;
 	try {
 		response = await server.replication.replicateOperation(req);

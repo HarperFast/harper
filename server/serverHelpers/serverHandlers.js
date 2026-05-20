@@ -132,7 +132,9 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 		// happen. The progress emitter is attached to req.body so the operation handler can
 		// emit without changing its return signature; non-SSE callers leave `progress`
 		// undefined and the handler stays on its synchronous result path.
-		if (req.headers.accept === 'text/event-stream' && SSE_PROGRESS_OPERATIONS.has(req.body.operation)) {
+		// Optional-chained `req.headers` because unit tests dispatch through this path with
+		// synthetic req shapes that don't set headers; production Fastify requests always do.
+		if (req.headers?.accept === 'text/event-stream' && SSE_PROGRESS_OPERATIONS.has(req.body.operation)) {
 			const emitter = new ProgressEmitter();
 			req.body.progress = emitter;
 			res.header('Content-Type', 'text/event-stream');
