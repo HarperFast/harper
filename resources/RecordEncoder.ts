@@ -589,7 +589,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
 			const nodeId = options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
-			if (nodeId !== undefined && nodeId >= 0) {
+			if (nodeId >= 0) {
 				nodeIdAtNextEncoding = nodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;
 			} else nodeIdAtNextEncoding = -1;
