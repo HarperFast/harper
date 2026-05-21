@@ -210,8 +210,9 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('blob file removed from filesystem after auditRetention expires', async () => {
-		// auditRetention is 10s; wait 21s to be safe.
-		await setTimeout(21000);
+		// auditRetention is 10s. The GC timer may tick every ~10s, so worst-case
+		// the cleanup fires ~20s after deletion. Wait 35s to cover two full cycles.
+		await setTimeout(35000);
 
 		if (!blobsPath || process.env.DOCKER_CONTAINER_ID) return;
 
@@ -236,7 +237,9 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 			.send({ operation: 'drop_table', schema: 'blob', table: 'BlobCache', drop_records: true })
 			.expect(200);
 
-		await setTimeout(5000);
+		// Blob cleanup goes through the audit log (same 10s retention), so wait
+		// a full GC cycle rather than just a few seconds.
+		await setTimeout(21000);
 
 		if (!blobsPath || process.env.DOCKER_CONTAINER_ID) return;
 		if (await fs.pathExists(blobsPath)) {
