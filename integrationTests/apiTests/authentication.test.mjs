@@ -67,7 +67,7 @@ suite('Authentication', (ctx) => {
 		await request(client.operationsURL)
 			.post('')
 			.set({
-				'Authorization': `Basic ${Buffer.from(`'':''`).toString('base64')}`,
+				'Authorization': `Basic ${Buffer.from(':').toString('base64')}`,
 				'Content-Type': 'application/json',
 			})
 			.send({ operation: 'describe_all' })
