@@ -103,6 +103,8 @@ kill -0 $(cat /path/to/hdb/hdb.pid)  # Check if process is running
 | `harper restart`                   | Restart Harper                                               | v4.1.0          |
 | `harper start`                     | Start Harper in background (daemon mode)                     | v4.1.0          |
 | `harper stop`                      | Stop a running Harper instance                               | v4.1.0          |
+| `harper login`                     | Log in to a Harper instance                                  | v5.0.0          |
+| `harper logout`                    | Log out of a Harper instance                                 | v5.0.0          |
 | `harper status`                    | Display Harper and clustering status                         | v4.1.0          |
 | `harper version`                   | Show installed Harper version                                | v4.1.0          |
 | `harper renew-certs`               | Renew Harper-generated self-signed certificates              | v4.1.0          |
@@ -153,16 +155,28 @@ The CLI can execute operations on remote Harper instances by passing the `target
 
 **Authentication**: Provide credentials via:
 
-- Parameters: `username=<user> password=<pass>`
-- Environment variables: `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD`
+- **Persistent Login**: `harper login` to store tokens (recommended for local development)
+- **Environment variables and `.env` files**: Use `HARPER_CLI_TARGET`, `HARPER_CLI_USERNAME`, and `HARPER_CLI_PASSWORD` (recommended for CI/CD and project-specific configuration)
+- **Parameters**: `username=<user> password=<pass>`
 
 See [CLI Authentication](./authentication.md) for detailed information on authentication methods and best practices.
+
+**Example: Persistent Login and `.env`**:
+
+```bash
+# Log in to a specific target
+harper login https://server.com:9925
+# This automatically sets HARPER_CLI_TARGET in your local .env file
+
+# Subsequently execute operations without target or credentials
+harper describe_database database=dev
+```
 
 **Example: CLI Target Environment Variables**:
 
 ```bash
-export CLI_TARGET_USERNAME=HDB_ADMIN
-export CLI_TARGET_PASSWORD=password
+export HARPER_CLI_USERNAME=HDB_ADMIN
+export HARPER_CLI_PASSWORD=password
 harper describe_database database=dev target=https://server.com:9925
 ```
 

@@ -335,15 +335,15 @@ The Operations API commands through the CLI are ideal for:
 - Administrative tasks
 - Monitoring and health checks
 
-**Example Script**:
+**Check status**:
 
 ```bash
-#!/bin/bash
+# Log in to the cluster
+harper login https://cluster-node-1.example.com:9925
+
+# Provide your cluster's username and password when prompted.
 
 # Deploy component to remote cluster
-export CLI_TARGET_USERNAME=HDB_ADMIN
-export CLI_TARGET_PASSWORD=$SECURE_PASSWORD
-
 harper deploy \
   target=https://cluster-node-1.example.com:9925 \
   replicated=true \

@@ -34,28 +34,86 @@ For remote operations (operations executed on a remote Harper instance via the `
 
 ### Authentication Methods
 
-#### Method 1: Environment Variables (Recommended)
+#### Method 1: Persistent Login (Recommended for Local Development)
 
-Set the following environment variables to avoid exposing credentials in command history:
+Available since: v5.1.0
+
+Use `harper login` to store authentication tokens for a specific target. This is the most convenient method for local development as it removes the need to pass credentials with every command.
 
 ```bash
-export CLI_TARGET_USERNAME=HDB_ADMIN
-export CLI_TARGET_PASSWORD=password
+# Log in once
+harper login https://server.com:9925
+# Provide username and password when prompted
+
+# Subsequently execute operations without credentials
+harper describe_database database=dev target=https://server.com:9925
+harper deploy target=https://server.com:9925
 ```
 
-Then execute remote operations without including credentials in the command:
+When you are finished, you can log out to remove the stored token:
 
 ```bash
-harper describe_database database=dev target=https://server.com:9925
-harper get_components target=https://remote-instance.example.com:9925
+harper logout https://server.com:9925
+```
+
+**Benefits**:
+
+- Credentials are not stored in command history for every operation
+- Simplifies frequent remote operations
+- No need to maintain environment variables in multiple terminal sessions
+
+#### Method 2: Environment Variables (Recommended for CI/CD)
+
+The CLI supports loading environment variables from your shell environment (or optionally from a `.env` file in the current directory). This is the recommended method for CI/CD pipelines and for pre-populating the `target` parameter for specific projects.
+
+**Supported Variables**:
+
+- `HARPER_CLI_TARGET` (or `CLI_TARGET`) - Sets the default `target` for CLI commands.
+- `HARPER_CLI_USERNAME` (or `CLI_TARGET_USERNAME`) - Harper admin username for the target.
+- `HARPER_CLI_PASSWORD` (or `CLI_TARGET_PASSWORD`) - Harper admin password for the target.
+
+**Example `.env` file**:
+
+```bash
+HARPER_CLI_TARGET=https://example.com:9925
+HARPER_CLI_USERNAME=HDB_ADMIN
+HARPER_CLI_PASSWORD=password
+```
+
+**Manual Environment Variables**:
+
+Set these variables in your shell to avoid exposing credentials in command history:
+
+```bash
+export HARPER_CLI_USERNAME=HDB_ADMIN
+export HARPER_CLI_PASSWORD=password
 ```
 
 **Benefits**:
 
 - Credentials not visible in command history
-- More secure for scripting
-- Can be set once per session
-- Supported by most CI/CD systems
+- More secure for scripting and CI/CD systems
+- Can be set once per session or project directory
+- Automatically populated by `harper login`
+
+**Automatic `.env` Updates**:
+
+When you run `harper login <URL>`, the CLI will automatically update your `.env` file in your current directory and set `HARPER_CLI_TARGET` to the specified URL.
+
+```bash
+# Automatically sets HARPER_CLI_TARGET in .env
+harper login https://my-project.harperdb.cloud
+```
+
+Then you can run commands without specifying the `target` or credentials (if they are also in `.env` or exported):
+
+```bash
+# Respects HARPER_CLI_TARGET from .env
+harper deploy
+harper describe_database database=dev
+harper get_components
+harper logout
+```
 
 **Example Script**:
 
@@ -63,15 +121,15 @@ harper get_components target=https://remote-instance.example.com:9925
 #!/bin/bash
 
 # Set credentials from secure environment
-export CLI_TARGET_USERNAME=HDB_ADMIN
-export CLI_TARGET_PASSWORD=$SECURE_PASSWORD  # from secret manager
+export HARPER_CLI_USERNAME=HDB_ADMIN
+export HARPER_CLI_PASSWORD=$SECURE_PASSWORD  # from secret manager
 
-# Execute operations
+# Execute operations without passing credentials or target (if set)
 harper deploy target=https://prod-server.com:9925 replicated=true
 harper restart target=https://prod-server.com:9925 replicated=true
 ```
 
-#### Method 2: Command Parameters
+#### Method 3: Command Parameters
 
 Provide credentials directly as command parameters:
 
@@ -121,8 +179,8 @@ target=https://server.example.com:8080
 Always use environment variables for credentials in scripts and automation:
 
 ```bash
-export CLI_TARGET_USERNAME=HDB_ADMIN
-export CLI_TARGET_PASSWORD=$SECURE_PASSWORD
+export HARPER_CLI_USERNAME=HDB_ADMIN
+export HARPER_CLI_PASSWORD=$SECURE_PASSWORD
 ```
 
 ### 2. Use HTTPS
@@ -151,12 +209,12 @@ Store credentials in secure secret management systems:
 #!/bin/bash
 
 # Retrieve credentials from AWS Secrets Manager
-export CLI_TARGET_USERNAME=$(aws secretsmanager get-secret-value \
+export HARPER_CLI_USERNAME=$(aws secretsmanager get-secret-value \
   --secret-id harper-admin-user \
   --query SecretString \
   --output text)
 
-export CLI_TARGET_PASSWORD=$(aws secretsmanager get-secret-value \
+export HARPER_CLI_PASSWORD=$(aws secretsmanager get-secret-value \
   --secret-id harper-admin-password \
   --query SecretString \
   --output text)
@@ -209,8 +267,8 @@ If environment variables aren't working:
 1. **Verify variables are set**:
 
    ```bash
-   echo $CLI_TARGET_USERNAME
-   echo $CLI_TARGET_PASSWORD
+   echo $HARPER_CLI_USERNAME
+   echo $HARPER_CLI_PASSWORD
    ```
 
 2. **Export variables**:
@@ -218,10 +276,10 @@ If environment variables aren't working:
 
    ```bash
    # Wrong - variable only available in current shell
-   CLI_TARGET_USERNAME=admin
+   HARPER_CLI_USERNAME=admin
 
    # Correct - variable available to child processes
-   export CLI_TARGET_USERNAME=admin
+   export HARPER_CLI_USERNAME=admin
    ```
 
 3. **Check variable scope**:

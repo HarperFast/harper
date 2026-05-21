@@ -140,6 +140,44 @@ The `harper install` command operates exactly like the [`harper`](#harper) comma
 
 **Note**: We recommend using `harper` instead of `harper install` as it provides a consistent workflow for both installation and running Harper.
 
+### `harper login`
+
+Available since: v5.0.0
+
+Log in to a Harper instance to store authentication tokens locally. Once logged in, subsequent commands targeting this instance (via `target`) will automatically use the stored token.
+
+The CLI also supports `.env` files. When you log in, the `HARPER_CLI_TARGET` environment variable will be automatically added to a `.env` file in your current directory if it exists. This allows you to omit the `target` parameter in subsequent commands within that directory.
+
+```bash
+harper login <URL>
+```
+
+**Optional Parameters**:
+
+- `<URL>` - The URL of the Harper instance to log in to.
+
+**Prompts**:
+
+You'll be asked to type in the following information:
+
+- `<URL>` - If a URL parameter is not provided, you'll be prompted to enter the URL of the Harper instance to log in to.
+- `<username>` - Harper admin username.
+- `<password>` - Harper admin password.
+
+### `harper logout`
+
+Available since: v5.0.0
+
+Log out of a Harper instance and remove the stored authentication token.
+
+```bash
+harper logout <URL>
+```
+
+**Optional Parameters**:
+
+- `<URL>` - The URL of the Harper instance to log out from. If none is provided, you'll be signed out of all instances.
+
 ## Information Commands
 
 ### `harper version`
