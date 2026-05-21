@@ -551,6 +551,8 @@ async function getComponents() {
  * @param req
  * @returns {Promise<*>}
  */
+const DEFAULT_COMPONENT_FILE_MAX_SIZE = 5 * 1024 * 1024; // 5 MB
+
 async function getComponentFile(req) {
 	const validation = validator.getComponentFileValidator(req);
 	if (validation) {
@@ -558,12 +560,23 @@ async function getComponentFile(req) {
 	}
 
 	const compRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const filePath = path.join(compRoot, req.project, req.file);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
+	const configuredMax = configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_COMPONENTFILE_MAXSIZE);
+	const maxSize =
+		Number.isFinite(+configuredMax) && +configuredMax > 0 ? +configuredMax : DEFAULT_COMPONENT_FILE_MAX_SIZE;
 
 	try {
-		const stats = await fs.stat(path.join(compRoot, req.project, req.file));
+		const stats = await fs.stat(filePath);
+		if (stats.size > maxSize) {
+			throw handleHDBError(
+				new Error(HDB_ERROR_MSGS.COMPONENT_FILE_TOO_LARGE(stats.size, maxSize)),
+				HDB_ERROR_MSGS.COMPONENT_FILE_TOO_LARGE(stats.size, maxSize),
+				HTTP_STATUS_CODES.CONTENT_TOO_LARGE
+			);
+		}
 		return {
-			message: await fs.readFile(path.join(compRoot, req.project, req.file), options),
+			message: await fs.readFile(filePath, options),
 			size: stats.size,
 			birthtime: stats.birthtime,
 			mtime: stats.mtime,

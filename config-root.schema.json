@@ -395,6 +395,17 @@
 						"timeout": { "type": "integer" }
 					}
 				},
+				"componentFile": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"maxSize": {
+							"type": "integer",
+							"minimum": 1,
+							"description": "Maximum size in bytes for files returned by get_component_file. Default: 5242880 (5 MB)"
+						}
+					}
+				},
 				"tls": {
 					"$ref": "#/definitions/tlsConfig",
 					"description": "TLS configuration overriding root TLS for Operations API"

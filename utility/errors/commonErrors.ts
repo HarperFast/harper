@@ -15,6 +15,7 @@ export const HTTP_STATUS_CODES = {
 	METHOD_NOT_ALLOWED: 405,
 	REQUEST_TIMEOUT: 408,
 	CONFLICT: 409,
+	CONTENT_TOO_LARGE: 413,
 	TOO_MANY_REQUESTS: 429,
 	INTERNAL_SERVER_ERROR: 500,
 	NOT_IMPLEMENTED: 501,
@@ -216,6 +217,8 @@ const ITC_ERRORS = {
 };
 
 const CUSTOM_FUNCTIONS_ERROR_MSGS = {
+	COMPONENT_FILE_TOO_LARGE: (size: number, limit: number) =>
+		`Component file size (${size} bytes) exceeds the configured limit of ${limit} bytes`,
 	FUNCTION_STATUS: 'Error getting custom function status, check the log for more details',
 	GET_FUNCTIONS: 'Error getting custom functions, check the log for more details',
 	GET_FUNCTION: 'Error getting custom function, check the log for more details',

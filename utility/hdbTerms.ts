@@ -516,6 +516,7 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_SECUREPORT: 'operationsApi_network_securePort',
 	OPERATIONSAPI_NETWORK_HTTP2: 'operationsApi_network_http2',
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
+	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
