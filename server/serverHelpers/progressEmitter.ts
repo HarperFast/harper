@@ -55,8 +55,12 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 	stream.write(`: stream open\n\n`);
 
 	let active = true;
+	let errorEmitted = false;
 	const unsubscribe = emitter.subscribe((event) => {
-		if (active) writeSSE(stream, event);
+		if (active) {
+			writeSSE(stream, event);
+			if (event.event === 'error') errorEmitted = true;
+		}
 	});
 
 	const cleanup = () => {
@@ -76,7 +80,9 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 			if (active) writeSSE(stream, { event: 'done', data: { result } });
 		})
 		.catch((err) => {
-			if (active) {
+			// Only emit a framework-level error event if the operation itself didn't already
+			// emit one (with richer context like phase) through the emitter subscriber above.
+			if (active && !errorEmitted) {
 				writeSSE(stream, {
 					event: 'error',
 					data: {
