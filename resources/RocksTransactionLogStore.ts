@@ -125,7 +125,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		throw new Error('Not implemented');
 	}
 	addLogToMaps(logName: string, log: TransactionLog) {
-		const nodeId = (getIdOfRemoteNode(logName, this) ?? 0) as number;
+		// 'local' is always the local node's log, which maps to nodeId 0
+		const nodeId = (logName === 'local' ? 0 : getIdOfRemoteNode(logName, this)) as number;
 		if (this.nodeLogs) {
 			this.nodeLogs![nodeId] ??= log;
 		}
