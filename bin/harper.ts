@@ -18,6 +18,8 @@ Usage: harperdb [command]
 
 With no command, harper will simply run Harper (in the foreground)
 
+Documentation: https://docs.harperdb.io/learn
+
 By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
 
 Commands:
