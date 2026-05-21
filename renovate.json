@@ -7,6 +7,7 @@
 	"prConcurrentLimit": 2,
 	"minimumReleaseAge": "7 days",
 	"internalChecksFilter": "strict",
+	"automerge": true,
 	"reviewersFromCodeOwners": true,
 	"lockFileMaintenance": { "enabled": false },
 	"packageRules": [
