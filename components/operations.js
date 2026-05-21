@@ -19,6 +19,7 @@ const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
 const { DeploymentRecorder } = require('./deploymentRecorder.ts');
+const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 /**
  * Read the settings.js file and return the
@@ -388,13 +389,17 @@ async function deployComponent(req) {
 
 	// Slice A of issue #641: create a hdb_deployment row up front so the deploy is
 	// observable and auditable even if the CLI disconnects. The row also holds the payload
-	// in a Blob attribute — Slice B will use that for peer delivery; for now it's the
-	// audit record and the rollback source.
+	// in a Blob attribute — Slice B uses it as the rollback source.
 	//
 	// Only the origin node records — peers receiving a replicated deploy_component skip
 	// recording so we don't accumulate one row per node for the same deploy. The row will
 	// reach peers via the table's replication once Slice B has them consume it.
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	// Slice B1 of #641: an SSE-bound caller already attached a ProgressEmitter (created in
+	// the server handler so it can also drive the response stream). Reuse it; otherwise
+	// spin up a fresh emitter so the recorder still gets phase events for non-SSE deploys.
+	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
+	if (emitter && !req.progress) req.progress = emitter;
 	const recorder = isReplicatedExecution
 		? null
 		: await DeploymentRecorder.create({
@@ -402,8 +407,11 @@ async function deployComponent(req) {
 				package_identifier: req.package ?? null,
 				user: req.hdb_user?.username,
 				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
+				emitter,
 			});
 	if (recorder) req._deploymentId = recorder.deploymentId;
+
+	const emit = (event, data) => emitter?.emit(event, data);
 
 	let extractionPayload = req.payload;
 	try {
@@ -428,7 +436,9 @@ async function deployComponent(req) {
 			},
 		});
 
+		emit('phase', { phase: 'prepare', status: 'start' });
 		await prepareApplication(application);
+		emit('phase', { phase: 'prepare', status: 'done' });
 
 		// now we attempt to actually load the component in case there is
 		// an error we can immediately detect and report, but app code should not run on the main thread
@@ -439,6 +449,7 @@ async function deployComponent(req) {
 			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
 			let lastError;
 			componentLoader.setErrorReporter((error) => (lastError = error));
+			emit('phase', { phase: 'load', status: 'start' });
 			await componentLoader.loadComponent(
 				application.dirPath,
 				pseudoResources,
@@ -448,23 +459,34 @@ async function deployComponent(req) {
 				false,
 				req.project
 			);
+			emit('phase', { phase: 'load', status: 'done' });
 
 			if (lastError) throw lastError;
 		}
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
+		// ProgressEmitter holds function listeners that can't survive the replication
+		// channel's serialization, and the recorder is local to origin anyway. Strip both
+		// before sending so peers see a clean req.
+		delete req.progress;
+		emit('phase', { phase: 'replicate', status: 'start' });
 		let response = await server.replication.replicateOperation(req);
+		emit('phase', { phase: 'replicate', status: 'done' });
 		if (req.restart === true) {
+			emit('phase', { phase: 'restart', status: 'start' });
 			manageThreads.restartWorkers('http');
+			emit('phase', { phase: 'restart', status: 'done' });
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
 			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			emit('phase', { phase: 'restart', status: 'start' });
 			const jobResponse = await serverUtilities.executeJob({
 				operation: 'restart_service',
 				service: 'http',
 				replicated: true,
 			});
+			emit('phase', { phase: 'restart', status: 'done' });
 
 			response.restartJobId = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
@@ -472,10 +494,16 @@ async function deployComponent(req) {
 
 		if (recorder) {
 			response.deployment_id = recorder.deploymentId;
+			emit('phase', { phase: 'success', status: 'done' });
 			await recorder.finish('success');
 		}
 		return response;
 	} catch (err) {
+		emit('error', {
+			message: err?.message ?? String(err),
+			code: err?.statusCode ?? err?.code,
+			phase: recorder?.row.phase,
+		});
 		if (recorder) await recorder.finish('failed', err);
 		throw err;
 	}

@@ -11,10 +11,19 @@ import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
 import { streamPackagedDirectory } from '../components/packageComponent.ts';
 import { buildMultipartBody } from './multipartBuilder.ts';
+import { parseSSE } from './sseConsumer.ts';
+import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.js';
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
+
+// Operations whose responses should be consumed as text/event-stream so live phase events
+// (prepare, load, replicate, restart) render as they happen instead of after the whole
+// deploy completes. Add an operation here only after wiring its server-side
+// SSE_PROGRESS_OPERATIONS entry — otherwise the server returns the buffered JSON path and
+// the SSE parser sees no events.
+const SSE_OPERATIONS = new Set(['deploy_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
 // They never get serialized into the request body.
@@ -191,6 +200,15 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
 		}
+		const useSse = SSE_OPERATIONS.has(req.operation);
+		if (useSse) {
+			options.headers.Accept = 'text/event-stream';
+			options.streamResponse = true;
+		}
+		// One renderer owns the (future) upload bar and the SSE event rendering for a
+		// multipart deploy. Created here so the upload-stream tap and the SSE consumer
+		// below share the same instance.
+		const renderer = req._multipart ? new DeployRenderer({}) : null;
 		let body;
 		if (req._multipart) {
 			const packageStream = req._packageStream;
@@ -209,20 +227,66 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			// Use chunked transfer-encoding: we don't know the total size up front because the
 			// payload is streamed from `tar.pack` and never fully buffered.
 			options.headers['Transfer-Encoding'] = 'chunked';
-			body = multipart.stream;
+			// Tap the body so bytes flowing into the HTTP request advance the upload bar.
+			// The renderer's Transform is identity — chunks pass through unmodified.
+			body = renderer ? renderer.tapUploadStream(multipart.stream) : multipart.stream;
 		} else {
 			body = req;
 		}
 		let response: any = await httpRequest(options, body);
 
+		// Upload is done by the time we get the response; tear the bar down before any SSE
+		// rendering so the bar and event lines don't fight for the same terminal row.
+		renderer?.endUpload();
+
 		let responseData;
-		try {
-			responseData = JSON.parse(response.body);
-		} catch {
-			responseData = {
-				status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
-				body: response.body,
-			};
+		if (useSse && response.headers['content-type']?.startsWith('text/event-stream')) {
+			// Consume SSE: render phase events live, capture the final result from the `done`
+			// event (or the error message from the `error` event). The HTTP status stays 200
+			// until end-of-stream; failures are signaled in-band.
+			let finalResult;
+			let sseError;
+			for await (const message of parseSSE(response)) {
+				renderer?.renderEvent(message);
+				if (message.event === 'done') {
+					try {
+						finalResult = JSON.parse(message.data)?.result;
+					} catch {
+						finalResult = message.data;
+					}
+				} else if (message.event === 'error') {
+					try {
+						sseError = JSON.parse(message.data);
+					} catch {
+						sseError = { message: message.data };
+					}
+				}
+			}
+			if (sseError) {
+				const errMsg = sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
+				console.error(`error: ${errMsg}`);
+				process.exit(1);
+			}
+			responseData = finalResult ?? { message: 'Deploy completed (no result payload).' };
+		} else {
+			// When useSse is true, httpRequest returns a raw IncomingMessage (streamResponse mode),
+			// so .body is undefined. Drain the stream to get the text (e.g. a 401 error body).
+			let bodyText: string;
+			if (useSse) {
+				const chunks: Buffer[] = [];
+				for await (const chunk of response as AsyncIterable<Buffer>) chunks.push(Buffer.from(chunk));
+				bodyText = Buffer.concat(chunks).toString('utf8');
+			} else {
+				bodyText = response.body;
+			}
+			try {
+				responseData = JSON.parse(bodyText);
+			} catch {
+				responseData = {
+					status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
+					body: bodyText,
+				};
+			}
 		}
 
 		let responseLog;
