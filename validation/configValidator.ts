@@ -66,6 +66,57 @@ export function configValidator(configJson, skipFsValidation = false) {
 		privateKey: pemFileConstraints,
 	});
 
+	// Models — `models:` block opts a deployment into the per-backend registry.
+	// Per-backend shape is validated by a discriminated alternative on the
+	// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
+	//
+	// `.unknown(false)` on each known backend's schema turns field-name typos
+	// (`bakend: ollama`, `hsot: ...`) into boot-blocking validation errors.
+	// Without it, Joi's top-level `allowUnknown: true` propagates and typos
+	// silently survive into bootstrap. Unknown backend types (anything not in
+	// the `switch` list) fall through to a permissive schema so future Harper
+	// versions or third-party components can register their own backends
+	// without core schema edits — `bootstrapModels` logs+skips at runtime.
+	//
+	// `requestTimeoutMs: min(1)` (not `min(0)`) so the meaning is unambiguous:
+	// omit the field for "no timeout". `0` would validate but `composeSignal`
+	// treats it as "no timeout" via `if (!timeoutMs)`, surprising a test that
+	// sets 0 to mean "fail immediately".
+	const commonEntryFields = {
+		model: string.optional(),
+		requestTimeoutMs: number.min(1).optional(),
+	};
+	const ollamaEntrySchema = Joi.object({
+		backend: string.valid('ollama').required(),
+		host: string.optional(),
+		...commonEntryFields,
+	}).unknown(false);
+	const openaiEntrySchema = Joi.object({
+		backend: string.valid('openai').required(),
+		// `apiKey` may be a literal secret or a `${ENV_VAR}` placeholder; both
+		// are syntactically strings. `bootstrap.ts` runs `expandEnvVarsDeep`
+		// before construction; the backend rejects unresolved placeholders
+		// with an explicit error pointing at the env-var name.
+		apiKey: string.required(),
+		baseUrl: string.optional(),
+		organization: string.optional(),
+		...commonEntryFields,
+	}).unknown(false);
+	const unknownBackendEntrySchema = Joi.object({
+		backend: string.required(),
+	}).unknown(true);
+	const modelEntrySchema = Joi.alternatives().conditional('.backend', {
+		switch: [
+			{ is: 'ollama', then: ollamaEntrySchema },
+			{ is: 'openai', then: openaiEntrySchema },
+		],
+		otherwise: unknownBackendEntrySchema,
+	});
+	const modelsSchema = Joi.object({
+		embedding: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
+		generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
+	});
+
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
 			Joi.object({
@@ -195,6 +246,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			maxFreeSpaceToLoad: number.optional(),
 			maxFreeSpaceToRetain: number.optional(),
 		}).required(),
+		models: modelsSchema.optional(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});

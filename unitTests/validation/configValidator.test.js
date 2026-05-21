@@ -385,4 +385,208 @@ describe('Test configValidator module', () => {
 			"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'"
 		);
 	});
+
+	// #629 (Phase 2 of #510): models config block.
+	describe('models config', () => {
+		function baseConfig() {
+			return testUtils.deepClone(FAKE_CONFIG);
+		}
+
+		it('validates clean when the models block is absent', () => {
+			const result = configValidator(baseConfig(), true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.models).to.be.undefined;
+		});
+
+		it('accepts an empty models block', () => {
+			const config = baseConfig();
+			config.models = {};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('accepts an ollama embedding entry with host + model', () => {
+			const config = baseConfig();
+			config.models = {
+				embedding: {
+					default: { backend: 'ollama', host: 'localhost:11434', model: 'nomic-embed-text' },
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('accepts a generative entry with requestTimeoutMs', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: {
+					fast: { backend: 'ollama', model: 'llama3.2', requestTimeoutMs: 30000 },
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('rejects entries missing a backend discriminator', () => {
+			const config = baseConfig();
+			config.models = { embedding: { default: { model: 'm' } } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include('backend');
+		});
+
+		it('rejects a non-numeric requestTimeoutMs', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', requestTimeoutMs: 'soon' } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+		});
+
+		it('rejects a negative requestTimeoutMs', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', requestTimeoutMs: -1 } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+		});
+
+		it('rejects requestTimeoutMs: 0 (omit the field for "no timeout")', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', requestTimeoutMs: 0 } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+		});
+
+		it('rejects unknown fields inside a model entry (typo guard)', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', bakend: 'oops' } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include('bakend');
+		});
+
+		it('accepts multiple logical names per kind', () => {
+			const config = baseConfig();
+			config.models = {
+				embedding: {
+					default: { backend: 'ollama', model: 'm1' },
+					high_quality: { backend: 'ollama', model: 'm2' },
+				},
+				generative: {
+					default: { backend: 'ollama', model: 'g1' },
+					fast: { backend: 'ollama', model: 'g2' },
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		// #630 (Phase 3): openai-specific discriminated schema.
+		describe('openai backend', () => {
+			it('accepts an openai entry with apiKey + model', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'openai', apiKey: 'sk-test', model: 'gpt-4o-mini' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('accepts a ${ENV_VAR} placeholder as the apiKey value (resolved at bootstrap)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'openai', apiKey: '${OPENAI_API_KEY}', model: 'gpt-4o-mini' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('accepts baseUrl and organization on openai entries', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						azure: {
+							backend: 'openai',
+							apiKey: 'sk-test',
+							model: 'gpt-4o',
+							baseUrl: 'https://my-azure.openai.azure.com/openai/v1',
+							organization: 'org-abc',
+						},
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('rejects openai entry missing apiKey', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'openai', model: 'gpt-4o-mini' } },
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('apiKey');
+			});
+
+			it('rejects ollama-specific field (host) on an openai entry', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'openai', apiKey: 'sk-test', model: 'gpt-4o-mini', host: 'oops' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('host');
+			});
+
+			it('rejects openai-specific field (apiKey) on an ollama entry', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'ollama', model: 'm', apiKey: 'wrong-backend' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('apiKey');
+			});
+
+			it('allows ollama and openai entries side by side', () => {
+				const config = baseConfig();
+				config.models = {
+					embedding: {
+						'default': { backend: 'ollama', model: 'nomic-embed-text' },
+						'high-quality': { backend: 'openai', apiKey: 'sk-test', model: 'text-embedding-3-large' },
+					},
+					generative: {
+						default: { backend: 'openai', apiKey: 'sk-test', model: 'gpt-4o-mini' },
+						fast: { backend: 'ollama', model: 'llama3.2' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('passes through an unknown backend (bootstrap handles at runtime)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'future-backend', model: 'whatever', anyField: 'goes' } },
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+		});
+	});
 });

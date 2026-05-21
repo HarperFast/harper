@@ -35,6 +35,7 @@ import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, getConfigPath } from '../config/configUtils.js';
+import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -313,6 +314,12 @@ export async function loadComponent(
 			config = DEFAULT_CONFIG;
 		}
 		applicationScope.config ??= config;
+
+		// #629 (Phase 2 of #510): populate the model-backend registry from the root
+		// config's `models:` block before any user `handleApplication(scope)` runs,
+		// so `scope.models.embed(...)` works from app-init code as well as Resource
+		// methods. Per-entry errors are logged and skipped by `bootstrapModels`.
+		if (isRoot) bootstrapModels(config);
 
 		if (!isRoot) {
 			try {

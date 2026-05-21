@@ -454,6 +454,24 @@ describe('Audit log', () => {
 		});
 	});
 
+	it('addLogToMaps assigns nodeId 0 to the local log and populates nodeLogs[0]', () => {
+		const fakeLog = { query: () => null, addEntry: () => null, on: () => null };
+		const fakeRoot = { useLog: () => fakeLog, on: () => null, listLogs: () => [] };
+		const store = new RocksTransactionLogStore(fakeRoot);
+		store.nodeLogs = [];
+		const nodeId = store.addLogToMaps('local', fakeLog);
+		assert.strictEqual(nodeId, 0, "'local' log must map to nodeId 0");
+		assert.strictEqual(store.nodeLogs[0], fakeLog, 'nodeLogs[0] must be the local log');
+	});
+
+	it('local audited write stores nodeId 0 in the primary record', async function () {
+		const key = 9001;
+		await AuditedTable.put(key, { name: 'nodeId-test' });
+		const entry = AuditedTable.primaryStore.getEntry(key);
+		assert.strictEqual(entry.nodeId, 0, 'locally-written audited record must store nodeId 0');
+		await AuditedTable.delete(key);
+	});
+
 	it('can handle separate subscriptions on separate dbs', async function () {
 		const DB_COUNT = 3;
 		let tables = [];

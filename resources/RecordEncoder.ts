@@ -588,7 +588,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
 				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
-			const nodeId = options?.nodeId;
+			const nodeId = options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
 			if (nodeId >= 0) {
 				nodeIdAtNextEncoding = nodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;

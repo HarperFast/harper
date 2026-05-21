@@ -98,6 +98,19 @@ export interface Context {
 	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 	timestamp?: number;
 	includeExpensiveRecordCountEstimates?: boolean;
+	/**
+	 * Matched route path of the calling Resource, populated by the HTTP/WS entry points
+	 * before they hand the request into `transaction()`. Populated on the Request that
+	 * becomes the ALS-bound Context for that path; absent for ops-API, internal jobs,
+	 * and replication-driven contexts.
+	 */
+	handlerPath?: string;
+	/**
+	 * Abort signal carried through ALS so generator bodies can forward cancellation to
+	 * external work (e.g. `scope.models.generateStream({ signal })`). Populated on the
+	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513.
+	 */
+	signal?: AbortSignal;
 }
 
 export interface SourceContext<TRequestContext = Context, Record extends object = any> {

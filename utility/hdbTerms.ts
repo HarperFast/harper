@@ -802,6 +802,8 @@ export const ITC_EVENT_TYPES = {
 	START_JOB: 'start_job',
 	COMPONENT_STATUS_REQUEST: 'component_status_request',
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
+	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
+	RESOURCE_OPENAPI_RESPONSE: 'resource_openapi_response',
 } as const;
 
 /** Supported thread types */
