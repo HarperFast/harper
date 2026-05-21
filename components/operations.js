@@ -18,6 +18,7 @@ const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
+const { DeploymentRecorder } = require('./deploymentRecorder.ts');
 
 /**
  * Read the settings.js file and return the
@@ -361,7 +362,6 @@ async function deployComponent(req) {
 	}
 
 	// Write to root config if the request contains a package identifier
-	// TODO: how can we keep record of the `payload`? Its often too large to stuff into a config file; especially the root config. Maybe we can write it to a file and reference that way?
 	if (req.package) {
 		// Check if trying to overwrite a core component (requires force)
 		// Lazy-load to avoid circular dependency with componentLoader
@@ -386,60 +386,89 @@ async function deployComponent(req) {
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
-	const application = new Application({
-		name: req.project,
-		payload: req.payload,
-		packageIdentifier: req.package,
-		install: {
-			command: req.install_command,
-			timeout: req.install_timeout,
-			allowInstallScripts: req.install_allow_scripts,
-		},
+	// Slice A of issue #641: create a hdb_deployment row up front so the deploy is
+	// observable and auditable even if the CLI disconnects. The row also holds the payload
+	// in a Blob attribute — Slice B will use that for peer delivery; for now it's the
+	// audit record and the rollback source.
+	const recorder = await DeploymentRecorder.create({
+		project: req.project,
+		package_identifier: req.package ?? null,
+		user: req.hdb_user?.username,
+		restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
 	});
+	req._deploymentId = recorder.deploymentId;
 
-	await prepareApplication(application);
+	let extractionPayload = req.payload;
+	try {
+		// If a tarball came in (Buffer or Readable from the multipart parser), tee it through
+		// a hash-and-size tap into the row's payload_blob, then re-source extraction from the
+		// persisted blob. This means we read the upload exactly once into local storage; the
+		// blob is the staging area and (in Slice B) the channel peers will replicate from.
+		if (req.payload != null) {
+			await recorder.ingestPayload(req.payload);
+			extractionPayload = recorder.row.payload_blob.stream();
+		}
 
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report, but app code should not run on the main thread
-	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
-		const pseudoResources = new Resources();
-		pseudoResources.isWorker = true;
-
-		const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
-		let lastError;
-		componentLoader.setErrorReporter((error) => (lastError = error));
-		await componentLoader.loadComponent(
-			application.dirPath,
-			pseudoResources,
-			undefined,
-			false,
-			undefined,
-			false,
-			req.project
-		);
-
-		if (lastError) throw lastError;
-	}
-	const rollingRestart = req.restart === 'rolling';
-	// if doing a rolling restart set restart to false so that other nodes don't also restart.
-	req.restart = rollingRestart ? false : req.restart;
-	let response = await server.replication.replicateOperation(req);
-	if (req.restart === true) {
-		manageThreads.restartWorkers('http');
-		response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-	} else if (rollingRestart) {
-		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
-		const jobResponse = await serverUtilities.executeJob({
-			operation: 'restart_service',
-			service: 'http',
-			replicated: true,
+		const application = new Application({
+			name: req.project,
+			payload: extractionPayload,
+			packageIdentifier: req.package,
+			install: {
+				command: req.install_command,
+				timeout: req.install_timeout,
+				allowInstallScripts: req.install_allow_scripts,
+			},
 		});
 
-		response.restartJobId = jobResponse.job_id;
-		response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-	} else response.message = `Successfully deployed: ${application.name}`;
+		await prepareApplication(application);
 
-	return response;
+		// now we attempt to actually load the component in case there is
+		// an error we can immediately detect and report, but app code should not run on the main thread
+		if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
+			const pseudoResources = new Resources();
+			pseudoResources.isWorker = true;
+
+			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
+			let lastError;
+			componentLoader.setErrorReporter((error) => (lastError = error));
+			await componentLoader.loadComponent(
+				application.dirPath,
+				pseudoResources,
+				undefined,
+				false,
+				undefined,
+				false,
+				req.project
+			);
+
+			if (lastError) throw lastError;
+		}
+		const rollingRestart = req.restart === 'rolling';
+		// if doing a rolling restart set restart to false so that other nodes don't also restart.
+		req.restart = rollingRestart ? false : req.restart;
+		let response = await server.replication.replicateOperation(req);
+		if (req.restart === true) {
+			manageThreads.restartWorkers('http');
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+		} else if (rollingRestart) {
+			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			const jobResponse = await serverUtilities.executeJob({
+				operation: 'restart_service',
+				service: 'http',
+				replicated: true,
+			});
+
+			response.restartJobId = jobResponse.job_id;
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+		} else response.message = `Successfully deployed: ${application.name}`;
+
+		response.deployment_id = recorder.deploymentId;
+		await recorder.finish('success');
+		return response;
+	} catch (err) {
+		await recorder.finish('failed', err);
+		throw err;
+	}
 }
 
 /**

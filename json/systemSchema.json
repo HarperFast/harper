@@ -369,5 +369,69 @@
 				"attribute": "composite_id"
 			}
 		]
+	},
+	"hdb_deployment": {
+		"hash_attribute": "deployment_id",
+		"name": "hdb_deployment",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "deployment_id"
+			},
+			{
+				"attribute": "project"
+			},
+			{
+				"attribute": "package_identifier"
+			},
+			{
+				"attribute": "payload_hash"
+			},
+			{
+				"attribute": "payload_size"
+			},
+			{
+				"attribute": "payload_blob"
+			},
+			{
+				"attribute": "status"
+			},
+			{
+				"attribute": "phase"
+			},
+			{
+				"attribute": "event_log"
+			},
+			{
+				"attribute": "peer_results"
+			},
+			{
+				"attribute": "origin_node"
+			},
+			{
+				"attribute": "restart_mode"
+			},
+			{
+				"attribute": "started_at"
+			},
+			{
+				"attribute": "completed_at"
+			},
+			{
+				"attribute": "user"
+			},
+			{
+				"attribute": "rollback_of"
+			},
+			{
+				"attribute": "error"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
 	}
 }

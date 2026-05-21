@@ -36,6 +36,7 @@ import type { OperationRequest, OperationRequestBody } from '../operationsServer
 import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
+import * as deploymentOperations from '../../components/deploymentOperations.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -445,6 +446,14 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
 		new OperationFunctionObject(customFunctionOperations.deployComponent)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS,
+		new OperationFunctionObject(deploymentOperations.handleListDeployments)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
+		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,

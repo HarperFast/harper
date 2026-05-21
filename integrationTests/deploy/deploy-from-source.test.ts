@@ -7,7 +7,7 @@
  *
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert/strict';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -45,7 +45,11 @@ suite('Local application deployment', (ctx: ContextWithHarper) => {
 		});
 		strictEqual(response.status, 200);
 		const body = await response.json();
-		deepStrictEqual(body, { message: 'Successfully deployed: test-application, restarting Harper' });
+		strictEqual(body.message, 'Successfully deployed: test-application, restarting Harper');
+		ok(
+			typeof body.deployment_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.deployment_id),
+			`expected a UUID deployment_id, got ${body.deployment_id}`
+		);
 		// Poll until the deployed app is reachable. `restart: true` returns
 		// before the new Harper process is listening, so a fixed sleep is
 		// flaky — especially on Windows where the restart can take >5s.

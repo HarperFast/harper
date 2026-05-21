@@ -6,7 +6,7 @@
  * versioning, time-based rules, edge cases, and table CRUD.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert/strict';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,7 +41,8 @@ suite('Component: redirector', (ctx: ContextWithHarper) => {
 			package: join(__dirname, '../fixtures/template-redirector-3.0.1.tgz'),
 			restart: true,
 		});
-		deepStrictEqual(deployBody, { message: 'Successfully deployed: redirector, restarting Harper' });
+		strictEqual(deployBody.message, 'Successfully deployed: redirector, restarting Harper');
+		ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
 
 		// poll until ready
 		const deadline = Date.now() + 60_000;
