@@ -171,6 +171,13 @@ suite('Deployment tracking — events + SSE', (ctx: ContextWithHarper) => {
 		const project = 'live-tail-test-application';
 		const liveDir = mkdtempSync(join(tmpdir(), 'live-tail-fixture-'));
 		try {
+			// package.json is required so installApplication actually runs install_command
+			// (without it Harper logs "no package.json; skipping install" and the deploy
+			// completes in <100ms, before the first poll can catch the in-flight row).
+			writeFileSync(
+				join(liveDir, 'package.json'),
+				JSON.stringify({ name: project, version: '0.0.0', dependencies: {} })
+			);
 			writeFileSync(join(liveDir, 'config.yaml'), 'rest: true\n');
 			const multipart = buildMultipartBody(
 				{
