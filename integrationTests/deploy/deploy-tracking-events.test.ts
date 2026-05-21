@@ -165,6 +165,75 @@ suite('Deployment tracking — events + SSE', (ctx: ContextWithHarper) => {
 		);
 	});
 
+	test('get_deployment SSE tails live events on an in-flight deploy', async () => {
+		// This test exercises the live-tail branch: subscribe before the deploy completes,
+		// then assert that phase events arrive from the emitter (not just the historical replay).
+		const project = 'live-tail-test-application';
+		const liveDir = mkdtempSync(join(tmpdir(), 'live-tail-fixture-'));
+		try {
+			writeFileSync(join(liveDir, 'config.yaml'), 'rest: true\n');
+			const multipart = buildMultipartBody(
+				{
+					operation: 'deploy_component',
+					project,
+					restart: false,
+					// A 3-second sleep gives us a window to attach the SSE tail before the
+					// deploy reaches a terminal status. The row exists after the multipart
+					// upload completes (before prepareApplication), so polling finds it quickly.
+					install_command: 'sleep 3',
+					install_timeout: 30_000,
+				},
+				{
+					name: 'payload',
+					filename: 'package.tar.gz',
+					contentType: 'application/gzip',
+					stream: streamPackagedDirectory(liveDir, { skip_node_modules: true }),
+				}
+			);
+			const url = new URL(ctx.harper.operationsAPIURL);
+
+			// Start the deploy without awaiting — the HTTP response comes back only after the
+			// deploy finishes, so this promise stays pending for ~3+ seconds.
+			const deployPromise = postMultipart(url, multipart.contentType, multipart.stream, ctx.harper.admin);
+
+			// Poll list_deployments until we see the in-flight row. The recorder row is created
+			// after the multipart body is fully received (which is fast for a tiny fixture).
+			const TERMINAL = new Set(['success', 'failed', 'rolled_back']);
+			let inFlightId: string | null = null;
+			for (let i = 0; i < 15 && !inFlightId; i++) {
+				await sleep(300);
+				const listed = await callOperation(ctx, { operation: 'list_deployments', project });
+				const rows: any[] = listed.body?.deployments ?? [];
+				const inFlight = rows.find((d: any) => !TERMINAL.has(d.status));
+				if (inFlight) inFlightId = inFlight.deployment_id;
+			}
+			ok(inFlightId, 'expected to find an in-flight deployment row within the polling window');
+
+			// Open SSE tail while the deploy is still running; fetch blocks until the SSE
+			// stream closes (when the deploy reaches a terminal status and the server ends it).
+			const [deployResult, sseResult] = await Promise.all([
+				deployPromise,
+				callOperation(ctx, { operation: 'get_deployment', deployment_id: inFlightId }, { Accept: 'text/event-stream' }),
+			]);
+
+			strictEqual(deployResult.status, 200, `deploy should succeed: ${deployResult.body}`);
+			strictEqual(sseResult.status, 200);
+			ok(sseResult.contentType.startsWith('text/event-stream'));
+
+			const records = sseResult.rawText.split(/\r?\n\r?\n/).filter((r) => r.includes('event:'));
+			ok(
+				records.some((r) => r.includes('event: phase')),
+				`expected at least one phase event in SSE stream.\nraw SSE:\n${sseResult.rawText}`
+			);
+			ok(
+				records.some((r) => r.includes('event: done')),
+				`expected a final done event in SSE stream.\nraw SSE:\n${sseResult.rawText}`
+			);
+		} finally {
+			rmSync(liveDir, { recursive: true, force: true });
+		}
+	});
+
 	test('failed deploy event_log captures the error event', async () => {
 		const project = 'broken-events-application';
 		const brokenDir = mkdtempSync(join(tmpdir(), 'broken-events-fixture-'));

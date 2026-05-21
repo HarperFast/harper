@@ -112,6 +112,21 @@ describe('createSSEResponseStream', () => {
 		assert.strictEqual(errData.code, 500);
 	});
 
+	it('does not emit a second error event when the operation already emitted one before throwing', async () => {
+		const emitter = new ProgressEmitter();
+		const stream = createSSEResponseStream(emitter, async () => {
+			// Simulates operations.js: emit a rich error event (with phase context) then throw.
+			emitter.emit('error', { message: 'install failed', code: 500, phase: 'install' });
+			const err = new Error('install failed');
+			err.statusCode = 500;
+			throw err;
+		});
+		const events = parseSSEBlocks(await collect(stream));
+		const errorEvents = events.filter((e) => e.event === 'error');
+		assert.strictEqual(errorEvents.length, 1, `expected exactly 1 error event, got ${errorEvents.length}`);
+		assert.deepStrictEqual(JSON.parse(errorEvents[0].data), { message: 'install failed', code: 500, phase: 'install' });
+	});
+
 	it('still closes the stream cleanly when the operation emits nothing', async () => {
 		const emitter = new ProgressEmitter();
 		const stream = createSSEResponseStream(emitter, async () => ({ ok: true }));
