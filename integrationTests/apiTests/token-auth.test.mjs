@@ -18,9 +18,8 @@
  * configurations; we preserve that branching since the framework's
  * default config controls which mode applies.
  *
- * `refresh_operation_token` is skipped on Bun: the test hangs
- * indefinitely under Harper-on-Bun in CI (confirmed in CI run for
- * this PR; all other tests pass reliably).
+ * `refresh_operation_token` is skipped on Bun: the operation hangs
+ * indefinitely under Harper-on-Bun. Tracked in issue #697.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,7 +31,7 @@ const SCHEMA = 'northnwd';
 const TABLE = 'employees';
 const PRIMARY_KEY = 'employeeid';
 
-// refresh_operation_token hangs indefinitely on Harper-on-Bun (CI confirmed)
+// refresh_operation_token hangs indefinitely on Harper-on-Bun (issue #697)
 const skipOnBun = process.env.HARPER_RUNTIME === 'bun';
 
 suite('Token authentication', (ctx) => {
