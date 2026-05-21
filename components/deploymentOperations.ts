@@ -47,7 +47,8 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 	const conditions: any[] = [];
 	if (req.project) conditions.push({ attribute: 'project', value: req.project });
 	if (req.status) conditions.push({ attribute: 'status', value: req.status });
-	if (req.since != null) conditions.push({ attribute: 'started_at', value: req.since, comparator: 'greater_than_equal' });
+	if (req.since != null)
+		conditions.push({ attribute: 'started_at', value: req.since, comparator: 'greater_than_equal' });
 	if (req.until != null) conditions.push({ attribute: 'started_at', value: req.until, comparator: 'less_than_equal' });
 
 	const collected: any[] = [];
@@ -55,7 +56,9 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 		collected.push(stripBlob(row));
 	}
 	// Newest first by started_at; ties broken by deployment_id for stability.
-	collected.sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0) || String(a.deployment_id).localeCompare(b.deployment_id));
+	collected.sort(
+		(a, b) => (b.started_at ?? 0) - (a.started_at ?? 0) || String(a.deployment_id).localeCompare(b.deployment_id)
+	);
 
 	const total = collected.length;
 	const offset = Math.max(0, req.offset ?? 0);

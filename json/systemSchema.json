@@ -374,6 +374,7 @@
 		"hash_attribute": "deployment_id",
 		"name": "hdb_deployment",
 		"schema": "system",
+		"audit": true,
 		"attributes": [
 			{
 				"attribute": "deployment_id"

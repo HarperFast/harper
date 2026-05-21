@@ -9,7 +9,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
 import { join } from 'node:path';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { request } from 'node:http';
@@ -37,7 +37,7 @@ function postMultipart(
 				headers: {
 					'Content-Type': contentType,
 					'Transfer-Encoding': 'chunked',
-					Authorization: 'Basic ' + Buffer.from(`${auth.username}:${auth.password}`).toString('base64'),
+					'Authorization': 'Basic ' + Buffer.from(`${auth.username}:${auth.password}`).toString('base64'),
 				},
 			},
 			(res) => {
@@ -58,11 +58,10 @@ async function callOperation(
 	op: Record<string, unknown>
 ): Promise<{ status: number; body: any }> {
 	const url = new URL(ctx.harper.operationsAPIURL);
-	const auth =
-		'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
+	const auth = 'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
 	const res = await fetch(url, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json', Authorization: auth },
+		headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 		body: JSON.stringify(op),
 	});
 	const text = await res.text();
@@ -133,10 +132,16 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 		strictEqual(row.project, project);
 		strictEqual(row.status, 'success');
 		strictEqual(row.payload_blob_present, true, 'payload_blob should have been persisted');
-		ok(typeof row.payload_hash === 'string' && /^[0-9a-f]{64}$/i.test(row.payload_hash), 'payload_hash should be a sha256 hex string');
+		ok(
+			typeof row.payload_hash === 'string' && /^[0-9a-f]{64}$/i.test(row.payload_hash),
+			'payload_hash should be a sha256 hex string'
+		);
 		ok(typeof row.payload_size === 'number' && row.payload_size > 0, 'payload_size should be a positive integer');
 		ok(typeof row.started_at === 'number' && row.started_at > 0, 'started_at should be set');
-		ok(typeof row.completed_at === 'number' && row.completed_at >= row.started_at, 'completed_at should be >= started_at');
+		ok(
+			typeof row.completed_at === 'number' && row.completed_at >= row.started_at,
+			'completed_at should be >= started_at'
+		);
 	});
 
 	test('list_deployments surfaces the row, supports project filter', async () => {
@@ -148,7 +153,10 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 		ok(deploymentId && ids.includes(deploymentId), `listed deployments should include ${deploymentId}`);
 		// blob bytes must NOT travel back in the list response — only the presence boolean.
 		ok(!('payload_blob' in listed.body.deployments[0]), 'list_deployments must not include payload_blob bytes');
-		ok('payload_blob_present' in listed.body.deployments[0], 'list_deployments should include payload_blob_present flag');
+		ok(
+			'payload_blob_present' in listed.body.deployments[0],
+			'list_deployments should include payload_blob_present flag'
+		);
 	});
 
 	test('a failed deploy is recorded with status=failed and error.message', async () => {
@@ -190,7 +198,10 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 			const failed = listed.body.deployments.find((d: any) => d.project === project);
 			ok(failed, `expected to find a deployment for ${project} in list`);
 			strictEqual(failed.status, 'failed');
-			ok(failed.error && typeof failed.error.message === 'string' && failed.error.message.length > 0, 'failed deployment should have error.message');
+			ok(
+				failed.error && typeof failed.error.message === 'string' && failed.error.message.length > 0,
+				'failed deployment should have error.message'
+			);
 		} finally {
 			try {
 				rmSync(brokenDir, { recursive: true, force: true });

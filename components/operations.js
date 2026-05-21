@@ -390,21 +390,29 @@ async function deployComponent(req) {
 	// observable and auditable even if the CLI disconnects. The row also holds the payload
 	// in a Blob attribute — Slice B will use that for peer delivery; for now it's the
 	// audit record and the rollback source.
-	const recorder = await DeploymentRecorder.create({
-		project: req.project,
-		package_identifier: req.package ?? null,
-		user: req.hdb_user?.username,
-		restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
-	});
-	req._deploymentId = recorder.deploymentId;
+	//
+	// Only the origin node records — peers receiving a replicated deploy_component skip
+	// recording so we don't accumulate one row per node for the same deploy. The row will
+	// reach peers via the table's replication once Slice B has them consume it.
+	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	const recorder = isReplicatedExecution
+		? null
+		: await DeploymentRecorder.create({
+				project: req.project,
+				package_identifier: req.package ?? null,
+				user: req.hdb_user?.username,
+				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
+			});
+	if (recorder) req._deploymentId = recorder.deploymentId;
 
 	let extractionPayload = req.payload;
 	try {
-		// If a tarball came in (Buffer or Readable from the multipart parser), tee it through
-		// a hash-and-size tap into the row's payload_blob, then re-source extraction from the
-		// persisted blob. This means we read the upload exactly once into local storage; the
-		// blob is the staging area and (in Slice B) the channel peers will replicate from.
-		if (req.payload != null) {
+		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
+		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
+		// from the persisted blob. This is the staging area and (in Slice B) the channel
+		// peers will replicate from. On peer nodes we skip recording entirely and use the
+		// raw payload as-is.
+		if (recorder && req.payload != null) {
 			await recorder.ingestPayload(req.payload);
 			extractionPayload = recorder.row.payload_blob.stream();
 		}
@@ -462,11 +470,13 @@ async function deployComponent(req) {
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else response.message = `Successfully deployed: ${application.name}`;
 
-		response.deployment_id = recorder.deploymentId;
-		await recorder.finish('success');
+		if (recorder) {
+			response.deployment_id = recorder.deploymentId;
+			await recorder.finish('success');
+		}
 		return response;
 	} catch (err) {
-		await recorder.finish('failed', err);
+		if (recorder) await recorder.finish('failed', err);
 		throw err;
 	}
 }

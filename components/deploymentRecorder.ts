@@ -10,14 +10,29 @@
 
 import { randomUUID } from 'node:crypto';
 import { createHash, Hash } from 'node:crypto';
-import { Transform } from 'node:stream';
 import type { Readable } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import { createBlob } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { hostname } from 'node:os';
 
-type DeploymentStatus = 'pending' | 'extracting' | 'installing' | 'loading' | 'replicating' | 'restarting' | 'success' | 'failed' | 'rolled_back';
+// Slice A buffers the entire payload in memory before computing the hash and persisting.
+// This cap prevents an OOM on accidentally-huge uploads while Slice B is in flight. Slice B
+// replaces the buffer with a streaming hash + Blob-source pattern that lifts this limit
+// back to whatever the replication path supports.
+const SLICE_A_PAYLOAD_LIMIT_BYTES = 200 * 1024 * 1024;
+
+type DeploymentStatus =
+	| 'pending'
+	| 'extracting'
+	| 'installing'
+	| 'loading'
+	| 'replicating'
+	| 'restarting'
+	| 'success'
+	| 'failed'
+	| 'rolled_back';
 
 interface CreateOptions {
 	project?: string;
@@ -88,10 +103,26 @@ export class DeploymentRecorder {
 			buffer = Buffer.from(source, 'base64');
 		} else {
 			const chunks: Buffer[] = [];
+			let collected = 0;
 			for await (const chunk of source as AsyncIterable<Buffer | string>) {
-				chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any));
+				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any);
+				collected += buf.length;
+				if (collected > SLICE_A_PAYLOAD_LIMIT_BYTES) {
+					(source as Readable).destroy?.();
+					throw new ClientError(
+						`Deploy payload exceeds Slice A's interim ${SLICE_A_PAYLOAD_LIMIT_BYTES} byte cap. ` +
+							`Use a package identifier (npm:/file:/git:) or wait for Slice B's streaming path.`
+					);
+				}
+				chunks.push(buf);
 			}
 			buffer = Buffer.concat(chunks);
+		}
+		if (buffer.length > SLICE_A_PAYLOAD_LIMIT_BYTES) {
+			throw new ClientError(
+				`Deploy payload (${buffer.length} bytes) exceeds Slice A's interim ${SLICE_A_PAYLOAD_LIMIT_BYTES} byte cap. ` +
+					`Use a package identifier (npm:/file:/git:) or wait for Slice B's streaming path.`
+			);
 		}
 		hash.update(buffer);
 		byteCount = buffer.length;
