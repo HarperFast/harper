@@ -32,6 +32,7 @@ export const getPrivateKeys = () => privateKeys;
 
 import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
+import { isMainThread } from 'node:worker_threads';
 import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
@@ -276,7 +277,7 @@ function loadAndWatch(path, loadCert, type) {
 		try {
 			let modified = stats.mtimeMs;
 			if (modified && modified !== lastModified) {
-				if (lastModified) logger.warn?.(`Reloading ${type}:`, path);
+				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
 				loadCert(readPEM(path));
 			}
@@ -858,8 +859,11 @@ export function createTLSSelector(type, mtlsOptions?): any {
 			} as any);
 			// Register this selector so the per-thread cert-file watcher can trigger
 			// a reload directly, bypassing the cross-thread subscribe path that does
-			// not fire for RocksDB.
-			tlsUpdateFns.push(() => setTimeout(() => updateTLS(), 1500).unref());
+			// not fire for RocksDB. Only real servers need this — the transient
+			// secureTarget created by getReplicationCert() for one-off lookups does not.
+			if (server instanceof net.Server) {
+				tlsUpdateFns.push(() => setTimeout(() => updateTLS(), 1500).unref());
+			}
 			updateTLS();
 		}));
 	};
