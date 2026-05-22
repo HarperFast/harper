@@ -156,9 +156,7 @@ suite('Computed indexed properties', { skip: skipSuite }, (ctx) => {
 		await client
 			.req()
 			.send({ operation: 'drop_table', schema: 'data', table: 'Product' })
-			.expect((r) =>
-				assert.ok(r.body.message.includes(`successfully deleted table 'data.Product'`), r.text)
-			)
+			.expect((r) => assert.ok(r.body.message.includes(`successfully deleted table 'data.Product'`), r.text))
 			.expect(200);
 	});
 
