@@ -723,7 +723,8 @@ function startScheduledTasks() {
 			async () => {
 				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
 				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
-				await cleanup(getAnalyticsTable(), aggregateRetentionMs);
+				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
+				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);
 			},
 			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
 		).unref();

@@ -585,7 +585,7 @@
 				"aggregateRetentionMs": {
 					"type": "number",
 					"minimum": 0,
-					"description": "Milliseconds to retain aggregated analytics. Default: 31536000000 (1 year)"
+					"description": "Milliseconds to retain aggregated analytics. 0 disables cleanup (keep forever). Default: 31536000000 (1 year)"
 				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
