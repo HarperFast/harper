@@ -32,7 +32,6 @@ export const getPrivateKeys = () => privateKeys;
 
 import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
-import { isMainThread } from 'worker_threads';
 import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
@@ -135,6 +134,14 @@ export async function getReplicationCertAuth() {
 let configuredCertsLoaded;
 const privateKeys = new Map();
 
+// Per-thread registry of TLS selector update functions. Used to directly trigger
+// cert reloads on the current thread without relying on the cross-thread
+// subscribe mechanism (which doesn't fire for RocksDB).
+const tlsUpdateFns: Array<() => void> = [];
+function scheduleLocalTLSUpdate() {
+	for (const fn of tlsUpdateFns) fn();
+}
+
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdbCertificate table.
  * @return {*}
@@ -171,7 +178,7 @@ export function loadCertificates() {
 				}
 				for (let ca of [false, true]) {
 					let path = config[ca ? 'certificateAuthority' : 'certificate'];
-					if (path && isMainThread) {
+					if (path) {
 						loadAndWatch(
 							path,
 							(certificate) => {
@@ -217,6 +224,10 @@ export function loadCertificates() {
 												recordTimestamp > 1 ? new Date(recordTimestamp) : 'only self signed certificate available'
 											})`
 										);
+									// The DB already has a current or newer cert; still schedule a reload so
+									// this thread's TLS contexts reflect whatever is in the DB (handles the
+									// case where another thread already updated the DB entry).
+									scheduleLocalTLSUpdate();
 									return;
 								}
 
@@ -238,6 +249,10 @@ export function loadCertificates() {
 										valid_to: x509Cert.validTo,
 									},
 								});
+								// Directly trigger TLS context reload on this thread. The cross-thread
+								// subscribe path (committed event) does not fire for RocksDB, so each
+								// thread must handle its own reload after detecting a file change.
+								scheduleLocalTLSUpdate();
 							},
 							ca ? 'certificate authority' : 'certificate'
 						);
@@ -261,7 +276,7 @@ function loadAndWatch(path, loadCert, type) {
 		try {
 			let modified = stats.mtimeMs;
 			if (modified && modified !== lastModified) {
-				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
+				if (lastModified) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
 				loadCert(readPEM(path));
 			}
@@ -841,6 +856,10 @@ export function createTLSSelector(type, mtlsOptions?): any {
 				listener: () => setTimeout(() => updateTLS(), 1500).unref(),
 				omitCurrent: true,
 			} as any);
+			// Register this selector so the per-thread cert-file watcher can trigger
+			// a reload directly, bypassing the cross-thread subscribe path that does
+			// not fire for RocksDB.
+			tlsUpdateFns.push(() => setTimeout(() => updateTLS(), 1500).unref());
 			updateTLS();
 		}));
 	};
