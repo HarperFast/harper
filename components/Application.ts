@@ -206,7 +206,7 @@ export async function extractApplication(application: Application) {
 			if (code !== 0) {
 				if (isSSHAuthFailure(stderr)) {
 					throw new Error(
-						`Failed to deploy private repository ${application.packageIdentifier}: SSH authentication failed. Verify the repository URL, configure an SSH key on this Harper instance, and ensure it has access to the target repository.`,
+						`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
 						{ cause: new Error(stderr) }
 					);
 				}
