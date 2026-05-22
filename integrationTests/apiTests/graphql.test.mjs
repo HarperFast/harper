@@ -36,7 +36,7 @@ const SCHEMA_GRAPHQL =
 	'type HasBigInt @table @export { \n\t id: BigInt @primaryKey \n\t name: String @indexed \n\t anotherBigint: BigInt \n } \n\n';
 
 const CONFIG_YAML =
-	'rest: true\ngraphqlSchema:\n  files: \'*.graphql\'\njsResource:\n  files: resources.js\nstatic:\n  root: web\n  files: web/**\nroles:\n  files: roles.yaml\ngraphql: true';
+	"rest: true\ngraphqlSchema:\n  files: '*.graphql'\njsResource:\n  files: resources.js\nstatic:\n  root: web\n  files: web/**\nroles:\n  files: roles.yaml\ngraphql: true";
 
 const RELATED_ROWS = [
 	{ id: '1', name: 'name-1', nestedIdObjectId: ['a', '1'], subObjectId: '1' },
@@ -102,10 +102,7 @@ suite('GraphQL queries', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('named query returns all Related rows in order', async () => {
-		const r = await client
-			.reqGraphQl()
-			.send({ query: 'query GetRelated { Related { id name } }' })
-			.expect(200);
+		const r = await client.reqGraphQl().send({ query: 'query GetRelated { Related { id name } }' }).expect(200);
 		assert.equal(r.body.data.Related.length, 5, r.text);
 		r.body.data.Related.forEach((row, i) => {
 			assert.equal(row.id, (i + 1).toString(), r.text);
@@ -220,10 +217,7 @@ suite('GraphQL queries', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('query by nested attribute primary key', async () => {
-		const r = await client
-			.reqGraphQl()
-			.send({ query: '{ SubObject(related: { id: "2" }) { id any } }' })
-			.expect(200);
+		const r = await client.reqGraphQl().send({ query: '{ SubObject(related: { id: "2" }) { id any } }' }).expect(200);
 		assert.equal(r.body.data.SubObject[0].id, '2', r.text);
 	});
 
