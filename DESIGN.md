@@ -32,6 +32,17 @@ The mitigations live in three places:
 
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
 
+## Shared structures buffer has an lmdb-js version prefix on `useVersions=true` stores
+
+lmdb-js's internal `saveStructures()` (in `setupSharedStructures` in `lmdb/open.js`) stores the msgpack structures array via `this.put(sharedStructuresKey, structures)` with no version argument. On a store opened with `useVersions: true` (every Harper primary store — see `OpenDBIObject`), lmdb-js defaults version=0 and prepends 8 zero bytes (raw float64 `0.0`, big-endian) to the stored value. `getBinary(sharedStructuresKey)` returns those 8 bytes as part of the buffer.
+
+When wiring code that reads or copies the structures buffer:
+
+- **Decoding the buffer (`RecordEncoder.decode`)**: handle a leading 8-byte all-zero prefix as a version header to skip. Don't fall through to the legacy 2-byte metadata reader — checking only `nextByte === 0` is ambiguous because legacy metadata records with `HAS_RESIDENCY_ID` / `HAS_NODE_ID` / `HAS_ADDITIONAL_AUDIT_REFS` set (and the low 5 flag bits clear) also encode `[00 ...]`. Require the full 8 zero bytes before treating it as the lmdb version prefix.
+- **Copying the buffer to RocksDB (`copyDb.ts` `copyStructures`)**: strip the 8-byte version prefix before writing to RocksDB. RocksDB has no equivalent version prefix; if not stripped, the RocksDB-side decoder mis-reads it as a metadata record (`isRocksDB && nextByte < 32` enters the metadata branch with `localTime = 0`), returns the `lastMetadata` wrapper instead of the structures array, and every subsequent structures lookup fails.
+
+Symptom when missed: a table whose structures aren't warm in memory hits `getStructures()` → fails to decode → `msgpackr` throws `"Data read, but end of buffer not reached"`. In `migrateOnStart`'s `copyDbiToRocks`, that throw propagates out of the per-record try/catch into the outer retry loop, which used to swallow it silently and spin at ~94% CPU.
+
 ## Schema migration and `runIndexing` internals (`databases.ts`)
 
 When `table()` is called with an attribute newly marked `indexed: true` (or with any change that requires re-building the secondary index), `runIndexing` is launched asynchronously and `Table.indexingOperation` is set to its promise. While running:
