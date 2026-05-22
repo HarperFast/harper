@@ -82,6 +82,7 @@ Performs a query on the resource or table. This is called by `get()` on collecti
 ---
 
 ### `put(target: RequestTarget | Id, data: Promise<object>, context?: Resource | Context): Promise<void> | Response`
+
 ### `put(record: object, context?): Promise<void>`
 
 Writes the full record to the table, creating or replacing the existing record. This does _not_ merge the `data` into the existing record — it replaces it. The second form reads the primary key from the record object.
