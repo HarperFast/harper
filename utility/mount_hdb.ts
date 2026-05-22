@@ -1,12 +1,13 @@
 'use strict';
 
-const { mkdirpSync } = require('fs-extra');
+const { mkdirpSync, copySync } = require('fs-extra');
 import * as path from 'path';
 import * as terms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import bridge from '../dataLayer/harperBridge/harperBridge.ts';
 import systemSchema from '../json/systemSchema.json';
 import * as initPaths from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 
 export default async function mountHdb(hdbPath: string) {
 	hdbLogger.trace('Mounting Harper');
@@ -17,6 +18,7 @@ export default async function mountHdb(hdbPath: string) {
 	makeDirectory(path.join(hdbPath, 'log'));
 	makeDirectory(path.join(hdbPath, 'database'));
 	makeDirectory(path.join(hdbPath, 'components'));
+	copySync(path.join(PACKAGE_ROOT, 'static/README.md'), path.join(hdbPath, 'README.md'));
 
 	await createTables();
 }
