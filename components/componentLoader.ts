@@ -444,7 +444,14 @@ export async function loadComponent(
 
 				// New Plugin API (`handleApplication`)
 				if (resources.isWorker && extensionModule.handleApplication) {
-					const scope = new Scope(appName || 'harper', componentName, componentDirectory, configPath, applicationScope);
+					const scope = new Scope(
+						appName || 'harper',
+						componentName,
+						componentDirectory,
+						configPath,
+						applicationScope,
+						origin
+					);
 
 					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => scope.close());
 
