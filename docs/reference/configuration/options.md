@@ -104,6 +104,7 @@ operationsApi:
     privateKey: ~/hdb/keys/privateKey.pem
 ```
 
+- `componentFile.maxSize` — Maximum file size in bytes returned by `get_component_file`. Requests for files larger than this limit are rejected with HTTP 413. _Default_: `5242880` (5 MB)
 - `network.cors` / `network.corsAccessList` — CORS settings
 - `network.domainSocket` — Unix socket path for CLI communication; _Default_: `<rootPath>/hdb/operations-server`
 - `network.headersTimeout` / `network.keepAliveTimeout` / `network.timeout` — Timeout settings (ms)
