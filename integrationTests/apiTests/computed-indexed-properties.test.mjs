@@ -96,6 +96,7 @@ suite('Computed indexed properties', { skip: skipSuite }, (ctx) => {
 		assert.equal(r.body[0].taxRate, 0.19, r.text);
 		assert.equal(r.body[0].totalPrice, 119, r.text);
 		assert.equal(r.body[0].notIndexedTotalPrice, 119, r.text);
+		assert.equal(r.body[0].jsTotalPrice, 119, r.text);
 	});
 
 	test('REST GET by id returns raw fields', async () => {
