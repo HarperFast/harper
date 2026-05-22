@@ -715,11 +715,15 @@ function startScheduledTasks() {
 	nodeStorageInterval = envGet(CONFIG_PARAMS.ANALYTICS_STORAGEINTERVAL) ?? DEFAULT_STORAGE_INTERVAL;
 	const AGGREGATE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	if (AGGREGATE_PERIOD) {
+		// Clamp raw retention to at least one full aggregation period so raw records
+		// are never deleted before they can be rolled up.
+		const rawRetentionMs = Math.max(envGet(CONFIG_PARAMS.ANALYTICS_RAWRETENTIONMS) ?? RAW_EXPIRATION, AGGREGATE_PERIOD);
+		const aggregateRetentionMs = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATERETENTIONMS) ?? AGGREGATE_EXPIRATION;
 		setInterval(
 			async () => {
 				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
-				await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
-				await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
+				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
+				await cleanup(getAnalyticsTable(), aggregateRetentionMs);
 			},
 			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
 		).unref();

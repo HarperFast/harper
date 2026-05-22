@@ -577,6 +577,16 @@
 					"type": "number",
 					"description": "Number of aggregation cycles between node storage measurements. 0 to disable. Default: 10"
 				},
+				"rawRetentionMs": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Milliseconds to retain raw (pre-aggregation) analytics. Clamped to at least aggregatePeriod to prevent data loss. Default: 3600000 (1 hour)"
+				},
+				"aggregateRetentionMs": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Milliseconds to retain aggregated analytics. Default: 31536000000 (1 year)"
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		}
