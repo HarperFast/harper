@@ -10,8 +10,10 @@
  * - `components.securitySchemes` includes `basicAuth` and `bearerAuth`
  *
  * Self-contained: installs a minimal `openApiApp` component that defines a
- * `TableName` table and a `Greeting` resource class, restarts HTTP workers,
- * then checks the spec.
+ * `TableName` table (via schema.graphql) and a `Greeting` JS Resource class
+ * (via resources.js), restarts HTTP workers, then checks the spec.
+ * Using a Resource class for Greeting matches the legacy setup and ensures
+ * that JS-based resources (not just @table types) appear in the OpenAPI output.
  *
  * Skipped on Windows: depends on `restart_service http_workers` after component
  * install, which crashes Harper on the Windows single-worker model
@@ -28,16 +30,22 @@ const SCHEMA_GRAPHQL = `type TableName @table @export {
 \tname: String
 \ttag: String @indexed
 }
+`;
 
-type Greeting @table @export {
-\tid: ID @primaryKey
-\tmessage: String
+// Greeting is a JS Resource class (not a table) — matches the legacy test's
+// coverage and verifies that non-table Resource exports appear in OpenAPI.
+const RESOURCES_JS = `export class Greeting extends Resource {
+\tget() {
+\t\treturn { greeting: 'Hello world' };
+\t}
 }
 `;
 
 const CONFIG_YAML = `rest: true
 graphqlSchema:
   files: '*.graphql'
+jsResource:
+  files: resources.js
 `;
 
 const skipSuite = process.platform === 'win32';
@@ -51,7 +59,7 @@ suite('OpenAPI endpoint', { skip: skipSuite }, (ctx) => {
 
 		await installAppComponent(client, {
 			project: 'openApiApp',
-			files: { 'schema.graphql': SCHEMA_GRAPHQL, 'config.yaml': CONFIG_YAML },
+			files: { 'schema.graphql': SCHEMA_GRAPHQL, 'resources.js': RESOURCES_JS, 'config.yaml': CONFIG_YAML },
 			probePath: '/TableName/',
 		});
 	});
