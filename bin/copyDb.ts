@@ -306,8 +306,6 @@ export async function migrateOnStart() {
 	const rootPath = get(CONFIG_PARAMS.ROOTPATH);
 	const databases = getDatabases();
 
-	updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
-
 	try {
 		let databaseNames = Object.keys(databases);
 		// system is a dontenum property, so we have to manually add it
@@ -362,6 +360,9 @@ export async function migrateOnStart() {
 			}
 		}
 
+		// Only clear the flag after all databases have migrated successfully
+		updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
+
 		try {
 			resetDatabases();
 		} catch (err) {
@@ -389,7 +390,10 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 	const copyStructures = (sourceDbi, storeName: string) => {
 		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
 		if (buffer) {
-			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(buffer));
+			// lmdb-js prepends an 8-byte version prefix when useVersions=true and no version is given.
+			// Strip it before storing in RocksDB, which doesn't use this prefix.
+			const msgpackBuffer = buffer.length > 8 && buffer[0] === 0 ? buffer.subarray(8) : buffer;
+			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(msgpackBuffer));
 		}
 	};
 
@@ -453,7 +457,8 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
-		let retries = 1000000;
+		const MAX_RETRIES = 1000;
+		let retries = MAX_RETRIES;
 		let start = null;
 		while (retries-- > 0) {
 			try {
@@ -537,7 +542,12 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				}
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return;
-			} catch {
+			} catch (err) {
+				const retriesLeft = retries;
+				console.error(
+					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retriesLeft} retries left):`,
+					err
+				);
 				if (typeof start === 'string') {
 					if (start === 'z') {
 						return console.error('Reached end of dbi', start, 'for', sourceDatabase);
@@ -547,5 +557,10 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				else return console.error('Unknown key type', start, 'for', sourceDatabase);
 			}
 		}
+		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and
+		// skips moving the LMDB files to backup, instead of leaving a partial copy.
+		throw new Error(
+			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${JSON.stringify(start)}`
+		);
 	}
 }

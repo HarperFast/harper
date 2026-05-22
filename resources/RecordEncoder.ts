@@ -251,7 +251,23 @@ export class RecordEncoder extends Encoder {
 					position += 8;
 					localTime = TIMESTAMP_VIEW.getFloat64(0);
 					nextByte = buffer[position];
-				} else if (nextByte === 2) {
+				} else if (
+					nextByte === 2 ||
+					// lmdb-js prepends an 8-byte float64 version prefix on stores with
+					// useVersions=true; version=0 (used by lmdb-js's internal saveStructures)
+					// is 8 zero bytes. We require the full 8-byte zero prefix to disambiguate
+					// from legacy 2-byte metadata records that can also start with 0x00 (e.g.
+					// HAS_RESIDENCY_ID=32 alone encodes as [00 01 ...]).
+					(nextByte === 0 &&
+						end >= start + 8 &&
+						buffer[start + 1] === 0 &&
+						buffer[start + 2] === 0 &&
+						buffer[start + 3] === 0 &&
+						buffer[start + 4] === 0 &&
+						buffer[start + 5] === 0 &&
+						buffer[start + 6] === 0 &&
+						buffer[start + 7] === 0)
+				) {
 					if (buffer.copy) {
 						buffer.copy(TIMESTAMP_HOLDER, 0, position);
 						position += 8;
