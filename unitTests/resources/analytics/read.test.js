@@ -4,7 +4,87 @@ const { expect } = require('chai');
 const { describe, it } = require('mocha');
 const sinon = require('sinon');
 const { METRIC } = require('#src/resources/analytics/metadata');
-const { listMetrics, describeMetric /* collectDistinctValues */ } = require('#src/resources/analytics/read');
+const { get, listMetrics, describeMetric /* collectDistinctValues */ } = require('#src/resources/analytics/read');
+
+describe('get', () => {
+	let searchStub;
+	let mockAsyncIterable;
+
+	beforeEach(() => {
+		mockAsyncIterable = {
+			[Symbol.asyncIterator]: async function* () {},
+			map: function () {
+				return this;
+			},
+		};
+
+		global.databases = {
+			system: {
+				hdb_analytics: {
+					search: sinon.stub().resolves(mockAsyncIterable),
+				},
+			},
+		};
+		global.server = { hostname: 'test-host' };
+
+		searchStub = global.databases.system.hdb_analytics.search;
+	});
+
+	afterEach(() => {
+		sinon.restore();
+		delete global.databases;
+		delete global.server;
+	});
+
+	function findIdCondition(conditions, comparator) {
+		return conditions.find((c) => c.attribute === 'id' && c.comparator === comparator);
+	}
+
+	it('should not add any id condition when neither startTime nor endTime is provided', async () => {
+		await get('cpu-usage');
+		const { conditions } = searchStub.firstCall.args[0];
+		expect(conditions.some((c) => c.attribute === 'id')).to.be.false;
+	});
+
+	it('should wrap startTime as a compound-key prefix for greater_than_equal', async () => {
+		const startTime = 1779488703216;
+		await get('cpu-usage', { startTime });
+		const { conditions } = searchStub.firstCall.args[0];
+		const cond = findIdCondition(conditions, 'greater_than_equal');
+		expect(cond, 'expected a greater_than_equal condition on id').to.exist;
+		// id is stored as [timestamp, nodeId]; a scalar bound would land outside
+		// the array key range and return zero rows, so the bound must be wrapped.
+		expect(cond.value).to.deep.equal([startTime]);
+	});
+
+	it('should wrap endTime as a compound-key prefix for less_than', async () => {
+		const endTime = 1779488793222;
+		await get('cpu-usage', { endTime });
+		const { conditions } = searchStub.firstCall.args[0];
+		const cond = findIdCondition(conditions, 'less_than');
+		expect(cond, 'expected a less_than condition on id').to.exist;
+		expect(cond.value).to.deep.equal([endTime]);
+	});
+
+	it('should emit both wrapped bounds when startTime and endTime are provided', async () => {
+		const startTime = 1779488703216;
+		const endTime = 1779488793222;
+		await get('cpu-usage', { startTime, endTime });
+		const { conditions } = searchStub.firstCall.args[0];
+		const ge = findIdCondition(conditions, 'greater_than_equal');
+		const lt = findIdCondition(conditions, 'less_than');
+		expect(ge.value).to.deep.equal([startTime]);
+		expect(lt.value).to.deep.equal([endTime]);
+	});
+
+	it('should treat startTime of 0 as a valid bound (not falsy)', async () => {
+		await get('cpu-usage', { startTime: 0 });
+		const { conditions } = searchStub.firstCall.args[0];
+		const cond = findIdCondition(conditions, 'greater_than_equal');
+		expect(cond).to.exist;
+		expect(cond.value).to.deep.equal([0]);
+	});
+});
 
 describe('listMetrics', () => {
 	let searchStub;
@@ -137,7 +217,9 @@ describe('listMetrics', () => {
 		const firstCondition = searchStub.firstCall.args[0].conditions[0];
 		expect(firstCondition.attribute).to.be.equal('id');
 		expect(firstCondition.comparator).to.be.equal('greater_than');
-		expect(firstCondition.value).to.be.approximately(weekAgo, 1000);
+		// id is a compound key, so the bound is wrapped in an array
+		expect(firstCondition.value).to.be.an('array').with.lengthOf(1);
+		expect(firstCondition.value[0]).to.be.approximately(weekAgo, 1000);
 	});
 
 	it('should use the given metric time window when provided', async () => {
@@ -146,7 +228,8 @@ describe('listMetrics', () => {
 		const firstCondition = searchStub.firstCall.args[0].conditions[0];
 		expect(firstCondition.attribute).to.be.equal('id');
 		expect(firstCondition.comparator).to.be.equal('greater_than');
-		expect(firstCondition.value).to.be.approximately(Date.now() - twoDays, 1000);
+		expect(firstCondition.value).to.be.an('array').with.lengthOf(1);
+		expect(firstCondition.value[0]).to.be.approximately(Date.now() - twoDays, 1000);
 	});
 
 	it('should return empty array when no metric types are requested', async () => {
@@ -191,7 +274,8 @@ describe('listMetrics', () => {
 		// Should set a time window cutoff as the first condition
 		expect(searchParams.conditions[0].attribute).to.equal('id');
 		expect(searchParams.conditions[0].comparator).to.equal('greater_than');
-		expect(searchParams.conditions[0].value).to.be.lessThan(Date.now());
+		expect(searchParams.conditions[0].value).to.be.an('array').with.lengthOf(1);
+		expect(searchParams.conditions[0].value[0]).to.be.lessThan(Date.now());
 
 		// Each condition should be checking "not equal" to a built-in metric
 		for (let i = 0; i < builtins.length; i++) {

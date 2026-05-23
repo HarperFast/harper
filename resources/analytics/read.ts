@@ -97,27 +97,22 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		select.push('id');
 	}
 
-	if (startTime && endTime) {
+	// id is a compound key [timestamp, nodeId], so the bounds must be wrapped as
+	// single-element arrays — a scalar timestamp won't match any of the stored
+	// array-encoded keys in the underlying index.
+	if (startTime != null) {
 		conditions.push({
 			attribute: 'id',
-			comparator: 'between',
-			value: [startTime, endTime],
+			comparator: 'greater_than_equal',
+			value: [startTime],
 		});
-	} else {
-		if (startTime) {
-			conditions.push({
-				attribute: 'id',
-				comparator: 'greater_than_equal',
-				value: startTime,
-			});
-		}
-		if (endTime) {
-			conditions.push({
-				attribute: 'id',
-				comparator: 'less_than',
-				value: endTime,
-			});
-		}
+	}
+	if (endTime != null) {
+		conditions.push({
+			attribute: 'id',
+			comparator: 'less_than',
+			value: [endTime],
+		});
 	}
 
 	const request: any = { conditions, allowConditionsOnDynamicAttributes: true };
@@ -177,11 +172,13 @@ export async function listMetrics(
 
 	if (metricTypes.includes('custom')) {
 		const oldestCustomId = Date.now() - customWindow;
+		// id is a compound key [timestamp, nodeId]; wrap the bound so the range
+		// comparison lands inside the array key space rather than past it.
 		const conditions: Conditions = [
 			{
 				attribute: 'id',
 				comparator: 'greater_than',
-				value: oldestCustomId,
+				value: [oldestCustomId],
 			},
 		];
 		const metricConditions = builtins.map((c) => {
