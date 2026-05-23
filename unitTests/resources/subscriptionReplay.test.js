@@ -314,8 +314,13 @@ describe('Subscription replay', () => {
 				inFlight.push(FreshTable.put(20000 + i, { name: 'fresh_inflight' + i }));
 			}
 			const subscription = await FreshTable.subscribe({ startTime: startTime - 1, isCollection: true });
-			const events = await collect(subscription, 250);
+			// Collect while writes commit: attach listener first, await all commits, then drain.
+			// Using collect()'s quiet-period timer here is racy — it can expire before all in-flight
+			// writes have committed and their events have been delivered.
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			await delay(300);
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
@@ -345,8 +350,13 @@ describe('Subscription replay', () => {
 					}
 				}
 			})();
-			const events = await collect(subscription, 200);
+			// Attach listener before awaiting writes so no event is missed during commit.
+			// collect()'s quiet-period can expire while round-2 writes are still in progress,
+			// causing the final-value assertion below to see stale values.
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await concurrentWrites;
+			await delay(200);
 			subscription.return?.();
 
 			// every key in 6000..6199 must appear at least once
@@ -472,8 +482,12 @@ describe('Subscription replay', () => {
 			}
 			// subscribe immediately — lastTxnTime is captured now, mid-flight
 			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
-			const events = await collect(subscription, 250);
+			// Same fix as FIRST-subscription race test: attach listener before awaiting writes
+			// so events from commits that land after collect()'s quiet period aren't dropped.
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			await delay(300);
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
