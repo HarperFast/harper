@@ -40,6 +40,7 @@ import PermissionResponseObject from '../security/data_objects/PermissionRespons
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
+import * as deploymentOperations from '../components/deploymentOperations.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -241,6 +242,14 @@ requiredPermissions.set(functionsOperations.addComponent.name, new (permission a
 requiredPermissions.set(functionsOperations.dropCustomFunctionProject.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.packageComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.deployComponent.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	deploymentOperations.handleListDeployments.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS)
+);
+requiredPermissions.set(
+	deploymentOperations.handleGetDeployment.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
+);
 
 //Below are functions that are currently open to all roles
 requiredPermissions.set(regDeprecated.getRegistrationInfo.name, new (permission as any)(false, []));

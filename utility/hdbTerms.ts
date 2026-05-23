@@ -177,6 +177,7 @@ export const SYSTEM_TABLE_NAMES = {
 	TABLE_TABLE_NAME: 'hdb_table',
 	USER_TABLE_NAME: 'hdb_user',
 	INFO_TABLE_NAME: 'hdb_info',
+	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -297,6 +298,10 @@ export const OPERATIONS_ENUM = {
 	GET_STATUS: 'get_status',
 	SET_STATUS: 'set_status',
 	CLEAR_STATUS: 'clear_status',
+	LIST_DEPLOYMENTS: 'list_deployments',
+	GET_DEPLOYMENT: 'get_deployment',
+	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
+	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -426,6 +431,8 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_AGGREGATERETENTIONMS: 'analytics_aggregateRetentionMs',
+	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
 	ANALYTICS_STORAGEINTERVAL: 'analytics_storageInterval',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
