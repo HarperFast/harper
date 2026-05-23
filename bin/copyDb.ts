@@ -390,10 +390,7 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 	const copyStructures = (sourceDbi, storeName: string) => {
 		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
 		if (buffer) {
-			// lmdb-js prepends an 8-byte version prefix when useVersions=true and no version is given.
-			// Strip it before storing in RocksDB, which doesn't use this prefix.
-			const msgpackBuffer = buffer.length > 8 && buffer[0] === 0 ? buffer.subarray(8) : buffer;
-			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(msgpackBuffer));
+			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(buffer));
 		}
 	};
 
