@@ -239,9 +239,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		}
 		let response: any = await httpRequest(options, body);
 
-		// Upload is done by the time we get the response; tear the bar down before any SSE
-		// rendering so the bar and event lines don't fight for the same terminal row.
-		renderer?.endUpload();
+		// endUpload() is called from the counter Transform's flush callback in tapUploadStream
+		// once all multipart bytes have flowed through. For SSE deploys, httpRequest resolves
+		// when response headers arrive (streamResponse: true), which happens before the full
+		// upload completes — calling endUpload() here would snap the bar prematurely.
 
 		let responseData;
 		if (useSse && response.headers['content-type']?.startsWith('text/event-stream')) {
