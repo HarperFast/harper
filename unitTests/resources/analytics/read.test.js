@@ -25,7 +25,6 @@ describe('get', () => {
 				},
 			},
 		};
-		global.server = { hostname: 'test-host' };
 
 		searchStub = global.databases.system.hdb_analytics.search;
 	});
@@ -33,7 +32,6 @@ describe('get', () => {
 	afterEach(() => {
 		sinon.restore();
 		delete global.databases;
-		delete global.server;
 	});
 
 	function findIdCondition(conditions, comparator) {
