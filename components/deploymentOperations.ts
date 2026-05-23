@@ -86,7 +86,7 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	// our return as the operation's final SSE event. We replay event_log on connect, then
 	// tail the deployment's live emitter (if it's still running on this node) until it
 	// reaches a terminal status. The final return value becomes the SSE `done` event.
-	if (req.progress) {
+	if (req.progress && typeof (req.progress as any).emit === 'function') {
 		const sse = req.progress;
 		const liveEmitter = getActiveEmitter(req.deployment_id);
 
