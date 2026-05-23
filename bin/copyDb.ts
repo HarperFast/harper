@@ -408,8 +408,13 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 			targetDbisDb.put(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 
-			// Open source LMDB dbi with default encoding so values are decoded
+			// Open source LMDB dbi with default encoding so values are decoded.
+			// Compression must be passed through from the attribute descriptor so lmdb-js
+			// installs its decompression layer; without it, compressed record/structure bytes
+			// are interpreted as raw msgpack, which on records that reference shared structures
+			// triggers infinite getStructures recursion → "Maximum call stack size exceeded".
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
+			dbiInit.compression = attribute.compression;
 			const sourceDbi = sourceRootStore.openDB(key, dbiInit);
 
 			let targetDbi;
