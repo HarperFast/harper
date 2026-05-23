@@ -9,7 +9,7 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
-import { streamPackagedDirectory } from '../components/packageComponent.ts';
+import { streamPackagedDirectory, getPackagedDirectorySize } from '../components/packageComponent.ts';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
@@ -46,13 +46,17 @@ const PREPARE_OPERATION: any = {
 
 		const projectPath = process.cwd();
 		if (!req.project) req.project = path.basename(projectPath);
+		const packageOptions = {
+			skip_node_modules: req.skip_node_modules !== false,
+			skip_symlinks: req.skip_symlinks === true,
+		};
 		// Stream the tar+gzip directly to the server as the file part of a multipart body.
 		// This bypasses the Node Buffer 2 GB cap that the previous CBOR-encoded path was
 		// subject to, so large components can deploy without materializing in memory.
-		req._packageStream = streamPackagedDirectory(projectPath, {
-			skip_node_modules: req.skip_node_modules !== false,
-			skip_symlinks: req.skip_symlinks === true,
-		});
+		req._packageStream = streamPackagedDirectory(projectPath, packageOptions);
+		// Pre-walk the directory for an uncompressed-size estimate. The gzipped wire size
+		// will be smaller, so the bar won't reach 100% on its own — endUpload() snaps it.
+		req._uploadSizeEstimate = await getPackagedDirectorySize(projectPath, packageOptions);
 		req._multipart = true;
 	},
 };
@@ -208,7 +212,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		// One renderer owns the (future) upload bar and the SSE event rendering for a
 		// multipart deploy. Created here so the upload-stream tap and the SSE consumer
 		// below share the same instance.
-		const renderer = req._multipart ? new DeployRenderer({}) : null;
+		const renderer = req._multipart ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
 		let body;
 		if (req._multipart) {
 			const packageStream = req._packageStream;

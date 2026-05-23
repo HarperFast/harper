@@ -15,7 +15,7 @@ function makeOutput() {
 
 describe('DeployRenderer', () => {
 	describe('upload progress (non-TTY)', () => {
-		it('advances bytes as data flows through the tap and logs at 10% steps', async () => {
+		it('counts bytes as data flows through the tap and prints a single line on completion', async () => {
 			const { stream, lines } = makeOutput();
 			const renderer = new DeployRenderer({ uploadTotal: 1_000_000, output: stream });
 			const source = new PassThrough();
@@ -24,21 +24,14 @@ describe('DeployRenderer', () => {
 			const sink = new PassThrough();
 			tap.pipe(sink);
 			sink.on('data', () => {});
-			// Write 5×200_000 byte chunks → 1MB total, crossing each 10% threshold.
+			// Write 5×200_000 byte chunks → 1MB total.
 			for (let i = 0; i < 5; i++) source.write(Buffer.alloc(200_000));
 			source.end();
 			await new Promise((resolve) => sink.on('end', resolve));
 			renderer.endUpload();
-			// Expect at least one per-10% progress line plus the final "Upload complete" line.
-			const progressLines = lines.filter((l) => /Uploaded /.test(l));
-			assert.ok(
-				progressLines.length >= 4,
-				`expected multiple progress lines, got ${progressLines.length}: ${progressLines.join('|')}`
-			);
-			assert.ok(
-				lines.some((l) => l.startsWith('Upload complete')),
-				'should log Upload complete on endUpload'
-			);
+			// No intermediate progress lines — only the final completion line.
+			assert.strictEqual(lines.length, 1, `expected 1 line, got ${lines.length}: ${lines.join('|')}`);
+			assert.ok(lines[0].startsWith('Uploaded '), `expected Uploaded line, got: ${lines[0]}`);
 		});
 
 		it('endUpload is idempotent', () => {
@@ -47,7 +40,7 @@ describe('DeployRenderer', () => {
 			renderer.tapUploadStream(new PassThrough());
 			renderer.endUpload();
 			renderer.endUpload();
-			const completeLines = lines.filter((l) => l.startsWith('Upload complete'));
+			const completeLines = lines.filter((l) => l.startsWith('Uploaded '));
 			assert.strictEqual(completeLines.length, 1);
 		});
 	});

@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { stat, readdir } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import tar from 'tar-fs';
 import { createGzip } from 'node:zlib';
@@ -34,6 +35,47 @@ export function streamPackagedDirectory(directory: string, options: PackageOptio
 	// Propagate pack errors onto the gzip stream so a single consumer can listen
 	packStream.on('error', (err) => gzip.destroy(err));
 	return packStream.pipe(gzip);
+}
+
+/**
+ * Walk `directory` and return the total uncompressed size of all files that
+ * `streamPackagedDirectory` would include with the same options. Used by the
+ * CLI to give the upload progress bar a realistic total. The uncompressed size
+ * won't equal the gzipped wire size, but it gives the bar a steady trajectory:
+ * the bar moves as bytes are sent and snaps to 100% when the upload finishes.
+ */
+export async function getPackagedDirectorySize(
+	directory: string,
+	options: PackageOptions = DEFAULT_OPTIONS
+): Promise<number> {
+	let total = 0;
+	const walk = async (dir: string): Promise<void> => {
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return; // unreadable directory — skip
+		}
+		for (const entry of entries) {
+			const fullPath = join(dir, entry.name);
+			if (options.skip_node_modules && (entry.name === 'node_modules' || fullPath.includes(join('cache', 'webpack')))) {
+				continue;
+			}
+			if (entry.isDirectory()) {
+				await walk(fullPath);
+			} else {
+				if (options.skip_symlinks && entry.isSymbolicLink()) continue;
+				try {
+					const s = await stat(fullPath); // follows symlinks, matching tar dereference
+					total += s.size;
+				} catch {
+					// inaccessible file — skip
+				}
+			}
+		}
+	};
+	await walk(directory);
+	return total;
 }
 
 /**

@@ -12,7 +12,6 @@ interface RendererOptions {
 interface UploadState {
 	bar: cliProgress.SingleBar | null;
 	sent: number;
-	textLastLogged: number;
 	finished: boolean;
 }
 
@@ -27,8 +26,8 @@ interface PhaseState {
  *
  *   1. Local upload — driven by `tapUploadStream`, which wraps the multipart body so we
  *      can update a `cli-progress` bar against the precomputed uncompressed source-tree
- *      total. In a non-TTY environment (CI logs, redirected output) we fall back to
- *      periodic text lines so logs stay grep-able.
+ *      total. The bar moves as gzipped bytes are sent and snaps to 100% on completion.
+ *      In a non-TTY environment a single "Uploaded X MiB" line is printed on completion.
  *
  *   2. Server-side phases — driven by `renderEvent`, called for each SSE message the
  *      CLI receives from the operations API. Phase events print one-liners; live
@@ -39,7 +38,7 @@ interface PhaseState {
  * it doesn't compete with subsequent prints) before any SSE events render.
  */
 export class DeployRenderer {
-	private upload: UploadState = { bar: null, sent: 0, textLastLogged: 0, finished: false };
+	private upload: UploadState = { bar: null, sent: 0, finished: false };
 	private phase: PhaseState = { installLineCount: 0 };
 	private output: NodeJS.WritableStream;
 	private isTty: boolean;
@@ -61,17 +60,22 @@ export class DeployRenderer {
 		this.upload.bar = this.isTty
 			? new cliProgress.SingleBar(
 					{
-						format: 'Uploading [{bar}] {percentage}% | {value}/{total} bytes',
+						// {value_fmt} and {total_fmt} are payload tokens updated in tickUpload/endUpload.
+						// uploadTotal is the uncompressed source size; gzip output is smaller so the
+						// bar won't naturally reach 100% — endUpload() snaps it on completion.
+						format: 'Uploading [{bar}] {percentage}% | {value_fmt} / ~{total_fmt}',
 						barCompleteChar: '█',
 						barIncompleteChar: '░',
 						hideCursor: true,
 						stream: this.output,
-						etaBuffer: 50,
 					},
 					cliProgress.Presets.shades_classic
 				)
 			: null;
-		this.upload.bar?.start(this.uploadTotal || 1, 0);
+		this.upload.bar?.start(this.uploadTotal || 1, 0, {
+			value_fmt: formatBytes(0),
+			total_fmt: formatBytes(this.uploadTotal),
+		});
 
 		const counter = new Transform({
 			transform: (chunk, _enc, cb) => {
@@ -95,30 +99,22 @@ export class DeployRenderer {
 		if (this.upload.bar) {
 			// Snap to total so the bar shows 100% even when our uncompressed-total estimate
 			// is slightly off (gzip output is usually smaller than the source tree).
-			if (this.uploadTotal > 0) this.upload.bar.update(this.uploadTotal);
+			const finalPayload = { value_fmt: formatBytes(this.upload.sent), total_fmt: formatBytes(this.uploadTotal) };
+			if (this.uploadTotal > 0) this.upload.bar.update(this.uploadTotal, finalPayload);
 			this.upload.bar.stop();
 			this.upload.bar = null;
 		} else {
-			this.output.write(`Upload complete (${formatBytes(this.upload.sent)})\n`);
+			// Non-TTY: single completion line, no intermediate chatter.
+			this.output.write(`Uploaded ${formatBytes(this.upload.sent)}\n`);
 		}
 	}
 
 	private tickUpload(): void {
+		if (this.upload.finished) return;
 		if (this.upload.bar) {
-			this.upload.bar.update(this.upload.sent);
-			return;
+			this.upload.bar.update(this.upload.sent, { value_fmt: formatBytes(this.upload.sent) });
 		}
-		// Non-TTY: log a line every 10% of the total (or every 5MB if total unknown).
-		const step = this.uploadTotal > 0 ? this.uploadTotal / 10 : 5 * 1024 * 1024;
-		if (this.upload.sent - this.upload.textLastLogged >= step) {
-			this.upload.textLastLogged = this.upload.sent;
-			const pct = this.uploadTotal > 0 ? Math.min(100, Math.floor((this.upload.sent / this.uploadTotal) * 100)) : null;
-			this.output.write(
-				pct !== null
-					? `Uploaded ${formatBytes(this.upload.sent)} / ~${formatBytes(this.uploadTotal)} (${pct}%)\n`
-					: `Uploaded ${formatBytes(this.upload.sent)}\n`
-			);
-		}
+		// Non-TTY: no intermediate lines — endUpload() prints the final size on completion.
 	}
 
 	renderEvent(message: SSEMessage): void {
