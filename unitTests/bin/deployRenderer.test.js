@@ -15,23 +15,29 @@ function makeOutput() {
 
 describe('DeployRenderer', () => {
 	describe('upload progress (non-TTY)', () => {
-		it('counts bytes as data flows through the tap and prints a single line on completion', async () => {
+		it('counts pre-gzip bytes via countUploadBytes and prints a single completion line', async () => {
 			const { stream, lines } = makeOutput();
-			const renderer = new DeployRenderer({ uploadTotal: 1_000_000, output: stream });
+			// 4 × 262_144 = 1_048_576 bytes = exactly 1 MiB (clean binary unit).
+			const CHUNK = 262_144;
+			const renderer = new DeployRenderer({ uploadTotal: 4 * CHUNK, output: stream });
 			const source = new PassThrough();
 			const tap = renderer.tapUploadStream(source);
 			// Drain into a sink so backpressure doesn't pause the tap.
 			const sink = new PassThrough();
 			tap.pipe(sink);
 			sink.on('data', () => {});
-			// Write 5×200_000 byte chunks → 1MB total.
-			for (let i = 0; i < 5; i++) source.write(Buffer.alloc(200_000));
+			// Simulate pre-gzip counting via countUploadBytes — in production this is driven
+			// by the tar pack stream's onBytes callback; the tap Transform no longer counts bytes.
+			for (let i = 0; i < 4; i++) {
+				const chunk = Buffer.alloc(CHUNK);
+				source.write(chunk);
+				renderer.countUploadBytes(chunk.length);
+			}
 			source.end();
 			await new Promise((resolve) => sink.on('end', resolve));
-			renderer.endUpload();
 			// No intermediate progress lines — only the final completion line.
 			assert.strictEqual(lines.length, 1, `expected 1 line, got ${lines.length}: ${lines.join('|')}`);
-			assert.ok(lines[0].startsWith('Uploaded '), `expected Uploaded line, got: ${lines[0]}`);
+			assert.match(lines[0], /^Uploaded 1\.0 MiB/, `expected Uploaded 1.0 MiB, got: ${lines[0]}`);
 		});
 
 		it('endUpload is idempotent', () => {

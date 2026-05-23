@@ -79,8 +79,9 @@ export class DeployRenderer {
 
 		const counter = new Transform({
 			transform: (chunk, _enc, cb) => {
-				this.upload.sent += chunk.length;
-				this.tickUpload();
+				// Bytes are counted externally via countUploadBytes() on the pre-gzip tar
+				// stream so progress and total are both in uncompressed units. The Transform
+				// is kept here solely to get the flush callback that signals upload completion.
 				cb(null, chunk);
 			},
 			flush: (cb) => {
@@ -91,6 +92,18 @@ export class DeployRenderer {
 		stream.on('error', (err) => counter.destroy(err));
 		stream.pipe(counter);
 		return counter;
+	}
+
+	/**
+	 * Record `n` pre-gzip bytes read from the tar pack stream. Called for each
+	 * raw tar chunk by the `onBytes` callback passed to `streamPackagedDirectory`,
+	 * keeping progress and total in the same (uncompressed) unit so the bar
+	 * tracks smoothly and doesn't terminate far short of 100%.
+	 */
+	countUploadBytes(n: number): void {
+		if (this.upload.finished) return;
+		this.upload.sent += n;
+		this.tickUpload();
 	}
 
 	endUpload(): void {

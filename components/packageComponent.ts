@@ -15,8 +15,16 @@ const DEFAULT_OPTIONS: PackageOptions = { skip_node_modules: false, skip_symlink
  * Package a directory into a tar+gzip stream. The returned Readable can be
  * piped directly into an HTTP request body, avoiding the Node.js 2GB Buffer
  * cap that the buffered variant runs into for large components.
+ *
+ * @param onBytes - Optional callback invoked with the byte length of each raw
+ *   tar chunk *before* gzip compression. Useful for tracking upload progress
+ *   against an uncompressed-size total (e.g. from `getPackagedDirectorySize`).
  */
-export function streamPackagedDirectory(directory: string, options: PackageOptions = DEFAULT_OPTIONS): Readable {
+export function streamPackagedDirectory(
+	directory: string,
+	options: PackageOptions = DEFAULT_OPTIONS,
+	onBytes?: (n: number) => void
+): Readable {
 	const packStream = tar.pack(directory, {
 		dereference: !options.skip_symlinks,
 		ignore: options.skip_node_modules
@@ -34,6 +42,11 @@ export function streamPackagedDirectory(directory: string, options: PackageOptio
 	const gzip = createGzip();
 	// Propagate pack errors onto the gzip stream so a single consumer can listen
 	packStream.on('error', (err) => gzip.destroy(err));
+	if (onBytes) {
+		// Attaching a 'data' listener after pipe() is safe — the stream is already
+		// in flowing mode and Node's EventEmitter supports multiple listeners.
+		packStream.on('data', (chunk: Buffer) => onBytes(chunk.length));
+	}
 	return packStream.pipe(gzip);
 }
 

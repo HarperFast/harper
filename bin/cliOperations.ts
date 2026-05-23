@@ -50,12 +50,12 @@ const PREPARE_OPERATION: any = {
 			skip_node_modules: req.skip_node_modules !== false,
 			skip_symlinks: req.skip_symlinks === true,
 		};
-		// Stream the tar+gzip directly to the server as the file part of a multipart body.
-		// This bypasses the Node Buffer 2 GB cap that the previous CBOR-encoded path was
-		// subject to, so large components can deploy without materializing in memory.
-		req._packageStream = streamPackagedDirectory(projectPath, packageOptions);
-		// Pre-walk the directory for an uncompressed-size estimate. The gzipped wire size
-		// will be smaller, so the bar won't reach 100% on its own — endUpload() snaps it.
+		// Store path + options for deferred stream creation after the renderer is set up,
+		// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
+		req._projectPath = projectPath;
+		req._packageOptions = packageOptions;
+		// Pre-walk the directory for an uncompressed-size estimate. Both the progress counter
+		// and this total are in uncompressed units so the bar tracks to 100% naturally.
 		req._uploadSizeEstimate = await getPackagedDirectorySize(projectPath, packageOptions);
 		req._multipart = true;
 	},
@@ -215,18 +215,25 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		const renderer = req._multipart ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
 		let body;
 		if (req._multipart) {
-			const packageStream = req._packageStream;
+			// Create the package stream here — after the renderer exists — so we can pass
+			// renderer.countUploadBytes as the onBytes callback. Both progress and total are
+			// uncompressed bytes, so the bar tracks accurately to 100% without premature snapping.
+			const packageStream = streamPackagedDirectory(
+				req._projectPath,
+				req._packageOptions,
+				renderer ? (n) => renderer.countUploadBytes(n) : undefined
+			);
 			const fields = {};
 			for (const [key, value] of Object.entries(req)) {
 				if (key.startsWith('_') || TRANSPORT_ONLY_FIELDS.has(key)) continue;
 				fields[key] = value;
 			}
-			const multipart = buildMultipartBody(
-				fields,
-				packageStream
-					? { name: 'payload', filename: 'package.tar.gz', contentType: 'application/gzip', stream: packageStream }
-					: undefined
-			);
+			const multipart = buildMultipartBody(fields, {
+				name: 'payload',
+				filename: 'package.tar.gz',
+				contentType: 'application/gzip',
+				stream: packageStream,
+			});
 			options.headers['Content-Type'] = multipart.contentType;
 			// Use chunked transfer-encoding: we don't know the total size up front because the
 			// payload is streamed from `tar.pack` and never fully buffered.
