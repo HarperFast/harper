@@ -127,6 +127,10 @@ describe('Subscription replay', () => {
 			})();
 			const events = await collect(subscription, 100);
 			await concurrentWrites;
+			// All writes have committed; wait for any pending subscription events to flush
+			// before closing. Without this, the last write's event can be queued but not
+			// yet delivered when return() closes the stream.
+			await delay(200);
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
@@ -180,6 +184,7 @@ describe('Subscription replay', () => {
 			})();
 			const events = await collect(subscription, 150);
 			await concurrentWrites;
+			await delay(200);
 			subscription.return?.();
 
 			// concurrent writes should arrive
@@ -236,6 +241,7 @@ describe('Subscription replay', () => {
 			})();
 			const events = await collect(subscription, 150);
 			await concurrentWrites;
+			await delay(200);
 			subscription.return?.();
 
 			// every updated key MUST be delivered with its final value at least once, even if
