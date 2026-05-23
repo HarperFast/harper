@@ -8,10 +8,17 @@ const { isMainThread } = require('worker_threads');
 const { Readable } = require('stream');
 
 const os = require('os');
-const util = require('util');
 
 const auth = require('../../security/fastifyAuth.ts');
-const pAuthorize = util.promisify(auth.authorize);
+
+// this is a hack to suppress a deprecation warning and can be removed once `auth.authorize`
+// is converted to an async function
+function pAuthorize(req, resp) {
+	return new Promise((resolve, reject) => {
+		auth.authorize(req, resp, (err, user) => (err ? reject(err) : resolve(user)));
+	});
+}
+
 const serverUtilities = require('./serverUtilities.ts');
 const { applyImpersonation } = require('../../security/impersonation.ts');
 const { createGzip, constants } = require('zlib');
