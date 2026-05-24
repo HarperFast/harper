@@ -2,7 +2,7 @@ import { Resource } from '../resources/Resource.ts';
 import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
-import { Models } from '../resources/models/Models.ts';
+import { models as harperModelsSingleton } from '../resources/models/Models.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -40,17 +40,12 @@ const HARPER_MODULE_IDS = new Set([
 	'@harperfast/harper-pro',
 ]);
 
-// #629 (Phase 2 of #510): module-singleton `Models` facade used by
-// `getHarperExports` to populate `harper.models`. The Models class has no
-// per-Scope or per-ApplicationScope state (registry + analytics writer are
-// process-singletons), so a single shared instance is equivalent to the
-// per-Scope instance Phase 1 wired in `components/Scope.ts` while keeping
-// that wiring untouched.
-let _harperModels: Models | undefined;
-function harperModels(): Models {
-	if (!_harperModels) _harperModels = new Models();
-	return _harperModels;
-}
+// `harper.models` (consumed by `getHarperExports`) and the top-level
+// `models` package export both point at the same process-wide `Models`
+// singleton declared in `resources/models/Models.ts`. The Models class has
+// no per-Scope or per-ApplicationScope state (registry + analytics writer
+// are process-singletons), so one shared instance is observationally
+// identical to the per-Scope instances built in `components/Scope.ts`.
 
 let lockedDown = false;
 /**
@@ -697,13 +692,11 @@ function getHarperExports(scope: ApplicationScope) {
 		Resource,
 		tables,
 		databases,
-		// #629 (Phase 2 of #510): expose `harper.models` so user code can call
-		// `harper.models.embed(...)`. Uses a shared module-singleton — the
-		// `Models` facade reads ALS for per-request context and a process-wide
-		// backend registry, so per-Scope instances would carry no extra state.
-		// The registry it reads from is populated at boot by
+		// `harper.models` — same singleton that's surfaced as the top-level
+		// `models` package export (see `resources/models/Models.ts`).  The
+		// registry it reads from is populated at boot by
 		// `resources/models/bootstrap.ts`.
-		models: harperModels(),
+		models: harperModelsSingleton,
 		createBlob,
 		RequestTarget,
 		getContext,
