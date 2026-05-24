@@ -6,7 +6,7 @@ import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { resources, type Resources } from '../resources/Resources.ts';
-import { Models } from '../resources/models/Models.ts';
+import { Models, models as modelsSingleton } from '../resources/models/Models.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
@@ -70,7 +70,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
 		this.resources = applicationScope?.resources ?? resources;
-		this.models = new Models();
+		this.models = modelsSingleton;
 
 		const baseServer = applicationScope?.server ?? server;
 		const scopeRef = this;
