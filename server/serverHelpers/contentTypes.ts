@@ -13,6 +13,7 @@ import { logger } from '../../utility/logging/logger.ts';
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
+import { parseMultipartRequest } from './multipartParser.ts';
 // Resolve lazily: reading config at module-load time would TDZ under ESM
 // because configUtils.ts is mid-evaluation when this module is imported.
 let _serializationBigint: boolean | undefined;
@@ -49,7 +50,8 @@ export const contentTypes = mediaTypes;
 // Defer attachment to `server` because under ESM cycles Server.ts may still
 // be mid-evaluation when this module is loaded.
 setImmediate(() => {
-	server.contentTypes = contentTypes as any;
+	// @ts-expect-error - server.contentTypes is wired here as a runtime extension; declared type differs from the Map
+	server.contentTypes = contentTypes;
 });
 _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
@@ -114,6 +116,29 @@ mediaTypes.set('text/yaml', {
 
 	q: 0.7,
 });
+
+const ndjsonHandler = {
+	serializeStream(data: any) {
+		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
+			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
+		}
+		return JSONStringify(data) + '\n';
+	},
+	serialize(data: any) {
+		return JSONStringify(data) + '\n';
+	},
+	deserialize(data: Buffer) {
+		return data
+			.toString()
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line) => JSONParse(line));
+	},
+	q: 0.7,
+};
+mediaTypes.set('application/x-ndjson', ndjsonHandler);
+mediaTypes.set('application/ndjson', ndjsonHandler);
 
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
@@ -183,28 +208,6 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
-const ndjsonHandler = {
-	serializeStream(data: any) {
-		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
-			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
-		}
-		return JSONStringify(data) + '\n';
-	},
-	serialize(data: any) {
-		return JSONStringify(data) + '\n';
-	},
-	deserialize(data: Buffer) {
-		return data
-			.toString()
-			.split('\n')
-			.map((line) => line.trim())
-			.filter(Boolean)
-			.map(JSONParse);
-	},
-	q: 0.7,
-};
-mediaTypes.set('application/x-ndjson', ndjsonHandler);
-mediaTypes.set('application/ndjson', ndjsonHandler);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {
@@ -262,6 +265,13 @@ export function registerContentHandlers(app) {
 			error.statusCode = 400;
 			done(error);
 		}
+	});
+
+	// multipart/form-data is streamed: we hand the operation handler a Readable for the file
+	// part rather than buffering the body, so deploy_component payloads can exceed the 2 GB
+	// Node Buffer cap. See multipartParser.ts for the part ordering contract.
+	app.addContentTypeParser(/^multipart\/form-data/, (req, payload, done) => {
+		parseMultipartRequest(req, payload, done);
 	});
 }
 

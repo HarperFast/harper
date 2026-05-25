@@ -1,0 +1,29 @@
+name: Assign Reviewers
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign Developers team if no reviewers set
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEWERS_JSON: ${{ toJson(github.event.pull_request.requested_reviewers) }}
+          TEAMS_JSON: ${{ toJson(github.event.pull_request.requested_teams) }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          reviewers=$(echo "$REVIEWERS_JSON" | jq 'length')
+          teams=$(echo "$TEAMS_JSON" | jq 'length')
+          if [ "$reviewers" -eq 0 ] && [ "$teams" -eq 0 ]; then
+            gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
+              --method POST \
+              --field 'team_reviewers[]=developers'
+          fi

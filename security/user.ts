@@ -460,5 +460,6 @@ onStartup(() => {
 	server.getUser = getUserImpl;
 	server.authenticateUser = authenticateUserImpl;
 	server.onInvalidatedUser = onInvalidatedUserImpl;
-	(server as any).invalidateUser = invalidateUserImpl;
+	// @ts-expect-error - invalidateUser is wired here as a server-singleton extension; not declared on the Server type
+	server.invalidateUser = invalidateUserImpl;
 });

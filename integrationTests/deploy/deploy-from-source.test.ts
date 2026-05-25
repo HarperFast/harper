@@ -7,7 +7,7 @@
  *
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert/strict';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -45,8 +45,30 @@ suite('Local application deployment', (ctx: ContextWithHarper) => {
 		});
 		strictEqual(response.status, 200);
 		const body = await response.json();
-		deepStrictEqual(body, { message: 'Successfully deployed: test-application, restarting Harper' });
-		await sleep(5000);
+		strictEqual(body.message, 'Successfully deployed: test-application, restarting Harper');
+		ok(
+			typeof body.deployment_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.deployment_id),
+			`expected a UUID deployment_id, got ${body.deployment_id}`
+		);
+		// Poll until the deployed app is reachable. `restart: true` returns
+		// before the new Harper process is listening, so a fixed sleep is
+		// flaky — especially on Windows where the restart can take >5s.
+		// Mirrors the pattern in deploy-from-github.test.ts.
+		const deadline = Date.now() + 30_000;
+		while (true) {
+			try {
+				const check = await fetch(ctx.harper.httpURL);
+				if (check.status === 200) {
+					await check.body?.cancel();
+					break;
+				}
+				await check.body?.cancel();
+			} catch {
+				// server not yet accepting connections
+			}
+			if (Date.now() > deadline) throw new Error('Timed out waiting for application to be ready after restart');
+			await sleep(250);
+		}
 		ok(existsSync(join(ctx.harper.dataRootDir, 'components', project)));
 		ok(existsSync(join(ctx.harper.dataRootDir, 'harper-application-lock.json')));
 	});

@@ -72,7 +72,11 @@ export class CrossThreadStatusCollector {
 	}
 
 	/**
-	 * Schedule cleanup of stale requests if needed
+	 * Safety-net cleanup of stale requests. Each collect() call also has its own 5s
+	 * timeout that deletes its requestId on completion or timeout, so this should
+	 * normally never find anything to reap — it exists to defend against a missed
+	 * cleanup path (e.g., a thrown exception between awaitingResponses.set and the
+	 * timeout being armed).
 	 */
 	private scheduleCleanup(): void {
 		// Clear any existing timer
@@ -80,12 +84,17 @@ export class CrossThreadStatusCollector {
 			clearTimeout(this.cleanupTimer);
 		}
 
-		// Schedule cleanup in 30 seconds if there are pending requests
-		if (this.awaitingResponses.size > 0) {
+		// Schedule cleanup in 30 seconds if there are pending requests or checkers
+		if (this.awaitingResponses.size > 0 || this.responseCheckers.size > 0) {
 			this.cleanupTimer = setTimeout(() => {
-				if (this.awaitingResponses.size > 0) {
-					logger.debug?.(`Cleaning up ${this.awaitingResponses.size} stale pending requests`);
+				const staleResponses = this.awaitingResponses.size;
+				const staleCheckers = this.responseCheckers.size;
+				if (staleResponses > 0 || staleCheckers > 0) {
+					logger.debug?.(
+						`Cleaning up ${staleResponses} stale pending requests, ${staleCheckers} stale response checkers`
+					);
 					this.awaitingResponses.clear();
+					this.responseCheckers.clear();
 				}
 				this.cleanupTimer = null;
 			}, 30000);

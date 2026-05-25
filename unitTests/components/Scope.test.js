@@ -1,4 +1,5 @@
 const { Scope, MissingDefaultFilesOptionError } = require('#src/components/Scope');
+const { Models } = require('#src/resources/models/Models');
 const { EventEmitter } = require('node:events');
 const assert = require('node:assert/strict');
 const { join, basename } = require('node:path');
@@ -59,6 +60,14 @@ describe('Scope', () => {
 		assert.ok(scope.options instanceof OptionsWatcher, 'Scope should have an OptionsWatcher instance');
 		assert.ok(scope.resources instanceof Resources, 'Scope should have a resources property of type Map');
 		assert.ok(scope.server !== undefined, 'Scope should have a server property');
+		assert.ok(scope.models instanceof Models, 'Scope should expose a Models facade as scope.models');
+		assert.strictEqual(typeof scope.models.embed, 'function', 'scope.models.embed should be callable');
+		assert.strictEqual(typeof scope.models.generate, 'function', 'scope.models.generate should be callable');
+		assert.strictEqual(
+			typeof scope.models.generateStream,
+			'function',
+			'scope.models.generateStream should be callable'
+		);
 
 		// Even though scope is ready, we haven't provided an entry handler yet so modifying a file matched by files option should not request a restart
 		await writeFile(this.testFilePath, '"bar";');

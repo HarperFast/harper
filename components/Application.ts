@@ -109,6 +109,21 @@ export function assertApplicationConfig(
 }
 
 /**
+ * Returns true when npm/git stderr indicates an SSH authentication failure —
+ * git exits 128 with the standard "could not read" message, or the SSH layer
+ * reports a missing uid (no SSH daemon user), explicit publickey denial, or
+ * an unverified host key.
+ */
+export function isSSHAuthFailure(stderr: string): boolean {
+	return (
+		stderr.includes('Could not read from remote repository') ||
+		stderr.includes('Permission denied (publickey)') ||
+		stderr.includes('No user exists for uid') ||
+		stderr.includes('Host key verification failed')
+	);
+}
+
+/**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
  *
  * Only one of `application.payload` or `application.package` should be specified; otherwise, an error is thrown.
@@ -134,10 +149,17 @@ export async function extractApplication(application: Application) {
 	let shouldDeleteTarball = false;
 
 	if (application.payload) {
-		// Given a payload, create a Readable from the Buffer or string
-		tarball = Readable.from(
-			application.payload instanceof Buffer ? application.payload : Buffer.from((application as any).payload, 'base64')
-		);
+		const payload = application.payload;
+		if (payload instanceof Readable) {
+			// Stream payloads (e.g. multipart file part from the operations API) are piped
+			// straight into extraction so multi-GB components don't have to materialize as a Buffer.
+			tarball = payload;
+		} else if (typeof payload === 'string') {
+			// base64 string payload
+			tarball = Readable.from(Buffer.from(payload, 'base64'));
+		} else {
+			tarball = Readable.from(payload as Buffer);
+		}
 	} else {
 		// Given a package, there are a a couple options
 		const parentDirPath = dirname(application.dirPath);
@@ -182,6 +204,12 @@ export async function extractApplication(application: Application) {
 				parentDirPath
 			);
 			if (code !== 0) {
+				if (isSSHAuthFailure(stderr)) {
+					throw new Error(
+						`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
+						{ cause: new Error(stderr) }
+					);
+				}
 				throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
 			}
 
@@ -414,14 +442,14 @@ export async function installApplication(application: Application) {
 
 interface ApplicationOptions {
 	name: string;
-	payload?: Buffer | string;
+	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 }
 
 export class Application {
 	name: string;
-	payload?: Buffer | string;
+	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	dirPath: string;

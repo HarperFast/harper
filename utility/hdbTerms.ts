@@ -177,6 +177,7 @@ export const SYSTEM_TABLE_NAMES = {
 	TABLE_TABLE_NAME: 'hdb_table',
 	USER_TABLE_NAME: 'hdb_user',
 	INFO_TABLE_NAME: 'hdb_info',
+	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -297,6 +298,10 @@ export const OPERATIONS_ENUM = {
 	GET_STATUS: 'get_status',
 	SET_STATUS: 'set_status',
 	CLEAR_STATUS: 'clear_status',
+	LIST_DEPLOYMENTS: 'list_deployments',
+	GET_DEPLOYMENT: 'get_deployment',
+	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
+	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -337,6 +342,8 @@ export const SERVICE_ACTIONS_ENUM = {
 	UPGRADE: 'upgrade',
 	HELP: 'help',
 	STATUS: 'status',
+	LOGIN: 'login',
+	LOGOUT: 'logout',
 	OPERATION: 'operation',
 	RENEWCERTS: 'renew-certs',
 	COPYDB: 'copy-db',
@@ -424,6 +431,8 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_AGGREGATERETENTIONMS: 'analytics_aggregateRetentionMs',
+	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
 	ANALYTICS_STORAGEINTERVAL: 'analytics_storageInterval',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
@@ -514,6 +523,7 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_SECUREPORT: 'operationsApi_network_securePort',
 	OPERATIONSAPI_NETWORK_HTTP2: 'operationsApi_network_http2',
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
+	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
@@ -521,6 +531,25 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_TIMEOUT: 'operationsApi_network_timeout',
 	OPERATIONSAPI_SYSINFO_NETWORK: 'operationsApi_sysInfo_network',
 	OPERATIONSAPI_SYSINFO_DISK: 'operationsApi_sysInfo_disk',
+	MCP_OPERATIONS_MOUNTPATH: 'mcp_operations_mountPath',
+	MCP_OPERATIONS_ALLOW: 'mcp_operations_allow',
+	MCP_OPERATIONS_DENY: 'mcp_operations_deny',
+	MCP_OPERATIONS_MAXTOOLS: 'mcp_operations_maxTools',
+	MCP_OPERATIONS_RATELIMIT_PERTOOLPERSECOND: 'mcp_operations_rateLimit_perToolPerSecond',
+	MCP_OPERATIONS_RATELIMIT_PERTOOLBURST: 'mcp_operations_rateLimit_perToolBurst',
+	MCP_OPERATIONS_RATELIMIT_SESSIONCONCURRENCY: 'mcp_operations_rateLimit_sessionConcurrency',
+	MCP_OPERATIONS_RATELIMIT_SESSIONPERSECOND: 'mcp_operations_rateLimit_sessionPerSecond',
+	MCP_APPLICATION_MOUNTPATH: 'mcp_application_mountPath',
+	MCP_APPLICATION_ALLOW: 'mcp_application_allow',
+	MCP_APPLICATION_DENY: 'mcp_application_deny',
+	MCP_APPLICATION_MAXTOOLS: 'mcp_application_maxTools',
+	MCP_APPLICATION_SEARCHMAXRESULTS: 'mcp_application_searchMaxResults',
+	MCP_APPLICATION_RATELIMIT_PERTOOLPERSECOND: 'mcp_application_rateLimit_perToolPerSecond',
+	MCP_APPLICATION_RATELIMIT_PERTOOLBURST: 'mcp_application_rateLimit_perToolBurst',
+	MCP_APPLICATION_RATELIMIT_SESSIONCONCURRENCY: 'mcp_application_rateLimit_sessionConcurrency',
+	MCP_APPLICATION_RATELIMIT_SESSIONPERSECOND: 'mcp_application_rateLimit_sessionPerSecond',
+	MCP_SESSION_IDLETIMEOUTSECONDS: 'mcp_session_idleTimeoutSeconds',
+	MCP_SESSION_ALLOWCLIENTDELETE: 'mcp_session_allowClientDelete',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',
@@ -800,6 +829,8 @@ export const ITC_EVENT_TYPES = {
 	START_JOB: 'start_job',
 	COMPONENT_STATUS_REQUEST: 'component_status_request',
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
+	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
+	RESOURCE_OPENAPI_RESPONSE: 'resource_openapi_response',
 } as const;
 
 /** Supported thread types */

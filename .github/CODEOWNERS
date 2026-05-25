@@ -1,11 +1,3 @@
-# CODEOWNERS is not the most intuitive file
-# Review the docs before modifying: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
-# Importantly, **the last matching pattern takes precedence**
-
-# By default, everything must be reviewed by someone in the core engineering team
-*          @HarperFast/developers
-
-# Otherwise, certain paths may require other reviewers as well
-/.github/  @HarperFast/developers @HarperFast/devops
-/upgrade/  @HarperFast/developers @HarperFast/devops
-/utility/AWS/  @HarperFast/developers @HarperFast/devops
+# Reviewer assignment is handled by the assign-reviewers workflow
+# (.github/workflows/assign-reviewers.yml), which adds @HarperFast/developers
+# when a PR is opened with no reviewers already set.

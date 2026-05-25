@@ -752,12 +752,28 @@ export function noBootFile() {
 	}
 }
 
-export function httpRequest(options: any, data: any) {
+export function httpRequest(options: any, data: any): Promise<http.IncomingMessage & { body?: string }> {
 	let client;
 	if (options.protocol === 'http:') client = http;
 	else client = https;
+	// `streamResponse` opts into a non-buffered response shape: the promise resolves as soon
+	// as headers arrive, with `response` itself as a Readable. Used by the CLI for SSE
+	// (text/event-stream) deploys so progress events render live instead of after the deploy
+	// finishes. Strip the flag from `options` before handing it to http.request so it doesn't
+	// end up as an unknown option.
+	const streamResponse = options.streamResponse === true;
+	if (streamResponse) {
+		options = { ...options };
+		delete options.streamResponse;
+	}
 	return new Promise((resolve, reject) => {
-		const req = client.request(options, (response) => {
+		const req = client.request(options, (response: http.IncomingMessage & { body?: string }) => {
+			if (streamResponse) {
+				// Hand the raw stream to the caller; do not setEncoding so binary-safe consumers
+				// (or SSE parsers that prefer Buffers) still work.
+				resolve(response);
+				return;
+			}
 			response.setEncoding('utf8');
 			response.body = '';
 			response.on('data', (chunk) => {
@@ -773,8 +789,16 @@ export function httpRequest(options: any, data: any) {
 			reject(err);
 		});
 
-		req.write(data instanceof Buffer ? data : JSON.stringify(data));
-		req.end();
+		// A Readable body is streamed with chunked transfer-encoding (e.g. multipart deploys
+		// over the 2 GB Buffer cap); .pipe also takes care of closing the request when the
+		// source ends. Everything else is sent as a single write.
+		if (data && typeof data.pipe === 'function') {
+			data.on('error', reject);
+			data.pipe(req);
+		} else {
+			req.write(data instanceof Buffer ? data : JSON.stringify(data));
+			req.end();
+		}
 	});
 }
 

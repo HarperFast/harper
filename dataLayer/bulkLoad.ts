@@ -15,7 +15,8 @@ import _fs from 'fs-extra';
 const fs = _fs;
 import * as path from 'path';
 import streamChain from 'stream-chain';
-const chain = (streamChain as any).chain ?? streamChain;
+// @ts-expect-error - stream-chain types declare only the default callable but CJS exposes a `.chain` property too
+const chain = streamChain.chain ?? streamChain;
 import StreamArray from 'stream-json/streamers/StreamArray.js';
 import Batch from 'stream-json/utils/Batch.js';
 import comp from 'stream-chain/utils/comp.js';

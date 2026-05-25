@@ -878,3 +878,33 @@ describe('test refreshOperationToken function', () => {
 		assert(validate_error === undefined);
 	});
 });
+
+describe('isJWTExpired', () => {
+	const createToken = (exp) => {
+		const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
+		const payload = Buffer.from(JSON.stringify({ exp })).toString('base64');
+		return `${header}.${payload}.signature`;
+	};
+
+	it('should return true for invalid token', () => {
+		assert.strictEqual(token_auth.isJWTExpired('invalid'), true);
+	});
+
+	it('should return true for expired token', () => {
+		const expiredTime = Math.floor(Date.now() / 1000) - 60;
+		const token = createToken(expiredTime);
+		assert.strictEqual(token_auth.isJWTExpired(token), true);
+	});
+
+	it('should return true for token expiring soon (within buffer)', () => {
+		const soonExpTime = Math.floor(Date.now() / 1000) + 60; // 1 minute from now
+		const token = createToken(soonExpTime);
+		assert.strictEqual(token_auth.isJWTExpired(token, 300), true); // 5 minute buffer
+	});
+
+	it('should return false for long-lived token', () => {
+		const farExpTime = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+		const token = createToken(farExpTime);
+		assert.strictEqual(token_auth.isJWTExpired(token, 300), false);
+	});
+});

@@ -87,6 +87,7 @@ export var NON_REPLICATING_SYSTEM_TABLES = [
 	'hdb_temp',
 	'hdb_certificate',
 	'hdb_raw_analytics',
+	'hdb_model_calls',
 	'hdb_session_will',
 	'hdb_job',
 	'hdb_info',

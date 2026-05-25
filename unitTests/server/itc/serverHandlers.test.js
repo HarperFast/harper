@@ -12,6 +12,7 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 // Note: rewire is used to access private functions (schemaHandler, userHandler, componentStatusRequestHandler)
 // for testing validation logic, not for replacing dependencies with mocks
 const server_itc_handlers = rewire('#js/server/itc/serverHandlers');
+const { resetResources } = require('#src/resources/Resources');
 
 describe('Test hdbChildIpcHandler module', () => {
 	const TEST_ERR = 'The roof is on fire';
@@ -181,6 +182,144 @@ describe('Test hdbChildIpcHandler module', () => {
 
 			// Trace log confirms handler received and started processing the event
 			expect(log_trace_stub).to.have.been.called;
+		});
+
+		it('Test componentStatusRequestHandler sends response directly when originator is reachable', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			const test_event = {
+				type: 'component_status_request',
+				message: { originator: 7, requestId: 'req-789' },
+			};
+			await component_status_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			expect(sendToThreadStub.firstCall.args[0]).to.equal(7);
+			const responseMessage = sendToThreadStub.firstCall.args[1];
+			expect(responseMessage.type).to.equal('component_status_response');
+			expect(responseMessage.message.requestId).to.equal('req-789');
+			// Should have a trace confirming direct send (no error/debug fallback)
+			expect(log_error_stub).to.not.have.been.called;
+			sendToThreadStub.restore();
+		});
+
+		it('Test componentStatusRequestHandler drops response silently when originator is unreachable', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(false);
+
+			const test_event = {
+				type: 'component_status_request',
+				message: { originator: 42, requestId: 'req-dropped' },
+			};
+			await component_status_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			// No error, no fallback broadcast — just a trace acknowledging the drop
+			expect(log_error_stub).to.not.have.been.called;
+			const traceCalls = log_trace_stub.getCalls().map((call) => String(call.args[0]));
+			expect(traceCalls.some((msg) => msg.includes('Dropping component status response'))).to.be.true;
+			sendToThreadStub.restore();
+		});
+	});
+
+	describe('Test resourceOpenApiRequestHandler function', () => {
+		let resource_openapi_handler;
+		let resources_instance;
+
+		before(() => {
+			resource_openapi_handler = server_itc_handlers.__get__('resourceOpenApiRequestHandler');
+			resources_instance = resetResources();
+		});
+
+		afterEach(() => {
+			resources_instance.clear();
+		});
+
+		// Tests validation: invalid events should be rejected and logged
+		it('logs error on invalid event (missing type)', async () => {
+			const test_event = {
+				message: { originator: 1, requestId: 42, serverHttpURL: 'http://localhost' },
+			};
+			await resource_openapi_handler(test_event);
+			expect(log_error_stub).to.have.been.called;
+		});
+
+		// Tests validation: invalid events should be rejected and logged
+		it('logs error on invalid event (missing message)', async () => {
+			const test_event = {
+				type: 'resource_openapi_request',
+			};
+			await resource_openapi_handler(test_event);
+			expect(log_error_stub).to.have.been.called;
+		});
+
+		// Tests validation: invalid events should be rejected and logged
+		it('logs error on invalid event (missing originator)', async () => {
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { requestId: 42, serverHttpURL: 'http://localhost' },
+			};
+			await resource_openapi_handler(test_event);
+			expect(log_error_stub).to.have.been.called;
+		});
+
+		// Tests guard: a thread with no registered resources must stay silent so that an app
+		// worker (which has real resources) responds first and the caller gets the correct spec.
+		it('does not respond when this thread has no registered resources', async () => {
+			sandbox.resetHistory();
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { originator: 5, requestId: 99, serverHttpURL: 'http://localhost:9925' },
+			};
+			await resource_openapi_handler(test_event);
+
+			expect(sendToThreadStub).to.not.have.been.called;
+			expect(log_error_stub).to.not.have.been.called;
+			sendToThreadStub.restore();
+		});
+
+		it('sends OpenAPI response directly when originator is reachable', async () => {
+			sandbox.resetHistory();
+			// Resources.set wraps the argument as entry.Resource; passing {isError:true} makes
+			// generateJsonApi skip the entry so the spec is minimal but the send path is exercised.
+			resources_instance.set('test', { isError: true });
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { originator: 5, requestId: 99, serverHttpURL: 'http://localhost:9925' },
+			};
+			await resource_openapi_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			expect(sendToThreadStub.firstCall.args[0]).to.equal(5);
+			const responseMessage = sendToThreadStub.firstCall.args[1];
+			expect(responseMessage.type).to.equal('resource_openapi_response');
+			expect(responseMessage.message.requestId).to.equal(99);
+			expect(responseMessage.message.openapi).to.be.an('object');
+			expect(log_error_stub).to.not.have.been.called;
+			sendToThreadStub.restore();
+		});
+
+		it('drops response silently when originator is unreachable', async () => {
+			sandbox.resetHistory();
+			resources_instance.set('test', { isError: true });
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(false);
+
+			const test_event = {
+				type: 'resource_openapi_request',
+				message: { originator: 99, requestId: 7, serverHttpURL: 'http://localhost:9925' },
+			};
+			await resource_openapi_handler(test_event);
+
+			expect(sendToThreadStub).to.have.been.calledOnce;
+			expect(log_error_stub).to.not.have.been.called;
+			const traceCalls = log_trace_stub.getCalls().map((call) => String(call.args[0]));
+			expect(traceCalls.some((msg) => msg.includes('Dropping resource OpenAPI response'))).to.be.true;
+			sendToThreadStub.restore();
 		});
 	});
 });

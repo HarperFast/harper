@@ -1,7 +1,7 @@
 import * as hdbUtils from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import { ITC_ERRORS } from '../../utility/errors/commonErrors.ts';
-import { threadId, isMainThread } from 'worker_threads';
+import { threadId } from 'worker_threads';
 import { onMessageFromWorkers, broadcastWithAcknowledgement } from './manageThreads.ts';
 
 export { sendItcEvent, validateEvent, SchemaEventMsg, UserEventMsg };
@@ -33,7 +33,10 @@ setImmediate(() => {
  * @param event
  */
 function sendItcEvent(event) {
-	if (!isMainThread && event.message) event.message.originator = threadId;
+	// Always stamp originator so handlers can send direct responses back.
+	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
+	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
+	if (event.message) event.message.originator = threadId;
 	return broadcastWithAcknowledgement(event);
 }
 

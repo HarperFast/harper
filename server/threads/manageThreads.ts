@@ -58,9 +58,16 @@ connectedPorts.onMessageByType = onMessageByType;
 connectedPorts.sendToThread = function (threadId, message) {
 	if (!message?.type) throw new Error('A message with a type must be provided');
 	const port = connectedPorts.find((port) => port.threadId === threadId);
-	if (port) {
+	if (!port) return false;
+	try {
 		port.postMessage(message);
 		return true;
+	} catch (err) {
+		// Port may have closed between find() and postMessage() — treat as unreachable.
+		// Only swallow the documented "closed port" race; let serialization bugs
+		// (DataCloneError) and other unexpected errors surface to the caller.
+		if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') return false;
+		throw err;
 	}
 };
 export let threadsHaveStarted: (value?: unknown) => void;
@@ -118,6 +125,8 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.SCHEMA, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.USER, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE, null);
 
 function startWorker(path, options = {}) {
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
@@ -508,6 +517,9 @@ function startMonitoring() {
 var REPORTING_INTERVAL = 1000;
 
 if (parentPort && workerData?.addPorts) {
+	// Main thread always has threadId 0 (worker_threads convention). Stamp it on
+	// parentPort so sendToThread(0, ...) and similar lookups can route back to main.
+	parentPort.threadId = 0;
 	addPort(parentPort);
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
@@ -643,7 +655,8 @@ if (isMainThread) {
 	if (process.env.WATCH_DIR) watchDir(process.env.WATCH_DIR);
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
-		(globalThis as any).restartNumber = message.restartNumber;
+		// @ts-expect-error - stash restartNumber on globalThis for cross-module access during shutdown
+		globalThis.restartNumber = message.restartNumber;
 		parentPort.unref(); // remove this handle
 		setTimeout(() => {
 			harperLogger.warn('Thread did not voluntarily terminate', threadId);

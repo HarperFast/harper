@@ -24,6 +24,8 @@ copy-db <source> <target>       - Copies a database from source path to target p
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
 <api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
+login [target] [username]       - Login to a remote or local Harper instance
+logout [target]                 - Logout from Harper and clear saved JWT
 register                        - Register harperdb
 renew-certs                     - Generate a new set of self-signed certificates
 restart                         - Restart the harperdb background process
@@ -41,17 +43,11 @@ deploy                          - Deploy the application locally or remotely wit
  * Initialize the environment manager. Call before dynamically importing the
  * subcommand module so any module-load reads of `env.get(…)` see a populated
  * configuration. Side-effectful initialization is deferred to `onStartup(…)`
- * hooks; call `runServerStartup()` once the subcommand module has finished
- * loading to drain them.
+ * hooks; subcommand modules drain them via their own lifecycle.runStartup() calls.
  */
 async function initEnv() {
 	const env = await import('../utility/environment/environmentManager.ts');
 	env.initSync();
-}
-
-async function runServerStartup() {
-	const lifecycle = await import('../utility/lifecycle.ts');
-	await lifecycle.runStartup();
 }
 
 /**
@@ -116,6 +112,15 @@ async function harper() {
 			return (await import('./upgrade.ts')).upgrade(null).then(() => 'Your instance of Harper is up to date!');
 		case SERVICE_ACTIONS_ENUM.STATUS: {
 			return getDefaultExport(await import('./status.ts'))();
+		}
+		case SERVICE_ACTIONS_ENUM.LOGIN: {
+			const target = process.argv[3];
+			const username = process.argv[4];
+			return (await import('./login.ts')).login(target, username);
+		}
+		case SERVICE_ACTIONS_ENUM.LOGOUT: {
+			const target = process.argv[3];
+			return (await import('./logout.ts')).logout(target);
 		}
 		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
 			return (await import('../security/keys.ts'))

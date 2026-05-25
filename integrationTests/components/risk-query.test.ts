@@ -5,7 +5,7 @@
  * shorthand field mapping, upsert, edge cases, and deletion.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert/strict';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,7 +24,8 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 			package: join(__dirname, '../fixtures/risq-1.0.0.tgz'),
 			restart: true,
 		});
-		deepStrictEqual(body, { message: 'Successfully deployed: risk-query, restarting Harper' });
+		strictEqual(body.message, 'Successfully deployed: risk-query, restarting Harper');
+		ok(typeof body.deployment_id === 'string', `expected deployment_id in deploy response, got ${body.deployment_id}`);
 
 		// Poll until the component is ready
 		const deadline = Date.now() + 30_000;

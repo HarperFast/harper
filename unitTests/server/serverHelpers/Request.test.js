@@ -260,8 +260,65 @@ describe('Request class', function () {
 		});
 
 		it('should return isAborted status', function () {
-			// Currently always returns false (TODO in implementation)
 			assert.strictEqual(request.isAborted, false);
+		});
+	});
+
+	describe('signal (AbortSignal)', function () {
+		const { EventEmitter } = require('node:events');
+
+		function makeNodeRequest() {
+			return {
+				method: 'GET',
+				url: '/test',
+				headers: {},
+				socket: Object.assign(new EventEmitter(), {
+					encrypted: true,
+					remoteAddress: '127.0.0.1',
+					getPeerCertificate: sinon.stub().returns({}),
+				}),
+			};
+		}
+
+		function makeNodeResponse({ writableFinished = false } = {}) {
+			const res = new EventEmitter();
+			res.writableFinished = writableFinished;
+			return res;
+		}
+
+		it('exposes a live AbortSignal that is not initially aborted', function () {
+			const request = new Request(makeNodeRequest(), makeNodeResponse());
+			assert.ok(request.signal instanceof AbortSignal);
+			assert.strictEqual(request.signal.aborted, false);
+			assert.strictEqual(request.isAborted, false);
+		});
+
+		it('aborts the signal on nodeResponse close before write is finished', function () {
+			const nodeResponse = makeNodeResponse({ writableFinished: false });
+			const request = new Request(makeNodeRequest(), nodeResponse);
+			nodeResponse.emit('close');
+			assert.strictEqual(request.signal.aborted, true);
+			assert.strictEqual(request.isAborted, true);
+		});
+
+		it('does NOT abort the signal on nodeResponse close after write finishes', function () {
+			const nodeResponse = makeNodeResponse({ writableFinished: true });
+			const request = new Request(makeNodeRequest(), nodeResponse);
+			nodeResponse.emit('close');
+			assert.strictEqual(request.signal.aborted, false);
+		});
+
+		it('aborts on socket close when no nodeResponse is provided (WebSocket-upgrade path)', function () {
+			const nodeRequest = makeNodeRequest();
+			const request = new Request(nodeRequest);
+			nodeRequest.socket.emit('close');
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('_abort() aborts the signal explicitly', function () {
+			const request = new Request(makeNodeRequest(), makeNodeResponse());
+			request._abort();
+			assert.strictEqual(request.signal.aborted, true);
 		});
 	});
 

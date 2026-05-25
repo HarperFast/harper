@@ -340,6 +340,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
 				incomingMessages.emit('close');
 				if (iterator) iterator.return();
+				request._abort?.();
 			});
 			try {
 				await chainCompletion;

@@ -7,6 +7,7 @@
 	"prConcurrentLimit": 2,
 	"minimumReleaseAge": "7 days",
 	"internalChecksFilter": "strict",
+	"automerge": true,
 	"reviewersFromCodeOwners": true,
 	"lockFileMaintenance": { "enabled": false },
 	"packageRules": [
@@ -19,6 +20,10 @@
 		{
 			"matchPackageNames": ["alasql"],
 			"groupName": "alasql"
+		},
+		{
+			"matchPackageNames": ["sinon"],
+			"groupName": "sinon"
 		},
 		{
 			"groupName": "all non-major dependencies",

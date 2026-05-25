@@ -25,15 +25,48 @@ const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please che
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
 
+interface SearchObject {
+	schema: string;
+	table: string;
+	get_attributes: string[];
+	attribute?: string;
+	value?: any;
+	hash_values?: any[];
+}
+
+interface AlaSQLAST {
+	where?: any;
+	columns?: any[];
+	from?: any[];
+	joins?: any[];
+	order?: any[];
+	group?: any[];
+	limit?: any;
+	offset?: any;
+	toString(): string;
+}
+
+interface AlaSQLYY {
+	LogicValue: new (props: { value: any }) => any;
+	StringValue: new (props: { value: any }) => any;
+	NumValue: new (props: { value: any }) => any;
+	Op: new (props: any) => any;
+	Columnid: new (props: any) => any;
+	Param: new (props: any) => any;
+	FuncValue: new (props?: any) => any;
+	Select: new (props: any) => any;
+	Column: new (props?: any) => any;
+}
+
 class SQLSearch {
-	statement: any;
-	columns: any;
-	all_table_attributes: any;
+	statement: AlaSQLAST;
+	columns: Record<string, any[]>;
+	all_table_attributes: any[];
 	fetch_attributes: any[];
-	exact_search_values: any;
-	comparator_search_values: any;
-	tables: any[];
-	data: any;
+	exact_search_values: Record<string, { ignore: boolean; values: Set<any> }>;
+	comparator_search_values: Record<string, { ignore: boolean; comparators: any[] }>;
+	tables: { databaseid: string; tableid: string; as: string }[];
+	data: Record<string, any>;
 	has_aggregator: boolean;
 	has_ordinal: boolean;
 	has_outer_join: boolean;
@@ -76,7 +109,7 @@ class SQLSearch {
 
 	/**
 	 * Starting point function to execute the search
-	 * @returns {Promise<results||finalResults[]||Array>}
+	 * @returns {Promise<results|finalResults[]|Array>}
 	 */
 	async search() {
 		let searchResults = undefined;
@@ -202,19 +235,18 @@ class SQLSearch {
 			if (!commonUtils.isEmpty(node) && node.right) {
 				if (commonUtils.isNotEmptyAndHasValue(node.right.value)) {
 					const whereVal = commonUtils.autoCast(node.right.value);
+					const yy = (alasql as any).yy as AlaSQLYY;
 					if ([true, false].indexOf(whereVal) >= 0) {
-						node.right = new (alasql as any).yy.LogicValue({ value: whereVal });
+						node.right = new yy.LogicValue({ value: whereVal });
 					}
 				} else if (Array.isArray(node.right)) {
+					const yy = (alasql as any).yy as AlaSQLYY;
 					node.right.forEach((col, i) => {
 						const whereVal = commonUtils.autoCast(col.value);
 						if ([true, false].indexOf(whereVal) >= 0) {
-							node.right[i] = new (alasql as any).yy.LogicValue({ value: whereVal });
-						} else if (
-							col instanceof (alasql as any).yy.StringValue &&
-							commonUtils.autoCasterIsNumberCheck(whereVal.toString())
-						) {
-							node.right[i] = new (alasql as any).yy.NumValue({ value: whereVal });
+							node.right[i] = new yy.LogicValue({ value: whereVal });
+						} else if (col instanceof yy.StringValue && commonUtils.autoCasterIsNumberCheck(whereVal.toString())) {
+							node.right[i] = new yy.NumValue({ value: whereVal });
 						}
 					});
 				}
@@ -538,12 +570,10 @@ class SQLSearch {
 		const simpleSelectQuery = this._isSimpleSelect();
 		if (simpleSelectQuery) {
 			this._addFetchColumns(this.columns.columns);
-		}
-		//the bitwise or '|' is intentionally used because I want both conditions checked regardless of whether the left condition is false
-		//the bitwise or "|" is intentionally used because I want both conditions checked regardless of whether the left condition is false
-		else if (
-			((!this.columns.where && this.fetch_attributes.length === 0) as any) |
-			((whereString.indexOf(WHERE_CLAUSE_IS_NULL) > -1) as any)
+		} else if (
+			// @ts-expect-error the bitwise or '|' is intentionally used because I want both conditions checked regardless of whether the left condition is false
+			(!this.columns.where && this.fetch_attributes.length === 0) |
+			(whereString.indexOf(WHERE_CLAUSE_IS_NULL) > -1)
 		) {
 			//get unique ids of tables if there is no join or the where is performing an is null check
 			this.tables.forEach((table) => {
@@ -598,7 +628,7 @@ class SQLSearch {
 			}`;
 			let hashName = this.data[schemaTable].__hashName;
 
-			let searchObject: any = {
+			let searchObject: SearchObject = {
 				schema: attribute.table.databaseid,
 				table: attribute.table.tableid,
 				get_attributes: [attribute.attribute],
@@ -746,7 +776,7 @@ class SQLSearch {
 	 * @returns {boolean} is SQL statement a simple select
 	 * @private
 	 */
-	_isSimpleSelect() {
+	_isSimpleSelect(): boolean {
 		let isSimpleSelect = true;
 
 		if (
@@ -760,7 +790,8 @@ class SQLSearch {
 		}
 
 		this.statement.columns.forEach((col) => {
-			if (!(col instanceof (alasql as any).yy.Column)) {
+			const yy = (alasql as any).yy as AlaSQLYY;
+			if (!(col instanceof yy.Column)) {
 				isSimpleSelect = false;
 			}
 		});
@@ -817,21 +848,26 @@ class SQLSearch {
 			orderBy.is_aggregator = !!selectColumn.aggregatorid;
 
 			if (!selectColumn.as) {
-				orderBy.initial_select_column = Object.assign(new (alasql as any).yy.Column(), orderBy.expression);
+				const yy = (alasql as any).yy as AlaSQLYY;
+				orderBy.initial_select_column = Object.assign(new yy.Column(), orderBy.expression);
 				orderBy.initial_select_column.as = `[${orderBy.expression.columnid_orig}]`;
-				orderBy.expression.columnid = orderBy.initial_select_column.as;
+				orderBy.expression.columnid = `\`${orderBy.expression.columnid_orig}\``;
 				return;
 			} else if (selectColumn.as && !orderBy.expression.tableid) {
-				orderBy.expression.columnid = selectColumn.as;
+				orderBy.expression.columnid = selectColumn.as_orig;
 				orderBy.expression.columnid_orig = selectColumn.as_orig;
+				orderBy.expression.toString = () => selectColumn.as;
 			} else {
-				let aliasExpression = new (alasql as any).yy.Column();
-				aliasExpression.columnid = selectColumn.as;
+				const yy = (alasql as any).yy as AlaSQLYY;
+				let aliasExpression = new yy.Column();
+				aliasExpression.columnid = selectColumn.as_orig;
 				aliasExpression.columnid_orig = selectColumn.as_orig;
+				aliasExpression.toString = () => selectColumn.as;
 				orderBy.expression = aliasExpression;
 			}
 			if (!orderBy.is_aggregator) {
-				const targetObj = orderBy.is_func ? new (alasql as any).yy.FuncValue() : new (alasql as any).yy.Column();
+				const yy = (alasql as any).yy as AlaSQLYY;
+				const targetObj = orderBy.is_func ? new yy.FuncValue() : new yy.Column();
 				orderBy.initial_select_column = Object.assign(targetObj, selectColumn);
 			}
 		});
@@ -858,10 +894,10 @@ class SQLSearch {
 	/**
 	 * Takes an initial pass on the data by processing just the joins, conditions and order by.
 	 * This allows us to limit the broader select based on just the ids we need based on this pass
-	 * @returns {Promise<{existingAttributes, joined_length: number}>}
+	 * @returns {Promise<{existing_attributes: any, joined_length: number}>}
 	 * @private
 	 */
-	async _processJoins() {
+	async _processJoins(): Promise<{ existing_attributes: any; joined_length: number }> {
 		let tableData = [];
 		let select = [];
 		//TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
@@ -907,7 +943,7 @@ class SQLSearch {
 			let hash = this.data[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`].__hashName;
 			const tableKey = table.as ? table.as_orig : table.tableid_orig;
 			hashAttributes.push({
-				key: `'${tableKey}.${hash}'`,
+				key: `${tableKey}.${hash}`,
 				schema: table.databaseid_orig,
 				table: table.as ? table.as_orig : table.tableid_orig,
 				keys: new Set(),
@@ -1008,7 +1044,7 @@ class SQLSearch {
 	 * @returns {Promise<void>}
 	 * @private
 	 */
-	async _getFinalAttributeData(existingAttributes, rowCount) {
+	async _getFinalAttributeData(existingAttributes, rowCount): Promise<void> {
 		if (rowCount === 0) {
 			return;
 		}
@@ -1050,7 +1086,7 @@ class SQLSearch {
 	 * @returns {Promise<void>}
 	 * @private
 	 */
-	async _getData(allColumns) {
+	async _getData(allColumns): Promise<void> {
 		try {
 			const tableSearches = allColumns.reduce((acc, column) => {
 				const tableKey = `${column.table.databaseid}_${column.table.as ? column.table.as : column.table.tableid}`;
@@ -1077,7 +1113,7 @@ class SQLSearch {
 				// __mergedAttributes when do the final translation of the SQL statement
 				this.data[schemaTable].__mergedAttributes.push(...table.columns);
 
-				const searchObject: any = {
+				const searchObject = {
 					schema: table.schema,
 					table: table.table,
 					hash_values: mergedHashKeys,
@@ -1198,7 +1234,13 @@ class SQLSearch {
 		return finalResults;
 	}
 
-	_translateUndefinedValues(data) {
+	/**
+	 * Translates undefined values to nulls in the result data
+	 * @param data
+	 * @returns {any[]}
+	 * @private
+	 */
+	_translateUndefinedValues(data): any[] {
 		try {
 			let finalData = [];
 			for (const row of data) {
@@ -1226,7 +1268,7 @@ class SQLSearch {
 	 * @returns {string}
 	 * @private
 	 */
-	_buildSQL(callConvertToIndexes = true) {
+	_buildSQL(callConvertToIndexes = true): string {
 		let sql = this.statement.toString();
 		sql = sql.replace(/NOT\(NULL\)/g, 'NOT NULL');
 
@@ -1248,10 +1290,10 @@ class SQLSearch {
 	 * Updates the sqlStatment string to use index values instead of table column names
 	 * @param sqlStatement
 	 * @param tables
-	 * @returns {*}
+	 * @returns {string}
 	 * @private
 	 */
-	_convertColumnsToIndexes(sqlStatement, tables) {
+	_convertColumnsToIndexes(sqlStatement, tables): string {
 		let finalSql = sqlStatement;
 		const tablesMap = {};
 		tables.forEach((table) => {
@@ -1288,10 +1330,10 @@ class SQLSearch {
 
 	/**
 	 * Builds out the final result JSON for a simple SQL query to return to the main search method without using alasql
-	 * @returns {Promise<unknown[]>}
+	 * @returns {Promise<any[]>}
 	 * @private
 	 */
-	async _simpleSQLQuery() {
+	async _simpleSQLQuery(): Promise<any[]> {
 		let aliasMap = this.statement.columns.reduce((acc, col) => {
 			if (col.as_orig && col.as_orig != col.columnid_orig) {
 				acc[col.columnid_orig] = col.as_orig;
@@ -1315,7 +1357,7 @@ class SQLSearch {
 				attribute.table.as ? attribute.table.as : attribute.table.tableid
 			}`;
 
-			let searchObject: any = {
+			let searchObject: SearchObject = {
 				schema: attribute.table.databaseid,
 				table: attribute.table.tableid,
 				get_attributes: [attribute.attribute],
@@ -1340,9 +1382,8 @@ class SQLSearch {
 				throw new Error(SEARCH_ERROR_MSG);
 			}
 		}
-		return Object.values((Object.values(this.data)[0] as any).__mergedData);
+		return Object.values(Object.values(this.data)[0].__mergedData);
 	}
 }
 
-console.log('HARPER BRIDGE IN SQLSEARCH', Object.keys(harperBridge));
 export default SQLSearch;

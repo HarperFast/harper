@@ -98,6 +98,19 @@ export interface Context {
 	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 	timestamp?: number;
 	includeExpensiveRecordCountEstimates?: boolean;
+	/**
+	 * Matched route path of the calling Resource, populated by the HTTP/WS entry points
+	 * before they hand the request into `transaction()`. Populated on the Request that
+	 * becomes the ALS-bound Context for that path; absent for ops-API, internal jobs,
+	 * and replication-driven contexts.
+	 */
+	handlerPath?: string;
+	/**
+	 * Abort signal carried through ALS so generator bodies can forward cancellation to
+	 * external work (e.g. `scope.models.generateStream({ signal })`). Populated on the
+	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513.
+	 */
+	signal?: AbortSignal;
 }
 
 export interface SourceContext<TRequestContext = Context, Record extends object = any> {
@@ -131,8 +144,13 @@ export type Comparator =
 	| 'ends_with'
 	| 'eq'
 	| 'equals'
+	| 'gt'
+	| 'ge'
+	| 'lt'
+	| 'le'
 	| 'greater_than'
 	| 'greater_than_equal'
+	| 'in'
 	| 'less_than'
 	| 'less_than_equal'
 	| 'ne'
@@ -146,8 +164,13 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_attribute?: keyof Record | Array<keyof Record> | string | string[];
 	comparator?: Comparator;
 	search_type?: Comparator;
-	value?: Record[Property];
-	search_value?: Record[Property];
+	value?: Record[Property] | Record[Property][];
+	search_value?: Record[Property] | Record[Property][];
+	/**
+	 * If true, the condition is negated. Phase 1: filter-only — forces a
+	 * full scan unless paired with another indexed condition.
+	 */
+	negated?: boolean;
 }
 
 interface ConditionGroup<Record extends object = any> {
