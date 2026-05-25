@@ -75,7 +75,7 @@ async function lmdbSearchByConditions(searchObject) {
 		// get the intersection of condition searches by using the indexed query for the first condition
 		// and then filtering by all subsequent conditions
 		let primaryDbi = env.dbis[tableInfo.hash_attribute];
-		let filters = sortedConditions.slice(1).map(lmdb_search.filterByType);
+		let filters: any[] = sortedConditions.slice(1).map(lmdb_search.filterByType as any);
 		let filtersLength = filters.length;
 		let fetchAttributes = searchUtility.setGetWholeRowAttributes(env, searchObject.get_attributes);
 		records = ids.map((id) => primaryDbi.get(id, { transaction, lazy: true }));

@@ -1,3 +1,4 @@
+/* global HDB_TABLE_INFO, hdbAttributeAttributes */
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';
 import * as writeUtility from '../../../../utility/lmdb/writeUtility.ts';

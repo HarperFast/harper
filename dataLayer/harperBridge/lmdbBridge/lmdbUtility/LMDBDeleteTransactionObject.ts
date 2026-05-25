@@ -4,6 +4,7 @@ import { OPERATIONS_ENUM } from '../../../../utility/hdbTerms.ts';
  * class to define a delete transaction
  */
 class LMDBDeleteTransactionObject extends LMDBTransactionObject {
+	original_records: any;
 	/**
 	 * @param {Array.<string|number>} hash_values - hash values of deleted records
 	 * @param {Array.<Object>} originalRecords - original records prior to delete

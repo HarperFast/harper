@@ -4,6 +4,7 @@ import { OPERATIONS_ENUM } from '../../../../utility/hdbTerms.ts';
  * class to define an insert transaction
  */
 class LMDBInsertTransactionObject extends LMDBTransactionObject {
+	records: any;
 	/**
 	 * @param {Array.<Object>} records - inserted records
 	 * @param {string} userName - username that executed trasaction

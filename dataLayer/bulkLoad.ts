@@ -583,7 +583,7 @@ async function callPapaParse(jsonMessage) {
 }
 
 function createTransformMap(schema, table) {
-	const attributes = databases[schema][table].attributes;
+	const attributes = (databases[schema][table] as any).attributes;
 	let mapOfTransforms = new Map(); // I don't know if this should be a Map, but this just makes a map of attributes with type coercions that we want
 	for (let attribute of attributes) {
 		if (attribute.type && !attribute.computed && !attribute.relationship)

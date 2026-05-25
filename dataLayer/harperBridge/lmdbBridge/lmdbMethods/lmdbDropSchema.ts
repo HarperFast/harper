@@ -32,7 +32,7 @@ async function lmdbDropSchema(dropSchemaObj) {
 			[hdbTerms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY]
 		);
 
-		let tables = Array.from(await searchDataByValue(tableSearchObj));
+		let tables: any[] = Array.from(await searchDataByValue(tableSearchObj));
 
 		for (let x = 0; x < tables.length; x++) {
 			const deleteTableObj = {

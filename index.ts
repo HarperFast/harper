@@ -157,7 +157,10 @@ import type { Resource as ResourceImport } from './resources/Resource.ts';
 import type { SecretsView as SecretsImport } from './components/componentSecrets.ts'; // per-component secrets view (#1550)
 import type { server as ServerImport } from './server/Server.ts';
 import type { tables as TablesImport } from './resources/databases.ts';
-type ThreadsImport = unknown[]; // TODO: figure out actual type for this
+type ThreadsImport = any[] & {
+	sendToThread?: (threadId: number, message: any) => boolean;
+	onMessageByType?: (type: string, listener: (...args: any[]) => any) => void;
+};
 import type { transaction as TransactionImport } from './resources/transaction.ts';
 
 // These names are exposed TWO ways that resolve to the SAME live, process-wide value:

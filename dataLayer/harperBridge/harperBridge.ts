@@ -1,6 +1,7 @@
 'use strict';
 
 import { ResourceBridge } from './ResourceBridge.ts';
+import * as envMngr from '../../utility/environment/environmentManager.ts';
 try {
 	envMngr.initSync();
 } catch {

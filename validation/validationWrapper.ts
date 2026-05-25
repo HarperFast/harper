@@ -75,7 +75,7 @@ export async function validateObjectAsync(object, fileConstraints) {
 	}
 
 	try {
-		await validate.async(object, fileConstraints, { format: 'flat' });
+		await validate.async(object, fileConstraints, { format: 'flat' } as any);
 	} catch (err) {
 		// unroll the array and make a full error message.
 		let msg = err.join(`,`);

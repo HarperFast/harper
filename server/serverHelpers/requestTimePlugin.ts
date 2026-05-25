@@ -12,15 +12,15 @@ export default fp(
 			let _time = reply.elapsedTime;
 		});
 		// eslint-disable-next-line require-await
-		fastify.addHook('onSend', async (request, reply, payload) => {
+		fastify.addHook('onSend', async (request, reply, payload: any) => {
 			let responseTime = reply.elapsedTime;
 			let startTransfer = performance.now();
-			let config = reply.request.routeOptions;
+			let config: any = reply.request.routeOptions;
 			let action;
 			let type;
 			let method;
 			if (config.config?.isOperation) {
-				action = request.body?.operation;
+				action = (request.body as any)?.operation;
 				type = 'operation';
 			} else {
 				action = config.url;

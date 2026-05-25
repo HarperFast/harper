@@ -4,6 +4,8 @@ import { OPERATIONS_ENUM } from '../../../../utility/hdbTerms.ts';
  * class to define an update transaction
  */
 class LMDBUpdateTransactionObject extends LMDBTransactionObject {
+	records: any;
+	original_records: any;
 	/**
 	 * @param {Array.<Object>} records - records updated
 	 * @param {Array.<Object>} originalRecords - original state of records that were updated

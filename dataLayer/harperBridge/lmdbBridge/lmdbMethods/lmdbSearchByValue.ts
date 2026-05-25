@@ -12,7 +12,7 @@ export default lmdbSearchByValue;
  * @param {hdbTerms.VALUE_SEARCH_COMPARATORS} [comparator]
  * @returns {Promise<{}|{}[]>}
  */
-async function lmdbSearchByValue(searchObject, comparator) {
+async function lmdbSearchByValue(searchObject, comparator?) {
 	let comparatorSearch = !commonUtils.isEmpty(comparator);
 	if (comparatorSearch && hdbTerms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 		throw new Error(`Value search comparator - ${comparator} - is not valid`);
