@@ -2,6 +2,7 @@ import { _assignPackageExport } from '../../globals.js';
 import { contextStorage } from '../transaction.ts';
 import { resolveEmbedding, resolveGenerative } from './backendRegistry.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
+import { recordAction } from '../analytics/write.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
 import type {
@@ -19,6 +20,7 @@ import type {
 } from './types.ts';
 
 type CallMethod = ModelCallRecord['method'];
+type MetricEmitter = (value: number, metric: string, path?: string) => void;
 
 /**
  * Process-wide singleton. One shared instance serves all Scopes — `scope.models`,
@@ -38,9 +40,15 @@ type CallMethod = ModelCallRecord['method'];
  */
 export class Models implements ModelsContract {
 	#analyticsWriter: ModelCallAnalyticsWriter;
+	#emit: MetricEmitter;
 
-	constructor(analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter()) {
+	constructor(
+		analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter(),
+		// DI'd for unit tests; production wires up the module-scope `recordAction`.
+		metricEmitter: MetricEmitter = recordAction
+	) {
 		this.#analyticsWriter = analyticsWriter;
+		this.#emit = metricEmitter;
 	}
 
 	async embed(input: string | string[], opts: EmbedOpts = {}): Promise<Float32Array[]> {
@@ -171,6 +179,17 @@ export class Models implements ModelsContract {
 	): void {
 		const usage = result?.status === 'completed' ? result.usage : undefined;
 		this.#analyticsWriter.write(buildRecord(backend, method, model, accounting, opts, usage, startedAt, true));
+		// Also emit aggregate analytics into hdb_raw_analytics so model usage rolls up
+		// into the same per-period analytics that license enforcement and admin
+		// dashboards consume — mirrors the `db-read` pattern in Table.ts. The detailed
+		// per-call row in hdb_model_calls (above) is for forensics; this is for billing.
+		// Path is the backend name (analogous to tableName for db-read) so dashboards
+		// can break usage down by backend.
+		this.#emit(1, `model-${method}`, backend.name);
+		if (usage) {
+			const tokens = (usage.embeddingTokens ?? 0) + (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+			if (tokens > 0) this.#emit(tokens, `model-${method}-tokens`, backend.name);
+		}
 	}
 
 	#recordFailure(
