@@ -149,15 +149,20 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
-const MEMORY_FOR_ROCKS_DB = Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25; // 25% of available memory
-
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
 	}
-	RocksDatabase.config({ blockCacheSize: MEMORY_FOR_ROCKS_DB });
+	// Read block cache size lazily so env/CLI overrides applied after module load are respected.
+	// Falls back to 25% of constrained (cgroup) memory when not configured.
+	const configuredBlockCacheSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE);
+	const blockCacheSize =
+		configuredBlockCacheSize > 0
+			? configuredBlockCacheSize
+			: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25;
+	RocksDatabase.config({ blockCacheSize });
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
 		if (isReadOnlyMode()) {
