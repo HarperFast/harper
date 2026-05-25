@@ -74,7 +74,7 @@ async function lmdbDeleteRecords(deleteObj, writeToTxnLog = true) {
  * @param {number} txnTime - the transaction timestamp
  * @returns {{skipped_hashes: [], deleted_hashes: [], message: string}}
  */
-function createDeleteResponse(deleted, skipped, txnTime) {
+function createDeleteResponse(deleted, skipped, txnTime?) {
 	let total = deleted.length + skipped.length;
 	let plural = total === 1 ? 'record' : 'records';
 

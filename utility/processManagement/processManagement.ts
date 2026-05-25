@@ -41,7 +41,7 @@ function start(procConfig, noKill = false) {
 		...procConfig.env,
 		HARPER_PARENT_PROCESS_PID: process.pid.toString(),
 	};
-	const subprocess = procConfig.script
+	const subprocess: any = procConfig.script
 		? fork(procConfig.script, args, procConfig)
 		: execFile(procConfig.binFile, args, procConfig);
 	subprocess.name = procConfig.name;

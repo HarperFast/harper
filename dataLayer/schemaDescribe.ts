@@ -11,6 +11,7 @@ import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonError
 import { getDatabases as _getDatabases } from '../resources/databases.ts';
 const getDatabases = _getDatabases;
 import fs from 'fs-extra';
+import * as envMngr from '../utility/environment/environmentManager.ts';
 try {
 	envMngr.initSync();
 } catch {
@@ -141,7 +142,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}
-	let tableObj = tables[table];
+	let tableObj: any = tables[table];
 	if (!tableObj)
 		throw handleHDBError(
 			new Error(),

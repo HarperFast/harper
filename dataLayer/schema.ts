@@ -314,7 +314,7 @@ function dropAttributeFromGlobal(dropAttributeObject) {
 export async function createAttribute(createAttributeObject: any) {
 	transformReq(createAttributeObject);
 
-	const tableAttr = getDatabases()[createAttributeObject.schema][createAttributeObject.table].attributes;
+	const tableAttr = (getDatabases()[createAttributeObject.schema][createAttributeObject.table] as any).attributes;
 	for (const { name } of tableAttr) {
 		if (name === createAttributeObject.attribute) {
 			throw handleHDBError(

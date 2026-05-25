@@ -110,7 +110,7 @@ export default function (searchObject: any, type: any) {
 			return handleHDBError(new Error(), checkSchemaTable, HTTP_STATUS_CODES.NOT_FOUND);
 		}
 
-		let tableSchema = getDatabases()[searchObject.schema][searchObject.table];
+		let tableSchema: any = getDatabases()[searchObject.schema][searchObject.table];
 		let allTableAttributes = tableSchema.attributes;
 
 		//this clones the get_attributes array

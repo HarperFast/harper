@@ -312,7 +312,7 @@ export function makeTable(options) {
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
 					const value = event.value;
-					const Table = event.table ? databases[databaseName][event.table] : TableResource;
+					const Table: any = event.table ? databases[databaseName][event.table] : TableResource;
 					if (
 						databaseName === SYSTEM_SCHEMA_NAME &&
 						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME || event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME)

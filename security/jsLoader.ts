@@ -11,8 +11,7 @@ import { createContext, runInContext, runInThisContext } from 'node:vm';
 // SourceTextModule and SyntheticModule require `--experimental-vm-modules`. Pull
 // them off the vm namespace at runtime so the named ESM import doesn't fail when
 // the flag isn't passed (e.g. CLI paths that never touch the JS loader).
-// @ts-expect-error - SourceTextModule/SyntheticModule are gated behind --experimental-vm-modules and not in node:vm's public types
-const { SourceTextModule, SyntheticModule } = _vm;
+const { SourceTextModule, SyntheticModule } = _vm as any;
 type SourceTextModule = any;
 type SyntheticModule = any;
 import { ApplicationScope } from '../components/ApplicationScope.ts';

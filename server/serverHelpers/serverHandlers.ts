@@ -150,9 +150,9 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 			return createSSEResponseStream(emitter, () => serverUtilities.processLocalTransaction(req, operation_function));
 		}
 
-		let result = await serverUtilities.processLocalTransaction(req, operation_function);
-		if (result instanceof Readable && result.headers) {
-			for (let [name, value] of result.headers) {
+		let result: any = await serverUtilities.processLocalTransaction(req, operation_function);
+		if (result instanceof Readable && (result as any).headers) {
+			for (let [name, value] of (result as any).headers) {
 				res.header(name, value);
 			}
 			// fastify-compress has one job. I don't know why it can't do it. So we compress here to

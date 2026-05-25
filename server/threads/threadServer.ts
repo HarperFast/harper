@@ -66,7 +66,7 @@ if (!isBun) {
 	}
 }
 
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', (error: any) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
@@ -76,7 +76,7 @@ process.on('uncaughtException', (error) => {
 // handler is registered. Without this, any async path that rejects without being caught
 // (e.g. a cache-update commit error when the caller has already resolved) will kill the
 // worker thread. Mirror the uncaughtException behavior: log and continue.
-process.on('unhandledRejection', (reason) => {
+process.on('unhandledRejection', (reason: any) => {
 	if (reason?.isHandled) return;
 	harperLogger.error('unhandledRejection', reason);
 });
@@ -135,7 +135,7 @@ function closeServers() {
 		}
 		// And we tell the server not to accept any more incoming connections
 		promises.push(
-			new Promise((resolve) => {
+			new Promise<void>((resolve) => {
 				server.close?.(() => {
 					resolve();
 				});
@@ -310,7 +310,7 @@ async function listenOnPortsBun() {
 			} else {
 				portNumber = +port;
 			}
-			const serveOptions = {
+			const serveOptions: any = {
 				port: portNumber,
 				reusePort: !isWindows && !isMac,
 				fetch: config.fetch,
@@ -321,7 +321,7 @@ async function listenOnPortsBun() {
 				// Wait for TLS certs to be loaded
 				const defaultContext = await config.tlsSelector.ready;
 				if (defaultContext) {
-					serveOptions.tls = {
+					const tlsOpts: any = {
 						cert: defaultContext.options.cert,
 						key: defaultContext.options.key,
 					};
@@ -330,9 +330,10 @@ async function listenOnPortsBun() {
 					if (ca) {
 						if (Array.isArray(ca)) ca = ca.filter((entry) => typeof entry === 'string');
 						if (typeof ca === 'string' || (Array.isArray(ca) && ca.length > 0)) {
-							serveOptions.tls.ca = ca;
+							tlsOpts.ca = ca;
 						}
 					}
+					serveOptions.tls = tlsOpts;
 				}
 				// Set up listener for cert updates to reload TLS
 				const pseudoServer = config.pseudoServer;
@@ -340,7 +341,7 @@ async function listenOnPortsBun() {
 					pseudoServer.secureContextsListeners.push(() => {
 						const updatedCtx = config.tlsSelector.defaultContext;
 						if (updatedCtx && SERVERS[port]?.reload) {
-							const tlsUpdate = {
+							const tlsUpdate: any = {
 								cert: updatedCtx.options.cert,
 								key: updatedCtx.options.key,
 							};
@@ -367,6 +368,7 @@ async function listenOnPortsBun() {
 				delete serveOptions.port;
 			}
 			if (isNaN(serveOptions.port)) continue;
+			// @ts-expect-error - Bun is a runtime global only available in Bun environment
 			const bunServer = Bun.serve(serveOptions);
 			SERVERS[port] = bunServer;
 			harperLogger.trace('Bun listening on port ' + port, threadId);
@@ -381,6 +383,7 @@ async function listenOnPortsBun() {
 				if (existsSync(udsPath)) unlinkSync(udsPath);
 
 				// Create a plain HTTP Bun server on the UDS (no TLS)
+				// @ts-expect-error - Bun is a runtime global only available in Bun environment
 				const udsServer = Bun.serve({
 					unix: udsPath,
 					fetch: config.fetch,
@@ -495,11 +498,10 @@ function onSocket(listener, options) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			const udsServer = createSocketServer(listener, {
-				noDelay: true,
-				keepAlive: true,
-				keepAliveInitialDelay: 600,
-			});
+			const udsServer: any = createSocketServer(
+				{ allowHalfOpen: false, noDelay: true, keepAlive: true, keepAliveInitialDelay: 600 } as any,
+				listener
+			);
 
 			udsServer.isPerThreadSocket = true;
 			SERVERS[udsPath] = udsServer;
@@ -512,11 +514,10 @@ function onSocket(listener, options) {
 	}
 	if (options.port) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
-		socketServer = createSocketServer(listener, {
-			noDelay: true,
-			keepAlive: true,
-			keepAliveInitialDelay: 600,
-		});
+		socketServer = createSocketServer(
+			{ allowHalfOpen: false, noDelay: true, keepAlive: true, keepAliveInitialDelay: 600 } as any,
+			listener
+		);
 		socketServer.noReusePort = true;
 		SERVERS[options.port] = socketServer;
 	}

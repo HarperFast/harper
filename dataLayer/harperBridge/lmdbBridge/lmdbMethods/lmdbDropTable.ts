@@ -68,7 +68,7 @@ async function deleteAttributesFromSystem(dropTableObj) {
 		[hdbTerms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
 	);
 
-	let searchResult = Array.from(await searchByValue(searchObj));
+	let searchResult: any[] = Array.from(await searchByValue(searchObj));
 
 	let deleteIds = [];
 	for (let x = 0; x < searchResult.length; x++) {
@@ -109,7 +109,7 @@ async function dropTableFromSystem(dropTableObj) {
 	let searchResult;
 	let deleteTable;
 	try {
-		searchResult = Array.from(await searchByValue(searchObj));
+		searchResult = Array.from(await searchByValue(searchObj)) as any[];
 	} catch (err) {
 		throw err;
 	}

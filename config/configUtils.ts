@@ -187,7 +187,7 @@ function createConfigFile(args, skipFsValidation = false) {
 	flatConfigObj = flattenConfig(configObj);
 
 	// Create new config file and write config doc to it.
-	const hdbRoot = configDoc.getIn(['rootPath']);
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	fs.createFileSync(configFilePath);
 	if (configDoc.errors?.length > 0) {
@@ -361,7 +361,7 @@ function initConfig(force = false) {
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(configDoc);
 		const configObj = configDoc.toJSON();
-		server.config = configObj;
+		(server as any).config = configObj;
 		flatConfigObj = flattenConfig(configObj);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
@@ -618,7 +618,7 @@ function updateConfigValue(
 			}
 			if (configParam?.startsWith('threads_')) {
 				// if threads was a number, recreate the threads object
-				const threadCount = configDoc.getIn(['threads']);
+				const threadCount = configDoc.getIn(['threads']) as any;
 				if (threadCount >= 0) {
 					configDoc.deleteIn(['threads']);
 					configDoc.setIn(['threads', 'count'], threadCount);
@@ -657,7 +657,7 @@ function updateConfigValue(
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc);
-	const hdbRoot = configDoc.getIn(['rootPath']);
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	let configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	if (!fs.existsSync(configFileLocation) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
 		configFileLocation = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
@@ -847,6 +847,7 @@ function readConfigFile() {
 }
 
 function parseYamlDoc(filePath) {
+	// @ts-expect-error - simpleKeys is a valid yaml option but not in the type defs
 	return YAML.parseDocument(fs.readFileSync(filePath, 'utf8'), { simpleKeys: true });
 }
 
@@ -904,6 +905,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 
 		// Update the YAML document's contents
 		// We update only the 'contents' property to preserve the Document instance and its methods
+		// @ts-expect-error - simpleKeys is a valid yaml option but not in the type defs
 		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true });
 
 		// Check for YAML parsing errors
@@ -1003,7 +1005,7 @@ function deleteConfigFromFile(param) {
 	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
 	const configDoc = parseYamlDoc(configFilePath);
 	configDoc.deleteIn(param);
-	const hdbRoot = configDoc.getIn(['rootPath']);
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	const configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	atomicWriteFile(configFileLocation, String(configDoc));
 }

@@ -25,7 +25,7 @@ class SearchObject {
 		value,
 		hash_attribute,
 		get_attributes,
-		endValue,
+		endValue = undefined,
 		reverse = false,
 		limit = undefined,
 		offset = undefined

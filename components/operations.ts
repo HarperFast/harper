@@ -42,7 +42,7 @@ function customFunctionsStatus() {
 			new Error(),
 			HDB_ERROR_MSGS.FUNCTION_STATUS,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -78,7 +78,7 @@ function getCustomFunctions() {
 			new Error(),
 			HDB_ERROR_MSGS.GET_FUNCTIONS,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -117,7 +117,7 @@ function getCustomFunction(req) {
 			new Error(),
 			HDB_ERROR_MSGS.GET_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -157,7 +157,7 @@ async function setCustomFunction(req) {
 			new Error(),
 			HDB_ERROR_MSGS.SET_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -197,7 +197,7 @@ async function dropCustomFunction(req) {
 			new Error(),
 			HDB_ERROR_MSGS.DROP_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -245,7 +245,7 @@ async function addComponent(req) {
 			new Error(),
 			HDB_ERROR_MSGS.ADD_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -271,7 +271,7 @@ async function dropCustomFunctionProject(req) {
 	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 
-	let apps = env.get(hdbTerms.CONFIG_PARAMS.APPS);
+	let apps = env.get((hdbTerms.CONFIG_PARAMS as any).APPS);
 	if (!hdbUtils.isEmptyOrZeroLength(apps)) {
 		let appFound = false;
 		for (const [i, app] of apps.entries()) {
@@ -283,7 +283,7 @@ async function dropCustomFunctionProject(req) {
 		}
 
 		if (appFound) {
-			configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps);
+			configUtils.updateConfigValue((hdbTerms.CONFIG_PARAMS as any).APPS, apps);
 
 			return `Successfully deleted project: ${project}`;
 		}
@@ -300,7 +300,7 @@ async function dropCustomFunctionProject(req) {
 			new Error(),
 			HDB_ERROR_MSGS.DROP_FUNCTION_PROJECT,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -379,7 +379,7 @@ async function deployComponent(req) {
 			);
 		}
 
-		const applicationConfig = { package: req.package };
+		const applicationConfig: any = { package: req.package };
 		// Avoid writing an empty `install:` block
 		if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
 			applicationConfig.install = {
@@ -454,7 +454,7 @@ async function deployComponent(req) {
 			let lastError;
 			componentLoader.setErrorReporter((error) => (lastError = error));
 			emit('phase', { phase: 'load', status: 'start' });
-			await componentLoader.loadComponent(
+			await (componentLoader.loadComponent as any)(
 				application.dirPath,
 				pseudoResources,
 				undefined,
@@ -475,7 +475,7 @@ async function deployComponent(req) {
 		// before sending so peers see a clean req.
 		delete req.progress;
 		emit('phase', { phase: 'replicate', status: 'start' });
-		let response = await server.replication.replicateOperation(req);
+		let response: any = await server.replication.replicateOperation(req);
 		emit('phase', { phase: 'replicate', status: 'done' });
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
@@ -484,11 +484,11 @@ async function deployComponent(req) {
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
 			emit('phase', { phase: 'restart', status: 'start' });
-			const jobResponse = await serverUtilities.executeJob({
+			const jobResponse: any = await serverUtilities.executeJob({
 				operation: 'restart_service',
 				service: 'http',
 				replicated: true,
-			});
+			} as any);
 			emit('phase', { phase: 'restart', status: 'done' });
 
 			response.restartJobId = jobResponse.job_id;

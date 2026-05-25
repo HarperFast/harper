@@ -360,10 +360,5 @@ function createSearchTypeFromSearchObject(searchObject, hash_attribute, returnMa
 	}
 }
 
-export {
-	executeSearch,
-	createSearchTypeFromSearchObject,
-	prepSearch,
-	searchByType,
-	//	filterByType
-};
+export { executeSearch, createSearchTypeFromSearchObject, prepSearch, searchByType };
+export const filterByType: any = undefined; // placeholder: filterByType is not yet implemented

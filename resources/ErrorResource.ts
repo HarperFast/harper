@@ -18,8 +18,7 @@ function getErrorResource(): any {
 		_ErrorResource = class ErrorResource extends Resource {
 			error: Error;
 			constructor(error: Error) {
-				// @ts-expect-error - Resource constructor expects (id, source); this is a placeholder sentinel for error reporting
-				super(null, null);
+				super(null as any, null);
 				this.error = error;
 			}
 			isError = true;

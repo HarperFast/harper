@@ -67,7 +67,7 @@ function getTransactionAuditStorePath(schema, table) {
 	);
 }
 
-function getSchemaPath(schema, table) {
+function getSchemaPath(schema, table?: string | null) {
 	schema = schema.toString();
 	table = table ? table.toString() : table;
 	let schemaConfig = env.get(hdbTerms.CONFIG_PARAMS.DATABASES)?.[schema];

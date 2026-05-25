@@ -15,8 +15,7 @@ import _fs from 'fs-extra';
 const fs = _fs;
 import * as path from 'path';
 import streamChain from 'stream-chain';
-// @ts-expect-error - stream-chain types declare only the default callable but CJS exposes a `.chain` property too
-const chain = streamChain.chain ?? streamChain;
+const chain = (streamChain as any).chain ?? streamChain;
 import StreamArray from 'stream-json/streamers/StreamArray.js';
 import Batch from 'stream-json/utils/Batch.js';
 import comp from 'stream-chain/utils/comp.js';
@@ -581,7 +580,7 @@ async function callPapaParse(jsonMessage) {
 }
 
 function createTransformMap(schema, table) {
-	const attributes = databases[schema][table].attributes;
+	const attributes = (databases[schema][table] as any).attributes;
 	let mapOfTransforms = new Map(); // I don't know if this should be a Map, but this just makes a map of attributes with type coercions that we want
 	for (let attribute of attributes) {
 		if (attribute.type && !attribute.computed && !attribute.relationship)

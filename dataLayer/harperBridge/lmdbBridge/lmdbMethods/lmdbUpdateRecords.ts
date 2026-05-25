@@ -18,7 +18,7 @@ export default lmdbUpdateRecords;
  */
 async function lmdbUpdateRecords(updateObj) {
 	try {
-		let { schemaTable, attributes } = insertUpdateValidate(updateObj);
+		let { schema_table: schemaTable, attributes } = insertUpdateValidate(updateObj);
 
 		lmdbProcessRows(updateObj, attributes, schemaTable.hash_attribute);
 

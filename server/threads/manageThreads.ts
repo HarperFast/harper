@@ -16,8 +16,8 @@ import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.j
 import chokidar from 'chokidar';
 var isBun = typeof globalThis.Bun !== 'undefined';
 var MB = 1024 * 1024;
-var workers = []; // these are our child workers that we are managing
-var connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
+var workers: any[] = []; // these are our child workers that we are managing
+var connectedPorts: any[] = []; // these are all known connected worker ports (siblings, children, parents)
 var MAX_UNEXPECTED_RESTARTS = 50;
 var threadTerminationTimeout = 10000; // threads, you got 10 seconds to die
 var RESTART_TYPE = 'restart';
@@ -54,8 +54,8 @@ export {
 	setTerminateTimeout,
 };
 
-connectedPorts.onMessageByType = onMessageByType;
-connectedPorts.sendToThread = function (threadId, message) {
+(connectedPorts as any).onMessageByType = onMessageByType;
+(connectedPorts as any).sendToThread = function (threadId, message) {
 	if (!message?.type) throw new Error('A message with a type must be provided');
 	const port = connectedPorts.find((port) => port.threadId === threadId);
 	if (!port) return false;
@@ -128,7 +128,7 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE, null);
 
-function startWorker(path, options = {}) {
+function startWorker(path, options: any = {}) {
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -155,7 +155,7 @@ function startWorker(path, options = {}) {
 	const channelsToConnect = [];
 	const portsToSend = [];
 	for (let existingPort of connectedPorts) {
-		const channel = new MessageChannel();
+		const channel: any = new MessageChannel();
 		channel.existingPort = existingPort;
 		channelsToConnect.push(channel);
 		portsToSend.push(channel.port2);
@@ -178,7 +178,7 @@ function startWorker(path, options = {}) {
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
 
-	const worker = new Worker(isAbsolute(path) ? path : join(RUNTIME_SRC_ROOT, path), {
+	const worker: any = new Worker(isAbsolute(path) ? path : join(RUNTIME_SRC_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
 			maxYoungGenerationSizeMb: maxYoungMemory,
@@ -293,7 +293,7 @@ async function restartWorkers(
 			worker.wasShutdown = true;
 			worker.emit('shutdown', {});
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
-			let whenDone = new Promise((resolve) => {
+			let whenDone = new Promise<void>((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				let timeout = setTimeout(() => {
 					harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
@@ -316,7 +316,7 @@ async function restartWorkers(
 			waitingToFinish.push(whenDone);
 			if (overlapping && startReplacementThreads) {
 				let newWorker = worker.startCopy();
-				let whenStarted = new Promise((resolve) => {
+				let whenStarted = new Promise<void>((resolve) => {
 					const startListener = (message) => {
 						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
 							harperLogger.trace('Worker has started', newWorker.threadId);
@@ -353,7 +353,7 @@ async function restartWorkers(
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }
-async function shutdownWorkersNow(name) {
+async function shutdownWorkersNow(name?) {
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	if (isBun) {
 		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead
@@ -410,7 +410,7 @@ async function broadcast(message, includeSelf) {
 var awaitingResponses = new Map();
 var nextId = 1;
 function broadcastWithAcknowledgement(message) {
-	return new Promise((resolve) => {
+	return new Promise<void>((resolve) => {
 		let waitingCount = 0;
 		for (let port of connectedPorts) {
 			try {
@@ -519,10 +519,11 @@ var REPORTING_INTERVAL = 1000;
 if (parentPort && workerData?.addPorts) {
 	// Main thread always has threadId 0 (worker_threads convention). Stamp it on
 	// parentPort so sendToThread(0, ...) and similar lookups can route back to main.
+	// @ts-expect-error - stamping threadId on MessagePort for routing purposes
 	parentPort.threadId = 0;
 	addPort(parentPort);
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
-		let port = workerData.addPorts[i];
+		let port: any = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
 		addPort(port);
 	}
@@ -573,7 +574,7 @@ function removePort(port, deadThreadId) {
 	}
 }
 
-function addPort(port, keepRef) {
+function addPort(port, keepRef?) {
 	connectedPorts.push(port);
 	// Capture threadId now — Bun resets port.threadId to -1 by the time 'exit' fires.
 	const portThreadId = port.threadId;
@@ -632,7 +633,7 @@ if (isMainThread) {
 	let beforeRestart, queuedRestart;
 	let changedFiles = new Set();
 	const ignoredPaths = ['node_modules', '.git'];
-	const watchDir = async (dir, beforeRestartCallback) => {
+	const watchDir = async (dir, beforeRestartCallback?) => {
 		if (beforeRestartCallback) beforeRestart = beforeRestartCallback;
 		chokidar
 			.watch(dir, {
@@ -655,8 +656,7 @@ if (isMainThread) {
 	if (process.env.WATCH_DIR) watchDir(process.env.WATCH_DIR);
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
-		// @ts-expect-error - stash restartNumber on globalThis for cross-module access during shutdown
-		globalThis.restartNumber = message.restartNumber;
+		(globalThis as any).restartNumber = message.restartNumber;
 		parentPort.unref(); // remove this handle
 		setTimeout(() => {
 			harperLogger.warn('Thread did not voluntarily terminate', threadId);

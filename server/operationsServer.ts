@@ -57,7 +57,7 @@ export { operationsServer as startOnMainThread };
 /**
  * Builds a Harper server.
  */
-async function operationsServer(options: ServerOptions & { resources?: Resources }) {
+async function operationsServer(options: ServerOptions & { resources?: Resources } = {}) {
 	try {
 		harperLogger.debug('In Fastify server' + process.cwd());
 		harperLogger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);

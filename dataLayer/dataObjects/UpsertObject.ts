@@ -3,6 +3,11 @@ import { OPERATIONS_ENUM } from '../../utility/hdbTerms.ts';
  * object representing an UPSERT operation
  */
 class UpsertObject {
+	operation: string;
+	schema: string;
+	table: string;
+	records: any[];
+	__origin: any;
 	/**
 	 * @param {String} schema
 	 * @param {string} table

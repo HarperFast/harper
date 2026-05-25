@@ -53,7 +53,7 @@ async function syncSchemaMetadata(msg) {
 		let databases = resetDatabases();
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
-			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+			await (databases[msg.database][msg.table] as any).put(Symbol.for('write-verify'), null);
 	} catch (e) {
 		hdbLogger.error(e);
 	}
@@ -80,7 +80,7 @@ async function userHandler(event) {
 			return;
 		}
 
-		hdbLogger.trace(`ITC userHandler ${hdbTerms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
+		hdbLogger.trace(`ITC userHandler ${process.pid} received user event:`, event);
 		await userSchema.setUsersWithRolesCache();
 		for (let listener of userListeners) listener();
 	} catch (err) {
