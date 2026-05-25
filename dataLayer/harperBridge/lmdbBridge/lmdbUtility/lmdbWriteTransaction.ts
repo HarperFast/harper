@@ -30,7 +30,7 @@ async function writeTransaction(hdbOperation, lmdbResponse) {
 
 	let txnObject = createTransactionObject(hdbOperation, lmdbResponse);
 
-	if (txnObject === undefined || txnObject.hash_values.length === 0) {
+	if (txnObject === undefined || (txnObject as any).hash_values.length === 0) {
 		return;
 	}
 

@@ -22,7 +22,7 @@ async function getBackup(getBackupObj) {
 	let tables = getBackupObj.tables || (getBackupObj.table && [getBackupObj.table]);
 	if (tables) {
 		// if tables are specified, we have to copy the database with just the specified tables and then stream that
-		let tableClass = database[tables[0]];
+		let tableClass: any = database[tables[0]];
 		if (!tableClass) throw new Error(`Can not find table ${tables[0]}`);
 		// we use the attribute store to drive this process, finding the right stores to duplicate
 		let attributeStore = tableClass.dbisDB;
@@ -64,7 +64,7 @@ async function getBackup(getBackupObj) {
 			await copyDatabase(AUDIT_STORE_NAME, { ...AUDIT_STORE_OPTIONS });
 		}
 		await resolution;
-		let stream = createReadStream(backupRoot.path);
+		let stream: any = createReadStream((backupRoot as any).path);
 		stream.headers = getHeaders();
 		stream.on('close', () => {
 			readTxn.done();
@@ -72,21 +72,21 @@ async function getBackup(getBackupObj) {
 		});
 		return stream;
 	}
-	const firstTable = database[Object.keys(database)[0]];
-	const store = firstTable.primaryStore;
+	const firstTable: any = database[Object.keys(database)[0]];
+	const store: any = firstTable.primaryStore;
 
-	let fd = openSync(store.path);
+	let fd = openSync(store.path, 'r');
 	return store.transaction(() => {
 		let metaBuffers = Buffer.alloc(META_SIZE);
-		readSync(fd, metaBuffers, 0, META_SIZE); // sync, need to do this as fast as possible since we are in a write txn
+		readSync(fd, metaBuffers, 0, META_SIZE, null); // sync, need to do this as fast as possible since we are in a write txn
 		store.resetReadTxn(); // make sure we are not using a cached read transaction, force a fresh one
 		let readTxn = store.useReadTransaction(); // this guarantees the current transaction is preserved in the backup
 		// renew is necessary because normally renew is actually lazily called on the next db operation, but
 		// we are not performing any db operations
 		readTxn.renew();
 		// create a file stream that starts after the meta area
-		let fileStream = createReadStream(null, { fd, start: META_SIZE });
-		let stream = new Readable.from(
+		let fileStream = createReadStream(null as any, { fd, start: META_SIZE });
+		let stream: any = Readable.from(
 			(async function* () {
 				yield metaBuffers; // return the meta area that was frozen inside the write transaction
 				for await (const chunk of fileStream) {

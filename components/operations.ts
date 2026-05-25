@@ -88,7 +88,7 @@ function customFunctionsStatus() {
 			new Error(),
 			HDB_ERROR_MSGS.FUNCTION_STATUS,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -124,7 +124,7 @@ function getCustomFunctions() {
 			new Error(),
 			HDB_ERROR_MSGS.GET_FUNCTIONS,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -163,7 +163,7 @@ function getCustomFunction(req) {
 			new Error(),
 			HDB_ERROR_MSGS.GET_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -203,7 +203,7 @@ async function setCustomFunction(req) {
 			new Error(),
 			HDB_ERROR_MSGS.SET_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -243,7 +243,7 @@ async function dropCustomFunction(req) {
 			new Error(),
 			HDB_ERROR_MSGS.DROP_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -289,7 +289,7 @@ async function addComponent(req) {
 			new Error(),
 			HDB_ERROR_MSGS.ADD_FUNCTION,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -315,7 +315,7 @@ async function dropCustomFunctionProject(req) {
 	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 
-	let apps = env.get(hdbTerms.CONFIG_PARAMS.APPS);
+	let apps = env.get((hdbTerms.CONFIG_PARAMS as any).APPS);
 	if (!hdbUtils.isEmptyOrZeroLength(apps)) {
 		let appFound = false;
 		for (const [i, app] of apps.entries()) {
@@ -352,7 +352,7 @@ async function dropCustomFunctionProject(req) {
 			new Error(),
 			HDB_ERROR_MSGS.DROP_FUNCTION_PROJECT,
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			log.ERR,
+			undefined,
 			err
 		);
 	}
@@ -972,14 +972,14 @@ async function deployComponent(req) {
 		} else if (rollingRestart) {
 			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
 			emit('phase', { phase: 'restart', status: 'start' });
-			const jobResponse = await serverUtilities.executeJob({
+			const jobResponse: any = await serverUtilities.executeJob({
 				operation: 'restart_service',
 				service: 'http',
 				scope: manageThreads.encodeRestartScope(restartScope),
 				scopeFallback:
 					restartScope === undefined || restartScope === '*' ? undefined : manageThreads.encodeRestartScope(undefined),
 				replicated: true,
-			});
+			} as any);
 			emit('phase', { phase: 'restart', status: 'done' });
 
 			response.restartJobId = jobResponse.job_id;

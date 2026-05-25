@@ -1,4 +1,5 @@
-import * as pm2Utils from '../processManagement/processManagement.ts';
+import * as _pm2Utils from '../processManagement/processManagement.ts';
+const pm2Utils: any = _pm2Utils;
 import * as hdbTerms from '../hdbTerms.ts';
 
 /**

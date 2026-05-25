@@ -351,7 +351,7 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async deleteRecords(deleteObj) {
-		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getDatabases()[deleteObj.schema][deleteObj.table];
 		const context: Context = { user: deleteObj.hdb_user };
 		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
 		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
@@ -387,7 +387,7 @@ export class ResourceBridge extends BridgeMethods {
 	 * @returns {undefined}
 	 */
 	async deleteRecordsBefore(deleteObj) {
-		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getDatabases()[deleteObj.schema][deleteObj.table];
 		if (!Table.createdTimeProperty) {
 			throw new ClientError(
 				`Table must have a '__createdtime__' attribute or @createdTime timestamp defined to perform this operation`

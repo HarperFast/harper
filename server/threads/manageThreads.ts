@@ -221,8 +221,8 @@ export {
 	// types them from it, so only a value that cannot be built before the literal belongs here.
 };
 
-connectedPorts.onMessageByType = onMessageByType;
-connectedPorts.sendToThread = function (threadId, message) {
+(connectedPorts as any).onMessageByType = onMessageByType;
+(connectedPorts as any).sendToThread = function (threadId, message) {
 	if (!message?.type) throw new Error('A message with a type must be provided');
 	const port = connectedPorts.find((port) => port.threadId === threadId);
 	if (!port) return false;
@@ -536,7 +536,7 @@ function startWorker(path, options = {}) {
 	const channelsToConnect = [];
 	const portsToSend = [];
 	for (let existingPort of connectedPorts) {
-		const channel = new MessageChannel();
+		const channel: any = new MessageChannel();
 		channel.existingPort = existingPort;
 		channelsToConnect.push(channel);
 		portsToSend.push(channel.port2);
@@ -1495,12 +1495,13 @@ const REPORTING_INTERVAL = 1000;
 if (parentPort && workerData?.addPorts) {
 	// Main thread always has threadId 0 (worker_threads convention). Stamp it on
 	// parentPort so sendToThread(0, ...) and similar lookups can route back to main.
+	// @ts-expect-error - stamping threadId on MessagePort for routing purposes
 	parentPort.threadId = 0;
 	addPort(parentPort);
 	const osThreadId = getOsThreadId();
 	if (osThreadId !== undefined) parentPort.postMessage({ type: OS_THREAD_ID, osThreadId });
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
-		let port = workerData.addPorts[i];
+		let port: any = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
 		addPort(port, false, workerData.addPortIsJobWorkers?.[i]);
 	}

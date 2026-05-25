@@ -145,7 +145,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}
-	let tableObj = tables[table];
+	let tableObj: any = tables[table];
 	if (!tableObj)
 		throw handleHDBError(
 			new Error(),

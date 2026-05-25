@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as terms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import bridge from '../dataLayer/harperBridge/harperBridge.ts';
-import systemSchema from '../json/systemSchema.json' with { type: 'json' };
+import systemSchema from '../json/systemSchema.json';
 import CreateTableObject from '../dataLayer/CreateTableObject.ts';
 import * as initPaths from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';

@@ -1,4 +1,4 @@
-import systemSchema from '../json/systemSchema.json' with { type: 'json' };
+import systemSchema from '../json/systemSchema.json';
 import { promisify } from 'util';
 import { getDatabases } from '../resources/databases.ts';
 

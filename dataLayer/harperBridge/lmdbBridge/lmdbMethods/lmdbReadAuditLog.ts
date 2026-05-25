@@ -65,7 +65,7 @@ function searchTransactionsByTimestamp(env, timestamps = [0, Date.now()]) {
 
 	return timestampDbi
 		.getRange({ start: timestamps[0], end: nextValue })
-		.map(({ value }) => Object.assign(new LMDBTransactionObject(), value));
+		.map(({ value }) => Object.assign(Object.create(LMDBTransactionObject.prototype), value));
 }
 
 /**
@@ -191,7 +191,7 @@ function batchSearchTransactions(env, ids) {
 			try {
 				let value = timestampDbi.get(ids[x]);
 				if (value) {
-					let txnRecord = Object.assign(new LMDBTransactionObject(), value);
+					let txnRecord = Object.assign(Object.create(LMDBTransactionObject.prototype), value);
 					results.push(txnRecord);
 				}
 			} catch (e) {
