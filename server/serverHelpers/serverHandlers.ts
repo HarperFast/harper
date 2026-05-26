@@ -5,7 +5,9 @@ import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
 import { isMainThread } from 'worker_threads';
 import { Readable } from 'stream';
 
-import os from 'os';
+import _os from 'os';
+// Rewire-compat alias: unit tests inject `os` by name via rewire __set__
+let os = _os;
 
 import * as auth from '../../security/fastifyAuth.ts';
 

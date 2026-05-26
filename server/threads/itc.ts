@@ -2,7 +2,12 @@ import * as hdbUtils from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import { ITC_ERRORS } from '../../utility/errors/commonErrors.ts';
 import { threadId } from 'worker_threads';
-import { onMessageFromWorkers, broadcastWithAcknowledgement } from './manageThreads.ts';
+import {
+	onMessageFromWorkers,
+	broadcastWithAcknowledgement as _broadcastWithAcknowledgement,
+} from './manageThreads.ts';
+// Rewire-compat alias: unit tests inject `broadcastWithAcknowledgement` by name via rewire __set__
+let broadcastWithAcknowledgement = _broadcastWithAcknowledgement;
 
 export { sendItcEvent, validateEvent, SchemaEventMsg, UserEventMsg };
 let serverItcHandlers;
