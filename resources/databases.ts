@@ -159,23 +159,33 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
 	// configured; the WriteBufferManager is opt-in (0 disables).
 	//
+	// envGet may return values straight from process.env as strings (configUtils
+	// doesn't cast every code path), so we explicitly coerce numeric/boolean values
+	// here before passing them to the native binding.
+	//
 	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
 	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
 	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
 	// In practice that's fine — these come from process-level config that doesn't change.
-	const configuredBlockCacheSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE);
+	const toBool = (v: unknown): boolean | undefined => {
+		if (v == null) return undefined;
+		if (typeof v === 'boolean') return v;
+		if (typeof v === 'string') return v.toLowerCase() === 'true';
+		return Boolean(v);
+	};
+	const configuredBlockCacheSize = Number(envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE));
 	const blockCacheSize =
 		configuredBlockCacheSize > 0
 			? configuredBlockCacheSize
 			: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25;
-	const writeBufferManagerSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE);
-	const writeBufferManagerCostToCache = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE);
-	const writeBufferManagerAllowStall = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL);
+	const writeBufferManagerSize = Number(envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE));
+	const writeBufferManagerCostToCache = toBool(envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE));
+	const writeBufferManagerAllowStall = toBool(envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL));
 	RocksDatabase.config({
 		blockCacheSize,
 		...(writeBufferManagerSize > 0 ? { writeBufferManagerSize } : {}),
-		...(writeBufferManagerCostToCache != null ? { writeBufferManagerCostToCache } : {}),
-		...(writeBufferManagerAllowStall != null ? { writeBufferManagerAllowStall } : {}),
+		...(writeBufferManagerCostToCache !== undefined ? { writeBufferManagerCostToCache } : {}),
+		...(writeBufferManagerAllowStall !== undefined ? { writeBufferManagerAllowStall } : {}),
 	});
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
