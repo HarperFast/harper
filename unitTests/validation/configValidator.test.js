@@ -386,6 +386,75 @@ describe('Test configValidator module', () => {
 		);
 	});
 
+	describe('mcp config', () => {
+		it('validates clean when the mcp block is absent (profile off)', () => {
+			const result = configValidator(testUtils.deepClone(FAKE_CONFIG), true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.mcp).to.be.undefined;
+		});
+
+		it('applies the default mountPath when mcp.operations is present but empty', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: {} };
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.mcp.operations.mountPath).to.equal('/mcp');
+		});
+
+		it('validates clean when both profile blocks are supplied with full keys', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = {
+				operations: {
+					mountPath: '/mcp',
+					allow: ['describe_*', 'list_*'],
+					deny: [],
+					maxTools: 200,
+					rateLimit: {
+						perToolPerSecond: 10,
+						perToolBurst: 20,
+						sessionConcurrency: 25,
+						sessionPerSecond: 100,
+					},
+				},
+				application: {
+					mountPath: '/mcp',
+					allow: [],
+					deny: [],
+					maxTools: 500,
+					searchMaxResults: 100,
+					rateLimit: {
+						perToolPerSecond: 25,
+						perToolBurst: 50,
+						sessionConcurrency: 50,
+						sessionPerSecond: 200,
+					},
+				},
+				session: {
+					idleTimeoutSeconds: 1800,
+					allowClientDelete: true,
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('rejects mcp.operations.mountPath with a non-string', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { mountPath: 42 } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.mountPath' must be a string");
+		});
+
+		it('rejects mcp.operations.maxTools below 1', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { maxTools: 0 } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.maxTools' must be greater than or equal to 1");
+		});
+	});
+
 	// #629 (Phase 2 of #510): models config block.
 	describe('models config', () => {
 		function baseConfig() {

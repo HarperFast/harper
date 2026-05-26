@@ -25,6 +25,8 @@ import {
 } from './serverHelpers/serverHandlers.js';
 import { registerBunFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
+import { getConfigObj } from '../config/configUtils.js';
+import { registerMcpProfile } from '../components/mcp/index.ts';
 import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
 type ParsedSqlObject = any;
 import { generateJsonApi } from '../resources/openApi.ts';
@@ -182,6 +184,21 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 		},
 	});
 	registerContentHandlers(app);
+
+	// Presence-based enablement (matches Harper's `replication` convention):
+	// register iff `mcp.operations` is present in the merged config. The
+	// nested config tree from `getConfigObj()` is used directly here because
+	// Joi defaults under `mcp` are not propagated to env.get's flat map —
+	// only six hardcoded defaults are re-applied in configUtils.validateConfig.
+	const fullConfig = getConfigObj() ?? {};
+	if (fullConfig.mcp?.operations) {
+		registerMcpProfile({
+			profile: 'operations',
+			host: app,
+			config: fullConfig,
+			routeOptions: { preValidation: [authHandler] },
+		});
+	}
 
 	// Add a simple health check
 	app.get('/health', () => 'Harper is running.');

@@ -3739,30 +3739,31 @@ export function makeTable(options) {
 	function checkValidId(id) {
 		switch (typeof id) {
 			case 'number':
+				if (isNaN(id)) throw new ClientError('Invalid primary key of NaN', 400);
 				return true;
 			case 'string':
 				if (id.length < 659) return true; // max number of characters that can't expand our key size limit
 				if (id.length > MAX_KEY_BYTES) {
 					// we can quickly determine this is too big
-					throw new Error('Primary key size is too large: ' + id.length);
+					throw new ClientError('Primary key size is too large: ' + id.length, 400);
 				}
 				// TODO: We could potentially have a faster test here, Buffer.byteLength is close, but we have to handle characters < 4 that are escaped in ordered-binary
 				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
 			case 'object':
 				if (id === null) {
-					throw new Error('Invalid primary key of null');
+					throw new ClientError('Invalid primary key of null', 400);
 				}
 				break; // otherwise we have to test it
 			case 'bigint':
 				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
 				break; // otherwise we have to test it
 			default:
-				throw new Error('Invalid primary key type: ' + typeof id);
+				throw new ClientError('Invalid primary key type: ' + typeof id, 400);
 		}
 		// otherwise it is difficult to determine if the key size is too large
 		// without actually attempting to serialize it
 		const length = writeKey(id, TEST_WRITE_KEY_BUFFER, 0);
-		if (length > MAX_KEY_BYTES) throw new Error('Primary key size is too large: ' + id.length);
+		if (length > MAX_KEY_BYTES) throw new ClientError('Primary key size is too large: ' + id.length, 400);
 		return true;
 	}
 	function requestTargetToId(target: RequestTargetOrId): Id {

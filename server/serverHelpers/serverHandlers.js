@@ -8,13 +8,27 @@ const { isMainThread } = require('worker_threads');
 const { Readable } = require('stream');
 
 const os = require('os');
-const util = require('util');
 
 const auth = require('../../security/fastifyAuth.ts');
-const pAuthorize = util.promisify(auth.authorize);
+
+// this is a hack to suppress a deprecation warning and can be removed once `auth.authorize`
+// is converted to an async function
+function pAuthorize(req, resp) {
+	return new Promise((resolve, reject) => {
+		auth.authorize(req, resp, (err, user) => (err ? reject(err) : resolve(user)));
+	});
+}
+
 const serverUtilities = require('./serverUtilities.ts');
 const { applyImpersonation } = require('../../security/impersonation.ts');
 const { createGzip, constants } = require('zlib');
+const { ProgressEmitter, createSSEResponseStream } = require('./progressEmitter.ts');
+
+// Operations that support `Accept: text/event-stream` for live progress streaming. The
+// handler attaches a ProgressEmitter as req.body.progress so the operation can emit phase
+// events; the response body is the SSE-encoded emitter output. Non-SSE clients see the
+// historical single-response shape because progress is undefined on that path.
+const SSE_PROGRESS_OPERATIONS = new Set([terms.OPERATIONS_ENUM.DEPLOY_COMPONENT, terms.OPERATIONS_ENUM.GET_DEPLOYMENT]);
 
 const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
@@ -119,6 +133,25 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 		if (req.body.bypass_auth) delete req.body.bypass_auth;
 
 		operation_function = serverUtilities.chooseOperation(req.body);
+
+		// SSE progress branch — when the client asks for `text/event-stream` on an operation
+		// that supports it, run the operation in the background and stream events back as they
+		// happen. The progress emitter is attached to req.body so the operation handler can
+		// emit without changing its return signature; non-SSE callers leave `progress`
+		// undefined and the handler stays on its synchronous result path.
+		// Optional-chained `req.headers` because unit tests dispatch through this path with
+		// synthetic req shapes that don't set headers; production Fastify requests always do.
+		// `Accept` parsing only checks for the text/event-stream token; allow comma-separated
+		// values like `text/event-stream, application/json` and quality params per RFC 7231.
+		if (req.headers?.accept?.includes('text/event-stream') && SSE_PROGRESS_OPERATIONS.has(req.body.operation)) {
+			const emitter = new ProgressEmitter();
+			req.body.progress = emitter;
+			res.header('Content-Type', 'text/event-stream');
+			res.header('Cache-Control', 'no-cache');
+			res.header('X-Accel-Buffering', 'no'); // disable proxy buffering so events flush in real time
+			return createSSEResponseStream(emitter, () => serverUtilities.processLocalTransaction(req, operation_function));
+		}
+
 		let result = await serverUtilities.processLocalTransaction(req, operation_function);
 		if (result instanceof Readable && result.headers) {
 			for (let [name, value] of result.headers) {

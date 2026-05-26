@@ -66,6 +66,35 @@ export function configValidator(configJson, skipFsValidation = false) {
 		privateKey: pemFileConstraints,
 	});
 
+	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
+	// Presence-based enablement: a profile is on iff its sub-block exists in
+	// config (same convention as `replication`). No `enabled` field.
+	const mcpRateLimitSchema = Joi.object({
+		perToolPerSecond: number.min(0).optional(),
+		perToolBurst: number.min(0).optional(),
+		sessionConcurrency: number.min(0).optional(),
+		sessionPerSecond: number.min(0).optional(),
+	});
+	const mcpOperationsSchema = Joi.object({
+		mountPath: string.optional().default('/mcp'),
+		allow: array.items(string).optional(),
+		deny: array.items(string).optional(),
+		maxTools: number.min(1).optional(),
+		rateLimit: mcpRateLimitSchema.optional(),
+	});
+	const mcpApplicationSchema = mcpOperationsSchema.keys({
+		searchMaxResults: number.min(1).optional(),
+	});
+	const mcpSessionSchema = Joi.object({
+		idleTimeoutSeconds: number.min(1).optional(),
+		allowClientDelete: boolean.optional(),
+	});
+	const mcpSchema = Joi.object({
+		operations: mcpOperationsSchema.optional(),
+		application: mcpApplicationSchema.optional(),
+		session: mcpSessionSchema.optional(),
+	});
+
 	// Models — `models:` block opts a deployment into the per-backend registry.
 	// Per-backend shape is validated by a discriminated alternative on the
 	// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
@@ -264,6 +293,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			maxFreeSpaceToLoad: number.optional(),
 			maxFreeSpaceToRetain: number.optional(),
 		}).required(),
+		mcp: mcpSchema.optional(),
 		models: modelsSchema.optional(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),

@@ -6,7 +6,7 @@
  * conversion, empty hints handling, and response length limits.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
+import { strictEqual, ok, match } from 'node:assert/strict';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,7 +26,8 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
 			restart: true,
 		});
-		deepStrictEqual(deployBody, { message: 'Successfully deployed: early-hints, restarting Harper' });
+		strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
+		ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
 
 		// poll until /hints endpoint is registered and seed data is loaded
 		const seedDeadline = Date.now() + 60_000;

@@ -9,12 +9,21 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
-import { streamPackagedDirectory } from '../components/packageComponent.ts';
+import { streamPackagedDirectory, getPackagedDirectorySize } from '../components/packageComponent.ts';
 import { buildMultipartBody } from './multipartBuilder.ts';
+import { parseSSE } from './sseConsumer.ts';
+import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.js';
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
+
+// Operations whose responses should be consumed as text/event-stream so live phase events
+// (prepare, load, replicate, restart) render as they happen instead of after the whole
+// deploy completes. Add an operation here only after wiring its server-side
+// SSE_PROGRESS_OPERATIONS entry — otherwise the server returns the buffered JSON path and
+// the SSE parser sees no events.
+const SSE_OPERATIONS = new Set(['deploy_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
 // They never get serialized into the request body.
@@ -37,13 +46,17 @@ const PREPARE_OPERATION: any = {
 
 		const projectPath = process.cwd();
 		if (!req.project) req.project = path.basename(projectPath);
-		// Stream the tar+gzip directly to the server as the file part of a multipart body.
-		// This bypasses the Node Buffer 2 GB cap that the previous CBOR-encoded path was
-		// subject to, so large components can deploy without materializing in memory.
-		req._packageStream = streamPackagedDirectory(projectPath, {
+		const packageOptions = {
 			skip_node_modules: req.skip_node_modules !== false,
 			skip_symlinks: req.skip_symlinks === true,
-		});
+		};
+		// Store path + options for deferred stream creation after the renderer is set up,
+		// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
+		req._projectPath = projectPath;
+		req._packageOptions = packageOptions;
+		// Pre-walk the directory for an uncompressed-size estimate. Both the progress counter
+		// and this total are in uncompressed units so the bar tracks to 100% naturally.
+		req._uploadSizeEstimate = await getPackagedDirectorySize(projectPath, packageOptions);
 		req._multipart = true;
 	},
 };
@@ -191,38 +204,101 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
 		}
+		const useSse = SSE_OPERATIONS.has(req.operation);
+		if (useSse) {
+			options.headers.Accept = 'text/event-stream';
+			options.streamResponse = true;
+		}
+		// One renderer owns the (future) upload bar and the SSE event rendering for a
+		// multipart deploy. Created here so the upload-stream tap and the SSE consumer
+		// below share the same instance.
+		const renderer = req._multipart ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
 		let body;
 		if (req._multipart) {
-			const packageStream = req._packageStream;
+			// Create the package stream here — after the renderer exists — so we can pass
+			// renderer.countUploadBytes as the onBytes callback. Both progress and total are
+			// uncompressed bytes, so the bar tracks accurately to 100% without premature snapping.
+			const packageStream = streamPackagedDirectory(
+				req._projectPath,
+				req._packageOptions,
+				renderer ? (n) => renderer.countUploadBytes(n) : undefined
+			);
 			const fields = {};
 			for (const [key, value] of Object.entries(req)) {
 				if (key.startsWith('_') || TRANSPORT_ONLY_FIELDS.has(key)) continue;
 				fields[key] = value;
 			}
-			const multipart = buildMultipartBody(
-				fields,
-				packageStream
-					? { name: 'payload', filename: 'package.tar.gz', contentType: 'application/gzip', stream: packageStream }
-					: undefined
-			);
+			const multipart = buildMultipartBody(fields, {
+				name: 'payload',
+				filename: 'package.tar.gz',
+				contentType: 'application/gzip',
+				stream: packageStream,
+			});
 			options.headers['Content-Type'] = multipart.contentType;
 			// Use chunked transfer-encoding: we don't know the total size up front because the
 			// payload is streamed from `tar.pack` and never fully buffered.
 			options.headers['Transfer-Encoding'] = 'chunked';
-			body = multipart.stream;
+			// Tap the body so bytes flowing into the HTTP request advance the upload bar.
+			// The renderer's Transform is identity — chunks pass through unmodified.
+			body = renderer ? renderer.tapUploadStream(multipart.stream) : multipart.stream;
 		} else {
 			body = req;
 		}
 		let response: any = await httpRequest(options, body);
 
+		// endUpload() is called from the counter Transform's flush callback in tapUploadStream
+		// once all multipart bytes have flowed through. For SSE deploys, httpRequest resolves
+		// when response headers arrive (streamResponse: true), which happens before the full
+		// upload completes — calling endUpload() here would snap the bar prematurely.
+
 		let responseData;
-		try {
-			responseData = JSON.parse(response.body);
-		} catch {
-			responseData = {
-				status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
-				body: response.body,
-			};
+		if (useSse && response.headers['content-type']?.startsWith('text/event-stream')) {
+			// Consume SSE: render phase events live, capture the final result from the `done`
+			// event (or the error message from the `error` event). The HTTP status stays 200
+			// until end-of-stream; failures are signaled in-band.
+			let finalResult;
+			let sseError;
+			for await (const message of parseSSE(response)) {
+				renderer?.renderEvent(message);
+				if (message.event === 'done') {
+					try {
+						finalResult = JSON.parse(message.data)?.result;
+					} catch {
+						finalResult = message.data;
+					}
+				} else if (message.event === 'error') {
+					try {
+						sseError = JSON.parse(message.data);
+					} catch {
+						sseError = { message: message.data };
+					}
+				}
+			}
+			if (sseError) {
+				const errMsg = sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
+				console.error(`error: ${errMsg}`);
+				process.exit(1);
+			}
+			responseData = finalResult ?? { message: 'Deploy completed (no result payload).' };
+		} else {
+			// When useSse is true, httpRequest returns a raw IncomingMessage (streamResponse mode),
+			// so .body is undefined. Drain the stream to get the text (e.g. a 401 error body).
+			let bodyText: string;
+			if (useSse) {
+				const chunks: Buffer[] = [];
+				for await (const chunk of response as AsyncIterable<Buffer>) chunks.push(Buffer.from(chunk));
+				bodyText = Buffer.concat(chunks).toString('utf8');
+			} else {
+				bodyText = response.body;
+			}
+			try {
+				responseData = JSON.parse(bodyText);
+			} catch {
+				responseData = {
+					status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
+					body: bodyText,
+				};
+			}
 		}
 
 		let responseLog;

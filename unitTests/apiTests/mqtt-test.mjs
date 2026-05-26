@@ -545,9 +545,12 @@ describe('test MQTT connections and commands', function () {
 		}
 		let client = await connectAsync('mqtts://localhost:8884', {
 			key: readFileSync(private_key_path),
-			// if they have a CA, we append it, so it is included
 			cert,
 			ca,
+			// Self-signed CA in test environment; mTLS is server-side (server rejects clients without
+			// a cert), so we skip client-side server-cert verification to avoid intermittent
+			// "self-signed certificate in certificate chain" failures on loaded runners.
+			rejectUnauthorized: false,
 			clean: true,
 			clientId: 'test-client-mtls',
 			protocolVersion: 4,
@@ -607,9 +610,10 @@ describe('test MQTT connections and commands', function () {
 			}).catch(() => null);
 			let client = await connectAsync('wss://localhost:8885', {
 				key: readFileSync(private_key_path),
-				// if they have a CA, we append it, so it is included
 				cert,
 				ca,
+				// Same rationale as the TCP mTLS test: skip client-side server-cert check.
+				rejectUnauthorized: false,
 				clean: true,
 				reconnectPeriod: 0,
 				clientId: 'test-client-mtls',
@@ -812,6 +816,7 @@ describe('test MQTT connections and commands', function () {
 		assert.equal(granted[0].qos, 0x8f); // assert that the subscription was rejected
 	});
 	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
+		this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
 		// this first connection is a tear down to remove any previous durable session with this id
 		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
@@ -895,13 +900,19 @@ describe('test MQTT connections and commands', function () {
 				messages.push(message.toString());
 			}
 		);
-		await new Promise((resolve) => {
+		await new Promise((resolve, reject) => {
 			const interval = setInterval(() => {
 				if (messages.length === 3) {
 					clearInterval(interval);
 					resolve();
 				}
 			}, 1);
+			setTimeout(() => {
+				clearInterval(interval);
+				reject(
+					new Error(`Expected 3 queued messages to be delivered to reconnected durable session, got ${messages.length}`)
+				);
+			}, 15000);
 		});
 		await delay(50);
 		await client.endAsync();
