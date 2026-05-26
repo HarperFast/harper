@@ -52,6 +52,12 @@ interface TaggedLogger {
 
 `TaggedLogger` does not have a `withTag()` method.
 
+### Console Capture
+
+When `logging.console: true` is set, writes to `process.stdout` and `process.stderr` from component code are also written verbatim to the Harper log file. This includes anything written via `console.log`, `console.warn`, `console.error`, etc. Captured lines do not pass through `logger`'s level filter — they are appended as-is.
+
+Prefer `logger` directly in production code so that level filtering and tagging apply. Console capture is intended as a convenience for porting existing code and for debugging.
+
 ### Usage
 
 #### Basic logging with `logger`

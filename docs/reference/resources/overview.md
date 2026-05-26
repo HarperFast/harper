@@ -39,6 +39,8 @@ type MyTable @table {
 }
 ```
 
+`@export` on the schema type registers Harper's default table resource at `/MyTable`. When you extend the table in JavaScript and want your subclass to serve those endpoints instead, **omit `@export`** from the schema and let the exported JavaScript class own the URL. Leaving `@export` on the schema while also exporting a subclass with the same name produces conflicting endpoints. When overriding handlers, call `super.get/post/...` to preserve Harper's default behavior unless you intend to replace it entirely.
+
 > For more info on the schema API see [`Database / Schema`](../database/schema.md)
 
 Then, in a `resources.js` extend from the `tables.MyTable` global:
@@ -105,6 +107,17 @@ Resources are the true customization point for Harper. This is where the busines
 ## Exporting Resources as Endpoints
 
 Resources become HTTP/MQTT endpoints when they are exported. As the examples demonstrated if a Resource extends an existing table, make sure to not have conflicting exports between the schema and the JavaScript implementation. Alternatively, you can register resources programmatically using `server.resources.set()`. See [HTTP API](../http/api.md) for `server` API documentation.
+
+The shape of the export controls the resulting URL:
+
+| Export form                              | URL             | Notes                                                                        |
+| ---------------------------------------- | --------------- | ---------------------------------------------------------------------------- |
+| `export class Foo extends Resource {}`   | `/Foo/`         | The class name becomes the path segment. Path segments are case-sensitive.   |
+| `export const Bar = { Foo };`            | `/Bar/Foo/`     | Nest a class under an object to add a path prefix.                           |
+| `export const bar = { 'foo-baz': Foo };` | `/bar/foo-baz/` | Use object keys when you need lowercase, hyphens, or any non-identifier URL. |
+| `server.resources.set('my-path', Foo);`  | `/my-path/`     | Programmatic registration; useful when the path is dynamic.                  |
+
+URL path matching is case-sensitive — `/Foo/` and `/foo/` are different endpoints.
 
 ## Pages in This Section
 

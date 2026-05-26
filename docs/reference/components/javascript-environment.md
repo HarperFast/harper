@@ -30,6 +30,36 @@ npm link harper
 
 All installed components have `harper` automatically linked.
 
+## TypeScript Support
+
+Harper runs `.ts` files directly via Node.js's built-in [type stripping](https://nodejs.org/api/typescript.html#type-stripping). No build step or transpiler is required.
+
+Requirements and conventions:
+
+- **Node.js 22.6 or later.** Type stripping is unavailable on earlier versions.
+- **Use the `.ts` extension on the source files** referenced from `config.yaml`. The `jsResource` plugin loads `.js` and `.ts` files; point its `files` glob at the `.ts` files you want loaded:
+  ```yaml
+  jsResource:
+    files: 'resources/*.ts'
+  ```
+- **Use explicit `.ts` extensions in imports** between local modules. Node's loader does not resolve `'./helper'` to `'./helper.ts'`:
+  ```typescript
+  import { helper } from './helper.ts';
+  ```
+- **Only type-stripping is performed.** Enum values, namespaces with runtime semantics, and other features that require code transformation are not supported — declarations and type annotations are simply removed.
+
+Type imports from the `harper` package work as usual:
+
+```typescript
+import { type RequestTargetOrId, Resource, tables } from 'harper';
+
+export class MyResource extends Resource {
+	async get(target?: RequestTargetOrId): Promise<{ message: string }> {
+		return { message: 'Hello from TS' };
+	}
+}
+```
+
 ## Harper API
 
 The following objects and functions are available as exports from the `harper` package (and also available as global variables).

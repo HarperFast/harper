@@ -143,9 +143,12 @@ Extensions require an `extensionModule` option pointing to the extension source.
 
 ### Extensions
 
-- [`@harperdb/nextjs`](https://github.com/HarperDB/nextjs)
-- [`@harperdb/apollo`](https://github.com/HarperDB/apollo)
-- [`@harperdb/astro`](https://github.com/HarperDB/astro)
+- [`@harperdb/nextjs`](https://github.com/HarperDB/nextjs) — Run a Next.js application on Harper
+- [`@harperdb/apollo`](https://github.com/HarperDB/apollo) — Serve an Apollo GraphQL server backed by Harper
+- [`@harperdb/astro`](https://github.com/HarperDB/astro) — Run an Astro application on Harper
+- [`@harperfast/vite-plugin`](https://github.com/HarperFast/vite-plugin) — Develop and serve Vite-built front-ends from Harper, with HMR via `harper run`
+
+Each plugin owns its own documentation in its repository — refer to the linked README for installation, configuration, and version-specific details.
 
 ## Component Status Monitoring
 

@@ -89,6 +89,57 @@ Response:
 
 When both tokens have expired, call `create_authentication_tokens` again with your username and password.
 
+## Issuing Tokens from a Custom Resource
+
+Custom Resources can mint tokens programmatically by invoking the same operations via [`server.operation()`](../http/api.md#serveroperationoperation-context-authorize). This is useful when you want a Resource-style endpoint (e.g., `POST /IssueTokens`) instead of (or in addition to) the raw Operations API.
+
+```typescript
+import { Resource, server } from 'harper';
+
+export class IssueTokens extends Resource {
+	static async get(_target, context) {
+		// Caller is already authenticated (Basic Auth or an existing JWT) — issue
+		// tokens for the current user.
+		const { operation_token, refresh_token } = await server.operation(
+			{ operation: 'create_authentication_tokens' },
+			context,
+			true
+		);
+		return { operation_token, refresh_token };
+	}
+
+	static async post(_target, data) {
+		// Caller provides credentials in the body — issue tokens directly.
+		const { username, password } = await data;
+		if (!username || !password) {
+			return new Response('username and password required', { status: 400 });
+		}
+		const { operation_token, refresh_token } = await server.operation({
+			operation: 'create_authentication_tokens',
+			username,
+			password,
+		});
+		return { operation_token, refresh_token };
+	}
+}
+
+export class RefreshJWT extends Resource {
+	static async post(_target, data) {
+		const { refresh_token } = await data;
+		if (!refresh_token) {
+			return new Response('refresh_token required', { status: 400 });
+		}
+		const { operation_token } = await server.operation({
+			operation: 'refresh_operation_token',
+			refresh_token,
+		});
+		return { operation_token };
+	}
+}
+```
+
+Pass `authorize: true` (third argument) when the operation should run as the current authenticated user; omit it (or pass `false`) when the operation supplies its own credentials.
+
 ## Token Expiry Configuration
 
 Token timeouts are configurable in `harper-config.yaml` under the top-level `authentication` section:

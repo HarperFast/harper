@@ -480,6 +480,53 @@ Executes a Harper operations API call using this table as the target. Set `autho
 
 ---
 
+### `getCurrentUser(): User | undefined`
+
+Returns the user associated with the current request, or `undefined` if no user is authenticated. The returned object exposes the username, role, and `role.permission` flags.
+
+```javascript
+async get(target) {
+	const user = this.getCurrentUser();
+	if (!user) return new Response(null, { status: 401 });
+	return { username: user.username, role: user.role };
+}
+```
+
+---
+
+### Session and Login from a Resource
+
+The context returned by `getContext()` exposes `login` and `session` for handling sign-in/out flows in a custom Resource. Sessions require `authentication.enableSessions: true` in `harperdb-config.yaml`.
+
+```typescript
+export class SignIn extends Resource {
+	async post(_target, data) {
+		const context = this.getContext();
+		try {
+			await context.login(data.username, data.password);
+		} catch {
+			return new Response('Invalid credentials', { status: 403 });
+		}
+		return new Response('Logged in', { status: 200 });
+	}
+}
+
+export class SignOut extends Resource {
+	async post() {
+		const context = this.getContext();
+		if (!context.session) return new Response(null, { status: 401 });
+		await context.session.delete(context.session.id);
+		return new Response('Logged out', { status: 200 });
+	}
+}
+```
+
+`context.login(username, password)` verifies credentials and establishes the session cookie on success. To end a session, delete it via `context.session.delete(context.session.id)`.
+
+Cookie-based sessions are intended for browser clients. For non-browser clients (CLI tools, mobile apps, service-to-service), use JWT issuance — see [JWT Authentication](../security/jwt-authentication.md).
+
+---
+
 ## Resource Instance Methods
 
 A Resource instance is used to update and interact with a single record/resource. It provides functionality for updating properties, accessing property values, and managing record lifecycle. The Resource instance is normally retrieved from the static `update()` method. An instance from a table has updatable properties that can used to access and update individual properties (for properties declared in the table's schema), as well methods for more advanced updates and saving data. For example:
@@ -650,6 +697,7 @@ Special properties:
 
 - `$id` — Returns the primary key regardless of its name
 - `$updatedtime` — Returns the last-updated timestamp
+- `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
 
 ### `sort`
 

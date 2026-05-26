@@ -412,6 +412,37 @@ let results = Document.search({
 });
 ```
 
+### Filtering by Distance Threshold
+
+To return only records whose distance to a target vector is below a threshold, place `target` directly on the condition (alongside `comparator` and `value`). This returns matches within the threshold without using `sort`:
+
+```javascript
+let results = Document.search({
+	conditions: {
+		attribute: 'textEmbeddings',
+		comparator: 'lt',
+		value: 0.1,
+		target: searchVector,
+	},
+});
+```
+
+This form is useful when you want to bound result quality by a similarity cutoff rather than ranking by similarity.
+
+### Selecting the Distance
+
+Use the special `$distance` field in `select` to include the computed distance from the target vector in returned records:
+
+```javascript
+let results = Document.search({
+	select: ['name', '$distance'],
+	sort: { attribute: 'textEmbeddings', target: searchVector },
+	limit: 5,
+});
+```
+
+`$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries.
+
 ### HNSW Parameters
 
 | Parameter              | Default           | Description                                                                                         |

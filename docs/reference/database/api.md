@@ -197,9 +197,57 @@ await MyTable.put({ id: 'my-record', data: blob });
 
 ### `BlobOptions`
 
-| Option             | Type      | Default | Description                                                             |
-| ------------------ | --------- | ------- | ----------------------------------------------------------------------- |
-| `saveBeforeCommit` | `boolean` | `false` | Wait for the blob to be fully written before committing the transaction |
+| Option             | Type      | Default     | Description                                                                                                                  |
+| ------------------ | --------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `type`             | `string`  | `undefined` | MIME type to associate with the blob (e.g., `image/jpeg`, `audio/mpeg`). Readable via `blob.type` and used when serving HTTP |
+| `size`             | `number`  | `undefined` | Size of the data in bytes, if known ahead of time. Otherwise inferred from a buffer or determined as a stream completes      |
+| `saveBeforeCommit` | `boolean` | `false`     | Wait for the blob to be fully written before committing the transaction                                                      |
+| `compress`         | `boolean` | `false`     | Compress the stored data with deflate                                                                                        |
+| `flush`            | `boolean` | `false`     | Flush the file to disk after writing, before the `createBlob` promise chain resolves                                         |
+
+Example with MIME type:
+
+```javascript
+let blob = createBlob(imageBuffer, { type: 'image/jpeg' });
+await Photo.put({ id, data: blob });
+```
+
+### Accepting Binary in JSON Requests
+
+REST clients that can't post raw binary typically send base64 inside JSON. Decode in the resource override and wrap with `createBlob`, recording the MIME type so it round-trips on read:
+
+```typescript
+import { type RequestTargetOrId, tables, createBlob } from 'harper';
+
+export class Photo extends tables.Photo {
+	async post(target: RequestTargetOrId, record: any) {
+		if (record.data) {
+			record.data = createBlob(Buffer.from(record.data, record.encoding || 'base64'), {
+				type: record.contentType || 'application/octet-stream',
+			});
+		}
+		return super.post(target, record);
+	}
+}
+```
+
+### Serving Binary from a Resource
+
+Return a response object with the blob's MIME type in headers and the blob itself as the body. Harper will stream it to the client:
+
+```typescript
+async get(target: RequestTargetOrId) {
+	const record = await super.get(target);
+	if (record?.data) {
+		return {
+			status: 200,
+			headers: { 'Content-Type': record.data.type || 'application/octet-stream' },
+			body: record.data,
+		};
+	}
+	return record;
+}
+```
 
 ### Error Handling
 
