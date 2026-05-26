@@ -1,0 +1,11 @@
+{
+	"name": "acl-connect-with-sys",
+	"version": "1.0.0",
+	"type": "module",
+	"main": "resources.js",
+	"license": "Apache-2.0",
+	"dependencies": {
+		"@harperdb/acl-connect": "1.0.10",
+		"jsonwebtoken": "^9.0.2"
+	}
+}
