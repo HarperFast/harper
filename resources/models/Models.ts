@@ -20,7 +20,8 @@ import type {
 type CallMethod = ModelCallRecord['method'];
 
 /**
- * Public `scope.models` facade. One instance per `Scope`.
+ * Process-wide singleton. One shared instance serves all Scopes — `scope.models`,
+ * `global.models`, and `import { models } from 'harperdb'` all alias the same object.
  *
  * On every call:
  * - Resolves the configured backend via `backendRegistry`.
