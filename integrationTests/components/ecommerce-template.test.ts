@@ -11,7 +11,9 @@ import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } fr
 
 suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		await startHarper(ctx, {
+			config: { applications: { allowedSpawnCommands: ['npm', 'node', 'npx'] } },
+		});
 
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
