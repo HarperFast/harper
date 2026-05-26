@@ -681,20 +681,24 @@ export class HierarchicalNavigableSmallWorld {
 		if (!entryPoint) return;
 		const visited = new Set<number>();
 
-		// BFS from entry point to ensure all nodes are reachable
-		const queue = [entryPoint.id];
-		visited.add(entryPoint.id);
+		// BFS from entry point to ensure all nodes are reachable. Asymmetric stale neighbor
+		// references can survive deletes, so a referenced node may not actually exist anymore;
+		// only count a node as visited once we confirm the underlying record is present.
+		const queue: number[] = [entryPoint.id];
+		const enqueued = new Set<number>([entryPoint.id]);
 		let connections = 0;
 
 		while (queue.length > 0) {
 			const currentId = queue.shift()!;
-			const current = this.indexStore.getSync(currentId);
+			const current = this.safeGetSync(currentId);
+			if (!current) continue;
+			visited.add(currentId);
 
 			for (let level = startLevel; level <= current.level; level++) {
 				for (const { id: neighborId } of current[level] || []) {
 					connections++;
-					if (!visited.has(neighborId)) {
-						visited.add(neighborId);
+					if (!enqueued.has(neighborId)) {
+						enqueued.add(neighborId);
 						queue.push(neighborId);
 					}
 				}
