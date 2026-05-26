@@ -138,6 +138,99 @@ Default: `true`
 
 In-memory record caching of decoded records. Disable to reduce heap usage when records are large and unlikely to be re-read in the same process.
 
+## RocksDB Memory
+
+RocksDB uses two large native memory pools that Harper exposes for tuning: a shared **block cache** for hot SST blocks, and an optional **WriteBufferManager** that caps total memtable memory across every database in the process. These are RocksDB-specific — when `storage.engine` is `lmdb`, none of these options apply.
+
+For single-tenant deployments the defaults are appropriate. The knobs below are intended for shared-host or memory-constrained environments where multiple Harper databases coexist with other workloads and total memory must be bounded predictably.
+
+### `storage.rocks.blockCacheSize`
+
+<VersionBadge version="v5.1.0" />
+
+Type: `number` (bytes)
+
+Default: 25% of constrained (cgroup) or total memory
+
+The shared LRU cache for decompressed SST blocks. Every RocksDB database in the process draws from this single pool — sizing it correctly is a balance between read-cache hit rate and leaving room for memtables, the heap, and OS page cache.
+
+The default sizes the cache to 25% of available memory, computed once at startup. This is reasonable for single-tenant servers but can be excessive in multi-tenant deployments where the cache is rarely filled and the unused capacity contributes to the process's idle-state memory floor (the cache itself does not shrink on idle — entries persist until LRU eviction or a manual `SetCapacity` change).
+
+```yaml
+storage:
+  rocks:
+    blockCacheSize: 268435456 # 256 MB
+```
+
+Lower the cache size when:
+
+- Multiple Harper instances or other memory-heavy processes share the host.
+- Read access patterns favor warm data far smaller than 25% of memory.
+- The instance is provisioned with a strict cgroup limit and the headroom is needed for memtables or application heap.
+
+Raise it (or leave at the default) when reads dominate and the working set is large.
+
+### `storage.rocks.writeBufferManagerSize`
+
+<VersionBadge version="v5.1.0" />
+
+Type: `number` (bytes)
+
+Default: `0` (disabled)
+
+When set, Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history used by [OptimisticTransactionDB](./storage-algorithm.md) for conflict checking — is capped at this size across the entire process.
+
+Without a `WriteBufferManager`, each column family manages its own memtable budget. For databases with many tables (column families), this can grow unbounded: every column family retains roughly `max_write_buffer_size_to_maintain` worth of recently-flushed memtables for snapshot reads and conflict detection, so a 14-table database can hold 1–2 GB of resident anonymous memory before any cap is reached.
+
+Enabling the manager bounds that growth at a single configurable limit:
+
+```yaml
+storage:
+  rocks:
+    writeBufferManagerSize: 268435456 # 256 MB total memtable budget
+```
+
+The manager affects new databases opened after it is configured; existing open databases retain whatever budget they were attached with.
+
+### `storage.rocks.writeBufferManagerCostToCache`
+
+<VersionBadge version="v5.1.0" />
+
+Type: `boolean`
+
+Default: `false`
+
+When `true`, memtable memory tracked by the `WriteBufferManager` is **charged against the block cache** as pinned cache entries. The block cache and write buffers then share a single accounting pool, visible through one operational metric (`rocksdb.block-cache-usage`).
+
+This does not let the cache "shrink" to make room for writes — pinned entries cannot be evicted by LRU — but it unifies observability and bounds the combined memory footprint when `writeBufferManagerSize` is at or below `blockCacheSize`.
+
+Has no effect when `storage.rocks.writeBufferManagerSize` is `0` or when the block cache is disabled.
+
+```yaml
+storage:
+  rocks:
+    blockCacheSize: 536870912 # 512 MB
+    writeBufferManagerSize: 268435456 # 256 MB
+    writeBufferManagerCostToCache: true
+```
+
+### `storage.rocks.writeBufferManagerAllowStall`
+
+<VersionBadge version="v5.1.0" />
+
+Type: `boolean`
+
+Default: `false`
+
+Controls behavior when memtable memory reaches `writeBufferManagerSize`:
+
+- `false` (soft cap) — Memtables may briefly exceed the limit. RocksDB compensates by flushing more aggressively. Writes proceed without latency spikes; total memory may temporarily overshoot during bursts.
+- `true` (hard cap) — Writes are stalled until flushes free up memory. Total memtable memory is strictly bounded; write latency can spike during bursts.
+
+Use the default (`false`) for most workloads. Enable stalling only when a strict OOM-prevention guarantee is required and the application can tolerate occasional write-latency spikes.
+
+This option is the only `WriteBufferManager` setting that can be changed at runtime — `costToCache` is fixed at first creation.
+
 ## Storage Reclamation
 
 `storage.reclamation` controls how Harper evicts data from caching tables (tables with [`sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options)) when disk usage runs high. Reclamation does **not** affect non-caching tables — those rely on explicit deletion, TTL expiration, or [compaction](./compaction.md).
