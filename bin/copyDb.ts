@@ -545,9 +545,8 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return;
 			} catch (err) {
-				const retriesLeft = retries;
 				console.error(
-					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retriesLeft} retries left):`,
+					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
 					err
 				);
 				if (typeof start === 'string') {
