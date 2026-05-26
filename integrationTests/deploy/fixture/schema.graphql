@@ -1,0 +1,4 @@
+type Simple @table @export {
+	id: Long @primaryKey
+	name: String
+}

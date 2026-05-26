@@ -1,7 +1,7 @@
 'use strict';
 
 const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');
-const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
 
 module.exports = {
 	flush,

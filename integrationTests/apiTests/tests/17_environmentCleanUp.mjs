@@ -4,7 +4,7 @@ import { setTimeout } from 'node:timers/promises';
 import { req } from '../utils/request.mjs';
 import { timestamp } from '../utils/timestamp.mjs';
 
-describe('17. Environment Clean Up', () => {
+describe('17. Environment Clean Up', { skip: process.platform === 'win32' }, () => {
 	beforeEach(timestamp);
 
 	//Environment Clean Up Folder

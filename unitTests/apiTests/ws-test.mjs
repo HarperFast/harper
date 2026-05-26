@@ -24,17 +24,13 @@ describe('test WebSockets connections and messaging', () => {
 		if (ws2) ws2.close();
 	});
 	it('ping echo server', async function () {
-		let resolver;
 		ws1.send(
 			JSON.stringify({
 				action: 'ping',
 			})
 		);
 		let message = await new Promise((resolve) => {
-			resolver = resolve;
-			ws1.on('message', (message) => {
-				resolver(JSON.parse(message));
-			});
+			ws1.once('message', (msg) => resolve(JSON.parse(msg)));
 		});
 		assert.equal(message.action, 'ping');
 		ws1.send(
@@ -43,12 +39,11 @@ describe('test WebSockets connections and messaging', () => {
 			})
 		);
 		message = await new Promise((resolve) => {
-			resolver = resolve;
+			ws1.once('message', (msg) => resolve(JSON.parse(msg)));
 		});
 		assert.equal(message.action, 'another ping');
 	});
 	it('ping echo server with content type', async function () {
-		let resolver;
 		let ws = new WebSocket('ws://localhost:9926/Echo.msgpack');
 		await new Promise((resolve, reject) => {
 			ws.on('open', resolve);
@@ -59,11 +54,9 @@ describe('test WebSockets connections and messaging', () => {
 		});
 		ws.send(encoded);
 		let message = await new Promise((resolve) => {
-			resolver = resolve;
-			ws.on('message', (message) => {
-				resolver(unpack(message));
-			});
+			ws.once('message', (msg) => resolve(unpack(msg)));
 		});
+		ws.close();
 		assert.equal(message.action, 'ping');
 	});
 	it('ping echo EventSource', async function () {

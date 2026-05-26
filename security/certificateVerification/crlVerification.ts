@@ -20,7 +20,6 @@ import {
 import { ERROR_CACHE_TTL, CRL_DEFAULT_VALIDITY_PERIOD, CRL_USER_AGENT } from './verificationConfig.ts';
 import type {
 	CertificateVerificationResult,
-	CertificateVerificationContext,
 	CertificateCacheEntry,
 	CRLCheckResult,
 	CRLConfig,
@@ -82,6 +81,10 @@ class CertificateRevocationListSource extends Resource {
 			};
 		} catch (error) {
 			logger.error?.(`CRL fetch error for: ${distributionPoint} - ${error}`);
+
+			if (error instanceof CRLSignatureVerificationError) {
+				throw error;
+			}
 
 			// Check failure mode
 			if (config.failureMode === 'fail-closed') {
@@ -228,12 +231,12 @@ export async function verifyCRL(
 		const cacheKey = createCacheKey(certPemStr, issuerPemStr, 'crl');
 
 		// Pass certificate data as context - Harper will make it available as requestContext in the source
-		const cacheEntry = await (getCertificateCacheTable() as any).get(cacheKey, {
+		const cacheEntry = await (getCertificateCacheTable() as any).get(cacheKey, undefined, {
 			certPem: certPemStr,
 			issuerPem: issuerPemStr,
 			distributionPoint: distributionPoints[0], // Use first distribution point for CRL fetch
 			config: { crl: config ?? {} },
-		} as CertificateVerificationContext);
+		} as any);
 
 		if (!cacheEntry) {
 			// This should not happen if the source is configured correctly but handle it gracefully
@@ -258,6 +261,10 @@ export async function verifyCRL(
 		};
 	} catch (error) {
 		logger.error?.(`CRL verification error: ${error}`);
+
+		if (error instanceof CRLSignatureVerificationError) {
+			return { valid: false, status: 'error', error: (error as Error).message, method: 'crl' };
+		}
 
 		// Check failure mode
 		if (config.failureMode === 'fail-closed') {
@@ -488,7 +495,7 @@ async function downloadAndParseCRL(
 		}
 
 		// Parse and validate the CRL
-		const crl = pkijs.CertificateRevocationList.fromBER(crlDerBuffer);
+		const crl = pkijs.CertificateRevocationList.fromBER(crlDerBuffer as any);
 
 		// Verify CRL signature
 		const issuerCert = pkijs.Certificate.fromBER(pemToBuffer(issuerPemStr));

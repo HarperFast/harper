@@ -319,7 +319,7 @@ function createTestScript() {
  * Test CRL verification manually
  */
 
-const { verifyCRL } = require('../../../security/certificateVerification/index.ts');
+const { verifyCRL } = require('../../../security/certificateVerification/index.js');
 const { readFileSync } = require('fs');
 const { join } = require('path');
 

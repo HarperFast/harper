@@ -2,16 +2,16 @@ import { getSuperUser } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.ts';
-import { table } from '../resources/databases.ts';
+import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
-import * as env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent, AuthAuditLog } = harperLogger;
 import serverHandlers from '../server/itc/serverHandlers.js';
 const { user } = serverHandlers;
 import { Headers } from '../server/serverHelpers/Headers.ts';
-import { convertToMS } from '../utility/common_utils.js';
+import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 const authLogger = forComponent('authentication');
@@ -24,11 +24,14 @@ const appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
 const operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
 const operationsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
 
-const sessionTable = table({
+const _sessionTable = table<Table>({
 	table: 'hdb_session',
 	database: 'system',
 	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
 });
+function getSessionTable() {
+	return _sessionTable;
+}
 const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
 // check the environment for a flag to bypass authentication (for testing) since it doesn't necessarily get set on child threads
 let AUTHORIZE_LOCAL =
@@ -45,8 +48,10 @@ server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
 	authorizationCache = new Map();
 });
+let bypassUser: any;
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
+	bypassUser = { username: 'bypass', role: { role: 'super_user', permission: { super_user: true } } };
 }
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
@@ -98,7 +103,7 @@ export async function authentication(request, nextHandler) {
 				if (cookie.startsWith(cookiePrefix)) {
 					const end = cookie.indexOf(';');
 					sessionId = cookie.slice(cookiePrefix.length, end === -1 ? cookie.length : end);
-					session = await sessionTable.get(sessionId);
+					session = await getSessionTable().get(sessionId);
 					break;
 				}
 			}
@@ -114,10 +119,10 @@ export async function authentication(request, nextHandler) {
 				request.method,
 				request.pathname
 			);
-			log.auth_strategy = strategy;
-			if (sessionId) log.session_id = sessionId;
-			if (headers['referer']) log.referer = headers['referer'];
-			if (headers['origin']) log.origin = headers['origin'];
+			(log as any).auth_strategy = strategy;
+			if (sessionId) (log as any).session_id = sessionId;
+			if (headers['referer']) (log as any).referer = headers['referer'];
+			if (headers['origin']) (log as any).origin = headers['origin'];
 
 			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
 			else authEventLog.error?.(log);
@@ -242,10 +247,13 @@ export async function authentication(request, nextHandler) {
 			// or should this be cached in the session?
 			request.user = await server.getUser(session.user, null, request);
 		} else if (
+			(AUTHORIZE_LOCAL && bypassUser) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
 			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
-			(request?._nodeRequest?.socket?.server?._pipeName && request.ip === undefined) // allow socket domain
+			(request?._nodeRequest?.socket?.server?._pipeName &&
+				request?._nodeRequest?.socket?.server?.bypassLocalAuth &&
+				request.ip === undefined) // allow operations API domain socket
 		) {
-			request.user = await getSuperUser();
+			request.user = bypassUser ?? (await getSuperUser());
 		}
 		if (ENABLE_SESSIONS) {
 			request.session.update = function (updatedSession) {
@@ -303,7 +311,7 @@ export async function authentication(request, nextHandler) {
 					}
 				}
 				updatedSession.id = sessionId;
-				return sessionTable.put(updatedSession, {
+				return getSessionTable().put(updatedSession, {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 				});
 			};
@@ -344,20 +352,21 @@ export async function authentication(request, nextHandler) {
 		return response;
 	}
 }
-let started;
-export function start({ server, port, securePort }) {
-	server.http(authentication, port || securePort ? { port, securePort } : { port: 'all' });
-	// keep it cleaned out periodically
-	if (!started) {
-		started = true;
-		setInterval(() => {
-			authorizationCache = new Map();
-		}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
-		user.addListener(() => {
-			authorizationCache = new Map();
-		});
-	}
+setInterval(() => {
+	authorizationCache = new Map();
+}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
+user.addListener(() => {
+	authorizationCache = new Map();
+});
+let started = false;
+export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+	if (started) return;
+	started = true;
+	const { port, securePort }: any = scope.options.getAll() as { port?: number; securePort?: number };
+	const httpOpts = port || securePort ? ({ port, securePort } as any) : ({ port: 'all' } as any);
+	scope.server.http(authentication, httpOpts);
 }
+
 // operations
 export async function login(loginObject) {
 	if (!loginObject.baseRequest?.login) throw new Error('No session for login');

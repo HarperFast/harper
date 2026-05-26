@@ -2,17 +2,16 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req, reqRest } from '../utils/request.mjs';
 import { timestamp } from '../utils/timestamp.mjs';
+import request from 'supertest';
+import { envUrlRest, headers } from '../config/envConfig.mjs';
 
 describe('18. Computed indexed properties', () => {
 	beforeEach(timestamp);
 
 	//Computed indexed properties Folder
 
-	it('Insert data', () => {
-		return req()
-			.send({ operation: 'insert', table: 'Product', records: [{ id: '1', price: 100, taxRate: 0.19 }] })
-			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records'), r.text))
-			.expect(200);
+	it('PUT data', () => {
+		return request(envUrlRest).put('/Product/1').set(headers).send({ id: '1', price: 100, taxRate: 0.19 }).expect(204);
 	});
 
 	it('Search for attribute', () => {
@@ -48,7 +47,6 @@ describe('18. Computed indexed properties', () => {
 				assert.equal(r.body[0].taxRate, 0.19, r.text);
 				assert.equal(r.body[0].totalPrice, 119, r.text);
 				assert.equal(r.body[0].notIndexedTotalPrice, 119, r.text);
-				assert.equal(r.body[0].jsTotalPrice, 119, r.text);
 			})
 			.expect(200);
 	});

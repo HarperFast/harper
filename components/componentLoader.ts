@@ -1,9 +1,18 @@
 import { onMessageByType } from '../server/threads/manageThreads.js';
-import { readdirSync, readFileSync, existsSync, realpathSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import {
+	readdirSync,
+	readFileSync,
+	existsSync,
+	lstatSync,
+	realpathSync,
+	mkdirSync,
+	rmSync,
+	symlinkSync,
+} from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
-import * as env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME, ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import * as graphqlHandler from '../resources/graphql.ts';
@@ -12,23 +21,21 @@ import * as roles from '../resources/roles.ts';
 import * as jsHandler from '../resources/jsResource.ts';
 import * as login from '../resources/login.ts';
 import * as REST from '../server/REST.ts';
-import * as fastifyRoutesHandler from '../server/fastifyRoutes.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
-import harperLogger from '../utility/logging/harper_logger.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
-import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
 import { table } from '../resources/databases.ts';
-import { startSocketServer } from '../server/threads/socketRouter.ts';
-import { getHdbBasePath } from '../utility/environment/environmentManager.js';
-import * as operationsServer from '../server/operationsServer.ts';
+import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, getConfigPath } from '../config/configUtils.js';
-import { createReuseportFd } from '../server/serverHelpers/Request.ts';
+import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -82,17 +89,18 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 	});
 }
 
-export const TRUSTED_RESOURCE_PLUGINS = {
+export const TRUSTED_RESOURCE_PLUGINS: any = {
 	REST, // for backwards compatibility with older configs
 	rest: REST,
 	graphql: graphqlQueryHandler,
 	graphqlSchema: graphqlHandler,
 	roles,
 	jsResource: jsHandler,
-	fastifyRoutes: fastifyRoutesHandler,
+	get fastifyRoutes() {
+		return require('../server/fastifyRoutes');
+	},
 	login,
 	static: staticFiles,
-	operationsApi: operationsServer,
 	customFunctions: {},
 	http: httpComponent,
 	authentication: auth,
@@ -105,6 +113,19 @@ export const TRUSTED_RESOURCE_PLUGINS = {
 	login: ...
 	 */
 };
+if (isMainThread) {
+	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
+} else {
+	// The HTTP operations API itself only binds in the main thread, but worker threads still
+	// dispatch operations — most notably, the replication WebSocket handler in workers receives
+	// inter-node operations like `add_node_back` and calls `server.operation(...)`. That requires
+	// `server.operation` / `server.registerOperation` to be wired up here too, and the operation
+	// function map to be initialized, BEFORE component plugins (replication, etc.) load and call
+	// `server.registerOperation?.({...})` at their module top level. Requiring serverUtilities
+	// directly (rather than the full operationsServer) avoids binding the fastify HTTP layer in
+	// workers while still installing the dispatch machinery.
+	require('../server/serverHelpers/serverUtilities');
+}
 
 for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
@@ -112,7 +133,6 @@ for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 
 const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
 
-const portsStarted = [];
 export const loadedPaths = new Map();
 let errorReporter;
 export function setErrorReporter(reporter) {
@@ -150,23 +170,26 @@ function symlinkHarperModule(componentDirectory: string) {
 
 				// validate harper module
 				const harperModule = join(nodeModulesDir, 'harper');
-				if (existsSync(harperModule)) {
-					if (realpathSync(harperModule) !== realpathSync(PACKAGE_ROOT)) {
-						// if it exists but is incorrectly linked, fix it
-						rmSync(harperModule, { recursive: true, force: true });
-						// create link to harper module
-						symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
-					}
-				} else {
-					// create link to harper module
+				let harperModuleLinked = false;
+				try {
+					lstatSync(harperModule); // throws ENOENT if absent; succeeds even for dangling symlinks
+					harperModuleLinked = realpathSync(harperModule) === realpathSync(PACKAGE_ROOT);
+				} catch {}
+				if (!harperModuleLinked) {
+					rmSync(harperModule, { recursive: true, force: true });
 					symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
 				}
 				// if there is a harperdb module, fix that too
 				const harperdbModule = join(nodeModulesDir, 'harperdb');
-				if (existsSync(harperdbModule) && realpathSync(harperdbModule) !== realpathSync(PACKAGE_ROOT)) {
-					// if it exists but is incorrectly linked, fix it
+				let harperdbModulePresent = false;
+				let harperdbModuleLinked = false;
+				try {
+					lstatSync(harperdbModule);
+					harperdbModulePresent = true;
+					harperdbModuleLinked = realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
+				} catch {}
+				if (harperdbModulePresent && !harperdbModuleLinked) {
 					rmSync(harperdbModule, { recursive: true, force: true });
-					// create link to harper module
 					symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
 				}
 
@@ -274,7 +297,7 @@ export async function loadComponent(
 		autoReload,
 		appName,
 	} = options;
-	applicationScope.verifyPath ??= componentDirectory;
+	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {
 		let config;
@@ -291,6 +314,12 @@ export async function loadComponent(
 			config = DEFAULT_CONFIG;
 		}
 		applicationScope.config ??= config;
+
+		// #629 (Phase 2 of #510): populate the model-backend registry from the root
+		// config's `models:` block before any user `handleApplication(scope)` runs,
+		// so `scope.models.embed(...)` works from app-init code as well as Resource
+		// methods. Per-entry errors are logged and skipped by `bootstrapModels`.
+		if (isRoot) bootstrapModels(config);
 
 		if (!isRoot) {
 			try {
@@ -326,8 +355,13 @@ export async function loadComponent(
 
 			let extensionModule: any;
 			const pkg = componentConfig.package;
+			const loadComponentOption = componentConfig.loadComponent ?? 'always';
 			try {
 				if (pkg) {
+					if (loadComponentOption === 'dev-only' && !process.env.DEV_MODE) {
+						componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' skipped (dev-only)`);
+						continue;
+					}
 					let componentPath: string | null = null;
 					if (isRoot) {
 						componentPath = join(componentDirectory, 'components', componentName);
@@ -344,7 +378,7 @@ export async function loadComponent(
 						}
 					}
 					if (componentPath) {
-						subApplicationScope.verifyPath ??= componentPath;
+						subApplicationScope.allowedPath ??= realpathSync(componentPath);
 						if (!process.env.HARPER_SAFE_MODE) {
 							extensionModule = await loadComponent(componentPath, resources, origin, {
 								isRoot: false,
@@ -354,6 +388,12 @@ export async function loadComponent(
 							});
 							componentFunctionality[componentName] = true;
 						}
+					} else if (loadComponentOption === 'if-installed') {
+						componentLifecycle.loaded(
+							componentStatusName,
+							`Component '${componentStatusName}' skipped (not installed)`
+						);
+						continue;
 					} else {
 						throw new Error(`Unable to find package ${componentName}:${pkg}`);
 					}
@@ -442,22 +482,8 @@ export async function loadComponent(
 							...componentConfig,
 						})) || extensionModule;
 					if (isRoot && network) {
-						for (const possiblePort of [port, securePort]) {
-							try {
-								if (+possiblePort && !portsStarted.includes(possiblePort)) {
-									const sessionAffinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
-									if (sessionAffinity)
-										harperLogger.warn('Session affinity is not recommended and may cause memory leaks');
-									if (sessionAffinity || !createReuseportFd) {
-										// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
-										portsStarted.push(possiblePort);
-										startSocketServer(possiblePort, sessionAffinity);
-									}
-								}
-							} catch (error) {
-								console.error('Error listening on socket', possiblePort, error, componentName);
-							}
-						}
+						if (env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY))
+							harperLogger.warn('Session affinity is not supported and will be ignored');
 					}
 				}
 				if (resources.isWorker)
@@ -504,10 +530,16 @@ export async function loadComponent(
 		}
 
 		compName = parentCompName;
-		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watchesSetup && autoReload) {
-			watchDir(componentDirectory, async () => {
-				return loadComponentDirectories(); // return the promise
+			let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+			subscribeToRestartRequests(() => {
+				if (debounceTimer) clearTimeout(debounceTimer);
+				debounceTimer = setTimeout(async () => {
+					debounceTimer = null;
+					resetRestartNeeded();
+					await loadComponentDirectories();
+					restartWorkers();
+				}, 500);
 			});
 		}
 		if ((config.extensionModule || config.pluginModule) && (!isMainThread || config.runOnMainThread)) {

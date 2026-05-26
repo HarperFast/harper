@@ -1,8 +1,8 @@
 'use strict';
 
 const assert = require('assert');
-const environment_utility = require('#js/utility/lmdb/environmentUtility');
-const search_utility = require('#js/utility/lmdb/searchUtility');
+const environment_utility = require('#src/utility/lmdb/environmentUtility');
+const search_utility = require('#src/utility/lmdb/searchUtility');
 
 module.exports = verifyTxn;
 

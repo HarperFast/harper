@@ -4,13 +4,13 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
-const config_val = rewire('#js/validation/configValidator');
+const config_val = rewire('#src/validation/configValidator');
 const { configValidator, routesValidator } = config_val;
 const path = require('path');
 const testUtils = require('../testUtils.js');
 const fs = require('fs-extra');
 const os = require('os');
-const logger = require('#js/utility/logging/harper_logger');
+const logger = require('#src/utility/logging/harper_logger');
 
 const HDB_ROOT = path.join(__dirname, 'carrot');
 
@@ -384,5 +384,395 @@ describe('Test configValidator module', () => {
 		expect(helpers.message.args[0][0]).to.equal(
 			"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'"
 		);
+	});
+
+	describe('mcp config', () => {
+		it('validates clean when the mcp block is absent (profile off)', () => {
+			const result = configValidator(testUtils.deepClone(FAKE_CONFIG), true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.mcp).to.be.undefined;
+		});
+
+		it('applies the default mountPath when mcp.operations is present but empty', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: {} };
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.mcp.operations.mountPath).to.equal('/mcp');
+		});
+
+		it('validates clean when both profile blocks are supplied with full keys', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = {
+				operations: {
+					mountPath: '/mcp',
+					allow: ['describe_*', 'list_*'],
+					deny: [],
+					maxTools: 200,
+					rateLimit: {
+						perToolPerSecond: 10,
+						perToolBurst: 20,
+						sessionConcurrency: 25,
+						sessionPerSecond: 100,
+					},
+				},
+				application: {
+					mountPath: '/mcp',
+					allow: [],
+					deny: [],
+					maxTools: 500,
+					searchMaxResults: 100,
+					rateLimit: {
+						perToolPerSecond: 25,
+						perToolBurst: 50,
+						sessionConcurrency: 50,
+						sessionPerSecond: 200,
+					},
+				},
+				session: {
+					idleTimeoutSeconds: 1800,
+					allowClientDelete: true,
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('rejects mcp.operations.mountPath with a non-string', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { mountPath: 42 } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.mountPath' must be a string");
+		});
+
+		it('rejects mcp.operations.maxTools below 1', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { maxTools: 0 } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.maxTools' must be greater than or equal to 1");
+		});
+	});
+
+	// #629 (Phase 2 of #510): models config block.
+	describe('models config', () => {
+		function baseConfig() {
+			return testUtils.deepClone(FAKE_CONFIG);
+		}
+
+		it('validates clean when the models block is absent', () => {
+			const result = configValidator(baseConfig(), true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.models).to.be.undefined;
+		});
+
+		it('accepts an empty models block', () => {
+			const config = baseConfig();
+			config.models = {};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('accepts an ollama embedding entry with host + model', () => {
+			const config = baseConfig();
+			config.models = {
+				embedding: {
+					default: { backend: 'ollama', host: 'localhost:11434', model: 'nomic-embed-text' },
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('accepts a generative entry with requestTimeoutMs', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: {
+					fast: { backend: 'ollama', model: 'llama3.2', requestTimeoutMs: 30000 },
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('rejects entries missing a backend discriminator', () => {
+			const config = baseConfig();
+			config.models = { embedding: { default: { model: 'm' } } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include('backend');
+		});
+
+		it('rejects a non-numeric requestTimeoutMs', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', requestTimeoutMs: 'soon' } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+		});
+
+		it('rejects a negative requestTimeoutMs', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', requestTimeoutMs: -1 } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+		});
+
+		it('rejects requestTimeoutMs: 0 (omit the field for "no timeout")', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', requestTimeoutMs: 0 } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+		});
+
+		it('rejects unknown fields inside a model entry (typo guard)', () => {
+			const config = baseConfig();
+			config.models = {
+				generative: { default: { backend: 'ollama', model: 'm', bakend: 'oops' } },
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include('bakend');
+		});
+
+		it('accepts multiple logical names per kind', () => {
+			const config = baseConfig();
+			config.models = {
+				embedding: {
+					default: { backend: 'ollama', model: 'm1' },
+					high_quality: { backend: 'ollama', model: 'm2' },
+				},
+				generative: {
+					default: { backend: 'ollama', model: 'g1' },
+					fast: { backend: 'ollama', model: 'g2' },
+				},
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		// #630 (Phase 3): openai-specific discriminated schema.
+		describe('openai backend', () => {
+			it('accepts an openai entry with apiKey + model', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'openai', apiKey: 'sk-test', model: 'gpt-4o-mini' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('accepts a ${ENV_VAR} placeholder as the apiKey value (resolved at bootstrap)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'openai', apiKey: '${OPENAI_API_KEY}', model: 'gpt-4o-mini' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('accepts baseUrl and organization on openai entries', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						azure: {
+							backend: 'openai',
+							apiKey: 'sk-test',
+							model: 'gpt-4o',
+							baseUrl: 'https://my-azure.openai.azure.com/openai/v1',
+							organization: 'org-abc',
+						},
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('rejects openai entry missing apiKey', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'openai', model: 'gpt-4o-mini' } },
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('apiKey');
+			});
+
+			it('rejects ollama-specific field (host) on an openai entry', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'openai', apiKey: 'sk-test', model: 'gpt-4o-mini', host: 'oops' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('host');
+			});
+
+			it('rejects openai-specific field (apiKey) on an ollama entry', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						default: { backend: 'ollama', model: 'm', apiKey: 'wrong-backend' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('apiKey');
+			});
+
+			it('allows ollama and openai entries side by side', () => {
+				const config = baseConfig();
+				config.models = {
+					embedding: {
+						'default': { backend: 'ollama', model: 'nomic-embed-text' },
+						'high-quality': { backend: 'openai', apiKey: 'sk-test', model: 'text-embedding-3-large' },
+					},
+					generative: {
+						default: { backend: 'openai', apiKey: 'sk-test', model: 'gpt-4o-mini' },
+						fast: { backend: 'ollama', model: 'llama3.2' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('passes through an unknown backend (bootstrap handles at runtime)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'future-backend', model: 'whatever', anyField: 'goes' } },
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+		});
+
+		// #633 (Phase 6): anthropic + bedrock schemas.
+		describe('anthropic backend', () => {
+			it('accepts an anthropic entry with apiKey + model', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						claude: { backend: 'anthropic', apiKey: 'sk-ant-test', model: 'claude-opus-4-7' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('accepts a ${ENV_VAR} placeholder as the apiKey value', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						claude: { backend: 'anthropic', apiKey: '${ANTHROPIC_API_KEY}', model: 'claude-opus-4-7' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('rejects an anthropic entry missing apiKey', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { claude: { backend: 'anthropic', model: 'claude-opus-4-7' } },
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('apiKey');
+			});
+
+			it('rejects an openai-only field (organization) on an anthropic entry', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						claude: { backend: 'anthropic', apiKey: 'sk-ant', model: 'claude', organization: 'oops' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('organization');
+			});
+		});
+
+		describe('bedrock backend', () => {
+			it('accepts a bedrock entry with region + model (no apiKey — AWS SDK chain)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						'bedrock-claude': {
+							backend: 'bedrock',
+							region: 'us-east-1',
+							model: 'anthropic.claude-opus-4-v1:0',
+						},
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('accepts a bedrock embedding entry (Titan)', () => {
+				const config = baseConfig();
+				config.models = {
+					embedding: {
+						titan: { backend: 'bedrock', region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' },
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+
+			it('rejects an apiKey field on a bedrock entry (AWS SDK chain only)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: {
+						claude: {
+							backend: 'bedrock',
+							region: 'us-east-1',
+							model: 'anthropic.claude',
+							apiKey: 'oops',
+						},
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('apiKey');
+			});
+		});
+
+		describe('all four backends side by side', () => {
+			it('validates a config with ollama + openai + anthropic + bedrock entries', () => {
+				const config = baseConfig();
+				config.models = {
+					embedding: {
+						local: { backend: 'ollama', model: 'nomic-embed-text' },
+						hq: { backend: 'openai', apiKey: '${OPENAI_KEY}', model: 'text-embedding-3-large' },
+						titan: { backend: 'bedrock', region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' },
+					},
+					generative: {
+						'local-llm': { backend: 'ollama', model: 'llama3.2' },
+						'gpt': { backend: 'openai', apiKey: '${OPENAI_KEY}', model: 'gpt-4o-mini' },
+						'claude': { backend: 'anthropic', apiKey: '${ANTHROPIC_KEY}', model: 'claude-opus-4-7' },
+						'bedrock-claude': {
+							backend: 'bedrock',
+							region: 'us-east-1',
+							model: 'anthropic.claude-opus-4-v1:0',
+						},
+					},
+				};
+				const result = configValidator(config, true);
+				expect(result.error).to.be.undefined;
+			});
+		});
 	});
 });

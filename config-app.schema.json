@@ -50,6 +50,16 @@
 				}
 			},
 			"required": ["files"]
+		},
+		"package": {
+			"type": "string",
+			"description": "Package identifier for the application (npm-compatible or git URL)."
+		},
+		"loadComponent": {
+			"type": "string",
+			"description": "Conditional package loading option.",
+			"enum": ["always", "if-installed", "dev-only"],
+			"default": "always"
 		}
 	},
 	"additionalProperties": true,

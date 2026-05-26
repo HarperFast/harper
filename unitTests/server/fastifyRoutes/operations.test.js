@@ -9,7 +9,7 @@ const tar = require('tar-fs');
 const testUtils = require('../../testUtils.js');
 testUtils.getMockTestPath();
 const operations = rewire('#js/components/operations');
-const env = require('#js/utility/environment/environmentManager');
+const env = require('#src/utility/environment/environmentManager');
 const { expect } = chai;
 const configUtils = require('#js/config/configUtils');
 
@@ -468,6 +468,25 @@ describe('Test custom functions operations', () => {
 			const updated_file = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
 			expect(updated_file.message).to.eql('im the new payload');
 			expect(result.message).to.equal('Successfully set component: config.yaml');
+		});
+
+		it('Test getComponentFile rejects files over the default 5 MB limit', async () => {
+			const largeFilePath = path.join(CF_DIR_ROOT, 'my-other-component', 'large-file.bin');
+			// Write exactly one byte over the 5 MB default limit
+			await fs.writeFile(largeFilePath, Buffer.alloc(5 * 1024 * 1024 + 1));
+			try {
+				let threw = false;
+				try {
+					await operations.getComponentFile({ project: 'my-other-component', file: 'large-file.bin' });
+				} catch (err) {
+					threw = true;
+					expect(err.statusCode).to.equal(413);
+					expect(err.message).to.match(/exceeds the configured limit/);
+				}
+				expect(threw).to.be.true;
+			} finally {
+				await fs.remove(largeFilePath);
+			}
 		});
 	});
 

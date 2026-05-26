@@ -1,0 +1,58 @@
+name: Claude Mention Handler
+
+# Thin caller of the reusable in HarperFast/ai-review-prompts. The
+# single `uses:` ref pin below controls everything that moves
+# together — workflow logic, parse + auth scripts, agent prompt.
+# Bumping the pin is the entire upgrade motion.
+#
+# Pre-requisites (org-level secrets, configured once on HarperFast):
+#   - HARPERFAST_AI_CLIENT_ID       (the App's Client ID, like Iv23li…)
+#   - HARPERFAST_AI_APP_PRIVATE_KEY (.pem file contents)
+#
+# Plus the per-repo / inherited:
+#   - ANTHROPIC_API_KEY             (required)
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+concurrency:
+  group: claude-mention-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  mention:
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-mention.yml@6463b3da6326f0ca4646fb6b5139c2ecf92130f6 # main 2026-05-06 (post #11/#12/#14)
+    with:
+      # Same SHA as the `uses:` ref above. The reusable uses this to
+      # check out HarperFast/ai-review-prompts (parse + auth scripts)
+      # at the same ref as the workflow logic itself.
+      #
+      # The duplication is unavoidable: reusable workflows can't
+      # introspect their own ref (`github.workflow_ref` resolves to
+      # the CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
+      # is parsed literally so we can't interpolate a variable.
+      ai-review-prompts-ref: 6463b3da6326f0ca4646fb6b5139c2ecf92130f6
+      repo-specific-conventions: |
+        ## Harper core notes
+
+        - Linter is **oxlint**, not eslint. `npm run lint` runs
+          oxlint. Don't add eslint config or invoke `eslint` directly.
+        - Primary storage engine is **RocksDB**; LMDB is supported
+          via `HARPER_STORAGE_ENGINE=lmdb`. Changes affecting storage
+          should work on both.
+        - **TypeStrip-compatible** (`erasableSyntaxOnly`) — avoid
+          TypeScript features that break typestrip (non-type-only
+          type imports, parameter property initialization).
+        - **`dependencies.md`** documents all npm packages and their
+          justifications; keep it in sync with `package.json` when
+          adding a runtime dep.
+        - **Build tolerance (`tsc || true`)** is NOT used here —
+          Harper core's build should pass cleanly. Treat type errors
+          as real failures.
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      HARPERFAST_AI_CLIENT_ID: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+      HARPERFAST_AI_APP_PRIVATE_KEY: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}

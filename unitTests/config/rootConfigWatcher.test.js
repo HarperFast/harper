@@ -3,7 +3,7 @@ const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { tmpdir } = require('node:os');
 const { once } = require('node:events');
 const { join } = require('node:path');
-const { writeFileSync, mkdtempSync, rmSync } = require('node:fs');
+const { writeFileSync, mkdtempSync, rmSync, renameSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
 const { replace, fake, restore, spy } = require('sinon');
 const configUtils = require('#js/config/configUtils');
@@ -55,5 +55,24 @@ describe('RootConfigWatcher', () => {
 			undefined,
 			'RootConfigWatcher should not have a config property after close() is called'
 		);
+	});
+
+	it('should detect changes written via temp-file + rename (atomic write)', async () => {
+		const initial = { foo: 'bar' };
+		writeFileSync(this.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+
+		const [readyValue] = await configWatcher.ready;
+		assert.deepEqual(readyValue, initial, 'watcher should pick up initial config');
+
+		const updated = { foo: 'baz' };
+		const tempPath = `${this.configFilePath}.${process.pid}.${Date.now()}.tmp`;
+		writeFileSync(tempPath, stringify(updated));
+		renameSync(tempPath, this.configFilePath);
+
+		const [changeValue] = await once(configWatcher, 'change');
+		assert.deepEqual(changeValue, updated, 'watcher should fire change after atomic rename');
+
+		configWatcher.close();
 	});
 });

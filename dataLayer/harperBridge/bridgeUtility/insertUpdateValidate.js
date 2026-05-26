@@ -1,9 +1,9 @@
 'use strict';
 
-const hdbUtils = require('../../../utility/common_utils.js');
-const log = require('../../../utility/logging/harper_logger.js');
+const hdbUtils = require('../../../utility/common_utils.ts');
+const log = require('../../../utility/logging/harper_logger.ts');
 const { getDatabases } = require('../../../resources/databases.ts');
-const { ClientError } = require('../../../utility/errors/hdbError.js');
+const { ClientError } = require('../../../utility/errors/hdbError.ts');
 
 module.exports = insertUpdateValidate;
 
@@ -12,7 +12,7 @@ module.exports = insertUpdateValidate;
 /**
  * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
  * @param {Object} writeObject
- * @returns {Promise<{tableSchema, hashes: any[], attributes: string[]}>}
+ * @returns {{schema_table: any, hashes: any[], attributes: string[]}}
  */
 function insertUpdateValidate(writeObject) {
 	// Need to validate these outside of the validator as the getTableSchema call will fail with

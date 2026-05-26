@@ -2,8 +2,11 @@
 
 const chai = require('chai');
 const sinon = require('sinon');
+const sinon_chai = require('sinon-chai').default;
+const rewire = require('rewire');
+chai.use(sinon_chai);
 const { expect } = chai;
-const hdb_logger = require('#js/utility/logging/harper_logger');
+const hdb_logger = require('#src/utility/logging/harper_logger');
 const itc_utils = require('#js/server/threads/itc');
 
 describe('Test itcUtils module', () => {
@@ -41,6 +44,42 @@ describe('Test itcUtils module', () => {
 		it('Test missing originator error returned', () => {
 			const result = itc_utils.validateEvent({ type: 'table', message: { operation: 'create_table' } });
 			expect(result).to.equal("ITC event message missing 'originator' property");
+		});
+	});
+
+	describe('Test sendItcEvent function', () => {
+		let itc_rewired;
+		let broadcast_stub;
+
+		before(() => {
+			itc_rewired = rewire('#js/server/threads/itc');
+			broadcast_stub = sinon.stub().resolves();
+			itc_rewired.__set__('broadcastWithAcknowledgement', broadcast_stub);
+		});
+
+		afterEach(() => {
+			broadcast_stub.resetHistory();
+		});
+
+		it('sets originator on message when called from main thread', () => {
+			const event = { type: 'schema', message: { operation: 'create_schema' } };
+			itc_rewired.sendItcEvent(event);
+			expect(event.message.originator).to.not.equal(undefined);
+			expect(broadcast_stub).to.have.been.calledOnce;
+		});
+
+		it('sets originator to threadId regardless of isMainThread value', () => {
+			const event = { type: 'schema', message: { operation: 'create_schema' } };
+			const { threadId } = require('node:worker_threads');
+			itc_rewired.sendItcEvent(event);
+			expect(event.message.originator).to.equal(threadId);
+		});
+
+		it('does not set originator when message is absent', () => {
+			const event = { type: 'schema' };
+			itc_rewired.sendItcEvent(event);
+			expect(event.originator).to.equal(undefined);
+			expect(broadcast_stub).to.have.been.calledOnce;
 		});
 	});
 

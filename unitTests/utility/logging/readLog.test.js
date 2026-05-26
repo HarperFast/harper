@@ -1,6 +1,6 @@
 'use strict';
 
-const env_mangr = require('#js/utility/environment/environmentManager');
+const env_mangr = require('#src/utility/environment/environmentManager');
 env_mangr.initTestEnvironment();
 const sinon = require('sinon');
 const chai = require('chai');
@@ -9,7 +9,8 @@ const path = require('path');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const testUtils = require('../../testUtils.js');
-const read_log = rewire('#js/utility/logging/readLog');
+const read_log = rewire('#src/utility/logging/readLog');
+const readLogFunction = read_log.default || read_log;
 const hdb_terms = require('#src/utility/hdbTerms');
 
 const LOG_DIR_TEST = 'testLogger';
@@ -73,12 +74,14 @@ describe('Test readLog module', () => {
 		});
 
 		beforeEach(() => {
-			getConfigPath_rw = read_log.__set__('getConfigPath', (key) => {
-				if (key === hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) {
-					return TEST_LOG_DIR;
-				}
+			getConfigPath_rw = read_log.__set__('configUtils_js_1', {
+				getConfigPath: (key) => {
+					if (key === hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) {
+						return TEST_LOG_DIR;
+					}
+				},
 			});
-			validator_rw = read_log.__set__('validator', validator_stub);
+			validator_rw = read_log.__set__('readLogValidator_ts_1', { default: validator_stub });
 		});
 
 		after(() => {
@@ -99,7 +102,10 @@ describe('Test readLog module', () => {
 				start: 'pancake',
 			};
 
-			await testUtils.testHDBError(read_log(test_request), testUtils.generateHDBError("'start' must be a number", 400));
+			await testUtils.testHDBError(
+				readLogFunction(test_request),
+				testUtils.generateHDBError("'start' must be a number", 400)
+			);
 		});
 
 		it('Test no filter with correct number of logs returned', async () => {
@@ -107,7 +113,7 @@ describe('Test readLog module', () => {
 				operation: 'read_log',
 				log_name: LOG_NAME_TEST,
 			};
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(35);
 		});
@@ -145,7 +151,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(3);
 			expect(result).to.eql(expected_logs);
@@ -171,7 +177,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(1);
 			expect(result).to.eql(expected_logs);
@@ -202,7 +208,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(2);
 			expect(result).to.eql(expected_logs);
@@ -227,7 +233,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(1);
 			expect(result).to.eql(expected_logs);
@@ -258,7 +264,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(2);
 			expect(result).to.eql(expected_logs);
@@ -284,7 +290,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(1);
 			expect(result).to.eql(expected_logs);
@@ -350,7 +356,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(7);
 			expect(result).to.eql(expected_logs);
@@ -395,7 +401,7 @@ describe('Test readLog module', () => {
 					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 			];
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(4);
 			expect(result).to.eql(expected_logs);
@@ -446,7 +452,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(5);
 			expect(result).to.eql(expected_logs);
@@ -498,7 +504,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(5);
 			expect(result).to.eql(expected_logs);
@@ -550,7 +556,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(5);
 			expect(result).to.eql(expected_logs);
@@ -564,7 +570,7 @@ describe('Test readLog module', () => {
 				log_name: LOG_NAME_TEST,
 			};
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result).to.be.empty;
 		});
@@ -628,7 +634,7 @@ describe('Test readLog module', () => {
 				},
 			];
 
-			const result = await read_log(test_request);
+			const result = await readLogFunction(test_request);
 
 			expect(result.length).to.equal(7);
 			expect(result).to.eql(expected_logs);

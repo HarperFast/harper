@@ -1,11 +1,12 @@
 'use strict';
 
-const hUtils = require('../../../../utility/common_utils.js');
+const hUtils = require('../../../../utility/common_utils.ts');
 const hdbTerms = require('../../../../utility/hdbTerms.ts');
-const logger = require('../../../../utility/logging/harper_logger.js');
+const logger = require('../../../../utility/logging/harper_logger.ts');
 const lmdbCreateAttribute = require('../lmdbMethods/lmdbCreateAttribute.js');
-const LMDBCreateAttributeObject = require('./LMDBCreateAttributeObject.js');
-const signalling = require('../../../../utility/signalling.js');
+const LMDBCreateAttributeObject =
+	require('./LMDBCreateAttributeObject.js').default || require('./LMDBCreateAttributeObject.js');
+const signalling = require('../../../../utility/signalling.ts');
 const { SchemaEventMsg } = require('../../../../server/threads/itc.js');
 
 const ATTRIBUTE_ALREADY_EXISTS = 'already exists in';

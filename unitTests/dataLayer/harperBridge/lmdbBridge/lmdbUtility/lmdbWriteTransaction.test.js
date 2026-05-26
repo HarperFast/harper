@@ -8,31 +8,31 @@ const BASE_PATH = testUtils.setupTestDBPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
 const lmdb_create_txn_envs = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const lmdb_write_txn = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const rw_lmdb_write_txn = rewire('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
-const search_util = require('#js/utility/lmdb/searchUtility');
+const search_util = require('#src/utility/lmdb/searchUtility');
 
-const env_mngr = require('#js/utility/environment/environmentManager');
+const env_mngr = require('#src/utility/environment/environmentManager');
 
 const create_transaction_object_func = rw_lmdb_write_txn.__get__('createTransactionObject');
 
-const CreateTableObject = require('#js/dataLayer/CreateTableObject');
+const CreateTableObject = require('#src/dataLayer/CreateTableObject');
 
 const assert = require('assert');
 const fs = require('fs-extra');
-const common = require('#js/utility/lmdb/commonUtility');
+const common = require('#src/utility/lmdb/commonUtility');
 
-const InsertObject = require('#js/dataLayer/InsertObject');
-const UpdateObject = require('#js/dataLayer/UpdateObject');
-const UpsertObject = require('#js/dataLayer/UpsertObject');
-const DeleteObject = require('#js/dataLayer/DeleteObject');
+const InsertObject = require('#src/dataLayer/InsertObject');
+const UpdateObject = require('#src/dataLayer/UpdateObject');
+const UpsertObject = require('#src/dataLayer/UpsertObject');
+const DeleteObject = require('#src/dataLayer/DeleteObject');
 
-const InsertRecordsResponseObject = require('#js/utility/lmdb/InsertRecordsResponseObject');
-const UpdateRecordsResponseObject = require('#js/utility/lmdb/UpdateRecordsResponseObject');
-const UpsertRecordsResponseObject = require('#js/utility/lmdb/UpsertRecordsResponseObject');
-const DeleteRecordsResponseObject = require('#js/utility/lmdb/DeleteRecordsResponseObject');
+const InsertRecordsResponseObject = require('#src/utility/lmdb/InsertRecordsResponseObject');
+const UpdateRecordsResponseObject = require('#src/utility/lmdb/UpdateRecordsResponseObject');
+const UpsertRecordsResponseObject = require('#src/utility/lmdb/UpsertRecordsResponseObject');
+const DeleteRecordsResponseObject = require('#src/utility/lmdb/DeleteRecordsResponseObject');
 
 const LMDBInsertTransactionObject = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject');
 const LMDBUpdateTransactionObject = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpdateTransactionObject');

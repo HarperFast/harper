@@ -1,4 +1,5 @@
 import { logger } from '../utility/logging/logger.ts';
+import { Session, url as inspectorURL } from 'node:inspector';
 const MAX_EVENT_DELAY_TIME = 3000;
 const DEFAULT_MAX_QUEUE_TIME = 20_000; // 20 seconds
 let lastWarning = 0;
@@ -71,3 +72,20 @@ setInterval(() => {
 	}
 	lastEventQueueCheck = now;
 }, EVENT_QUEUE_MONITORING_INTERVAL).unref();
+
+// Reset lastEventQueueCheck if we are resuming from the debugger
+// so the event loop lag check ignores breakpoint pauses
+setTimeout(() => {
+	// wait for any debugger to register and then see if the inspector/debugger is actually enabled
+	if (inspectorURL()) {
+		const session = new Session();
+		session.connect();
+		session.post('Debugger.enable');
+		session.on('inspectorNotification', ({ method }) => {
+			if (method === 'Debugger.resumed') {
+				// reset if we are resuming
+				lastEventQueueCheck = performance.now();
+			}
+		});
+	}
+}, 1);

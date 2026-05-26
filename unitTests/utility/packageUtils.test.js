@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { join } = require('node:path');
 const { readFileSync } = require('node:fs');
 
-const packageUtils = require('#js/utility/packageUtils');
+const packageUtils = require('#src/utility/packageUtils');
 
 // Compare the fs resolved package.json to an absolute resolution from this test file.
 // These tests will fail if this test file changes location.

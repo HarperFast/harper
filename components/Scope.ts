@@ -1,11 +1,12 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'node:events';
 import { databaseEventsEmitter } from '../resources/databases.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { resources, type Resources } from '../resources/Resources.ts';
+import { Models } from '../resources/models/Models.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
@@ -49,6 +50,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	server?: Server;
 	ready: Promise<any[]>;
 	databaseEvents: typeof databaseEventsEmitter;
+	models: Models;
 
 	constructor(
 		appName: string,
@@ -63,12 +65,36 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#pluginName = pluginName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
-		this.#logger = logger || loggerWithTag(this.#appName);
+		this.#logger = loggerWithTag(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
 		this.resources = applicationScope?.resources ?? resources;
-		this.server = applicationScope?.server ?? server;
+		this.models = new Models();
+
+		const baseServer = applicationScope?.server ?? server;
+		const scopeRef = this;
+		// Wrap server so http/request/ws/upgrade calls automatically carry this plugin's name,
+		// urlPath, and host — enabling routing and before/after dependencies on named middleware.
+		this.server = new Proxy(baseServer, {
+			get(target, prop, receiver) {
+				if (prop === 'http' || prop === 'request' || prop === 'ws' || prop === 'upgrade') {
+					const method = Reflect.get(target, prop, receiver);
+					if (typeof method === 'function') {
+						return (listener: any, options?: any) => {
+							const scopeConfig = (scopeRef.options?.getAll() as any) ?? {};
+							return method.call(target, listener, {
+								name: pluginName,
+								urlPath: scopeConfig.urlPath || undefined,
+								host: scopeConfig.host || undefined,
+								...options,
+							});
+						};
+					}
+				}
+				return Reflect.get(target, prop, receiver);
+			},
+		}) as Server;
 
 		this.#entryHandlers = [];
 		this.#pendingInitialLoads = new Set();

@@ -15,7 +15,7 @@ Install dependencies using `npm install`
 
 Build the project using `npm run build` or `npm run build:watch` to automatically rebuild on file changes.
 
-Run integration tests using `npm run test:integration`. Make sure to read the [integration test instructions](./integrationTests/README.md) for setup requirements (particularly the loopback address configuration).
+Run integration tests using `npm run test:integration:all`. For targeted runs or additional options, use `npm run test:integration -- <pattern>`. Make sure to read the [integration test instructions](./integrationTests/README.md) for setup requirements (particularly the loopback address configuration).
 
 Run unit tests using `npm run test:unit <unit-test-file>` or `npm run test:unit:all`, but make sure to build the project first since unit tests depend on the built source files.
 
@@ -37,6 +37,16 @@ We use [Renovate](https://www.mend.io/renovate/) to automatically update depende
 This is configured in the `renovate.json` file in the project root. Renovate will open pull requests when it detects available updates and
 Harper staff will review these and merge them on a case-by-case basis. But contributors should feel free to comment on any pull requests
 they have feedback on. But in general, manually opening PRs to update dependencies is not necessary thanks to this automation.
+
+### Reducing package-lock.json merge conflicts
+
+The repository includes a `.gitattributes` entry that registers `npm-merge-driver` as the merge strategy for `package-lock.json`. To enable automatic conflict resolution when merging or rebasing locally, install it once:
+
+```bash
+npx npm-merge-driver install --global
+```
+
+This is optional — contributors who skip it will see standard merge conflict behavior. The driver is not used for server-side PR merges on GitHub.
 
 ## Repository Structure
 

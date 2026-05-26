@@ -5,9 +5,9 @@ const sinon = require('sinon');
 const { expect } = chai;
 const alasql = require('alasql');
 const rewire = require('rewire');
-const sql = require('#js/sqlTranslator/index');
-const update = rewire('#js/dataLayer/update');
-const insert = require('#js/dataLayer/insert');
+const sql = require('#src/sqlTranslator/index');
+const update = rewire('#src/dataLayer/update');
+const insert = require('#src/dataLayer/insert');
 const testUtils = require('../testUtils.js');
 
 describe('Test update module', () => {
@@ -22,7 +22,7 @@ describe('Test update module', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#js/dataLayer/update');
+		rewire('#src/dataLayer/update');
 	});
 
 	describe('Tests update function', () => {
@@ -91,7 +91,7 @@ describe('Test update module', () => {
 		});
 
 		afterEach(() => {
-			sinon.resetHistory();
+			sandbox.resetHistory();
 		});
 
 		it('Tests update function with simple where query', async () => {

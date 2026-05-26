@@ -1,0 +1,75 @@
+name: Claude PR Review
+
+# Thin caller of the reusable in HarperFast/ai-review-prompts. The single
+# `uses:` ref pin below controls everything that moves together — workflow
+# logic, layer files, bash scripts, auth-gate behavior. Bumping the pin
+# is the entire upgrade motion.
+#
+# Pre-requisites (org-level secrets, configured once on HarperFast):
+#   - HARPERFAST_AI_CLIENT_ID       (the App's Client ID, like Iv23li…)
+#   - HARPERFAST_AI_APP_PRIVATE_KEY (.pem file contents)
+#
+# Plus the per-repo / inherited:
+#   - ANTHROPIC_API_KEY             (required)
+#   - AI_REVIEW_LOG_TOKEN           (optional — if set, threads each run
+#                                   into a per-PR issue in HarperFast/ai-review-log)
+
+on:
+  pull_request:
+    # `labeled` admits the `claude-review` label gesture for
+    # bot-authored PRs (renovate, dependabot). See ai-review-prompts#38.
+    types: [opened, synchronize, reopened, labeled]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@f22bf7dcb7d22d5de94c938daa9d790f2b5c776b # main 2026-05-18 (post #37 + #38 + #40 — calibration layer update + label-gated bot-PR review; #39's workflow-level `permissions: {}` reverted in #40 because it broke reusable callers via the GH Actions calling-workflow-caps-reusable rule)
+    with:
+      # Same SHA as the `uses:` ref above. The reusable uses this to
+      # check out HarperFast/ai-review-prompts (layer files + bash
+      # scripts) at the same ref as the workflow logic itself — keeps
+      # the upgrade motion atomic.
+      #
+      # The duplication is unavoidable: reusable workflows can't
+      # introspect their own ref (`github.workflow_ref` resolves to the
+      # CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
+      # is parsed literally so we can't interpolate a variable.
+      ai-review-prompts-ref: f22bf7dcb7d22d5de94c938daa9d790f2b5c776b
+      review-layers: |
+        universal
+        harper/common
+        harper/v5
+      repo-specific-checks: |
+        ## Repo-specific checks (Harper core)
+
+        This repo IS Harper core itself — "defer to Harper docs"
+        guidance from the layers applies to PLUGIN / APP docs,
+        not to docs within this repo (this is where the Harper docs'
+        behavior is defined).
+
+        On top of the layered scope, these are things specific to this
+        repo that the shared layers don't cover:
+
+        - **Linter is oxlint, not eslint.** `npm run lint` runs oxlint.
+          Advice in layers that references ESLint doesn't apply here.
+        - **Build tolerance (`tsc || true`)** is NOT used here —
+          Harper core's build should pass cleanly. Flag type errors
+          as real findings.
+        - **`dependencies.md`** documents all npm packages. New
+          runtime dependencies require an entry there; flag PRs that
+          add a dep without updating the file.
+        - **TypeStrip compatibility** — Harper core uses
+          `erasableSyntaxOnly`. Flag TypeScript constructs that would
+          break typestrip (non-type-only imports of types, parameter
+          property initialization, etc.).
+        - **RocksDB is primary storage** (LMDB still supported via
+          `HARPER_STORAGE_ENGINE=lmdb`). Tests should exercise the
+          primary path; flag PRs that test only the fallback.
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AI_REVIEW_LOG_TOKEN: ${{ secrets.AI_REVIEW_LOG_TOKEN }}
+      HARPERFAST_AI_CLIENT_ID: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+      HARPERFAST_AI_APP_PRIVATE_KEY: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}

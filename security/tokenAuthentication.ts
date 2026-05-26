@@ -2,7 +2,7 @@ import jwt, { type Algorithm, type JwtPayload, type Secret, type SignOptions } f
 import fs from 'fs-extra';
 import path from 'node:path';
 import Joi from 'joi';
-import { validateBySchema } from '../validation/validationWrapper.js';
+import { validateBySchema } from '../validation/validationWrapper.ts';
 import {
 	CONFIG_PARAMS,
 	JWT_ENUM,
@@ -10,16 +10,16 @@ import {
 	SYSTEM_SCHEMA_NAME,
 	SYSTEM_TABLE_NAMES,
 } from '../utility/hdbTerms.ts';
-import { ClientError, hdbErrors } from '../utility/errors/hdbError.js';
+import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
-import logger from '../utility/logging/harper_logger.js';
+import logger from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
 import { findAndValidateUser, type User } from './user.ts';
-import { update } from '../dataLayer/insert.js';
-import UpdateObject from '../dataLayer/UpdateObject.js';
-import signalling from '../utility/signalling.js';
+import { update } from '../dataLayer/insert.ts';
+import UpdateObject from '../dataLayer/UpdateObject.ts';
+import * as signalling from '../utility/signalling.ts';
 import { UserEventMsg } from '../server/threads/itc.js';
-import env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 env.initSync();
 
 type StringValue = SignOptions['expiresIn'];
@@ -225,4 +225,31 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
+}
+
+/**
+ * Decodes a JWT and returns its payload.
+ * @param {string} token The JWT token to decode.
+ * @returns {Object|null} The decoded payload or null if invalid.
+ */
+export function decodeJWT(token: string): null | { exp: number; iat: number } {
+	try {
+		const parts = token.split('.');
+		if (parts.length !== 3) return null;
+		const payload = parts[1];
+		const decoded = Buffer.from(payload, 'base64').toString('utf8');
+		return JSON.parse(decoded);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Decodes a JWT and checks if it has expired or is going to expire soon (based on the buffer seconds).
+ */
+export function isJWTExpired(token: string, bufferSeconds = 300): boolean {
+	const payload = decodeJWT(token);
+	if (!payload || !payload.exp) return true;
+	const now = Math.floor(Date.now() / 1000);
+	return payload.exp < now + bufferSeconds;
 }

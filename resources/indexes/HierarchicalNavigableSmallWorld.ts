@@ -1,10 +1,64 @@
-import { cosineDistance, euclideanDistance } from './vector.ts';
+import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ClientError } from '../../utility/errors/hdbError.js';
+import { ClientError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 const logger = loggerWithTag('HNSW');
+
+class MinHeap {
+	private data: Candidate[] = [];
+	get size() {
+		return this.data.length;
+	}
+	push(item: Candidate) {
+		this.data.push(item);
+		let i = this.data.length - 1;
+		while (i > 0) {
+			const p = (i - 1) >> 1;
+			if (this.data[p].distance <= this.data[i].distance) break;
+			const tmp = this.data[p];
+			this.data[p] = this.data[i];
+			this.data[i] = tmp;
+			i = p;
+		}
+	}
+	pop(): Candidate | undefined {
+		if (this.data.length === 0) return undefined;
+		const top = this.data[0];
+		const last = this.data.pop()!;
+		if (this.data.length > 0) {
+			this.data[0] = last;
+			let i = 0;
+			for (;;) {
+				const l = 2 * i + 1,
+					r = l + 1;
+				let min = i;
+				if (l < this.data.length && this.data[l].distance < this.data[min].distance) min = l;
+				if (r < this.data.length && this.data[r].distance < this.data[min].distance) min = r;
+				if (min === i) break;
+				const tmp = this.data[min];
+				this.data[min] = this.data[i];
+				this.data[i] = tmp;
+				i = min;
+			}
+		}
+		return top;
+	}
+}
+
+function bisectInsert(arr: Candidate[], distance: number): number {
+	let lo = 0,
+		hi = arr.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (arr[mid].distance <= distance) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
 /**
  * Implementation of a vector index for Harper, using hierarchical navigable small world graphs.
  */
@@ -17,6 +71,7 @@ type Connection = {
 };
 type Node = {
 	vector: number[];
+	invMag?: number; // cached 1/|vector| for cosine distance; undefined on legacy nodes
 	level?: number;
 	primaryKey: string;
 	[level: number]: Connection[];
@@ -52,7 +107,12 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
-		this.distance = options?.distance === 'euclidean' ? euclideanDistance : cosineDistance;
+		this.distance =
+			options?.distance === 'euclidean'
+				? euclideanDistance
+				: options?.distance === 'dotProduct'
+					? dotProductDistance
+					: cosineDistance;
 		if (options) {
 			// allow all the HNSW parameters to be configured/tuned
 			if (options.M !== undefined) {
@@ -104,14 +164,22 @@ export class HierarchicalNavigableSmallWorld {
 		if (existingVector) {
 			// If we are updating an existing entry, we need to update the entry point
 			// if the new entry is closer to the entry point than the old one
-			oldNode = { ...this.indexStore.getSync(nodeId, options) };
+			oldNode = { ...this.safeGetSync(nodeId, options) };
 		} else oldNode = {} as Node;
 		if (vector) {
-			let entryPoint = entryPointId && this.indexStore.getSync(entryPointId, options);
+			// Pre-compute 1/|vector| for cosine distance so searchLayer can skip sqrt per neighbor
+			let invMag: number | undefined;
+			if (this.distance === cosineDistance) {
+				let magSq = 0;
+				for (const v of vector) magSq += v * v;
+				invMag = 1 / (Math.sqrt(magSq) || 1);
+			}
+			let entryPoint = entryPointId && this.safeGetSync(entryPointId, options);
 			if (entryPoint == null) {
 				const level = Math.floor(-Math.log(Math.random()) * this.mL);
 				const node = {
 					vector,
+					invMag,
 					level,
 					primaryKey,
 				};
@@ -130,8 +198,8 @@ export class HierarchicalNavigableSmallWorld {
 			// Generate random level for this new element
 			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
-			if (level >= currentLevel) {
-				// if we are at this level or higher, make this the new entry point
+			if (level > currentLevel) {
+				// if we are at a higher level, make this the new entry point
 				if (typeof nodeId !== 'number') {
 					throw new Error('Invalid nodeId: ' + nodeId);
 				}
@@ -142,7 +210,14 @@ export class HierarchicalNavigableSmallWorld {
 			// For each level from top to bottom
 			while (currentLevel > level) {
 				// Search for closest neighbors at current level
-				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel);
+				const neighbors = this.searchLayer(
+					vector,
+					entryPointId,
+					entryPoint,
+					this.efConstruction,
+					currentLevel,
+					options
+				);
 
 				if (neighbors.length > 0) {
 					entryPointId = neighbors[0].id; // closest neighbor becomes new entry point
@@ -157,7 +232,7 @@ export class HierarchicalNavigableSmallWorld {
 
 			// Connect the new element to neighbors at its level and below
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
+				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, options);
 				neighbors = neighbors.slice(0, this.M << 1) as SearchResults;
 
 				if (neighbors.length === 0 && l === 0) {
@@ -206,8 +281,11 @@ export class HierarchicalNavigableSmallWorld {
 
 					for (const { fromId, toId } of connectionsToBeReplaced) {
 						let from = updateNode(fromId);
-						if (!from) from = updateNode(fromId, this.indexStore.getSync(fromId, options));
-						for (let i = 0; i < from[l].length; i++) {
+						if (!from) from = updateNode(fromId, this.safeGetSync(fromId, options));
+						if (!from) continue;
+						const fromAtLevel = from[l];
+						if (!fromAtLevel) continue;
+						for (let i = 0; i < fromAtLevel.length; i++) {
 							if (from[l][i].id === toId) {
 								if (Object.isFrozen(from[l])) {
 									from[l] = from[l].slice();
@@ -232,6 +310,19 @@ export class HierarchicalNavigableSmallWorld {
 							oldNode[l] = oldConnections;
 						}
 						oldConnections.splice(oldPosition, 1);
+						// update the distance in the reverse connection if the vector changed
+						if (oldConnection.distance !== distance) {
+							const neighborNode = updateNode(id, node);
+							if (neighborNode[l]) {
+								if (Object.isFrozen(neighborNode[l])) {
+									neighborNode[l] = neighborNode[l].slice();
+								}
+								const reverseIdx = neighborNode[l].findIndex(({ id: nid }) => nid === nodeId);
+								if (reverseIdx >= 0) {
+									neighborNode[l][reverseIdx] = { id: nodeId, distance };
+								}
+							}
+						}
 					} else {
 						// add new connection since this is truly a new connection now
 						this.addConnection(id, updateNode(id, node), nodeId, l, distance, updateNode, options);
@@ -244,6 +335,7 @@ export class HierarchicalNavigableSmallWorld {
 				nodeId,
 				{
 					vector,
+					invMag,
 					level,
 					primaryKey,
 					...connections,
@@ -294,7 +386,7 @@ export class HierarchicalNavigableSmallWorld {
 				const oldConnections = oldNode[l];
 				for (const { id: neighborId } of oldConnections) {
 					// get and copy the neighbor node so we can modify it
-					const neighborNode = updateNode(neighborId, this.indexStore.getSync(neighborId, options));
+					const neighborNode = updateNode(neighborId, this.safeGetSync(neighborId, options));
 					if (!neighborNode) continue;
 					for (let l2 = 0; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
@@ -323,16 +415,26 @@ export class HierarchicalNavigableSmallWorld {
 			this.indexStore.put(id, updatedNode, options);
 		}
 		for (const [key, vector] of needsReindexing) {
-			this.index(key, vector, vector);
+			this.index(key, vector, vector, options);
 		}
-		this.checkSymmetry(nodeId, this.indexStore.getSync(nodeId, options), options);
+		this.checkSymmetry(nodeId, this.safeGetSync(nodeId, options), options);
 	}
 
-	private getEntryPoint() {
+	private safeGetSync(key: any, options?: any): any {
+		try {
+			return this.indexStore.getSync(key, options);
+		} catch {
+			logger.warn?.('Failed to decode HNSW node, skipping', key);
+			return undefined;
+		}
+	}
+
+	private getEntryPoint(options: { transaction?: any } = {}) {
 		// Get entry point
-		const entryPointId = this.indexStore.getSync(ENTRY_POINT);
+		const entryPointId = this.indexStore.getSync(ENTRY_POINT, options);
 		if (entryPointId === undefined) return;
-		const node = this.indexStore.getSync(entryPointId);
+		const node = this.safeGetSync(entryPointId, options);
+		if (!node) return;
 		return { id: entryPointId, ...node };
 	}
 
@@ -346,6 +448,7 @@ export class HierarchicalNavigableSmallWorld {
 	 * @param ef
 	 * @param level
 	 * @param distanceFunction
+	 * @param options
 	 * @private
 	 */
 	private searchLayer(
@@ -354,52 +457,60 @@ export class HierarchicalNavigableSmallWorld {
 		entryPoint: any,
 		ef: number,
 		level: number,
+		options: { transaction?: any } = {},
 		distanceFunction = this.distance
 	): SearchResults {
+		// Pre-compute query magnitude for cosine; use cached invMag on stored nodes to skip sqrt per neighbor
+		let computeDistance: (b: number[], invMagB?: number) => number;
+		if (distanceFunction === cosineDistance) {
+			let magASq = 0;
+			for (const v of queryVector) magASq += v * v;
+			const invMagA = 1 / (Math.sqrt(magASq) || 1);
+			computeDistance = (b: number[], invMagB?: number) => {
+				let dot = 0;
+				for (let i = 0; i < b.length; i++) dot += queryVector[i] * b[i];
+				if (invMagB !== undefined) return 1 - dot * invMagA * invMagB;
+				let magBSq = 0;
+				for (let i = 0; i < b.length; i++) magBSq += b[i] * b[i];
+				return 1 - (dot * invMagA) / (Math.sqrt(magBSq) || 1);
+			};
+		} else {
+			computeDistance = (b: number[]) => distanceFunction(queryVector, b);
+		}
+
 		const visited = new Set([entryPointId]);
-		const candidates = [
-			{
-				id: entryPointId,
-				distance: this.distance(queryVector, entryPoint.vector),
-				node: entryPoint,
-			},
-		];
-		const results = [...candidates] as SearchResults;
+		const initialCandidate: Candidate = {
+			id: entryPointId,
+			distance: computeDistance(entryPoint.vector, entryPoint.invMag),
+			node: entryPoint,
+		};
 
-		while (candidates.length > 0) {
-			// Get closest unvisited element
-			candidates.sort((a, b) => a.distance - b.distance);
-			const current = candidates.shift();
+		const candidates = new MinHeap();
+		candidates.push(initialCandidate);
+		const results = [initialCandidate] as SearchResults;
 
-			// Get least result distance
+		while (candidates.size > 0) {
+			const current = candidates.pop()!;
 			const furthestDistance = results[results.length - 1].distance;
 
-			// If current candidate is less similar than our worst result, we're done
 			if (current.distance > furthestDistance) break;
 
-			// Check neighbors of current point
-			const currentNode = current.node;
-			for (const { id: neighborId } of currentNode[level] || []) {
+			for (const { id: neighborId } of current.node[level] || []) {
 				if (visited.has(neighborId) || neighborId === undefined) continue;
 				visited.add(neighborId);
 
-				const neighbor = this.indexStore.getSync(neighborId);
+				const neighbor = this.safeGetSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
-				const distance = distanceFunction(queryVector, neighbor.vector);
+				const distance = computeDistance(neighbor.vector, neighbor.invMag);
 
 				if (distance < furthestDistance || results.length < ef) {
-					const candidate = {
-						id: neighborId,
-						distance,
-						node: neighbor,
-					};
+					const candidate: Candidate = { id: neighborId, distance, node: neighbor };
 					candidates.push(candidate);
-					results.push(candidate);
+					results.splice(bisectInsert(results, distance), 0, candidate);
+					if (results.length > ef) results.pop();
 				}
 			}
-			results.sort((a, b) => a.distance - b.distance);
-			if (results.length > ef) results.splice(ef, results.length - ef);
 		}
 		results.visited = visited.size;
 		return results;
@@ -416,19 +527,22 @@ export class HierarchicalNavigableSmallWorld {
 	 * @param comparator
 	 * @param context
 	 */
-	search({
-		target,
-		value,
-		descending,
-		distance,
-		comparator,
-	}: {
-		target: number[];
-		value: number;
-		descending: boolean;
-		distance: string;
-		comparator: string;
-	}) {
+	search(
+		{
+			target,
+			value,
+			descending,
+			distance,
+			comparator,
+		}: {
+			target: number[];
+			value: number;
+			descending: boolean;
+			distance: string;
+			comparator: string;
+		},
+		context: any
+	) {
 		let limit = 0; // zero is ignored, only used if set below
 		switch (comparator) {
 			case 'lt':
@@ -444,19 +558,29 @@ export class HierarchicalNavigableSmallWorld {
 		let distanceFunction: (a: number[], b: number[]) => number;
 		if (distance === 'cosine') distanceFunction = cosineDistance;
 		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
+		else if (distance === 'dotProduct') distanceFunction = dotProductDistance;
 		else if (distance) throw new ClientError('Unknown distance function');
 		else distanceFunction = this.distance;
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
 
-		let entryPoint = this.getEntryPoint();
+		const options = context.transaction; // should have a nested RocksDB transaction
+		let entryPoint = this.getEntryPoint(options);
 		if (!entryPoint) return [];
 		let entryPointId = entryPoint.id;
 		let results: Candidate[] = [];
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(target, entryPointId, entryPoint, this.efConstructionSearch, l, distanceFunction);
+			results = this.searchLayer(
+				target,
+				entryPointId,
+				entryPoint,
+				this.efConstructionSearch,
+				l,
+				options,
+				distanceFunction
+			);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -479,15 +603,15 @@ export class HierarchicalNavigableSmallWorld {
 			// verify that the level is not empty, otherwise this means we have an orphaned node
 			if (connections.length === 0) break;
 			for (const { id: neighbor } of connections) {
-				const neighborNode = this.indexStore.getSync(neighbor, options);
+				const neighborNode = this.safeGetSync(neighbor, options);
 				if (!neighborNode) {
-					logger.info?.('could not find neighbor node', neighborNode);
+					logger.info?.('could not find neighbor node', neighbor);
 					continue;
 				}
 				// verify that the connection is symmetrical
 				const symmetrical = neighborNode[l]?.find(({ id: nid }) => nid == id);
 				if (!symmetrical) {
-					logger.info?.('asymmetry detected', neighborNode[l]);
+					logger.info?.('asymmetry detected', neighborNode[l], 'does not have', id);
 				}
 			}
 			l++;
@@ -527,14 +651,17 @@ export class HierarchicalNavigableSmallWorld {
 			node[level] = keptConnections;
 			// For removed connections, ensure there's still a path to them
 			for (const removed of removedConnections) {
-				let removedNode = updateNode(removed.id) ?? this.indexStore.getSync(removed.id, options);
+				let removedNode = updateNode(removed.id) ?? this.safeGetSync(removed.id, options);
 				if (removedNode) {
 					// Remove the reverse connection if it exists
 					if (removedNode[level]) {
-						removedNode = updateNode(removed.id, removedNode);
-						removedNode[level] = removedNode[level].filter(({ id }) => id !== fromId);
-						if (level === 0 && removedNode[level].length === 0) {
-							logger.info?.('should not remove last connection', fromId, toId);
+						const filtered = removedNode[level].filter(({ id }) => id !== fromId);
+						if (level === 0 && filtered.length === 0) {
+							// don't remove the last connection at level 0 — it would orphan this node
+							logger.info?.('skipping removal of last connection', fromId, toId);
+						} else {
+							removedNode = updateNode(removed.id, removedNode);
+							removedNode[level] = filtered;
 						}
 					}
 				}
@@ -551,6 +678,7 @@ export class HierarchicalNavigableSmallWorld {
 	}
 	validateConnectivity(startLevel: number = 0) {
 		const entryPoint = this.getEntryPoint();
+		if (!entryPoint) return;
 		const visited = new Set<number>();
 
 		// BFS from entry point to ensure all nodes are reachable
@@ -575,9 +703,6 @@ export class HierarchicalNavigableSmallWorld {
 
 		// Check if all nodes are reachable
 		// This would require maintaining a separate set/count of all nodes
-		if (visited.size !== this.totalNodes) {
-			console.log('visited', visited.size, 'total', this.totalNodes);
-		}
 		return {
 			isFullyConnected: visited.size === this.totalNodes,
 			averageConnections: connections / visited.size,
@@ -599,7 +724,9 @@ export class HierarchicalNavigableSmallWorld {
 	 * @returns
 	 */
 	estimateCountAsSort() {
-		return Math.sqrt(this.indexStore.getStats().entryCount * this.efConstructionSearch);
+		const count =
+			this.indexStore instanceof RocksDatabase ? this.indexStore.getKeysCount() : this.indexStore.getStats().entryCount;
+		return Math.sqrt(count * this.efConstructionSearch);
 	}
 
 	/**
@@ -621,7 +748,12 @@ export class HierarchicalNavigableSmallWorld {
 
 			let distanceFunction = this.distance;
 			if (sortDefinition.type)
-				distanceFunction = sortDefinition.distance === 'euclidean' ? euclideanDistance : cosineDistance;
+				distanceFunction =
+					sortDefinition.distance === 'euclidean'
+						? euclideanDistance
+						: sortDefinition.distance === 'dotProduct'
+							? dotProductDistance
+							: cosineDistance;
 			const distance = distanceFunction(sortDefinition.target, vector);
 			vectorDistances.set(entry, distance);
 			return distance;

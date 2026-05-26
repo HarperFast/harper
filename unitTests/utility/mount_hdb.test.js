@@ -5,10 +5,12 @@ const { expect } = chai;
 const rewire = require('rewire');
 const sinon = require('sinon');
 const init_paths = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
-const bridge = require('#js/dataLayer/harperBridge/harperBridge');
-const mount_hdb = rewire('#js/utility/mount_hdb');
+const bridge =
+	require('#src/dataLayer/harperBridge/harperBridge').default.default ||
+	require('#src/dataLayer/harperBridge/harperBridge').default;
+const mount_hdb = rewire('#src/utility/mount_hdb');
 const path = require('path');
-const { get: envGet } = require('#js/utility/environment/environmentManager');
+const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const SEP = path.sep;
 
@@ -53,7 +55,7 @@ describe('test mount_hdb module', () => {
 		create_table_stub = sandbox.stub(bridge, 'createTable');
 		mount_hdb.__set__('mkdirpSync', mk_dirp_sync_stub);
 		mount_hdb.__set__('copySync', sandbox.stub());
-		mount_hdb.__set__('systemSchema', test_system_schema);
+		mount_hdb.__set__('systemSchema_json_1', { default: test_system_schema });
 	});
 
 	after(() => {
@@ -62,7 +64,7 @@ describe('test mount_hdb module', () => {
 
 	it('Test mountHdb calls makeDirectory happy path', async () => {
 		const test_hdb_path = `mount${SEP}test${SEP}hdb`;
-		await mount_hdb(test_hdb_path);
+		await (mount_hdb.default || mount_hdb)(test_hdb_path);
 		expect(mk_dirp_sync_stub.getCall(0).args[0]).to.equal(`mount${SEP}test${SEP}hdb`);
 		expect(mk_dirp_sync_stub.getCall(1).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}backup`);
 		expect(mk_dirp_sync_stub.getCall(2).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys`);

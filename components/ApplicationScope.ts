@@ -1,8 +1,8 @@
 import type { Resources } from '../resources/Resources.ts';
 import { type Server } from '../server/Server.ts';
-import { forComponent } from '../utility/logging/harper_logger.js';
+import { forComponent } from '../utility/logging/harper_logger.ts';
 import { scopedImport } from '../security/jsLoader.ts';
-import * as env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
@@ -21,10 +21,10 @@ export class ApplicationScope {
 	server: Server;
 	mode?: 'native' | 'vm' | 'vm-current-context' | 'compartment'; // option to set this from the scope
 	dependencyLoader?: 'native' | 'app' | 'auto'; // option to set this from the scope
-	verifyPath?: string;
+	allowedPath?: string;
 	config: any;
 	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
-	constructor(name: string, resources: Resources, server: Server, isInternal = false, verifyPath?: string) {
+	constructor(name: string, resources: Resources, server: Server, isInternal = false) {
 		this.logger = forComponent(name, !isInternal);
 
 		this.resources = resources;
@@ -32,7 +32,7 @@ export class ApplicationScope {
 
 		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm';
 		this.dependencyLoader = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYLOADER);
-		this.verifyPath = verifyPath;
+		if (env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDDIRECTORY) !== 'app') this.allowedPath = ''; // this is used to match paths by startsWith, so empty string matches everything
 	}
 
 	/**

@@ -1,6 +1,10 @@
 const assert = require('node:assert');
+const { Worker } = require('worker_threads');
+const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
@@ -142,6 +146,111 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		);
 		assert.equal(results[0].id, 2);
 	});
+	it('produces different rankings under cosine, euclidean, and dot product metrics', async () => {
+		const records = [
+			{ id: 0, name: 'A', vector: [0.1, 0.1] }, // best cosine (direction match)
+			{ id: 1, name: 'B', vector: [1.2, 0.8] }, // best euclidean (closest in space)
+			{ id: 2, name: 'C', vector: [7.0, 8.0] }, // best dot product (max projection)
+		];
+
+		await HNSWTest.dropTable?.();
+
+		HNSWTest = table({
+			table: 'HNSWMetricTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+
+		for (let r of records) {
+			await HNSWTest.put(r.id, r);
+		}
+
+		const target = [1, 1];
+
+		const cosine = await fromAsync(
+			HNSWTest.search({
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id'],
+				limit: 1,
+			})
+		);
+
+		const euclidean = await fromAsync(
+			HNSWTest.search({
+				sort: { attribute: 'vector', target, distance: 'euclidean' },
+				select: ['id'],
+				limit: 1,
+			})
+		);
+
+		const dot = await fromAsync(
+			HNSWTest.search({
+				sort: { attribute: 'vector', target, distance: 'dotProduct' },
+				select: ['id'],
+				limit: 1,
+			})
+		);
+
+		assert.equal(cosine[0].id, 0);
+		assert.equal(euclidean[0].id, 1);
+		assert.equal(dot[0].id, 2);
+	});
+	it('does not crash when an index node decodes as corrupt', () => {
+		const nodes = new Map();
+		let entryPoint;
+		let neighborReadCount = 0;
+
+		// Minimal mock indexStore: corrupt reads on numeric neighbor-node keys after the first few
+		const mockStore = {
+			encoder: { useFloat32: false },
+			getSync(key) {
+				if (key === Symbol.for('entryPoint')) return entryPoint;
+				if (typeof key === 'number') {
+					neighborReadCount++;
+					// After the graph has a few nodes, simulate a corrupt node read
+					if (neighborReadCount > 3) {
+						throw new Error('Data read, but end of buffer not reached 0');
+					}
+					return nodes.get(key);
+				}
+				return nodes.get(JSON.stringify(key));
+			},
+			put(key, value) {
+				if (key === Symbol.for('entryPoint')) {
+					entryPoint = value;
+				} else if (typeof key === 'number') {
+					nodes.set(key, value);
+				} else {
+					nodes.set(JSON.stringify(key), value);
+				}
+			},
+			remove(key) {
+				nodes.delete(typeof key === 'number' ? key : JSON.stringify(key));
+			},
+			getKeys() {
+				return [];
+			},
+			getUserSharedBuffer(_name, buffer) {
+				return buffer;
+			},
+		};
+
+		const hnsw = new HierarchicalNavigableSmallWorld(mockStore, {});
+
+		// Build a small graph (neighbor reads stay under threshold here)
+		for (let i = 0; i < 5; i++) {
+			hnsw.index(i, [i, i + 1, i + 2], null, {});
+		}
+		neighborReadCount = 0; // reset so subsequent inserts hit the corrupt path
+
+		// Inserting new nodes must not throw even though neighbor reads now corrupt
+		assert.doesNotThrow(() => hnsw.index(100, [1, 2, 3], null, {}));
+		assert.doesNotThrow(() => hnsw.index(101, [4, 5, 6], null, {}));
+	});
 	after(() => {
 		HNSWTest.dropTable();
 	});
@@ -237,6 +346,129 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		assert(invertedSimiliarities <= 6, `expected at most 6 distance inversions, got ${invertedSimiliarities}`);
 	}
 });
+
+describe('HNSW concurrent PUT race condition (issue #386)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const WORKER_COUNT = 4;
+	const PUTS_PER_WORKER = 2;
+	const DIMS = 768;
+	let ConcurrentTest;
+	let workers = [];
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		ConcurrentTest = table({
+			table: 'HNSWConcurrentTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		for (let w = 0; w < WORKER_COUNT; w++) {
+			workers.push(new Worker(__dirname + '/vectorIndex-thread.js'));
+		}
+	});
+
+	it('handles concurrent multi-worker PUTs without race conditions', async () => {
+		const replies = await Promise.all(
+			workers.map(
+				(worker, w) =>
+					new Promise((resolve) => {
+						worker.once('message', resolve);
+						worker.once('error', (err) =>
+							resolve({ type: 'error', start: w * PUTS_PER_WORKER, message: err.message, stack: err.stack })
+						);
+						worker.postMessage({
+							type: 'insert',
+							start: w * PUTS_PER_WORKER,
+							count: PUTS_PER_WORKER,
+							dims: DIMS,
+						});
+					})
+			)
+		);
+		const errors = replies.filter((r) => r.type === 'error');
+		assert.deepEqual(
+			errors,
+			[],
+			`expected no worker errors, got: ${errors.map((e) => `[start=${e.start}] ${e.message} ${e.stack}`).join('; ')}`
+		);
+
+		const expected = WORKER_COUNT * PUTS_PER_WORKER;
+		let count = 0;
+		for await (const _ of ConcurrentTest.search([])) count++;
+		assert.equal(count, expected, `expected ${expected} records after concurrent puts, got ${count}`);
+	});
+
+	after(async () => {
+		await Promise.all(workers.map((w) => w.terminate()));
+		ConcurrentTest.dropTable();
+	});
+});
+
+describe('HNSW search result loading (searchByIndex)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWSearchLoadTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	it('skips a deleted record instead of returning a broken partial entry', async () => {
+		await T.put(1, { name: 'keep', vector: [1, 0, 0] });
+		await T.put(2, { name: 'delete-me', vector: [0.99, 0.1, 0] });
+
+		await T.delete(2);
+
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, limit: 5 })
+		);
+
+		assert(
+			results.some((r) => r.id === 1),
+			'kept record should appear in results'
+		);
+		assert(!results.some((r) => r.id === 2), 'deleted record should not appear in results');
+		assert(
+			results.every((r) => r.id != null),
+			'no partial entries (missing id) should appear in results'
+		);
+	});
+
+	it('write-then-search within the same transaction sees the written record', async () => {
+		const context = {};
+		let foundInTxn = false;
+
+		await transaction(context, async () => {
+			await T.put(100, { name: 'in-txn', vector: [0, 0, 1] }, context);
+
+			const results = await fromAsync(
+				T.search({ sort: { attribute: 'vector', target: [0, 0, 1], distance: 'cosine' }, limit: 5 }, context)
+			);
+
+			foundInTxn = results.some((r) => r.id === 100);
+		});
+
+		assert(foundInTxn, 'record written in a transaction must be visible to a search in the same transaction');
+	});
+});
+
 async function fromAsync(iterable) {
 	let results = [];
 	for await (let entry of iterable) {

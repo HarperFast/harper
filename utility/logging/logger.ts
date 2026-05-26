@@ -1,5 +1,5 @@
 /** Like harperLogger, but conditionally exports functions based on the log level. */
-import harperLogger from './harper_logger.js';
+import harperLogger from './harper_logger.ts';
 
 export const logger: Logger = {};
 

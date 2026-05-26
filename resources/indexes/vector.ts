@@ -36,3 +36,20 @@ export function cosineDistance(a: number[], b: number[]): number {
 
 	return 1 - dotProduct / (magnitudeA * magnitudeB || 1);
 }
+
+export function dotProductDistance(a: number[], b: number[]): number {
+	if (!Array.isArray(a) || !Array.isArray(b)) {
+		throw new Error('Inner product comparison requires an array');
+	}
+
+	let dotProduct = 0;
+	const length = Math.max(a.length, b.length);
+
+	for (let i = 0; i < length; i++) {
+		const va = a[i] || 0;
+		const vb = b[i] || 0;
+		dotProduct += va * vb;
+	}
+
+	return -dotProduct;
+}

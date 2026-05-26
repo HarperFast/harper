@@ -1,0 +1,50 @@
+name: Claude Issue to PR
+
+# Thin caller of the reusable in HarperFast/ai-review-prompts. The
+# single `uses:` ref pin below controls everything that moves
+# together — workflow logic, auth script, agent prompt, allowed-
+# labels list. Bumping the pin is the entire upgrade motion.
+#
+# Pre-requisites (org-level secrets, configured once on HarperFast):
+#   - HARPERFAST_AI_CLIENT_ID
+#   - HARPERFAST_AI_APP_PRIVATE_KEY
+#
+# Plus the per-repo / inherited:
+#   - ANTHROPIC_API_KEY             (required)
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: claude-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  work:
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@6463b3da6326f0ca4646fb6b5139c2ecf92130f6 # main 2026-05-06 (post #11/#12/#14)
+    with:
+      # Same SHA as the `uses:` ref above. See the comment in
+      # claude-mention.yml for why the duplication is unavoidable.
+      ai-review-prompts-ref: 6463b3da6326f0ca4646fb6b5139c2ecf92130f6
+      repo-specific-conventions: |
+        ## Harper core notes
+
+        - Linter is **oxlint**, not eslint. `npm run lint` runs
+          oxlint. Don't add eslint config or invoke `eslint` directly.
+        - Primary storage engine is **RocksDB**; LMDB is supported
+          via `HARPER_STORAGE_ENGINE=lmdb`. Changes affecting storage
+          should work on both.
+        - **TypeStrip-compatible** (`erasableSyntaxOnly`) — avoid
+          TypeScript features that break typestrip (non-type-only
+          type imports, parameter property initialization).
+        - **`dependencies.md`** documents all npm packages. For
+          `claude-fix:deps` work, update this file too if a new
+          runtime package is added.
+        - **Build tolerance (`tsc || true`)** is NOT used here —
+          Harper core's build should pass cleanly. Treat type errors
+          as real failures.
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      HARPERFAST_AI_CLIENT_ID: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+      HARPERFAST_AI_APP_PRIVATE_KEY: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}

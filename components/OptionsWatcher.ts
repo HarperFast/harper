@@ -1,11 +1,11 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'events';
 import yaml from 'yaml';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
-import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.js';
+import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 
 export interface Config {
@@ -178,7 +178,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// First, ensure current and new config values are Config objects (not null, undefined, or a primitive)
 		if (!this.#isConfig(currentConfigValue) || !this.#isConfig(newConfigValue)) {
 			// If either is not a config, then just set as there is no need to diff/merge
-			this.#setValue(prevKeys, newConfigValue);
+			if (!isDeepStrictEqual(currentConfigValue, newConfigValue)) {
+				this.#setValue(prevKeys, newConfigValue);
+			}
 			return;
 		}
 
@@ -254,6 +256,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 
 		if (!['object', 'string', 'array', 'number', 'boolean', 'undefined'].includes(typeof value)) {
 			throw new InvalidValueTypeError(keys, value);
+		}
+
+		if (keys.length === 0) {
+			this.#scopedConfig = value;
+			this.emit('change', keys, value, this.#scopedConfig);
+			return;
 		}
 
 		let obj: ConfigValue = this.#scopedConfig;

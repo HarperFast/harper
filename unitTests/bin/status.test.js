@@ -3,13 +3,12 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
-const rewire = require('rewire');
 const fs = require('fs-extra');
-const env_mgr = require('#js/utility/environment/environmentManager');
-const sys_info = require('#js/utility/environment/systemInformation');
+const env_mgr = require('#src/utility/environment/environmentManager');
+const sys_info = require('#src/utility/environment/systemInformation');
 const hdb_terms = require('#src/utility/hdbTerms');
 const installation = require('#src/utility/installation');
-const status = rewire('#js/bin/status');
+const status = require('#src/bin/status').default;
 
 describe('Test status module', () => {
 	const sandbox = sinon.createSandbox();

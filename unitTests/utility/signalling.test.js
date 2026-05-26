@@ -17,12 +17,12 @@ describe('Test signalling module', () => {
 	let log_error_stub;
 
 	before(() => {
-		hdb_logger = require('#js/utility/logging/harper_logger');
+		hdb_logger = require('#src/utility/logging/harper_logger');
 		log_error_stub = sandbox.stub(hdb_logger, 'error');
 		sandbox.stub(hdb_logger, 'trace');
 		itc_utils = require('#js/server/threads/itc');
 		send_itc_event_stub = sandbox.stub(itc_utils, 'sendItcEvent');
-		signalling = rewire('#js/utility/signalling');
+		signalling = rewire('#src/utility/signalling');
 	});
 
 	afterEach(() => {
@@ -32,7 +32,7 @@ describe('Test signalling module', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#js/utility/signalling');
+		rewire('#src/utility/signalling');
 	});
 
 	it('Test signalSchemaChange happy path', () => {

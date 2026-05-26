@@ -1,5 +1,5 @@
 import { table } from '../../resources/databases.ts';
-import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.js';
+import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
@@ -28,7 +28,7 @@ type StatusWriteRequestBody<T extends StatusId = StatusId> = {
 // Lazy-initialize the Status table to avoid initialization issues during module import
 let _statusTable: ReturnType<typeof table>;
 
-function getStatusTable() {
+function getStatusTable(): any {
 	if (!_statusTable) {
 		_statusTable = table({
 			database: 'system',

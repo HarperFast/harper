@@ -1,12 +1,15 @@
 'use strict';
 
 /* global threads */
-const hdbLogger = require('../../utility/logging/harper_logger.js');
+const hdbLogger = require('../../utility/logging/harper_logger.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
-const cleanLmdbMap = require('../../utility/lmdb/cleanLMDBMap.js');
+const cleanLmdbMap =
+	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const userSchema = require('../../security/user.ts');
 const { validateEvent } = require('../threads/itc.js');
-const harperBridge = require('../../dataLayer/harperBridge/harperBridge.js');
+const harperBridge =
+	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
+	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { resetDatabases } = require('../../resources/databases.ts');
 
@@ -18,6 +21,7 @@ const serverItcHandlers = {
 	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
 	[hdbTerms.ITC_EVENT_TYPES.USER]: userHandler,
 	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
+	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
 };
 
 /**
@@ -46,10 +50,6 @@ async function schemaHandler(event) {
  */
 async function syncSchemaMetadata(msg) {
 	try {
-		// reset current read transactions to ensure that we are getting the very latest data
-		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
-		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
-		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
 		if (msg.table && msg.database)
@@ -119,7 +119,6 @@ async function componentStatusRequestHandler(event) {
 		// Get current thread's component status
 		const { internal } = require('../../components/status/index.ts');
 		const { getWorkerIndex } = require('../threads/manageThreads.js');
-		const { sendItcEvent } = require('../threads/itc.js');
 		const componentStatuses = internal.componentStatusRegistry.getAllStatuses();
 
 		// Convert Map to array for serialization
@@ -129,7 +128,8 @@ async function componentStatusRequestHandler(event) {
 		const workerIndex = getWorkerIndex();
 		const isMainThread = workerIndex === undefined;
 
-		// Send response directly back to the originating thread
+		// Send response directly back to the originating thread. validateEvent already
+		// ensures originator is present.
 		const originatorThreadId = event.message.originator;
 		const responseMessage = {
 			type: hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_RESPONSE,
@@ -141,20 +141,61 @@ async function componentStatusRequestHandler(event) {
 			},
 		};
 
-		// Use global threads (connectedPorts) to send directly to originator
-		if (originatorThreadId !== undefined && threads.sendToThread(originatorThreadId, responseMessage)) {
+		if (threads.sendToThread(originatorThreadId, responseMessage)) {
 			hdbLogger.trace(`Sent component status response directly to thread ${originatorThreadId}`);
 		} else {
-			// Fallback to broadcast if direct send fails or originator is missing
-			if (originatorThreadId === undefined) {
-				hdbLogger.debug('No originator threadId, falling back to broadcast');
-			} else {
-				hdbLogger.debug(`Failed to send direct response to thread ${originatorThreadId}, falling back to broadcast`);
-			}
-			await sendItcEvent(responseMessage);
+			// Originator's port is no longer in connectedPorts (thread exited / disconnected
+			// during the request). Dropping the response is correct — the originator is
+			// unreachable, and the collector's own timeout will handle the missing reply.
+			hdbLogger.trace(
+				`Dropping component status response for request ${event.message.requestId}: originator thread ${originatorThreadId} is unreachable`
+			);
 		}
 	} catch (error) {
 		hdbLogger.error('Error handling component status request:', error);
+	}
+}
+
+/**
+ * Handles incoming requests for the REST OpenAPI spec from the main thread.
+ * Generates the spec from the local resources (which are only registered on worker threads)
+ * and sends it back to the requesting thread.
+ */
+async function resourceOpenApiRequestHandler(event) {
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdbLogger.error(validate);
+			return;
+		}
+
+		hdbLogger.trace(`ITC resourceOpenApiRequestHandler received request:`, event);
+
+		const { resources } = require('../../resources/Resources.ts');
+		// Only respond if this thread has registered resources. Job-type workers with an empty
+		// resources map must stay silent so that an app worker with real resources replies first.
+		// If no worker has resources the main thread gets a 503 after the timeout, which is a
+		// more honest response than silently returning an empty spec.
+		if (!resources || resources.size === 0) return;
+		const { generateJsonApi } = require('../../resources/openApi.ts');
+		const openapi = generateJsonApi(resources, event.message.serverHttpURL);
+
+		const originatorThreadId = event.message.originator;
+		const responseMessage = {
+			type: hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE,
+			message: {
+				requestId: event.message.requestId,
+				openapi,
+			},
+		};
+
+		if (!threads.sendToThread(originatorThreadId, responseMessage)) {
+			hdbLogger.trace(
+				`Dropping resource OpenAPI response for request ${event.message.requestId}: originator thread ${originatorThreadId} is unreachable`
+			);
+		}
+	} catch (error) {
+		hdbLogger.error('Error handling resource OpenAPI request:', error);
 	}
 }
 

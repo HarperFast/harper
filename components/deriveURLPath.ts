@@ -1,6 +1,5 @@
-import { join } from 'node:path';
-import type { Component } from './Component.js';
-import type { ComponentV1 } from './ComponentV1.js';
+import type { Component } from './Component.ts';
+import type { ComponentV1 } from './ComponentV1.ts';
 
 function pathStartsWithBase(base: string, path: string) {
 	const re = new RegExp(`^${base}(/|$)`);
@@ -8,6 +7,7 @@ function pathStartsWithBase(base: string, path: string) {
 }
 
 export function deriveURLPath(component: Component | ComponentV1, path: string, type: 'file' | 'directory'): string {
+	path = path.replace(/\\/g, '/'); // converting from potential windows path to URL paths
 	if (path.startsWith('./')) {
 		path = path.slice(2); // remove leading './'
 	}
@@ -53,5 +53,5 @@ export function deriveURLPath(component: Component | ComponentV1, path: string, 
 		}
 	}
 
-	return join(component.baseURLPath, path);
+	return component.baseURLPath + path; // note, do NOT use join here, this is not a file system path, this is a URL path
 }

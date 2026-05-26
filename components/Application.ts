@@ -1,7 +1,7 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.js';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
-import logger from '../utility/logging/harper_logger.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import logger from '../utility/logging/harper_logger.ts';
 
 import { dirname, extname, join } from 'node:path';
 import {
@@ -109,6 +109,21 @@ export function assertApplicationConfig(
 }
 
 /**
+ * Returns true when npm/git stderr indicates an SSH authentication failure —
+ * git exits 128 with the standard "could not read" message, or the SSH layer
+ * reports a missing uid (no SSH daemon user), explicit publickey denial, or
+ * an unverified host key.
+ */
+export function isSSHAuthFailure(stderr: string): boolean {
+	return (
+		stderr.includes('Could not read from remote repository') ||
+		stderr.includes('Permission denied (publickey)') ||
+		stderr.includes('No user exists for uid') ||
+		stderr.includes('Host key verification failed')
+	);
+}
+
+/**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
  *
  * Only one of `application.payload` or `application.package` should be specified; otherwise, an error is thrown.
@@ -131,11 +146,20 @@ export async function extractApplication(application: Application) {
 	// Resolve the tarball from the input
 	let tarballPath: string;
 	let tarball: Readable;
+	let shouldDeleteTarball = false;
+
 	if (application.payload) {
-		// Given a payload, create a Readable from the Buffer or string
-		tarball = Readable.from(
-			application.payload instanceof Buffer ? application.payload : Buffer.from(application.payload, 'base64')
-		);
+		const payload = application.payload;
+		if (payload instanceof Readable) {
+			// Stream payloads (e.g. multipart file part from the operations API) are piped
+			// straight into extraction so multi-GB components don't have to materialize as a Buffer.
+			tarball = payload;
+		} else if (typeof payload === 'string') {
+			// base64 string payload
+			tarball = Readable.from(Buffer.from(payload, 'base64'));
+		} else {
+			tarball = Readable.from(payload as Buffer);
+		}
 	} else {
 		// Given a package, there are a a couple options
 		const parentDirPath = dirname(application.dirPath);
@@ -172,15 +196,37 @@ export async function extractApplication(application: Application) {
 				}
 			}
 		} else {
-			// Given a package, resolve using `npm pack` (downloads the package as a tarball and writes the path to stdout)
-			const {
-				stdout: tarballFilePath,
-				code,
-				stderr,
-			} = await nonInteractiveSpawn(application.name, 'npm', ['pack', application.packageIdentifier], parentDirPath);
-			if (code !== 0) throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
-			tarballPath = join(parentDirPath, tarballFilePath.trim());
-			// Create a Readable from the tarball
+			// `npm pack --json` writes a JSON array describing the packed tarball(s).
+			const { stdout, code, stderr } = await nonInteractiveSpawn(
+				application.name,
+				'npm',
+				['pack', '--json', application.packageIdentifier],
+				parentDirPath
+			);
+			if (code !== 0) {
+				if (isSSHAuthFailure(stderr)) {
+					throw new Error(
+						`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
+						{ cause: new Error(stderr) }
+					);
+				}
+				throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+			}
+
+			let packResult: Array<{ filename: string }>;
+			try {
+				packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+			} catch (err) {
+				throw new Error(
+					`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+				);
+			}
+			if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+				throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+			}
+
+			tarballPath = join(parentDirPath, packResult[0].filename);
+			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
 		}
 	}
@@ -222,7 +268,7 @@ export async function extractApplication(application: Application) {
 	}
 
 	// Clean up the original tarball
-	if (tarballPath) {
+	if (shouldDeleteTarball && tarballPath) {
 		await rm(tarballPath, { force: true });
 	}
 }
@@ -396,14 +442,14 @@ export async function installApplication(application: Application) {
 
 interface ApplicationOptions {
 	name: string;
-	payload?: Buffer | string;
+	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 }
 
 export class Application {
 	name: string;
-	payload?: Buffer | string;
+	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	dirPath: string;
@@ -583,6 +629,10 @@ export function nonInteractiveSpawn(
 		const gitSSHCommand = getGitSSHCommand();
 		if (gitSSHCommand) {
 			env.GIT_SSH_COMMAND = gitSSHCommand;
+		}
+
+		if (process.platform === 'win32' && command === 'npm') {
+			command = 'npm.cmd';
 		}
 
 		const childProcess = spawn(command, args, {

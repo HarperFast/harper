@@ -5,12 +5,12 @@
 
 const assert = require('assert');
 const chai = require('chai');
-const cu = require('#js/utility/common_utils');
+const cu = require('#src/utility/common_utils');
 const testUtils = require('../testUtils.js');
 // try to move to /bin directory so our properties reader doesn't explode.
 testUtils.changeProcessToBinDir();
 const rewire = require('rewire');
-const cu_rewire = rewire('#js/utility/common_utils');
+const cu_rewire = rewire('#src/utility/common_utils');
 const { expect } = chai;
 const ALL_SPACES = '     ';
 const SEP = require('path').sep;

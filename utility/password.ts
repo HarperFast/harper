@@ -1,6 +1,6 @@
 import * as crypto from 'node:crypto';
 import * as argon2 from 'argon2';
-import { get } from './environment/environmentManager.js';
+import { get } from './environment/environmentManager.ts';
 import { CONFIG_PARAMS } from './hdbTerms.ts';
 const configuredHashFunction = get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION)?.toLowerCase();
 

@@ -6,18 +6,20 @@ const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
 const validator = require('./operationsValidation.js');
-const log = require('../utility/logging/harper_logger.js');
+const log = require('../utility/logging/harper_logger.ts');
 const hdbTerms = require('../utility/hdbTerms.ts');
-const env = require('../utility/environment/environmentManager.js');
+const env = require('../utility/environment/environmentManager.ts');
 const configUtils = require('../config/configUtils.js');
-const hdbUtils = require('../utility/common_utils.js');
-const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const hdbUtils = require('../utility/common_utils.ts');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
+const { DeploymentRecorder } = require('./deploymentRecorder.ts');
+const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 /**
  * Read the settings.js file and return the
@@ -217,7 +219,7 @@ async function addComponent(req) {
 
 	log.trace(`adding component`);
 	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	const { project, install_command, install_timeout } = req;
+	const { project, install_command, install_timeout, install_allow_scripts } = req;
 
 	const template = req.template || 'https://github.com/harperdb/application-template';
 
@@ -230,6 +232,7 @@ async function addComponent(req) {
 			install: {
 				command: install_command,
 				timeout: install_timeout,
+				allowInstallScripts: install_allow_scripts,
 			},
 		});
 		await prepareApplication(application);
@@ -360,7 +363,6 @@ async function deployComponent(req) {
 	}
 
 	// Write to root config if the request contains a package identifier
-	// TODO: how can we keep record of the `payload`? Its often too large to stuff into a config file; especially the root config. Maybe we can write it to a file and reference that way?
 	if (req.package) {
 		// Check if trying to overwrite a core component (requires force)
 		// Lazy-load to avoid circular dependency with componentLoader
@@ -375,71 +377,136 @@ async function deployComponent(req) {
 
 		const applicationConfig = { package: req.package };
 		// Avoid writing an empty `install:` block
-		if (req.install_command || req.install_timeout) {
+		if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
 			applicationConfig.install = {
 				command: req.install_command,
 				timeout: req.install_timeout,
+				allowInstallScripts: req.install_allow_scripts,
 			};
 		}
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
-	const application = new Application({
-		name: req.project,
-		payload: req.payload,
-		packageIdentifier: req.package,
-		install: {
-			command: req.install_command,
-			timeout: req.install_timeout,
-		},
-	});
+	// Slice A of issue #641: create a hdb_deployment row up front so the deploy is
+	// observable and auditable even if the CLI disconnects. The row also holds the payload
+	// in a Blob attribute — Slice B uses it as the rollback source.
+	//
+	// Only the origin node records — peers receiving a replicated deploy_component skip
+	// recording so we don't accumulate one row per node for the same deploy. The row will
+	// reach peers via the table's replication once Slice B has them consume it.
+	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	// Slice B1 of #641: an SSE-bound caller already attached a ProgressEmitter (created in
+	// the server handler so it can also drive the response stream). Reuse it; otherwise
+	// spin up a fresh emitter so the recorder still gets phase events for non-SSE deploys.
+	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
+	if (emitter && !req.progress) req.progress = emitter;
+	const recorder = isReplicatedExecution
+		? null
+		: await DeploymentRecorder.create({
+				project: req.project,
+				package_identifier: req.package ?? null,
+				user: req.hdb_user?.username,
+				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
+				emitter,
+			});
+	if (recorder) req._deploymentId = recorder.deploymentId;
 
-	await prepareApplication(application);
+	const emit = (event, data) => emitter?.emit(event, data);
 
-	// the main thread should never actually load component, just do a deploy
-	if (isMainThread) return;
+	let extractionPayload = req.payload;
+	try {
+		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
+		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
+		// from the persisted blob. This is the staging area and (in Slice B) the channel
+		// peers will replicate from. On peer nodes we skip recording entirely and use the
+		// raw payload as-is.
+		if (recorder && req.payload != null) {
+			await recorder.ingestPayload(req.payload);
+			extractionPayload = recorder.row.payload_blob.stream();
+		}
 
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report
-	const pseudoResources = new Resources();
-	pseudoResources.isWorker = true;
-
-	if (!process.env.HARPER_SAFE_MODE) {
-		const componentLoader = require('./componentLoader.ts');
-		let lastError;
-		componentLoader.setErrorReporter((error) => (lastError = error));
-		await componentLoader.loadComponent(
-			application.dirPath,
-			pseudoResources,
-			undefined,
-			false,
-			undefined,
-			false,
-			req.project
-		);
-
-		if (lastError) throw lastError;
-	}
-	const rollingRestart = req.restart === 'rolling';
-	// if doing a rolling restart set restart to false so that other nodes don't also restart.
-	req.restart = rollingRestart ? false : req.restart;
-	let response = await server.replication.replicateOperation(req);
-	if (req.restart === true) {
-		manageThreads.restartWorkers('http');
-		response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-	} else if (rollingRestart) {
-		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
-		const jobResponse = await serverUtilities.executeJob({
-			operation: 'restart_service',
-			service: 'http',
-			replicated: true,
+		const application = new Application({
+			name: req.project,
+			payload: extractionPayload,
+			packageIdentifier: req.package,
+			install: {
+				command: req.install_command,
+				timeout: req.install_timeout,
+				allowInstallScripts: req.install_allow_scripts,
+			},
 		});
 
-		response.restartJobId = jobResponse.job_id;
-		response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-	} else response.message = `Successfully deployed: ${application.name}`;
+		emit('phase', { phase: 'prepare', status: 'start' });
+		await prepareApplication(application);
+		emit('phase', { phase: 'prepare', status: 'done' });
 
-	return response;
+		// now we attempt to actually load the component in case there is
+		// an error we can immediately detect and report, but app code should not run on the main thread
+		if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
+			const pseudoResources = new Resources();
+			pseudoResources.isWorker = true;
+
+			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
+			let lastError;
+			componentLoader.setErrorReporter((error) => (lastError = error));
+			emit('phase', { phase: 'load', status: 'start' });
+			await componentLoader.loadComponent(
+				application.dirPath,
+				pseudoResources,
+				undefined,
+				false,
+				undefined,
+				false,
+				req.project
+			);
+			emit('phase', { phase: 'load', status: 'done' });
+
+			if (lastError) throw lastError;
+		}
+		const rollingRestart = req.restart === 'rolling';
+		// if doing a rolling restart set restart to false so that other nodes don't also restart.
+		req.restart = rollingRestart ? false : req.restart;
+		// ProgressEmitter holds function listeners that can't survive the replication
+		// channel's serialization, and the recorder is local to origin anyway. Strip both
+		// before sending so peers see a clean req.
+		delete req.progress;
+		emit('phase', { phase: 'replicate', status: 'start' });
+		let response = await server.replication.replicateOperation(req);
+		emit('phase', { phase: 'replicate', status: 'done' });
+		if (req.restart === true) {
+			emit('phase', { phase: 'restart', status: 'start' });
+			manageThreads.restartWorkers('http');
+			emit('phase', { phase: 'restart', status: 'done' });
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+		} else if (rollingRestart) {
+			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			emit('phase', { phase: 'restart', status: 'start' });
+			const jobResponse = await serverUtilities.executeJob({
+				operation: 'restart_service',
+				service: 'http',
+				replicated: true,
+			});
+			emit('phase', { phase: 'restart', status: 'done' });
+
+			response.restartJobId = jobResponse.job_id;
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+		} else response.message = `Successfully deployed: ${application.name}`;
+
+		if (recorder) {
+			response.deployment_id = recorder.deploymentId;
+			emit('phase', { phase: 'success', status: 'done' });
+			await recorder.finish('success');
+		}
+		return response;
+	} catch (err) {
+		emit('error', {
+			message: err?.message ?? String(err),
+			code: err?.statusCode ?? err?.code,
+			phase: recorder?.row.phase,
+		});
+		if (recorder) await recorder.finish('failed', err);
+		throw err;
+	}
 }
 
 /**
@@ -551,6 +618,8 @@ async function getComponents() {
  * @param req
  * @returns {Promise<*>}
  */
+const DEFAULT_COMPONENT_FILE_MAX_SIZE = 5 * 1024 * 1024; // 5 MB
+
 async function getComponentFile(req) {
 	const validation = validator.getComponentFileValidator(req);
 	if (validation) {
@@ -558,12 +627,23 @@ async function getComponentFile(req) {
 	}
 
 	const compRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const filePath = path.join(compRoot, req.project, req.file);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
+	const configuredMax = configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_COMPONENTFILE_MAXSIZE);
+	const maxSize =
+		Number.isFinite(+configuredMax) && +configuredMax > 0 ? +configuredMax : DEFAULT_COMPONENT_FILE_MAX_SIZE;
 
 	try {
-		const stats = await fs.stat(path.join(compRoot, req.project, req.file));
+		const stats = await fs.stat(filePath);
+		if (stats.size > maxSize) {
+			throw handleHDBError(
+				new Error(HDB_ERROR_MSGS.COMPONENT_FILE_TOO_LARGE(stats.size, maxSize)),
+				HDB_ERROR_MSGS.COMPONENT_FILE_TOO_LARGE(stats.size, maxSize),
+				HTTP_STATUS_CODES.CONTENT_TOO_LARGE
+			);
+		}
 		return {
-			message: await fs.readFile(path.join(compRoot, req.project, req.file), options),
+			message: await fs.readFile(filePath, options),
 			size: stats.size,
 			birthtime: stats.birthtime,
 			mtime: stats.mtime,

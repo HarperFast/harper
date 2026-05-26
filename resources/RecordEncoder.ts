@@ -15,9 +15,10 @@ import {
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
 } from './auditStore.ts';
-import * as harperLogger from '../utility/logging/harper_logger.js';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 import './blob.ts';
 import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
+import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
@@ -32,6 +33,7 @@ export type Entry = {
 	residencyId: number;
 	size: number;
 	deref?: () => any;
+	[METADATA]?: any;
 	additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
 };
 
@@ -63,8 +65,8 @@ const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publi
 // WeakMaps are definitely not the fastest form of private properties, but they are the only
 // way to do this with how the objects are frozen for now.
 export const entryMap = new WeakMap<any, Entry>();
-let lastValueEncoding,
-	timestampNextEncoding = 0,
+export let lastValueEncoding: Buffer | undefined;
+let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0,
@@ -73,6 +75,9 @@ let lastValueEncoding,
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
 export class RecordEncoder extends Encoder {
+	rootStore: any;
+	declare saveStructures: any;
+	declare getStructures: any;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
@@ -194,20 +199,23 @@ export class RecordEncoder extends Encoder {
 		const superGetStructures = this.getStructures;
 		this.saveStructures = function (structures, isCompatible): boolean | undefined {
 			if (this.isRocksDB) {
-				return this.rootStore.transactionSync((txn) => {
-					const sharedStructuresKey = [Symbol.for('structures'), this.name];
-					const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
-					const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
-					if (typeof isCompatible == 'function') {
-						if (!isCompatible(existingStructures)) {
+				return this.rootStore.transactionSync(
+					(txn) => {
+						const sharedStructuresKey = [Symbol.for('structures'), this.name];
+						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
+						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
+						if (typeof isCompatible == 'function') {
+							if (!isCompatible(existingStructures)) {
+								return false;
+							}
+						} else if (existingStructures && existingStructures.length !== isCompatible) {
 							return false;
 						}
-					} else if (existingStructures && existingStructures.length !== isCompatible) {
-						return false;
-					}
-					txn.putSync(sharedStructuresKey, structures);
-					this.structureUpdate = structures;
-				});
+						txn.putSync(sharedStructuresKey, structures);
+						this.structureUpdate = structures;
+					},
+					{ retryOnBusy: true }
+				);
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
@@ -317,7 +325,7 @@ export class RecordEncoder extends Encoder {
 					additionalAuditRefs,
 					size: end - start,
 					value,
-				};
+				} as any;
 				if (this.isRocksDB) return lastMetadata;
 				return value;
 			} // else a normal entry
@@ -386,7 +394,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (entry.value.constructor === Object) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
-					entry.value = new this.encoder.structPrototype.constructor();
+					entry.value = new store.encoder.structPrototype.constructor();
 					Object.assign(entry.value, originalValue);
 				}
 				entryMap.set(entry.value, entry); // allow the record to access the entry
@@ -444,7 +452,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (entry.value.constructor === Object) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
-					entry.value = new this.encoder.structPrototype.constructor();
+					entry.value = new store.encoder.structPrototype.constructor();
 					for (const key in originalValue) entry.value[key] = originalValue[key];
 				}
 			}
@@ -469,6 +477,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			};
 			Txn.prototype.done = function () {
 				done.call(this);
+				this.openTimer = 0; // reset so idle pool time doesn't accumulate toward the stale-open threshold
 				if (this.isDone) {
 					for (let i = 0; i < trackedTxns.length; i++) {
 						const txn = trackedTxns[i].deref();
@@ -497,7 +506,14 @@ setInterval(() => {
 							'Read transaction detected that has been open too long (over 15 minutes), ending transaction',
 							txn
 						);
-						txn.done();
+						trackedTxns.splice(i--, 1);
+						txn.timerTracked = false;
+						txn.openTimer = 0;
+						try {
+							txn.done();
+						} catch (error) {
+							harperLogger.warn('Unexpected error force-closing stale LMDB read transaction', error);
+						}
 					} else
 						harperLogger.error(
 							'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
@@ -509,6 +525,13 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
+export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
+	timestampNextEncoding = timestamp;
+	metadataInNextEncoding = metadata;
+	expiresAtNextEncoding = expiresAt;
+	nodeIdAtNextEncoding = nodeId;
+	residencyIdAtNextEncoding = residencyId;
+}
 export function recordUpdater(store, tableId, auditStore) {
 	return function (
 		id,
@@ -549,6 +572,7 @@ export function recordUpdater(store, tableId, auditStore) {
 			version: number;
 			instructedWrite?: boolean;
 			ifVersion?: number;
+			transaction?: any;
 		} = {
 			version: newVersion,
 			instructedWrite: timestampNextEncoding > 0,
@@ -564,7 +588,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
 				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
-			const nodeId = options?.nodeId;
+			const nodeId = options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
 			if (nodeId >= 0) {
 				nodeIdAtNextEncoding = nodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;
@@ -614,7 +638,7 @@ export function recordUpdater(store, tableId, auditStore) {
 					store.encoder.structureUpdate = null;
 				}
 				const structureVersion = store.encoder.structures.length + (store.encoder.typedStructs?.length ?? 0);
-				const nodeId = options?.nodeId ?? server.replication?.getThisNodeId(auditStore) ?? 0;
+				const nodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
 				const viaNodeId = options?.viaNodeId ?? nodeId;
 				if (resolveRecord && existingEntry?.localTime) {
 					const replacingId = existingEntry?.localTime;
@@ -688,13 +712,13 @@ export function recordUpdater(store, tableId, auditStore) {
 export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: number }> | undefined) {
 	additionalAuditRefsNextEncoding = refs;
 }
-export function removeEntry(store: any, entry: any, existingVersion?: number) {
+export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;
 	if (entry.value && entry.metadataFlags & HAS_BLOBS) {
 		// if it used to have blobs, we need to delete the old blobs
 		deleteBlobsInObject(entry.value);
 	}
-	return store.remove(entry.key, existingVersion);
+	return store.remove(entry.key, options);
 }
 export interface RecordObject {
 	getUpdatedTime(): number;

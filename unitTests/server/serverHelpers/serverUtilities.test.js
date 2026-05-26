@@ -8,8 +8,8 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
-const operation_function_caller = require('#js/utility/OperationFunctionCaller');
-const logger = require('#js/utility/logging/harper_logger');
+const operation_function_caller = require('#src/utility/OperationFunctionCaller');
+const logger = require('#src/utility/logging/harper_logger');
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';

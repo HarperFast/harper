@@ -19,8 +19,8 @@ export interface ResourceInterface<Record extends object = any>
 
 	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
 	create?(
-		newRecord: Partial<Record & RecordObject>,
-		target: RequestTargetOrId
+		target: RequestTargetOrId,
+		newRecord: Partial<Record & RecordObject>
 	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
 	post?(
 		target: RequestTargetOrId,
@@ -31,10 +31,6 @@ export interface ResourceInterface<Record extends object = any>
 	put?(
 		record: Record & RecordObject,
 		target?: RequestTargetOrId
-	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
-	patch?(
-		record: Partial<Record & RecordObject>,
-		target: RequestTargetOrId
 	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
 	update?(updates: Record & RecordObject, fullUpdate: true): ResourceInterface<Record & Partial<RecordObject>>;
 	update?(
@@ -69,7 +65,7 @@ export interface Context {
 	/**	 The user making the request */
 	user?: User;
 	/** Check the username and password against the core user table to verify user identity */
-	login: (username: string, password: string) => Promise<string>;
+	login?: (username: string, password: string) => Promise<string>;
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
 	session?: Session;
 	/**	 The database transaction object */
@@ -101,6 +97,20 @@ export interface Context {
 	resourceCache?: Map<Id, any>;
 	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 	timestamp?: number;
+	includeExpensiveRecordCountEstimates?: boolean;
+	/**
+	 * Matched route path of the calling Resource, populated by the HTTP/WS entry points
+	 * before they hand the request into `transaction()`. Populated on the Request that
+	 * becomes the ALS-bound Context for that path; absent for ops-API, internal jobs,
+	 * and replication-driven contexts.
+	 */
+	handlerPath?: string;
+	/**
+	 * Abort signal carried through ALS so generator bodies can forward cancellation to
+	 * external work (e.g. `scope.models.generateStream({ signal })`). Populated on the
+	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513.
+	 */
+	signal?: AbortSignal;
 }
 
 export interface SourceContext<TRequestContext = Context, Record extends object = any> {
@@ -134,8 +144,13 @@ export type Comparator =
 	| 'ends_with'
 	| 'eq'
 	| 'equals'
+	| 'gt'
+	| 'ge'
+	| 'lt'
+	| 'le'
 	| 'greater_than'
 	| 'greater_than_equal'
+	| 'in'
 	| 'less_than'
 	| 'less_than_equal'
 	| 'ne'
@@ -149,8 +164,13 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_attribute?: keyof Record | Array<keyof Record> | string | string[];
 	comparator?: Comparator;
 	search_type?: Comparator;
-	value?: Record[Property];
-	search_value?: Record[Property];
+	value?: Record[Property] | Record[Property][];
+	search_value?: Record[Property] | Record[Property][];
+	/**
+	 * If true, the condition is negated. Phase 1: filter-only — forces a
+	 * full scan unless paired with another indexed condition.
+	 */
+	negated?: boolean;
 }
 
 interface ConditionGroup<Record extends object = any> {

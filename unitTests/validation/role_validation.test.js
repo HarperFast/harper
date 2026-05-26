@@ -8,7 +8,7 @@ const { expect } = chai;
 const sinon = require('sinon');
 
 const rewire = require('rewire');
-const role_validation_rw = rewire('#js/validation/role_validation');
+const role_validation_rw = rewire('#src/validation/role_validation');
 let customValidate_rw = role_validation_rw.__get__('customValidate');
 const { TEST_ROLE_PERMS_ERROR, TEST_SCHEMA_OP_ERROR } = require('../commonTestErrors');
 

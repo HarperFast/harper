@@ -1,47 +1,48 @@
-import search from '../../dataLayer/search.js';
-import bulkLoad from '../../dataLayer/bulkLoad.js';
-import schema from '../../dataLayer/schema.js';
-import schemaDescribe from '../../dataLayer/schemaDescribe.js';
-import delete_ from '../../dataLayer/delete.js';
-import readAuditLog from '../../dataLayer/readAuditLog.js';
+import * as search from '../../dataLayer/search.ts';
+import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
+import * as schema from '../../dataLayer/schema.ts';
+import * as schemaDescribe from '../../dataLayer/schemaDescribe.ts';
+import * as delete_ from '../../dataLayer/delete.ts';
+import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
-import role from '../../security/role.js';
+import * as role from '../../security/role.ts';
 import customFunctionOperations from '../../components/operations.js';
-import harperLogger from '../../utility/logging/harper_logger.js';
-import readLog from '../../utility/logging/readLog.js';
-import export_ from '../../dataLayer/export.js';
-import opAuth from '../../utility/operation_authorization.js';
-import jobs from '../jobs/jobs.js';
+import harperLogger from '../../utility/logging/harper_logger.ts';
+import readLog from '../../utility/logging/readLog.ts';
+import * as export_ from '../../dataLayer/export.ts';
+import * as opAuth from '../../utility/operation_authorization.ts';
+import * as jobs from '../jobs/jobs.ts';
 import * as terms from '../../utility/hdbTerms.ts';
-import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.js';
+import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
-import restart from '../../bin/restart.js';
+import * as restart from '../../bin/restart.ts';
 import * as util from 'util';
-import insert from '../../dataLayer/insert.js';
-import globalSchema from '../../utility/globalSchema.js';
-import systemInformation from '../../utility/environment/systemInformation.js';
-import jobRunner from '../jobs/jobRunner.js';
+import * as insert from '../../dataLayer/insert.ts';
+import * as globalSchema from '../../utility/globalSchema.ts';
+import { systemInformation } from '../../utility/environment/systemInformation.ts';
+import * as jobRunner from '../jobs/jobRunner.ts';
 import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
 import * as auth from '../../security/auth.ts';
 import configUtils from '../../config/configUtils.js';
-import transactionLog from '../../utility/logging/transactionLog.js';
-import npmUtilities from '../../utility/npmUtilities.js';
+import * as transactionLog from '../../utility/logging/transactionLog.ts';
+import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';
-import { transformReq } from '../../utility/common_utils.js';
+import { transformReq } from '../../utility/common_utils.ts';
 import { server } from '../Server.ts';
 const operationLog = harperLogger.loggerWithTag('operation');
 import * as analytics from '../../resources/analytics/read.ts';
-import operationFunctionCaller from '../../utility/OperationFunctionCaller.js';
+import * as operationFunctionCaller from '../../utility/OperationFunctionCaller.ts';
 import type { OperationRequest, OperationRequestBody } from '../operationsServer.ts';
 import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
+import * as deploymentOperations from '../../components/deploymentOperations.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
 function evaluateSQL(command) {
 	if (!pEvaluateSql) {
-		const sql = require('../../sqlTranslator/index.js');
+		const sql = require('../../sqlTranslator/index');
 		pEvaluateSql = util.promisify(sql.evaluateSQL);
 	}
 	return pEvaluateSql(command);
@@ -70,9 +71,9 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 	try {
 		if (
 			req.body.operation !== 'read_log' &&
-			(harperLogger.log_level === terms.LOG_LEVELS.INFO ||
-				harperLogger.log_level === terms.LOG_LEVELS.DEBUG ||
-				harperLogger.log_level === terms.LOG_LEVELS.TRACE)
+			(harperLogger.logLevel === terms.LOG_LEVELS.INFO ||
+				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
+				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
 			// Need to remove auth variables, but we don't want to create an object unless
 			// the logging is actually going to happen.
@@ -111,6 +112,7 @@ export type OperationDefinition = {
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
+	parametersSchema?: any[];
 };
 
 /**
@@ -118,7 +120,7 @@ export type OperationDefinition = {
  * @param operationDefinition
  */
 server.registerOperation = (operationDefinition: OperationDefinition) => {
-	OPERATION_FUNCTION_MAP.set(operationDefinition.name, new OperationFunctionObject(operationDefinition.execute));
+	OPERATION_FUNCTION_MAP.set(operationDefinition.name as any, new OperationFunctionObject(operationDefinition.execute));
 };
 
 export function chooseOperation(json: OperationRequestBody) {
@@ -136,7 +138,7 @@ export function chooseOperation(json: OperationRequestBody) {
 	// on all affected tables/attributes.
 	try {
 		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
-			const sql = require('../../sqlTranslator/index.js');
+			const sql = require('../../sqlTranslator/index');
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
@@ -186,7 +188,7 @@ export function chooseOperation(json: OperationRequestBody) {
 			}
 		}
 	} catch (err) {
-		throw handleHDBError(err, `There was an error when trying to choose an operation path`);
+		throw handleHDBError(err, `There was an error when trying to choose an operation path`, 500);
 	}
 	return operation_function;
 }
@@ -296,7 +298,7 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 		const error = err instanceof Error ? err : null;
 		const message = `There was an error executing job: ${error && 'http_resp_msg' in error ? error.http_resp_msg : err}`;
 		operationLog.error(message);
-		throw handleHDBError(err, message);
+		throw handleHDBError(err, message, 500);
 	}
 }
 
@@ -363,10 +365,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.SYSTEM_INFORMATION,
-		new OperationFunctionObject(systemInformation.systemInformation)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(systemInformation));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE,
 		new OperationFunctionObject(executeJob, delete_.deleteAuditLogsBefore)
@@ -447,6 +446,14 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
 		new OperationFunctionObject(customFunctionOperations.deployComponent)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS,
+		new OperationFunctionObject(deploymentOperations.handleListDeployments)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
+		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,

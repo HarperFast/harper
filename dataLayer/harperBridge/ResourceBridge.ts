@@ -1,17 +1,17 @@
-import searchValidator from '../../validation/searchValidator.js';
-import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.js';
+import searchValidator from '../../validation/searchValidator.ts';
+import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
 import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
-import SearchObject from '../SearchObject.js';
+import SearchObject from '../SearchObject.ts';
 import {
 	OPERATIONS_ENUM,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 } from '../../utility/hdbTerms.ts';
-import * as signalling from '../../utility/signalling.js';
+import * as signalling from '../../utility/signalling.ts';
 import { SchemaEventMsg } from '../../server/threads/itc.js';
-import { asyncSetTimeout } from '../../utility/common_utils.js';
+import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
 import type {
 	Condition,
@@ -23,9 +23,9 @@ import type {
 	Operator,
 } from '../../resources/ResourceInterface.ts';
 import { collapseData } from '../../resources/tracked.ts';
-import { errorToString } from '../../utility/logging/harper_logger.js';
+import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
-import BridgeMethods from './BridgeMethods.js';
+import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';
@@ -83,14 +83,14 @@ export class ResourceBridge extends BridgeMethods {
 			{
 				conditions: searchObject.conditions,
 				//set the operator to always be lowercase for later evaluations
-				operator: searchObject.operator ? searchObject.operator.toLowerCase() : undefined,
+				operator: searchObject.operator ? (searchObject.operator as any).toLowerCase() : undefined,
 				limit: searchObject.limit,
 				offset: searchObject.offset,
 				reverse: searchObject.reverse,
 				select: getSelect(searchObject, table),
 				sort: searchObject.sort,
 				allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
-			},
+			} as any,
 			{
 				onlyIfCached: searchObject.onlyIfCached,
 				noCacheStore: searchObject.noCacheStore,
@@ -143,7 +143,7 @@ export class ResourceBridge extends BridgeMethods {
 			{
 				name: createAttributeObj.attribute,
 				indexed: createAttributeObj.indexed ?? true,
-			},
+			} as any,
 		]);
 		return `attribute ${createAttributeObj.schema}.${createAttributeObj.table}.${createAttributeObj.attribute} successfully created.`;
 	}
@@ -266,7 +266,7 @@ export class ResourceBridge extends BridgeMethods {
 				keys.push(record[Table.primaryKey]);
 			}
 			return {
-				txn_time: transaction.timestamp,
+				txn_time: (transaction as any).timestamp,
 				written_hashes: keys,
 				new_attributes,
 				skipped_hashes: skipped,
@@ -288,7 +288,7 @@ export class ResourceBridge extends BridgeMethods {
 				if (await Table.delete(id, context)) deleted.push(id);
 				else skipped.push(id);
 			}
-			return createDeleteResponse(deleted, skipped, transaction.timestamp);
+			return createDeleteResponse(deleted, skipped, (transaction as any).timestamp);
 		});
 	}
 
@@ -319,7 +319,7 @@ export class ResourceBridge extends BridgeMethods {
 					comparator: VALUE_SEARCH_COMPARATORS.LESS,
 				},
 			],
-		});
+		} as any);
 
 		let deleteCalled = false;
 		const deletedIds = [];
@@ -376,7 +376,7 @@ export class ResourceBridge extends BridgeMethods {
 	async getDataByHash(searchObject) {
 		const map = new Map();
 		searchObject._returnKeyValue = true;
-		for await (const { key, value } of getRecords(searchObject, true)) {
+		for await (const { key, value } of getRecords(searchObject, true) as any) {
 			map.set(key, value);
 		}
 		return map;
@@ -386,9 +386,10 @@ export class ResourceBridge extends BridgeMethods {
 		if (comparator && VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 			throw new Error(`Value search comparator - ${comparator} - is not valid`);
 		}
-		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
-		if (searchObject.search_attribute !== undefined) searchObject.attribute = searchObject.search_attribute;
-		if (searchObject.search_value !== undefined) searchObject.value = searchObject.search_value;
+		const obj = searchObject as any;
+		if (obj.select !== undefined) obj.get_attributes = obj.select;
+		if (obj.search_attribute !== undefined) obj.attribute = obj.search_attribute;
+		if (obj.search_value !== undefined) obj.value = obj.search_value;
 
 		const validationError = searchValidator(searchObject, 'value');
 		if (validationError) {
@@ -399,7 +400,7 @@ export class ResourceBridge extends BridgeMethods {
 		if (!table) {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
-		let value = searchObject.value;
+		let value: any = searchObject.value;
 		if (value.includes?.('*')) {
 			if (value.startsWith('*')) {
 				if (value.endsWith('*')) {
@@ -435,14 +436,14 @@ export class ResourceBridge extends BridgeMethods {
 				limit: searchObject.limit,
 				offset: searchObject.offset,
 				reverse: searchObject.reverse,
-				sort: searchObject.sort,
+				sort: (searchObject as any).sort,
 				select: getSelect(searchObject, table),
-			},
+			} as any,
 			{
-				onlyIfCached: searchObject.onlyIfCached,
-				noCacheStore: searchObject.noCacheStore,
-				noCache: searchObject.noCache,
-				replicateFrom: searchObject.replicateFrom,
+				onlyIfCached: (searchObject as any).onlyIfCached,
+				noCacheStore: (searchObject as any).noCacheStore,
+				noCache: (searchObject as any).noCache,
+				replicateFrom: (searchObject as any).replicateFrom,
 			}
 		);
 	}
@@ -557,7 +558,7 @@ export class ResourceBridge extends BridgeMethods {
 	}
 }
 
-function getSelect({ get_attributes }, table) {
+function getSelect({ get_attributes }: any, table: any) {
 	if (get_attributes) {
 		if (get_attributes[0] === '*') {
 			if (table.schemaDefined) return;
@@ -599,7 +600,7 @@ function getRecords(searchObject, returnKeyValue?) {
 						const id = ids[i++];
 						let record;
 						try {
-							record = await table.get({ id, lazy, select }, context);
+							record = await table.get({ id, lazy, select } as any, context);
 							record = record && collapseData(record);
 						} catch (error) {
 							record = {

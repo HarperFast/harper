@@ -7,7 +7,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const assert = require('assert');
 // need to rewire in order to override p_search_search_by_value
-const schema_describe = rewire('#js/dataLayer/schemaDescribe');
+const schema_describe = rewire('#src/dataLayer/schemaDescribe');
 const start_time = Date.now();
 
 const TEST_DATA_DOG = [

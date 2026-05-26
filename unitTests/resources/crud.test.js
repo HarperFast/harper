@@ -213,15 +213,21 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			assert.equal(messages.length, 1);
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const analyticsResults = await databases.system.hdb_raw_analytics.search({
-				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
-			});
+			// Poll until analytics are flushed (fixed 100ms was too short on a loaded CI runner)
 			let publishRecorded, messageRecorded;
-			for await (let { metrics } of analyticsResults) {
-				publishRecorded = metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
-				messageRecorded = metrics.find(({ metric, path }) => metric === 'db-message' && path === 'CRUDTable');
-				if (publishRecorded) break;
+			for (let i = 0; i < 20; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				const analyticsResults = await databases.system.hdb_raw_analytics.search({
+					conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+				});
+				publishRecorded = undefined;
+				messageRecorded = undefined;
+				for await (let { metrics } of analyticsResults) {
+					publishRecorded ??= metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
+					messageRecorded ??= metrics.find(({ metric, path }) => metric === 'db-message' && path === 'CRUDTable');
+					if (publishRecorded && messageRecorded) break;
+				}
+				if (publishRecorded && messageRecorded) break;
 			}
 			assert(publishRecorded, 'db-write was recorded in analytics');
 			assert(publishRecorded.mean > 20, 'db-write recorded the bytes count');

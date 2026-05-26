@@ -34,16 +34,16 @@ import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
-import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.js';
+import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
-import type { LMDBStore } from 'lmdb';
+import type { RootDatabase } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 import { HAS_BLOBS } from './auditStore.ts';
 import { getHeapStatistics } from 'node:v8';
 import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { _assignPackageExport } from '../globals.js';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -51,7 +51,7 @@ type StorageInfo = {
 	store?: any;
 	filePath?: string;
 	recordId?: number;
-	contentBuffer?: Buffer;
+	contentBuffer?: any;
 	source?: NodeJS.ReadableStream;
 	storageBuffer?: Buffer;
 	compress?: boolean;
@@ -71,7 +71,7 @@ const ERROR_TYPE = 0xff;
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
-const storageInfoForBlob = new WeakMap<Blob, StorageInfo>();
+const storageInfoForBlob = new WeakMap<any, StorageInfo>();
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
@@ -79,9 +79,6 @@ let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 // the header is 8 bytes
-// this is a reusable buffer for reading and writing to the header (without having to create new allocations)
-const HEADER = new Uint8Array(8);
-const headerView = new DataView(HEADER.buffer);
 const FILE_READ_TIMEOUT = 60000;
 // We want FileBackedBlob instances to be an instanceof Blob, but we don't want to actually extend the class and call Blob's constructor, which is quite expensive because it has to set it up as a transferrable.
 function InstanceOfBlobWithNoConstructor() {}
@@ -96,7 +93,7 @@ InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
  * 3. This also avoids the Blob constructor which is expensive due to the transferred setup
  * Harper still supports saving native Blobs, but when they blobs are retrieved from storage, they always use this class.
  */
-class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
+class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Blob {
 	type = '';
 	size: number;
 	declare finished: Promise<void>;
@@ -117,7 +114,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			this.#onError.push(callback);
 		} else if (type === 'size') {
 			this.#onSize ??= [];
-			this.#onSize.push(callback);
+			this.#onSize.push(callback as any);
 		} else throw new Error("Only 'error' and 'size' events are supported");
 	}
 
@@ -149,7 +146,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	async text(): Promise<string> {
 		return (await this.bytes()).toString();
 	}
-	bytes(): Promise<Buffer> {
+	bytes(): Promise<any> {
 		const storageInfo = storageInfoForBlob.get(this);
 		let { start, end, contentBuffer } = storageInfo;
 		if (contentBuffer) {
@@ -166,8 +163,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			try {
 				rawBytes = await readFile(filePath);
 				if (rawBytes.length >= HEADER_SIZE) {
-					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
-					const headerValue = headerView.getBigUint64(0);
+					const headerValue = new DataView(rawBytes.buffer, rawBytes.byteOffset, 8).getBigUint64(0);
 					if (Number(headerValue >> 48n) === ERROR_TYPE) {
 						throw new Error('Error in blob: ' + rawBytes.subarray(HEADER_SIZE));
 					}
@@ -315,14 +311,13 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								// else throw new Error();
 								return;
 							}
-							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-							const headerValue = headerView.getBigUint64(0);
+							const headerValue = new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0);
 							if (Number(headerValue >> 48n) === ERROR_TYPE) {
 								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead)));
 							}
 							size = Number(headerValue & 0xffffffffffffn);
 							if (size < UNKNOWN_SIZE && blob.size !== size) {
-								blob.size = size;
+								(blob as any).size = size;
 								if (blob.#onSize) {
 									for (const callback of blob.#onSize) callback(size);
 								}
@@ -333,41 +328,62 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							const buffer = Buffer.allocUnsafe(8);
 							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
 								if (error) return onError(error);
-								HEADER.set(buffer);
-								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+								size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
 									if (checkIfIsBeingWritten()) {
+										// detects the race where the writer finished between our last async read
+										// and the watcher being set up (or the watcher missing the final write event)
+										const resumeIfWriterFinished = (): boolean => {
+											if (readSync(fd, buffer, 0, HEADER_SIZE, 0) < HEADER_SIZE) return false;
+											const updatedSize = Number(
+												new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn
+											);
+											if (updatedSize === UNKNOWN_SIZE) return false;
+											size = updatedSize;
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+											}
+											readMore(resolve, reject);
+											return true;
+										};
 										// the file is not finished being written, watch the file for changes to resume reading
 										// set up a watcher to be notified of file changes
 										watcher = watch(filePath, { persistent: false }, () => {
-											watcher.close();
-											watcher = null;
-											clearTimeout(timer); // clear it
-											readMore(resolve, reject);
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+												clearTimeout(timer); // clear it
+												readMore(resolve, reject);
+											}
 										});
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
 											// never mind with the watcher, let's read more data
-											watcher.close();
-											watcher = null;
+											if (watcher) {
+												watcher.close();
+												watcher = null;
+											}
 											readMore(resolve, reject);
-										} else {
+										} else if (!resumeIfWriterFinished()) {
 											// set a timer for the watcher too
 											timer = setTimeout(() => {
-												if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
-													// finally try to read one more time to see if it was a watcher failure
-													onError(
-														new Error(
-															`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
-														)
-													);
-												} else {
-													onError(
-														new Error(
-															`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
-														)
-													);
+												if (!resumeIfWriterFinished()) {
+													if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
+														// finally try to read one more time to see if it was a watcher failure
+														onError(
+															new Error(
+																`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															)
+														);
+													} else {
+														onError(
+															new Error(
+																`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															)
+														);
+													}
 												}
 											}, FILE_READ_TIMEOUT).unref();
 										}
@@ -464,7 +480,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			// TODO: Implement this
 			throw new Error('Can not slice a streaming blob that is not backed by a file');
 		}
-		return slicedBlob;
+		return slicedBlob as any;
 	}
 	get written() {
 		return storageInfoForBlob.get(this)?.saving ?? Promise.resolve();
@@ -477,7 +493,7 @@ let deletionDelay = 500;
  */
 export function deleteBlob(blob: Blob): void {
 	// do we even need to check for completion here?
-	const filePath = getFilePathForBlob(blob);
+	const filePath = getFilePathForBlob(blob as any);
 	if (!filePath) {
 		return;
 	}
@@ -503,7 +519,10 @@ export type BlobCreationOptions = {
  * can be saved/stored.
  * @param source
  */
-global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, options?: BlobCreationOptions): Blob {
+export function createBlob(
+	source: Uint8Array | NodeJS.ReadableStream | string | Iterable<Uint8Array> | AsyncIterator<Uint8Array>,
+	options?: BlobCreationOptions
+): Blob {
 	const blob = new FileBackedBlob(options);
 	const storageInfo: StorageInfo = {
 		storageIndex: 0,
@@ -518,10 +537,12 @@ global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, opt
 	} else if (source instanceof Readable) {
 		storageInfo.source = source;
 	} else if (typeof source === 'string') storageInfo.contentBuffer = Buffer.from(source);
-	else if (source?.[Symbol.asyncIterator] || source?.[Symbol.iterator]) storageInfo.source = Readable.from(source);
+	else if (source?.[Symbol.asyncIterator] || source?.[Symbol.iterator])
+		storageInfo.source = Readable.from(source as any);
 	else throw new Error('Invalid source type');
-	return blob;
-};
+	return blob as any;
+}
+_assignPackageExport('createBlob', createBlob);
 
 export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 	let storageInfo = storageInfoForBlob.get(blob);
@@ -541,11 +562,11 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		return storageInfo; // nothing more to do if it supposed to be saved in the record
 	}
 	generateFilePath(storageInfo);
-	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
-	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob, storageInfo);
+	if (storageInfo.source) writeBlobWithStream(blob as any, storageInfo.source, storageInfo);
+	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob as any, storageInfo);
 	else {
 		// for native blobs, we have to read them from the stream
-		writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo);
+		writeBlobWithStream(blob as any, Readable.from(blob.stream()), storageInfo);
 	}
 	return storageInfo;
 }
@@ -568,7 +589,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			writeStream.write(createHeader(blob.size)); // write the default header
 			wroteSize = true;
 		}
-		let compressedStream: NodeJS.Stream;
+		let compressedStream: any;
 		if (compress) {
 			if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
 			compressedStream = createDeflate();
@@ -587,12 +608,12 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		}
 		// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
 		function finished(error?: Error) {
-			const fd = writeStream.fd;
+			const fd = (writeStream as any).fd;
 			if (error) {
 				store.unlock(lockKey);
 				if (fd) {
 					close(fd);
-					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+					(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
 				}
 				if (storageInfo.deleteOnFailure) {
 					unlink(filePath, (error) => {
@@ -620,7 +641,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 				if (!wroteSize) {
 					wroteSize = true;
 					const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
-					blob.size = size;
+					(blob as any).size = size;
 					write(fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
 					return; // not finished yet, wait for this write and then we are finished
 				}
@@ -631,12 +652,12 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 						if (error) reject(error);
 						resolve();
 						close(fd);
-						writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+						(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
 					});
 				} else {
 					resolve();
 					close(fd);
-					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+					(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
 				}
 			}
 		}
@@ -648,7 +669,7 @@ export function getFileId(blob: Blob): string {
 	return storageInfoForBlob.get(blob)?.fileId;
 }
 
-export function isSaving(blob: Blob): string {
+export function isSaving(blob: Blob): Promise<void> {
 	return storageInfoForBlob.get(blob)?.saving;
 }
 
@@ -656,28 +677,28 @@ export function getFilePathForBlob(blob: FileBackedBlob): string {
 	const storageInfo = storageInfoForBlob.get(blob);
 	return storageInfo?.fileId && getFilePath(storageInfo);
 }
-export const databasePaths = new Map<LMDBStore, string[]>();
-export function getRootBlobPathsForDB(store: LMDBStore) {
+export const databasePaths = new Map<RootDatabase, string[]>();
+export function getRootBlobPathsForDB(store: RootDatabase) {
 	if (!store) {
 		throw new Error('No store specified, can not determine blob storage path');
 	}
 	let paths: string[] = databasePaths.get(store);
 	if (!paths) {
-		if (!store.databaseName) {
+		if (!(store as any).databaseName) {
 			logger.warn?.('No database name specified, can not determine blob storage path');
 			return [];
 		}
 		const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
 		if (blobPaths) {
-			paths = blobPaths.map((path) => join(path, store.databaseName));
+			paths = blobPaths.map((path) => join(path, (store as any).databaseName));
 		} else {
-			paths = [join(getHdbBasePath(), 'blobs', store.databaseName)];
+			paths = [join(getHdbBasePath(), 'blobs', (store as any).databaseName)];
 		}
 		databasePaths.set(store, paths);
 	}
 	return paths;
 }
-export async function deleteRootBlobPathsForDB(store: LMDBStore): Promise<any[]> {
+export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<void> {
 	const paths = getRootBlobPathsForDB(store);
 	if (paths) {
 		await Promise.all(paths.map((path) => rimrafSteadily(path)));
@@ -730,7 +751,7 @@ function writeBlobWithBuffer(blob: Blob, storageInfo: StorageInfo): Blob {
 		// if the buffer is small enough, just store it in memory
 		return;
 	}
-	blob.size = size;
+	(blob as any).size = size;
 	return writeBlobWithStream(blob, Readable.from([buffer]), storageInfo);
 }
 
@@ -751,7 +772,7 @@ function generateFilePath(storageInfo: StorageInfo) {
 	if (!existsSync(fileDir)) ensureDirSync(fileDir);
 	storageInfo.filePath = filePath;
 }
-const idIncrementers = new Map<LMDBStore, BigInt64Array>();
+const idIncrementers = new Map<RootDatabase, BigInt64Array>();
 function getNextFileId(): number {
 	// all threads will use a shared buffer to atomically increment the id
 	// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
@@ -800,21 +821,21 @@ const FREQUENCY_TABLE_SIZE = 128;
  */
 function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
 	const now = Date.now();
-	if (!blobStoragePaths.frequencyTable) {
-		blobStoragePaths.lastUpdated = 0;
+	if (!(blobStoragePaths as any).frequencyTable) {
+		(blobStoragePaths as any).lastUpdated = 0;
 		// setup default frequency table with even distribution
 		const frequencyTable = new Array(FREQUENCY_TABLE_SIZE);
 		for (let i = 0; i < frequencyTable.length; i++) {
 			frequencyTable[i] = i % blobStoragePaths.length;
 		}
-		blobStoragePaths.frequencyTable = frequencyTable;
+		(blobStoragePaths as any).frequencyTable = frequencyTable;
 	}
-	if ((blobStoragePaths.lastUpdated ?? 0) + 60000 < now) {
-		blobStoragePaths.lastUpdated = now;
+	if (((blobStoragePaths as any).lastUpdated ?? 0) + 60000 < now) {
+		(blobStoragePaths as any).lastUpdated = now;
 		// create a new frequency table based on the available space
 		createFrequencyTableForStoragePaths(blobStoragePaths);
 	}
-	const nextIndex = blobStoragePaths.frequencyTable[fileId % FREQUENCY_TABLE_SIZE];
+	const nextIndex = (blobStoragePaths as any).frequencyTable[fileId % FREQUENCY_TABLE_SIZE];
 	return nextIndex;
 }
 
@@ -857,7 +878,7 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 		pathPeriods[nextIndex] += 1 / availableSpaces[nextIndex];
 		frequencyTable[i] = nextIndex;
 	}
-	blobStoragePaths.frequencyTable = frequencyTable;
+	(blobStoragePaths as any).frequencyTable = frequencyTable;
 }
 
 /**
@@ -866,7 +887,7 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
  * @param encodingId
  * @param objectToClear
  */
-export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, store: LMDBStore): T {
+export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, store: RootDatabase): T {
 	encodeForStorageForRecordId = encodingId;
 	currentStore = store;
 	blobsWereEncoded = false;
@@ -902,7 +923,7 @@ export function encodeBlobsAsBuffers<T>(callback: () => T): Promise<T> {
  * Decode blobs, creating local storage to hold the blogs and returning a promise that resolves when all the blobs are written to disk
  * @param callback
  */
-export function decodeBlobsWithWrites(callback: () => void, store?: LMDBStore, blobCallback?: (blob: Blob) => void) {
+export function decodeBlobsWithWrites(callback: () => void, store?: RootDatabase, blobCallback?: (blob: Blob) => void) {
 	try {
 		promisedWrites = [];
 		currentBlobCallback = blobCallback;
@@ -928,7 +949,7 @@ export function decodeBlobsWithWrites(callback: () => void, store?: LMDBStore, b
 export function decodeWithBlobCallback(
 	callback: () => void,
 	blobCallback: (blob: Blob) => void,
-	rootStore?: LMDBStore
+	rootStore?: RootDatabase
 ) {
 	currentStore = rootStore;
 	try {
@@ -942,7 +963,7 @@ export function decodeWithBlobCallback(
  * Decode with a callback for when blobs are encountered, allowing for detecting of blobs
  * @param callback
  */
-export function decodeFromDatabase<T>(callback: () => T, rootStore: LMDBStore) {
+export function decodeFromDatabase<T>(callback: () => T, rootStore: RootDatabase) {
 	// note that this is actually called recursively (but always the same root store), so we don't clear afterwards
 	currentStore = rootStore;
 	return callback();
@@ -981,13 +1002,22 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	}
 }
 
+export interface PreCommitBlobs {
+	blobs: Blob[];
+	complete: () => Promise<void[]>;
+}
+
 /**
  * Do a shallow/fast search for blobs on the record and start saving them if they are supposed to be saved before a commit
  * @param record
  * @param store
  */
-export function startPreCommitBlobsForRecord(record: any, store: LMDBStore | RocksDatabase, saveInRecord?: boolean) {
-	let blobsNeedingSaving = [];
+export function startPreCommitBlobsForRecord(
+	record: any,
+	store: any,
+	saveInRecord?: boolean
+): PreCommitBlobs | undefined {
+	const blobsNeedingSaving: Blob[] = [];
 	for (const key in record) {
 		const value = record[key];
 		if (value instanceof FileBackedBlob && (saveInRecord || value.saveBeforeCommit)) {
@@ -999,16 +1029,43 @@ export function startPreCommitBlobsForRecord(record: any, store: LMDBStore | Roc
 		}
 	}
 	if (blobsNeedingSaving.length > 0) {
-		// we do have blobs, start saving once the returned function is called
-		return () => {
-			currentStore = store;
-			return Promise.all(
-				blobsNeedingSaving.map((blob) => {
-					return saveBlob(blob, true).saving ?? Promise.resolve();
-				})
-			);
+		// we do have blobs, start saving once complete() is called
+		return {
+			blobs: blobsNeedingSaving,
+			complete: () => {
+				currentStore = store;
+				return Promise.all(
+					blobsNeedingSaving.map((blob) => {
+						return saveBlob(blob as any, true).saving ?? Promise.resolve();
+					})
+				);
+			},
 		};
 	}
+}
+
+/**
+ * Clean up blob files that were pre-saved as part of a transaction that ended up not committing
+ * (e.g. transaction aborted, optimistic-lock retry where the commit handler skipped the update).
+ *
+ * Waits for any in-flight save to settle before unlinking, so we don't race with the writer
+ * and leave a half-written file. Errors are swallowed — the blob may have already been
+ * cleaned up by deleteOnFailure on the save path.
+ * @param blobs blobs that were registered via {@link startPreCommitBlobsForRecord}
+ */
+export function cleanupUnusedBlobs(blobs: Blob[] | undefined): void {
+	if (!blobs?.length) return;
+	for (const blob of blobs) {
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
+		const settle = storageInfo.saving ?? Promise.resolve();
+		settle.then(
+			() => deleteBlob(blob),
+			() => deleteBlob(blob) // even on save failure, attempt cleanup in case a partial file remains
+		);
+	}
+	// idempotent: subsequent calls (e.g. from abort after commit-handler already cleaned up) are no-ops
+	blobs.length = 0;
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
@@ -1035,8 +1092,8 @@ addExtension({
 			storageInfoForBlob.set(blob, {
 				storageIndex: 0,
 				fileId: null,
-				storageBuffer: buffer,
-				contentBuffer: blobInfo[1],
+				storageBuffer: buffer as any,
+				contentBuffer: blobInfo[1] as any,
 			});
 			blob.size = blobInfo[1]?.length;
 		}
@@ -1085,8 +1142,7 @@ addExtension({
 			try {
 				const buffer = readFileSync(getFilePath(storageInfo));
 				if (buffer.length >= HEADER_SIZE) {
-					buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-					const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+					const size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 					if (size === buffer.length - HEADER_SIZE) {
 						// the file is there and complete, we can return the encoding
 						return Buffer.concat([pack([options]), buffer]);
@@ -1160,8 +1216,8 @@ function polyfillBlob() {
  * @param database
  */
 export async function cleanupOrphans(database: any, databaseName?: string) {
-	let store: LMDBStore;
-	let auditStore: LMDBStore;
+	let store: RootDatabase;
+	let auditStore: RootDatabase;
 	let orphansDeleted = 0;
 	for (const tableName in database) {
 		const table = database[tableName];
@@ -1236,13 +1292,13 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		}
 		logger.warn?.('Checking for references to potential orphaned blobs in the audit log');
 		// search the audit store for references
-		for (const auditRecord of auditStore.getRange({ start: 1, snapshot: false, lazy: true })) {
+		for (const auditRecord of auditStore.getRange({ start: 1, snapshot: false } as any)) {
 			try {
-				const primaryStore = auditStore.tableStores[auditRecord.tableId];
+				const primaryStore = (auditStore as any).tableStores[(auditRecord as any).tableId];
 				if (!primaryStore) continue;
-				const entry = primaryStore?.getEntry(auditRecord.recordId);
+				const entry = primaryStore?.getEntry((auditRecord as any).recordId);
 				if (!entry || entry.version !== auditRecord.version || !entry.value) {
-					checkObjectForReferences(auditRecord.getValue(primaryStore));
+					checkObjectForReferences((auditRecord as any).getValue(primaryStore));
 				}
 				// slow this down a bit to reduce excessive load, this runs approximately at 10k per second
 				if (i++ % perMS === 0)
