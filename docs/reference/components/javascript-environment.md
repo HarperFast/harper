@@ -46,7 +46,7 @@ An object containing all databases defined in Harper. Each database is an object
 
 See [Database API](../database/api.md) for full reference.
 
-### `transaction(fn)`
+### `transaction(fn)` {#transaction}
 
 Executes a function inside a database transaction. Changes made within the function are committed atomically, or rolled back if an error is thrown.
 
