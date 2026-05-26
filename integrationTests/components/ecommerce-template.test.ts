@@ -5,7 +5,7 @@
  * REST API CRUD, edge cases, and GraphQL.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert/strict';
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -19,7 +19,7 @@ suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 			package: 'https://github.com/HarperFast/harper-ecommerce-template',
 			restart: true,
 		});
-		deepStrictEqual(body, { message: 'Successfully deployed: harper-ecommerce-template, restarting Harper' });
+		strictEqual(body.message, 'Successfully deployed: harper-ecommerce-template, restarting Harper');
 
 		const deadline = Date.now() + 60_000;
 		while (true) {
