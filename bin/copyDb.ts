@@ -306,8 +306,6 @@ export async function migrateOnStart() {
 	const rootPath = get(CONFIG_PARAMS.ROOTPATH);
 	const databases = getDatabases();
 
-	updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
-
 	try {
 		let databaseNames = Object.keys(databases);
 		// system is a dontenum property, so we have to manually add it
@@ -362,6 +360,9 @@ export async function migrateOnStart() {
 			}
 		}
 
+		// Only clear the flag after all databases have migrated successfully
+		updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
+
 		try {
 			resetDatabases();
 		} catch (err) {
@@ -404,8 +405,13 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 			targetDbisDb.put(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 
-			// Open source LMDB dbi with default encoding so values are decoded
+			// Open source LMDB dbi with default encoding so values are decoded.
+			// Compression must be passed through from the attribute descriptor so lmdb-js
+			// installs its decompression layer; without it, compressed record/structure bytes
+			// are interpreted as raw msgpack, which on records that reference shared structures
+			// triggers infinite getStructures recursion → "Maximum call stack size exceeded".
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
+			dbiInit.compression = attribute.compression;
 			const sourceDbi = sourceRootStore.openDB(key, dbiInit);
 
 			let targetDbi;
@@ -453,7 +459,8 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
-		let retries = 1000000;
+		const MAX_RETRIES = 1000;
+		let retries = MAX_RETRIES;
 		let start = null;
 		while (retries-- > 0) {
 			try {
@@ -537,7 +544,11 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				}
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return;
-			} catch {
+			} catch (err) {
+				console.error(
+					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
+					err
+				);
 				if (typeof start === 'string') {
 					if (start === 'z') {
 						return console.error('Reached end of dbi', start, 'for', sourceDatabase);
@@ -547,5 +558,10 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				else return console.error('Unknown key type', start, 'for', sourceDatabase);
 			}
 		}
+		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and
+		// skips moving the LMDB files to backup, instead of leaving a partial copy.
+		throw new Error(
+			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${JSON.stringify(start)}`
+		);
 	}
 }
