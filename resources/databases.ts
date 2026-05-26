@@ -155,14 +155,28 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
 	}
-	// Read block cache size lazily so env/CLI overrides applied after module load are respected.
-	// Falls back to 25% of constrained (cgroup) memory when not configured.
+	// Read RocksDB memory config lazily so env/CLI overrides applied after module load are
+	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
+	// configured; the WriteBufferManager is opt-in (0 disables).
+	//
+	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
+	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
+	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
+	// In practice that's fine — these come from process-level config that doesn't change.
 	const configuredBlockCacheSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE);
 	const blockCacheSize =
 		configuredBlockCacheSize > 0
 			? configuredBlockCacheSize
 			: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25;
-	RocksDatabase.config({ blockCacheSize });
+	const writeBufferManagerSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE);
+	const writeBufferManagerCostToCache = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE);
+	const writeBufferManagerAllowStall = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL);
+	RocksDatabase.config({
+		blockCacheSize,
+		...(writeBufferManagerSize > 0 ? { writeBufferManagerSize } : {}),
+		...(writeBufferManagerCostToCache != null ? { writeBufferManagerCostToCache } : {}),
+		...(writeBufferManagerAllowStall != null ? { writeBufferManagerAllowStall } : {}),
+	});
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
 		if (isReadOnlyMode()) {
