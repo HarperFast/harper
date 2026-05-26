@@ -148,7 +148,8 @@ suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 		strictEqual(res.status, 404);
 	});
 
-	test('GraphQL query returns products', async () => {
+	// TODO: unskip once HarperFast/nextjs#36 is fixed (Next.js intercepts /graphql)
+	test('GraphQL query returns products', { skip: true }, async () => {
 		const res = await fetch(`${ctx.harper.httpURL}/graphql`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
