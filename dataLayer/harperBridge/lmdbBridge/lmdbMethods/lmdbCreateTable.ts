@@ -1,4 +1,3 @@
-/* global HDB_TABLE_INFO, hdbTableAttributes */
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';
 import * as _writeUtility from '../../../../utility/lmdb/writeUtility.ts';
@@ -58,10 +57,10 @@ async function lmdbCreateTable(tableSystemData, tableCreateObj) {
 				hdbTableEnv,
 				// I'm not sure what else to do with these for now, but I do want to eslint to check the rest of the codebase
 				// for undefined vars. - WSM 2025-11-26
-				// eslint-disable-next-line no-undef
-				HDB_TABLE_INFO.hash_attribute,
-				// eslint-disable-next-line no-undef
-				hdbTableAttributes,
+				// @ts-expect-error - HDB_TABLE_INFO is a legacy global injected at runtime
+				HDB_TABLE_INFO.hash_attribute, // eslint-disable-line no-undef
+				// @ts-expect-error - hdbTableAttributes is a legacy global injected at runtime
+				hdbTableAttributes, // eslint-disable-line no-undef
 				[tableSystemData]
 			);
 			//create attributes for hash attribute created/updated time stamps
