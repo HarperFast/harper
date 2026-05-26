@@ -4,9 +4,10 @@ import { ITC_ERRORS } from '../../utility/errors/commonErrors.ts';
 import { threadId } from 'node:worker_threads';
 import {
 	onMessageFromWorkers,
-	broadcastWithAcknowledgement,
+	broadcastWithAcknowledgement as _broadcastWithAcknowledgement,
 	broadcastWithStrictAcknowledgement,
 } from './manageThreads.ts';
+let broadcastWithAcknowledgement = _broadcastWithAcknowledgement;
 
 export { sendItcEvent, sendItcEventStrict, validateEvent, SchemaEventMsg };
 let serverItcHandlers;

@@ -7,7 +7,7 @@ import { isMainThread } from 'node:worker_threads';
 import { Readable } from 'node:stream';
 
 import * as _os from 'node:os';
-const os = _os;
+let os = _os;
 
 import * as auth from '../../security/fastifyAuth.ts';
 
