@@ -1,4 +1,3 @@
-/* global HDB_TABLE_INFO, hdbAttributeAttributes */
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';
 import * as writeUtility from '../../../../utility/lmdb/writeUtility.ts';
@@ -96,10 +95,10 @@ async function lmdbCreateAttribute(createAttributeObj) {
 			hdbAttributeEnv,
 			// I'm not sure what else to do with these for now, but I do want to eslint to check the rest of the codebase
 			// for undefined vars. - WSM 2025-11-26
-			// eslint-disable-next-line no-undef
-			HDB_TABLE_INFO.hash_attribute,
-			// eslint-disable-next-line no-undef
-			hdbAttributeAttributes,
+			// @ts-expect-error - HDB_TABLE_INFO is a legacy global injected at runtime
+			HDB_TABLE_INFO.hash_attribute, // eslint-disable-line no-undef
+			// @ts-expect-error - hdbAttributeAttributes is a legacy global injected at runtime
+			hdbAttributeAttributes, // eslint-disable-line no-undef
 			[record]
 		);
 
