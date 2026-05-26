@@ -140,9 +140,19 @@ In-memory record caching of decoded records. Disable to reduce heap usage when r
 
 ## RocksDB Memory
 
-RocksDB uses two large native memory pools that Harper exposes for tuning: a shared **block cache** for hot SST blocks, and an optional **WriteBufferManager** that caps total memtable memory across every database in the process. These are RocksDB-specific — when `storage.engine` is `lmdb`, none of these options apply.
+RocksDB exposes two large native memory pools that Harper makes tunable: a shared **block cache** for hot SST blocks, and an optional **WriteBufferManager** that caps total memtable memory across every database in the process. These options apply only when `storage.engine` is `rocksdb`.
 
-For single-tenant deployments the defaults are appropriate. The knobs below are intended for shared-host or memory-constrained environments where multiple Harper databases coexist with other workloads and total memory must be bounded predictably.
+### How RocksDB reads are cached
+
+A read of a record that isn't in the memtable goes through three tiers before reaching disk:
+
+1. **Block cache** (in-process, decompressed) — sized by `storage.rocks.blockCacheSize`. A hit returns in roughly a microsecond with no syscall and no decompression cost.
+2. **OS page cache** (kernel, compressed SST file pages) — sized dynamically by the kernel from whatever memory isn't claimed by the process. A block-cache miss that hits the page cache costs a `read` syscall plus decompression — still on the order of microseconds, just an order of magnitude slower than the block cache.
+3. **Disk** — if neither cache holds the page, RocksDB reads from the SST file directly.
+
+Harper uses buffered I/O, so the OS page cache is always in play. The implication for sizing: shrinking the block cache doesn't directly translate to more disk reads — it shifts hits from the block cache (decompressed) to the OS page cache (compressed). The OS page cache also adjusts dynamically to host-wide memory pressure, which the block cache does not. Reserving less memory for the block cache leaves more for the page cache and for unrelated allocations on the host.
+
+The trade-off favors a larger block cache when read latency matters and the working set fits; it favors a smaller block cache when memory pressure or noisy neighbors are the dominant concern.
 
 ### `storage.rocks.blockCacheSize`
 
@@ -152,9 +162,9 @@ Type: `number` (bytes)
 
 Default: 25% of constrained (cgroup) or total memory
 
-The shared LRU cache for decompressed SST blocks. Every RocksDB database in the process draws from this single pool — sizing it correctly is a balance between read-cache hit rate and leaving room for memtables, the heap, and OS page cache.
+The shared LRU cache for decompressed SST blocks. Every RocksDB database in the process draws from this single pool.
 
-The default sizes the cache to 25% of available memory, computed once at startup. This is reasonable for single-tenant servers but can be excessive in multi-tenant deployments where the cache is rarely filled and the unused capacity contributes to the process's idle-state memory floor (the cache itself does not shrink on idle — entries persist until LRU eviction or a manual `SetCapacity` change).
+The cache fills as blocks are read; it does **not** shrink on idle. Once the cache reaches its high-water mark for a workload, entries persist until LRU eviction or a manual capacity change. A long-running instance with a brief burst of activity will hold the cached blocks for the lifetime of the process.
 
 ```yaml
 storage:
@@ -164,11 +174,11 @@ storage:
 
 Lower the cache size when:
 
-- Multiple Harper instances or other memory-heavy processes share the host.
-- Read access patterns favor warm data far smaller than 25% of memory.
-- The instance is provisioned with a strict cgroup limit and the headroom is needed for memtables or application heap.
+- The host has limited memory headroom and the OS page cache is a meaningful second tier.
+- Read access patterns favor a warm working set far smaller than 25% of memory.
+- The instance runs under a strict cgroup limit and the headroom is needed for memtables or application heap.
 
-Raise it (or leave at the default) when reads dominate and the working set is large.
+Raise it (or leave at the default) when reads dominate and the working set comfortably fits at 25%.
 
 ### `storage.rocks.writeBufferManagerSize`
 
@@ -178,9 +188,9 @@ Type: `number` (bytes)
 
 Default: `0` (disabled)
 
-When set, Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history used by [OptimisticTransactionDB](./storage-algorithm.md) for conflict checking — is capped at this size across the entire process.
+When set, Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history that RocksDB's OptimisticTransactionDB retains for conflict checking — is capped at this size across the entire process.
 
-Without a `WriteBufferManager`, each column family manages its own memtable budget. For databases with many tables (column families), this can grow unbounded: every column family retains roughly `max_write_buffer_size_to_maintain` worth of recently-flushed memtables for snapshot reads and conflict detection, so a 14-table database can hold 1–2 GB of resident anonymous memory before any cap is reached.
+Without a `WriteBufferManager`, each column family (table) manages its own memtable budget. The total grows with the number of column families: each one retains roughly `max_write_buffer_size_to_maintain` worth of recently-flushed memtables for snapshot reads and conflict detection. A database with many tables can accumulate hundreds of megabytes to a few gigabytes of resident anonymous memory before any cap is reached.
 
 Enabling the manager bounds that growth at a single configurable limit:
 
