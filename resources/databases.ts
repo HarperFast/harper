@@ -110,11 +110,30 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
-const MEMORY_FOR_ROCKS_DB = Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25; // 25% of available memory
-
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
-	RocksDatabase.config({ blockCacheSize: MEMORY_FOR_ROCKS_DB });
+	// Read RocksDB memory config lazily so env/CLI overrides applied after module load are
+	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
+	// configured; the WriteBufferManager is opt-in (0 disables).
+	//
+	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
+	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
+	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
+	// In practice that's fine — these come from process-level config that doesn't change.
+	const configuredBlockCacheSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE);
+	const blockCacheSize =
+		configuredBlockCacheSize > 0
+			? configuredBlockCacheSize
+			: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25;
+	const writeBufferManagerSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE);
+	const writeBufferManagerCostToCache = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE);
+	const writeBufferManagerAllowStall = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL);
+	RocksDatabase.config({
+		blockCacheSize,
+		...(writeBufferManagerSize > 0 ? { writeBufferManagerSize } : {}),
+		...(writeBufferManagerCostToCache != null ? { writeBufferManagerCostToCache } : {}),
+		...(writeBufferManagerAllowStall != null ? { writeBufferManagerAllowStall } : {}),
+	});
 	if (!existsSync(path)) {
 		mkdirSync(path, { recursive: true });
 	}
