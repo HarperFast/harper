@@ -776,7 +776,13 @@ describe('EntryHandler', () => {
 		});
 
 		it('should ignore package-manager log files', async () => {
-			const { directory } = createFixture(['app.js', 'npm-debug.log', 'yarn-error.log', 'pnpm-debug.log']);
+			const { directory } = createFixture([
+				'app.js',
+				'npm-debug.log',
+				'yarn-debug.log',
+				'yarn-error.log',
+				'pnpm-debug.log',
+			]);
 
 			const allHandlerSpy = spy();
 			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
