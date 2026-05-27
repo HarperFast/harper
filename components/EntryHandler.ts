@@ -184,7 +184,14 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				warnWatcherFallback(this.#component.directory);
 				this.#usingPolling = true;
 				// Reopen with polling. #watch() itself guards against reopen-after-close.
-				void this.#watch();
+				// The .catch is required because #watch() internally awaits the failed
+				// watcher's close(), which can reject under the same FD/inotify pressure
+				// that triggered this path; without it Node would treat that as an
+				// unhandled rejection (matches the .catch pattern used in
+				// OptionsWatcher / RootConfigWatcher).
+				this.#watch().catch(() => {
+					// Teardown errors on an already-failed watcher are not actionable.
+				});
 			}
 			return;
 		}
