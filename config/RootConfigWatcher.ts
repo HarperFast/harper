@@ -11,6 +11,7 @@ export class RootConfigWatcher extends EventEmitter {
 	#config: any;
 	#usingPolling: boolean;
 	#closed: boolean;
+	#openCount: number = 0;
 	ready: Promise<any[]>;
 
 	constructor() {
@@ -23,6 +24,7 @@ export class RootConfigWatcher extends EventEmitter {
 	}
 
 	#openWatcher() {
+		this.#openCount++;
 		this.#watcher = chokidar
 			.watch(this.#configFilePath, {
 				persistent: false,
@@ -31,6 +33,23 @@ export class RootConfigWatcher extends EventEmitter {
 			.on('add', this.handleChange.bind(this))
 			.on('change', this.handleChange.bind(this))
 			.on('error', this.handleError.bind(this));
+	}
+
+	// Test-only: simulate the underlying chokidar watcher emitting an error.
+	// Exposed so the polling-fallback path can be exercised without triggering a
+	// real ENOSPC/EMFILE on the host.
+	_simulateWatcherErrorForTests(error: unknown): void {
+		this.handleError(error);
+	}
+
+	// Test-only: whether the watcher has fallen back to polling.
+	get _usingPollingForTests(): boolean {
+		return this.#usingPolling;
+	}
+
+	// Test-only: number of times the underlying watcher has been (re)opened.
+	get _openCountForTests(): number {
+		return this.#openCount;
 	}
 
 	handleError(error: unknown) {

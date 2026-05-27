@@ -75,4 +75,90 @@ describe('RootConfigWatcher', () => {
 
 		configWatcher.close();
 	});
+
+	describe('polling fallback on watcher exhaustion', () => {
+		// harper#488: when ENOSPC/EMFILE fires on the underlying chokidar
+		// watcher, the RootConfigWatcher should swap to a polling watcher
+		// rather than surfacing the error to consumers.
+
+		it('falls back to polling on ENOSPC and continues to receive change events', async () => {
+			const initial = { foo: 'bar' };
+			writeFileSync(this.configFilePath, stringify(initial));
+			const configWatcher = new RootConfigWatcher();
+			await configWatcher.ready;
+
+			const errorSpy = spy();
+			configWatcher.on('error', errorSpy);
+
+			assert.equal(configWatcher._usingPollingForTests, false);
+
+			configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			assert.equal(configWatcher._usingPollingForTests, true, 'should have flipped to polling');
+			assert.equal(errorSpy.callCount, 0, 'ENOSPC should be swallowed');
+
+			// Polling watcher should pick up subsequent writes; default polling
+			// interval is 1s, so allow up to ~3s for the change event.
+			const updated = { foo: 'after-fallback' };
+			await writeFile(this.configFilePath, stringify(updated));
+			const [changeValue] = await once(configWatcher, 'change');
+			assert.deepEqual(changeValue, updated, 'polling watcher should fire change');
+
+			configWatcher.close();
+		}).timeout(5000);
+
+		it('propagates non-exhaustion errors and does not fall back', async () => {
+			writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+			const configWatcher = new RootConfigWatcher();
+			await configWatcher.ready;
+
+			const errorSpy = spy();
+			configWatcher.on('error', errorSpy);
+
+			configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+			await new Promise((resolve) => setTimeout(resolve, 20));
+
+			assert.equal(configWatcher._usingPollingForTests, false);
+			assert.equal(errorSpy.callCount, 1, 'non-exhaustion error should propagate');
+
+			configWatcher.close();
+		});
+
+		it('swallows additional exhaustion errors during recovery', async () => {
+			writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+			const configWatcher = new RootConfigWatcher();
+			await configWatcher.ready;
+
+			const errorSpy = spy();
+			configWatcher.on('error', errorSpy);
+
+			const enospc = () => Object.assign(new Error('boom'), { code: 'ENOSPC' });
+			configWatcher._simulateWatcherErrorForTests(enospc());
+			configWatcher._simulateWatcherErrorForTests(enospc());
+			configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EMFILE' }));
+
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			assert.equal(configWatcher._usingPollingForTests, true);
+			assert.equal(errorSpy.callCount, 0, 'all exhaustion errors should be swallowed');
+
+			configWatcher.close();
+		});
+
+		it('does not reopen watcher if close() is called during recovery', async () => {
+			writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+			const configWatcher = new RootConfigWatcher();
+			await configWatcher.ready;
+
+			assert.equal(configWatcher._openCountForTests, 1, 'one initial open');
+
+			configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+			configWatcher.close();
+
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			assert.equal(configWatcher._openCountForTests, 1, 'reopen must be suppressed by the close-during-fallback guard');
+		});
+	});
 });

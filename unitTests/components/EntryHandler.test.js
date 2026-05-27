@@ -584,4 +584,108 @@ describe('EntryHandler', () => {
 			rmSync(directory, { recursive: true, force: true });
 		});
 	});
+
+	describe('polling fallback on watcher exhaustion', () => {
+		// harper#488: when the underlying chokidar watcher emits ENOSPC/EMFILE,
+		// the EntryHandler should re-open with polling rather than surfacing the
+		// error to consumers. EntryHandler's recovery path uses #watch() (which
+		// awaits the old watcher's close then checks #closed), structurally
+		// different from OptionsWatcher/RootConfigWatcher's explicit
+		// close().catch().finally() chain — so it needs its own coverage.
+
+		it('falls back to polling on ENOSPC and continues to receive change events', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errorSpy = spy();
+			entryHandler.on('error', errorSpy);
+
+			assert.equal(entryHandler._usingPollingForTests, false);
+
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+
+			// Allow the close+reopen-with-polling to settle.
+			await waitFor(() => entryHandler._usingPollingForTests === true, 2000);
+			assert.equal(entryHandler._usingPollingForTests, true);
+			assert.equal(errorSpy.callCount, 0, 'ENOSPC should be swallowed');
+
+			// The polling watcher should pick up subsequent file writes; default
+			// directory polling interval is 3s, so allow up to 5s.
+			const addSpy = spy();
+			entryHandler.on('add', addSpy);
+			await writeFile(join(directory, 'b.txt'), 'b');
+			await waitFor(() => addSpy.callCount >= 1, 5000);
+			assert.ok(addSpy.callCount >= 1, 'polling watcher should fire add');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		}).timeout(8000);
+
+		it('propagates non-exhaustion errors and does not fall back', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errorSpy = spy();
+			entryHandler.on('error', errorSpy);
+
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+			await new Promise((r) => setTimeout(r, 20));
+
+			assert.equal(entryHandler._usingPollingForTests, false);
+			assert.equal(errorSpy.callCount, 1, 'non-exhaustion error should propagate');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('swallows additional exhaustion errors during recovery', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errorSpy = spy();
+			entryHandler.on('error', errorSpy);
+
+			const enospc = () => Object.assign(new Error('boom'), { code: 'ENOSPC' });
+			entryHandler._simulateWatcherErrorForTests(enospc());
+			entryHandler._simulateWatcherErrorForTests(enospc());
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EMFILE' }));
+
+			await waitFor(() => entryHandler._usingPollingForTests === true, 1000);
+			assert.equal(errorSpy.callCount, 0, 'all exhaustion errors should be swallowed');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('does not reopen watcher if close() is called during recovery', async () => {
+			// EntryHandler's recovery path: #handleError calls `void this.#watch()`,
+			// which does `await this.#watcher?.close(); if (this.#closed) return`.
+			// If close() lands between the ENOSPC and #watch()'s post-await check,
+			// the new chokidar watcher must not be installed.
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+			entryHandler.close();
+
+			// Allow plenty of time for the would-be reopen to (not) happen.
+			await new Promise((r) => setTimeout(r, 200));
+
+			// After close(), no further events should fire. Subsequent file writes
+			// are the strongest signal we can observe without exposing more internals.
+			const addSpy = spy();
+			entryHandler.on('add', addSpy);
+			await writeFile(join(directory, 'b.txt'), 'b');
+			// Even with the polling interval (3s for directory watchers), we should
+			// never see events because there's no active watcher of either flavor.
+			await new Promise((r) => setTimeout(r, 500));
+			assert.equal(addSpy.callCount, 0, 'no events should fire after close()');
+
+			rmSync(directory, { recursive: true, force: true });
+		}).timeout(2000);
+	});
 });

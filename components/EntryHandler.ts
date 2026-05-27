@@ -270,6 +270,18 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		return this.ready;
 	}
 
+	// Test-only: simulate the underlying chokidar watcher emitting an error.
+	// Exposed so the polling-fallback path can be exercised without triggering a
+	// real ENOSPC/EMFILE on the host.
+	_simulateWatcherErrorForTests(error: unknown): void {
+		this.#handleError(error);
+	}
+
+	// Test-only: whether the watcher has fallen back to polling.
+	get _usingPollingForTests(): boolean {
+		return this.#usingPolling;
+	}
+
 	close(): this {
 		this.#closed = true;
 		this.#watcher?.close();
