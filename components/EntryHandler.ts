@@ -9,6 +9,11 @@ import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { deriveURLPath } from './deriveURLPath.ts';
 import { isMatch } from 'micromatch';
+import {
+	DIRECTORY_POLLING_FALLBACK_OPTIONS,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} from '../utility/watcherFallback.ts';
 
 export interface BaseEntry {
 	stats?: Stats;
@@ -85,6 +90,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	// chokidar instance — otherwise a rapid pause→resume can overlap teardown
 	// and setup, which under inotify pressure can produce spurious EMFILE.
 	#pausedClose?: Promise<void>;
+	#usingPolling: boolean = false;
+	#closed: boolean = false;
 	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: Logger) {
@@ -169,6 +176,18 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	#handleError(error: unknown): void {
+		if (isWatcherExhaustionError(error)) {
+			// Swallow every exhaustion error — chokidar can emit several before the
+			// failed native watcher closes, and we don't want a flurry of ENOSPC to
+			// surface to consumers in the middle of recovery.
+			if (!this.#usingPolling) {
+				warnWatcherFallback(this.#component.directory);
+				this.#usingPolling = true;
+				// Reopen with polling. #watch() itself guards against reopen-after-close.
+				void this.#watch();
+			}
+			return;
+		}
 		this.emit('error', error);
 	}
 
@@ -201,6 +220,10 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		await this.#watcher?.close();
 		this.#watcher = undefined;
 
+		// If close() landed while a previous close()/recreate was awaiting, don't
+		// install a fresh watcher — it would outlive the EntryHandler.
+		if (this.#closed) return this.ready;
+
 		// pause() may have landed in the gap before our async close resolved.
 		// If so, do not install a replacement watcher — resume() will.
 		if (this.#paused) return this.ready;
@@ -217,6 +240,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				cwd: this.#component.directory,
 				persistent: false,
 				followSymlinks: false,
+				...(this.#usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
 					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
@@ -247,6 +271,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	close(): this {
+		this.#closed = true;
 		this.#watcher?.close();
 		this.#watcher = undefined;
 

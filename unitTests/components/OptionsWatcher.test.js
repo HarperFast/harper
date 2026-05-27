@@ -637,4 +637,109 @@ describe('OptionsWatcher', () => {
 
 		await teardown({ fixture, options });
 	});
+
+	describe('polling fallback on watcher exhaustion', () => {
+		// harper#488: when ENOSPC/EMFILE fires on the underlying chokidar watcher,
+		// the OptionsWatcher should swap to a polling watcher rather than surfacing
+		// the error to consumers.
+
+		it('falls back to polling on ENOSPC and continues to receive change events', async () => {
+			const { fixture, configFilePath, options } = await setup();
+
+			const errorSpy = spy();
+			options.on('error', errorSpy);
+
+			assert.equal(options._usingPollingForTests, false, 'should not be polling initially');
+
+			// Simulate the underlying watcher emitting ENOSPC.
+			options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+
+			// Wait a tick for the close + reopen to settle.
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			assert.equal(options._usingPollingForTests, true, 'should have flipped to polling');
+			assert.equal(errorSpy.callCount, 0, 'ENOSPC should be swallowed, not propagated');
+
+			// Verify the polling watcher actually fires change events. The poll
+			// interval is 1s, so allow up to ~3s for a change event to land.
+			const updated = { ...CONFIG, [NAME]: { ...OPTIONS, str: 'after-fallback' } };
+			await assertEvent(
+				options,
+				'change',
+				() => writeFile(configFilePath, stringify(updated), 'utf-8'),
+				(changeSpy) => {
+					assert.ok(changeSpy.callCount >= 1, 'change event should fire after polling fallback');
+				}
+			);
+
+			await teardown({ fixture, options });
+		}).timeout(5000);
+
+		it('propagates non-exhaustion errors and does not fall back', async () => {
+			const { fixture, options } = await setup();
+
+			const errorSpy = spy();
+			options.on('error', errorSpy);
+
+			options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+			await new Promise((resolve) => setTimeout(resolve, 20));
+
+			assert.equal(options._usingPollingForTests, false, 'should not fall back for unrelated errors');
+			assert.equal(errorSpy.callCount, 1, 'non-exhaustion error should propagate');
+
+			await teardown({ fixture, options });
+		});
+
+		it('swallows additional exhaustion errors during recovery', async () => {
+			// chokidar can fire several ENOSPC/EMFILE errors before the failed
+			// native watcher finishes closing. Only the first should trigger the
+			// fallback; subsequent ones must not be re-emitted to consumers.
+			const { fixture, options } = await setup();
+
+			const errorSpy = spy();
+			options.on('error', errorSpy);
+
+			const enospc = () => Object.assign(new Error('boom'), { code: 'ENOSPC' });
+			options._simulateWatcherErrorForTests(enospc());
+			options._simulateWatcherErrorForTests(enospc());
+			options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EMFILE' }));
+
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			assert.equal(options._usingPollingForTests, true);
+			assert.equal(errorSpy.callCount, 0, 'all exhaustion errors should be swallowed');
+
+			await teardown({ fixture, options });
+		});
+
+		it('does not reopen watcher if close() is called during recovery', async () => {
+			// Race condition: close() lands while the failed-watcher .close() promise
+			// is still pending. The reopen-with-polling must not fire after the
+			// OptionsWatcher has been closed, otherwise the new watcher leaks.
+			const { fixture, configFilePath } = createFixture();
+			const options = new OptionsWatcher(NAME, configFilePath);
+			await options.ready;
+
+			assert.equal(options._openCountForTests, 1, 'one initial open');
+
+			// Trigger the fallback path, then immediately close before the inner
+			// `await this.#watcher.close()` resolves.
+			options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+			options.close();
+
+			// Wait long enough for the failed-watcher close promise to resolve and
+			// the `finally` callback to run (which should NOT reopen).
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			assert.equal(options._openCountForTests, 1, 'reopen must be suppressed by the close-during-fallback guard');
+
+			try {
+				rmSync(fixture, { recursive: true, force: true });
+				// eslint-disable-next-line sonarjs/no-ignored-exceptions
+			} catch {
+				// best-effort cleanup
+			}
+		});
+	});
 });

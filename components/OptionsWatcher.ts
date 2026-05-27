@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
+import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
 
 export interface Config {
 	[key: string]: ConfigValue;
@@ -82,11 +83,14 @@ export class CannotSetPropertyError extends Error {
  */
 export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#filePath: string;
-	#watcher: FSWatcher;
+	#watcher!: FSWatcher;
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
 	#name: string;
 	#logger: Logger;
+	#usingPolling: boolean;
+	#closed: boolean;
+	#openCount: number = 0;
 	ready: Promise<any[]>;
 
 	constructor(name: string, filePath: string, logger?: Logger) {
@@ -94,9 +98,19 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#name = name;
 		this.#filePath = filePath;
 		this.#logger = logger || loggerWithTag(name);
+		this.#usingPolling = false;
+		this.#closed = false;
 		this.ready = once(this, 'ready');
+		this.#openWatcher();
+	}
+
+	#openWatcher() {
+		this.#openCount++;
 		this.#watcher = chokidar
-			.watch(filePath, { persistent: false })
+			.watch(this.#filePath, {
+				persistent: false,
+				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
+			})
 			.on('add', this.#handleChange.bind(this))
 			.on('change', this.#handleChange.bind(this))
 			.on('error', this.#handleError.bind(this))
@@ -150,6 +164,28 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	#handleError(error: unknown) {
+		if (isWatcherExhaustionError(error)) {
+			// Swallow every exhaustion error — chokidar can emit several before the
+			// failed native watcher closes, and we don't want a flurry of ENOSPC to
+			// surface to consumers in the middle of recovery.
+			if (!this.#usingPolling) {
+				warnWatcherFallback(this.#filePath);
+				this.#usingPolling = true;
+				// Close the failed native watcher and reopen with polling. Guard
+				// against reopen-after-close: the caller may have invoked close()
+				// while this teardown was in flight. The .catch is required because
+				// `finally` would re-raise a teardown rejection as an unhandled one.
+				this.#watcher
+					.close()
+					.catch(() => {
+						// Teardown errors on an already-failed watcher are not actionable.
+					})
+					.finally(() => {
+						if (!this.#closed) this.#openWatcher();
+					});
+			}
+			return;
+		}
 		this.emit('error', new OptionsWatcherConfigFileError(this.#filePath, error));
 	}
 
@@ -283,10 +319,30 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.emit('change', keys, value, this.#scopedConfig);
 	}
 
+	// Test-only: simulate the underlying chokidar watcher emitting an error.
+	// Exposed so the polling-fallback path can be exercised without triggering a
+	// real ENOSPC/EMFILE on the host.
+	_simulateWatcherErrorForTests(error: unknown): void {
+		this.#handleError(error);
+	}
+
+	// Test-only: whether the watcher has fallen back to polling.
+	get _usingPollingForTests(): boolean {
+		return this.#usingPolling;
+	}
+
+	// Test-only: number of times the underlying watcher has been (re)opened.
+	// Used to assert that a close()-during-fallback race didn't install a
+	// replacement watcher.
+	get _openCountForTests(): number {
+		return this.#openCount;
+	}
+
 	/**
 	 * Closes the underlying file watcher, emits the `close` event, and removes any listeners on the OptionsWatcher instance
 	 */
 	close() {
+		this.#closed = true;
 		this.#watcher.close();
 
 		this.emit('close');
