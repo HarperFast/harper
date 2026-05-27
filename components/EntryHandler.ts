@@ -255,20 +255,28 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
 					const normalizedDirectory = this.#component.directory.replace(/\\/g, '/');
 
-					// Check for nested node_modules relative to the component directory
-					// This allows plugins loaded from node_modules to watch their own files
-					// while still ignoring their nested node_modules dependencies
-					const relativePath = normalizedPath.startsWith(normalizedDirectory + '/')
+					// Determine the path relative to the component directory. Leading '/' is preserved
+					// (or empty when the path *is* the component directory) so the regex anchors below
+					// can use `(?:^|/)` to match the first segment without false positives on names
+					// that merely contain the same substring (e.g. `mynode_modules`, `notgit`).
+					const relativePath = normalizedPath.startsWith(normalizedDirectory)
 						? normalizedPath.slice(normalizedDirectory.length)
-						: normalizedPath.startsWith(normalizedDirectory)
-							? normalizedPath.slice(normalizedDirectory.length)
-							: normalizedPath;
-					const hasNestedNodeModules = relativePath.includes('/node_modules');
+						: normalizedPath;
+
+					// Skip node_modules at any depth. This allows plugins loaded from node_modules
+					// to still watch their own component files while ignoring their dependencies.
+					if (/(?:^|\/)node_modules(?:\/|$)/.test(relativePath)) return true;
+
+					// Skip transient package manager and VCS artifacts. Without these, an in-place
+					// `npm install` during a component deploy writes log files and atomic-rename
+					// temp directories that fire change events and drive an auto-reload restart
+					// storm — see harper#488.
+					if (/(?:^|\/)\.git(?:\/|$)/.test(relativePath)) return true;
+					if (/(?:^|\/)\.tmp-/.test(relativePath)) return true;
+					if (/(?:^|\/)(?:npm-debug|yarn-error|yarn-debug|pnpm-debug)\.log(?:\/|$)/.test(relativePath)) return true;
 
 					return (
-						hasNestedNodeModules ||
-						(normalizedPath !== normalizedDirectory &&
-							normalizedBases.every((base) => !normalizedPath.startsWith(base)))
+						normalizedPath !== normalizedDirectory && normalizedBases.every((base) => !normalizedPath.startsWith(base))
 					);
 				},
 			})

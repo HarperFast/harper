@@ -684,4 +684,154 @@ describe('EntryHandler', () => {
 			rmSync(directory, { recursive: true, force: true });
 		}).timeout(2000);
 	});
+
+	describe('ignored paths', () => {
+		// These cases ensure the watcher does not consume inotify handles for or fire
+		// events from transient artifacts produced by `npm install`, git operations, etc.
+		// Background: harper#488 — restart storms driven by these paths can exhaust the
+		// system file-watcher limit during component deploys.
+
+		it('should ignore top-level node_modules', async () => {
+			const { directory } = createFixture([['node_modules', [['pkg', ['index.js']]]], 'app.js']);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('node_modules')),
+				`no event should reference node_modules, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p === '/app.js'),
+				'app.js outside node_modules should still be emitted'
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore nested node_modules', async () => {
+			const { directory } = createFixture([['plugin', [['node_modules', [['dep', ['index.js']]]], 'main.js']]]);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, 'plugin/**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('node_modules')),
+				`no event should reference node_modules, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p.endsWith('main.js')),
+				'plugin/main.js should still be emitted'
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore .git directory', async () => {
+			const { directory } = createFixture([['.git', ['HEAD', 'config']], 'app.js']);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('.git')),
+				`no event should reference .git, got: ${JSON.stringify(paths)}`
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore npm atomic-rename temp directories (.tmp-*)', async () => {
+			const { directory } = createFixture([['.tmp-12345', ['package.json']], 'app.js']);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('.tmp-')),
+				`no event should reference .tmp- dirs, got: ${JSON.stringify(paths)}`
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore package-manager log files', async () => {
+			const { directory } = createFixture(['app.js', 'npm-debug.log', 'yarn-error.log', 'pnpm-debug.log']);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.endsWith('.log')),
+				`no event should reference a .log file, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p === '/app.js'),
+				'app.js should still be emitted'
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should not over-match similar names (prefix and suffix)', async () => {
+			// The leading-and-trailing segment anchors in the ignored regex must not match
+			// substrings on either side. Directories like `notnode_modules` (prefix) and
+			// `node_modules_not` (suffix), and files like `npm-debug.log.txt`, are real user
+			// paths and must be watched.
+			const { directory } = createFixture([
+				['notnode_modules', ['data.json']],
+				['node_modules_not', ['data.json']],
+				'npm-debug.log.txt',
+				'app.js',
+			]);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.some((p) => p.includes('notnode_modules')),
+				`event for notnode_modules should be emitted, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p.includes('node_modules_not')),
+				`event for node_modules_not should be emitted, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p === '/npm-debug.log.txt'),
+				`event for npm-debug.log.txt should be emitted, got: ${JSON.stringify(paths)}`
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+	});
 });
