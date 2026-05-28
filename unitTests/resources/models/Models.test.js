@@ -316,30 +316,19 @@ describe('Models facade', () => {
 			assert.strictEqual(writer.records[0].method, 'generateStream');
 		});
 
-		describe("toolMode: 'auto' (commit-1 guard)", () => {
-			it('throws on first iteration with 501 — streaming loop lands in commit 5', async () => {
-				// Async-generator stub: the throw fires on first iteration, not at the
-				// synchronous .generateStream(...) call. Matches the existing capability/
-				// resolve pattern (errors surface when the caller iterates).
-				await assert.rejects(
-					async () => {
-						// eslint-disable-next-line no-unused-vars
-						for await (const _ of models.generateStream('hello', { toolMode: 'auto' })) {
-							// will not iterate
-						}
-					},
-					(err) => err.statusCode === 501 && /not yet implemented/i.test(err.message)
-				);
-			});
+		describe("toolMode: 'auto' (entry dispatch)", () => {
+			// Streaming auto-loop behavior is in `agentLoop.test.js`. Tests here cover
+			// the dispatch branch in `Models.generateStream` itself.
 
-			it('writes NO analytics row for the outer auto-stream call', async () => {
-				await assert.rejects(async () => {
-					// eslint-disable-next-line no-unused-vars
-					for await (const _ of models.generateStream('hello', { toolMode: 'auto' })) {
-						// will not iterate
-					}
-				});
-				assert.strictEqual(writer.records.length, 0);
+			it("toolMode: 'return' still flows the single-shot stream", async () => {
+				const chunks = [];
+				for await (const chunk of models.generateStream('hello', { toolMode: 'return' })) {
+					chunks.push(chunk);
+				}
+				assert.ok(chunks.length > 1);
+				assert.strictEqual(writer.records.length, 1);
+				assert.strictEqual(writer.records[0].method, 'generateStream');
+				assert.strictEqual(writer.records[0].success, true);
 			});
 		});
 	});

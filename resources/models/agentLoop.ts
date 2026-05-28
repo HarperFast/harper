@@ -17,15 +17,20 @@
  * only fired externally (caller aborts → composed signal aborts); commit 4 wires
  * it to also fire on budget trips so an in-flight LLM call cancels cleanly.
  *
- * Commit 4 of #612 — token + cost budgets, `toolErrorMode: 'abort'`. The cost
- * function is a stub (returns 0) until a per-model rate card is wired; the cap
- * still trips when a test overrides the function via `_setComputeCallCostUsdForTests`.
- * `toolErrorMode: 'abort'` surfaces handler errors as `ToolHandlerError` with the
- * trace attached (including the failing entry) so callers always have the full
- * picture on error paths. Modes deferred to later commits throw 501 at entry:
+ * Commit 5 of #612 — streaming auto path + `opts.conversation.append` hook on
+ * both sync and streaming. The streaming loop yields each round's deltas to the
+ * caller as they arrive, accumulates the round's tool-call assembly internally,
+ * suppresses intermediate `finishReason: 'tool_calls'` chunks (per the
+ * `GenerateChunk` contract that finishReason marks the FINAL chunk only), runs
+ * tools between rounds, and resumes with the next backend stream. Budget /
+ * abort / error-mode semantics match the sync path, with one streaming-specific
+ * gap: `maxToolTokens` / `maxCostUsd` are not yet enforced for streamed calls
+ * because `GenerateChunk` doesn't expose `usage` in v1 (follow-up to extend the
+ * chunk shape + backend final-chunk handling).
+ *
+ * Modes still deferred to follow-ups throw 501 at entry:
  *   - `toolArgValidation: 'strict' | 'lenient'`  → JSON Schema validator (TBD)
- *   - `opts.conversation.append`                 → commit 5
- *   - `runAgentLoopStream`                       → commit 5
+ *   - `maxToolTokens` / `maxCostUsd` (streaming) → backend `usage` on chunks (TBD)
  *
  * Registry seam: v1 dispatches via caller-supplied `opts.toolHandlers`. #615
  * replaces that with a `scope.resources` lookup using the same call signature.
@@ -73,6 +78,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	const errorMode = opts.toolErrorMode ?? 'recover';
 	const maxToolTokens = opts.maxToolTokens;
 	const maxCostUsd = opts.maxCostUsd;
+	const conversation = opts.conversation;
 
 	const { messages, tools, system } = normalizeInput(args.input);
 	const trace: ToolTraceEntry[] = [];
@@ -80,6 +86,18 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	// trip `maxToolTokens` / `maxCostUsd` after each backend round.
 	let totalTokens = 0;
 	let totalCostUsd = 0;
+
+	// Initial conversation turns: append the user-role messages flowing IN before the
+	// first backend round. System messages skipped — conventions vary (some hosts treat
+	// system as ambient, not turn-scoped). Awaited so caller can observe initial state
+	// before any backend round runs.
+	if (conversation) {
+		for (const m of messages) {
+			if (m.role === 'user') {
+				await conversation.append({ role: 'user', content: m.content });
+			}
+		}
+	}
 
 	// Loop-level abort controller — fired internally on budget trips (commit 4 wires
 	// that) and on every loop exit (success, throw, abort) via the `finally` below.
@@ -138,12 +156,23 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			const calls = result.toolCalls;
 			if (result.finishReason !== 'tool_calls' || !calls || calls.length === 0) {
 				// Terminal: model produced a final answer (stop / length / content_filter), or it
-				// signaled tool_calls but emitted none. Pass the result through; attach the trace
+				// signaled tool_calls but emitted none. Append final assistant turn to the
+				// conversation hook (if set), then pass the result through; attach the trace
 				// when the caller asked for it.
+				if (conversation && result.content) {
+					await conversation.append({ role: 'assistant', content: result.content });
+				}
 				return opts.includeToolTrace ? { ...result, trace } : result;
 			}
 
 			messages.push({ role: 'assistant', content: result.content, toolCalls: calls });
+			if (conversation) {
+				await conversation.append({
+					role: 'assistant',
+					content: result.content,
+					toolCalls: calls,
+				});
+			}
 
 			const ctx: ToolHandlerContext = { signal: composedSignal, accounting };
 			const dispatched = await dispatchToolCalls(
@@ -173,6 +202,13 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 					content: dispatchResult.toolMessageContent,
 					toolCallId: dispatchResult.entry.toolCallId,
 				});
+				if (conversation) {
+					await conversation.append({
+						role: 'tool',
+						toolCallId: dispatchResult.entry.toolCallId,
+						content: dispatchResult.toolMessageContent,
+					});
+				}
 			}
 
 			// `toolErrorMode: 'abort'`: any handler failure terminates the loop. Trace
@@ -341,8 +377,208 @@ function composeAbortSignal(caller: AbortSignal | undefined, internal: AbortSign
 	return AbortSignal.any([caller, internal]);
 }
 
-export async function* runAgentLoopStream(_args: RunAgentLoopArgs): AsyncIterable<GenerateChunk> {
-	throw new ServerError("`toolMode: 'auto'` is not yet implemented for streaming", 501);
+export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable<GenerateChunk> {
+	const { models, opts, accounting, signal: callerSignal } = args;
+
+	guardUnsupportedModes(opts);
+
+	const maxIterations = opts.maxToolIterations ?? DEFAULT_MAX_ITERATIONS;
+	const maxResultBytes = opts.toolResultMaxBytes ?? DEFAULT_MAX_RESULT_BYTES;
+	const handlers = opts.toolHandlers ?? {};
+	const parallelism = opts.toolParallelism ?? 'parallel';
+	const errorMode = opts.toolErrorMode ?? 'recover';
+	const conversation = opts.conversation;
+	// Streaming + token/cost budgets: backends don't emit `usage` on `GenerateChunk`
+	// in v1 (the type has no `usage` field on chunks), so cumulative usage isn't
+	// observable from the stream. The iteration budget still applies. Wiring
+	// streaming budgets requires extending `GenerateChunk` and updating each
+	// backend's stream-final-chunk handling — a follow-up to this PR.
+	if (opts.maxToolTokens !== undefined || opts.maxCostUsd !== undefined) {
+		throw new ServerError(
+			`maxToolTokens / maxCostUsd are not yet supported for generateStream (streamed usage not exposed in v1)`,
+			501
+		);
+	}
+
+	const { messages, tools, system } = normalizeInput(args.input);
+	const trace: ToolTraceEntry[] = [];
+
+	const loopController = new AbortController();
+	const composedSignal = composeAbortSignal(callerSignal, loopController.signal);
+	const innerOpts: GenerateOpts = { ...opts, toolMode: 'return', signal: composedSignal };
+
+	// Initial conversation turns: append the user-role messages flowing IN before the
+	// first backend round. System messages skipped — conventions vary (some hosts treat
+	// system as ambient, not turn-scoped).
+	if (conversation) {
+		for (const m of messages) {
+			if (m.role === 'user') {
+				await conversation.append({ role: 'user', content: m.content });
+			}
+		}
+	}
+
+	try {
+		for (let iteration = 1; iteration <= maxIterations; iteration++) {
+			composedSignal.throwIfAborted();
+
+			// Stream this round: yield content + tool-call deltas to the caller as they
+			// arrive, while internally assembling the round's content and tool-call shape.
+			let accumulatedContent = '';
+			const toolCallAssembly = new Map<string, Partial<ToolCall>>();
+			let finishReason: GenerateResult['finishReason'] | undefined;
+
+			const stream = models.generateStream(buildInnerInput(messages, tools, system), innerOpts);
+			for await (const chunk of stream) {
+				if (chunk.deltaContent !== undefined) {
+					accumulatedContent += chunk.deltaContent;
+				}
+				if (chunk.deltaToolCalls) {
+					for (const delta of chunk.deltaToolCalls) {
+						mergeToolCallDelta(toolCallAssembly, delta);
+					}
+				}
+				if (chunk.finishReason) {
+					finishReason = chunk.finishReason;
+				}
+				// Suppress intermediate `finishReason: 'tool_calls'` from the caller —
+				// the contract on `GenerateChunk` is "finishReason set on the FINAL chunk".
+				// Intermediate tool-pause states are an internal loop concern; the caller
+				// sees a continuous stream punctuated only by the terminal finishReason.
+				if (chunk.finishReason === 'tool_calls') {
+					if (chunk.deltaContent !== undefined || chunk.deltaToolCalls) {
+						// Carry the deltas but drop the finishReason field for the yield.
+						const cleaned: GenerateChunk = {};
+						if (chunk.deltaContent !== undefined) cleaned.deltaContent = chunk.deltaContent;
+						if (chunk.deltaToolCalls) cleaned.deltaToolCalls = chunk.deltaToolCalls;
+						yield cleaned;
+					}
+					// Pure finishReason chunk on tool_calls — drop entirely.
+					continue;
+				}
+				yield chunk;
+			}
+
+			const finalToolCalls = completeToolCallAssembly(toolCallAssembly);
+			const isTerminal =
+				finishReason !== 'tool_calls' || finalToolCalls.length === 0;
+
+			if (isTerminal) {
+				// Append the assistant turn (final content) to conversation before bailing.
+				if (conversation && accumulatedContent) {
+					await conversation.append({ role: 'assistant', content: accumulatedContent });
+				}
+				// Degenerate-backend guard: if the stream finished with `tool_calls` BUT no
+				// assembled calls landed (provider misbehavior or upstream truncation), we
+				// already suppressed the 'tool_calls' chunk under the intermediate-finishReason
+				// rule above. Without a synthetic terminal chunk the consumer's `for-await`
+				// ends without ever seeing a terminal `finishReason`, violating the
+				// `GenerateChunk` contract. Reclassify to 'stop' and emit one chunk so the
+				// stream closes cleanly.
+				if (finishReason === 'tool_calls' && finalToolCalls.length === 0) {
+					yield { finishReason: 'stop' };
+				}
+				return;
+			}
+
+			// Continue the loop: dispatch tools, append messages, resume on next iteration.
+			const assistantMessage: Message = {
+				role: 'assistant',
+				content: accumulatedContent,
+				toolCalls: finalToolCalls,
+			};
+			messages.push(assistantMessage);
+			if (conversation) {
+				await conversation.append({
+					role: 'assistant',
+					content: accumulatedContent,
+					toolCalls: finalToolCalls,
+				});
+			}
+
+			const ctx: ToolHandlerContext = { signal: composedSignal, accounting };
+			const dispatched = await dispatchToolCalls(
+				finalToolCalls,
+				handlers,
+				ctx,
+				iteration,
+				maxResultBytes,
+				parallelism
+			);
+
+			composedSignal.throwIfAborted();
+
+			for (const d of dispatched) {
+				trace.push(d.entry);
+				messages.push({
+					role: 'tool',
+					content: d.toolMessageContent,
+					toolCallId: d.entry.toolCallId,
+				});
+				if (conversation) {
+					await conversation.append({
+						role: 'tool',
+						toolCallId: d.entry.toolCallId,
+						content: d.toolMessageContent,
+					});
+				}
+			}
+
+			if (errorMode === 'abort') {
+				const failed = dispatched.find((d) => d.originalError !== undefined);
+				if (failed) {
+					throw new ToolHandlerError(
+						failed.entry.toolName,
+						failed.entry.toolCallId,
+						trace,
+						failed.originalError
+					);
+				}
+			}
+		}
+
+		throw new BudgetExceededError(
+			'iterations',
+			`agent loop exceeded maxToolIterations=${maxIterations}`,
+			trace
+		);
+	} finally {
+		loopController.abort();
+	}
+}
+
+/**
+ * Update the in-flight assembly map with one streamed tool-call delta. Streaming
+ * backends may send the same `id` multiple times with partial `name` / `arguments`;
+ * we merge them in arrival order. Some backends pre-assemble and send the full
+ * call as a single delta — same code path, single update.
+ *
+ * Backends that stream `arguments` as accumulating JSON string fragments must
+ * parse before yielding (delta.arguments is typed as `object`); shape assembly
+ * lives in this loop, fragment assembly lives in the backend.
+ */
+function mergeToolCallDelta(map: Map<string, Partial<ToolCall>>, delta: Partial<ToolCall>): void {
+	if (!delta.id) return;
+	const existing: Partial<ToolCall> = map.get(delta.id) ?? { id: delta.id };
+	if (delta.name) existing.name = delta.name;
+	if (delta.arguments) {
+		existing.arguments = { ...existing.arguments, ...delta.arguments };
+	}
+	map.set(delta.id, existing);
+}
+
+function completeToolCallAssembly(map: Map<string, Partial<ToolCall>>): ToolCall[] {
+	const out: ToolCall[] = [];
+	for (const partial of map.values()) {
+		if (partial.id && partial.name) {
+			out.push({
+				id: partial.id,
+				name: partial.name,
+				arguments: partial.arguments ?? {},
+			});
+		}
+	}
+	return out;
 }
 
 function guardUnsupportedModes(opts: GenerateOpts): void {
@@ -350,12 +586,6 @@ function guardUnsupportedModes(opts: GenerateOpts): void {
 	if (validationMode !== 'none') {
 		throw new ServerError(
 			`toolArgValidation: '${validationMode}' is not yet implemented; v1 supports 'none' only`,
-			501
-		);
-	}
-	if (opts.conversation !== undefined) {
-		throw new ServerError(
-			`opts.conversation is not yet implemented (commit 5 of #612)`,
 			501
 		);
 	}

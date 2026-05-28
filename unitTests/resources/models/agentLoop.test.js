@@ -32,18 +32,23 @@ class ScriptedBackend {
 	constructor(name = 'scripted') {
 		this.name = name;
 		this.responses = [];
+		this.streamResponses = [];
 		this.calls = [];
+		this.streamCalls = [];
 	}
 	capabilities() {
-		return { embed: false, generate: true, stream: false, tools: true, adapters: false };
+		return { embed: false, generate: true, stream: true, tools: true, adapters: false };
 	}
 	queue(...results) {
 		for (const r of results) this.responses.push(r);
 		return this;
 	}
+	queueStream(...rounds) {
+		// Each `round` is an array of GenerateChunk-like objects to yield in order.
+		for (const round of rounds) this.streamResponses.push(round);
+		return this;
+	}
 	async generate(input, opts) {
-		// Snapshot the input — the loop mutates the same `messages` array across
-		// iterations, so naive reference capture would show every call as the final state.
 		const snapshot =
 			typeof input === 'string' || Array.isArray(input)
 				? input
@@ -54,6 +59,18 @@ class ScriptedBackend {
 		}
 		const next = this.responses.shift();
 		return { status: 'completed', output: next.output, usage: next.usage };
+	}
+	async *generateStream(input, opts) {
+		const snapshot =
+			typeof input === 'string' || Array.isArray(input)
+				? input
+				: { ...input, messages: input.messages.map((m) => ({ ...m })) };
+		this.streamCalls.push({ input: snapshot, opts });
+		if (this.streamResponses.length === 0) {
+			throw new Error('ScriptedBackend stream ran out of rounds');
+		}
+		const chunks = this.streamResponses.shift();
+		for (const c of chunks) yield c;
 	}
 }
 
@@ -735,6 +752,358 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		});
 	});
 
+	describe('streaming auto path (generateStream + toolMode: auto)', () => {
+		it('terminal first-round stream: yields the inner deltas + final finishReason unchanged', async () => {
+			backend.queueStream([
+				{ deltaContent: 'hello ' },
+				{ deltaContent: 'world' },
+				{ finishReason: 'stop' },
+			]);
+			const chunks = [];
+			for await (const c of models.generateStream('q', { toolMode: 'auto' })) {
+				chunks.push(c);
+			}
+			assert.strictEqual(chunks.length, 3);
+			assert.strictEqual(chunks[0].deltaContent, 'hello ');
+			assert.strictEqual(chunks[2].finishReason, 'stop');
+		});
+
+		it('multi-round: streams round 1 deltas, suppresses intermediate finishReason=tool_calls, streams round 2 deltas + terminal finishReason', async () => {
+			backend.queueStream(
+				[
+					{ deltaContent: 'thinking' },
+					{ deltaToolCalls: [{ id: 'c1', name: 'echo', arguments: { x: 1 } }] },
+					{ finishReason: 'tool_calls' },
+				],
+				[
+					{ deltaContent: 'final answer' },
+					{ finishReason: 'stop' },
+				]
+			);
+			const chunks = [];
+			for await (const c of models.generateStream('q', {
+				toolMode: 'auto',
+				toolHandlers: { echo: (args) => args },
+			})) {
+				chunks.push(c);
+			}
+			// No chunk carries 'tool_calls' as a terminal finishReason — only the final 'stop'.
+			const finishReasons = chunks.map((c) => c.finishReason).filter(Boolean);
+			assert.deepStrictEqual(finishReasons, ['stop']);
+			// Deltas from BOTH rounds reached the caller.
+			const allContent = chunks.map((c) => c.deltaContent ?? '').join('');
+			assert.match(allContent, /thinking/);
+			assert.match(allContent, /final answer/);
+			// Two inner stream calls — one per iteration.
+			assert.strictEqual(backend.streamCalls.length, 2);
+		});
+
+		it('assembles deltaToolCalls across multiple chunks (id-keyed, fields merge in arrival order)', async () => {
+			backend.queueStream(
+				[
+					{ deltaToolCalls: [{ id: 'c1', name: 'echo' }] },
+					{ deltaToolCalls: [{ id: 'c1', arguments: { partial: 1 } }] },
+					{ deltaToolCalls: [{ id: 'c1', arguments: { full: 2 } }] },
+					{ finishReason: 'tool_calls' },
+				],
+				[{ deltaContent: 'done' }, { finishReason: 'stop' }]
+			);
+			const seenArgs = [];
+			for await (const _ of models.generateStream('q', {
+				toolMode: 'auto',
+				toolHandlers: {
+					echo: (args) => {
+						seenArgs.push(args);
+						return args;
+					},
+				},
+			})) {
+				// drain
+			}
+			assert.strictEqual(seenArgs.length, 1);
+			assert.deepStrictEqual(seenArgs[0], { partial: 1, full: 2 });
+		});
+
+		it('iteration cap trips on stream too — BudgetExceededError({kind: iterations}) after maxToolIterations rounds', async () => {
+			for (let i = 0; i < 4; i++) {
+				backend.queueStream([
+					{ deltaToolCalls: [{ id: `c${i}`, name: 'echo', arguments: { i } }] },
+					{ finishReason: 'tool_calls' },
+				]);
+			}
+			let caught;
+			try {
+				for await (const _ of models.generateStream('q', {
+					toolMode: 'auto',
+					maxToolIterations: 3,
+					toolHandlers: { echo: (args) => args },
+				})) {
+					// drain
+				}
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof BudgetExceededError);
+			assert.strictEqual(caught.kind, 'iterations');
+			assert.strictEqual(caught.partialTrace.length, 3);
+		});
+
+		it('caller-pre-aborted signal bails on stream too, before any backend round', async () => {
+			backend.queueStream([{ deltaContent: 'unreachable' }, { finishReason: 'stop' }]);
+			const ac = new AbortController();
+			ac.abort();
+			await assert.rejects(
+				async () => {
+					for await (const _ of models.generateStream('q', {
+						toolMode: 'auto',
+						signal: ac.signal,
+					})) {
+						// drain
+					}
+				},
+				(err) => err.name === 'AbortError'
+			);
+			assert.strictEqual(backend.streamCalls.length, 0);
+		});
+
+		it('degenerate backend: finishReason=tool_calls with NO assembled calls → loop reclassifies as terminal stop', async () => {
+			// Provider misbehavior or upstream truncation can yield "tool_calls" without
+			// any tool-call deltas. Without the guard, the loop would suppress the
+			// intermediate finishReason chunk AND treat the round as terminal — the
+			// consumer's `for-await` would end with zero chunks ever yielded, violating
+			// the GenerateChunk contract ("finishReason set on the FINAL chunk").
+			backend.queueStream([{ finishReason: 'tool_calls' }]);
+			const chunks = [];
+			for await (const c of models.generateStream('q', { toolMode: 'auto' })) {
+				chunks.push(c);
+			}
+			assert.strictEqual(chunks.length, 1, 'must yield exactly one terminal chunk');
+			assert.strictEqual(chunks[0].finishReason, 'stop');
+		});
+
+		it("toolErrorMode: 'abort' on stream surfaces ToolHandlerError with cause + trace", async () => {
+			backend.queueStream(
+				[
+					{ deltaToolCalls: [{ id: 'c1', name: 'broken', arguments: {} }] },
+					{ finishReason: 'tool_calls' },
+				],
+				[{ deltaContent: 'unreachable' }, { finishReason: 'stop' }]
+			);
+			const handlerErr = new Error('stream boom');
+			let caught;
+			try {
+				for await (const _ of models.generateStream('q', {
+					toolMode: 'auto',
+					toolErrorMode: 'abort',
+					toolHandlers: {
+						broken: () => {
+							throw handlerErr;
+						},
+					},
+				})) {
+					// drain
+				}
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof ToolHandlerError);
+			assert.strictEqual(caught.cause, handlerErr);
+			assert.strictEqual(caught.partialTrace.length, 1);
+			assert.strictEqual(caught.partialTrace[0].error.message, 'stream boom');
+			// Second round was never consumed.
+			assert.strictEqual(backend.streamCalls.length, 1);
+		});
+
+		it('streaming recover-mode appends error envelope and continues (default behavior)', async () => {
+			backend.queueStream(
+				[
+					{ deltaToolCalls: [{ id: 'c1', name: 'broken', arguments: {} }] },
+					{ finishReason: 'tool_calls' },
+				],
+				[{ deltaContent: 'recovered' }, { finishReason: 'stop' }]
+			);
+			const chunks = [];
+			for await (const c of models.generateStream('q', {
+				toolMode: 'auto',
+				toolHandlers: {
+					broken: () => {
+						throw new Error('boom');
+					},
+				},
+			})) {
+				chunks.push(c);
+			}
+			const text = chunks.map((c) => c.deltaContent ?? '').join('');
+			assert.match(text, /recovered/);
+			// Second round saw the error envelope as the tool message.
+			const round2messages = backend.streamCalls[1].input.messages;
+			const toolMsg = round2messages[round2messages.length - 1];
+			assert.strictEqual(toolMsg.role, 'tool');
+			assert.strictEqual(JSON.parse(toolMsg.content).error, 'boom');
+		});
+
+		it('streaming parallel dispatch: multi-id assembly across interleaved deltas', async () => {
+			// Realistic OpenAI-style streaming: deltas for two tool calls arrive interleaved,
+			// each id built up across multiple chunks. The Map-keyed assembler must reconcile
+			// them into two complete calls.
+			backend.queueStream(
+				[
+					{ deltaToolCalls: [{ id: 'c1', name: 'echo' }] },
+					{ deltaToolCalls: [{ id: 'c2', name: 'echo' }] },
+					{ deltaToolCalls: [{ id: 'c1', arguments: { i: 1 } }] },
+					{ deltaToolCalls: [{ id: 'c2', arguments: { i: 2 } }] },
+					{ finishReason: 'tool_calls' },
+				],
+				[{ deltaContent: 'done' }, { finishReason: 'stop' }]
+			);
+			const dispatched = [];
+			for await (const _ of models.generateStream('q', {
+				toolMode: 'auto',
+				toolHandlers: {
+					echo: (args) => {
+						dispatched.push(args.i);
+						return args;
+					},
+				},
+			})) {
+				// drain
+			}
+			assert.deepStrictEqual(dispatched.sort(), [1, 2]);
+		});
+
+		it("maxToolTokens / maxCostUsd throw 501 on stream — usage isn't exposed on GenerateChunk in v1", async () => {
+			backend.queueStream([{ finishReason: 'stop' }]);
+			await assert.rejects(
+				async () => {
+					for await (const _ of models.generateStream('q', {
+						toolMode: 'auto',
+						maxToolTokens: 100,
+					})) {
+						// drain
+					}
+				},
+				(err) => err.statusCode === 501 && /streamed usage/.test(err.message)
+			);
+		});
+	});
+
+	describe('opts.conversation hook', () => {
+		function makeConversationSpy() {
+			const turns = [];
+			return {
+				turns,
+				async append(turn) {
+					turns.push(turn);
+				},
+			};
+		}
+
+		it('sync path: user → assistant → tool → assistant turns appended in order', async () => {
+			backend.queue(
+				toolCallRound('thinking', [tc('c1', 'echo', { x: 1 })]),
+				final('done')
+			);
+			const conversation = makeConversationSpy();
+			await models.generate('hello', {
+				toolMode: 'auto',
+				conversation,
+				toolHandlers: { echo: (args) => ({ result: args.x }) },
+			});
+			assert.deepStrictEqual(
+				conversation.turns.map((t) => t.role),
+				['user', 'assistant', 'tool', 'assistant']
+			);
+			assert.strictEqual(conversation.turns[0].content, 'hello');
+			assert.ok(conversation.turns[1].toolCalls, 'mid-loop assistant turn carries toolCalls');
+			assert.strictEqual(conversation.turns[2].toolCallId, 'c1');
+			assert.strictEqual(conversation.turns[3].content, 'done');
+			assert.strictEqual(conversation.turns[3].toolCalls, undefined, 'terminal assistant turn omits toolCalls');
+		});
+
+		it('streaming path: user → assistant → tool → assistant turns appended in order', async () => {
+			backend.queueStream(
+				[
+					{ deltaContent: 'thinking' },
+					{ deltaToolCalls: [{ id: 'c1', name: 'echo', arguments: { x: 1 } }] },
+					{ finishReason: 'tool_calls' },
+				],
+				[{ deltaContent: 'final' }, { finishReason: 'stop' }]
+			);
+			const conversation = makeConversationSpy();
+			for await (const _ of models.generateStream('hello', {
+				toolMode: 'auto',
+				conversation,
+				toolHandlers: { echo: (args) => ({ result: args.x }) },
+			})) {
+				// drain
+			}
+			assert.deepStrictEqual(
+				conversation.turns.map((t) => t.role),
+				['user', 'assistant', 'tool', 'assistant']
+			);
+			assert.strictEqual(conversation.turns[0].content, 'hello');
+			assert.strictEqual(conversation.turns[1].content, 'thinking');
+			assert.ok(conversation.turns[1].toolCalls);
+			assert.strictEqual(conversation.turns[3].content, 'final');
+		});
+
+		it('sync path with Message[] input: appends EACH user turn before the first round', async () => {
+			backend.queue(final('out'));
+			const conversation = makeConversationSpy();
+			await models.generate(
+				[
+					{ role: 'system', content: 'sys (ambient — not a turn)' },
+					{ role: 'user', content: 'q1' },
+					{ role: 'user', content: 'q2' },
+				],
+				{ toolMode: 'auto', conversation }
+			);
+			// Two user turns appended before the round; one assistant turn after.
+			assert.deepStrictEqual(
+				conversation.turns.map((t) => ({ role: t.role, content: t.content })),
+				[
+					{ role: 'user', content: 'q1' },
+					{ role: 'user', content: 'q2' },
+					{ role: 'assistant', content: 'out' },
+				]
+			);
+		});
+
+		it('streaming path: empty terminal content does NOT append an empty assistant turn', async () => {
+			backend.queueStream([{ finishReason: 'stop' }]);
+			const conversation = makeConversationSpy();
+			for await (const _ of models.generateStream('hello', {
+				toolMode: 'auto',
+				conversation,
+			})) {
+				// drain
+			}
+			// Only the user turn — no assistant turn for the empty terminal.
+			assert.deepStrictEqual(
+				conversation.turns.map((t) => t.role),
+				['user']
+			);
+		});
+
+		it("sync path: BudgetExceededError still fires; conversation reflects work that completed before the trip", async () => {
+			backend.queue(
+				{ output: { content: 'over', finishReason: 'stop' }, usage: { promptTokens: 200, completionTokens: 0 } }
+			);
+			const conversation = makeConversationSpy();
+			await assert.rejects(
+				() =>
+					models.generate('q', {
+						toolMode: 'auto',
+						maxToolTokens: 100,
+						conversation,
+					}),
+				(err) => err instanceof BudgetExceededError
+			);
+			// User turn appended; assistant turn NOT (budget tripped before terminal append).
+			assert.deepStrictEqual(conversation.turns.map((t) => t.role), ['user']);
+		});
+	});
+
 	describe('gated modes (deferred to later commits)', () => {
 		it("toolArgValidation: 'strict' throws 501 at entry", async () => {
 			backend.queue(final('x'));
@@ -752,16 +1121,6 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			);
 		});
 
-		it('opts.conversation throws 501 at entry (commit 5)', async () => {
-			await assert.rejects(
-				() =>
-					models.generate('q', {
-						toolMode: 'auto',
-						conversation: { async append() {} },
-					}),
-				(err) => err.statusCode === 501 && /conversation/.test(err.message)
-			);
-		});
 	});
 
 	describe('token + cost budgets', () => {
