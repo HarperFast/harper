@@ -160,10 +160,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		});
 
 		it('appends assistant + tool messages onto the running message list between rounds', async () => {
-			backend.queue(
-				toolCallRound('plan', [tc('c1', 'lookup', { key: 'k1' })]),
-				final('answer')
-			);
+			backend.queue(toolCallRound('plan', [tc('c1', 'lookup', { key: 'k1' })]), final('answer'));
 			await models.generate('q', {
 				toolMode: 'auto',
 				toolHandlers: { lookup: (args) => ({ key: args.key, value: 'v1' }) },
@@ -181,10 +178,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 		it("toolParallelism: 'serial' runs handlers in order (no concurrent overlap)", async () => {
 			// Two tool calls in ONE round.
-			backend.queue(
-				toolCallRound('multi', [tc('c1', 'slow', { i: 1 }), tc('c1b', 'slow', { i: 2 })]),
-				final('done')
-			);
+			backend.queue(toolCallRound('multi', [tc('c1', 'slow', { i: 1 }), tc('c1b', 'slow', { i: 2 })]), final('done'));
 			const events = [];
 			await models.generate('go', {
 				toolMode: 'auto',
@@ -203,10 +197,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		});
 
 		it('records the trace entries when includeToolTrace is set', async () => {
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'echo', { text: 'a' })]),
-				final('done')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'echo', { text: 'a' })]), final('done'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -259,11 +250,36 @@ describe("agentLoop (toolMode: 'auto')", () => {
 	});
 
 	describe('result truncation', () => {
-		it('passes small results through untouched in the trace', async () => {
+		it('coerces null/undefined assistant content to empty string (OpenAI-style tool-call rounds)', async () => {
+			// OpenAI leaves `content` as null when the model's only output is tool_calls.
+			// `Message.content` and `ConversationTurn.content` are typed as required
+			// strings — the loop must coerce at the seam, not push null into the
+			// running message list (would corrupt downstream rounds + appender).
 			backend.queue(
-				toolCallRound('p', [tc('c1', 'small', {})]),
+				{ output: { content: null, finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { x: 1 })] }, usage: {} },
 				final('done')
 			);
+			const turns = [];
+			await models.generate('q', {
+				toolMode: 'auto',
+				conversation: {
+					async append(t) {
+						turns.push(t);
+					},
+				},
+				toolHandlers: { echo: (args) => args },
+			});
+			// Round 2 saw the assistant message with empty-string content (not null).
+			const round2 = backend.calls[1].input.messages;
+			const assistantMsg = round2.find((m) => m.role === 'assistant');
+			assert.strictEqual(assistantMsg.content, '');
+			// Conversation appender got empty string too.
+			const assistantTurn = turns.find((t) => t.role === 'assistant' && t.toolCalls);
+			assert.strictEqual(assistantTurn.content, '');
+		});
+
+		it('passes small results through untouched in the trace', async () => {
+			backend.queue(toolCallRound('p', [tc('c1', 'small', {})]), final('done'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -275,10 +291,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 		it('truncates a result that exceeds toolResultMaxBytes and tags the trace entry', async () => {
 			const huge = 'x'.repeat(10_000);
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'big', {})]),
-				final('done')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'big', {})]), final('done'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				toolResultMaxBytes: 256,
@@ -303,10 +316,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			// (b) the result is valid UTF-8 even when the byte boundary splits a codepoint,
 			// (c) the trace's `totalBytes` reports the byte length, not char length.
 			const text = '漢'.repeat(10_000); // 30_000 bytes UTF-8
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'cjk', {})]),
-				final('done')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'cjk', {})]), final('done'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				toolResultMaxBytes: 256,
@@ -329,10 +339,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 	describe('handler errors (recover mode)', () => {
 		it('appends the error as a tool result and keeps looping', async () => {
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'broken', {})]),
-				final('recovered')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'broken', {})]), final('recovered'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -354,10 +361,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			// Handlers returning raw DB rows can include BigInt — JSON.stringify throws.
 			// The loop must catch the serialization error in the same recover path it uses
 			// for handler throws, otherwise a "real" tool result crashes the whole loop.
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'bigint', {})]),
-				final('recovered')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'bigint', {})]), final('recovered'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -369,10 +373,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		});
 
 		it('recovers when serialization throws on a circular result', async () => {
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'cyc', {})]),
-				final('recovered')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'cyc', {})]), final('recovered'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -391,10 +392,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 	describe("parallel dispatch (default, toolParallelism: 'parallel')", () => {
 		it('handlers in one round run concurrently — start events interleave', async () => {
-			backend.queue(
-				toolCallRound('multi', [tc('c1', 'slow', { i: 1 }), tc('c2', 'slow', { i: 2 })]),
-				final('done')
-			);
+			backend.queue(toolCallRound('multi', [tc('c1', 'slow', { i: 1 }), tc('c2', 'slow', { i: 2 })]), final('done'));
 			const events = [];
 			await models.generate('go', {
 				toolMode: 'auto',
@@ -416,10 +414,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			// Handler #1 sleeps longer than #2 — completion order is [#2, #1] but the
 			// trace and the tool messages fed back to the model must follow the order the
 			// model emitted them in.
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'slow', { ms: 10 }), tc('c2', 'fast', { ms: 0 })]),
-				final('done')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'slow', { ms: 10 }), tc('c2', 'fast', { ms: 0 })]), final('done'));
 			const result = await models.generate('go', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -441,15 +436,15 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			// Tool messages on round 2 appear in call order too.
 			const round2 = backend.calls[1].input.messages;
 			const toolMsgs = round2.filter((m) => m.role === 'tool');
-			assert.deepStrictEqual(toolMsgs.map((m) => m.toolCallId), ['c1', 'c2']);
+			assert.deepStrictEqual(
+				toolMsgs.map((m) => m.toolCallId),
+				['c1', 'c2']
+			);
 		});
 
 		it('single tool call uses the serial path even under parallel default', async () => {
 			// Sanity — one call, default parallel: still runs cleanly via Promise.all bypass.
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'echo', { x: 1 })]),
-				final('done')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'echo', { x: 1 })]), final('done'));
 			const result = await models.generate('go', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -558,10 +553,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			// into messages and try a SECOND backend round before bailing. Pin the
 			// behavior: handler-mid-flight abort → loop throws AbortError after the
 			// post-dispatch check; no second backend call; no error envelope in trace.
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'slow', {})]),
-				final('unreachable — abort happens during round 1')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'slow', {})]), final('unreachable — abort happens during round 1'));
 			const ac = new AbortController();
 			await assert.rejects(
 				() =>
@@ -655,10 +647,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 	describe('trace integrity', () => {
 		it("trace's `arguments` is decoupled from in-handler mutation", async () => {
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'mutator', { keep: 'as-emitted' })]),
-				final('done')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'mutator', { keep: 'as-emitted' })]), final('done'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				includeToolTrace: true,
@@ -754,11 +743,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 	describe('streaming auto path (generateStream + toolMode: auto)', () => {
 		it('terminal first-round stream: yields the inner deltas + final finishReason unchanged', async () => {
-			backend.queueStream([
-				{ deltaContent: 'hello ' },
-				{ deltaContent: 'world' },
-				{ finishReason: 'stop' },
-			]);
+			backend.queueStream([{ deltaContent: 'hello ' }, { deltaContent: 'world' }, { finishReason: 'stop' }]);
 			const chunks = [];
 			for await (const c of models.generateStream('q', { toolMode: 'auto' })) {
 				chunks.push(c);
@@ -775,10 +760,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 					{ deltaToolCalls: [{ id: 'c1', name: 'echo', arguments: { x: 1 } }] },
 					{ finishReason: 'tool_calls' },
 				],
-				[
-					{ deltaContent: 'final answer' },
-					{ finishReason: 'stop' },
-				]
+				[{ deltaContent: 'final answer' }, { finishReason: 'stop' }]
 			);
 			const chunks = [];
 			for await (const c of models.generateStream('q', {
@@ -929,10 +911,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 		it("toolErrorMode: 'abort' on stream surfaces ToolHandlerError with cause + trace", async () => {
 			backend.queueStream(
-				[
-					{ deltaToolCalls: [{ id: 'c1', name: 'broken', arguments: {} }] },
-					{ finishReason: 'tool_calls' },
-				],
+				[{ deltaToolCalls: [{ id: 'c1', name: 'broken', arguments: {} }] }, { finishReason: 'tool_calls' }],
 				[{ deltaContent: 'unreachable' }, { finishReason: 'stop' }]
 			);
 			const handlerErr = new Error('stream boom');
@@ -962,10 +941,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 		it('streaming recover-mode appends error envelope and continues (default behavior)', async () => {
 			backend.queueStream(
-				[
-					{ deltaToolCalls: [{ id: 'c1', name: 'broken', arguments: {} }] },
-					{ finishReason: 'tool_calls' },
-				],
+				[{ deltaToolCalls: [{ id: 'c1', name: 'broken', arguments: {} }] }, { finishReason: 'tool_calls' }],
 				[{ deltaContent: 'recovered' }, { finishReason: 'stop' }]
 			);
 			const chunks = [];
@@ -1045,10 +1021,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		}
 
 		it('sync path: assistant → tool → assistant turns appended in order (input NOT echoed)', async () => {
-			backend.queue(
-				toolCallRound('thinking', [tc('c1', 'echo', { x: 1 })]),
-				final('done')
-			);
+			backend.queue(toolCallRound('thinking', [tc('c1', 'echo', { x: 1 })]), final('done'));
 			const conversation = makeConversationSpy();
 			await models.generate('hello', {
 				toolMode: 'auto',
@@ -1128,10 +1101,11 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			assert.deepStrictEqual(conversation.turns, []);
 		});
 
-		it("sync path: BudgetExceededError still fires; conversation has NOT had any turn appended pre-trip", async () => {
-			backend.queue(
-				{ output: { content: 'over', finishReason: 'stop' }, usage: { promptTokens: 200, completionTokens: 0 } }
-			);
+		it('sync path: BudgetExceededError still fires; conversation has NOT had any turn appended pre-trip', async () => {
+			backend.queue({
+				output: { content: 'over', finishReason: 'stop' },
+				usage: { promptTokens: 200, completionTokens: 0 },
+			});
 			const conversation = makeConversationSpy();
 			await assert.rejects(
 				() =>
@@ -1163,7 +1137,6 @@ describe("agentLoop (toolMode: 'auto')", () => {
 				(err) => err.statusCode === 501
 			);
 		});
-
 	});
 
 	describe('token + cost budgets', () => {
@@ -1230,10 +1203,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		it("maxCostUsd trips BudgetExceededError({kind: 'cost'}) when an injected cost function exceeds the cap", async () => {
 			// Inject a $0.01-per-call cost so two rounds = $0.02, capped at $0.015.
 			_setComputeCallCostUsdForTests(() => 0.01);
-			backend.queue(
-				tokenToolRound('p', [tc('c1', 'echo', { i: 1 })]),
-				tokenRound('done')
-			);
+			backend.queue(tokenToolRound('p', [tc('c1', 'echo', { i: 1 })]), tokenRound('done'));
 			let caught;
 			try {
 				await models.generate('q', {
@@ -1249,7 +1219,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			assert.match(caught.message, /maxCostUsd=0.015/);
 		});
 
-		it("maxCostUsd does NOT trip with the v1 stub (computeCallCostUsd returns 0)", async () => {
+		it('maxCostUsd does NOT trip with the v1 stub (computeCallCostUsd returns 0)', async () => {
 			// Default stub: cost = 0 per call, so any cap is unreachable today. Proves
 			// the v1 contract: cap is wired but doesn't fire in production until a
 			// real rate card lands.
@@ -1332,10 +1302,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 	describe("toolErrorMode: 'abort'", () => {
 		it('handler throw surfaces as ToolHandlerError carrying the cause + trace (recover NOT applied)', async () => {
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'broken', {})]),
-				final('unreachable — abort halts the loop')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'broken', {})]), final('unreachable — abort halts the loop'));
 			const handlerErr = new Error('boom');
 			let caught;
 			try {
@@ -1382,11 +1349,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 
 		it('parallel: successful sibling entries are recorded in trace BEFORE the abort throw', async () => {
 			backend.queue(
-				toolCallRound('p', [
-					tc('c1', 'ok', { i: 1 }),
-					tc('c2', 'broken', { i: 2 }),
-					tc('c3', 'ok', { i: 3 }),
-				])
+				toolCallRound('p', [tc('c1', 'ok', { i: 1 }), tc('c2', 'broken', { i: 2 }), tc('c3', 'ok', { i: 3 })])
 			);
 			let caught;
 			try {
@@ -1412,10 +1375,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		});
 
 		it("default toolErrorMode is 'recover' (unchanged behavior)", async () => {
-			backend.queue(
-				toolCallRound('p', [tc('c1', 'broken', {})]),
-				final('recovered')
-			);
+			backend.queue(toolCallRound('p', [tc('c1', 'broken', {})]), final('recovered'));
 			const result = await models.generate('q', {
 				toolMode: 'auto',
 				toolHandlers: {

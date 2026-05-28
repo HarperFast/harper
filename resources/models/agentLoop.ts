@@ -148,35 +148,32 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			}
 
 			const calls = result.toolCalls;
+			// Backends (notably OpenAI) leave `content` as `null` / undefined on tool-call
+			// rounds. `Message.content` and `ConversationTurn.content` are typed as a
+			// required string — coerce to '' at the seam.
+			const assistantContent = result.content ?? '';
 			if (result.finishReason !== 'tool_calls' || !calls || calls.length === 0) {
 				// Terminal: model produced a final answer (stop / length / content_filter), or it
 				// signaled tool_calls but emitted none. Append final assistant turn to the
 				// conversation hook (if set), then pass the result through; attach the trace
 				// when the caller asked for it.
-				if (conversation && result.content) {
-					await conversation.append({ role: 'assistant', content: result.content });
+				if (conversation && assistantContent) {
+					await conversation.append({ role: 'assistant', content: assistantContent });
 				}
 				return opts.includeToolTrace ? { ...result, trace } : result;
 			}
 
-			messages.push({ role: 'assistant', content: result.content, toolCalls: calls });
+			messages.push({ role: 'assistant', content: assistantContent, toolCalls: calls });
 			if (conversation) {
 				await conversation.append({
 					role: 'assistant',
-					content: result.content,
+					content: assistantContent,
 					toolCalls: calls,
 				});
 			}
 
 			const ctx: ToolHandlerContext = { signal: composedSignal, accounting };
-			const dispatched = await dispatchToolCalls(
-				calls,
-				handlers,
-				ctx,
-				iteration,
-				maxResultBytes,
-				parallelism
-			);
+			const dispatched = await dispatchToolCalls(calls, handlers, ctx, iteration, maxResultBytes, parallelism);
 
 			// Post-dispatch abort check — covers the LAST-iteration case: if the signal
 			// fired during this round's handlers, we'd otherwise skip the top-of-loop check
@@ -212,12 +209,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			if (errorMode === 'abort') {
 				const failed = dispatched.find((d) => d.originalError !== undefined);
 				if (failed) {
-					throw new ToolHandlerError(
-						failed.entry.toolName,
-						failed.entry.toolCallId,
-						trace,
-						failed.originalError
-					);
+					throw new ToolHandlerError(failed.entry.toolName, failed.entry.toolCallId, trace, failed.originalError);
 				}
 			}
 		}
@@ -225,11 +217,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 		// Hit `maxToolIterations` without a terminal finishReason — the model kept calling tools.
 		// Always include the trace on the error path (independent of `includeToolTrace`) so
 		// callers can debug an exhausted budget without re-running with tracing on.
-		throw new BudgetExceededError(
-			'iterations',
-			`agent loop exceeded maxToolIterations=${maxIterations}`,
-			trace
-		);
+		throw new BudgetExceededError('iterations', `agent loop exceeded maxToolIterations=${maxIterations}`, trace);
 	} finally {
 		// Always abort the loop controller on exit (success, throw, or external abort).
 		// Cleans up `AbortSignal.any`'s listener on `callerSignal` so a session-scoped caller
@@ -283,9 +271,7 @@ async function dispatchToolCalls(
 	// unhandled-rejection warnings (and crash under `--unhandled-rejections=throw`).
 	// Attach a no-op catch to each promise so the runtime sees every rejection as
 	// handled while still letting `Promise.all` settle on the first one.
-	const promises = calls.map((call) =>
-		runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes)
-	);
+	const promises = calls.map((call) => runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes));
 	for (const p of promises) p.catch(() => {});
 	return Promise.all(promises);
 }
@@ -314,10 +300,7 @@ async function runSingleToolCall(
 		// branch for a `scope.resources` lookup; same call signature, same throw if
 		// unresolved.) Throw as ClientError(400) since the caller didn't supply a handler
 		// for a tool they declared, not a Harper-internal fault.
-		throw new ClientError(
-			`No handler registered for tool '${call.name}' (call id ${call.id})`,
-			400
-		);
+		throw new ClientError(`No handler registered for tool '${call.name}' (call id ${call.id})`, 400);
 	}
 
 	const handlerStart = performance.now();
@@ -464,8 +447,7 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 			//   receive a terminal finishReason inline (degenerate streams, or the
 			//   suppressed `tool_calls` finishReason with zero assembled calls).
 			const hasToolCalls = finalToolCalls.length > 0;
-			const continueWithToolCalls =
-				hasToolCalls && (finishReason === 'tool_calls' || finishReason === undefined);
+			const continueWithToolCalls = hasToolCalls && (finishReason === 'tool_calls' || finishReason === undefined);
 
 			if (!continueWithToolCalls) {
 				if (conversation && accumulatedContent) {
@@ -495,14 +477,7 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 			}
 
 			const ctx: ToolHandlerContext = { signal: composedSignal, accounting };
-			const dispatched = await dispatchToolCalls(
-				finalToolCalls,
-				handlers,
-				ctx,
-				iteration,
-				maxResultBytes,
-				parallelism
-			);
+			const dispatched = await dispatchToolCalls(finalToolCalls, handlers, ctx, iteration, maxResultBytes, parallelism);
 
 			composedSignal.throwIfAborted();
 
@@ -525,21 +500,12 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 			if (errorMode === 'abort') {
 				const failed = dispatched.find((d) => d.originalError !== undefined);
 				if (failed) {
-					throw new ToolHandlerError(
-						failed.entry.toolName,
-						failed.entry.toolCallId,
-						trace,
-						failed.originalError
-					);
+					throw new ToolHandlerError(failed.entry.toolName, failed.entry.toolCallId, trace, failed.originalError);
 				}
 			}
 		}
 
-		throw new BudgetExceededError(
-			'iterations',
-			`agent loop exceeded maxToolIterations=${maxIterations}`,
-			trace
-		);
+		throw new BudgetExceededError('iterations', `agent loop exceeded maxToolIterations=${maxIterations}`, trace);
 	} finally {
 		loopController.abort();
 	}
@@ -650,14 +616,17 @@ function serializeToolResult(value: unknown, maxBytes: number): SerializedResult
 	}
 	// Truncated form: head of the JSON + a marker that names the original size. The
 	// content is no longer valid JSON — that's intentional, the model reads it as text
-	// alongside the marker. Single-pass byte-level slice; `Buffer#toString('utf8')`
-	// folds a split codepoint at the boundary into a replacement char (U+FFFD).
-	// The body slice never exceeds the byte budget — no O(n²) trim loop needed for
-	// multi-byte content.
+	// alongside the marker. Pre-slice the JSON string by CHARACTERS to `headBudget`
+	// before converting to a Buffer — any character takes at least one UTF-8 byte, so
+	// the pre-sliced string already fits in (4 * headBudget) bytes worst-case. Without
+	// this, a multi-MB JSON result would materialize a multi-MB Buffer copy just to
+	// throw away >99 % of it via `subarray`. After conversion, `subarray(0, headBudget)`
+	// trims to exact byte budget; `toString('utf8')` folds a split codepoint at the
+	// boundary into U+FFFD.
 	const marker = `…[truncated; full result is ${totalBytes} bytes]`;
 	const markerBytes = Buffer.byteLength(marker, 'utf8');
 	const headBudget = Math.max(0, maxBytes - markerBytes);
-	const buf = Buffer.from(json, 'utf8');
+	const buf = Buffer.from(json.slice(0, headBudget), 'utf8');
 	const body = buf.subarray(0, headBudget).toString('utf8');
 	return { content: body + marker, totalBytes, truncated: true };
 }
@@ -707,8 +676,11 @@ export class ToolHandlerError extends ServerError {
 	constructor(toolName: string, toolCallId: string, partialTrace: ToolTraceEntry[], cause: unknown) {
 		const causeMessage = errorInfo(cause).message;
 		const causeStatus =
-			cause && typeof cause === 'object' && 'statusCode' in cause && typeof (cause as { statusCode: unknown }).statusCode === 'number'
-				? ((cause as { statusCode: number }).statusCode)
+			cause &&
+			typeof cause === 'object' &&
+			'statusCode' in cause &&
+			typeof (cause as { statusCode: unknown }).statusCode === 'number'
+				? (cause as { statusCode: number }).statusCode
 				: 500;
 		super(`Tool handler '${toolName}' (call ${toolCallId}) failed: ${causeMessage}`, causeStatus);
 		this.name = 'ToolHandlerError';
