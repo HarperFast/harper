@@ -115,17 +115,11 @@ async function dispatchToolCalls(
 				toolCallId: call.id,
 				reason: 'destructive',
 			});
-			await appendMessage(opts.sessionId, {
-				role: 'tool',
-				content: JSON.stringify({
-					ok: false,
-					error: 'awaiting_approval',
-					tool: call.name,
-				}),
-				toolCallId: call.id,
-				createdAt: Date.now(),
-			});
-			// addPendingApproval already set status to awaiting_approval and persisted the entry.
+			// Don't append a placeholder tool message here — most LLM APIs enforce a strict 1:1
+			// between an assistant tool_call and a tool response. `consumeResolvedApprovals` writes
+			// the single tool response (either the real execution or `denied_by_operator`) on the
+			// next run, after the operator resolves the approval. addPendingApproval has already
+			// flipped status to `awaiting_approval` and persisted the entry.
 			return true;
 		}
 		const observation = await invokeTool(call, toolMap, ctx);

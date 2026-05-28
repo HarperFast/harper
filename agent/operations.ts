@@ -108,9 +108,15 @@ async function cancelAgentRun(op: any, deps: OperationDeps) {
 	requireSuperUser(op);
 	const sessionId = String(op?.session_id ?? '');
 	if (!sessionId) throw new ServerError('session_id is required', 400);
-	const cancelled = deps.cancelRun(sessionId);
-	if (cancelled) await setStatus(sessionId, 'aborted', 'Cancelled by operator');
-	return { cancelled };
+	const session = await getSession(sessionId);
+	if (!session) throw new ServerError(`Unknown session ${sessionId}`, 404);
+	// Abort any active controller (best-effort — there may not be one if the loop is paused
+	// in `awaiting_approval` or sitting `idle` between turns). Always update the persisted
+	// status so a paused session can still be terminated by the operator.
+	const signalledLiveRun = deps.cancelRun(sessionId);
+	const wasTerminal = session.status === 'completed' || session.status === 'aborted' || session.status === 'error';
+	if (!wasTerminal) await setStatus(sessionId, 'aborted', 'Cancelled by operator');
+	return { cancelled: !wasTerminal, signalledLiveRun };
 }
 
 async function approveAgentAction(op: any, deps: OperationDeps) {

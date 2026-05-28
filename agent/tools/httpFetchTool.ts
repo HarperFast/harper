@@ -1,14 +1,25 @@
 /**
  * `http_fetch` for the built-in agent (#626). Wraps the platform `fetch`
- * with a size cap and an inactivity timeout so the agent can probe its own
- * deployed components and pull lightweight web pages for context without
- * letting a single tool call hang the loop or exhaust memory.
+ * with a size cap, an inactivity timeout, and a metadata/loopback blocklist
+ * so the agent can probe its own deployed components and pull lightweight
+ * web pages for context without becoming an SSRF vector against cloud
+ * instance-metadata endpoints or unrelated internal services.
  */
 
+import { isIP } from 'node:net';
 import type { AgentTool, AgentToolContext } from '../types.ts';
 
 const MAX_BYTES = 2 * 1024 * 1024; // 2 MiB cap on response bodies
 const DEFAULT_TIMEOUT_MS = 30_000;
+// Hard-blocked literal hosts. Cloud-metadata services live on these IPs and exposing them
+// to a prompt-controlled fetch is a credential-leak vector. Loopback to the local Harper
+// instance is allowed via `localhost`/`127.0.0.1` for self-testing — those are NOT blocked.
+const BLOCKED_HOSTS = new Set([
+	'169.254.169.254', // AWS / GCP / Azure IMDS
+	'fd00:ec2::254', // AWS IMDSv2 IPv6
+	'metadata.google.internal',
+	'metadata.goog',
+]);
 
 export const httpFetchTool: AgentTool = {
 	def: {
@@ -30,6 +41,20 @@ export const httpFetchTool: AgentTool = {
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const url = String(args.url ?? '');
 		if (!/^https?:\/\//i.test(url)) throw new Error('http_fetch requires an http(s) URL');
+		let parsed: URL;
+		try {
+			parsed = new URL(url);
+		} catch {
+			throw new Error(`http_fetch could not parse URL: ${url}`);
+		}
+		const host = parsed.hostname.toLowerCase();
+		if (BLOCKED_HOSTS.has(host)) {
+			throw new Error(`http_fetch blocked by metadata-host policy: ${host}`);
+		}
+		// IPv4 link-local (169.254.0.0/16) covers IMDS variants beyond the canonical 169.254.169.254.
+		if (isIP(host) === 4 && host.startsWith('169.254.')) {
+			throw new Error(`http_fetch blocked by link-local policy: ${host}`);
+		}
 		const timeoutMs = Math.min(args.timeoutMs ?? DEFAULT_TIMEOUT_MS, 120_000);
 		const localAbort = new AbortController();
 		const timer = setTimeout(() => localAbort.abort(new Error(`http_fetch timed out after ${timeoutMs}ms`)), timeoutMs);

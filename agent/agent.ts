@@ -69,7 +69,9 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		onFollowup: handleFollowup,
 	});
 
-	if (liveConfig.maxCostUsd > 0) {
+	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
+	// every boot would flood the log without telling anyone anything actionable.
+	if (opts.maxCostUsd !== undefined) {
 		log.warn?.(
 			`agent.maxCostUsd=${liveConfig.maxCostUsd} is advertised but not yet enforced; cost-cap wiring depends on #612 telemetry.`
 		);

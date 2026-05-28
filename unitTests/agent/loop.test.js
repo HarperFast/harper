@@ -197,8 +197,10 @@ describe('agent/loop runAgent', () => {
 		assert.equal(reloaded.status, 'awaiting_approval');
 		assert.equal(reloaded.pendingApprovals.length, 1);
 		assert.equal(reloaded.pendingApprovals[0].toolName, 'restart');
-		const observation = reloaded.messages.find((m) => m.role === 'tool');
-		assert.match(observation.content, /awaiting_approval/);
+		// No placeholder tool response: LLM APIs reject duplicate tool responses for the same
+		// tool_call_id. The tool response is only written when the operator resolves the approval.
+		const toolMessages = reloaded.messages.filter((m) => m.role === 'tool');
+		assert.equal(toolMessages.length, 0);
 	});
 
 	it('executes a destructive tool when autoApprove is true', async () => {
@@ -284,9 +286,10 @@ describe('agent/loop runAgent', () => {
 		const final = await session.getSession(created.session_id);
 		assert.equal(final.status, 'completed');
 		const toolMessages = final.messages.filter((m) => m.role === 'tool');
-		// One awaiting_approval observation, then the approved-execution observation.
-		assert.equal(toolMessages.length, 2);
-		assert.match(toolMessages[1].content, /restarted/);
+		// Exactly one tool response for the gated call (the executed one) — no placeholder.
+		assert.equal(toolMessages.length, 1);
+		assert.match(toolMessages[0].content, /restarted/);
+		assert.equal(toolMessages[0].toolCallId, 'c1');
 		assert.equal(final.pendingApprovals[0].consumed, true);
 	});
 
@@ -336,7 +339,8 @@ describe('agent/loop runAgent', () => {
 		const final = await session.getSession(created.session_id);
 		assert.equal(final.status, 'completed');
 		const toolMessages = final.messages.filter((m) => m.role === 'tool');
-		assert.match(toolMessages[1].content, /denied_by_operator/);
+		assert.equal(toolMessages.length, 1);
+		assert.match(toolMessages[0].content, /denied_by_operator/);
 	});
 
 	it('preserves aborted status when signal aborts mid-generate', async () => {

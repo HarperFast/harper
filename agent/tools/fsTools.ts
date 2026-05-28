@@ -11,7 +11,7 @@
  * reach more of the filesystem than a remote CLI.
  */
 
-import { readFile, writeFile, readdir, stat, mkdir, realpath } from 'node:fs/promises';
+import { readFile, writeFile, readdir, stat, mkdir, realpath, open } from 'node:fs/promises';
 import { resolve, dirname, relative, sep } from 'node:path';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
@@ -19,6 +19,7 @@ const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB
 const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_GREP_RESULTS = 500;
 const DEFAULT_TAIL_LINES = 200;
+const TAIL_READ_BYTES = 1 * 1024 * 1024; // 1 MiB — enough for thousands of normal log lines
 
 type Access = 'read' | 'write';
 
@@ -149,6 +150,16 @@ export const grepFilesTool: AgentTool = {
 		const results: Array<{ path: string; line: number; text: string }> = [];
 		await walk(root, async (file) => {
 			if (results.length >= cap) return false;
+			// `stat` first so a multi-GB log or database file can't be slurped into memory by a
+			// well-formed grep request. Anything over the read cap is silently skipped.
+			let size = 0;
+			try {
+				const st = await stat(file);
+				size = st.size;
+			} catch {
+				return true;
+			}
+			if (size > MAX_READ_BYTES) return true;
 			const text = await readFile(file, 'utf8').catch(() => '');
 			if (!text) return true;
 			const lines = text.split('\n');
@@ -178,13 +189,27 @@ export const tailFileTool: AgentTool = {
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const path = await resolveScoped(ctx.scopes, args.path, 'read');
 		const wanted = Math.min(args.lines ?? DEFAULT_TAIL_LINES, 5000);
-		const text = await readFile(path, 'utf8');
-		const all = text.split('\n');
-		// `split('\n')` on a file ending with `\n` leaves a trailing empty entry — drop it so the
-		// "last N lines" the agent sees matches what a human reading the file would see.
-		if (all.length > 0 && all[all.length - 1] === '') all.pop();
-		const start = Math.max(0, all.length - wanted);
-		return { path, lines: all.slice(start), totalLines: all.length };
+		// Read only the trailing TAIL_READ_BYTES — a multi-GB log file otherwise OOMs the process.
+		const st = await stat(path);
+		const start = Math.max(0, st.size - TAIL_READ_BYTES);
+		const truncated = start > 0;
+		const fh = await open(path, 'r');
+		try {
+			const buf = Buffer.alloc(st.size - start);
+			await fh.read(buf, 0, buf.length, start);
+			const text = buf.toString('utf8');
+			const all = text.split('\n');
+			// `split('\n')` on a file ending with `\n` leaves a trailing empty entry — drop it so the
+			// "last N lines" the agent sees matches what a human reading the file would see.
+			if (all.length > 0 && all[all.length - 1] === '') all.pop();
+			// When we read from a mid-file offset the first "line" is almost certainly a partial
+			// fragment of a real line. Drop it so we don't hand the agent a misleading prefix.
+			if (truncated && all.length > 0) all.shift();
+			const sliceStart = Math.max(0, all.length - wanted);
+			return { path, lines: all.slice(sliceStart), truncated };
+		} finally {
+			await fh.close();
+		}
 	},
 };
 
