@@ -87,17 +87,11 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	let totalTokens = 0;
 	let totalCostUsd = 0;
 
-	// Initial conversation turns: append the user-role messages flowing IN before the
-	// first backend round. System messages skipped — conventions vary (some hosts treat
-	// system as ambient, not turn-scoped). Awaited so caller can observe initial state
-	// before any backend round runs.
-	if (conversation) {
-		for (const m of messages) {
-			if (m.role === 'user') {
-				await conversation.append({ role: 'user', content: m.content });
-			}
-		}
-	}
+	// `conversation` is a one-way SINK for NEW turns produced by this loop — the loop
+	// does NOT re-append the caller's input messages, even when they include user
+	// turns. Echoing input back into the caller's store would corrupt it (the caller
+	// already added their own prompt) and scramble ordering for multi-turn history.
+	// The caller owns turn 0; the loop owns whatever assistant/tool turns it produces.
 
 	// Loop-level abort controller — fired internally on budget trips (commit 4 wires
 	// that) and on every loop exit (success, throw, abort) via the `finally` below.
@@ -407,16 +401,8 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 	const composedSignal = composeAbortSignal(callerSignal, loopController.signal);
 	const innerOpts: GenerateOpts = { ...opts, toolMode: 'return', signal: composedSignal };
 
-	// Initial conversation turns: append the user-role messages flowing IN before the
-	// first backend round. System messages skipped — conventions vary (some hosts treat
-	// system as ambient, not turn-scoped).
-	if (conversation) {
-		for (const m of messages) {
-			if (m.role === 'user') {
-				await conversation.append({ role: 'user', content: m.content });
-			}
-		}
-	}
+	// `conversation` is a one-way SINK for NEW turns produced by this loop — see
+	// `runAgentLoop` for the rationale. Streaming path applies the same contract.
 
 	try {
 		for (let iteration = 1; iteration <= maxIterations; iteration++) {
@@ -430,6 +416,11 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 
 			const stream = models.generateStream(buildInnerInput(messages, tools, system), innerOpts);
 			for await (const chunk of stream) {
+				// Defense-in-depth: well-behaved backends honor `opts.signal` via the
+				// fetch they hand it to. An ill-behaved community backend that doesn't
+				// observe its signal would otherwise keep streaming after a caller abort.
+				composedSignal.throwIfAborted();
+
 				if (chunk.deltaContent !== undefined) {
 					accumulatedContent += chunk.deltaContent;
 				}
@@ -460,22 +451,29 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 			}
 
 			const finalToolCalls = completeToolCallAssembly(toolCallAssembly);
-			const isTerminal =
-				finishReason !== 'tool_calls' || finalToolCalls.length === 0;
 
-			if (isTerminal) {
-				// Append the assistant turn (final content) to conversation before bailing.
+			// Continue-vs-terminal:
+			// - Hand off to tool dispatch when calls assembled AND the backend signalled
+			//   tool_calls OR didn't signal anything at all. The "no finishReason" case
+			//   covers proxy-truncated streams: every in-tree backend (openai, anthropic,
+			//   bedrock) emits a tail-flush `deltaToolCalls` without a finishReason when
+			//   the upstream connection drops mid-stream. Treating that as terminal would
+			//   silently drop the assembled tool calls — the backend's recovery would be
+			//   undone by this loop.
+			// - Otherwise, terminal: yield a synthetic 'stop' chunk if the consumer didn't
+			//   receive a terminal finishReason inline (degenerate streams, or the
+			//   suppressed `tool_calls` finishReason with zero assembled calls).
+			const hasToolCalls = finalToolCalls.length > 0;
+			const continueWithToolCalls =
+				hasToolCalls && (finishReason === 'tool_calls' || finishReason === undefined);
+
+			if (!continueWithToolCalls) {
 				if (conversation && accumulatedContent) {
 					await conversation.append({ role: 'assistant', content: accumulatedContent });
 				}
-				// Degenerate-backend guard: if the stream finished with `tool_calls` BUT no
-				// assembled calls landed (provider misbehavior or upstream truncation), we
-				// already suppressed the 'tool_calls' chunk under the intermediate-finishReason
-				// rule above. Without a synthetic terminal chunk the consumer's `for-await`
-				// ends without ever seeing a terminal `finishReason`, violating the
-				// `GenerateChunk` contract. Reclassify to 'stop' and emit one chunk so the
-				// stream closes cleanly.
-				if (finishReason === 'tool_calls' && finalToolCalls.length === 0) {
+				if (finishReason === undefined || finishReason === 'tool_calls') {
+					// Synthetic terminal: backend never yielded one inline, OR we suppressed
+					// the intermediate 'tool_calls' chunk and no calls assembled to dispatch.
 					yield { finishReason: 'stop' };
 				}
 				return;
@@ -640,9 +638,13 @@ interface SerializedResult {
 }
 
 function serializeToolResult(value: unknown, maxBytes: number): SerializedResult {
-	const json = JSON.stringify(value ?? null);
-	const buf = Buffer.from(json, 'utf8');
-	const totalBytes = buf.length;
+	// `JSON.stringify(Symbol())` (and `JSON.stringify(function(){})`) return `undefined`.
+	// `value ?? null` only catches null/undefined inputs, not unsupported types — fall
+	// back to the string 'null' so downstream `Buffer.byteLength` never sees undefined.
+	const json = JSON.stringify(value ?? null) ?? 'null';
+	const totalBytes = Buffer.byteLength(json, 'utf8');
+	// Common case: result fits. Skip buffer allocation entirely — read byte length
+	// without materializing a copy.
 	if (totalBytes <= maxBytes) {
 		return { content: json, totalBytes, truncated: false };
 	}
@@ -655,6 +657,7 @@ function serializeToolResult(value: unknown, maxBytes: number): SerializedResult
 	const marker = `…[truncated; full result is ${totalBytes} bytes]`;
 	const markerBytes = Buffer.byteLength(marker, 'utf8');
 	const headBudget = Math.max(0, maxBytes - markerBytes);
+	const buf = Buffer.from(json, 'utf8');
 	const body = buf.subarray(0, headBudget).toString('utf8');
 	return { content: body + marker, totalBytes, truncated: true };
 }

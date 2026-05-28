@@ -866,6 +866,52 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			assert.strictEqual(backend.streamCalls.length, 0);
 		});
 
+		it('backend tail-flushes tool calls without finishReason (proxy truncation) → loop dispatches, does NOT drop the calls', async () => {
+			// All three in-tree backends (openai, anthropic, bedrock) emit a tail-flush
+			// `{deltaToolCalls: ...}` without a `finishReason` when the upstream stream
+			// closes mid-message. The loop must treat that as a `tool_calls` round and
+			// dispatch — otherwise the backend's careful recovery is undone here.
+			backend.queueStream(
+				[
+					{ deltaContent: 'thinking' },
+					// Note: no finishReason chunk at all — backend tail-flushed.
+					{ deltaToolCalls: [{ id: 'c1', name: 'recover', arguments: { x: 1 } }] },
+				],
+				[{ deltaContent: 'recovered' }, { finishReason: 'stop' }]
+			);
+			const dispatched = [];
+			const chunks = [];
+			for await (const c of models.generateStream('q', {
+				toolMode: 'auto',
+				toolHandlers: {
+					recover: (args) => {
+						dispatched.push(args);
+						return { ok: true };
+					},
+				},
+			})) {
+				chunks.push(c);
+			}
+			assert.deepStrictEqual(dispatched, [{ x: 1 }], 'tail-flushed tool call must dispatch');
+			// Caller sees deltas from BOTH rounds + a terminal 'stop'.
+			const text = chunks.map((c) => c.deltaContent ?? '').join('');
+			assert.match(text, /thinking/);
+			assert.match(text, /recovered/);
+			const finishReasons = chunks.map((c) => c.finishReason).filter(Boolean);
+			assert.deepStrictEqual(finishReasons, ['stop']);
+		});
+
+		it('backend stream ends with no finishReason AND no tool calls → loop yields synthetic stop', async () => {
+			backend.queueStream([{ deltaContent: 'partial' }]);
+			const chunks = [];
+			for await (const c of models.generateStream('q', { toolMode: 'auto' })) {
+				chunks.push(c);
+			}
+			// Last chunk carries a synthetic terminal `stop` so consumer's for-await sees one.
+			const finishReasons = chunks.map((c) => c.finishReason).filter(Boolean);
+			assert.deepStrictEqual(finishReasons, ['stop']);
+		});
+
 		it('degenerate backend: finishReason=tool_calls with NO assembled calls → loop reclassifies as terminal stop', async () => {
 			// Provider misbehavior or upstream truncation can yield "tool_calls" without
 			// any tool-call deltas. Without the guard, the loop would suppress the
@@ -998,7 +1044,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			};
 		}
 
-		it('sync path: user → assistant → tool → assistant turns appended in order', async () => {
+		it('sync path: assistant → tool → assistant turns appended in order (input NOT echoed)', async () => {
 			backend.queue(
 				toolCallRound('thinking', [tc('c1', 'echo', { x: 1 })]),
 				final('done')
@@ -1009,18 +1055,20 @@ describe("agentLoop (toolMode: 'auto')", () => {
 				conversation,
 				toolHandlers: { echo: (args) => ({ result: args.x }) },
 			});
+			// Loop ONLY appends new turns it produced. The caller's `hello` input is
+			// theirs to track; re-appending it would corrupt the conversation store.
 			assert.deepStrictEqual(
 				conversation.turns.map((t) => t.role),
-				['user', 'assistant', 'tool', 'assistant']
+				['assistant', 'tool', 'assistant']
 			);
-			assert.strictEqual(conversation.turns[0].content, 'hello');
-			assert.ok(conversation.turns[1].toolCalls, 'mid-loop assistant turn carries toolCalls');
-			assert.strictEqual(conversation.turns[2].toolCallId, 'c1');
-			assert.strictEqual(conversation.turns[3].content, 'done');
-			assert.strictEqual(conversation.turns[3].toolCalls, undefined, 'terminal assistant turn omits toolCalls');
+			assert.strictEqual(conversation.turns[0].content, 'thinking');
+			assert.ok(conversation.turns[0].toolCalls, 'mid-loop assistant turn carries toolCalls');
+			assert.strictEqual(conversation.turns[1].toolCallId, 'c1');
+			assert.strictEqual(conversation.turns[2].content, 'done');
+			assert.strictEqual(conversation.turns[2].toolCalls, undefined, 'terminal assistant turn omits toolCalls');
 		});
 
-		it('streaming path: user → assistant → tool → assistant turns appended in order', async () => {
+		it('streaming path: assistant → tool → assistant turns appended in order (input NOT echoed)', async () => {
 			backend.queueStream(
 				[
 					{ deltaContent: 'thinking' },
@@ -1039,33 +1087,31 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			}
 			assert.deepStrictEqual(
 				conversation.turns.map((t) => t.role),
-				['user', 'assistant', 'tool', 'assistant']
+				['assistant', 'tool', 'assistant']
 			);
-			assert.strictEqual(conversation.turns[0].content, 'hello');
-			assert.strictEqual(conversation.turns[1].content, 'thinking');
-			assert.ok(conversation.turns[1].toolCalls);
-			assert.strictEqual(conversation.turns[3].content, 'final');
+			assert.strictEqual(conversation.turns[0].content, 'thinking');
+			assert.ok(conversation.turns[0].toolCalls);
+			assert.strictEqual(conversation.turns[2].content, 'final');
 		});
 
-		it('sync path with Message[] input: appends EACH user turn before the first round', async () => {
+		it('sync path with Message[] input: caller-supplied user turns are NOT echoed to the appender', async () => {
+			// Multi-turn history input: caller has already persisted these turns in their
+			// store. The loop must not echo them back.
 			backend.queue(final('out'));
 			const conversation = makeConversationSpy();
 			await models.generate(
 				[
 					{ role: 'system', content: 'sys (ambient — not a turn)' },
 					{ role: 'user', content: 'q1' },
+					{ role: 'assistant', content: 'a1' },
 					{ role: 'user', content: 'q2' },
 				],
 				{ toolMode: 'auto', conversation }
 			);
-			// Two user turns appended before the round; one assistant turn after.
+			// Only the assistant turn produced THIS call lands in the appender.
 			assert.deepStrictEqual(
 				conversation.turns.map((t) => ({ role: t.role, content: t.content })),
-				[
-					{ role: 'user', content: 'q1' },
-					{ role: 'user', content: 'q2' },
-					{ role: 'assistant', content: 'out' },
-				]
+				[{ role: 'assistant', content: 'out' }]
 			);
 		});
 
@@ -1078,14 +1124,11 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			})) {
 				// drain
 			}
-			// Only the user turn — no assistant turn for the empty terminal.
-			assert.deepStrictEqual(
-				conversation.turns.map((t) => t.role),
-				['user']
-			);
+			// No assistant turn for the empty terminal; loop never echoes input either.
+			assert.deepStrictEqual(conversation.turns, []);
 		});
 
-		it("sync path: BudgetExceededError still fires; conversation reflects work that completed before the trip", async () => {
+		it("sync path: BudgetExceededError still fires; conversation has NOT had any turn appended pre-trip", async () => {
 			backend.queue(
 				{ output: { content: 'over', finishReason: 'stop' }, usage: { promptTokens: 200, completionTokens: 0 } }
 			);
@@ -1099,8 +1142,8 @@ describe("agentLoop (toolMode: 'auto')", () => {
 					}),
 				(err) => err instanceof BudgetExceededError
 			);
-			// User turn appended; assistant turn NOT (budget tripped before terminal append).
-			assert.deepStrictEqual(conversation.turns.map((t) => t.role), ['user']);
+			// Budget tripped before the terminal assistant append — zero turns total.
+			assert.deepStrictEqual(conversation.turns, []);
 		});
 	});
 

@@ -236,12 +236,27 @@ export interface ToolHandlerContext {
  * Caller-supplied tool implementation. Return value is JSON-serialized into a
  * `tool`-role message and fed back to the model on the next iteration. Throws are
  * caught by the loop and routed by `toolErrorMode` (`'recover'` | `'abort'`).
+ *
+ * The `args` type parameter lets typed apps assign concrete handler signatures
+ * (`const search: ToolHandler<{query: string}> = ...`) without contravariance
+ * complaints under `strictFunctionTypes`. Defaults to `any` so the unparameterized
+ * `ToolHandler` stays assignable from arbitrary handlers in untyped callers.
  */
-export type ToolHandler = (args: object, ctx: ToolHandlerContext) => unknown | Promise<unknown>;
+export type ToolHandler<T = any> = (args: T, ctx: ToolHandlerContext) => unknown | Promise<unknown>;
 
 /**
  * Optional hook the loop calls as conversation turns flow. Structural so the
  * built-in `ConversationResource` (#511) AND ad-hoc stores can satisfy it.
+ *
+ * **Contract:**
+ * - The loop appends ONLY new turns it produces (assistant + tool turns from each
+ *   round). It does NOT echo the caller's input back — the caller owns turn 0.
+ * - `append` is `await`ed inline between loop steps, giving the appender ordering
+ *   + back-pressure. Slow appenders pause the loop.
+ * - Appenders SHOULD NOT throw. A throw propagates as the loop's terminal error
+ *   (bypassing `BudgetExceededError` / `ToolHandlerError` shapes) and discards any
+ *   in-progress trace. If your appender CAN fail recoverably, catch internally and
+ *   log; only surface unrecoverable persistence failures.
  */
 export interface ConversationAppender {
 	append(turn: ConversationTurn): Promise<void>;
