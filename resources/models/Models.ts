@@ -2,6 +2,7 @@ import { contextStorage } from '../transaction.ts';
 import { resolveEmbedding, resolveGenerative } from './backendRegistry.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
+import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
 import type {
 	AccountingContext,
 	BackendOpts,
@@ -61,6 +62,14 @@ export class Models implements ModelsContract {
 	}
 
 	async generate(input: GenerateInput, opts: GenerateOpts = {}): Promise<GenerateResult> {
+		if (opts.toolMode === 'auto') {
+			// The loop calls back through `this.generate(..., {toolMode: 'return'})` per
+			// iteration, so each backend round still flows through the single-shot path
+			// below and writes its own `hdb_model_calls` row. The outer auto call itself
+			// stays out of the analytics table — counting it would double-bill the round.
+			const { accounting, signal } = resolveCallContext(opts.signal);
+			return runAgentLoop({ models: this, input, opts, accounting, signal });
+		}
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		let backend: ModelBackend | undefined;
@@ -79,6 +88,12 @@ export class Models implements ModelsContract {
 	}
 
 	generateStream(input: GenerateInput, opts: GenerateOpts = {}): AsyncIterable<GenerateChunk> {
+		if (opts.toolMode === 'auto') {
+			// Same rationale as `generate`: per-iteration analytics happen inside the loop
+			// when it dispatches to `this.generateStream(..., {toolMode: 'return'})`.
+			const { accounting, signal } = resolveCallContext(opts.signal);
+			return runAgentLoopStream({ models: this, input, opts, accounting, signal });
+		}
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		let backend: ModelBackend | undefined;

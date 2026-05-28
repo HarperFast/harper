@@ -211,6 +211,55 @@ describe('Models facade', () => {
 			assert.strictEqual(r.success, false);
 			assert.strictEqual(r.error_code, 'backend_error');
 		});
+
+		describe("toolMode: 'auto' (commit-1 guard)", () => {
+			it('rejects with 501 — loop body lands in commit 2', async () => {
+				// The outer auto call delegates to runAgentLoop, which currently stubs out.
+				// Asserting the throw locks in the contract: `toolMode: 'auto'` is a
+				// type-declared entry point that's wired but not yet implemented.
+				await assert.rejects(
+					() => models.generate('hello', { toolMode: 'auto' }),
+					(err) => err.statusCode === 501 && /not yet implemented/i.test(err.message)
+				);
+			});
+
+			it('writes NO analytics row for the outer auto call (per-iteration rows happen inside)', async () => {
+				await assert.rejects(() => models.generate('hello', { toolMode: 'auto' }));
+				assert.strictEqual(
+					writer.records.length,
+					0,
+					'outer auto call must not double-bill the iteration the loop performs'
+				);
+			});
+
+			it("toolMode: 'return' still flows the single-shot path", async () => {
+				const result = await models.generate('hello', { toolMode: 'return' });
+				assert.strictEqual(typeof result.content, 'string');
+				assert.strictEqual(writer.records.length, 1);
+				assert.strictEqual(writer.records[0].method, 'generate');
+				assert.strictEqual(writer.records[0].success, true);
+			});
+
+			it('accepts all new option fields without rejecting at the type/runtime surface', async () => {
+				// Surface check: the loop options exist on GenerateOpts and a fully-populated
+				// call still hits the guard cleanly. Commits 2–5 give them runtime meaning.
+				await assert.rejects(() =>
+					models.generate('hello', {
+						toolMode: 'auto',
+						maxToolIterations: 5,
+						maxToolTokens: 1000,
+						maxCostUsd: 0.5,
+						toolParallelism: 'serial',
+						toolResultMaxBytes: 1024,
+						toolArgValidation: 'lenient',
+						toolErrorMode: 'abort',
+						includeToolTrace: true,
+						toolHandlers: { echo: (args) => args },
+						conversation: { async append() {} },
+					})
+				);
+			});
+		});
 	});
 
 	describe('generateStream', () => {
@@ -291,6 +340,33 @@ describe('Models facade', () => {
 			assert.strictEqual(writer.records[0].backend, 'no-stream');
 			assert.strictEqual(writer.records[0].error_code, 'capability_unsupported');
 			assert.strictEqual(writer.records[0].method, 'generateStream');
+		});
+
+		describe("toolMode: 'auto' (commit-1 guard)", () => {
+			it('throws on first iteration with 501 — streaming loop lands in commit 5', async () => {
+				// Async-generator stub: the throw fires on first iteration, not at the
+				// synchronous .generateStream(...) call. Matches the existing capability/
+				// resolve pattern (errors surface when the caller iterates).
+				await assert.rejects(
+					async () => {
+						// eslint-disable-next-line no-unused-vars
+						for await (const _ of models.generateStream('hello', { toolMode: 'auto' })) {
+							// will not iterate
+						}
+					},
+					(err) => err.statusCode === 501 && /not yet implemented/i.test(err.message)
+				);
+			});
+
+			it('writes NO analytics row for the outer auto-stream call', async () => {
+				await assert.rejects(async () => {
+					// eslint-disable-next-line no-unused-vars
+					for await (const _ of models.generateStream('hello', { toolMode: 'auto' })) {
+						// will not iterate
+					}
+				});
+				assert.strictEqual(writer.records.length, 0);
+			});
 		});
 	});
 });
