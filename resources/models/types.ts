@@ -181,6 +181,17 @@ export interface GenerateResult {
 	/** Why generation stopped. Backend-agnostic; backends map their native reasons. */
 	finishReason: 'stop' | 'length' | 'tool_calls' | 'content_filter';
 	/**
+	 * Token / cost usage for this call. Pass-through from the backend's
+	 * `ModelCallResult.usage` so callers (and the `toolMode: 'auto'` loop) can
+	 * cap cumulative budgets without re-querying analytics.
+	 *
+	 * Backends MUST NOT set this field on the `output` they return — the framework
+	 * (`Models.generate`) injects it from `ModelCallResult.usage`, which is the
+	 * authoritative source. A backend that sets both gets the framework's value;
+	 * easy to miss but unambiguous: usage lives at the call-result layer.
+	 */
+	usage?: TokenUsage;
+	/**
 	 * `toolMode: 'auto'` only, and only when `includeToolTrace: true` (or when an
 	 * error path attaches `partialTrace` via `BudgetExceededError`). One entry per
 	 * tool invocation, in the order it ran.

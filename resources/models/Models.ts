@@ -80,7 +80,10 @@ export class Models implements ModelsContract {
 			const result = await backend.generate!(input, backendOpts);
 			if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 			this.#record(backend, 'generate', opts.model, accounting, opts, result, startedAt);
-			return result.output;
+			// Propagate usage onto the returned GenerateResult so callers (notably the
+			// `toolMode: 'auto'` loop's budget tracker) can read cumulative tokens without
+			// re-querying analytics. Pure pass-through — backend usage is the source of truth.
+			return result.usage ? { ...result.output, usage: result.usage } : result.output;
 		} catch (err) {
 			this.#recordFailure(backend, 'generate', opts.model, accounting, opts, startedAt, err);
 			throw err;

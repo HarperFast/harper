@@ -17,12 +17,13 @@
  * only fired externally (caller aborts → composed signal aborts); commit 4 wires
  * it to also fire on budget trips so an in-flight LLM call cancels cleanly.
  *
- * Commit 3 of #612 — parallel batch dispatch (Promise.all, default) + caller-signal
- * propagation + iteration-boundary `throwIfAborted`. Modes deferred to later
- * commits throw 501 at entry:
+ * Commit 4 of #612 — token + cost budgets, `toolErrorMode: 'abort'`. The cost
+ * function is a stub (returns 0) until a per-model rate card is wired; the cap
+ * still trips when a test overrides the function via `_setComputeCallCostUsdForTests`.
+ * `toolErrorMode: 'abort'` surfaces handler errors as `ToolHandlerError` with the
+ * trace attached (including the failing entry) so callers always have the full
+ * picture on error paths. Modes deferred to later commits throw 501 at entry:
  *   - `toolArgValidation: 'strict' | 'lenient'`  → JSON Schema validator (TBD)
- *   - `toolErrorMode: 'abort'`                   → commit 4
- *   - `maxToolTokens`, `maxCostUsd`              → commit 4
  *   - `opts.conversation.append`                 → commit 5
  *   - `runAgentLoopStream`                       → commit 5
  *
@@ -38,6 +39,7 @@ import type {
 	GenerateResult,
 	Message,
 	Models,
+	TokenUsage,
 	ToolCall,
 	ToolDef,
 	ToolHandler,
@@ -68,9 +70,16 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	const maxResultBytes = opts.toolResultMaxBytes ?? DEFAULT_MAX_RESULT_BYTES;
 	const handlers = opts.toolHandlers ?? {};
 	const parallelism = opts.toolParallelism ?? 'parallel';
+	const errorMode = opts.toolErrorMode ?? 'recover';
+	const maxToolTokens = opts.maxToolTokens;
+	const maxCostUsd = opts.maxCostUsd;
 
 	const { messages, tools, system } = normalizeInput(args.input);
 	const trace: ToolTraceEntry[] = [];
+	// Cumulative usage tallies across all iterations of this loop invocation. Used to
+	// trip `maxToolTokens` / `maxCostUsd` after each backend round.
+	let totalTokens = 0;
+	let totalCostUsd = 0;
 
 	// Loop-level abort controller — fired internally on budget trips (commit 4 wires
 	// that) and on every loop exit (success, throw, abort) via the `finally` below.
@@ -95,6 +104,36 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			composedSignal.throwIfAborted();
 
 			const result = await models.generate(buildInnerInput(messages, tools, system), innerOpts);
+
+			// Tally this round's usage BEFORE deciding terminal vs continue. A round
+			// that crosses the cap trips even if it would otherwise have been the last
+			// one — the cap is on what we paid for, not on what we'd have paid for next.
+			// Cost trip semantics: `>= cap`, so `maxCostUsd: 0` blocks every call rather
+			// than dormantly admitting all of them until a real rate card lands and then
+			// abruptly blocking everything. Token trip uses `>=` for symmetry.
+			//
+			// Discarded-content asymmetry: a TERMINAL round that trips returns
+			// BudgetExceededError instead of the final assistant content. The content is
+			// in `messages` (the loop's running state) but neither `partialTrace` nor the
+			// thrown error surfaces it. Callers that need terminal content even on
+			// budget-trip should set `maxToolTokens` / `maxCostUsd` conservatively or read
+			// the per-iteration analytics rows (one row per round in `hdb_model_calls`).
+			totalTokens += sumTokens(result.usage);
+			totalCostUsd += computeCallCostUsd(result.usage, opts.model);
+			if (maxToolTokens !== undefined && totalTokens >= maxToolTokens) {
+				throw new BudgetExceededError(
+					'tokens',
+					`agent loop exceeded maxToolTokens=${maxToolTokens} (cumulative=${totalTokens})`,
+					trace
+				);
+			}
+			if (maxCostUsd !== undefined && totalCostUsd >= maxCostUsd) {
+				throw new BudgetExceededError(
+					'cost',
+					`agent loop exceeded maxCostUsd=${maxCostUsd} (cumulative=${totalCostUsd})`,
+					trace
+				);
+			}
 
 			const calls = result.toolCalls;
 			if (result.finishReason !== 'tool_calls' || !calls || calls.length === 0) {
@@ -125,6 +164,8 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 
 			// Trace + tool messages append in CALL order regardless of completion order under
 			// parallel — the trace mirrors what the model emitted, not which handler finished first.
+			// Append BEFORE the abort-mode check so the failing entry is included in the
+			// partial trace surfaced via `ToolHandlerError.partialTrace`.
 			for (const dispatchResult of dispatched) {
 				trace.push(dispatchResult.entry);
 				messages.push({
@@ -132,6 +173,22 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 					content: dispatchResult.toolMessageContent,
 					toolCallId: dispatchResult.entry.toolCallId,
 				});
+			}
+
+			// `toolErrorMode: 'abort'`: any handler failure terminates the loop. Trace
+			// includes the failing entry (pushed above) so the caller can see what blew
+			// up. Surfaces as `ToolHandlerError` carrying the original throw on `.cause`
+			// and the trace on `.partialTrace`.
+			if (errorMode === 'abort') {
+				const failed = dispatched.find((d) => d.originalError !== undefined);
+				if (failed) {
+					throw new ToolHandlerError(
+						failed.entry.toolName,
+						failed.entry.toolCallId,
+						trace,
+						failed.originalError
+					);
+				}
 			}
 		}
 
@@ -156,6 +213,13 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 interface DispatchedToolCall {
 	entry: ToolTraceEntry;
 	toolMessageContent: string;
+	/**
+	 * The original thrown value when the handler / serialization failed and recover
+	 * mode caught it. Preserved alongside the formatted `entry.error` so abort mode
+	 * can surface the cause unmodified via `ToolHandlerError.cause`. Undefined when
+	 * the handler succeeded.
+	 */
+	originalError?: unknown;
 }
 
 async function dispatchToolCalls(
@@ -167,8 +231,8 @@ async function dispatchToolCalls(
 	parallelism: 'parallel' | 'serial'
 ): Promise<DispatchedToolCall[]> {
 	// Single-call rounds use the serial path even when 'parallel' is selected — the
-	// Promise.all path adds nothing on one element and the serial path's stack trace
-	// is more readable in errors.
+	// settled-wrapping path adds nothing on one element and the serial path's stack
+	// trace is more readable in errors.
 	if (parallelism === 'serial' || calls.length <= 1) {
 		const out: DispatchedToolCall[] = [];
 		for (const call of calls) {
@@ -176,16 +240,24 @@ async function dispatchToolCalls(
 		}
 		return out;
 	}
-	// Parallel: handlers race concurrently. If any throws (missing handler is the only
-	// path that throws out of `runSingleToolCall` — handler errors are caught and
-	// recovered), Promise.all rejects with the first error. Siblings still running keep
-	// going in the background; their results are discarded. That's acceptable because
-	// (a) handler errors are recovered inline, so siblings rarely throw, and (b) the
-	// alternative (active cancellation via loopController) would also race in the same
-	// window. The composed signal still propagates external aborts to the siblings.
-	return Promise.all(
-		calls.map((call) => runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes))
+	// Parallel: handlers race concurrently. `runSingleToolCall` only throws on missing
+	// handler or cooperative abort — handler errors are caught inline and surface via
+	// `originalError`. `Promise.all` rejects on first throw, which is what we want for
+	// those two cases: surface the throw immediately so the loop's `finally` can fire
+	// `loopController.abort` and cancel siblings still in flight, instead of waiting
+	// for every sibling to complete (which `Promise.allSettled` would force).
+	//
+	// Concurrent-rejection caveat: when MULTIPLE siblings reject at the same time
+	// (e.g. several missing handlers, or several handlers reacting to a cooperative
+	// abort), `Promise.all` only awaits the first rejection — the rest become
+	// unhandled-rejection warnings (and crash under `--unhandled-rejections=throw`).
+	// Attach a no-op catch to each promise so the runtime sees every rejection as
+	// handled while still letting `Promise.all` settle on the first one.
+	const promises = calls.map((call) =>
+		runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes)
 	);
+	for (const p of promises) p.catch(() => {});
+	return Promise.all(promises);
 }
 
 async function runSingleToolCall(
@@ -220,6 +292,7 @@ async function runSingleToolCall(
 
 	const handlerStart = performance.now();
 	let toolMessageContent: string;
+	let originalError: unknown;
 	// Wrap BOTH the handler call AND result serialization in the recover catch.
 	// `JSON.stringify` throws on BigInt and circular refs — both trivially produced by
 	// handlers that return raw DB rows or Resource instances. Without this, a
@@ -242,14 +315,17 @@ async function runSingleToolCall(
 		// bogus `{error: 'aborted'}` tool message threaded into the conversation.
 		// The trace entry is abandoned (the loop builds an aborted-path trace later).
 		if (ctx.signal?.aborted) throw err;
-		// `toolErrorMode: 'recover'` (v1 only path): append the error message as the
-		// tool result so the model can react. Commit 4 wires 'abort' to throw early.
+		// Handler error. Populate entry.error so the trace records the failure, build
+		// the recover-mode tool-message envelope, and stash the original throw so
+		// `toolErrorMode: 'abort'` (checked in the main loop after dispatch) can
+		// surface the cause unmodified.
+		originalError = err;
 		entry.error = errorInfo(err);
 		toolMessageContent = JSON.stringify({ error: entry.error.message });
 	}
 	entry.durationMs = performance.now() - handlerStart;
 
-	return { entry, toolMessageContent };
+	return { entry, toolMessageContent, originalError };
 }
 
 /**
@@ -274,21 +350,6 @@ function guardUnsupportedModes(opts: GenerateOpts): void {
 	if (validationMode !== 'none') {
 		throw new ServerError(
 			`toolArgValidation: '${validationMode}' is not yet implemented; v1 supports 'none' only`,
-			501
-		);
-	}
-	const errorMode = opts.toolErrorMode ?? 'recover';
-	if (errorMode !== 'recover') {
-		throw new ServerError(
-			`toolErrorMode: '${errorMode}' is not yet implemented; v1 supports 'recover' only`,
-			501
-		);
-	}
-	// `toolParallelism` accepts 'serial' OR 'parallel' here; commit 3 wires the parallel
-	// branch. v1 runs serial regardless of caller setting — the field is forward-looking.
-	if (opts.maxToolTokens !== undefined || opts.maxCostUsd !== undefined) {
-		throw new ServerError(
-			`maxToolTokens / maxCostUsd budgets are not yet implemented (commit 4 of #612)`,
 			501
 		);
 	}
@@ -388,6 +449,77 @@ export class BudgetExceededError extends ClientError {
 		this.kind = kind;
 		this.partialTrace = partialTrace;
 	}
+}
+
+/**
+ * Surfaced under `toolErrorMode: 'abort'` when a tool handler throws (or its
+ * result fails to serialize). Carries the original throw on `.cause` and the
+ * partial trace — including the failing entry — on `.partialTrace` so callers
+ * always have the full picture on the abort path.
+ *
+ * `statusCode` mirrors the underlying error when it carries one (e.g. a handler
+ * throwing `ClientError(400)` surfaces as `ToolHandlerError(400)`), otherwise
+ * defaults to 500.
+ *
+ * **`instanceof` caveat:** extends `ServerError` regardless of `statusCode`, so a
+ * handler-thrown `ClientError(403)` becomes a `ToolHandlerError` whose `statusCode`
+ * is 403 but where `instanceof ClientError === false`. Callers that route on
+ * client-vs-server class should branch on `err.statusCode` or
+ * `err.cause instanceof ClientError`, not on `err instanceof ClientError` directly.
+ */
+export class ToolHandlerError extends ServerError {
+	toolName: string;
+	toolCallId: string;
+	partialTrace: ToolTraceEntry[];
+	constructor(toolName: string, toolCallId: string, partialTrace: ToolTraceEntry[], cause: unknown) {
+		const causeMessage = errorInfo(cause).message;
+		const causeStatus =
+			cause && typeof cause === 'object' && 'statusCode' in cause && typeof (cause as { statusCode: unknown }).statusCode === 'number'
+				? ((cause as { statusCode: number }).statusCode)
+				: 500;
+		super(`Tool handler '${toolName}' (call ${toolCallId}) failed: ${causeMessage}`, causeStatus);
+		this.name = 'ToolHandlerError';
+		this.toolName = toolName;
+		this.toolCallId = toolCallId;
+		this.partialTrace = partialTrace;
+		this.cause = cause;
+	}
+}
+
+/**
+ * Cost computation hook. v1 returns 0 — no per-model rate card is wired today —
+ * so `maxCostUsd` never trips in production. The cap, the trip path, and the
+ * `BudgetExceededError({kind: 'cost'})` shape ARE wired and exercised by tests
+ * that inject a non-zero function via `_setComputeCallCostUsdForTests`. When the
+ * rate card lands, replace this implementation; no surface change needed.
+ */
+let computeCallCostUsd: (usage: TokenUsage | undefined, model: string | undefined) => number = () => 0;
+
+/**
+ * Test-only override. Public callers must not depend on this — it exists so unit
+ * tests can prove the `maxCostUsd` trip path works end-to-end before a real rate
+ * card lands. Leading underscore marks the intent.
+ */
+export function _setComputeCallCostUsdForTests(
+	fn: (usage: TokenUsage | undefined, model: string | undefined) => number
+): void {
+	computeCallCostUsd = fn;
+}
+
+/**
+ * Reset the cost function to the v1 stub. Pair with `_setComputeCallCostUsdForTests`
+ * in test `afterEach` so suites don't leak state into each other.
+ */
+export function _resetComputeCallCostUsdForTests(): void {
+	computeCallCostUsd = () => 0;
+}
+
+function sumTokens(usage: TokenUsage | undefined): number {
+	if (!usage) return 0;
+	let total = 0;
+	if (typeof usage.promptTokens === 'number' && usage.promptTokens > 0) total += usage.promptTokens;
+	if (typeof usage.completionTokens === 'number' && usage.completionTokens > 0) total += usage.completionTokens;
+	return total;
 }
 
 /**

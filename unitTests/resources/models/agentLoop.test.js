@@ -6,7 +6,12 @@ const assert = require('node:assert/strict');
 require('#src/resources/databases');
 const { setGenerative, clearRegistry } = require('#src/resources/models/backendRegistry');
 const { Models } = require('#src/resources/models/Models');
-const { BudgetExceededError } = require('#src/resources/models/agentLoop');
+const {
+	BudgetExceededError,
+	ToolHandlerError,
+	_setComputeCallCostUsdForTests,
+	_resetComputeCallCostUsdForTests,
+} = require('#src/resources/models/agentLoop');
 
 function makeMockWriter() {
 	const records = [];
@@ -747,28 +752,6 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			);
 		});
 
-		it("toolErrorMode: 'abort' throws 501 at entry", async () => {
-			backend.queue(final('x'));
-			await assert.rejects(
-				() => models.generate('q', { toolMode: 'auto', toolErrorMode: 'abort' }),
-				(err) => err.statusCode === 501 && /toolErrorMode/.test(err.message)
-			);
-		});
-
-		it('maxToolTokens throws 501 at entry (commit 4)', async () => {
-			await assert.rejects(
-				() => models.generate('q', { toolMode: 'auto', maxToolTokens: 1000 }),
-				(err) => err.statusCode === 501
-			);
-		});
-
-		it('maxCostUsd throws 501 at entry (commit 4)', async () => {
-			await assert.rejects(
-				() => models.generate('q', { toolMode: 'auto', maxCostUsd: 0.1 }),
-				(err) => err.statusCode === 501
-			);
-		});
-
 		it('opts.conversation throws 501 at entry (commit 5)', async () => {
 			await assert.rejects(
 				() =>
@@ -778,6 +761,268 @@ describe("agentLoop (toolMode: 'auto')", () => {
 					}),
 				(err) => err.statusCode === 501 && /conversation/.test(err.message)
 			);
+		});
+	});
+
+	describe('token + cost budgets', () => {
+		afterEach(() => {
+			_resetComputeCallCostUsdForTests();
+		});
+
+		// The default ScriptedBackend usage helpers set tokens to 1+1 per round; for these
+		// tests we override per-call so the budget arithmetic is predictable.
+		function tokenRound(content, tokens = { promptTokens: 50, completionTokens: 50 }) {
+			return { output: { content, finishReason: 'stop' }, usage: tokens };
+		}
+		function tokenToolRound(content, toolCalls, tokens = { promptTokens: 50, completionTokens: 50 }) {
+			return {
+				output: { content, finishReason: 'tool_calls', toolCalls },
+				usage: tokens,
+			};
+		}
+
+		it("maxToolTokens trips BudgetExceededError({kind: 'tokens'}) when cumulative tokens exceed the cap", async () => {
+			// Round 1: 60 tokens. Round 2: 60 tokens. Total: 120 > cap of 100.
+			backend.queue(
+				tokenToolRound('p1', [tc('c1', 'echo', { i: 1 })], { promptTokens: 30, completionTokens: 30 }),
+				tokenRound('done', { promptTokens: 30, completionTokens: 30 })
+			);
+			let caught;
+			try {
+				await models.generate('q', {
+					toolMode: 'auto',
+					maxToolTokens: 100,
+					toolHandlers: { echo: (args) => args },
+				});
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof BudgetExceededError, 'expected BudgetExceededError');
+			assert.strictEqual(caught.kind, 'tokens');
+			assert.strictEqual(caught.statusCode, 429);
+			assert.match(caught.message, /maxToolTokens=100/);
+			// Trace records round 1's tool call before the budget tripped on round 2's generate.
+			assert.strictEqual(caught.partialTrace.length, 1);
+			assert.strictEqual(caught.partialTrace[0].iteration, 1);
+		});
+
+		it('first-round usage that exceeds the cap still trips — caps the round we PAID for, not the next one', async () => {
+			// One round, 150 tokens, cap 100. Trips immediately.
+			backend.queue(tokenRound('over', { promptTokens: 75, completionTokens: 75 }));
+			let caught;
+			try {
+				await models.generate('q', { toolMode: 'auto', maxToolTokens: 100 });
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof BudgetExceededError);
+			assert.strictEqual(caught.kind, 'tokens');
+		});
+
+		it('maxToolTokens unset → unlimited (no trip even with huge usage)', async () => {
+			backend.queue(tokenRound('over', { promptTokens: 1_000_000, completionTokens: 1_000_000 }));
+			const result = await models.generate('q', { toolMode: 'auto' });
+			assert.strictEqual(result.content, 'over');
+		});
+
+		it("maxCostUsd trips BudgetExceededError({kind: 'cost'}) when an injected cost function exceeds the cap", async () => {
+			// Inject a $0.01-per-call cost so two rounds = $0.02, capped at $0.015.
+			_setComputeCallCostUsdForTests(() => 0.01);
+			backend.queue(
+				tokenToolRound('p', [tc('c1', 'echo', { i: 1 })]),
+				tokenRound('done')
+			);
+			let caught;
+			try {
+				await models.generate('q', {
+					toolMode: 'auto',
+					maxCostUsd: 0.015,
+					toolHandlers: { echo: (args) => args },
+				});
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof BudgetExceededError);
+			assert.strictEqual(caught.kind, 'cost');
+			assert.match(caught.message, /maxCostUsd=0.015/);
+		});
+
+		it("maxCostUsd does NOT trip with the v1 stub (computeCallCostUsd returns 0)", async () => {
+			// Default stub: cost = 0 per call, so any cap is unreachable today. Proves
+			// the v1 contract: cap is wired but doesn't fire in production until a
+			// real rate card lands.
+			backend.queue(tokenRound('done'));
+			const result = await models.generate('q', { toolMode: 'auto', maxCostUsd: 0.0001 });
+			assert.strictEqual(result.content, 'done');
+		});
+
+		it('cost function receives the usage object and model name', async () => {
+			const observations = [];
+			_setComputeCallCostUsdForTests((usage, model) => {
+				observations.push({ usage, model });
+				return 0;
+			});
+			backend.queue(tokenRound('done', { promptTokens: 5, completionTokens: 3 }));
+			// Use the default-registered backend; the model name passed in opts is what
+			// flows to computeCallCostUsd, independent of how the backend resolves.
+			await models.generate('q', { toolMode: 'auto' });
+			assert.strictEqual(observations.length, 1);
+			assert.strictEqual(observations[0].usage.promptTokens, 5);
+			assert.strictEqual(observations[0].usage.completionTokens, 3);
+			// `opts.model` was undefined here; the cost function sees that.
+			assert.strictEqual(observations[0].model, undefined);
+		});
+
+		it('caller abort during the in-flight backend round preempts the budget tally', async () => {
+			// Round 1's usage would push us over a 100-token cap. But the caller aborts
+			// mid-call, so the inner generate rejects with AbortError BEFORE we tally —
+			// caller sees AbortError, not BudgetExceededError. Locks the ordering in
+			// `runAgentLoop` so commit 5's streaming wiring can't accidentally invert it.
+			let ac;
+			setGenerative('default', {
+				name: 'aborting-backend',
+				capabilities: () => ({ embed: false, generate: true, stream: false, tools: true, adapters: false }),
+				async generate(_input, opts) {
+					// Abort mid-call. opts.signal is the composed loop signal — firing the
+					// caller signal propagates to it.
+					ac.abort();
+					opts.signal.throwIfAborted();
+					// Unreachable, but keeps the type tidy.
+					return {
+						status: 'completed',
+						output: { content: 'unreachable', finishReason: 'stop' },
+						usage: { promptTokens: 200, completionTokens: 200 },
+					};
+				},
+			});
+			ac = new AbortController();
+			await assert.rejects(
+				() =>
+					models.generate('q', {
+						toolMode: 'auto',
+						maxToolTokens: 100,
+						signal: ac.signal,
+					}),
+				(err) => err.name === 'AbortError' && !(err instanceof BudgetExceededError)
+			);
+		});
+
+		it('partial trace on token budget trip is independent of includeToolTrace', async () => {
+			// includeToolTrace: false (default). On budget trip, partialTrace is still populated.
+			backend.queue(
+				tokenToolRound('p', [tc('c1', 'echo', { i: 1 })], { promptTokens: 60, completionTokens: 0 }),
+				tokenRound('done', { promptTokens: 60, completionTokens: 0 })
+			);
+			let caught;
+			try {
+				await models.generate('q', {
+					toolMode: 'auto',
+					maxToolTokens: 100,
+					toolHandlers: { echo: (args) => args },
+				});
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof BudgetExceededError);
+			assert.strictEqual(caught.partialTrace.length, 1, 'partial trace populated regardless of includeToolTrace');
+		});
+	});
+
+	describe("toolErrorMode: 'abort'", () => {
+		it('handler throw surfaces as ToolHandlerError carrying the cause + trace (recover NOT applied)', async () => {
+			backend.queue(
+				toolCallRound('p', [tc('c1', 'broken', {})]),
+				final('unreachable — abort halts the loop')
+			);
+			const handlerErr = new Error('boom');
+			let caught;
+			try {
+				await models.generate('q', {
+					toolMode: 'auto',
+					toolErrorMode: 'abort',
+					toolHandlers: {
+						broken: () => {
+							throw handlerErr;
+						},
+					},
+				});
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof ToolHandlerError);
+			assert.strictEqual(caught.toolName, 'broken');
+			assert.strictEqual(caught.toolCallId, 'c1');
+			assert.strictEqual(caught.cause, handlerErr, 'cause is the original throw, not a copy');
+			// Trace includes the failing entry so the caller sees the call that triggered abort.
+			assert.strictEqual(caught.partialTrace.length, 1);
+			assert.strictEqual(caught.partialTrace[0].error.message, 'boom');
+			// Loop halted — the second round's `final` was never consumed.
+			assert.strictEqual(backend.calls.length, 1);
+		});
+
+		it("ToolHandlerError statusCode mirrors a thrown ClientError's status (e.g. 400)", async () => {
+			const { ClientError } = require('#src/utility/errors/hdbError');
+			backend.queue(toolCallRound('p', [tc('c1', 'forbidden', {})]));
+			await assert.rejects(
+				() =>
+					models.generate('q', {
+						toolMode: 'auto',
+						toolErrorMode: 'abort',
+						toolHandlers: {
+							forbidden: () => {
+								throw new ClientError('nope', 403);
+							},
+						},
+					}),
+				(err) => err instanceof ToolHandlerError && err.statusCode === 403
+			);
+		});
+
+		it('parallel: successful sibling entries are recorded in trace BEFORE the abort throw', async () => {
+			backend.queue(
+				toolCallRound('p', [
+					tc('c1', 'ok', { i: 1 }),
+					tc('c2', 'broken', { i: 2 }),
+					tc('c3', 'ok', { i: 3 }),
+				])
+			);
+			let caught;
+			try {
+				await models.generate('q', {
+					toolMode: 'auto',
+					toolErrorMode: 'abort',
+					toolHandlers: {
+						ok: async (args) => ({ value: args.i }),
+						broken: () => {
+							throw new Error('boom');
+						},
+					},
+				});
+			} catch (err) {
+				caught = err;
+			}
+			assert.ok(caught instanceof ToolHandlerError);
+			// All three entries land on the trace — the successful ones AND the failed one.
+			assert.strictEqual(caught.partialTrace.length, 3);
+			assert.strictEqual(caught.partialTrace.find((e) => e.toolCallId === 'c2').error.message, 'boom');
+			assert.ok(caught.partialTrace.find((e) => e.toolCallId === 'c1').result);
+			assert.ok(caught.partialTrace.find((e) => e.toolCallId === 'c3').result);
+		});
+
+		it("default toolErrorMode is 'recover' (unchanged behavior)", async () => {
+			backend.queue(
+				toolCallRound('p', [tc('c1', 'broken', {})]),
+				final('recovered')
+			);
+			const result = await models.generate('q', {
+				toolMode: 'auto',
+				toolHandlers: {
+					broken: () => {
+						throw new Error('boom');
+					},
+				},
+			});
+			assert.strictEqual(result.content, 'recovered');
 		});
 	});
 });
