@@ -80,6 +80,27 @@ describe('agent/fsTools', () => {
 		assert.deepEqual(lines, ['c', 'd']);
 	});
 
+	it('grep_files refuses to traverse symlinked dirs that escape scope', async () => {
+		const { symlinkSync } = require('node:fs');
+		// Create an out-of-scope dir with a file, then link into componentsRoot.
+		const escapeTarget = join(scopes.root, 'escape-target');
+		mkdirSync(escapeTarget);
+		writeFileSync(join(escapeTarget, 'secret.txt'), 'PRIVATE');
+		try {
+			symlinkSync(escapeTarget, join(scopes.componentsRoot, 'gateway'), 'dir');
+		} catch (err) {
+			// Symlink not supported (e.g. some CI envs without permission) — skip the assertion
+			// rather than fail the suite. Real environments support it.
+			if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+			throw err;
+		}
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'PRIVATE');
+		const { results } = await grepFilesTool.handler({ root: scopes.componentsRoot, pattern: 'PRIVATE' }, ctx(scopes));
+		// Should only find the file in componentsRoot, not the file behind the symlink.
+		assert.equal(results.length, 1);
+		assert.match(results[0].path, /a\.txt$/);
+	});
+
 	it('refuses paths that resolve outside scope via ..', async () => {
 		const escape = join(scopes.componentsRoot, '..', '..', 'etc', 'passwd');
 		await assert.rejects(readFileTool.handler({ path: escape }, ctx(scopes)), /outside the agent's read scope/);

@@ -203,6 +203,55 @@ describe('agent/loop runAgent', () => {
 		assert.equal(toolMessages.length, 0);
 	});
 
+	it('preserves 1:1 tool-call mapping when a turn mixes destructive and non-destructive calls', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
+		const reads = [];
+		const readTool = {
+			def: { name: 'read', description: 'read', parameters: { type: 'object' } },
+			handler: async (args) => {
+				reads.push(args);
+				return { value: 'data' };
+			},
+		};
+		const dropTool = {
+			def: { name: 'drop', description: 'drop', parameters: { type: 'object' } },
+			destructive: true,
+			handler: async () => ({ dropped: true }),
+		};
+		const models = stubModels([
+			{
+				content: '',
+				finishReason: 'tool_calls',
+				toolCalls: [
+					{ id: 'c1', name: 'read', arguments: { what: 'first' } },
+					{ id: 'c2', name: 'drop', arguments: { table: 'x' } },
+					{ id: 'c3', name: 'read', arguments: { what: 'second' } },
+				],
+			},
+		]);
+
+		await runAgent({
+			sessionId: created.session_id,
+			models,
+			tools: [readTool, dropTool],
+			scopes,
+			maxTurns: 5,
+			autoApprove: false,
+		});
+
+		const reloaded = await session.getSession(created.session_id);
+		assert.equal(reloaded.status, 'awaiting_approval');
+		assert.equal(reads.length, 2, 'both non-destructive reads should execute');
+		const toolMessages = reloaded.messages.filter((m) => m.role === 'tool');
+		// Two tool responses (for c1 and c3); c2 is awaiting approval — no placeholder.
+		assert.equal(toolMessages.length, 2);
+		const toolCallIds = toolMessages.map((m) => m.toolCallId).sort();
+		assert.deepEqual(toolCallIds, ['c1', 'c3']);
+		assert.equal(reloaded.pendingApprovals.length, 1);
+		assert.equal(reloaded.pendingApprovals[0].toolCallId, 'c2');
+	});
+
 	it('executes a destructive tool when autoApprove is true', async () => {
 		const created = await session.createSession({ user: 'admin' });
 		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });

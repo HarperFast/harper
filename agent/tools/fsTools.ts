@@ -12,7 +12,7 @@
  */
 
 import { readFile, writeFile, readdir, stat, mkdir, realpath, open } from 'node:fs/promises';
-import { resolve, dirname, relative, sep } from 'node:path';
+import { resolve, dirname, relative, sep, isAbsolute } from 'node:path';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
 const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB
@@ -51,6 +51,10 @@ async function safeRealPath(p: string): Promise<string> {
 
 function isInside(child: string, parent: string): boolean {
 	const rel = relative(parent, child);
+	// On Windows, `path.relative` returns an absolute path when the two arguments are on
+	// different drive letters (e.g. C:\components vs D:\etc). Without this check the agent
+	// could escape its scope by naming a path on another drive.
+	if (isAbsolute(rel)) return false;
 	return rel === '' || (!rel.startsWith('..') && !rel.includes(`..${sep}`));
 }
 
@@ -216,6 +220,9 @@ export const tailFileTool: AgentTool = {
 export const fsTools: AgentTool[] = [readFileTool, writeFileTool, listDirTool, grepFilesTool, tailFileTool];
 
 async function walk(root: string, visit: (file: string) => Promise<boolean>): Promise<void> {
+	// Resolve the scope root once via realpath so the per-entry symlink check below has a
+	// stable comparison anchor; otherwise a symlink in the root itself could shift the anchor.
+	const realRoot = await safeRealPath(root);
 	const stack: string[] = [root];
 	while (stack.length) {
 		const dir = stack.pop()!;
@@ -229,8 +236,14 @@ async function walk(root: string, visit: (file: string) => Promise<boolean>): Pr
 			const full = resolve(dir, entry.name);
 			if (entry.isDirectory()) {
 				if (entry.name === 'node_modules' || entry.name === '.git') continue;
+				// Re-resolve via realpath so a symlinked directory pointing outside the scope is rejected.
+				// Without this, `componentsRoot/escape -> /etc` would let grep walk into /etc.
+				const realFull = await safeRealPath(full);
+				if (!isInside(realFull, realRoot)) continue;
 				stack.push(full);
 			} else if (entry.isFile()) {
+				const realFull = await safeRealPath(full);
+				if (!isInside(realFull, realRoot)) continue;
 				const proceed = await visit(full);
 				if (proceed === false) return;
 			}

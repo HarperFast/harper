@@ -95,8 +95,12 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 }
 
 /**
- * Returns `true` when the loop should pause (a destructive tool call required approval).
- * Otherwise dispatches every tool call inline and appends each observation.
+ * Returns `true` when the loop should pause (any destructive tool call required approval).
+ * Non-destructive calls execute inline and their observations are appended. Destructive calls
+ * register pending approvals but do NOT append a tool message — `consumeResolvedApprovals`
+ * writes the single tool response on the next run. This keeps the 1:1 mapping between
+ * assistant tool_calls and tool responses that LLM APIs enforce, including when the assistant
+ * message mixes destructive and non-destructive calls in the same turn.
  */
 async function dispatchToolCalls(
 	calls: ToolCall[],
@@ -104,6 +108,7 @@ async function dispatchToolCalls(
 	ctx: AgentToolContext,
 	opts: RunAgentOpts
 ): Promise<boolean> {
+	let needsApproval = false;
 	for (const call of calls) {
 		if (opts.signal?.aborted) return true;
 		const tool = toolMap.get(call.name);
@@ -115,12 +120,11 @@ async function dispatchToolCalls(
 				toolCallId: call.id,
 				reason: 'destructive',
 			});
-			// Don't append a placeholder tool message here — most LLM APIs enforce a strict 1:1
-			// between an assistant tool_call and a tool response. `consumeResolvedApprovals` writes
-			// the single tool response (either the real execution or `denied_by_operator`) on the
-			// next run, after the operator resolves the approval. addPendingApproval has already
-			// flipped status to `awaiting_approval` and persisted the entry.
-			return true;
+			needsApproval = true;
+			// Don't break — keep processing remaining calls so non-destructive ones in the same
+			// turn still execute and write their tool responses. Their results may be useful
+			// context for the operator deciding whether to approve.
+			continue;
 		}
 		const observation = await invokeTool(call, toolMap, ctx);
 		await appendMessage(opts.sessionId, {
@@ -130,7 +134,7 @@ async function dispatchToolCalls(
 			createdAt: Date.now(),
 		});
 	}
-	return false;
+	return needsApproval;
 }
 
 async function consumeResolvedApprovals(

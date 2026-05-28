@@ -583,7 +583,7 @@
 				"maxCostUsd": {
 					"type": "number",
 					"minimum": 0,
-					"description": "Per-session hard cost cap. Loop aborts with a structured error when hit. Default: 5.00"
+					"description": "Per-session cost budget. NOT YET ENFORCED — surfacing operator intent until #612 ships per-call cost telemetry. Default: 5.00"
 				},
 				"autoApprove": {
 					"type": "boolean",

@@ -105,13 +105,8 @@ function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal
 	const present = signals.filter((s): s is AbortSignal => Boolean(s));
 	if (present.length === 0) return undefined;
 	if (present.length === 1) return present[0];
-	const controller = new AbortController();
-	for (const s of present) {
-		if (s.aborted) {
-			controller.abort(s.reason);
-			return controller.signal;
-		}
-		s.addEventListener('abort', () => controller.abort(s.reason), { once: true });
-	}
-	return controller.signal;
+	// `AbortSignal.any` (Node 20+) manages listener cleanup internally; the manual
+	// `addEventListener` approach leaked listeners on `ctx.signal` for the lifetime of the agent
+	// run when a fetch completed normally.
+	return AbortSignal.any(present);
 }

@@ -111,6 +111,15 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	}
 
 	function cancelRun(sessionId: string): boolean {
+		// Clear any scheduled followups first. Without this, a timer set via `schedule_followup`
+		// would fire after the operator cancelled, silently re-injecting a user prompt and kicking
+		// the loop off again — surprising behavior and avoidable LLM cost.
+		for (const [id, followup] of composed.scheduled.entries()) {
+			if (followup.sessionId === sessionId) {
+				clearTimeout(followup.timer);
+				composed.scheduled.delete(id);
+			}
+		}
 		const controller = abortControllers.get(sessionId);
 		if (!controller) return false;
 		controller.abort(new Error('cancelled by operator'));
