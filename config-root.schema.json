@@ -561,6 +561,49 @@
 			}
 		},
 
+		"agent": {
+			"type": "object",
+			"description": "Built-in Harper Agent component. Disabled by default to avoid surprise LLM costs.",
+			"additionalProperties": false,
+			"properties": {
+				"enabled": { "type": "boolean", "description": "Enable the built-in agent component. Default: false" },
+				"provider": {
+					"type": "string",
+					"description": "Optional model provider override. Falls back to scope.models default when omitted."
+				},
+				"model": {
+					"type": "string",
+					"description": "Optional model id override. Falls back to scope.models default when omitted."
+				},
+				"maxTurns": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Maximum tool-call iterations per agent run. Default: 50"
+				},
+				"maxCostUsd": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Per-session hard cost cap. Loop aborts with a structured error when hit. Default: 5.00"
+				},
+				"autoApprove": {
+					"type": "boolean",
+					"description": "Run without per-action approval gates. Destructive ops still require allowDestructive and approval. Default: false"
+				},
+				"allowDestructive": {
+					"type": "boolean",
+					"description": "Allow destructive operator tools (drop_component, restart, set_configuration, ...). Default: false"
+				},
+				"user": {
+					"type": "string",
+					"description": "Harper user the agent acts as. Default: hdb_agent (created at startup if missing)."
+				},
+				"componentsScope": {
+					"type": "string",
+					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
+				}
+			}
+		},
+
 		"analytics": {
 			"type": "object",
 			"additionalProperties": false,

@@ -178,6 +178,7 @@ export const SYSTEM_TABLE_NAMES = {
 	USER_TABLE_NAME: 'hdb_user',
 	INFO_TABLE_NAME: 'hdb_info',
 	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
+	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -302,6 +303,12 @@ export const OPERATIONS_ENUM = {
 	GET_DEPLOYMENT: 'get_deployment',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
+	AGENT_PROMPT: 'agent_prompt',
+	GET_AGENT_SESSION: 'get_agent_session',
+	LIST_AGENT_SESSIONS: 'list_agent_sessions',
+	CANCEL_AGENT_RUN: 'cancel_agent_run',
+	APPROVE_AGENT_ACTION: 'approve_agent_action',
+	SET_AGENT_CONFIG: 'set_agent_config',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -550,6 +557,15 @@ export const CONFIG_PARAMS = {
 	MCP_APPLICATION_RATELIMIT_SESSIONPERSECOND: 'mcp_application_rateLimit_sessionPerSecond',
 	MCP_SESSION_IDLETIMEOUTSECONDS: 'mcp_session_idleTimeoutSeconds',
 	MCP_SESSION_ALLOWCLIENTDELETE: 'mcp_session_allowClientDelete',
+	AGENT_ENABLED: 'agent_enabled',
+	AGENT_PROVIDER: 'agent_provider',
+	AGENT_MODEL: 'agent_model',
+	AGENT_MAXTURNS: 'agent_maxTurns',
+	AGENT_MAXCOSTUSD: 'agent_maxCostUsd',
+	AGENT_AUTOAPPROVE: 'agent_autoApprove',
+	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
+	AGENT_USER: 'agent_user',
+	AGENT_COMPONENTSSCOPE: 'agent_componentsScope',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',

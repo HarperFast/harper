@@ -22,6 +22,7 @@
 		"harper": "./dist/bin/harper.js"
 	},
 	"files": [
+		"agent",
 		"bin",
 		"CODE_OF_CONDUCT.md",
 		"components",

@@ -115,6 +115,9 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 };
 if (isMainThread) {
 	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
+	// Built-in agent component (#626). Only loads if the root config carries an `agent:` block;
+	// the block's `enabled: false` default keeps it inert even when the key is present.
+	TRUSTED_RESOURCE_PLUGINS.agent = require('../agent/agent');
 } else {
 	// The HTTP operations API itself only binds in the main thread, but worker threads still
 	// dispatch operations — most notably, the replication WebSocket handler in workers receives
