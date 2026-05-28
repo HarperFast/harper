@@ -92,6 +92,12 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	}
 
 	function startRun(sessionId: string): void {
+		// A run is already active for this session. `runAgent` coalesces concurrent starts onto the
+		// existing in-flight promise (bound to the existing controller), so creating a second
+		// controller here would orphan it — `cancelRun` would then abort a controller nothing is
+		// listening to, leaving the live run uncancellable. Any message appended before this call
+		// (e.g. by a scheduled followup) is picked up by the in-flight loop on its next turn.
+		if (abortControllers.has(sessionId)) return;
 		const controller = new AbortController();
 		abortControllers.set(sessionId, controller);
 		runAgent({
@@ -136,6 +142,11 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 				onFollowup: handleFollowup,
 			});
 		}
+		// NOTE: an already in-flight run captured its toolset (and autoApprove) at start, so flipping
+		// allowDestructive here only affects subsequent runs — the live loop finishes on its existing
+		// toolset. Acceptable: the approval gate still applies on the next turn's run, and operators
+		// who need to halt a run immediately use cancel_agent_run. Tightening to per-turn re-evaluation
+		// would require threading a config getter into the loop; deferred until there's a need.
 		return liveConfig;
 	}
 
@@ -157,12 +168,16 @@ function resolveScopes(
 ): AgentScopes {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT) ?? process.cwd();
 	const logDir = getConfigPath(CONFIG_PARAMS.LOGGING_ROOT) ?? process.cwd();
+	const rootPath = getConfigPath(CONFIG_PARAMS.ROOTPATH) ?? componentsRoot;
 	const configFile = getConfigFilePath?.();
 	const configDir = configFile ? dirname(configFile) : process.cwd();
+	// A relative `componentsScope` is resolved against rootPath, as documented in the schema —
+	// NOT against componentsRoot, which would double-nest (`./components` → componentsRoot/components).
+	// With no scope set, the full componentsRoot is the FS write scope.
 	const scopedComponents = config.componentsScope
 		? isAbsolute(config.componentsScope)
 			? config.componentsScope
-			: resolvePath(componentsRoot, config.componentsScope)
+			: resolvePath(rootPath, config.componentsScope)
 		: componentsRoot;
 	return { componentsRoot: scopedComponents, logDir, configDir };
 }

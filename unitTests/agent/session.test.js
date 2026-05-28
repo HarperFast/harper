@@ -136,6 +136,20 @@ describe('agent/session', () => {
 		assert.equal(sessions[0].session_id, b.session_id);
 	});
 
+	it('serializes concurrent mutations on the same session (no lost updates)', async () => {
+		const session = await createSession({ user: 'admin' });
+		// Fire several mutations concurrently. Without per-session serialization each would read the
+		// same snapshot and the last put would clobber the rest, losing messages.
+		await Promise.all([
+			appendMessage(session.session_id, { role: 'user', content: 'a', createdAt: Date.now() }),
+			appendMessage(session.session_id, { role: 'assistant', content: 'b', createdAt: Date.now() }),
+			appendMessage(session.session_id, { role: 'user', content: 'c', createdAt: Date.now() }),
+		]);
+		const reloaded = await getSession(session.session_id);
+		assert.equal(reloaded.messages.length, 3);
+		assert.deepEqual(reloaded.messages.map((m) => m.content).sort(), ['a', 'b', 'c']);
+	});
+
 	it('setStatus persists the new status and optional error', async () => {
 		const session = await createSession({ user: 'admin' });
 		await setStatus(session.session_id, 'error', 'boom');

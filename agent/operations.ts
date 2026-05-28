@@ -9,7 +9,7 @@
 
 import type { OperationDefinition } from '../server/serverHelpers/serverUtilities.ts';
 import { OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
-import { ServerError } from '../utility/errors/hdbError.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { createSession, getSession, listSessions, appendMessage, resolveApproval, setStatus } from './session.ts';
 import type { AgentConfig, AgentMessage, AgentRunStatus } from './types.ts';
 
@@ -51,7 +51,7 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 
 function requireSuperUser(op: any): void {
 	if (!op?.hdb_user?.role?.permission?.super_user) {
-		throw new ServerError('Agent operations require super_user', 403);
+		throw new ClientError('Agent operations require super_user', 403);
 	}
 }
 
@@ -59,17 +59,17 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 	requireSuperUser(op);
 	const config = deps.getConfig();
 	if (!config.enabled) {
-		throw new ServerError('Agent component is disabled (agent.enabled=false)', 409);
+		throw new ClientError('Agent component is disabled (agent.enabled=false)', 409);
 	}
 	const message = String(op?.message ?? '').trim();
-	if (!message) throw new ServerError('message is required', 400);
+	if (!message) throw new ClientError('message is required', 400);
 
 	let sessionId: string = op?.session_id;
 	if (sessionId) {
 		const existing = await getSession(sessionId);
-		if (!existing) throw new ServerError(`Unknown session ${sessionId}`, 404);
+		if (!existing) throw new ClientError(`Unknown session ${sessionId}`, 404);
 		if (existing.status === 'running' || existing.status === 'awaiting_approval') {
-			throw new ServerError(
+			throw new ClientError(
 				`Session ${sessionId} is ${existing.status}; resolve or cancel before sending another prompt`,
 				409
 			);
@@ -92,9 +92,9 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 async function getAgentSession(op: any) {
 	requireSuperUser(op);
 	const sessionId = String(op?.session_id ?? '');
-	if (!sessionId) throw new ServerError('session_id is required', 400);
+	if (!sessionId) throw new ClientError('session_id is required', 400);
 	const session = await getSession(sessionId);
-	if (!session) throw new ServerError(`Unknown session ${sessionId}`, 404);
+	if (!session) throw new ClientError(`Unknown session ${sessionId}`, 404);
 	return session;
 }
 
@@ -107,9 +107,9 @@ async function listAgentSessions(op: any) {
 async function cancelAgentRun(op: any, deps: OperationDeps) {
 	requireSuperUser(op);
 	const sessionId = String(op?.session_id ?? '');
-	if (!sessionId) throw new ServerError('session_id is required', 400);
+	if (!sessionId) throw new ClientError('session_id is required', 400);
 	const session = await getSession(sessionId);
-	if (!session) throw new ServerError(`Unknown session ${sessionId}`, 404);
+	if (!session) throw new ClientError(`Unknown session ${sessionId}`, 404);
 	// Abort any active controller (best-effort — there may not be one if the loop is paused
 	// in `awaiting_approval` or sitting `idle` between turns). Always update the persisted
 	// status so a paused session can still be terminated by the operator.
@@ -124,7 +124,7 @@ async function approveAgentAction(op: any, deps: OperationDeps) {
 	const sessionId = String(op?.session_id ?? '');
 	const approvalId = String(op?.approval_id ?? '');
 	if (!sessionId || !approvalId) {
-		throw new ServerError('session_id and approval_id are required', 400);
+		throw new ClientError('session_id and approval_id are required', 400);
 	}
 	const approved = op?.approved !== false;
 	const resolved = await resolveApproval(sessionId, approvalId, approved);

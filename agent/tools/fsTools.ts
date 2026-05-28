@@ -18,6 +18,7 @@ import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 const MAX_READ_BYTES = 5 * 1024 * 1024; // 5 MiB
 const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_GREP_RESULTS = 500;
+const MAX_PATTERN_LENGTH = 1000;
 const DEFAULT_TAIL_LINES = 200;
 const TAIL_READ_BYTES = 1 * 1024 * 1024; // 1 MiB — enough for thousands of normal log lines
 
@@ -149,7 +150,15 @@ export const grepFilesTool: AgentTool = {
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
 		const root = await resolveScoped(ctx.scopes, args.root, 'read');
-		const pattern = new RegExp(args.pattern, args.flags ?? 'i');
+		// Cap pattern length. A maliciously crafted regex (e.g. nested quantifiers) can backtrack
+		// catastrophically and block the main thread; JS has no native per-match timeout. The agent
+		// is super_user-gated so this is self-inflicted DoS rather than a privilege boundary, but a
+		// length cap removes the easiest footgun without a worker-thread regex sandbox.
+		const patternSource = String(args.pattern ?? '');
+		if (patternSource.length > MAX_PATTERN_LENGTH) {
+			throw new Error(`grep pattern exceeds ${MAX_PATTERN_LENGTH}-char cap`);
+		}
+		const pattern = new RegExp(patternSource, args.flags ?? 'i');
 		const cap = Math.min(args.maxResults ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS);
 		const results: Array<{ path: string; line: number; text: string }> = [];
 		await walk(root, async (file) => {
