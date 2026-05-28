@@ -101,6 +101,22 @@ describe('agent/fsTools', () => {
 		assert.match(results[0].path, /a\.txt$/);
 	});
 
+	it('write_file refuses to write through a symlink whose target is outside scope (incl. non-existent target)', async () => {
+		const { symlinkSync } = require('node:fs');
+		const outsideTarget = join(scopes.root, 'outside-secret.txt'); // does NOT exist → realpath would throw
+		try {
+			symlinkSync(outsideTarget, join(scopes.componentsRoot, 'escape-link'), 'file');
+		} catch (err) {
+			if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+			throw err;
+		}
+		await assert.rejects(
+			writeFileTool.handler({ path: join(scopes.componentsRoot, 'escape-link'), content: 'pwned' }, ctx(scopes)),
+			/through a symlink/
+		);
+		assert.equal(existsSync(outsideTarget), false);
+	});
+
 	it('refuses paths that resolve outside scope via ..', async () => {
 		const escape = join(scopes.componentsRoot, '..', '..', 'etc', 'passwd');
 		await assert.rejects(readFileTool.handler({ path: escape }, ctx(scopes)), /outside the agent's read scope/);

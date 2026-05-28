@@ -11,7 +11,7 @@
  * reach more of the filesystem than a remote CLI.
  */
 
-import { readFile, writeFile, readdir, stat, mkdir, realpath, open } from 'node:fs/promises';
+import { readFile, writeFile, readdir, stat, mkdir, realpath, lstat, open } from 'node:fs/promises';
 import { resolve, dirname, relative, sep, isAbsolute } from 'node:path';
 import type { AgentTool, AgentToolContext, AgentScopes } from '../types.ts';
 
@@ -29,6 +29,21 @@ async function resolveScoped(scopes: AgentScopes, path: string, access: Access):
 	const candidates = [scopes.componentsRoot];
 	if (access === 'read') {
 		candidates.push(scopes.logDir, scopes.configDir);
+	}
+	// Reject a symlink leaf. `safeRealPath` resolves existing symlinks via `realpath` (so a link to
+	// an out-of-scope *existing* file is caught by the isInside check below) — but a link whose
+	// target does NOT exist makes `realpath` throw, and the fallback returns the link's own in-scope
+	// path. `writeFile`/`readFile` then follow the link out of scope. An explicit lstat closes that
+	// gap: a legitimate component/log/config file is never a symlink.
+	try {
+		const linkStat = await lstat(absolute);
+		if (linkStat.isSymbolicLink()) {
+			throw new Error(`Refusing to ${access} through a symlink: ${path}`);
+		}
+	} catch (err) {
+		// ENOENT (path doesn't exist yet — normal for a new-file write) is fine; rethrow anything else
+		// (including our own symlink rejection).
+		if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
 	}
 	const realAbsolute = await safeRealPath(absolute);
 	for (const root of candidates) {
