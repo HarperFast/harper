@@ -212,25 +212,10 @@ describe('Models facade', () => {
 			assert.strictEqual(r.error_code, 'backend_error');
 		});
 
-		describe("toolMode: 'auto' (commit-1 guard)", () => {
-			it('rejects with 501 — loop body lands in commit 2', async () => {
-				// The outer auto call delegates to runAgentLoop, which currently stubs out.
-				// Asserting the throw locks in the contract: `toolMode: 'auto'` is a
-				// type-declared entry point that's wired but not yet implemented.
-				await assert.rejects(
-					() => models.generate('hello', { toolMode: 'auto' }),
-					(err) => err.statusCode === 501 && /not yet implemented/i.test(err.message)
-				);
-			});
-
-			it('writes NO analytics row for the outer auto call (per-iteration rows happen inside)', async () => {
-				await assert.rejects(() => models.generate('hello', { toolMode: 'auto' }));
-				assert.strictEqual(
-					writer.records.length,
-					0,
-					'outer auto call must not double-bill the iteration the loop performs'
-				);
-			});
+		describe("toolMode: 'auto' (entry dispatch)", () => {
+			// Loop behavior lives in `agentLoop.test.js`. Tests here cover the dispatch
+			// branch in `Models.generate` itself — that the entry point picks the right
+			// path and that `'return'` is unaffected.
 
 			it("toolMode: 'return' still flows the single-shot path", async () => {
 				const result = await models.generate('hello', { toolMode: 'return' });
@@ -240,23 +225,12 @@ describe('Models facade', () => {
 				assert.strictEqual(writer.records[0].success, true);
 			});
 
-			it('accepts all new option fields without rejecting at the type/runtime surface', async () => {
-				// Surface check: the loop options exist on GenerateOpts and a fully-populated
-				// call still hits the guard cleanly. Commits 2–5 give them runtime meaning.
-				await assert.rejects(() =>
-					models.generate('hello', {
-						toolMode: 'auto',
-						maxToolIterations: 5,
-						maxToolTokens: 1000,
-						maxCostUsd: 0.5,
-						toolParallelism: 'serial',
-						toolResultMaxBytes: 1024,
-						toolArgValidation: 'lenient',
-						toolErrorMode: 'abort',
-						includeToolTrace: true,
-						toolHandlers: { echo: (args) => args },
-						conversation: { async append() {} },
-					})
+			it('still-gated modes throw 501 at the loop entry (sanity — full matrix in agentLoop.test.js)', async () => {
+				// Spot-check that the dispatch branch reaches the guarded loop body. Each
+				// deferred mode has its own assertion in `agentLoop.test.js`.
+				await assert.rejects(
+					() => models.generate('hello', { toolMode: 'auto', toolArgValidation: 'strict' }),
+					(err) => err.statusCode === 501
 				);
 			});
 		});

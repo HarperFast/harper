@@ -79,8 +79,11 @@ export type GenerateOpts = {
 	toolResultMaxBytes?: number;
 	/**
 	 * `toolMode: 'auto'` only. How to validate tool-call arguments against the
-	 * tool's `parameters` JSON Schema. `'strict'` (default) throws on failure;
-	 * `'lenient'` coerces / drops bad fields; `'none'` passes through unchecked.
+	 * tool's `parameters` JSON Schema. v1 implements `'none'` (default); `'strict'`
+	 * and `'lenient'` are reserved on the type surface but throw `501` at the loop
+	 * entry until a JSON Schema validator is wired (Harper today uses Joi for
+	 * internal validation and passes JSON Schema through to backends; adopting
+	 * Ajv is a separate decision).
 	 */
 	toolArgValidation?: 'strict' | 'lenient' | 'none';
 	/**
