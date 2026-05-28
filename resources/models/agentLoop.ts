@@ -10,11 +10,18 @@
  * per iteration so each backend round flows the single-shot path in `Models.ts` and
  * writes its own `hdb_model_calls` row. The outer auto call stays out of the table.
  *
- * Commit 2 of #612 — sequential dispatch, result truncation, includeToolTrace,
- * recover-mode error handling. Modes deferred to later commits throw 501 at entry:
+ * **Abort wiring** (commit 3). Each invocation creates a loop-level
+ * `AbortController` composed with the caller's signal via `AbortSignal.any`. The
+ * composed signal flows to both the inner `models.generate` call and the
+ * `ToolHandlerContext.signal` handlers receive. Today the loop-level controller is
+ * only fired externally (caller aborts → composed signal aborts); commit 4 wires
+ * it to also fire on budget trips so an in-flight LLM call cancels cleanly.
+ *
+ * Commit 3 of #612 — parallel batch dispatch (Promise.all, default) + caller-signal
+ * propagation + iteration-boundary `throwIfAborted`. Modes deferred to later
+ * commits throw 501 at entry:
  *   - `toolArgValidation: 'strict' | 'lenient'`  → JSON Schema validator (TBD)
  *   - `toolErrorMode: 'abort'`                   → commit 4
- *   - `toolParallelism: 'parallel'`              → commit 3 (this commit runs serial)
  *   - `maxToolTokens`, `maxCostUsd`              → commit 4
  *   - `opts.conversation.append`                 → commit 5
  *   - `runAgentLoopStream`                       → commit 5
@@ -31,7 +38,9 @@ import type {
 	GenerateResult,
 	Message,
 	Models,
+	ToolCall,
 	ToolDef,
+	ToolHandler,
 	ToolHandlerContext,
 	ToolTraceEntry,
 } from './types.ts';
@@ -48,7 +57,7 @@ export interface RunAgentLoopArgs {
 }
 
 export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResult> {
-	const { models, opts, accounting, signal } = args;
+	const { models, opts, accounting, signal: callerSignal } = args;
 
 	// v1 gates: surface declared on GenerateOpts, runtime fills in incrementally.
 	// Throw a clear 501 at entry rather than silently downgrading to default behavior —
@@ -58,92 +67,202 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	const maxIterations = opts.maxToolIterations ?? DEFAULT_MAX_ITERATIONS;
 	const maxResultBytes = opts.toolResultMaxBytes ?? DEFAULT_MAX_RESULT_BYTES;
 	const handlers = opts.toolHandlers ?? {};
+	const parallelism = opts.toolParallelism ?? 'parallel';
 
 	const { messages, tools, system } = normalizeInput(args.input);
 	const trace: ToolTraceEntry[] = [];
 
+	// Loop-level abort controller — fired internally on budget trips (commit 4 wires
+	// that) and on every loop exit (success, throw, abort) via the `finally` below.
+	// Composed with the caller's signal so an external `caller.abort()` ALSO fires
+	// the loop's signal (handlers and the in-flight backend call both react). The
+	// composed signal is the only signal that flows to inner calls.
+	const loopController = new AbortController();
+	const composedSignal = composeAbortSignal(callerSignal, loopController.signal);
+
 	// Strip loop-only knobs from what flows back into `models.generate`. The `toolMode:
 	// 'return'` override is what prevents the outer entry point from re-entering this loop.
-	const innerOpts: GenerateOpts = { ...opts, toolMode: 'return' };
+	// `signal` is swapped to the composed signal so `Models.generate` (and through it,
+	// the backend) see budget-trip and caller-abort cancellations the same way.
+	const innerOpts: GenerateOpts = { ...opts, toolMode: 'return', signal: composedSignal };
 
-	for (let iteration = 1; iteration <= maxIterations; iteration++) {
-		const result = await models.generate(buildInnerInput(messages, tools, system), innerOpts);
+	try {
+		for (let iteration = 1; iteration <= maxIterations; iteration++) {
+			// Pre-iteration abort check — if the caller (or a future budget trip) fired
+			// the composed signal between rounds, bail before paying for another backend
+			// call. The inner `models.generate` would itself throw on the in-flight check,
+			// but throwing here saves the round-trip and the spurious analytics row.
+			composedSignal.throwIfAborted();
 
-		const calls = result.toolCalls;
-		if (result.finishReason !== 'tool_calls' || !calls || calls.length === 0) {
-			// Terminal: model produced a final answer (stop / length / content_filter), or it
-			// signaled tool_calls but emitted none. Pass the result through; attach the trace
-			// when the caller asked for it.
-			return opts.includeToolTrace ? { ...result, trace } : result;
-		}
+			const result = await models.generate(buildInnerInput(messages, tools, system), innerOpts);
 
-		messages.push({ role: 'assistant', content: result.content, toolCalls: calls });
+			const calls = result.toolCalls;
+			if (result.finishReason !== 'tool_calls' || !calls || calls.length === 0) {
+				// Terminal: model produced a final answer (stop / length / content_filter), or it
+				// signaled tool_calls but emitted none. Pass the result through; attach the trace
+				// when the caller asked for it.
+				return opts.includeToolTrace ? { ...result, trace } : result;
+			}
 
-		// Commit 2: serial dispatch. Commit 3 swaps in Promise.all when
-		// `opts.toolParallelism !== 'serial'`.
-		for (const call of calls) {
-			const entry: ToolTraceEntry = {
+			messages.push({ role: 'assistant', content: result.content, toolCalls: calls });
+
+			const ctx: ToolHandlerContext = { signal: composedSignal, accounting };
+			const dispatched = await dispatchToolCalls(
+				calls,
+				handlers,
+				ctx,
 				iteration,
-				toolCallId: call.id,
-				toolName: call.name,
-				// Shallow-copy so the trace's view of "what the model emitted" doesn't
-				// shift if a handler mutates its `args` parameter (legitimate pattern).
-				// Deep mutations to nested objects can still leak — common-case flat-object
-				// args are covered; document the corner.
-				arguments: { ...call.arguments },
-				durationMs: 0,
-			};
+				maxResultBytes,
+				parallelism
+			);
 
-			const handler = handlers[call.name];
-			if (!handler) {
-				// No handler registered. Hard fail — there's nothing to call. (#615 swaps this
-				// branch for a `scope.resources` lookup; same call signature, same throw if
-				// unresolved.) Throw as ClientError(400) since the caller didn't supply a
-				// handler for a tool they declared, not a Harper-internal fault.
-				throw new ClientError(
-					`No handler registered for tool '${call.name}' (call id ${call.id})`,
-					400
-				);
+			// Post-dispatch abort check — covers the LAST-iteration case: if the signal
+			// fired during this round's handlers, we'd otherwise skip the top-of-loop check
+			// and throw `BudgetExceededError` (misleading: the budget never tripped). Fire
+			// the abort here so the caller gets the correct error class. Earlier iterations
+			// pick this up on the next round's top-of-loop check.
+			composedSignal.throwIfAborted();
+
+			// Trace + tool messages append in CALL order regardless of completion order under
+			// parallel — the trace mirrors what the model emitted, not which handler finished first.
+			for (const dispatchResult of dispatched) {
+				trace.push(dispatchResult.entry);
+				messages.push({
+					role: 'tool',
+					content: dispatchResult.toolMessageContent,
+					toolCallId: dispatchResult.entry.toolCallId,
+				});
 			}
-
-			const ctx: ToolHandlerContext = { signal, accounting };
-			const handlerStart = performance.now();
-			let toolResultContent: string;
-			// Wrap BOTH the handler call AND result serialization in the recover catch.
-			// `JSON.stringify` throws on BigInt and circular refs — both trivially produced
-			// by handlers that return raw DB rows or Resource instances. Without this, a
-			// serialization failure crashes the entire loop instead of becoming a tool
-			// error the model can react to (the `toolErrorMode: 'recover'` contract).
-			try {
-				const handlerOutput = await handler(call.arguments, ctx);
-				const serialized = serializeToolResult(handlerOutput, maxResultBytes);
-				entry.result = serialized.content;
-				if (serialized.truncated) {
-					entry.truncated = true;
-					entry.totalBytes = serialized.totalBytes;
-				}
-				toolResultContent = serialized.content;
-			} catch (err) {
-				// `toolErrorMode: 'recover'` (v1 only path): append the error message as the
-				// tool result so the model can react. Commit 4 wires 'abort' to throw early.
-				entry.error = errorInfo(err);
-				toolResultContent = JSON.stringify({ error: entry.error.message });
-			}
-			entry.durationMs = performance.now() - handlerStart;
-
-			trace.push(entry);
-			messages.push({ role: 'tool', content: toolResultContent, toolCallId: call.id });
 		}
+
+		// Hit `maxToolIterations` without a terminal finishReason — the model kept calling tools.
+		// Always include the trace on the error path (independent of `includeToolTrace`) so
+		// callers can debug an exhausted budget without re-running with tracing on.
+		throw new BudgetExceededError(
+			'iterations',
+			`agent loop exceeded maxToolIterations=${maxIterations}`,
+			trace
+		);
+	} finally {
+		// Always abort the loop controller on exit (success, throw, or external abort).
+		// Cleans up `AbortSignal.any`'s listener on `callerSignal` so a session-scoped caller
+		// signal doesn't accumulate listeners across many `runAgentLoop` invocations, and
+		// signals any sibling handlers still running in the background after a Promise.all
+		// rejection (missing-handler or aborted-mid-flight) to bail out promptly.
+		loopController.abort();
+	}
+}
+
+interface DispatchedToolCall {
+	entry: ToolTraceEntry;
+	toolMessageContent: string;
+}
+
+async function dispatchToolCalls(
+	calls: ToolCall[],
+	handlers: Record<string, ToolHandler>,
+	ctx: ToolHandlerContext,
+	iteration: number,
+	maxResultBytes: number,
+	parallelism: 'parallel' | 'serial'
+): Promise<DispatchedToolCall[]> {
+	// Single-call rounds use the serial path even when 'parallel' is selected — the
+	// Promise.all path adds nothing on one element and the serial path's stack trace
+	// is more readable in errors.
+	if (parallelism === 'serial' || calls.length <= 1) {
+		const out: DispatchedToolCall[] = [];
+		for (const call of calls) {
+			out.push(await runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes));
+		}
+		return out;
+	}
+	// Parallel: handlers race concurrently. If any throws (missing handler is the only
+	// path that throws out of `runSingleToolCall` — handler errors are caught and
+	// recovered), Promise.all rejects with the first error. Siblings still running keep
+	// going in the background; their results are discarded. That's acceptable because
+	// (a) handler errors are recovered inline, so siblings rarely throw, and (b) the
+	// alternative (active cancellation via loopController) would also race in the same
+	// window. The composed signal still propagates external aborts to the siblings.
+	return Promise.all(
+		calls.map((call) => runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes))
+	);
+}
+
+async function runSingleToolCall(
+	call: ToolCall,
+	handlers: Record<string, ToolHandler>,
+	ctx: ToolHandlerContext,
+	iteration: number,
+	maxResultBytes: number
+): Promise<DispatchedToolCall> {
+	const entry: ToolTraceEntry = {
+		iteration,
+		toolCallId: call.id,
+		toolName: call.name,
+		// Shallow-copy so the trace's view of "what the model emitted" doesn't shift if a
+		// handler mutates its `args` parameter (legitimate pattern). Deep mutations to
+		// nested objects can still leak — common-case flat-object args are covered.
+		arguments: { ...call.arguments },
+		durationMs: 0,
+	};
+
+	const handler = handlers[call.name];
+	if (!handler) {
+		// No handler registered. Hard fail — there's nothing to call. (#615 swaps this
+		// branch for a `scope.resources` lookup; same call signature, same throw if
+		// unresolved.) Throw as ClientError(400) since the caller didn't supply a handler
+		// for a tool they declared, not a Harper-internal fault.
+		throw new ClientError(
+			`No handler registered for tool '${call.name}' (call id ${call.id})`,
+			400
+		);
 	}
 
-	// Hit `maxToolIterations` without a terminal finishReason — the model kept calling tools.
-	// Always include the trace on the error path (independent of `includeToolTrace`) so
-	// callers can debug an exhausted budget without re-running with tracing on.
-	throw new BudgetExceededError(
-		'iterations',
-		`agent loop exceeded maxToolIterations=${maxIterations}`,
-		trace
-	);
+	const handlerStart = performance.now();
+	let toolMessageContent: string;
+	// Wrap BOTH the handler call AND result serialization in the recover catch.
+	// `JSON.stringify` throws on BigInt and circular refs — both trivially produced by
+	// handlers that return raw DB rows or Resource instances. Without this, a
+	// serialization failure crashes the entire loop instead of becoming a tool error
+	// the model can react to (the `toolErrorMode: 'recover'` contract).
+	try {
+		const handlerOutput = await handler(call.arguments, ctx);
+		const serialized = serializeToolResult(handlerOutput, maxResultBytes);
+		entry.result = serialized.content;
+		if (serialized.truncated) {
+			entry.truncated = true;
+			entry.totalBytes = serialized.totalBytes;
+		}
+		toolMessageContent = serialized.content;
+	} catch (err) {
+		// Cooperative cancellation is NOT a tool error — rethrow so the loop's
+		// abort path (top-of-loop / post-dispatch `throwIfAborted`) classifies it
+		// correctly. Without this, AbortError would land in `entry.error` and the
+		// caller would see `BudgetExceededError` on the last iteration, or a
+		// bogus `{error: 'aborted'}` tool message threaded into the conversation.
+		// The trace entry is abandoned (the loop builds an aborted-path trace later).
+		if (ctx.signal?.aborted) throw err;
+		// `toolErrorMode: 'recover'` (v1 only path): append the error message as the
+		// tool result so the model can react. Commit 4 wires 'abort' to throw early.
+		entry.error = errorInfo(err);
+		toolMessageContent = JSON.stringify({ error: entry.error.message });
+	}
+	entry.durationMs = performance.now() - handlerStart;
+
+	return { entry, toolMessageContent };
+}
+
+/**
+ * Mirror of `backendHelpers.composeSignal` but composing a caller signal with an
+ * INTERNAL controller's signal (not a timeout). Returns the internal signal alone
+ * when no caller signal exists, the caller signal alone when no internal controller
+ * is needed (today never — we always create one), and a composed signal otherwise.
+ *
+ * `AbortSignal.any` requires Node 20+, which matches Harper's engines floor.
+ */
+function composeAbortSignal(caller: AbortSignal | undefined, internal: AbortSignal): AbortSignal {
+	if (!caller) return internal;
+	return AbortSignal.any([caller, internal]);
 }
 
 export async function* runAgentLoopStream(_args: RunAgentLoopArgs): AsyncIterable<GenerateChunk> {

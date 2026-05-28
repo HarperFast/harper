@@ -157,7 +157,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			assert.strictEqual(backend.calls[1].input.messages[2].toolCallId, 'c1');
 		});
 
-		it('serial handlers run in order (no concurrent overlap in v1)', async () => {
+		it("toolParallelism: 'serial' runs handlers in order (no concurrent overlap)", async () => {
 			// Two tool calls in ONE round.
 			backend.queue(
 				toolCallRound('multi', [tc('c1', 'slow', { i: 1 }), tc('c1b', 'slow', { i: 2 })]),
@@ -166,6 +166,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			const events = [];
 			await models.generate('go', {
 				toolMode: 'auto',
+				toolParallelism: 'serial',
 				toolHandlers: {
 					slow: async (args) => {
 						events.push(`start-${args.i}`);
@@ -363,6 +364,270 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			});
 			assert.strictEqual(result.content, 'recovered');
 			assert.ok(result.trace[0].error);
+		});
+	});
+
+	describe("parallel dispatch (default, toolParallelism: 'parallel')", () => {
+		it('handlers in one round run concurrently — start events interleave', async () => {
+			backend.queue(
+				toolCallRound('multi', [tc('c1', 'slow', { i: 1 }), tc('c2', 'slow', { i: 2 })]),
+				final('done')
+			);
+			const events = [];
+			await models.generate('go', {
+				toolMode: 'auto',
+				// Default is parallel — assert behavior without explicit opt-in.
+				toolHandlers: {
+					slow: async (args) => {
+						events.push(`start-${args.i}`);
+						await new Promise((r) => setImmediate(r));
+						events.push(`end-${args.i}`);
+						return args.i;
+					},
+				},
+			});
+			// Parallel: both starts fire before either end (handlers overlap).
+			assert.deepStrictEqual(events, ['start-1', 'start-2', 'end-1', 'end-2']);
+		});
+
+		it('trace and tool messages are in CALL order, not completion order', async () => {
+			// Handler #1 sleeps longer than #2 — completion order is [#2, #1] but the
+			// trace and the tool messages fed back to the model must follow the order the
+			// model emitted them in.
+			backend.queue(
+				toolCallRound('p', [tc('c1', 'slow', { ms: 10 }), tc('c2', 'fast', { ms: 0 })]),
+				final('done')
+			);
+			const result = await models.generate('go', {
+				toolMode: 'auto',
+				includeToolTrace: true,
+				toolHandlers: {
+					slow: async (args) => {
+						await new Promise((r) => setTimeout(r, args.ms));
+						return { tag: 'slow' };
+					},
+					fast: async (args) => {
+						await new Promise((r) => setTimeout(r, args.ms));
+						return { tag: 'fast' };
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				result.trace.map((e) => e.toolName),
+				['slow', 'fast']
+			);
+			// Tool messages on round 2 appear in call order too.
+			const round2 = backend.calls[1].input.messages;
+			const toolMsgs = round2.filter((m) => m.role === 'tool');
+			assert.deepStrictEqual(toolMsgs.map((m) => m.toolCallId), ['c1', 'c2']);
+		});
+
+		it('single tool call uses the serial path even under parallel default', async () => {
+			// Sanity — one call, default parallel: still runs cleanly via Promise.all bypass.
+			backend.queue(
+				toolCallRound('p', [tc('c1', 'echo', { x: 1 })]),
+				final('done')
+			);
+			const result = await models.generate('go', {
+				toolMode: 'auto',
+				includeToolTrace: true,
+				toolHandlers: { echo: (args) => args },
+			});
+			assert.strictEqual(result.trace.length, 1);
+		});
+	});
+
+	describe('abort propagation', () => {
+		it('caller aborts between rounds → next iteration throws AbortError, partial work analytics recorded', async () => {
+			backend.queue(
+				toolCallRound('p', [tc('c1', 'echo', { i: 0 })]),
+				// Second round won't be reached — caller aborts after round 1's handler runs.
+				final('unreachable')
+			);
+			const ac = new AbortController();
+			let abortedDuringHandler = false;
+			await assert.rejects(
+				() =>
+					models.generate('q', {
+						toolMode: 'auto',
+						signal: ac.signal,
+						toolHandlers: {
+							echo: async (args, ctx) => {
+								// Caller aborts as the handler runs — composed signal reflects it.
+								ac.abort();
+								abortedDuringHandler = ctx.signal && ctx.signal.aborted;
+								return args;
+							},
+						},
+					}),
+				(err) => err.name === 'AbortError'
+			);
+			assert.strictEqual(abortedDuringHandler, true, 'handler ctx.signal must reflect caller abort');
+			// One analytics row for round 1 (succeeded); round 2 never started, so no row.
+			// (`throwIfAborted` fires before the second `models.generate` is reached.)
+			assert.strictEqual(writer.records.length, 1);
+			assert.strictEqual(writer.records[0].success, true);
+		});
+
+		it('handler ctx.signal aborts when caller aborts during execution', async () => {
+			backend.queue(toolCallRound('p', [tc('c1', 'slow', {})]), final('done'));
+			const ac = new AbortController();
+			let handlerSawAbort = false;
+			await assert.rejects(
+				async () => {
+					await models.generate('q', {
+						toolMode: 'auto',
+						signal: ac.signal,
+						toolHandlers: {
+							slow: async (_args, ctx) => {
+								// Race: abort and listen on ctx.signal simultaneously.
+								await new Promise((resolve, reject) => {
+									ctx.signal.addEventListener('abort', () => {
+										handlerSawAbort = true;
+										reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+									});
+									setImmediate(() => ac.abort());
+								});
+							},
+						},
+					});
+				},
+				(err) => err.name === 'AbortError'
+			);
+			assert.strictEqual(handlerSawAbort, true);
+		});
+
+		it('composed signal flows to the inner Models.generate as a wrapper (not the caller signal directly)', async () => {
+			// Use a custom backend that observes the signal AT call time — the loop's
+			// finally aborts the composed signal on exit, so post-loop inspection would
+			// always show aborted=true. The point is: backend gets the wrapper, not the
+			// raw caller signal, and it's not aborted while the call is in flight.
+			let observedSignal;
+			let abortedDuringCall;
+			setGenerative('default', {
+				name: 'observe',
+				capabilities: () => ({ embed: false, generate: true, stream: false, tools: true, adapters: false }),
+				async generate(_input, opts) {
+					observedSignal = opts.signal;
+					abortedDuringCall = opts.signal?.aborted ?? null;
+					return { status: 'completed', output: { content: 'x', finishReason: 'stop' }, usage: {} };
+				},
+			});
+			const ac = new AbortController();
+			await models.generate('q', { toolMode: 'auto', signal: ac.signal });
+			assert.ok(observedSignal, 'inner backend call must receive a signal');
+			assert.notStrictEqual(observedSignal, ac.signal, 'must be a composed wrapper, not the caller signal');
+			assert.strictEqual(abortedDuringCall, false, 'signal is not aborted while the call is in flight');
+		});
+
+		it('caller-pre-aborted signal: first iteration throws before paying for a backend call', async () => {
+			backend.queue(final('unreachable'));
+			const ac = new AbortController();
+			ac.abort();
+			await assert.rejects(
+				() => models.generate('q', { toolMode: 'auto', signal: ac.signal }),
+				(err) => err.name === 'AbortError'
+			);
+			assert.strictEqual(backend.calls.length, 0, 'inner generate must not run when caller pre-aborted');
+		});
+
+		it('in-flight handler abort rethrows (does NOT enter recover and append a bogus tool message)', async () => {
+			// If recover swallowed AbortError, the loop would push `{error: "aborted"}`
+			// into messages and try a SECOND backend round before bailing. Pin the
+			// behavior: handler-mid-flight abort → loop throws AbortError after the
+			// post-dispatch check; no second backend call; no error envelope in trace.
+			backend.queue(
+				toolCallRound('p', [tc('c1', 'slow', {})]),
+				final('unreachable — abort happens during round 1')
+			);
+			const ac = new AbortController();
+			await assert.rejects(
+				() =>
+					models.generate('q', {
+						toolMode: 'auto',
+						includeToolTrace: true,
+						signal: ac.signal,
+						toolHandlers: {
+							slow: async (_args, ctx) => {
+								await new Promise((resolve, reject) => {
+									ctx.signal.addEventListener('abort', () => {
+										const err = new Error('aborted');
+										err.name = 'AbortError';
+										reject(err);
+									});
+									setImmediate(() => ac.abort());
+								});
+							},
+						},
+					}),
+				(err) => err.name === 'AbortError'
+			);
+			// One backend call only — the second `final(...)` never got reached.
+			assert.strictEqual(backend.calls.length, 1, 'no second round after abort');
+		});
+
+		it('last-iteration abort → AbortError, NOT BudgetExceededError (misclassification check)', async () => {
+			// `maxToolIterations: 1` would otherwise trip BudgetExceededError after one
+			// round of tool calls. If we abort mid-handler in that one round, the loop
+			// must classify the throw as AbortError (post-dispatch throwIfAborted)
+			// rather than treating the loop body as having "exhausted" iterations.
+			backend.queue(toolCallRound('p', [tc('c1', 'slow', {})]));
+			const ac = new AbortController();
+			await assert.rejects(
+				() =>
+					models.generate('q', {
+						toolMode: 'auto',
+						maxToolIterations: 1,
+						signal: ac.signal,
+						toolHandlers: {
+							slow: async (_args, ctx) => {
+								await new Promise((resolve, reject) => {
+									ctx.signal.addEventListener('abort', () => {
+										const err = new Error('aborted');
+										err.name = 'AbortError';
+										reject(err);
+									});
+									setImmediate(() => ac.abort());
+								});
+							},
+						},
+					}),
+				(err) => err.name === 'AbortError' && !(err instanceof BudgetExceededError)
+			);
+		});
+
+		it('loopController.abort fires on exit — sibling handlers still running see the signal', async () => {
+			// One round, two parallel tool calls: 'missing' has no handler (throws on
+			// dispatch), 'slow' is in flight. After the missing-handler throw propagates
+			// out, the loop's finally aborts loopController → the slow handler's
+			// ctx.signal aborts. (Test by having the slow handler check ctx.signal in a
+			// microtask after a small delay; if cleanup didn't fire, the handler would
+			// hang.)
+			backend.queue(toolCallRound('p', [tc('c1', 'missing', {}), tc('c2', 'slow', {})]));
+			let slowSawAbort = false;
+			let slowResolver;
+			const slowFinished = new Promise((resolve) => {
+				slowResolver = resolve;
+			});
+			await assert.rejects(
+				() =>
+					models.generate('q', {
+						toolMode: 'auto',
+						toolHandlers: {
+							// 'missing' is intentionally absent — throws ClientError(400).
+							slow: async (_args, ctx) => {
+								await new Promise((resolve) => setImmediate(resolve));
+								slowSawAbort = ctx.signal.aborted;
+								slowResolver();
+								return null;
+							},
+						},
+					}),
+				(err) => err.statusCode === 400 && /No handler registered/.test(err.message)
+			);
+			// Wait for the slow handler to finish (it has nothing to await on after the abort).
+			await slowFinished;
+			assert.strictEqual(slowSawAbort, true, 'sibling handler must see signal aborted after loop cleanup');
 		});
 	});
 
