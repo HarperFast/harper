@@ -57,12 +57,21 @@ export type GenerateOpts = {
 	/**
 	 * `toolMode: 'auto'` only. Cumulative prompt+completion token cap across all
 	 * iterations. Trips `BudgetExceededError({kind: 'tokens'})` when exceeded.
+	 *
+	 * Best-effort: enforcement depends on the backend reporting `usage`. Against a
+	 * backend that returns no usage the cap is unmeasurable — the loop warns once and
+	 * continues (it does NOT silently pretend the cap is in force); `maxToolIterations`
+	 * remains the hard bound. Not yet supported on `generateStream` (throws 501).
 	 */
 	maxToolTokens?: number;
 	/**
 	 * `toolMode: 'auto'` only. Cumulative cost cap across all iterations. The v1
 	 * cost-per-call function returns 0 (no rate card yet) so this trips only when
 	 * a test or follow-up wires a non-zero function — the seam is in place.
+	 *
+	 * Same best-effort caveat as `maxToolTokens`: cost is derived from backend usage,
+	 * so a backend reporting no usage makes the cap unmeasurable (warn-once, continue).
+	 * Not yet supported on `generateStream` (throws 501).
 	 */
 	maxCostUsd?: number;
 	/**
@@ -102,6 +111,13 @@ export type GenerateOpts = {
 	 * `toolMode: 'auto'` only. Caller-supplied dispatch table keyed by tool name.
 	 * The model emits a tool call → loop looks up the handler here. v1 contract;
 	 * the registry seam (#615) replaces this with a `scope.resources` lookup.
+	 *
+	 * Lookup is own-property + callable only (a model-emitted name matching an Object
+	 * prototype member never resolves a built-in). Missing-handler behavior splits on
+	 * whether the name was declared in `tools`: a DECLARED name with no handler is a
+	 * caller config bug (hard `ClientError(400)`); an UNDECLARED name is treated as a
+	 * model hallucination and routed through `toolErrorMode` (recover feeds an
+	 * "unknown tool" error back to the model; abort stops the loop).
 	 */
 	toolHandlers?: Record<string, ToolHandler>;
 	/**

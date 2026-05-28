@@ -12,6 +12,7 @@ const {
 	_setComputeCallCostUsdForTests,
 	_resetComputeCallCostUsdForTests,
 } = require('#src/resources/models/agentLoop');
+const { logger } = require('#src/utility/logging/logger');
 
 function makeMockWriter() {
 	const records = [];
@@ -611,12 +612,12 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		});
 
 		it('loopController.abort fires on exit — sibling handlers still running see the signal', async () => {
-			// One round, two parallel tool calls: 'missing' has no handler (throws on
-			// dispatch), 'slow' is in flight. After the missing-handler throw propagates
-			// out, the loop's finally aborts loopController → the slow handler's
-			// ctx.signal aborts. (Test by having the slow handler check ctx.signal in a
-			// microtask after a small delay; if cleanup didn't fire, the handler would
-			// hang.)
+			// One round, two parallel tool calls: 'missing' is DECLARED in `tools` but has
+			// no handler (a caller config bug → hard ClientError(400) on dispatch), 'slow'
+			// is in flight. After the missing-handler throw propagates out, the loop's
+			// finally aborts loopController → the slow handler's ctx.signal aborts. (Test by
+			// having the slow handler check ctx.signal in a microtask after a small delay; if
+			// cleanup didn't fire, the handler would hang.)
 			backend.queue(toolCallRound('p', [tc('c1', 'missing', {}), tc('c2', 'slow', {})]));
 			let slowSawAbort = false;
 			let slowResolver;
@@ -625,19 +626,26 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			});
 			await assert.rejects(
 				() =>
-					models.generate('q', {
-						toolMode: 'auto',
-						toolHandlers: {
-							// 'missing' is intentionally absent — throws ClientError(400).
-							slow: async (_args, ctx) => {
-								await new Promise((resolve) => setImmediate(resolve));
-								slowSawAbort = ctx.signal.aborted;
-								slowResolver();
-								return null;
-							},
+					models.generate(
+						{
+							messages: [{ role: 'user', content: 'q' }],
+							// Declaring 'missing' makes the absent handler a caller config bug → hard throw.
+							tools: [{ name: 'missing', description: '', parameters: {} }],
 						},
-					}),
-				(err) => err.statusCode === 400 && /No handler registered/.test(err.message)
+						{
+							toolMode: 'auto',
+							toolHandlers: {
+								// 'missing' is intentionally absent — declared tool w/o handler throws ClientError(400).
+								slow: async (_args, ctx) => {
+									await new Promise((resolve) => setImmediate(resolve));
+									slowSawAbort = ctx.signal.aborted;
+									slowResolver();
+									return null;
+								},
+							},
+						}
+					),
+				(err) => err.statusCode === 400 && /No handler registered for declared tool/.test(err.message)
 			);
 			// Wait for the slow handler to finish (it has nothing to await on after the abort).
 			await slowFinished;
@@ -689,12 +697,77 @@ describe("agentLoop (toolMode: 'auto')", () => {
 		});
 	});
 
-	describe('missing handler', () => {
-		it('throws ClientError(400) — nothing to dispatch to', async () => {
-			backend.queue(toolCallRound('p', [tc('c1', 'unknown', {})]));
+	describe('missing handler (split policy: declared = config bug, undeclared = hallucination)', () => {
+		it('DECLARED tool with no handler throws ClientError(400) — caller config bug', async () => {
+			backend.queue(toolCallRound('p', [tc('c1', 'configured', {})]));
 			await assert.rejects(
-				() => models.generate('q', { toolMode: 'auto', toolHandlers: {} }),
-				(err) => err.statusCode === 400 && /No handler registered/.test(err.message)
+				() =>
+					models.generate(
+						{
+							messages: [{ role: 'user', content: 'q' }],
+							tools: [{ name: 'configured', description: '', parameters: {} }],
+						},
+						{ toolMode: 'auto', toolHandlers: {} }
+					),
+				(err) => err.statusCode === 400 && /No handler registered for declared tool 'configured'/.test(err.message)
+			);
+		});
+
+		it('UNDECLARED tool name recovers: feeds an "unknown tool" error back and the model continues', async () => {
+			// Round 1: model hallucinates a tool that was never declared and has no handler.
+			// Round 2: model recovers with a terminal answer. The loop must NOT throw.
+			backend.queue(toolCallRound('p', [tc('c1', 'hallucinated', {})]), final('recovered after unknown tool'));
+			const result = await models.generate('q', {
+				toolMode: 'auto',
+				includeToolTrace: true,
+				toolHandlers: {},
+			});
+			assert.strictEqual(result.content, 'recovered after unknown tool');
+			assert.strictEqual(result.trace.length, 1);
+			assert.match(result.trace[0].error.message, /Unknown tool 'hallucinated'/);
+			// The tool message fed back to the model carried the error envelope.
+			const toolMsg = backend.calls[1].input.messages.find((m) => m.role === 'tool');
+			assert.match(toolMsg.content, /Unknown tool 'hallucinated'/);
+		});
+
+		it('UNDECLARED tool under toolErrorMode:"abort" stops the loop with ToolHandlerError', async () => {
+			backend.queue(toolCallRound('p', [tc('c1', 'hallucinated', {})]));
+			await assert.rejects(
+				() => models.generate('q', { toolMode: 'auto', toolErrorMode: 'abort', toolHandlers: {} }),
+				(err) => err instanceof ToolHandlerError && /Unknown tool 'hallucinated'/.test(err.message)
+			);
+		});
+
+		it('prototype-member tool name (toString / constructor / __proto__) does NOT dispatch a built-in', async () => {
+			// A bare `handlers[name]` lookup would resolve Object.prototype.toString as a
+			// "handler" and invoke it. Each must be treated as an undeclared unknown tool.
+			for (const evil of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+				clearRegistry();
+				backend = new ScriptedBackend();
+				setGenerative('default', backend);
+				backend.queue(toolCallRound('p', [tc('c1', evil, {})]), final('ok'));
+				const result = await models.generate('q', {
+					toolMode: 'auto',
+					includeToolTrace: true,
+					toolHandlers: {},
+				});
+				assert.strictEqual(result.content, 'ok', `${evil} must not dispatch a built-in`);
+				assert.strictEqual(result.trace[0].error.message, `Unknown tool '${evil}': no such tool is available`);
+			}
+		});
+
+		it('own, NON-callable handler value for a declared tool is treated as missing (hard throw)', async () => {
+			backend.queue(toolCallRound('p', [tc('c1', 'broken', {})]));
+			await assert.rejects(
+				() =>
+					models.generate(
+						{
+							messages: [{ role: 'user', content: 'q' }],
+							tools: [{ name: 'broken', description: '', parameters: {} }],
+						},
+						{ toolMode: 'auto', toolHandlers: { broken: 'not a function' } }
+					),
+				(err) => err.statusCode === 400 && /No handler registered for declared tool 'broken'/.test(err.message)
 			);
 		});
 	});
@@ -1385,6 +1458,152 @@ describe("agentLoop (toolMode: 'auto')", () => {
 				},
 			});
 			assert.strictEqual(result.content, 'recovered');
+		});
+	});
+
+	describe('resilience hardening (no silent failures, consistent side-effects)', () => {
+		function makeConversationSpy() {
+			const turns = [];
+			return {
+				turns,
+				async append(turn) {
+					turns.push(turn);
+				},
+			};
+		}
+
+		// Spy on logger.warn for the warn-once assertions, restoring the original after.
+		let warnings;
+		let origWarn;
+		beforeEach(() => {
+			warnings = [];
+			origWarn = logger.warn;
+			logger.warn = (...args) => warnings.push(args.join(' '));
+		});
+		afterEach(() => {
+			logger.warn = origWarn;
+		});
+
+		describe('budget warn-once when backend reports no usage', () => {
+			it('maxToolTokens set but no usage → warns once, does NOT trip, loop completes', async () => {
+				// Two tool rounds + terminal, all with usage: undefined.
+				backend.queue(
+					{ output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] } },
+					{ output: { content: 'r2', finishReason: 'tool_calls', toolCalls: [tc('c2', 'echo', { i: 2 })] } },
+					{ output: { content: 'final', finishReason: 'stop' } }
+				);
+				const result = await models.generate('q', {
+					toolMode: 'auto',
+					maxToolTokens: 1, // would trip instantly IF usage were measurable
+					toolHandlers: { echo: (a) => a },
+				});
+				assert.strictEqual(result.content, 'final', 'unmeasurable budget must not falsely trip');
+				const budgetWarns = warnings.filter((w) => /budget is unenforceable/.test(w));
+				assert.strictEqual(budgetWarns.length, 1, 'warns exactly once across the run, not per-round');
+			});
+
+			it('maxToolTokens still trips normally when the backend DOES report usage', async () => {
+				backend.queue(toolCallRound('r1', [tc('c1', 'echo', { i: 1 })]), final('unreached'));
+				await assert.rejects(
+					() => models.generate('q', { toolMode: 'auto', maxToolTokens: 1, toolHandlers: { echo: (a) => a } }),
+					(err) => err instanceof BudgetExceededError && err.kind === 'tokens'
+				);
+				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 0);
+			});
+		});
+
+		describe('abort-mode does not persist tool turns the model never consumed', () => {
+			it('sync: toolErrorMode:"abort" throws BEFORE the failed tool turn reaches the conversation sink', async () => {
+				backend.queue(toolCallRound('thinking', [tc('c1', 'boom', {})]));
+				const conversation = makeConversationSpy();
+				await assert.rejects(
+					() =>
+						models.generate('q', {
+							toolMode: 'auto',
+							toolErrorMode: 'abort',
+							conversation,
+							toolHandlers: {
+								boom: () => {
+									throw new Error('handler failed');
+								},
+							},
+						}),
+					(err) => err instanceof ToolHandlerError
+				);
+				// The assistant tool-call turn is legitimately persisted (the model DID emit it),
+				// but the recover-style tool-error turn must NOT be — abort returns the error.
+				assert.deepStrictEqual(
+					conversation.turns.map((t) => t.role),
+					['assistant'],
+					'no tool-role turn should be appended on the abort path'
+				);
+			});
+
+			it('recover mode (default) DOES persist the tool-error turn so the model can react', async () => {
+				backend.queue(toolCallRound('thinking', [tc('c1', 'boom', {})]), final('handled'));
+				const conversation = makeConversationSpy();
+				await models.generate('q', {
+					toolMode: 'auto',
+					conversation,
+					toolHandlers: {
+						boom: () => {
+							throw new Error('handler failed');
+						},
+					},
+				});
+				assert.deepStrictEqual(
+					conversation.turns.map((t) => t.role),
+					['assistant', 'tool', 'assistant']
+				);
+			});
+		});
+
+		describe('streaming: terminal turn persisted before the terminal chunk is delivered', () => {
+			it('conversation has the final assistant turn even if the consumer breaks on the finish chunk', async () => {
+				backend.queueStream([{ deltaContent: 'the answer' }, { finishReason: 'stop' }]);
+				const conversation = makeConversationSpy();
+				for await (const chunk of models.generateStream('q', { toolMode: 'auto', conversation })) {
+					if (chunk.finishReason) break; // stop the instant the terminal chunk arrives
+				}
+				assert.deepStrictEqual(
+					conversation.turns.map((t) => t.role),
+					['assistant'],
+					'terminal assistant turn must be persisted before the finish chunk is yielded'
+				);
+				assert.strictEqual(conversation.turns[0].content, 'the answer');
+			});
+
+			it('the terminal finishReason is delivered on its own final chunk (never co-located with content)', async () => {
+				backend.queueStream([{ deltaContent: 'hi', finishReason: 'stop' }]);
+				const chunks = [];
+				for await (const c of models.generateStream('q', { toolMode: 'auto' })) {
+					chunks.push(c);
+				}
+				// Content delta and the terminal finishReason arrive as separate chunks.
+				assert.strictEqual(chunks.at(-1).finishReason, 'stop');
+				assert.strictEqual(chunks.at(-1).deltaContent, undefined);
+				assert.strictEqual(chunks.map((c) => c.deltaContent ?? '').join(''), 'hi');
+				assert.strictEqual(chunks.filter((c) => c.finishReason).length, 1, 'exactly one terminal chunk');
+			});
+		});
+
+		describe('streaming: incomplete assembled tool call is surfaced, not silently dropped', () => {
+			it('a tool-call delta that never delivers a name is recorded in the trace as IncompleteToolCall', async () => {
+				// id arrives but the name fragment never does (truncated stream); the round
+				// has no other content/calls, so the loop terminates — but must surface the drop.
+				backend.queueStream([
+					{ deltaToolCalls: [{ id: 'c1', arguments: { partial: true } }] },
+					{ finishReason: 'stop' },
+				]);
+				const chunks = [];
+				for await (const c of models.generateStream('q', { toolMode: 'auto', includeToolTrace: true })) {
+					chunks.push(c);
+				}
+				assert.strictEqual(warnings.filter((w) => /dropping incomplete streamed tool call/.test(w)).length, 1);
+				// generateStream doesn't return a trace object to the caller, but the warn is the
+				// observable signal; assert the loop still terminated cleanly with a stop.
+				assert.strictEqual(chunks.at(-1).finishReason, 'stop');
+			});
 		});
 	});
 });

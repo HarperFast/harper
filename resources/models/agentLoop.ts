@@ -17,25 +17,43 @@
  * only fired externally (caller aborts → composed signal aborts); commit 4 wires
  * it to also fire on budget trips so an in-flight LLM call cancels cleanly.
  *
- * Commit 5 of #612 — streaming auto path + `opts.conversation.append` hook on
- * both sync and streaming. The streaming loop yields each round's deltas to the
- * caller as they arrive, accumulates the round's tool-call assembly internally,
- * suppresses intermediate `finishReason: 'tool_calls'` chunks (per the
- * `GenerateChunk` contract that finishReason marks the FINAL chunk only), runs
- * tools between rounds, and resumes with the next backend stream. Budget /
- * abort / error-mode semantics match the sync path, with one streaming-specific
- * gap: `maxToolTokens` / `maxCostUsd` are not yet enforced for streamed calls
- * because `GenerateChunk` doesn't expose `usage` in v1 (follow-up to extend the
- * chunk shape + backend final-chunk handling).
+ * Streaming auto path + `opts.conversation.append` hook on both sync and streaming.
+ * The streaming loop yields each round's content / tool-call deltas to the caller as
+ * they arrive, accumulates the round's tool-call assembly internally, and treats
+ * `finishReason` as an INTERNAL signal: it is stripped from every forwarded chunk and
+ * re-emitted as exactly one terminal chunk AFTER the terminal assistant turn has been
+ * persisted, so a consumer that stops on the finish-reason chunk can never race past
+ * the conversation append. Tools run between rounds; the next backend stream resumes.
+ * Budget / abort / error-mode semantics match the sync path, with one streaming-specific
+ * gap: `maxToolTokens` / `maxCostUsd` are not yet enforced for streamed calls because
+ * `GenerateChunk` doesn't expose `usage` in v1 (follow-up to extend the chunk shape +
+ * backend final-chunk handling).
+ *
+ * Resilience posture (this module is foundational infra — fail loud, never silent):
+ *   - Handler lookup uses `Object.hasOwn` + a callable check; a model-emitted tool name
+ *     that collides with an Object prototype member (`toString`, `constructor`, …) does
+ *     NOT resolve a built-in as a handler.
+ *   - Missing handler splits two ways: a name the caller DECLARED in `tools` but didn't
+ *     supply a handler for is a caller config bug (hard `ClientError(400)`); an UNdeclared
+ *     name is a model hallucination, surfaced as a recoverable tool error (`toolErrorMode`
+ *     decides recover-vs-abort).
+ *   - A token/cost budget set against a backend that reports no `usage` warns once that it
+ *     is unenforceable rather than silently no-opping.
+ *   - An incomplete streamed tool call (id without a name) is recorded in the trace + warned,
+ *     not silently dropped.
+ *   - `toolErrorMode: 'abort'` throws BEFORE the conversation sink sees the round's tool
+ *     turns, so the store never holds a recover-style error turn the model never consumed.
  *
  * Modes still deferred to follow-ups throw 501 at entry:
  *   - `toolArgValidation: 'strict' | 'lenient'`  → JSON Schema validator (TBD)
  *   - `maxToolTokens` / `maxCostUsd` (streaming) → backend `usage` on chunks (TBD)
  *
- * Registry seam: v1 dispatches via caller-supplied `opts.toolHandlers`. #615
- * replaces that with a `scope.resources` lookup using the same call signature.
+ * Registry seam: v1 dispatches via caller-supplied `opts.toolHandlers`. #615 replaces
+ * that lookup with a `scope.resources` resolution using the same call signature — the
+ * declared-vs-undeclared split maps onto resolvable-but-misconfigured vs unknown.
  */
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
+import { logger } from '../../utility/logging/logger.ts';
 import type {
 	AccountingContext,
 	GenerateChunk,
@@ -81,11 +99,19 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 	const conversation = opts.conversation;
 
 	const { messages, tools, system } = normalizeInput(args.input);
+	// Names the CALLER declared as tools (object-form input). Used to split the
+	// missing-handler case: a declared tool with no handler is a caller config bug
+	// (hard fail); an UNdeclared name is a model hallucination (recover). See
+	// `runSingleToolCall`.
+	const declaredToolNames = collectDeclaredToolNames(tools);
 	const trace: ToolTraceEntry[] = [];
 	// Cumulative usage tallies across all iterations of this loop invocation. Used to
 	// trip `maxToolTokens` / `maxCostUsd` after each backend round.
 	let totalTokens = 0;
 	let totalCostUsd = 0;
+	// Warn-once latch: a token/cost budget is set but the backend isn't reporting
+	// usage, so the cap can't be measured. We refuse to silently pretend it's enforced.
+	let budgetUnmeasurableWarned = false;
 
 	// `conversation` is a one-way SINK for NEW turns produced by this loop — the loop
 	// does NOT re-append the caller's input messages, even when they include user
@@ -116,6 +142,33 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			composedSignal.throwIfAborted();
 
 			const result = await models.generate(buildInnerInput(messages, tools, system), innerOpts);
+
+			// Re-check abort the instant the backend round returns, BEFORE any budget
+			// accounting, assistant append, or tool dispatch. A well-behaved backend
+			// throws on an in-flight abort; an ill-behaved one (community backend that
+			// ignores its signal) can resolve normally after the caller aborted. Without
+			// this check the loop would run side-effecting handlers for a cancelled
+			// request and then misreport the outcome as a budget/tool error instead of
+			// an abort.
+			composedSignal.throwIfAborted();
+
+			logger.debug?.(
+				`[models] auto-loop iteration ${iteration}: finishReason=${result.finishReason} toolCalls=${result.toolCalls?.length ?? 0} cumulativeTokens=${totalTokens}`
+			);
+
+			// A token/cost budget is only as good as the backend's usage reporting. If a
+			// cap is set but this round reported no usage, the cap is unmeasurable — warn
+			// once rather than letting the caller believe spend is bounded when it isn't.
+			if (
+				(maxToolTokens !== undefined || maxCostUsd !== undefined) &&
+				result.usage === undefined &&
+				!budgetUnmeasurableWarned
+			) {
+				budgetUnmeasurableWarned = true;
+				logger.warn?.(
+					`[models] auto-loop token/cost budget set but backend '${opts.model ?? 'default'}' reported no usage; budget is unenforceable for this run (maxToolIterations still applies)`
+				);
+			}
 
 			// Tally this round's usage BEFORE deciding terminal vs continue. A round
 			// that crosses the cap trips even if it would otherwise have been the last
@@ -173,7 +226,15 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			}
 
 			const ctx: ToolHandlerContext = { signal: composedSignal, accounting };
-			const dispatched = await dispatchToolCalls(calls, handlers, ctx, iteration, maxResultBytes, parallelism);
+			const dispatched = await dispatchToolCalls(
+				calls,
+				handlers,
+				declaredToolNames,
+				ctx,
+				iteration,
+				maxResultBytes,
+				parallelism
+			);
 
 			// Post-dispatch abort check — covers the LAST-iteration case: if the signal
 			// fired during this round's handlers, we'd otherwise skip the top-of-loop check
@@ -182,10 +243,10 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 			// pick this up on the next round's top-of-loop check.
 			composedSignal.throwIfAborted();
 
-			// Trace + tool messages append in CALL order regardless of completion order under
-			// parallel — the trace mirrors what the model emitted, not which handler finished first.
-			// Append BEFORE the abort-mode check so the failing entry is included in the
-			// partial trace surfaced via `ToolHandlerError.partialTrace`.
+			// Trace + the in-memory message list always record every tool result in CALL
+			// order (the trace mirrors what the model emitted, not which handler finished
+			// first). The EXTERNAL conversation sink is handled separately below so the
+			// abort-mode throw can run BEFORE we persist turns the model never consumes.
 			for (const dispatchResult of dispatched) {
 				trace.push(dispatchResult.entry);
 				messages.push({
@@ -193,23 +254,29 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 					content: dispatchResult.toolMessageContent,
 					toolCallId: dispatchResult.entry.toolCallId,
 				});
-				if (conversation) {
+			}
+
+			// `toolErrorMode: 'abort'`: any handler failure terminates the loop. Throw
+			// BEFORE the conversation sink sees this round's tool turns — abort mode
+			// returns the error to the caller instead of recovering, so persisting a
+			// recover-style tool-error turn the model never reads would leave the store
+			// inconsistent with what actually happened. The trace (built above) still
+			// carries the failing entry via `ToolHandlerError.partialTrace`.
+			if (errorMode === 'abort') {
+				const failed = dispatched.find((d) => d.originalError !== undefined);
+				if (failed) {
+					throw new ToolHandlerError(failed.entry.toolName, failed.entry.toolCallId, trace, failed.originalError);
+				}
+			}
+
+			// Continue path: persist this round's tool turns to the conversation sink.
+			if (conversation) {
+				for (const dispatchResult of dispatched) {
 					await conversation.append({
 						role: 'tool',
 						toolCallId: dispatchResult.entry.toolCallId,
 						content: dispatchResult.toolMessageContent,
 					});
-				}
-			}
-
-			// `toolErrorMode: 'abort'`: any handler failure terminates the loop. Trace
-			// includes the failing entry (pushed above) so the caller can see what blew
-			// up. Surfaces as `ToolHandlerError` carrying the original throw on `.cause`
-			// and the trace on `.partialTrace`.
-			if (errorMode === 'abort') {
-				const failed = dispatched.find((d) => d.originalError !== undefined);
-				if (failed) {
-					throw new ToolHandlerError(failed.entry.toolName, failed.entry.toolCallId, trace, failed.originalError);
 				}
 			}
 		}
@@ -243,6 +310,7 @@ interface DispatchedToolCall {
 async function dispatchToolCalls(
 	calls: ToolCall[],
 	handlers: Record<string, ToolHandler>,
+	declaredToolNames: Set<string>,
 	ctx: ToolHandlerContext,
 	iteration: number,
 	maxResultBytes: number,
@@ -254,7 +322,7 @@ async function dispatchToolCalls(
 	if (parallelism === 'serial' || calls.length <= 1) {
 		const out: DispatchedToolCall[] = [];
 		for (const call of calls) {
-			out.push(await runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes));
+			out.push(await runSingleToolCall(call, handlers, declaredToolNames, ctx, iteration, maxResultBytes));
 		}
 		return out;
 	}
@@ -271,7 +339,9 @@ async function dispatchToolCalls(
 	// unhandled-rejection warnings (and crash under `--unhandled-rejections=throw`).
 	// Attach a no-op catch to each promise so the runtime sees every rejection as
 	// handled while still letting `Promise.all` settle on the first one.
-	const promises = calls.map((call) => runSingleToolCall(call, handlers, ctx, iteration, maxResultBytes));
+	const promises = calls.map((call) =>
+		runSingleToolCall(call, handlers, declaredToolNames, ctx, iteration, maxResultBytes)
+	);
 	for (const p of promises) p.catch(() => {});
 	return Promise.all(promises);
 }
@@ -279,6 +349,7 @@ async function dispatchToolCalls(
 async function runSingleToolCall(
 	call: ToolCall,
 	handlers: Record<string, ToolHandler>,
+	declaredToolNames: Set<string>,
 	ctx: ToolHandlerContext,
 	iteration: number,
 	maxResultBytes: number
@@ -294,13 +365,35 @@ async function runSingleToolCall(
 		durationMs: 0,
 	};
 
-	const handler = handlers[call.name];
+	// Handler resolution. Use `Object.hasOwn` + a callable check rather than a plain
+	// `handlers[call.name]` lookup: a model can emit a tool name that collides with an
+	// inherited Object prototype member (`toString`, `constructor`, `__proto__`, ...),
+	// and a bare index would resolve that built-in as a "handler" and invoke it. Model
+	// output is untrusted input at this boundary — only an own, callable property counts.
+	const handler =
+		Object.hasOwn(handlers, call.name) && typeof handlers[call.name] === 'function' ? handlers[call.name] : undefined;
 	if (!handler) {
-		// No handler registered. Hard fail — there's nothing to call. (#615 swaps this
-		// branch for a `scope.resources` lookup; same call signature, same throw if
-		// unresolved.) Throw as ClientError(400) since the caller didn't supply a handler
-		// for a tool they declared, not a Harper-internal fault.
-		throw new ClientError(`No handler registered for tool '${call.name}' (call id ${call.id})`, 400);
+		if (declaredToolNames.has(call.name)) {
+			// The caller DECLARED this tool but supplied no (callable) handler for it.
+			// That's a caller config bug, not something the model can recover from —
+			// hard fail. (#615 swaps this lookup for a `scope.resources` registry
+			// resolution; same split — resolvable-but-misconfigured stays a hard fail.)
+			throw new ClientError(`No handler registered for declared tool '${call.name}' (call id ${call.id})`, 400);
+		}
+		// Undeclared tool name: the model hallucinated a tool that doesn't exist. This is
+		// the EXPECTED failure mode for an LLM, not a caller fault — surface it as a
+		// recoverable tool error so `toolErrorMode: 'recover'` feeds it back and the model
+		// can self-correct, while `'abort'` (via `originalError`) still stops the loop.
+		logger.warn?.(
+			`[models] auto-loop: model called unknown tool '${call.name}' (call id ${call.id}); no such tool declared`
+		);
+		const unknownToolError = new ClientError(`Unknown tool '${call.name}': no such tool is available`, 400);
+		entry.error = errorInfo(unknownToolError);
+		return {
+			entry,
+			toolMessageContent: JSON.stringify({ error: entry.error.message }),
+			originalError: unknownToolError,
+		};
 	}
 
 	const handlerStart = performance.now();
@@ -378,6 +471,7 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 	}
 
 	const { messages, tools, system } = normalizeInput(args.input);
+	const declaredToolNames = collectDeclaredToolNames(tools);
 	const trace: ToolTraceEntry[] = [];
 
 	const loopController = new AbortController();
@@ -415,25 +509,46 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 				if (chunk.finishReason) {
 					finishReason = chunk.finishReason;
 				}
-				// Suppress intermediate `finishReason: 'tool_calls'` from the caller —
-				// the contract on `GenerateChunk` is "finishReason set on the FINAL chunk".
-				// Intermediate tool-pause states are an internal loop concern; the caller
-				// sees a continuous stream punctuated only by the terminal finishReason.
-				if (chunk.finishReason === 'tool_calls') {
-					if (chunk.deltaContent !== undefined || chunk.deltaToolCalls) {
-						// Carry the deltas but drop the finishReason field for the yield.
-						const cleaned: GenerateChunk = {};
-						if (chunk.deltaContent !== undefined) cleaned.deltaContent = chunk.deltaContent;
-						if (chunk.deltaToolCalls) cleaned.deltaToolCalls = chunk.deltaToolCalls;
-						yield cleaned;
-					}
-					// Pure finishReason chunk on tool_calls — drop entirely.
-					continue;
+				// `finishReason` is an INTERNAL signal — never forward it inline. We re-emit
+				// exactly one terminal chunk after the loop, AFTER the terminal turn has been
+				// appended to the conversation sink (see below). Forwarding it here would let a
+				// consumer that stops on the first finish-reason chunk close this generator at
+				// the `yield` before the append runs, delivering a response that never persists.
+				// The deltas (content / tool-call shape) still flow through untouched.
+				if (chunk.deltaContent !== undefined || chunk.deltaToolCalls) {
+					const cleaned: GenerateChunk = {};
+					if (chunk.deltaContent !== undefined) cleaned.deltaContent = chunk.deltaContent;
+					if (chunk.deltaToolCalls) cleaned.deltaToolCalls = chunk.deltaToolCalls;
+					yield cleaned;
 				}
-				yield chunk;
 			}
 
 			const finalToolCalls = completeToolCallAssembly(toolCallAssembly);
+			// Surface any assembled-but-incomplete tool calls (id arrived, name never did)
+			// instead of silently dropping them. `completeToolCallAssembly` keeps only
+			// dispatchable (id + name) calls; a missing-name partial usually means a
+			// truncated stream. Record it in the trace + warn so the drop is observable.
+			if (finalToolCalls.length < toolCallAssembly.size) {
+				for (const [id, partial] of toolCallAssembly) {
+					if (!partial.name) {
+						logger.warn?.(
+							`[models] auto-loop: dropping incomplete streamed tool call id=${id} (no tool name assembled; stream likely truncated)`
+						);
+						trace.push({
+							iteration,
+							toolCallId: id,
+							toolName: '<incomplete>',
+							arguments: partial.arguments ?? {},
+							durationMs: 0,
+							error: { name: 'IncompleteToolCall', message: 'streamed tool call missing name; dropped' },
+						});
+					}
+				}
+			}
+
+			logger.debug?.(
+				`[models] auto-loop stream iteration ${iteration}: finishReason=${finishReason ?? 'none'} toolCalls=${finalToolCalls.length}`
+			);
 
 			// Continue-vs-terminal:
 			// - Hand off to tool dispatch when calls assembled AND the backend signalled
@@ -450,14 +565,18 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 			const continueWithToolCalls = hasToolCalls && (finishReason === 'tool_calls' || finishReason === undefined);
 
 			if (!continueWithToolCalls) {
+				// Terminal. Persist the final assistant turn to the conversation sink FIRST,
+				// then emit exactly one terminal chunk. Because the loop suppressed every
+				// inline finishReason, this `yield` is the only finish-reason the consumer
+				// sees — and it lands after the append, so a consumer that stops on it cannot
+				// race past the persistence.
 				if (conversation && accumulatedContent) {
 					await conversation.append({ role: 'assistant', content: accumulatedContent });
 				}
-				if (finishReason === undefined || finishReason === 'tool_calls') {
-					// Synthetic terminal: backend never yielded one inline, OR we suppressed
-					// the intermediate 'tool_calls' chunk and no calls assembled to dispatch.
-					yield { finishReason: 'stop' };
-				}
+				// `tool_calls` with zero dispatchable calls can't honestly be reported as the
+				// terminal reason (there are no calls); fold it and the no-signal case to 'stop'.
+				const terminalReason = finishReason && finishReason !== 'tool_calls' ? finishReason : 'stop';
+				yield { finishReason: terminalReason };
 				return;
 			}
 
@@ -477,10 +596,21 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 			}
 
 			const ctx: ToolHandlerContext = { signal: composedSignal, accounting };
-			const dispatched = await dispatchToolCalls(finalToolCalls, handlers, ctx, iteration, maxResultBytes, parallelism);
+			const dispatched = await dispatchToolCalls(
+				finalToolCalls,
+				handlers,
+				declaredToolNames,
+				ctx,
+				iteration,
+				maxResultBytes,
+				parallelism
+			);
 
 			composedSignal.throwIfAborted();
 
+			// Trace + in-memory messages always record every result; the external
+			// conversation sink is deferred past the abort-mode throw (same rationale as
+			// the sync path — don't persist tool turns the model never consumes on abort).
 			for (const d of dispatched) {
 				trace.push(d.entry);
 				messages.push({
@@ -488,19 +618,22 @@ export async function* runAgentLoopStream(args: RunAgentLoopArgs): AsyncIterable
 					content: d.toolMessageContent,
 					toolCallId: d.entry.toolCallId,
 				});
-				if (conversation) {
-					await conversation.append({
-						role: 'tool',
-						toolCallId: d.entry.toolCallId,
-						content: d.toolMessageContent,
-					});
-				}
 			}
 
 			if (errorMode === 'abort') {
 				const failed = dispatched.find((d) => d.originalError !== undefined);
 				if (failed) {
 					throw new ToolHandlerError(failed.entry.toolName, failed.entry.toolCallId, trace, failed.originalError);
+				}
+			}
+
+			if (conversation) {
+				for (const d of dispatched) {
+					await conversation.append({
+						role: 'tool',
+						toolCallId: d.entry.toolCallId,
+						content: d.toolMessageContent,
+					});
 				}
 			}
 		}
@@ -578,6 +711,12 @@ function normalizeInput(input: GenerateInput): {
 		return { messages: [...input] };
 	}
 	return { messages: [...input.messages], tools: input.tools, system: input.system };
+}
+
+function collectDeclaredToolNames(tools: ToolDef[] | undefined): Set<string> {
+	const names = new Set<string>();
+	if (tools) for (const t of tools) names.add(t.name);
+	return names;
 }
 
 function errorInfo(err: unknown): { name: string; message: string } {
