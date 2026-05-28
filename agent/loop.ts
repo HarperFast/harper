@@ -58,6 +58,17 @@ async function doRun(opts: RunAgentOpts): Promise<void> {
 		// result of the operator decision.
 		await consumeResolvedApprovals(opts.sessionId, toolMap, ctx);
 
+		// If a turn produced multiple gated tool calls and the operator has only resolved some of
+		// them, the remaining approvals are still pending — meaning the assistant's tool_calls do
+		// not yet all have tool responses. Re-entering the generate loop now would send an
+		// incomplete tool-response set and the provider would 400. Stay paused until every gated
+		// call for this turn is resolved (each `approve_agent_action` re-runs this path).
+		const afterConsume = await getSession(opts.sessionId);
+		if (afterConsume?.pendingApprovals.some((a) => !a.resolved)) {
+			await setStatus(opts.sessionId, 'awaiting_approval');
+			return;
+		}
+
 		for (let turn = 0; turn < opts.maxTurns; turn++) {
 			if (opts.signal?.aborted) return; // status was already set to `aborted` by cancelRun
 			const session = await getSession(opts.sessionId);

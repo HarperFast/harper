@@ -392,6 +392,53 @@ describe('agent/loop runAgent', () => {
 		assert.match(toolMessages[0].content, /denied_by_operator/);
 	});
 
+	it('stays paused until ALL gated calls in a turn are resolved (no partial-approval 400)', async () => {
+		const created = await session.createSession({ user: 'admin' });
+		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
+		let executed = 0;
+		const dropTool = {
+			def: { name: 'drop', description: 'drop', parameters: { type: 'object' } },
+			destructive: true,
+			handler: async () => {
+				executed++;
+				return { dropped: true };
+			},
+		};
+		const models = stubModels([
+			{
+				content: '',
+				finishReason: 'tool_calls',
+				toolCalls: [
+					{ id: 'c1', name: 'drop', arguments: { t: 'A' } },
+					{ id: 'c2', name: 'drop', arguments: { t: 'B' } },
+				],
+			},
+			{ content: 'done', finishReason: 'stop' },
+		]);
+		const run = { sessionId: created.session_id, models, tools: [dropTool], scopes, maxTurns: 5, autoApprove: false };
+
+		await runAgent(run);
+		let s = await session.getSession(created.session_id);
+		assert.equal(s.status, 'awaiting_approval');
+		assert.equal(s.pendingApprovals.length, 2);
+
+		// Approve only the first. The loop must NOT advance to generate() with one tool response missing.
+		await session.resolveApproval(created.session_id, s.pendingApprovals[0].id, true);
+		await runAgent(run);
+		s = await session.getSession(created.session_id);
+		assert.equal(executed, 1, 'first approved call executed');
+		assert.equal(s.status, 'awaiting_approval', 'still paused on the second pending approval');
+
+		// Approve the second; now the loop can complete.
+		await session.resolveApproval(created.session_id, s.pendingApprovals[1].id, true);
+		await runAgent(run);
+		s = await session.getSession(created.session_id);
+		assert.equal(executed, 2);
+		assert.equal(s.status, 'completed');
+		const toolMsgs = s.messages.filter((m) => m.role === 'tool');
+		assert.deepEqual(toolMsgs.map((m) => m.toolCallId).sort(), ['c1', 'c2']);
+	});
+
 	it('preserves aborted status when signal aborts mid-generate', async () => {
 		const created = await session.createSession({ user: 'admin' });
 		await session.appendMessage(created.session_id, { role: 'user', content: 'go', createdAt: Date.now() });
