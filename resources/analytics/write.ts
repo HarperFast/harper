@@ -525,6 +525,7 @@ function storeRocksDBStatsMetrics(
 	period: number | undefined
 ) {
 	for (const [db, tables] of Object.entries(databases)) {
+		if (!tables) continue; // no tables or not loaded/initialized yet
 		const tableEntries = Object.entries(tables);
 		const [, firstTable] = tableEntries[0] ?? [];
 		if (!(firstTable?.primaryStore instanceof RocksDatabase)) continue;
@@ -572,6 +573,7 @@ function pruneRocksDBStatsCache(databases: Databases, systemDatabase: Tables | u
 	const activeDbs = new Set<string>(Object.keys(databases));
 	const activeTables = new Set<string>();
 	for (const [db, tables] of Object.entries(databases)) {
+		if (!tables) continue; // no tables or not loaded/initialized yet
 		for (const tableName of Object.keys(tables)) activeTables.add(`${db}.${tableName}`);
 	}
 	if (systemDatabase) {
