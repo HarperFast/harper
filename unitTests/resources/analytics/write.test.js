@@ -1,6 +1,13 @@
 const chai = require('chai');
 const expect = chai.expect;
-const { diffResourceUsage, calculateCPUUtilization, getDirectorySizeAsync } = require('#src/resources/analytics/write');
+const assert = require('node:assert/strict');
+const {
+	diffResourceUsage,
+	calculateCPUUtilization,
+	getDirectorySizeAsync,
+	recordAction,
+	setAnalyticsEnabled,
+} = require('#src/resources/analytics/write');
 const { writeFile, mkdtemp, rm, mkdir } = require('node:fs/promises');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
@@ -113,5 +120,18 @@ describe('calculateCPUUtilization', () => {
 		const cpuUtilization = calculateCPUUtilization(ru, 60000);
 
 		expect(cpuUtilization).to.equal(0.5);
+	});
+});
+
+describe('recordAction does not throw on invalid value types', () => {
+	before(() => setAnalyticsEnabled(true));
+	after(() => setAnalyticsEnabled(false));
+
+	it('no-ops on an object value instead of throwing', () => {
+		assert.doesNotThrow(() => recordAction({}, 'test-invalid-object'));
+	});
+
+	it('no-ops on an undefined value instead of throwing', () => {
+		assert.doesNotThrow(() => recordAction(undefined, 'test-invalid-undefined'));
 	});
 });

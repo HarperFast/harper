@@ -40,6 +40,7 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+let warnedInvalidMetricValue = false;
 
 // Check read-only mode lazily to avoid circular dependency at module load time
 function checkAnalyticsEnabled(): boolean {
@@ -115,6 +116,15 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
 	if (!checkAnalyticsEnabled()) return;
+	const valueType = typeof value;
+	if (valueType !== 'number' && valueType !== 'boolean' && valueType !== 'function') {
+		// metrics are best-effort; never throw on a value we can't aggregate
+		if (!warnedInvalidMetricValue) {
+			warnedInvalidMetricValue = true;
+			log.warn?.(`Ignoring analytics value of type ${valueType} for metric ${metric}`);
+		}
+		return;
+	}
 	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
