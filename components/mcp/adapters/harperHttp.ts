@@ -19,8 +19,8 @@ interface HarperHttpRequest {
 	body?: AsyncIterable<Buffer | string>;
 	/**
 	 * Full user object as Harper's auth pipeline attaches it (includes role +
-	 * permission tree). The transport reads `username` for session binding
-	 * and forwards the full object as `userObject` for tool RBAC.
+	 * permission tree). Transport reads `username` for session binding and
+	 * forwards the full object as `userObject` for resource/tool RBAC.
 	 */
 	user?: { username?: string; role?: unknown };
 	isWebSocket?: boolean;

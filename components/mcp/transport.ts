@@ -32,6 +32,7 @@ import {
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from './lifecycle.ts';
 import { deleteSession, loadSession, touchSession, type McpSessionRecord } from './session.ts';
+import { listResources, listResourceTemplates, readResource } from './resources.ts';
 import { getTool, listTools, type AuthedUser, type ToolResult } from './toolRegistry.ts';
 
 export type McpProfile = 'operations' | 'application';
@@ -50,11 +51,10 @@ export interface NormRequest {
 	/** Authenticated username from upstream auth pipeline. Used for session binding. */
 	user: string;
 	/**
-	 * Full authenticated user object from upstream auth — includes role +
-	 * permission tree. Required for tool RBAC filtering (#615) and
-	 * subsequent profiles (#617/#618). Optional in the transport's shape so
-	 * adapters can populate or omit; tools that gate on role will return no
-	 * matches when the object is absent.
+	 * permission tree. Required for tools and resources RBAC enforcement.
+	 * Adapters populate from `request.hdb_user` (Fastify) / `request.user`
+	 * (Harper-HTTP). Tools/resources that gate on role return no matches
+	 * when the object is absent.
 	 */
 	userObject?: AuthedUser;
 	profile: McpProfile;
@@ -175,12 +175,14 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 		return { status: 202, headers: {} };
 	}
 
-	// Request with id + method (and not 'initialize'): route to the
-	// known method handlers below. Tools came online in #615; resources
-	// land in #616. Anything we don't handle yet returns a
+	// Request with id + method (and not 'initialize'): route to the known
+	// method handlers below. Anything we don't handle yet returns a
 	// spec-conformant Method-not-found error.
 	if (method === 'tools/list') return dispatchToolsList(request, session, message, messageId);
 	if (method === 'tools/call') return dispatchToolsCall(request, session, message, messageId);
+	if (method === 'resources/list') return dispatchResourcesList(request, message, messageId);
+	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, messageId);
+	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
 	return jsonResponse(
 		200,
 		buildError(messageId, ERROR_CODES.METHOD_NOT_FOUND, `Method not found: ${method ?? '<missing>'}`)
@@ -214,11 +216,16 @@ function handleGet(): NormResponse {
 }
 
 const DEFAULT_MAX_TOOLS = 200;
+const DEFAULT_RESOURCE_PAGE_LIMIT = 200;
 
 function profileMaxTools(profile: McpProfile): number {
 	const key = profile === 'operations' ? CONFIG_PARAMS.MCP_OPERATIONS_MAXTOOLS : CONFIG_PARAMS.MCP_APPLICATION_MAXTOOLS;
 	const value = env.get(key);
 	return typeof value === 'number' && value > 0 ? value : DEFAULT_MAX_TOOLS;
+}
+
+function effectiveUser(request: NormRequest): AuthedUser {
+	return request.userObject ?? { username: request.user };
 }
 
 function dispatchToolsList(
@@ -230,9 +237,8 @@ function dispatchToolsList(
 	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
 	const cursor = typeof params?.cursor === 'string' ? params.cursor : undefined;
 	const limit = profileMaxTools(request.profile);
-	const userObject: AuthedUser = request.userObject ?? { username: request.user };
 	const { tools, nextCursor } = listTools({
-		user: userObject,
+		user: effectiveUser(request),
 		profile: request.profile,
 		sessionId: session.id,
 		cursor,
@@ -261,11 +267,14 @@ async function dispatchToolsCall(
 	}
 
 	const args = params?.arguments ?? {};
-	const userObject: AuthedUser = request.userObject ?? { username: request.user };
 
 	let toolResult: ToolResult;
 	try {
-		toolResult = await tool.handler(args, { user: userObject, profile: request.profile, sessionId: session.id });
+		toolResult = await tool.handler(args, {
+			user: effectiveUser(request),
+			profile: request.profile,
+			sessionId: session.id,
+		});
 	} catch (err) {
 		// Per MCP §server/tools → Error Handling: tool-execution errors come
 		// back as a successful JSON-RPC result with isError:true so the LLM
@@ -284,6 +293,52 @@ async function dispatchToolsCall(
 		};
 	}
 	return jsonResponse(200, buildSuccess(messageId, toolResult));
+}
+
+function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
+	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
+	const cursor = typeof params?.cursor === 'string' ? params.cursor : undefined;
+	const result = listResources({
+		user: effectiveUser(request),
+		profile: request.profile,
+		cursor,
+		limit: DEFAULT_RESOURCE_PAGE_LIMIT,
+	});
+	const body: { resources: unknown[]; nextCursor?: string } = { resources: result.resources };
+	if (result.nextCursor) body.nextCursor = result.nextCursor;
+	return jsonResponse(200, buildSuccess(messageId, body));
+}
+
+function dispatchResourceTemplatesList(request: NormRequest, messageId: JsonRpcId): NormResponse {
+	const templates = listResourceTemplates(request.profile);
+	return jsonResponse(200, buildSuccess(messageId, { resourceTemplates: templates }));
+}
+
+async function dispatchResourcesRead(
+	request: NormRequest,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params = 'params' in message ? (message.params as { uri?: unknown } | undefined) : undefined;
+	const uri = typeof params?.uri === 'string' ? params.uri : undefined;
+	if (!uri) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/read requires params.uri'));
+	}
+	const outcome = await readResource({ uri, user: effectiveUser(request), profile: request.profile });
+	if (outcome.ok !== true) {
+		const fail = outcome as { ok: false; reason: string };
+		// Per MCP §server/resources, "resource not found" and access-control
+		// failures are protocol errors, not isError tool results — resources/*
+		// returns JSON-RPC errors rather than success-with-isError. We pick
+		// -32602 (Invalid params) for bad inputs and -32601 (Method not found)
+		// for unknown resources, matching the spec's mapping for analogous
+		// situations and the precedent already in place for tools/call.
+		const code = /not found|no resource matches/.test(fail.reason)
+			? ERROR_CODES.METHOD_NOT_FOUND
+			: ERROR_CODES.INVALID_PARAMS;
+		return jsonResponse(200, buildError(messageId, code, fail.reason));
+	}
+	return jsonResponse(200, buildSuccess(messageId, { contents: outcome.contents }));
 }
 
 async function handleDelete(request: NormRequest): Promise<NormResponse> {
