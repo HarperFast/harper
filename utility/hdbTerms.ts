@@ -578,6 +578,8 @@ export const CONFIG_PARAMS = {
 	REPLICATION_BLOBCONCURRENCY: 'replication_blobConcurrency',
 	REPLICATION_MAXPAYLOAD: 'replication_maxPayload',
 	REPLICATION_RECORDCONCURRENCY: 'replication_recordConcurrency',
+	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
+	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
