@@ -318,7 +318,7 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 			const [firstTable] = Object.values(tables);
 			const dbAuditSize = firstTable?.getAuditSize();
 			if (!dbAuditSize) {
-				return;
+				continue;
 			}
 			let metric;
 			if (firstTable.primaryStore instanceof RocksDatabase) {
@@ -363,7 +363,7 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 			const [firstTable] = Object.values(tables);
 			const storageStats = firstTable?.getStorageStats();
 			if (!storageStats) {
-				return;
+				continue;
 			}
 			const metric = {
 				metric: METRIC.STORAGE_VOLUME,
