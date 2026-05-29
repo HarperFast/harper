@@ -3,6 +3,7 @@ global.contentTypes = exports.contentTypes = null;
 global.createBlob = exports.createBlob = undefined;
 global.databases = exports.databases = {};
 global.logger = exports.logger = {};
+global.models = exports.models = undefined;
 global.operation = exports.operation = undefined;
 global.Resource = exports.Resource = undefined;
 global.server = exports.server = {};

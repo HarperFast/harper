@@ -6,6 +6,8 @@ import type { Condition, Conditions } from '../ResourceInterface.ts';
 import { METRIC, type BuiltInMetricName } from './metadata.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { get as envGet } from '../../utility/environment/environmentManager.ts';
+import { validateGetAnalytics } from '../../validation/analyticsValidator.ts';
+import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
 
 // default to one week time window for finding custom metrics
 const defaultCustomMetricWindow = 1000 * 60 * 60 * 24 * 7;
@@ -34,8 +36,24 @@ interface GetAnalyticsRequest {
 
 type GetAnalyticsResponse = Metric[];
 
-export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
+/**
+ * Validates the `get_analytics` request and returns the analytics results.
+ * @param req
+ * @returns
+ */
+export async function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
 	log.trace?.('get_analytics request:', req);
+	const validationError = validateGetAnalytics(req);
+	if (validationError) {
+		throw handleHDBError(
+			validationError,
+			validationError.message,
+			hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 	return get(req.metric, {
 		getAttributes: req.get_attributes,
 		startTime: req.start_time,

@@ -1,12 +1,12 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'node:events';
-import { databaseEventsEmitter } from '../resources/databases.ts';
+import { databaseEventsEmitter, table } from '../resources/databases.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { resources, type Resources } from '../resources/Resources.ts';
-import { Models } from '../resources/models/Models.ts';
+import { Models, models as modelsSingleton } from '../resources/models/Models.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
@@ -39,6 +39,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#directory: string;
 	#appName: string;
 	#pluginName: string;
+	#origin: string;
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
 	#logger: Logger;
@@ -57,12 +58,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		pluginName: string,
 		directory: string,
 		configFilePath: string,
-		applicationScope: ApplicationScope
+		applicationScope: ApplicationScope,
+		origin: string = appName
 	) {
 		super();
 
 		this.#appName = appName;
 		this.#pluginName = pluginName;
+		this.#origin = typeof origin === 'string' ? origin : appName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
@@ -70,7 +73,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
 		this.resources = applicationScope?.resources ?? resources;
-		this.models = new Models();
+		this.models = modelsSingleton;
 
 		const baseServer = applicationScope?.server ?? server;
 		const scopeRef = this;
@@ -126,6 +129,11 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	get configFilePath(): string {
 		return this.#configFilePath;
+	}
+
+	ensureTable<TableResourceType = unknown>(options: any): TableResourceType {
+		options.origin = this.#origin;
+		return table<TableResourceType>(options);
 	}
 
 	#handleOptionsWatcherReady(): void {

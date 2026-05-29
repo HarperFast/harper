@@ -82,6 +82,7 @@ export const NON_REPLICATING_SYSTEM_TABLES = [
 	'hdb_session_will',
 	'hdb_job',
 	'hdb_info',
+	'mcp_session',
 ];
 
 export type Table = ReturnType<typeof makeTable> & {

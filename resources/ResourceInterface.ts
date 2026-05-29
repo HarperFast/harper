@@ -138,24 +138,27 @@ export interface SourceContext<TRequestContext = Context, Record extends object 
 
 export type Operator = 'and' | 'or';
 
-export type Comparator =
-	| 'between'
-	| 'contains'
-	| 'ends_with'
-	| 'eq'
-	| 'equals'
-	| 'gt'
-	| 'ge'
-	| 'lt'
-	| 'le'
-	| 'greater_than'
-	| 'greater_than_equal'
-	| 'in'
-	| 'less_than'
-	| 'less_than_equal'
-	| 'ne'
-	| 'not_equal'
-	| 'starts_with';
+export const COMPARATORS = [
+	'between',
+	'contains',
+	'ends_with',
+	'eq',
+	'equals',
+	'gt',
+	'ge',
+	'lt',
+	'le',
+	'greater_than',
+	'greater_than_equal',
+	'in',
+	'less_than',
+	'less_than_equal',
+	'ne',
+	'not_equal',
+	'starts_with',
+] as const;
+
+export type Comparator = (typeof COMPARATORS)[number];
 
 export type DirectCondition<Record extends object = any> = TypedDirectCondition<Record, keyof Record>;
 

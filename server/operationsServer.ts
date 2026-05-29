@@ -196,7 +196,10 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 			profile: 'operations',
 			host: app,
 			config: fullConfig,
-			routeOptions: { preValidation: [authHandler] },
+			// Use authAndEnsureUserOnRequest (sets `req.hdb_user`) instead of
+			// authHandler (which mutates `req.body.hdb_user` — that would
+			// contaminate the JSON-RPC envelope the MCP handler reads).
+			routeOptions: { preValidation: [authAndEnsureUserOnRequest] },
 		});
 	}
 

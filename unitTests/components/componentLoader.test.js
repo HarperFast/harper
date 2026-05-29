@@ -156,6 +156,55 @@ describe('ComponentLoader Status Integration', function () {
 			assert.match(loadedCalls[0].args[1], /loaded successfully/);
 		});
 
+		it('should expose ensureTable on handleApplication scope with component origin', async function () {
+			const componentDirName = 'scope-ensure-table-component';
+			const componentDir = path.join(tempDir, componentDirName);
+			const pluginName = 'scopeEnsureTablePlugin';
+			const origin = 'test-origin';
+			let capturedScope;
+
+			mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${pluginName}: {}`);
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+				handleApplication(scope) {
+					capturedScope = scope;
+				},
+			};
+
+			try {
+				await componentLoader.loadComponent(
+					componentDir,
+					{
+						isWorker: true,
+						set: sinon.stub(),
+					},
+					origin
+				);
+			} finally {
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			}
+
+			assert.equal(typeof capturedScope?.ensureTable, 'function', 'scope.ensureTable should be exposed');
+
+			let assignedOrigin;
+			const options = new Proxy(
+				{},
+				{
+					set(target, property, value) {
+						if (property === 'origin') {
+							assignedOrigin = value;
+							throw new Error('stop before table call');
+						}
+						return Reflect.set(target, property, value);
+					},
+				}
+			);
+
+			assert.throws(() => capturedScope.ensureTable(options), /stop before table call/);
+			assert.equal(assignedOrigin, origin, 'scope.ensureTable should preserve the component origin');
+		});
+
 		// TODO: Does the plugin API have an equivalent mechanism?
 		it.skip('should mark component as failed when it loads no functionality', async function () {
 			// Create a component directory without config
