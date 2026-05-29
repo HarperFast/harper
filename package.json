@@ -63,6 +63,7 @@
 		"test:unit": "mocha",
 		"test:unit:main": "mocha 'unitTests/**/*test.*js' --exclude 'unitTests/apiTests/**/*' --exclude 'unitTests/dataLayer/harperBridge/**/*' --exclude 'unitTests/resources/**/*'",
 		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
+<<<<<<< HEAD
 		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests",
 		"test:unit:components": "mocha 'unitTests/components/**/*.js'",
 		"test:unit:resources": "mocha 'unitTests/resources/**/*.js'",
@@ -75,6 +76,20 @@
 		"test:unit:server": "mocha 'unitTests/server/**/*.js'",
 		"test:unit:config": "mocha 'unitTests/config/**/*.js'",
 		"test:unit:typestrip": "env NODE_OPTIONS='--conditions=typestrip' npm run test:unit",
+=======
+		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
+		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
+		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\"",
+		"test:unit:bin": "mocha \"unitTests/bin/**/*.js\"",
+		"test:unit:apitests": "node ./dist/bin/harper.js stop && mocha \"unitTests/apiTests/**/*-test.mjs\"",
+		"test:unit:logging": "mocha \"unitTests/utility/logging/*.js\"",
+		"test:unit:security": "mocha \"unitTests/security/**/*.js\"",
+		"test:unit:dataLayer": "mocha \"unitTests/dataLayer/**/*.js\" --exclude \"unitTests/dataLayer/harperBridge/**/*\"",
+		"test:unit:utility": "mocha \"unitTests/utility/**/*.js\" --exclude \"unitTests/utility/logging/**/*\"",
+		"test:unit:server": "mocha \"unitTests/server/**/*.js\"",
+		"test:unit:config": "mocha \"unitTests/config/**/*.js\"",
+		"test:unit:typestrip": "env NODE_OPTIONS=\"--conditions=typestrip\" npm run test:unit",
+>>>>>>> e12e7d226 (test: run unitTests/bin under lmdb so the migration regression test executes)
 		"test:unit:typestrip:all": "npm run test:unit:typestrip unitTests"
 	},
 	"imports": {
