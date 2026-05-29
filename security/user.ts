@@ -92,7 +92,12 @@ import * as validate from 'validate.js';
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'util';
 import * as env from '../utility/environment/environmentManager.ts';
-import systemSchema from '../json/systemSchema.json';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+const systemSchema: Record<string, any> = JSON.parse(
+	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
+);
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
 import { UserEventMsg } from '../server/threads/itc.ts';
