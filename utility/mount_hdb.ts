@@ -6,10 +6,14 @@ import * as path from 'path';
 import * as terms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import bridge from '../dataLayer/harperBridge/harperBridge.ts';
-import systemSchema from '../json/systemSchema.json';
 import CreateTableObject from '../dataLayer/CreateTableObject.ts';
 import * as initPaths from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+const systemSchema: Record<string, any> = JSON.parse(
+	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
+);
 
 export default async function mountHdb(hdbPath: string) {
 	hdbLogger.trace('Mounting Harper');

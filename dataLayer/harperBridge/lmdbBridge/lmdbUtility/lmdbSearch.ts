@@ -3,7 +3,12 @@ import * as environmentUtility from '../../../../utility/lmdb/environmentUtility
 import * as commonUtils from '../../../../utility/common_utils.ts';
 import * as lmdbTerms from '../../../../utility/lmdb/terms.ts';
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
-import * as systemSchema from '../../../../json/systemSchema.json';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from '../../../../utility/packageUtils.js';
+const systemSchema: Record<string, any> = JSON.parse(
+	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
+);
 import { LMDB_ERRORS_ENUM as LMDB_ERRORS } from '../../../../utility/errors/commonErrors.ts';
 import { getSchemaPath } from './initializePaths.ts';
 
