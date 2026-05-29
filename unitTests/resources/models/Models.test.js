@@ -8,7 +8,12 @@ require('#src/resources/databases');
 const { contextStorage } = require('#src/resources/transaction');
 const { setEmbedding, setGenerative, clearRegistry } = require('#src/resources/models/backendRegistry');
 const { TestBackend } = require('#src/resources/models/TestBackend');
-const { Models, ModelCapabilityError, ModelPendingNotSupportedError, models: modelsSingleton } = require('#src/resources/models/Models');
+const {
+	Models,
+	ModelCapabilityError,
+	ModelPendingNotSupportedError,
+	models: modelsSingleton,
+} = require('#src/resources/models/Models');
 
 function makeMockWriter() {
 	const records = [];
