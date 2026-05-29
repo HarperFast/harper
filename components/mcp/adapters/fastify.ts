@@ -18,9 +18,9 @@ interface FastifyLikeRequest {
 	headers: Record<string, string | string[] | undefined>;
 	body: unknown;
 	/**
-	 * authAndEnsureUserOnRequest sets the full user (incl. role + permission
+	 * `authAndEnsureUserOnRequest` sets the full user (incl. role + permission
 	 * tree) on `req.hdb_user`. Used for session binding (`username`) and
-	 * forwarded as the `userObject` to the transport for tool RBAC.
+	 * forwarded as the transport's `userObject` for resource/tool RBAC.
 	 */
 	hdb_user?: { username?: string; role?: unknown } | null;
 }

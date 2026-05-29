@@ -6,6 +6,7 @@
  */
 
 import { Encoder } from 'msgpackr';
+import { createStructon } from 'structon';
 import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
@@ -22,6 +23,8 @@ import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
+
+const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 export type Entry = {
 	key: any;
 	value: any;
@@ -74,7 +77,7 @@ let timestampNextEncoding = 0,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
-export class RecordEncoder extends Encoder {
+export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;

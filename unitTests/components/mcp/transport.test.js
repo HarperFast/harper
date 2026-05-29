@@ -4,6 +4,28 @@ const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const { _setSessionTableForTest, createSession, loadSession } = require('#src/components/mcp/session');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const {
+	_setResourcesForTest,
+	_setOpenApiGeneratorForTest,
+	_setHttpUrlPrefixForTest,
+} = require('#src/components/mcp/resources');
+
+function makeFakeResources(entries) {
+	const map = new Map();
+	for (const [path, ResourceClass] of entries) {
+		map.set(path, { Resource: ResourceClass, path, exportTypes: {}, hasSubPaths: false, relativeURL: '' });
+	}
+	map.getMatch = (url) => {
+		let best;
+		for (const [p, entry] of map) {
+			if (url === p || url.startsWith(p + '/')) {
+				if (!best || p.length > best.path.length) best = entry;
+			}
+		}
+		return best;
+	};
+	return map;
+}
 
 function makeFakeTable() {
 	const store = new Map();
@@ -53,11 +75,17 @@ describe('mcp/transport', () => {
 		transport_mod.__set__('env', envStub);
 		_setSessionTableForTest(makeFakeTable());
 		_resetRegistryForTest();
+		_setResourcesForTest(makeFakeResources([]));
+		_setOpenApiGeneratorForTest(() => ({ openapi: '3.0.3', info: { title: 'fake' }, paths: {} }));
+		_setHttpUrlPrefixForTest('');
 	});
 
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
 		_resetRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setOpenApiGeneratorForTest(undefined);
+		_setHttpUrlPrefixForTest(undefined);
 	});
 
 	describe('POST initialize', () => {
@@ -169,13 +197,13 @@ describe('mcp/transport', () => {
 		it('accepts a matching MCP-Protocol-Version and returns Method-not-found for unknown methods', async () => {
 			const res = await handleMcpRequest(
 				makeReq({
-					body: jsonRpc(2, 'resources/list'),
+					body: jsonRpc(2, 'definitely/not/a/method'),
 					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
 				})
 			);
 			assert.equal(res.status, 200);
 			assert.equal(res.jsonBody.error.code, -32601);
-			assert.match(res.jsonBody.error.message, /resources\/list/);
+			assert.match(res.jsonBody.error.message, /definitely\/not\/a\/method/);
 		});
 
 		it('returns 202 on notifications/initialized and flips session.initialized', async () => {
@@ -486,6 +514,108 @@ describe('mcp/transport', () => {
 				assert.equal(received.ctx.sessionId, sessionId);
 				assert.equal(received.ctx.user.username, 'alice');
 				assert.equal(received.ctx.user.role.permission.super_user, true);
+			});
+		});
+
+		describe('resources/list', () => {
+			it('returns synthetic harper:// URIs as a baseline', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(30, 'resources/list'),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				const uris = res.jsonBody.result.resources.map((r) => r.uri);
+				assert.ok(uris.includes('harper://about'));
+				assert.ok(uris.includes('harper://openapi')); // application profile
+			});
+
+			it('paginates via opaque cursor', async () => {
+				// Stuff in enough table resources to need paging.
+				const entries = [];
+				for (let i = 0; i < 5; i++) {
+					entries.push([`Table${i}`, { databaseName: 'data', tableName: `t${i}`, attributes: [{ name: 'id' }] }]);
+				}
+				_setResourcesForTest(makeFakeResources(entries));
+				const superUser = { username: 'alice', role: { permission: { super_user: true } } };
+				// Page 1
+				const page1 = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(31, 'resources/list'),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						userObject: superUser,
+					})
+				);
+				assert.equal(page1.status, 200);
+				// Default page size is 200, so everything fits in one page; just verify shape.
+				assert.ok(Array.isArray(page1.jsonBody.result.resources));
+				assert.equal(page1.jsonBody.result.nextCursor, undefined);
+			});
+		});
+
+		describe('resources/templates/list', () => {
+			it('returns the application URI templates', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(32, 'resources/templates/list'),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				const templates = res.jsonBody.result.resourceTemplates;
+				assert.ok(Array.isArray(templates));
+				assert.ok(templates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
+			});
+		});
+
+		describe('resources/read', () => {
+			it('returns the harper://about body', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(33, 'resources/read', { uri: 'harper://about' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				const body = JSON.parse(res.jsonBody.result.contents[0].text);
+				assert.equal(body.serverInfo.name, 'harper-mcp');
+				assert.equal(body.profile, 'application');
+			});
+
+			it('returns -32602 when params.uri is missing', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(34, 'resources/read'),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('returns -32601 when the resource is not found', async () => {
+				const superUser = { username: 'alice', role: { permission: { super_user: true } } };
+				_setHttpUrlPrefixForTest('https://harper.example.com:9926');
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(35, 'resources/read', { uri: 'https://harper.example.com:9926/Ghost' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						userObject: superUser,
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32601);
+				assert.match(res.jsonBody.error.message, /no resource matches/);
+			});
+
+			it('returns -32602 for permission denied / invalid input', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(36, 'resources/read', { uri: 'harper://operations' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				// Application profile rejecting harper://operations → -32602.
+				assert.equal(res.jsonBody.error.code, -32602);
 			});
 		});
 	});
