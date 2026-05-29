@@ -376,7 +376,7 @@ export async function migrateOnStart() {
 	}
 }
 
-async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
+export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
 	console.log(`Migrating database ${sourceDatabase} to RocksDB at ${targetPath}`);
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
@@ -413,6 +413,11 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
 			dbiInit.compression = attribute.compression;
 			const sourceDbi = sourceRootStore.openDB(key, dbiInit);
+			// The primary dbi uses a RecordEncoder, whose decode resolves file-backed blob references
+			// against `rootStore`. Without it, decoding any record that holds a blob throws "No store
+			// specified, cannot load blob from storage", the error is swallowed (record decodes to null),
+			// and the record is silently dropped from the migration (HarperFast/harper#857).
+			if (isPrimary && sourceDbi.encoder) sourceDbi.encoder.rootStore = sourceRootStore;
 
 			let targetDbi;
 			if (!isPrimary) {
