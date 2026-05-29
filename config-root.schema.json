@@ -286,10 +286,12 @@
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
 				"pingInterval": {
 					"type": "number",
+					"minimum": 1,
 					"description": "Interval (ms) between replication keep-alive pings. Default: 30000"
 				},
 				"pingTimeout": {
 					"type": "number",
+					"minimum": 1,
 					"description": "Time (ms) without socket activity before a replication connection is considered dead and terminated. Default: 2x pingInterval"
 				},
 				"failOver": {
