@@ -5,7 +5,12 @@ import DropAttributeObject from '../../../DropAttributeObject.ts';
 import * as hdbTerms from '../../../../utility/hdbTerms.ts';
 import * as commonUtils from '../../../../utility/common_utils.ts';
 import * as environmentUtility from '../../../../utility/lmdb/environmentUtility.ts';
-import * as systemSchema from '../../../../json/systemSchema.json';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from '../../../../utility/packageUtils.js';
+const systemSchema: Record<string, any> = JSON.parse(
+	readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf-8')
+);
 import searchByValue from './lmdbSearchByValue.ts';
 import deleteRecords from './lmdbDeleteRecords.ts';
 import { getSchemaPath } from '../lmdbUtility/initializePaths.ts';
