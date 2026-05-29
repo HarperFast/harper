@@ -334,7 +334,7 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 		try {
 			const [firstTable] = Object.values(tables);
 			const dbAuditSize = firstTable?.getAuditSize();
-			if (!dbAuditSize) {
+			if (dbAuditSize == null) {
 				continue;
 			}
 			let metric;
