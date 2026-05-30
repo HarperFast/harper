@@ -30,6 +30,8 @@ export interface RestClientOptions {
 	table: string;
 	maxSockets: number;
 	auth?: { username: string; password: string };
+	/** Per-request timeout; a hung socket otherwise blocks a closed-loop worker forever. */
+	requestTimeoutMs?: number;
 }
 
 export interface RestExecutor extends OpExecutor {
@@ -38,6 +40,7 @@ export interface RestExecutor extends OpExecutor {
 
 export function createRestExecutor(options: RestClientOptions): RestExecutor {
 	const { table } = options;
+	const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
 	const authHeader = options.auth
 		? 'Basic ' + Buffer.from(`${options.auth.username}:${options.auth.password}`).toString('base64')
 		: undefined;
@@ -83,6 +86,9 @@ export function createRestExecutor(options: RestClientOptions): RestExecutor {
 				}
 			);
 			req.on('error', reject);
+			req.setTimeout(requestTimeoutMs, () =>
+				req.destroy(new Error(`${method} ${path} timed out after ${requestTimeoutMs}ms`))
+			);
 			if (body) req.write(body);
 			req.end();
 		});

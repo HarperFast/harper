@@ -26,13 +26,13 @@ async function waitForRoute(url: string, deadlineMs: number): Promise<void> {
 	const deadline = Date.now() + deadlineMs;
 	while (Date.now() < deadline) {
 		try {
-			const res = await fetch(url);
+			const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 			if (res.status < 500) {
 				await res.body?.cancel();
 				return;
 			}
 		} catch {
-			// not accepting connections yet
+			// not accepting connections yet (or this probe timed out)
 		}
 		await delay(250);
 	}
@@ -56,8 +56,9 @@ async function main(): Promise<void> {
 		analytics: { aggregatePeriod: -1 }, // analytics aggregation is noisy under load
 		logging: { level: 'warn' },
 	};
-	const env: Record<string, string> = {};
-	if (options.engine && options.engine !== 'rocksdb') env.HARPER_STORAGE_ENGINE = options.engine;
+	// Set the engine explicitly (not only when non-default) so the run is pinned to the
+	// requested engine even if Harper's default changes, matching the reported config.
+	const env: Record<string, string> = { HARPER_STORAGE_ENGINE: options.engine };
 	let profileDir: string | undefined;
 	if (options.profile) {
 		profileDir = join(options.out, 'profile');

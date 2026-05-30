@@ -290,6 +290,9 @@ export class KeyState {
 	}
 
 	existingKey(): string {
+		if (this.readableCount === 0) {
+			throw new Error('no readable keys — the load phase inserted/acknowledged 0 records');
+		}
 		return formatKey(this.chooser.next(this.readableCount), this.width);
 	}
 
@@ -353,8 +356,14 @@ async function executeOp(type: OperationType, executor: OpExecutor, keys: KeySta
 			return executor.readModifyWrite(keys.existingKey(), keys.record());
 		case 'insert': {
 			const { index, key } = keys.nextInsert();
-			await executor.insert(key, keys.record());
-			keys.acknowledgeInsert(index); // only now is the key visible to readers
+			try {
+				await executor.insert(key, keys.record());
+			} finally {
+				// Always advance the frontier, even on failure — otherwise one failed insert
+				// permanently stalls readableCount and leaks pendingAcks. A failed key may then
+				// 404 on a later read (counted as an error), proportionate to the failure rate.
+				keys.acknowledgeInsert(index);
+			}
 			return;
 		}
 		case 'scan':
