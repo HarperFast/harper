@@ -970,12 +970,26 @@ export function decodeFromDatabase<T>(callback: () => T, rootStore: RootDatabase
 }
 
 /**
- * Delete blobs in an object, recursively searching for blobs
+ * Delete blobs in an object, recursively searching for blobs. When `retainedFileIds`
+ * is supplied, blobs whose fileId is in that set are skipped — used by the update path
+ * to avoid deleting a blob the new record still references.
+ *
+ * Background: `RecordEncoder` calls this with the *prior* row's value on every update.
+ * If a caller updates an unrelated attribute on a row that still carries a file-backed
+ * blob, the unfiltered delete unlinks the blob file ~`deletionDelay` ms later, even
+ * though the new row still references the same fileId. The retainedFileIds set
+ * prevents that data loss.
+ *
  * @param object
+ * @param retainedFileIds optional set of fileIds the caller wants to keep on disk
  */
-export function deleteBlobsInObject(object) {
-	findBlobsInObject(object, (object) => {
-		deleteBlob(object);
+export function deleteBlobsInObject(object: any, retainedFileIds?: Set<string>): void {
+	findBlobsInObject(object, (blob) => {
+		if (retainedFileIds?.size) {
+			const fileId = getFileId(blob);
+			if (fileId && retainedFileIds.has(fileId)) return;
+		}
+		deleteBlob(blob);
 	});
 }
 
