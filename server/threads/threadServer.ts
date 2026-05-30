@@ -458,7 +458,7 @@ if (!isMainThread && !workerData?.noServerStart) {
 		startServers();
 	})().catch((err) => {
 		harperLogger.fatal('Worker failed to start', err);
-		process.exit(1);
+		realExit(1);
 	});
 }
 
