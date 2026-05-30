@@ -1,0 +1,3 @@
+rest: true # expose all exported resources over the HTTP REST interface
+graphqlSchema:
+  files: '*.graphql' # define the usertable schema

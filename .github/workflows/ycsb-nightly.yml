@@ -1,0 +1,69 @@
+name: YCSB Nightly Load Test
+
+# Runs the YCSB-style CRUD load test against a single local Harper instance and
+# uploads the JSON results as an artifact for tracking throughput/latency over
+# time. Default-runner perf is modest, so treat absolute numbers as a trend
+# signal on a fixed runner, not a hardware-representative benchmark.
+
+on:
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Workload scale'
+        required: true
+        type: choice
+        default: 'standard'
+        options:
+          - 'quick'
+          - 'standard'
+          - 'heavy'
+      workloads:
+        description: 'Comma-separated workloads (e.g. C,B,A,F,D,E)'
+        required: false
+        type: string
+        default: 'C,B,A,F,D,E'
+
+permissions:
+  contents: read
+
+jobs:
+  ycsb:
+    name: YCSB single-node (Node.js v24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build || true # repo currently has type errors; ignore per integration-tests.yml
+
+      - name: Verify build output
+        run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
+
+      - name: Run YCSB load test
+        run: |
+          node benchmarks/ycsb/run-single-node.mts \
+            --scale="${{ github.event.inputs.scale || 'standard' }}" \
+            --workloads="${{ github.event.inputs.workloads || 'C,B,A,F,D,E' }}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ycsb-results
+          path: benchmarks/ycsb/results/*.json
+          retention-days: 90
+          if-no-files-found: warn
