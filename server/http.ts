@@ -986,8 +986,9 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 // PROXY protocol v1 max header length per spec: 108 bytes
 const PROXY_V1_MAX_HEADER = 108;
+const PROXY_V1_PREFIX = Buffer.from('PROXY ');
 
-function enableProxyProtocol(httpServer) {
+export function enableProxyProtocol(httpServer) {
 	// In Node.js v24+, the HTTP parser's data path goes through the C++ stream layer
 	// and does not call socket.emit('data') via JavaScript method dispatch.
 	// Overriding socket.emit or socket.push has no effect on the HTTP parser's data intake.
@@ -1003,42 +1004,54 @@ function enableProxyProtocol(httpServer) {
 			const dataListeners = socket.listeners('data') as ((chunk: Buffer) => void)[];
 			if (dataListeners.length === 0) return;
 			socket.removeAllListeners('data');
-
-			let proxyDone = false;
-			socket.on('data', (chunk: Buffer) => {
-				if (!proxyDone) {
-					proxyDone = true;
-					// Fast path: PROXY v1 always starts with "PROXY " (0x50 0x52 0x4f 0x58 0x59 0x20)
-					if (
-						chunk.length >= 6 &&
-						chunk[0] === 0x50 &&
-						chunk[1] === 0x52 &&
-						chunk[2] === 0x4f &&
-						chunk[3] === 0x58 &&
-						chunk[4] === 0x59 &&
-						chunk[5] === 0x20
-					) {
-						const header = chunk.toString('latin1', 0, Math.min(PROXY_V1_MAX_HEADER, chunk.length));
-						const eol = header.indexOf('\r\n');
-						if (eol !== -1) {
-							// "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
-							const parts = header.slice(0, eol).split(' ');
-							if (parts.length === 6) {
-								// Override the UDS socket's undefined remoteAddress/remotePort with the real client values.
-								Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
-								Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
-							}
-							// Forward only the bytes after the PROXY header to the HTTP parser.
-							const rest = chunk.subarray(eol + 2);
-							if (rest.length > 0) {
-								for (const listener of dataListeners) listener.call(socket, rest);
-							}
-							return;
-						}
-					}
-				}
-				// Not a PROXY header (or already handled) — forward unchanged.
+			const forward = (chunk: Buffer) => {
 				for (const listener of dataListeners) listener.call(socket, chunk);
+			};
+
+			let headerHandled = false;
+			// Accumulates a possibly-split PROXY header. Raw protocols (MQTT/replication) can't
+			// recover from a corrupted first packet, so we must not forward a partial header —
+			// the line can arrive across multiple data events.
+			let pending: Buffer | null = null;
+			socket.on('data', (chunk: Buffer) => {
+				if (headerHandled) return forward(chunk);
+				if (pending) chunk = Buffer.concat([pending, chunk]);
+
+				// Compare against "PROXY " for as many bytes as we have so far.
+				const cmpLen = Math.min(PROXY_V1_PREFIX.length, chunk.length);
+				if (chunk.compare(PROXY_V1_PREFIX, 0, cmpLen, 0, cmpLen) !== 0) {
+					// Not a PROXY v1 header — forward everything unchanged.
+					headerHandled = true;
+					pending = null;
+					return forward(chunk);
+				}
+
+				const header = chunk.toString('latin1', 0, Math.min(PROXY_V1_MAX_HEADER, chunk.length));
+				const eol = header.indexOf('\r\n');
+				if (eol === -1) {
+					// Header not complete yet. Keep buffering until the CRLF arrives, unless we've
+					// passed the spec max without one — then it isn't a valid PROXY header.
+					if (chunk.length < PROXY_V1_MAX_HEADER) {
+						pending = chunk;
+						return;
+					}
+					headerHandled = true;
+					pending = null;
+					return forward(chunk);
+				}
+
+				// Complete header: "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
+				headerHandled = true;
+				pending = null;
+				const parts = header.slice(0, eol).split(' ');
+				if (parts.length === 6) {
+					// Override the UDS socket's undefined remoteAddress/remotePort with the real client values.
+					Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
+					Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
+				}
+				// Forward only the bytes after the PROXY header to the protocol parser.
+				const rest = chunk.subarray(eol + 2);
+				if (rest.length > 0) forward(rest);
 			});
 		});
 	});
