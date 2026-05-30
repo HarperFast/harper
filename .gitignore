@@ -46,3 +46,6 @@ commits-to-pick.txt
 # npm run package Outputs
 harperfast-harper-*.tgz
 harper-*.tgz
+
+# YCSB benchmark results (generated)
+benchmarks/ycsb/results/
