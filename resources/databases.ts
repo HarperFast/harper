@@ -1403,6 +1403,24 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		}
 	} catch (error) {
 		logger.error('Error in indexing', error);
+		// Persist indexingFailed so the next restart re-triggers the rebuild from an
+		// explicitly failed state rather than silently looping. Without this,
+		// indexingPID (written before runIndexing was called) stays in the descriptor
+		// but indexingFailed is never set, leaving isIndexing stuck with no recovery
+		// signal. Mirrors the hadIndexingErrors path. harper#843
+		try {
+			const puts: Promise<unknown>[] = [];
+			for (const attribute of attributes) {
+				attribute.indexingFailed = true;
+				puts.push(Table.dbisDB.put(attribute.key, attribute));
+				attribute.dbi.isIndexing = true;
+				const activeDbi = Table.indices[attribute.name];
+				if (activeDbi) activeDbi.isIndexing = true;
+			}
+			await Promise.all(puts);
+		} catch (persistError) {
+			logger.warn('Failed to persist indexing failure state', persistError);
+		}
 	}
 }
 

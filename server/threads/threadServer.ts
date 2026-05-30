@@ -15,6 +15,7 @@ import * as terms from '../../utility/hdbTerms.ts';
 import { server } from '../Server.ts';
 import { createServer as createSecureSocketServer } from 'node:tls';
 import { restartNumber, getWorkerIndex } from './manageThreads.ts';
+import { realExit } from './workerProcessGuard.ts';
 import { isBun } from '../serverHelpers/Request.ts';
 import { createTLSSelector } from '../../security/keys.ts';
 import { startupLog } from '../../bin/run.ts';
@@ -168,7 +169,7 @@ function startServers() {
 					// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 					// close connections as possible, then let the event loop complete
 					closeServers().then(() => {
-						process.exit(0);
+						realExit(0);
 					});
 					// Clean up per-thread UDS socket and metadata files
 					httpComponent.cleanupUdsFiles();

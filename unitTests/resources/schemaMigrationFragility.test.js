@@ -242,6 +242,78 @@ describe('schema-migration fragility: stale index entry from concurrent write du
 	});
 });
 
+describe('schema-migration fragility: outer catch does not persist indexingFailed when clear() throws (F4)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const TABLE = 'F4OuterCatchPersistFailed';
+	const DB = 'test';
+	const N = 5;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) {
+			last = Tbl.put({ id: 'f4-' + i, tag: 'v-' + i });
+		}
+		await last;
+	});
+
+	it('outer catch should persist indexingFailed when clear() throws before the record scan', async () => {
+		resetDatabases();
+		const Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+
+		// Intercept clear() on the tag index dbi to simulate ERR_COLUMN_FAMILY_DROPPED.
+		// This throws before the record scan begins, hitting the outer catch in runIndexing.
+		const tagIndex = Tbl.indices?.tag;
+		if (tagIndex && typeof tagIndex.clear === 'function') {
+			tagIndex.clear = async function () {
+				throw Object.assign(new Error('simulated clear failure: column family dropped'), {
+					code: 'ERR_COLUMN_FAMILY_DROPPED',
+				});
+			};
+		}
+
+		// Wait for runIndexing to finish (the outer catch swallows the error).
+		if (Tbl.indexingOperation) await Tbl.indexingOperation.catch(() => {});
+
+		// Verify: simulate restart by resetting and re-opening.
+		// The outer catch should have persisted indexingFailed=true in the attribute descriptor.
+		// A clean re-open should detect this and re-trigger runIndexing.
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(
+			Tbl2.indexingOperation,
+			'F4 fingerprint: outer catch did not persist indexingFailed — ' +
+				'table() on "restart" did not re-trigger runIndexing, so isIndexing would be stuck forever.'
+		);
+		if (Tbl2.indexingOperation) await Tbl2.indexingOperation;
+
+		// After a clean retry, all rows should be indexed.
+		const rows = await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: 'v-0' }] }));
+		assert.equal(rows.length, 1, `Expected 1 row indexed after clean re-run, got ${rows.length}`);
+	});
+});
+
 describe('schema-migration fragility: stale `changed` reused after re-fetch under lock (F1)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 

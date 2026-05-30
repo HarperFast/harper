@@ -2,6 +2,7 @@ import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 
 import { dirname, extname, join } from 'node:path';
 import {
@@ -518,11 +519,24 @@ export function derivePackageIdentifier(packageIdentifier: string) {
  *
  * This method should only be called from the main thread
  *
+ * Bracketed with `deploy:start`/`deploy:end` lifecycle broadcasts so every
+ * Harper thread's file watchers can suppress restart-on-change events while
+ * the component directory is being rewritten — see harper#488 and
+ * `components/deployLifecycle.ts`. The broadcast is best-effort: if it fails
+ * (e.g. workers haven't started yet during initial install), the deploy still
+ * proceeds.
+ *
  * @param application The application to prepare.
  * @returns A promise that resolves when all preparation steps complete.
  */
-export function prepareApplication(application: Application) {
-	return extractApplication(application).then(() => installApplication(application));
+export async function prepareApplication(application: Application) {
+	await broadcastDeployStart(application.name);
+	try {
+		await extractApplication(application);
+		await installApplication(application);
+	} finally {
+		broadcastDeployEnd(application.name);
+	}
 }
 
 /**

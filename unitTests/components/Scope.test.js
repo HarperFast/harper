@@ -14,6 +14,7 @@ const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRe
 const { writeFile } = require('node:fs/promises');
 const { waitFor } = require('./waitFor.js');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
+const { deployLifecycle, _resetForTests: resetDeployLifecycle } = require('#src/components/deployLifecycle');
 
 describe('Scope', () => {
 	beforeEach(() => {
@@ -323,5 +324,170 @@ describe('Scope', () => {
 		assert.ok(handleEntrySpy.callCount > 0, 'Entry handler should be called');
 
 		scope.close();
+	});
+
+	describe('deploy lifecycle integration', () => {
+		// These cases ensure that when a deploy is in flight for the parent
+		// component, file changes from the deploy itself (extract + npm install)
+		// don't drive restart-request storms — see harper#488 and
+		// components/deployLifecycle.ts.
+
+		afterEach(() => {
+			resetDeployLifecycle();
+		});
+
+		it('suppresses requestRestart while a deploy is in flight for the same component', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+			scope.handleEntry();
+
+			// Sanity: outside a deploy, file change drives restart
+			await writeFile(this.testFilePath, '"baz";');
+			await waitFor(() => restartNeeded());
+			assert.equal(restartNeeded(), true);
+			resetRestartNeeded();
+
+			// Enter a deploy
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+
+			// File changes during the deploy must NOT request restart
+			scope.requestRestart();
+			assert.equal(restartNeeded(), false, 'requestRestart was suppressed during deploy');
+
+			// Exit the deploy — restarts should be enabled again
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+			scope.requestRestart();
+			assert.equal(restartNeeded(), true, 'requestRestart works again after deploy:end');
+
+			scope.close();
+		});
+
+		it('does not suppress requestRestart for an unrelated component', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			deployLifecycle._handle({ name: 'some-other-component', phase: 'start' });
+
+			scope.requestRestart();
+			assert.equal(
+				restartNeeded(),
+				true,
+				'requestRestart for this component must not be suppressed by an unrelated deploy'
+			);
+
+			scope.close();
+		});
+
+		it('pauses entry handlers on deploy:start and resumes them on deploy:end without losing plugin listeners', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			// Register a plugin-style entry handler with a callback. Codex caught
+			// the original close+recreate design dropping these callbacks; this
+			// case guards against that regression.
+			const handlerSpy = spy();
+			const entryHandler = scope.handleEntry(handlerSpy);
+			await entryHandler.ready;
+			const callsBeforeDeploy = handlerSpy.callCount;
+			assert.ok(callsBeforeDeploy > 0, 'plugin handler fires for initial files');
+
+			// Enter and exit a deploy without touching the EntryHandler instance.
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+			// Settle the pause's pending watcher.close() promise before resuming.
+			await new Promise((r) => setTimeout(r, 50));
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+
+			// The same EntryHandler instance keeps the plugin's callback; the
+			// post-deploy re-scan should fire it again for the same file(s).
+			await waitFor(() => handlerSpy.callCount > callsBeforeDeploy, 3000);
+
+			// And the EntryHandler instance is unchanged — listener attachment is
+			// preserved, not re-issued through a fresh wrapper.
+			assert.strictEqual(scope.handleEntry(), entryHandler, 'same EntryHandler instance after pause/resume');
+
+			// Subsequent post-deploy file changes still fire the plugin handler
+			// (the wired listener is still attached).
+			const callsAfterResume = handlerSpy.callCount;
+			await writeFile(this.testFilePath, '"after-deploy";');
+			await waitFor(() => handlerSpy.callCount > callsAfterResume);
+			assert.ok(handlerSpy.callCount > callsAfterResume, 'post-deploy change fires the plugin handler');
+
+			scope.close();
+		});
+
+		it('re-emits deploy:start and deploy:end on the scope for plugins to observe', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: {} }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			const startSpy = spy();
+			const endSpy = spy();
+			scope.on('deploy:start', startSpy);
+			scope.on('deploy:end', endSpy);
+
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+
+			assert.equal(startSpy.callCount, 1);
+			assert.deepEqual(startSpy.getCall(0).args, [this.appName]);
+			assert.equal(endSpy.callCount, 1);
+			assert.deepEqual(endSpy.getCall(0).args, [this.appName]);
+
+			scope.close();
+		});
+
+		it('detaches deploy lifecycle listeners on scope.close()', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: {} }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			const beforeClose = deployLifecycle.listenerCount('deploy:start');
+			scope.close();
+			const afterClose = deployLifecycle.listenerCount('deploy:start');
+
+			assert.equal(
+				afterClose,
+				beforeClose - 1,
+				'scope.close() should remove its deploy:start listener from the module emitter'
+			);
+		});
 	});
 });

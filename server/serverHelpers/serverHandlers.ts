@@ -8,6 +8,7 @@ import { Readable } from 'stream';
 import _os from 'os';
 // Rewire-compat alias: unit tests inject `os` by name via rewire __set__
 let os = _os;
+import { realExit } from '../threads/workerProcessGuard.ts';
 
 import * as auth from '../../security/fastifyAuth.ts';
 
@@ -42,7 +43,9 @@ function handleServerUncaughtException(err) {
 	}Terminating ${isMainThread ? 'HDB' : 'thread'}.`;
 	console.error(message);
 	harperLogger.fatal(message);
-	process.exit(1);
+	// Harper-intentional fatal termination on uncaught exception. Use realExit
+	// so the worker process guard does not intercept it.
+	realExit(1);
 }
 
 function serverErrorHandler(error, req, resp) {

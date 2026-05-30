@@ -9,6 +9,7 @@ try {
 }
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { realExit } from './threads/workerProcessGuard.ts';
 import fastify, {
 	type FastifyInstance,
 	type FastifyReply,
@@ -101,7 +102,9 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 	} catch (err) {
 		console.error(`Failed to build server on ${process.pid}`, err);
 		harperLogger.fatal(err);
-		process.exit(1);
+		// Use realExit so this fatal worker bootstrap failure still terminates
+		// the worker even with the worker process guard installed.
+		realExit(1);
 	}
 }
 
