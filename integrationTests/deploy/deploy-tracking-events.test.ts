@@ -1,10 +1,10 @@
 /**
- * Deployment tracking — event_log and SSE replay/tail (Slice B1 of issue #641).
+ * Deployment tracking — event_log and SSE replay/tail.
  *
- * Builds on the Slice A audit-record tests by exercising the new ProgressEmitter →
- * DeploymentRecorder integration: every successful deploy should populate event_log with
- * the lifecycle phases, and `get_deployment` with `Accept: text/event-stream` should
- * replay those events to the client and close cleanly for a terminal deploy.
+ * Exercises the ProgressEmitter → DeploymentRecorder integration: every successful
+ * deploy should populate event_log with the lifecycle phases, and `get_deployment`
+ * with `Accept: text/event-stream` should replay those events to the client and close
+ * cleanly for a terminal deploy.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
@@ -138,7 +138,7 @@ suite('Deployment tracking — events + SSE', (ctx: ContextWithHarper) => {
 	});
 
 	test('get_deployment with Accept: text/event-stream replays event_log and closes cleanly', async () => {
-		// Already terminal at this point — Slice B1's SSE branch should replay event_log
+		// Already terminal at this point — the SSE branch should replay event_log
 		// then return the final record as the `done` event.
 		const got = await callOperation(
 			ctx,

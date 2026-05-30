@@ -91,6 +91,7 @@ export var NON_REPLICATING_SYSTEM_TABLES = [
 	'hdb_session_will',
 	'hdb_job',
 	'hdb_info',
+	'mcp_session',
 ];
 
 export type Table = ReturnType<typeof makeTable> & {
@@ -554,6 +555,9 @@ function initStores(
 		}
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
+		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
+		const recreateForEngineChange =
+			!!table && (table as any).primaryStore?.rootStore instanceof RocksDatabase !== rootStore instanceof RocksDatabase;
 		let indices = {},
 			existingAttributes = [];
 		let tableId;
@@ -566,7 +570,7 @@ function initStores(
 		const sealed = primaryAttribute.sealed;
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
-		if (table) {
+		if (table && !recreateForEngineChange) {
 			indices = table.indices;
 			existingAttributes = table.attributes;
 			table.schemaVersion++;
@@ -652,7 +656,7 @@ function initStores(
 				}
 			}
 		}
-		if (table) {
+		if (table && !recreateForEngineChange) {
 			if (attributesUpdated) {
 				table.schemaVersion++;
 				table.updatedAttributes();
@@ -699,12 +703,6 @@ export function resetDatabases() {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			store.close();
 			lmdbDatabaseEnvs.delete(path);
-			// Remove the database entry so that the next getDatabases() call re-creates it
-			// with the current storage engine (e.g. RocksDB after migrateOnStart).
-			if (store.databaseName && databases[store.databaseName]) {
-				delete databases[store.databaseName];
-				databaseEventsEmitter.emit('dropDatabase', store.databaseName);
-			}
 		}
 	}
 	return databases;

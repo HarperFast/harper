@@ -13,9 +13,9 @@ on:
         default: 'all'
         options:
           - 'all'
-          - '20'
           - '22'
           - '24'
+          - '26'
 
 jobs:
   generate-node-version-matrix:
@@ -32,7 +32,7 @@ jobs:
         id: set-node-versions
         run: |
           if [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
-            echo "node-versions=[20, 22, 24]" >> $GITHUB_OUTPUT
+            echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           else
             echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
           fi
@@ -259,8 +259,6 @@ jobs:
       matrix:
         node-version: ${{ fromJSON(needs.generate-node-version-matrix.outputs.node-versions) }}
         shard: [1, 2, 3, 4]
-        exclude:
-          - node-version: 20
 
     steps:
       - name: Checkout code

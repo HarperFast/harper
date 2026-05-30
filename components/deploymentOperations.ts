@@ -1,6 +1,6 @@
 'use strict';
 
-// Read-side operations against system.hdb_deployment. Slice A of issue #641.
+// Read-side operations against system.hdb_deployment.
 // Write-side lives in deploymentRecorder.ts; this module only reads.
 
 import { databases } from '../resources/databases.ts';
@@ -39,7 +39,7 @@ function deploymentTable() {
 }
 
 // Strip the blob attribute from a row; the bytes never travel over the operations API.
-// Callers wanting bytes use get_deployment_payload (added in Slice B).
+// A separate get_deployment_payload operation streams the raw bytes when callers need them.
 function stripBlob(row: any): any {
 	if (!row || typeof row !== 'object') return row;
 	const { payload_blob, ...rest } = row;
