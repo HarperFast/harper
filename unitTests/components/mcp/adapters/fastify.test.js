@@ -121,10 +121,13 @@ describe('mcp/adapters/fastify', () => {
 		assert.equal(reply.statusCode, 404);
 	});
 
-	it('returns 405 on GET', async () => {
+	it('returns 400 on GET without an Mcp-Session-Id header', async () => {
+		// GET is the server-push SSE channel (#619). Without a session id it
+		// can't open a stream, so 400 — not 405. The 405-with-Allow happens
+		// for genuinely unsupported methods (PUT, PATCH, ...).
 		const handler = createFastifyHandler('operations');
 		const reply = makeReply();
 		await handler({ method: 'GET', headers: {}, hdb_user: { username: 'alice' } }, reply);
-		assert.equal(reply.statusCode, 405);
+		assert.equal(reply.statusCode, 400);
 	});
 });
