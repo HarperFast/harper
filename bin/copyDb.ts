@@ -430,9 +430,23 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				existingEncoder.isRocksDB = true;
 				existingEncoder.rootStore = targetRootStore;
 				const tempEncoder = new RecordEncoder({ name: key }) as any;
+				// msgpackr's pack closure captures `packr = this` at construction, so during
+				// re-encoding the structure callbacks resolve to tempEncoder's getStructures/
+				// saveStructures (invoked with this === tempEncoder), not existingEncoder's.
+				// tempEncoder must therefore carry the RocksDB wiring too, or getStructures hits
+				// the non-RocksDB branch where the captured super is undefined and throws.
+				tempEncoder.name = key;
+				tempEncoder.isRocksDB = true;
+				tempEncoder.rootStore = targetRootStore;
 				existingEncoder.encode = tempEncoder.encode;
-				existingEncoder.saveStructures = tempEncoder.saveStructures;
 				existingEncoder.getStructures = tempEncoder.getStructures;
+				// The shared structures dictionary is copied verbatim from the source by
+				// copyStructures() below, so re-encoding never needs to persist new structures.
+				// A no-op saveStructures avoids opening a targetRootStore.transactionSync() in the
+				// middle of each record's encode, which otherwise discards the targetDbi record writes.
+				const noopSaveStructures = () => true;
+				existingEncoder.saveStructures = noopSaveStructures;
+				tempEncoder.saveStructures = noopSaveStructures;
 			}
 
 			copyStructures(sourceDbi, key);
