@@ -7,6 +7,7 @@
 import { parseArgs } from 'node:util';
 import { execFileSync } from 'node:child_process';
 import { writeFile, mkdir } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import {
 	WORKLOADS,
@@ -192,6 +193,12 @@ export async function runBenchmark(
 		log(
 			`[load] ${loadResult.throughput.toFixed(0)} records/sec, ${loadResult.errors} errors, ${(loadResult.elapsedMs / 1000).toFixed(1)}s`
 		);
+
+		// --- Settle: let async replication converge before reading (cluster runs) ---
+		if (options.settleMs > 0) {
+			log(`[settle] waiting ${options.settleMs}ms for replication to converge...`);
+			await delay(options.settleMs);
+		}
 
 		// --- Optional warmup (discarded) ---
 		if (config.warmupOps > 0) {
