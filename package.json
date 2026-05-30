@@ -160,7 +160,6 @@
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
 		"@aws-sdk/lib-storage": "3.1045.0",
-		"@datadog/pprof": "^5.11.1",
 		"@endo/static-module-record": "^1.1.2",
 		"@fastify/autoload": "^6.3.1",
 		"@fastify/compress": "^8.3.1",
