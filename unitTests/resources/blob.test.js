@@ -229,6 +229,62 @@ describe('Blob test', () => {
 		await delay(50); // wait for deletion
 		assert(!existsSync(filePath));
 	});
+	it('updating an unrelated attribute does not unlink a still-referenced blob', async () => {
+		// Regression: RecordEncoder used to call deleteBlobsInObject(existingEntry.value)
+		// unconditionally on every update, scheduling unlink() on every prior blob —
+		// even ones the new record still references. With the retention check, a put
+		// that carries the same blob (same fileId) leaves the file intact.
+		//
+		// This is the pattern the deployment-tracking recorder hits: ingestPayload
+		// stores payload_blob, then several subsequent puts update phase / event_log
+		// while keeping payload_blob on the row. Without retention the blob is unlinked
+		// mid-deploy and replication fails with ENOENT.
+		setAuditRetention(10);
+		setDeletionDelay(0);
+		const RetentionTest = table({
+			table: 'BlobRetentionTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+				{ name: 'phase', type: 'String' },
+			],
+		});
+		const payload = randomBytes(20000); // > FILE_STORAGE_THRESHOLD so it goes file-backed
+		const blob = await createBlob(payload);
+		await RetentionTest.put({ id: 100, blob, phase: 'pending' });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'expected file-backed blob');
+		assert(existsSync(filePath), 'blob file should exist after initial put');
+
+		// Update an unrelated attribute, keeping the same blob instance on the record.
+		// Pre-fix: this unlinked the file ~deletionDelay ms later.
+		await RetentionTest.put({ id: 100, blob, phase: 'extracting' });
+		await delay(50);
+		assert(existsSync(filePath), 'blob file must survive update that retains it');
+
+		// Several more updates simulating the multi-flush pattern.
+		for (const phase of ['installing', 'loading', 'replicating', 'success']) {
+			await RetentionTest.put({ id: 100, blob, phase });
+			await delay(20);
+			assert(existsSync(filePath), `blob file must survive phase=${phase} update`);
+		}
+
+		// Also exercise the get → mutate → put path so retention is proven with a
+		// freshly-decoded blob (different JS instance, same fileId), not only the
+		// in-memory blob we created above.
+		const fetched = await RetentionTest.get(100);
+		assert(fetched.blob, 'fetched row should still carry the blob attribute');
+		await RetentionTest.put({ id: 100, blob: fetched.blob, phase: 'after-roundtrip' });
+		await delay(50);
+		assert(existsSync(filePath), 'blob file must survive update via a freshly-decoded blob');
+
+		// Now explicitly drop the blob — file should get cleaned up as before.
+		await RetentionTest.put({ id: 100, blob: null, phase: 'gone' });
+		await delay(50);
+		assert(!existsSync(filePath), 'blob file should be unlinked when the new record no longer references it');
+		setDeletionDelay(500); // restore the default
+	});
 	it('slowly create a blob and save it before it is done', async () => {
 		let testString = 'this is a test string'.repeat(256);
 		let expectedResults = '';
