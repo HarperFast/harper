@@ -62,7 +62,7 @@ Use `--insecure` to skip TLS certificate validation (network mode only) — usef
 
 ## `harper mcp` (the bridge)
 
-The default subcommand runs until stdin closes. The expected use is to invoke it from an MCP host's configuration block (see `print-config` below). Each line of stdin is parsed as a JSON-RPC frame and POSTed to the Harper MCP endpoint; each response (whether JSON or SSE-streamed) is emitted to stdout as line-delimited JSON-RPC.
+The default subcommand runs until stdin closes. The expected use is to invoke it from an MCP host's configuration block (see [print-config](#harper-mcp-print-config) below). Each line of stdin is parsed as a JSON-RPC frame and POSTed to the Harper MCP endpoint; each response (whether JSON or SSE-streamed) is emitted to stdout as line-delimited JSON-RPC.
 
 After the `initialize` handshake completes, the bridge opens a long-lived `GET /mcp` request — Harper's server-push channel — and forwards every `notifications/tools/list_changed` and `notifications/resources/list_changed` frame to stdout. The host sees one unified MCP stream.
 
