@@ -320,6 +320,16 @@ export async function loadComponent(
 		}
 		applicationScope.config ??= config;
 
+		// For non-root components with empty/null config (e.g., comment-only YAML),
+		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing
+		// to load; falling back to DEFAULT_CONFIG would cause OptionsWatcher to wait
+		// forever for plugins that the file doesn't actually declare.
+		if (isRoot) config ??= DEFAULT_CONFIG;
+		if (!config) {
+			// Empty/comment-only config file on a non-root component: nothing to load.
+			return undefined;
+		}
+
 		// #629 (Phase 2 of #510): populate the model-backend registry from the root
 		// config's `models:` block before any user `handleApplication(scope)` runs,
 		// so `scope.models.embed(...)` works from app-init code as well as Resource
