@@ -1299,7 +1299,6 @@ describe('Querying through Resource API', () => {
 			})) {
 				results.push(record);
 			}
-
 			assert.equal(results.length, 27);
 			for (let result of results) {
 				assert.equal(result['10values'], 2);

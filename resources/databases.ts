@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
-import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
+import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
+import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
 import { join, extname, basename } from 'path';
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'node:fs';
@@ -10,22 +10,22 @@ import {
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import { makeTable } from './Table.ts';
-import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
+import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.js';
 import { _assignPackageExport } from '../globals.js';
-import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
-import * as signalling from '../utility/signalling.js';
+import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
+import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
-import harperLogger from '../utility/logging/harper_logger.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
-import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
+import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
@@ -33,6 +33,36 @@ import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+
+/**
+ * Check if Harper is running in read-only mode.
+ * Read-only mode can be enabled via:
+ * - HARPER_READONLY environment variable (truthy value)
+ * - --readonly CLI flag
+ * - storage.readOnly config setting
+ */
+let _isReadOnlyMode: boolean | undefined;
+export function isReadOnlyMode(): boolean {
+	if (_isReadOnlyMode !== undefined) return _isReadOnlyMode;
+	// Check environment variable
+	const envReadOnly = process.env.HARPER_READONLY;
+	if (envReadOnly && envReadOnly !== '0' && envReadOnly !== 'false') {
+		_isReadOnlyMode = true;
+		return true;
+	}
+	// Check CLI flag (simple argv check)
+	if (process.argv.includes('--readonly') || process.argv.includes('--read-only')) {
+		_isReadOnlyMode = true;
+		return true;
+	}
+	// Check config setting
+	if (envGet(CONFIG_PARAMS.STORAGE_READONLY)) {
+		_isReadOnlyMode = true;
+		return true;
+	}
+	_isReadOnlyMode = false;
+	return false;
+}
 
 function createOpenDBIObject(dupSort = false, isPrimary = false) {
 	return new OpenDBIObject(dupSort, isPrimary);
@@ -49,9 +79,11 @@ export const NON_REPLICATING_SYSTEM_TABLES = [
 	'hdb_temp',
 	'hdb_certificate',
 	'hdb_raw_analytics',
+	'hdb_model_calls',
 	'hdb_session_will',
 	'hdb_job',
 	'hdb_info',
+	'mcp_session',
 ];
 
 export type Table = ReturnType<typeof makeTable> & {
@@ -81,6 +113,10 @@ interface LMDBRootDatabase extends RootDatabase {
 	needsDeletion?: boolean;
 	path?: string;
 	status?: 'open' | 'closed';
+	store: any;
+	retryRisk?: number;
+	flushed: Promise<boolean>;
+	rootStore?: LMDBRootDatabase;
 }
 
 interface RocksDatabaseEx extends RocksDatabase {
@@ -96,6 +132,10 @@ interface RocksRootDatabase extends RocksDatabaseEx {
 	auditStore?: RocksDatabaseEx;
 	databaseName?: string;
 	dbisDb?: RocksDatabaseEx;
+	store: any;
+	retryRisk?: number;
+	flushed: Promise<boolean>;
+	rootStore?: RocksRootDatabase;
 }
 
 export type RootDatabaseKind = LMDBRootDatabase | RocksRootDatabase;
@@ -111,31 +151,62 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
-const MEMORY_FOR_ROCKS_DB = Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25; // 25% of available memory
-
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
-	RocksDatabase.config({ blockCacheSize: MEMORY_FOR_ROCKS_DB });
+	// Apply read-only mode if enabled
+	if (isReadOnlyMode()) {
+		options.readOnly = true;
+	}
+	// Read RocksDB memory config lazily so env/CLI overrides applied after module load are
+	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
+	// configured; the WriteBufferManager is opt-in (0 disables).
+	//
+	// We enforce types rather than coerce — values from YAML config and env vars flow
+	// through configUtils.castConfigValue which produces proper numbers/booleans/null,
+	// so anything else is misconfiguration and should fall through to the default.
+	//
+	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
+	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
+	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
+	// In practice that's fine — these come from process-level config that doesn't change.
+	const configuredBlockCacheSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE);
+	const blockCacheSize =
+		typeof configuredBlockCacheSize === 'number' && configuredBlockCacheSize > 0
+			? configuredBlockCacheSize
+			: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25;
+	const writeBufferManagerSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE);
+	const writeBufferManagerCostToCache = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE);
+	const writeBufferManagerAllowStall = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL);
+	RocksDatabase.config({
+		blockCacheSize,
+		...(typeof writeBufferManagerSize === 'number' && writeBufferManagerSize > 0 ? { writeBufferManagerSize } : {}),
+		...(typeof writeBufferManagerCostToCache === 'boolean' ? { writeBufferManagerCostToCache } : {}),
+		...(typeof writeBufferManagerAllowStall === 'boolean' ? { writeBufferManagerAllowStall } : {}),
+	});
 	if (!existsSync(path)) {
+		// Don't create directories in read-only mode
+		if (isReadOnlyMode()) {
+			throw new Error(`Database cannot be created in read-only mode: ${path}`);
+		}
 		mkdirSync(path, { recursive: true });
 	}
 	let db: RocksRootDatabase;
 	if (options.dupSort) {
-		db = new RocksIndexStore(path, options).open() as RocksDatabaseEx;
+		db = new RocksIndexStore(path, options).open() as any;
 	} else {
-		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksDatabaseEx;
+		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
 		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
-		db.put = db.putSync;
-		db.remove = db.removeSync;
-		db.encoder.name = options.name;
+		db.put = db.putSync as any;
+		db.remove = db.removeSync as any;
+		(db.encoder as any).name = options.name;
 	}
 	db.env = {};
 	return db;
 }
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
-const rocksdbDatabaseEnvs = new Map<string, RocksDatabaseEx>();
+const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 
 // set the following in both global and exports
 _assignPackageExport('databases', databases);
@@ -184,9 +255,7 @@ export function getDatabases(): Databases {
 		process.env.STORAGE_PATH ||
 		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
 		(databasePath && (existsSync(databasePath) ? databasePath : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME)));
-	if (!databasePath) return;
-
-	if (existsSync(databasePath)) {
+	if (databasePath && existsSync(databasePath)) {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
 		for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
@@ -337,13 +406,13 @@ export function readMetaDb(
 	auditPath?: string,
 	isLegacy?: boolean
 ) {
-	const envInit = new OpenEnvironmentObject(path, false);
+	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	try {
 		let rootStore = lmdbDatabaseEnvs.get(path);
 		if (rootStore) {
 			rootStore.needsDeletion = false;
 		} else {
-			rootStore = open(envInit);
+			rootStore = open(envInit) as any;
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
 
@@ -365,14 +434,17 @@ function readRocksMetaDb(path: string, defaultTable?: string, databaseName: stri
 			}
 		}
 
-		let rootStore: RocksDatabaseEx | undefined = rocksdbDatabaseEnvs.get(path);
+		let rootStore: RocksRootDatabase | undefined = rocksdbDatabaseEnvs.get(path);
 		if (rootStore) {
 			initStores(path, rootStore, databaseName, defaultTable);
 		} else {
-			rootStore = openRocksDatabase(path, { disableWAL: false }) as RocksDatabaseEx;
+			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
 			initStores(path, rootStore, databaseName, defaultTable);
-			replayLogs(rootStore, databases[databaseName]);
+			// Skip transaction log replay in read-only mode
+			if (!isReadOnlyMode()) {
+				replayLogs(rootStore, databases[databaseName]);
+			}
 		}
 		return rootStore;
 	} catch (error) {
@@ -389,7 +461,7 @@ function initStores(
 	auditPath?: string,
 	isLegacy?: boolean
 ) {
-	const envInit = new OpenEnvironmentObject(path, false);
+	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
 	if (!attributesDbi) {
@@ -398,9 +470,9 @@ function initStores(
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			}) as RocksDatabaseEx;
+			} as any) as RocksDatabaseEx;
 		} else {
-			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
+			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
 		rootStore.dbisDb = attributesDbi;
 	}
@@ -419,7 +491,7 @@ function initStores(
 							encode: (auditRecord: AuditRecord) => createAuditEntry(auditRecord),
 							decode: (encoding: Buffer) => readAuditEntry(encoding),
 						},
-					});
+					}) as any;
 				}
 				auditStore.isLegacy = true;
 			}
@@ -430,7 +502,7 @@ function initStores(
 
 	const tables = ensureDB(databaseName);
 	const definedTables = tables[DEFINED_TABLES];
-	definedTables.rootStore = rootStore;
+	(definedTables as any).rootStore = rootStore;
 	const tablesToLoad = new Map<string, any>();
 
 	for (const result of attributesDbi.getRange({ start: false })) {
@@ -475,6 +547,9 @@ function initStores(
 		}
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
+		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
+		const recreateForEngineChange =
+			!!table && (table as any).primaryStore?.rootStore instanceof RocksDatabase !== rootStore instanceof RocksDatabase;
 		let indices = {},
 			existingAttributes = [];
 		let tableId;
@@ -487,23 +562,23 @@ function initStores(
 		const sealed = primaryAttribute.sealed;
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
-		if (table) {
+		if (table && !recreateForEngineChange) {
 			indices = table.indices;
 			existingAttributes = table.attributes;
 			table.schemaVersion++;
 		} else {
 			tableId = primaryAttribute.tableId;
 			if (tableId) {
-				if (tableId >= (attributesDbi.getSync(NEXT_TABLE_ID) || 0)) {
-					attributesDbi.putSync(NEXT_TABLE_ID, tableId + 1);
+				if (tableId >= ((attributesDbi as any).getSync(NEXT_TABLE_ID) || 0)) {
+					(attributesDbi as any).putSync(NEXT_TABLE_ID, tableId + 1);
 					logger.info(`Updating next table id (it was out of sync) to ${tableId + 1} for ${tableName}`);
 				}
 			} else {
-				primaryAttribute.tableId = tableId = attributesDbi.getSync(NEXT_TABLE_ID);
+				primaryAttribute.tableId = tableId = (attributesDbi as any).getSync(NEXT_TABLE_ID);
 				if (!tableId) tableId = 1;
 				logger.debug(`Table {tableName} missing an id, assigning {tableId}`);
-				attributesDbi.putSync(NEXT_TABLE_ID, tableId + 1);
-				attributesDbi.putSync(primaryAttribute.key, primaryAttribute);
+				(attributesDbi as any).putSync(NEXT_TABLE_ID, tableId + 1);
+				(attributesDbi as any).putSync(primaryAttribute.key, primaryAttribute);
 			}
 			const dbiInit = createOpenDBIObject(!primaryAttribute.isPrimaryKey, primaryAttribute.isPrimaryKey);
 			dbiInit.compression = primaryAttribute.compression;
@@ -514,11 +589,14 @@ function initStores(
 			}
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key }),
+					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key } as any),
 					rootStore
 				);
 			} else {
-				primaryStore = handleLocalTimeForGets(rootStore.openDB(primaryAttribute.key, dbiInit), rootStore);
+				primaryStore = handleLocalTimeForGets(
+					(rootStore as any).openDB(primaryAttribute.key, dbiInit as any),
+					rootStore
+				);
 			}
 			rootStore.databaseName = databaseName;
 			primaryStore.tableId = tableId;
@@ -570,7 +648,7 @@ function initStores(
 				}
 			}
 		}
-		if (table) {
+		if (table && !recreateForEngineChange) {
 			if (attributesUpdated) {
 				table.schemaVersion++;
 				table.updatedAttributes();
@@ -617,15 +695,6 @@ export function resetDatabases() {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			store.close();
 			lmdbDatabaseEnvs.delete(path);
-			const db = databases[store.databaseName];
-			for (const tableName in db) {
-				const table = db[tableName];
-				if (table.primaryStore.path === path) {
-					delete databases[store.databaseName];
-					databaseEventsEmitter.emit('dropDatabase', store.databaseName);
-					break;
-				}
-			}
 		}
 	}
 	return databases;
@@ -696,8 +765,8 @@ export function database({ database: databaseName, table: tableName }) {
 	getDatabases();
 	ensureDB(databaseName);
 	const definedDatabase = definedDatabases.get(databaseName);
-	if (definedDatabase?.rootStore) {
-		return definedDatabase.rootStore;
+	if ((definedDatabase as any)?.rootStore) {
+		return (definedDatabase as any).rootStore;
 	}
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
 	if (process.env.SCHEMAS_DATA_PATH) {
@@ -712,9 +781,11 @@ export function database({ database: databaseName, table: tableName }) {
 		databaseConfig[databaseName]?.path ||
 		process.env.STORAGE_PATH ||
 		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
-		(existsSync(join(hdbBasePath, DATABASES_DIR_NAME))
+		(hdbBasePath && existsSync(join(hdbBasePath, DATABASES_DIR_NAME))
 			? join(hdbBasePath, DATABASES_DIR_NAME)
-			: join(hdbBasePath, LEGACY_DATABASES_DIR_NAME));
+			: hdbBasePath
+				? join(hdbBasePath, LEGACY_DATABASES_DIR_NAME)
+				: undefined);
 
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
@@ -724,23 +795,24 @@ export function database({ database: databaseName, table: tableName }) {
 		if (!rootStore || rootStore.status === 'closed') {
 			rootStore = openRocksDatabase(path, {
 				disableWAL: false,
-			});
-			rocksdbDatabaseEnvs.set(path, rootStore);
+				enableStats: true,
+			}) as any;
+			rocksdbDatabaseEnvs.set(path, rootStore as any);
 		}
 	} else {
 		const path = join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
 		rootStore = lmdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// TODO: validate database name
-			const envInit = new OpenEnvironmentObject(path, false);
-			rootStore = open(envInit);
-			lmdbDatabaseEnvs.set(path, rootStore);
+			const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
+			rootStore = open(envInit) as any;
+			lmdbDatabaseEnvs.set(path, rootStore as any);
 		}
 	}
 	if (!rootStore.auditStore) {
-		rootStore.auditStore = openAuditStore(rootStore);
+		rootStore.auditStore = openAuditStore(rootStore as any);
 	}
-	if (definedDatabase) definedDatabase.rootStore = rootStore;
+	if (definedDatabase) (definedDatabase as any).rootStore = rootStore;
 	return rootStore;
 }
 /**
@@ -810,10 +882,10 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 				rootStore?: RocksRootDatabase;
 		  });
 	if (rootStore instanceof RocksDatabase) {
-		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey });
-		dbi.rootStore = rootStore;
+		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey } as any) as any;
+		(dbi as any).rootStore = rootStore;
 	} else {
-		dbi = rootStore.openDB(dbiKey, dbiInit);
+		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
 	}
 	if (attribute.indexed.type) {
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
@@ -914,17 +986,17 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		const dbiName = tableName + '/';
 
 		if (rootStore instanceof RocksDatabase) {
-			attributesDbi = rootStore.dbisDb = openRocksDatabase(rootStore.path, {
+			attributesDbi = (rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			});
+			} as any);
 		} else {
-			attributesDbi = rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
+			attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
 
 		exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
-		if (attributesDbi.getSync(dbiName)) {
+		if ((attributesDbi as any).getSync(dbiName)) {
 			// table was created while we were setting up
 			if (releaseExclusiveLock) releaseExclusiveLock();
 			resetDatabases();
@@ -933,9 +1005,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 		let primaryStore;
 		if (rootStore instanceof RocksDatabase) {
-			primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName });
+			primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
 		} else {
-			primaryStore = rootStore.openDB(dbiName, dbiInit);
+			primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 		}
 		primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 		rootStore.databaseName = databaseName;
@@ -977,15 +1049,15 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	const indices = Table.indices;
 	if (!attributesDbi) {
 		if (rootStore instanceof RocksDatabase) {
-			rootStore.dbisDb = openRocksDatabase(rootStore.path, {
+			(rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			});
+			} as any);
 		} else {
-			rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
+			(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
-		attributesDbi = rootStore.dbisDb;
+		attributesDbi = (rootStore as any).dbisDb;
 	}
 	Table.dbisDB = attributesDbi;
 	const indicesToRemove = [];
@@ -1035,7 +1107,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				) {
 					const updatedPrimaryAttribute = { ...attributeDescriptor };
 					if (typeof audit === 'boolean') {
-						if (audit) Table.enableAuditing(audit);
+						if (audit) Table.enableAuditing();
 						updatedPrimaryAttribute.audit = audit;
 					}
 					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
@@ -1066,6 +1138,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
 					changed ||
+					attributeDescriptor.indexingFailed ||
 					(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
 					attributeDescriptor.restartNumber < workerData?.restartNumber
 				) {
@@ -1074,6 +1147,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					attributeDescriptor = attributesDbi.getSync(dbiKey);
 					if (
 						changed ||
+						attributeDescriptor.indexingFailed ||
 						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
 						attributeDescriptor.restartNumber < workerData?.restartNumber
 					) {
@@ -1087,14 +1161,20 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						if (hasExistingData) {
 							attribute.lastIndexedKey = attributeDescriptor?.lastIndexedKey ?? undefined;
 							attribute.indexingPID = process.pid;
+							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
-							Object.defineProperty(attribute, 'dbi', { value: dbi });
+							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
 							attributesToIndex.push(attribute);
 						}
 					}
 					attributesDbi.put(dbiKey, attribute);
 				}
+				// If a migration is in progress (indexingPID set), any newly opened dbi must also
+				// reflect isIndexing = true. A resetDatabases() during an active runIndexing creates
+				// a new dbi object; without this, queries could use the new dbi (isIndexing = false)
+				// and return incomplete results while the backfill is still running.
+				if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
 				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 				dbi.indexNulls = attribute.indexNulls;
 				indices[attribute.name] = dbi;
@@ -1165,6 +1245,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			lastResolution = index.drop();
 		}
 		let interrupted;
+		let hadIndexingErrors = false;
 		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
@@ -1218,6 +1299,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 							}
 						}
 					} catch (error) {
+						hadIndexingErrors = true;
 						if (!attributeErrorReported[property]) {
 							// just report an indexing error once per attribute so we don't spam the logs
 							attributeErrorReported[property] = true;
@@ -1230,6 +1312,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					() => outstanding--,
 					(error) => {
 						outstanding--;
+						hadIndexingErrors = true;
 						logger.error(error);
 					}
 				);
@@ -1247,22 +1330,89 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
 				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
 			}
+		}
+		// Await the last pending put. If it rejects, that is also an indexing error.
+		// Note: the when() calls above already attach rejection handlers to each record's
+		// last-put promise; this try-catch specifically handles the case where lastResolution
+		// itself rejects (i.e. the very last put in the loop failed) which would otherwise
+		// throw past the hadIndexingErrors check to the outer catch. The broader issue of
+		// unhandled rejections from non-last puts in multi-value attributes is pre-existing
+		// and out of scope for this fix.
+		try {
+			await lastResolution;
+		} catch (error) {
+			hadIndexingErrors = true;
+			logger.error(error);
+		}
+		// Yield one more event turn so any queued when() error callbacks (which fire as
+		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
+		// before we decide whether to mark indexing as complete.
+		await new Promise((resolve) => setImmediate(resolve));
+		if (hadIndexingErrors) {
+			// Some records failed to index. Persist the failure marker in the descriptor so
+			// the next call to table() (including after a restart with a fresh PID) re-triggers
+			// the backfill from the last checkpoint. Do NOT clear indexingPID or isIndexing —
+			// leave the index in its incomplete state so queries return 503 "not indexed yet"
+			// rather than silently returning partial results. This is the key fix for the
+			// serent-canopy issue #135 fingerprint: a completed migration with transient errors
+			// (e.g. ERR_BUSY from RocksDB under load) leaving gaps while appearing successful.
+			for (const attribute of attributes) {
+				attribute.indexingFailed = true;
+				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
+				lastResolution = Table.dbisDB.put(attribute.key, attribute);
+				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
+				// in Table.indices (which may differ if resetDatabases() ran during this pass).
+				attribute.dbi.isIndexing = true;
+				const activeDbi = Table.indices[attribute.name];
+				if (activeDbi) activeDbi.isIndexing = true;
+			}
+			await lastResolution;
+			logger.warn(
+				`Indexing of ${Table.tableName} encountered errors on some records - index will remain incomplete. ` +
+					`On next restart the migration will be retried from the last checkpoint (indexingFailed=true). ` +
+					`Affected attributes: ${attributes.map((a) => a.name).join(', ')}`
+			);
+		} else {
 			// update the attributes to indicate that we are finished
 			for (const attribute of attributes) {
 				delete attribute.lastIndexedKey;
 				delete attribute.indexingPID;
+				delete attribute.indexingFailed;
 				attribute.dbi.isIndexing = false;
+				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
+				// differ from attribute.dbi if a resetDatabases() call during this migration
+				// opened a new dbi and registered it there.
+				const activeDbi = Table.indices[attribute.name];
+				if (activeDbi) activeDbi.isIndexing = false;
 				lastResolution = Table.dbisDB.put(attribute.key, attribute);
 			}
+			await lastResolution;
+			// now notify all the threads that we are done and the index is ready to use
+			await signalling.signalSchemaChange(
+				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
+			);
+			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 		}
-		await lastResolution;
-		// now notify all the threads that we are done and the index is ready to use
-		await signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
-		);
-		logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 	} catch (error) {
 		logger.error('Error in indexing', error);
+		// Persist indexingFailed so the next restart re-triggers the rebuild from an
+		// explicitly failed state rather than silently looping. Without this,
+		// indexingPID (written before runIndexing was called) stays in the descriptor
+		// but indexingFailed is never set, leaving isIndexing stuck with no recovery
+		// signal. Mirrors the hadIndexingErrors path. harper#843
+		try {
+			const puts: Promise<unknown>[] = [];
+			for (const attribute of attributes) {
+				attribute.indexingFailed = true;
+				puts.push(Table.dbisDB.put(attribute.key, attribute));
+				attribute.dbi.isIndexing = true;
+				const activeDbi = Table.indices[attribute.name];
+				if (activeDbi) activeDbi.isIndexing = true;
+			}
+			await Promise.all(puts);
+		} catch (persistError) {
+			logger.warn('Failed to persist indexing failure state', persistError);
+		}
 	}
 }
 
@@ -1312,4 +1462,12 @@ export function getDefaultCompression() {
 		LMDB_COMPRESSION_OPTS['dictionary'] = readFileSync(STORAGE_COMPRESSION_DICTIONARY);
 	if (STORAGE_COMPRESSION_THRESHOLD) LMDB_COMPRESSION_OPTS['threshold'] = STORAGE_COMPRESSION_THRESHOLD;
 	return LMDB_COMPRESSION && LMDB_COMPRESSION_OPTS;
+}
+
+/**
+ * Force all RocksDB databases to flush to disk.
+ */
+export async function flushDatabases() {
+	// flush all RocksDB databases
+	return Promise.all(Array.from(rocksdbDatabaseEnvs.values()).map((db) => db.flush()));
 }

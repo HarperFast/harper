@@ -1,11 +1,12 @@
 'use strict';
 
-const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
 const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths.js');
 // eslint-disable-next-line no-unused-vars
-const DeleteBeforeObject = require('../../../DeleteBeforeObject.js');
-const lmdbTerms = require('../../../../utility/lmdb/terms.js');
-const hdbUtils = require('../../../../utility/common_utils.js');
+const DeleteBeforeObject =
+	require('../../../DeleteBeforeObject.ts').default || require('../../../DeleteBeforeObject.ts');
+const lmdbTerms = require('../../../../utility/lmdb/terms.ts');
+const hdbUtils = require('../../../../utility/common_utils.ts');
 const DeleteAuditLogsBeforeResults = require('./DeleteAuditLogsBeforeResults.js');
 const promisify = require('util').promisify;
 const pSettimeout = promisify(setTimeout);

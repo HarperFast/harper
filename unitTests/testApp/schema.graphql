@@ -67,6 +67,21 @@ type HasBigInt @table @export {
 	name: String @indexed
 	anotherBigint: BigInt
 }
+
+type DogIntPK @table @export {
+	id: Int @primaryKey
+	name: String
+}
+
+type DogStringPK @table @export {
+	id: String @primaryKey
+	name: String
+}
+
+type DogAnyPK @table @export {
+	id: Any @primaryKey
+	name: String
+}
 type Conflicted1 @table @export(name: "Conflicted") {
 	id: ID @primaryKey
 }

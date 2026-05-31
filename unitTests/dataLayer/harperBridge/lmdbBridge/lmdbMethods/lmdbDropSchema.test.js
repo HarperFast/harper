@@ -3,7 +3,7 @@
 const testUtils = require('../../../../testUtils');
 testUtils.preTestPrep();
 const path = require('path');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = require('#js/utility/errors/commonErrors');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = require('#src/utility/errors/commonErrors');
 
 const SYSTEM_FOLDER_NAME = 'system';
 const BASE_PATH = testUtils.setupTestDBPath();
@@ -13,9 +13,9 @@ const DEV_SCHEMA_PATH = path.join(BASE_PATH, 'dev');
 let test_data = require('../../../../testData');
 
 const rewire = require('rewire');
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
-const SearchObject = require('#js/dataLayer/SearchObject');
-const DropAttributeObject = require('#js/dataLayer/DropAttributeObject');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const SearchObject = require('#src/dataLayer/SearchObject');
+const DropAttributeObject = require('#src/dataLayer/DropAttributeObject');
 const lmdb_drop_schema = rewire('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbDropSchema');
 const search_by_value = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByValue');
 const lmdb_create_schema = require('#js/dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');

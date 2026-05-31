@@ -2,7 +2,7 @@
 
 const chai = require('chai');
 const { expect } = chai;
-const deleteValidator = require('#js/validation/deleteValidator');
+const deleteValidator = require('#src/validation/deleteValidator').default;
 
 describe('Test deleteValidator module', () => {
 	it('Test table required returned', () => {

@@ -1,11 +1,13 @@
 import type { Metric } from './write.ts';
-import harperLogger from '../../utility/logging/harper_logger.js';
+import harperLogger from '../../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import { getAnalyticsHostnameTable, stableNodeId } from './hostnames.ts';
 import type { Condition, Conditions } from '../ResourceInterface.ts';
 import { METRIC, type BuiltInMetricName } from './metadata.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
-import { get as envGet } from '../../utility/environment/environmentManager.js';
+import { get as envGet } from '../../utility/environment/environmentManager.ts';
+import { validateGetAnalytics } from '../../validation/analyticsValidator.ts';
+import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
 
 // default to one week time window for finding custom metrics
 const defaultCustomMetricWindow = 1000 * 60 * 60 * 24 * 7;
@@ -34,8 +36,24 @@ interface GetAnalyticsRequest {
 
 type GetAnalyticsResponse = Metric[];
 
-export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
+/**
+ * Validates the `get_analytics` request and returns the analytics results.
+ * @param req
+ * @returns
+ */
+export async function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
 	log.trace?.('get_analytics request:', req);
+	const validationError = validateGetAnalytics(req);
+	if (validationError) {
+		throw handleHDBError(
+			validationError,
+			validationError.message,
+			hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 	return get(req.metric, {
 		getAttributes: req.get_attributes,
 		startTime: req.start_time,
@@ -120,7 +138,7 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		}
 	}
 
-	const request = { conditions, allowConditionsOnDynamicAttributes: true };
+	const request: any = { conditions, allowConditionsOnDynamicAttributes: true };
 	if (select.length > 0) {
 		request['select'] = select;
 	}
@@ -192,7 +210,7 @@ export async function listMetrics(
 			} as Condition;
 		});
 		conditions.push(...metricConditions);
-		const customMetricsSearch = {
+		const customMetricsSearch: any = {
 			select: ['metric'],
 			conditions: conditions,
 		};
@@ -226,7 +244,7 @@ export function describeMetricOp(req: DescribeMetricRequest): Promise<DescribeMe
 }
 
 export async function describeMetric(metric: string): Promise<DescribeMetricResponse> {
-	const lastEntrySearch = {
+	const lastEntrySearch: any = {
 		conditions: [{ attribute: 'metric', comparator: 'equals', value: metric }],
 		sort: {
 			attribute: 'id',

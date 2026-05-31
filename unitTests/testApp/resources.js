@@ -169,6 +169,7 @@ tables.CacheOfResource.sourcedFrom({
 });
 
 // test transparent HTTP caching straight through
+tables.CacheOfHttp.serverErrorCalls = 0;
 tables.CacheOfHttp.sourcedFrom({
 	async get(target) {
 		switch (target) {
@@ -194,6 +195,11 @@ tables.CacheOfHttp.sourcedFrom({
 					headers: { 'x-custom-header': 'custom value' },
 					name: 'test-sibling-to-headers',
 				};
+			case 'not-found':
+				return new Response('Not Found', { status: 404 });
+			case 'server-error':
+				tables.CacheOfHttp.serverErrorCalls++;
+				return new Response('Internal Server Error', { status: 500 });
 		}
 	},
 });

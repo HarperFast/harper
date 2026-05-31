@@ -11,7 +11,7 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const DATABASE = 'test_db';
 const TABLE = 'dogs';

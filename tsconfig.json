@@ -5,7 +5,7 @@
 		"config/**/*",
 		"dataLayer/**/*",
 		"json/**/*",
-		"launchServiceSCripts/**/*",
+		"launchServiceScripts/**/*",
 		"resources/**/*",
 		"security/**/*",
 		"server/**/*",
@@ -14,8 +14,7 @@
 		"utility/**/*",
 		"validation/**/*",
 		"globals.js",
-		"index.d.ts",
-		"index.js"
+		"index.ts"
 	],
 	"compilerOptions": {
 		// Allow JS files for mixed codebase
@@ -38,6 +37,8 @@
 		"allowImportingTsExtensions": true,
 
 		// Enforce erasable syntax only so we can use Node.js type-stripping
-		"erasableSyntaxOnly": true
+		"erasableSyntaxOnly": true,
+		// Required: third-party type declarations (alasql, mathjs, msgpackr) have incompatible type errors
+		"skipLibCheck": true
 	}
 }

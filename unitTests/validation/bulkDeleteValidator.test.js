@@ -2,7 +2,7 @@
 
 const chai = require('chai');
 const { expect } = chai;
-const bulkDeleteValidator = require('#js/validation/bulkDeleteValidator');
+const bulkDeleteValidator = require('#src/validation/bulkDeleteValidator').default;
 
 describe('Test bulkDeleteValidator module', () => {
 	it('Test table required returned', () => {

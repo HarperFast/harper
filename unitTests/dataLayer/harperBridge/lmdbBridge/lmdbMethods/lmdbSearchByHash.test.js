@@ -12,18 +12,18 @@ const TRANSACTIONS_NAME = 'transactions';
 const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
-const bridge = require('#js/dataLayer/harperBridge/harperBridge');
+const bridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const lmdb_create_records = bridge.createRecords;
 const lmdb_search_by_hash = bridge.searchByHash;
 const lmdb_create_schema = bridge.createSchema;
 const lmdb_create_table = bridge.createTable;
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
-const SearchByHashObject = require('#js/dataLayer/SearchByHashObject');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const SearchByHashObject = require('#src/dataLayer/SearchByHashObject');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
-const common = require('#js/utility/lmdb/commonUtility');
+const common = require('#src/utility/lmdb/commonUtility');
 const { resetDatabases } = require('#src/resources/databases');
 
 const TIMESTAMP = Date.now();

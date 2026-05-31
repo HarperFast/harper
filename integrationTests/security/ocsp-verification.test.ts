@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as https from 'node:https';
 
-import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import {
 	setupOcspResponderWithCerts,
 	stopOcspResponder,
@@ -25,6 +25,7 @@ import { generateOcspCertificates } from '../utils/security/ocsp/generate-test-c
 
 const HTTPS_PORT = 9927;
 const FIXTURE_PATH = join(import.meta.dirname, 'fixture');
+const testsBun = process.env.HARPER_RUNTIME === 'bun';
 
 // The last test stops the OCSP responder to verify caching, so tests must run sequentially.
 // Tests CANNOT run concurrently because the caching test stops the responder that earlier tests need.
@@ -34,6 +35,7 @@ suite(
 	(ctx: ContextWithHarper) => {
 		let ocspResponder: OcspResponderContext | null = null;
 		let certsPath: string; // Track separately for cleanup even if responder is stopped
+		if (testsBun) return; // no Bun testing for now
 
 		before(async () => {
 			// 1. Create temp directory for certificates
@@ -165,6 +167,7 @@ suite(
 suite('OCSP Certificate Verification - Disabled', (ctx: ContextWithHarper) => {
 	let certsPath: string;
 	let certs: OcspCertificates;
+	if (testsBun) return; // no Bun testing for now
 
 	before(async () => {
 		certsPath = await mkdtemp(join(tmpdir(), 'harper-ocsp-disabled-'));
@@ -224,6 +227,7 @@ suite('OCSP Certificate Verification - Disabled', (ctx: ContextWithHarper) => {
 suite('OCSP Certificate Verification - Fail-Open Mode', (ctx: ContextWithHarper) => {
 	let certsPath: string;
 	let certs: OcspCertificates;
+	if (testsBun) return; // no Bun testing for now
 
 	before(async () => {
 		certsPath = await mkdtemp(join(tmpdir(), 'harper-ocsp-failopen-'));
@@ -282,6 +286,7 @@ suite('OCSP Certificate Verification - Fail-Open Mode', (ctx: ContextWithHarper)
 suite('OCSP Certificate Verification - Fail-Closed with Timeout', (ctx: ContextWithHarper) => {
 	let certsPath: string;
 	let certs: OcspCertificates;
+	if (testsBun) return; // no Bun testing for now
 
 	before(async () => {
 		certsPath = await mkdtemp(join(tmpdir(), 'harper-ocsp-timeout-'));

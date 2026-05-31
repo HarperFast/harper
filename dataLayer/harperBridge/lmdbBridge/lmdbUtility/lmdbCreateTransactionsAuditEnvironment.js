@@ -1,11 +1,14 @@
 'use strict';
 
 const fs = require('fs-extra');
-const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.ts');
 const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths.js');
-const lmdbTerms = require('../../../../utility/lmdb/terms.js');
+const lmdbTerms = require('../../../../utility/lmdb/terms.ts');
 // eslint-disable-next-line no-unused-vars
-const CreateTableObject = require('../../../CreateTableObject.js');
+const CreateTableObject =
+	require('../../../CreateTableObject.ts').default ||
+	require('../../../CreateTableObject.ts').default ||
+	require('../../../CreateTableObject.ts');
 
 module.exports = createTransactionsAuditEnvironment;
 

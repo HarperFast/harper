@@ -2,8 +2,8 @@ import { statfs } from 'node:fs/promises';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import envMgr from '../utility/environment/environmentManager.js';
-import { convertToMS } from '../utility/common_utils.js';
+import * as envMgr from '../utility/environment/environmentManager.ts';
+import { convertToMS } from '../utility/common_utils.ts';
 envMgr.initSync();
 const reclamationHandlers = new Map<
 	string,

@@ -1,13 +1,13 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
-import { Component, FileAndURLPathConfig } from './Component.js';
+import { Component, FileAndURLPathConfig } from './Component.ts';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { FilesOption } from './deriveGlobOptions.js';
-import { deriveURLPath } from './deriveURLPath.js';
+import { FilesOption } from './deriveGlobOptions.ts';
+import { deriveURLPath } from './deriveURLPath.ts';
 import { isMatch } from 'micromatch';
 
 export interface BaseEntry {
@@ -75,6 +75,16 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	#logger: Logger;
 	#pendingFileReads: Set<Promise<void>>;
 	#isInitialScanComplete: boolean;
+	// When true, #watch() short-circuits without creating a chokidar watcher.
+	// pause() sets it, resume() clears it. Lets a deploy quiesce the watcher
+	// without losing the EntryHandler instance (and therefore listener
+	// attachments registered by plugins via scope.handleEntry(handler)).
+	#paused: boolean = false;
+	// Tracks the in-flight close() promise from pause() so resume() can await
+	// the old watcher's inotify handles releasing before installing a fresh
+	// chokidar instance — otherwise a rapid pause→resume can overlap teardown
+	// and setup, which under inotify pressure can produce spurious EMFILE.
+	#pausedClose?: Promise<void>;
 	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: Logger) {
@@ -180,8 +190,25 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	async #watch() {
+		// If pause() retained an in-flight close, wait for it to release inotify
+		// handles before we install a new watcher. Otherwise a fast pause→resume
+		// can overlap teardown and setup under inotify pressure.
+		if (this.#pausedClose) {
+			await this.#pausedClose;
+			this.#pausedClose = undefined;
+		}
+
 		await this.#watcher?.close();
 		this.#watcher = undefined;
+
+		// pause() may have landed in the gap before our async close resolved.
+		// If so, do not install a replacement watcher — resume() will.
+		if (this.#paused) return this.ready;
+
+		// When a fresh watcher is installed (after pause+resume, or update), the
+		// initial scan emits add events anew, so reset the readiness latch so
+		// `ready` resolves after the new scan completes.
+		this.#isInitialScanComplete = false;
 
 		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
 
@@ -189,12 +216,26 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			.watch(this.#component.commonPatternBase, {
 				cwd: this.#component.directory,
 				persistent: false,
+				followSymlinks: false,
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
 					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
+					const normalizedDirectory = this.#component.directory.replace(/\\/g, '/');
+
+					// Check for nested node_modules relative to the component directory
+					// This allows plugins loaded from node_modules to watch their own files
+					// while still ignoring their nested node_modules dependencies
+					const relativePath = normalizedPath.startsWith(normalizedDirectory + '/')
+						? normalizedPath.slice(normalizedDirectory.length)
+						: normalizedPath.startsWith(normalizedDirectory)
+							? normalizedPath.slice(normalizedDirectory.length)
+							: normalizedPath;
+					const hasNestedNodeModules = relativePath.includes('/node_modules');
+
 					return (
-						normalizedPath !== this.#component.directory.replace(/\\/g, '/') &&
-						normalizedBases.every((base) => !normalizedPath.startsWith(base))
+						hasNestedNodeModules ||
+						(normalizedPath !== normalizedDirectory &&
+							normalizedBases.every((base) => !normalizedPath.startsWith(base)))
 					);
 				},
 			})
@@ -213,6 +254,49 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.removeAllListeners();
 
 		return this;
+	}
+
+	/**
+	 * Quiesce the watcher without tearing down the EntryHandler. Closes the
+	 * underlying chokidar watcher (releasing inotify handles for the watched
+	 * tree) but preserves all listeners attached to this instance, so plugins
+	 * that registered `scope.handleEntry(handler)` keep their handler wired up
+	 * across the pause.
+	 *
+	 * Idempotent. Awaiting `ready` while paused will not resolve until resume().
+	 */
+	pause(): void {
+		this.#paused = true;
+		// Reset `ready` to a fresh pending promise so the documented "awaiting
+		// ready while paused will not resolve until resume()" contract holds even
+		// when the watcher had already become ready before pause(). The next
+		// 'ready' emit will come from the chokidar instance installed by resume().
+		this.ready = once(this, 'ready');
+		if (this.#watcher) {
+			// Retain the close promise so resume()→#watch() can await full
+			// teardown before opening a new watcher.
+			this.#pausedClose = Promise.resolve(this.#watcher.close()).catch(() => {
+				// Teardown errors aren't actionable; swallow so resume can proceed.
+			});
+			this.#watcher = undefined;
+		}
+	}
+
+	/**
+	 * Reinstate the watcher previously stopped by pause(). The fresh chokidar
+	 * instance does an initial scan and emits add events for every file
+	 * currently matching the configured globs — by design, since the typical
+	 * caller (Scope, on deploy:end) wants plugins to see the post-deploy tree
+	 * as if loading cold.
+	 *
+	 * No-op if not currently paused.
+	 */
+	resume(): Promise<any[]> {
+		if (!this.#paused) return this.ready;
+		this.#paused = false;
+		// `this.ready` was already reset to a pending promise in pause(); just
+		// trigger the watcher recreation and let its 'ready' emit resolve it.
+		return this.#watch();
 	}
 
 	update(config: FilesOption | FileAndURLPathConfig) {

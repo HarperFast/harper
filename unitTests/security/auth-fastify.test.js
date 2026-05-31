@@ -4,12 +4,12 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const auth = rewire('#js/security/fastifyAuth');
-const token_auth = rewire('#js/security/tokenAuthentication');
+const auth = rewire('#src/security/fastifyAuth');
+const token_auth = rewire('#src/security/tokenAuthentication');
 const password_function = require('#src/utility/password');
 const user = require('#src/security/user');
-const insert = require('#js/dataLayer/insert');
-const signalling = require('#js/utility/signalling');
+const insert = require('#src/dataLayer/insert');
+const signalling = require('#src/utility/signalling');
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =

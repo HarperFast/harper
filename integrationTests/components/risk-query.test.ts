@@ -5,22 +5,27 @@
  * shorthand field mapping, upsert, edge cases, and deletion.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert/strict';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
 suite('Component: risk-query', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
-		// Deploy risk-query from GitHub
+		// Deploy risk-query from local fixture
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'risk-query',
-			package: 'https://github.com/HarperFast/risk-query',
+			package: join(__dirname, '../fixtures/risq-1.0.0.tgz'),
 			restart: true,
 		});
-		deepStrictEqual(body, { message: 'Successfully deployed: risk-query, restarting Harper' });
+		strictEqual(body.message, 'Successfully deployed: risk-query, restarting Harper');
+		ok(typeof body.deployment_id === 'string', `expected deployment_id in deploy response, got ${body.deployment_id}`);
 
 		// Poll until the component is ready
 		const deadline = Date.now() + 30_000;

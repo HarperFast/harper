@@ -20,7 +20,7 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const TEST_DATABASE = 'test';
 const TEST_TABLE = 'reclaim';
@@ -79,9 +79,12 @@ suite('Storage reclamation', (ctx: ContextWithHarper) => {
 				schema: TEST_DATABASE,
 				table: TEST_TABLE,
 				primary_key: 'id',
-				expiration: 2, // 2 second expiration (in seconds)
-				eviction: 1, // 1 second eviction (in seconds)
-				audit: true, // Enable audit logging
+				// Expirations large enough that the insert + initial count assertion
+				// completes well before any record can expire on slow runners (Windows
+				// CI was hitting count=1 with the previous 2s expiration).
+				expiration: 10,
+				eviction: 5,
+				audit: true,
 			}),
 		});
 		if (createTableResponse.status !== 200) {
@@ -162,9 +165,11 @@ suite('Storage reclamation', (ctx: ContextWithHarper) => {
 	});
 
 	test('records are reclaimed after expiration and reclamation cycle', async () => {
-		// Wait for expiration (2s) + eviction (1s) + reclamation interval (1s) + buffer
-		// Total: ~5 seconds should be enough for records to expire and be reclaimed
-		await sleep(6000);
+		// Wait long enough for the last-inserted record (which arrives ~2s after
+		// the bulk-insert call started) to pass expiration (10s) and for at least
+		// one reclamation cycle (1s interval) to sweep, with a healthy buffer
+		// for slow Windows runners.
+		await sleep(18000);
 
 		// Check record count - should be significantly reduced
 		const countResponse = await fetch(ctx.harper.operationsAPIURL, {

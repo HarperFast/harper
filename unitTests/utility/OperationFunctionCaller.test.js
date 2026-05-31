@@ -4,7 +4,7 @@
 //const testUtils = require('../testUtils.js');
 //testUtils.preTestPrep();
 const assert = require('assert');
-const op_func_caller = require('#js/utility/OperationFunctionCaller');
+const op_func_caller = require('#src/utility/OperationFunctionCaller');
 const { promisify } = require('util');
 
 class TestInputObject {

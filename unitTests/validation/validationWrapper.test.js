@@ -7,7 +7,7 @@ const { expect } = chai;
 chai.use(sinon_chai);
 
 const rewire = require('rewire');
-let validationWrapper_rw = rewire('#js/validation/validationWrapper');
+let validationWrapper_rw = rewire('#src/validation/validationWrapper');
 
 /**
  *  Unit tests for validation/validationWrapper.js
@@ -26,7 +26,7 @@ describe('Test validateWrapper module', () => {
 	});
 
 	after(() => {
-		rewire('#js/validation/validationWrapper');
+		rewire('#src/validation/validationWrapper');
 	});
 
 	describe('Test validateObject function', () => {
@@ -66,7 +66,7 @@ describe('Test validateWrapper module', () => {
 
 	describe('Test validateObjectAsync function', () => {
 		before(() => {
-			validationWrapper_rw = rewire('#js/validation/validationWrapper');
+			validationWrapper_rw = rewire('#src/validation/validationWrapper');
 			validate_async_stub = sandbox.stub().resolves();
 			validationWrapper_rw.__set__('validate', { async: () => validate_async_stub() });
 		});

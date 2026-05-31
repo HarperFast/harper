@@ -395,6 +395,17 @@
 						"timeout": { "type": "integer" }
 					}
 				},
+				"componentFile": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"maxSize": {
+							"type": "integer",
+							"minimum": 1,
+							"description": "Maximum size in bytes for files returned by get_component_file. Default: 5242880 (5 MB)"
+						}
+					}
+				},
 				"tls": {
 					"$ref": "#/definitions/tlsConfig",
 					"description": "TLS configuration overriding root TLS for Operations API"
@@ -565,6 +576,16 @@
 				"storageInterval": {
 					"type": "number",
 					"description": "Number of aggregation cycles between node storage measurements. 0 to disable. Default: 10"
+				},
+				"rawRetentionMs": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Milliseconds to retain raw (pre-aggregation) analytics. Clamped to at least aggregatePeriod to prevent data loss. Default: 3600000 (1 hour)"
+				},
+				"aggregateRetentionMs": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Milliseconds to retain aggregated analytics. 0 disables cleanup (keep forever). Default: 31536000000 (1 year)"
 				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}

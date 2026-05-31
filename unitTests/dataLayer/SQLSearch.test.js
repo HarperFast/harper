@@ -11,10 +11,11 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 
-const SQLSearch = require('#js/dataLayer/SQLSearch');
-const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
-const log = require('#js/utility/logging/harper_logger');
-const hdb_utils = require('#js/utility/common_utils');
+const SQLSearch = require('#src/dataLayer/SQLSearch').default;
+console.log('SQLSearch IS', SQLSearch);
+const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
+const log = require('#src/utility/logging/harper_logger');
+const hdb_utils = require('#src/utility/common_utils');
 
 const { TEST_DATA_AGGR, TEST_DATA_CAT, TEST_DATA_DOG, TEST_DATA_LONGTEXT } = require('../test_data');
 

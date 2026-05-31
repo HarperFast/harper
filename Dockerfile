@@ -20,6 +20,18 @@ RUN <<-EOF
   chown -R harperdb:harperdb /home/harperdb
 EOF
 
+# Create entrypoint that selects runtime via HARPER_RUNTIME env var
+RUN <<-'EOF' > /usr/local/bin/docker-entrypoint.sh
+#!/bin/sh
+set -e
+if [ "$HARPER_RUNTIME" = "bun" ]; then
+  exec bun "$(which harper)" "$@"
+else
+  exec harper "$@"
+fi
+EOF
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 WORKDIR /home/harperdb
 
 USER harperdb
@@ -27,11 +39,14 @@ USER harperdb
 # Install pnpm
 RUN wget -qO- https://get.pnpm.io/install.sh | ENV="$HOME/.bashrc" SHELL="$(which bash)" bash -
 
+# Install Bun
+RUN curl -fsSL https://bun.sh/install | bash
+
 COPY --from=build /usr/src/harper/harper-*.tgz .
 
-# Configure NPM
+# Configure NPM and Bun paths
 ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
-ENV PATH=/home/harperdb/.npm-global/bin:$PATH
+ENV PATH=/home/harperdb/.npm-global/bin:/home/harperdb/.bun/bin:$PATH
 
 VOLUME /home/harperdb/harper
 
@@ -58,6 +73,6 @@ EXPOSE 9926
 EXPOSE 9932
 EXPOSE 9933
 
-ENTRYPOINT ["harper"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 CMD ["run"]

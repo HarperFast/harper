@@ -168,6 +168,19 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		return super.removeSync(id, options);
 	}
 
+	clearSync(): void {
+		// clearSync wipes every record; the per-instance cache must be dropped
+		// too, otherwise a cached entry would survive the clear and be served as
+		// a stale "still exists" hit on the next read.
+		this.#cache?.clear();
+		return super.clearSync();
+	}
+
+	clear(): Promise<void> {
+		this.#cache?.clear();
+		return super.clear();
+	}
+
 	open(): PrimaryRocksDatabase {
 		return super.open() as PrimaryRocksDatabase;
 	}

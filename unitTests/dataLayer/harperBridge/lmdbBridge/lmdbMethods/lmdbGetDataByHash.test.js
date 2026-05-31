@@ -12,18 +12,18 @@ const TRANSACTIONS_NAME = 'transactions';
 const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
-const harperBridge = require('#js/dataLayer/harperBridge/harperBridge');
+const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const lmdb_create_schema = harperBridge.createSchema;
 const lmdb_create_table = harperBridge.createTable;
 const lmdb_create_records = harperBridge.createRecords;
 const lmdb_get_data_by_hash = harperBridge.getDataByHash;
-const environment_utility = rewire('#js/utility/lmdb/environmentUtility');
-const SearchByHashObject = require('#js/dataLayer/SearchByHashObject');
+const environment_utility = rewire('#src/utility/lmdb/environmentUtility');
+const SearchByHashObject = require('#src/dataLayer/SearchByHashObject');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
-const common = require('#js/utility/lmdb/commonUtility');
+const common = require('#src/utility/lmdb/commonUtility');
 
 const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';

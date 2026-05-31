@@ -5,6 +5,7 @@ import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry 
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { asBinary } from 'lmdb';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
 	// we want to be able to test log replay
@@ -124,7 +125,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		throw new Error('Not implemented');
 	}
 	addLogToMaps(logName: string, log: TransactionLog) {
-		const nodeId = (getIdOfRemoteNode(logName, this) ?? 0) as number;
+		// 'local' is always the local node's log, which maps to nodeId 0
+		const nodeId = (logName === 'local' ? 0 : getIdOfRemoteNode(logName, this)) as number;
 		if (this.nodeLogs) {
 			this.nodeLogs![nodeId] ??= log;
 		}
@@ -235,35 +237,53 @@ export class RocksTransactionLogStore extends EventEmitter {
 
 			aggregateIterator = {
 				next() {
-					if (nextEntries.length === 0) {
-						// on the first iteration and any time we finished all the iterators, we re-retrieve all
-						// the next entries (in case we are resuming after being done)
-						updateIterators();
-					}
-					let earliest: TransactionEntry;
-					let earliestIndex = -1;
-					for (let i = 0; i < nextEntries.length; i++) {
-						const result = nextEntries[i];
-						// skip any that are done
-						if (result.done) {
-							continue;
+					// We get up to two passes: the normal find-earliest pass, plus one retry that
+					// forces nextEntries.length = 0 to re-poll every per-log iterator (each picks
+					// up new entries when its log file has grown since the last `.next()` returned
+					// done) and to let updateIterators pick up any new logs added since the last
+					// call (e.g. a peer's log created by replication). Without the retry, a
+					// `{ done: true }` slot in nextEntries carried over from a previous call
+					// persists across a burst of commits that all coalesce into a single
+					// notifyFromTransactionData wake-up — the find-earliest loop keeps skipping
+					// the stale done slot, never re-polls the underlying iterator, and the entire
+					// burst is silently dropped (no further 'committed' arrives to unstick us).
+					// This was the fingerprint of the cloneNode topology bug where peer rows
+					// landed in hdb_nodes via system-DB replication but subscribeToNodeUpdates
+					// never received the events, so onNodeUpdate never opened replication
+					// connections to those peers.
+					for (let attempt = 0; attempt < 2; attempt++) {
+						if (nextEntries.length === 0) {
+							// on the first iteration and any time we finished all the iterators,
+							// we re-retrieve all the next entries (in case we are resuming after
+							// being done)
+							updateIterators();
 						}
-						// find the earliest one that is not done
-						const next = result.value;
-						if (!earliest || earliest.timestamp > next.timestamp) {
-							earliest = next;
-							earliestIndex = i;
+						let earliest: TransactionEntry;
+						let earliestIndex = -1;
+						for (let i = 0; i < nextEntries.length; i++) {
+							const result = nextEntries[i];
+							// skip any that are done
+							if (result.done) {
+								continue;
+							}
+							// find the earliest one that is not done
+							const next = result.value;
+							if (!earliest || earliest.timestamp > next.timestamp) {
+								earliest = next;
+								earliestIndex = i;
+							}
 						}
+						if (earliestIndex >= 0) {
+							// replace the entry with the next one from the iterator we pulled from
+							nextEntries[earliestIndex] = iterators[earliestIndex].next();
+							return {
+								value: onlyKeys ? earliest.timestamp : earliest,
+								done: false,
+							};
+						}
+						// All current entries are done; force the retry pass to re-poll
+						nextEntries.length = 0;
 					}
-					if (earliestIndex >= 0) {
-						// replace the entry with the next one from the iterator we pulled from
-						nextEntries[earliestIndex] = iterators[earliestIndex].next();
-						return {
-							value: onlyKeys ? earliest.timestamp : earliest,
-							done: false,
-						};
-					} // else we are done
-					nextEntries.length = 0; // reset so if this iterator is restarted, we can re-query
 					return { value: undefined, done: true };
 				},
 				addLog(logName: string) {
@@ -288,29 +308,53 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterable.iterate = () => aggregateIterator;
 		}
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
-			const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
-			data.dataView = decoder;
-			// This represents the data that shouldn't be transferred for replication
-			let structureVersion = decoder.getUint32(0);
-			let position = 4;
-			let previousResidencyId: number;
-			let previousVersion: number;
-			if (structureVersion & HAS_PREVIOUS_RESIDENCY_ID) {
-				previousResidencyId = decoder.getUint32(position);
-				position += 4;
+			// Per-entry try/catch: a corrupt rocks prelude (first 4-16 bytes) would otherwise
+			// throw a raw `RangeError: Offset is outside the bounds of the DataView` out
+			// through `iterable.map`, escape the for-of consumer, and land as an
+			// uncaughtException on a later tick — stalling outgoing replication at the
+			// failing offset on every catch-up attempt. On error, yield a sentinel record
+			// with the timestamp preserved so iteration advances past the bad entry;
+			// downstream consumers already skip records with no `tableId`/`type`.
+			try {
+				const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
+				(data as any).dataView = decoder;
+				// This represents the data that shouldn't be transferred for replication
+				let structureVersion = decoder.getUint32(0);
+				let position = 4;
+				let previousResidencyId: number;
+				let previousVersion: number;
+				if (structureVersion & HAS_PREVIOUS_RESIDENCY_ID) {
+					previousResidencyId = decoder.getUint32(position);
+					position += 4;
+				}
+				if (structureVersion & HAS_PREVIOUS_VERSION) {
+					// does previous residency id and version actually require separate flags?
+					previousVersion = decoder.getFloat64(position);
+					position += 8;
+				}
+				const auditRecord = readAuditEntry(data, position, undefined);
+				auditRecord.version = timestamp;
+				auditRecord.endTxn = endTxn;
+				auditRecord.previousResidencyId = previousResidencyId;
+				auditRecord.previousVersion = previousVersion;
+				auditRecord.structureVersion = structureVersion & 0x00ffffff;
+				return auditRecord;
+			} catch (error) {
+				harperLogger.error('Failed to decode rocks transaction log entry; skipping', error, {
+					timestamp,
+					byteLength: data?.byteLength,
+				});
+				return {
+					version: timestamp,
+					endTxn,
+					type: undefined,
+					tableId: undefined,
+					recordId: undefined,
+					getValue: () => undefined,
+					getBinaryValue: () => undefined,
+					getBinaryRecordId: () => undefined,
+				} as unknown as AuditRecord;
 			}
-			if (structureVersion & HAS_PREVIOUS_VERSION) {
-				// does previous residency id and version actually require separate flags?
-				previousVersion = decoder.getFloat64(position);
-				position += 8;
-			}
-			const auditRecord = readAuditEntry(data, position, undefined, true);
-			auditRecord.version = timestamp;
-			auditRecord.endTxn = endTxn;
-			auditRecord.previousResidencyId = previousResidencyId;
-			auditRecord.previousVersion = previousVersion;
-			auditRecord.structureVersion = structureVersion & 0x00ffffff;
-			return auditRecord;
 		});
 		// Add methods to the mapped iterable if we have an aggregate iterator
 		if (aggregateIterator?.addLog) {
@@ -342,7 +386,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	getUserSharedBuffer(key: string | symbol, defaultBuffer: ArrayBuffer, options?: { callback?: () => void }) {
 		return this.rootStore.getUserSharedBuffer(key, defaultBuffer, options);
 	}
-	on(eventName: string, listener: any) {
+	on(eventName: string, listener: any): any {
 		if (eventName === 'aftercommit') {
 			return super.on('aftercommit', listener);
 		} else {

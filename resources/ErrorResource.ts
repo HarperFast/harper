@@ -5,9 +5,10 @@ import type { Context } from './ResourceInterface.ts';
  * to access endpoints/resources that had an internal error in their configuration or setup. This helps ensure that
  * if there is a problem with a resource, it is immediately apparent and can be fixed.
  */
-export class ErrorResource implements Resource {
+export class ErrorResource extends Resource {
 	error: Error;
 	constructor(error: Error) {
+		super(null as any, null);
 		this.error = error;
 	}
 	isError = true;

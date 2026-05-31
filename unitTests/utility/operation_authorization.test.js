@@ -9,28 +9,29 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const _ = require('lodash');
 const rewire = require('rewire');
-const op_auth = require('#js/utility/operation_authorization');
-const op_auth_rewire = rewire('#js/utility/operation_authorization');
+const op_auth = require('#src/utility/operation_authorization');
+const op_auth_rewire = rewire('#src/utility/operation_authorization');
 const Permission_rw = op_auth_rewire.__get__('permission');
-const write = require('#js/dataLayer/insert');
+const write = require('#src/dataLayer/insert');
 const user = require('#src/security/user');
 const alasql = require('alasql');
-const search = require('#js/dataLayer/search');
-const restart = require('#js/bin/restart');
+const search = require('#src/dataLayer/search');
+const restart = require('#src/bin/restart');
 const configUtils = require('#js/config/configUtils');
-const jobs = require('#js/server/jobs/jobs');
+const jobs = require('#src/server/jobs/jobs');
 const terms = require('#src/utility/hdbTerms');
 
-const schema = require('#js/dataLayer/schema');
-const PermissionResponseObject = require('#js/security/data_objects/PermissionResponseObject');
-const PermissionTableResponseObject = require('#js/security/data_objects/PermissionTableResponseObject');
-const PermissionAttributeResponseObject = require('#js/security/data_objects/PermissionAttributeResponseObject');
+const schema = require('#src/dataLayer/schema');
+const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
+const PermissionTableResponseObject = require('#src/security/data_objects/PermissionTableResponseObject').default;
+const PermissionAttributeResponseObject =
+	require('#src/security/data_objects/PermissionAttributeResponseObject').default;
 const { TEST_SCHEMA_OP_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
 
-const serverUtilities_rw = rewire('#js/server/serverHelpers/serverUtilities');
+const serverUtilities_rw = rewire('#src/server/serverHelpers/serverUtilities');
 const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
 const OPERATION_MAP = initializeOperationFunctionMap_rw();
-rewire('#js/server/serverHelpers/serverUtilities');
+rewire('#src/server/serverHelpers/serverUtilities');
 
 const test_terms = testUtils.COMMON_TEST_TERMS;
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;
@@ -430,7 +431,7 @@ describe('Test operation_authorization', function () {
 		assert.deepEqual(missing_ops, []);
 	});
 
-	describe(`Test verifyPermsAst`, function () {
+	describe(`Test verifyPermsAST`, function () {
 		it('NOMINAL, test verify with proper syntax, expect true', function () {
 			let test_json = clone(TEST_INSERT_JSON);
 			let temp_insert = new alasql.yy.Insert(test_json);
@@ -438,7 +439,7 @@ describe('Test operation_authorization', function () {
 			req_json.hdb_user.role.permission.dev.tables.dog.insert = true;
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
 			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
-			let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
+			let result = op_auth_rewire.verifyPermsAST(temp_insert, req_json.hdb_user, write.insert.name);
 			assert.equal(result, null);
 		});
 
@@ -447,7 +448,7 @@ describe('Test operation_authorization', function () {
 			let temp_insert = new alasql.yy.Insert(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.insert = false;
-			let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
+			let result = op_auth_rewire.verifyPermsAST(temp_insert, req_json.hdb_user, write.insert.name);
 			assert.equal(result.unauthorized_access.length, 1);
 			assert.equal(result instanceof PermissionResponseObject, true);
 			assert.equal(result.unauthorized_access[0] instanceof PermissionTableResponseObject, true);
@@ -461,7 +462,7 @@ describe('Test operation_authorization', function () {
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
 			att_base[0].insert = false;
 			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
-			let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
+			let result = op_auth_rewire.verifyPermsAST(temp_insert, req_json.hdb_user, write.insert.name);
 			assert.equal(result.invalid_schema_items.length, 2);
 			assert.equal(result instanceof PermissionResponseObject, true);
 			assert.equal(result.unauthorized_access.length, 0);
@@ -476,7 +477,7 @@ describe('Test operation_authorization', function () {
 			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
 			let test_err;
 			try {
-				op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, 'fart');
+				op_auth_rewire.verifyPermsAST(temp_insert, req_json.hdb_user, 'fart');
 			} catch (e) {
 				test_err = e;
 			}
@@ -492,7 +493,7 @@ describe('Test operation_authorization', function () {
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
 			att_base[0].read = true;
 			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
-			let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
+			let result = op_auth_rewire.verifyPermsAST(temp_select, req_json.hdb_user, search.search.name);
 			assert.equal(result, null);
 		});
 
@@ -503,7 +504,7 @@ describe('Test operation_authorization', function () {
 			req_json.hdb_user.role.permission.dev.tables.dog.read = true;
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
 			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
-			let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
+			let result = op_auth_rewire.verifyPermsAST(temp_select, req_json.hdb_user, search.search.name);
 			assert.equal(result.unauthorized_access.length, 1);
 			assert.equal(result.invalid_schema_items.length, 0);
 			assert.equal(result instanceof PermissionResponseObject, true);
@@ -517,7 +518,7 @@ describe('Test operation_authorization', function () {
 			req_json.hdb_user.role.permission.dev.tables.dog.read = true;
 			let att_base = ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY], crud_keys.READ, true);
 			req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
-			let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
+			let result = op_auth_rewire.verifyPermsAST(temp_select, req_json.hdb_user, search.search.name);
 			assert.equal(result, null);
 		});
 
@@ -544,7 +545,7 @@ describe('Test operation_authorization', function () {
 				403
 			);
 			testUtils.assertErrorSync(
-				op_auth_rewire.verifyPermsAst,
+				op_auth_rewire.verifyPermsAST,
 				[temp_delete, req_json.hdb_user, 'delete'],
 				expected_error
 			);

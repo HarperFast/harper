@@ -1,14 +1,14 @@
 import { parentPort, threadId } from 'worker_threads';
 import { onMessageByType } from '../../server/threads/manageThreads.js';
-import { getDatabases, table } from '../databases.ts';
+import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
-import harperLogger from '../../utility/logging/harper_logger.js';
+import harperLogger from '../../utility/logging/harper_logger.ts';
 import { stat, readdir } from 'node:fs/promises';
 const { getLogFilePath, forComponent } = harperLogger;
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
-import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
-import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.js';
+import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
+import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
@@ -17,6 +17,7 @@ import { METRIC } from './metadata.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;
+const isBun = typeof globalThis.Bun !== 'undefined';
 
 initSync();
 
@@ -37,7 +38,19 @@ interface Action {
 
 let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+
+// Check read-only mode lazily to avoid circular dependency at module load time
+function checkAnalyticsEnabled(): boolean {
+	if (!analyticsReadOnlyChecked) {
+		analyticsReadOnlyChecked = true;
+		if (isReadOnlyMode()) {
+			analyticsEnabled = false;
+		}
+	}
+	return analyticsEnabled;
+}
 
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
@@ -47,7 +60,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
 
 function recordExistingAction(value: Value, action: Action) {
 	if (typeof value === 'number') {
-		let values: Float32Array = action.values;
+		let values: any = action.values;
 		const index = values.index++;
 		if (index >= values.length) {
 			const oldValues = values;
@@ -71,7 +84,7 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
 	if (typeof value === 'number') {
 		action.total = value;
 		action.values = new Float32Array(4);
-		action.values.index = 1;
+		(action.values as any).index = 1;
 		action.values[0] = value;
 		action.total = value;
 	} else if (typeof value === 'boolean') {
@@ -101,7 +114,7 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!analyticsEnabled) return;
+	if (!checkAnalyticsEnabled()) return;
 	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
@@ -151,7 +164,7 @@ function sendAnalytics() {
 		};
 		for (const [_name, action] of activeActions) {
 			if (action.values) {
-				const values = action.values.subarray(0, action.values.index);
+				const values = action.values.subarray(0, (action.values as any).index);
 				values.sort();
 				const count = values.length;
 				// compute the stats
@@ -214,6 +227,8 @@ function sendAnalytics() {
 }
 
 export async function recordHostname() {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const hostname = server.hostname;
 	log.trace?.('recordHostname server.hostname:', hostname);
 	const nodeId = stableNodeId(hostname);
@@ -224,7 +239,7 @@ export async function recordHostname() {
 		hostname,
 	};
 	log.trace?.(`recordHostname storing hostname: ${JSON.stringify(hostnameRecord)}`);
-	await hostnamesTable.put(hostnameRecord.id, hostnameRecord);
+	await (hostnamesTable as any).put(hostnameRecord.id, hostnameRecord);
 }
 
 export interface Metric {
@@ -244,6 +259,8 @@ function getHostNodeId(hostname: string) {
 }
 
 function storeMetric(table: Table, metric: Metric) {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const nodeId = getHostNodeId(server.hostname);
 	const metricValue = {
 		id: [getNextMonotonicTime(), nodeId],
@@ -317,8 +334,8 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 		try {
 			const [firstTable] = Object.values(tables);
 			const dbAuditSize = firstTable?.getAuditSize();
-			if (!dbAuditSize) {
-				return;
+			if (dbAuditSize == null) {
+				continue;
 			}
 			let metric;
 			if (firstTable.primaryStore instanceof RocksDatabase) {
@@ -363,7 +380,7 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 			const [firstTable] = Object.values(tables);
 			const storageStats = firstTable?.getStorageStats();
 			if (!storageStats) {
-				return;
+				continue;
 			}
 			const metric = {
 				metric: METRIC.STORAGE_VOLUME,
@@ -425,7 +442,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		await stat(getLogFilePath());
 		const delay = performance.now() - start;
 		if (delay > 5000) {
-			log.warn?.('Unusually high task queue latency on the main thread of ' + Math.round(now - start) + 'ms');
+			log.warn?.('Unusually high task queue latency on the main thread of ' + Math.round(delay) + 'ms');
 		}
 		return delay;
 	})();
@@ -565,7 +582,9 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		}
 	}
 	const now = Date.now();
-	const { idle, active } = performance.eventLoopUtilization();
+	const { idle, active } = (globalThis as any).Bun
+		? { idle: 0, active: 0 }
+		: (performance as any).eventLoopUtilization();
 	// don't record boring entries
 	if (hasUpdates || active * 10 > idle) {
 		const value = {
@@ -622,6 +641,8 @@ let lastResourceUsage: ResourceUsage = {
 const rest = () => new Promise(setImmediate);
 
 async function cleanup(AnalyticsTable, expiration) {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const end = Date.now() - expiration;
 	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
 		AnalyticsTable.primaryStore.remove(key);
@@ -694,11 +715,16 @@ function startScheduledTasks() {
 	nodeStorageInterval = envGet(CONFIG_PARAMS.ANALYTICS_STORAGEINTERVAL) ?? DEFAULT_STORAGE_INTERVAL;
 	const AGGREGATE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	if (AGGREGATE_PERIOD) {
+		// Clamp raw retention to at least one full aggregation period so raw records
+		// are never deleted before they can be rolled up.
+		const rawRetentionMs = Math.max(envGet(CONFIG_PARAMS.ANALYTICS_RAWRETENTIONMS) ?? RAW_EXPIRATION, AGGREGATE_PERIOD);
+		const aggregateRetentionMs = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATERETENTIONMS) ?? AGGREGATE_EXPIRATION;
 		setInterval(
 			async () => {
 				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
-				await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
-				await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
+				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
+				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
+				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);
 			},
 			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
 		).unref();
@@ -709,6 +735,8 @@ let totalBytesProcessed = 0;
 const lastUtilizations = new Map();
 const LOG_ANALYTICS = false; // TODO: Make this a config option if we really want this
 function recordAnalytics(message, worker?) {
+	// Skip writes in read-only mode
+	if (isReadOnlyMode()) return;
 	const report = message.report;
 	report.threadId = worker?.threadId || threadId;
 	// Add system information stats as well
@@ -718,7 +746,7 @@ function recordAnalytics(message, worker?) {
 		}
 	}
 	report.totalBytesProcessed = totalBytesProcessed;
-	if (worker) {
+	if (worker && !isBun) {
 		report.metrics.push({
 			metric: METRIC.UTILIZATION,
 			...worker.performance.eventLoopUtilization(lastUtilizations.get(worker)),

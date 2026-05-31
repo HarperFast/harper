@@ -9,14 +9,17 @@ describe('ComponentLoader Status Integration', function () {
 	let tempDir;
 	let componentLoader;
 	let lifecycle;
+	let sandbox;
 
 	before(function () {
+		sandbox = sinon.createSandbox();
+
 		// Create a temporary directory for test components
 		tempDir = mkdtempSync(path.join(tmpdir(), 'harper-test-components-'));
 
 		// Mock environment to use our temp directory
-		const env = require('#js/utility/environment/environmentManager');
-		sinon.stub(env, 'get').callsFake((key) => {
+		const env = require('#src/utility/environment/environmentManager');
+		sandbox.stub(env, 'get').callsFake((key) => {
 			if (key === 'COMPONENTSROOT') {
 				return tempDir;
 			}
@@ -35,20 +38,20 @@ describe('ComponentLoader Status Integration', function () {
 		componentStatusRegistry = internal.componentStatusRegistry;
 
 		// Spy on lifecycle methods (which componentLoader uses)
-		sinon.spy(lifecycle, 'loading');
-		sinon.spy(lifecycle, 'loaded');
-		sinon.spy(lifecycle, 'failed');
+		sandbox.spy(lifecycle, 'loading');
+		sandbox.spy(lifecycle, 'loaded');
+		sandbox.spy(lifecycle, 'failed');
 
 		// Also spy on registry methods for other tests
-		sinon.spy(componentStatusRegistry, 'initializeLoading');
-		sinon.spy(componentStatusRegistry, 'markLoaded');
-		sinon.spy(componentStatusRegistry, 'markFailed');
-		sinon.spy(componentStatusRegistry, 'setStatus');
-		sinon.spy(componentStatusRegistry, 'getStatus');
+		sandbox.spy(componentStatusRegistry, 'initializeLoading');
+		sandbox.spy(componentStatusRegistry, 'markLoaded');
+		sandbox.spy(componentStatusRegistry, 'markFailed');
+		sandbox.spy(componentStatusRegistry, 'setStatus');
+		sandbox.spy(componentStatusRegistry, 'getStatus');
 
 		// Mock getConfigObj to avoid loading real config for root components
 		const configUtils = require('#js/config/configUtils');
-		sinon.stub(configUtils, 'getConfigObj').returns({});
+		sandbox.stub(configUtils, 'getConfigObj').returns({});
 
 		// Clear the componentLoader from require cache to ensure it gets our spied lifecycle
 		delete require.cache[require.resolve('#src/components/componentLoader')];
@@ -58,8 +61,8 @@ describe('ComponentLoader Status Integration', function () {
 	});
 
 	after(function () {
-		// Restore all spies
-		sinon.restore();
+		// Restore only this test suite's stubs/spies
+		sandbox.restore();
 
 		// Clean up temp directory
 		if (tempDir && existsSync(tempDir)) {
@@ -153,7 +156,57 @@ describe('ComponentLoader Status Integration', function () {
 			assert.match(loadedCalls[0].args[1], /loaded successfully/);
 		});
 
-		it('should mark component as failed when it loads no functionality', async function () {
+		it('should expose ensureTable on handleApplication scope with component origin', async function () {
+			const componentDirName = 'scope-ensure-table-component';
+			const componentDir = path.join(tempDir, componentDirName);
+			const pluginName = 'scopeEnsureTablePlugin';
+			const origin = 'test-origin';
+			let capturedScope;
+
+			mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${pluginName}: {}`);
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+				handleApplication(scope) {
+					capturedScope = scope;
+				},
+			};
+
+			try {
+				await componentLoader.loadComponent(
+					componentDir,
+					{
+						isWorker: true,
+						set: sinon.stub(),
+					},
+					origin
+				);
+			} finally {
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			}
+
+			assert.equal(typeof capturedScope?.ensureTable, 'function', 'scope.ensureTable should be exposed');
+
+			let assignedOrigin;
+			const options = new Proxy(
+				{},
+				{
+					set(target, property, value) {
+						if (property === 'origin') {
+							assignedOrigin = value;
+							throw new Error('stop before table call');
+						}
+						return Reflect.set(target, property, value);
+					},
+				}
+			);
+
+			assert.throws(() => capturedScope.ensureTable(options), /stop before table call/);
+			assert.equal(assignedOrigin, origin, 'scope.ensureTable should preserve the component origin');
+		});
+
+		// TODO: Does the plugin API have an equivalent mechanism?
+		it.skip('should mark component as failed when it loads no functionality', async function () {
 			// Create a component directory without config
 			// This will use DEFAULT_CONFIG but won't actually load anything
 			const componentDirName = 'empty-component';

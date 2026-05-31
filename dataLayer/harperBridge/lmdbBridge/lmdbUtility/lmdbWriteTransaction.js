@@ -1,15 +1,15 @@
 'use strict';
 
-const environmentUtil = require('../../../../utility/lmdb/environmentUtility.js');
+const environmentUtil = require('../../../../utility/lmdb/environmentUtility.ts');
 const LMDBInsertTransactionObject = require('./LMDBInsertTransactionObject.js');
 const LMDBUpdateTransactionObject = require('./LMDBUpdateTransactionObject.js');
 const LMDBUpsertTransactionObject = require('./LMDBUpsertTransactionObject.js');
 const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject.js');
 
-const lmdbTerms = require('../../../../utility/lmdb/terms.js');
-const hdbUtil = require('../../../../utility/common_utils.js');
+const lmdbTerms = require('../../../../utility/lmdb/terms.ts');
+const hdbUtil = require('../../../../utility/common_utils.ts');
 const { CONFIG_PARAMS } = require('../../../../utility/hdbTerms.ts');
-const envMngr = require('../../../../utility/environment/environmentManager.js');
+const envMngr = require('../../../../utility/environment/environmentManager.ts');
 envMngr.initSync();
 
 const OPERATIONS_ENUM = require('../../../../utility/hdbTerms.ts').OPERATIONS_ENUM;

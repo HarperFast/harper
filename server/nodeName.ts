@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { X509Certificate } from 'node:crypto';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 import { logger } from '../utility/logging/logger.ts';
+import { server } from './Server.ts';
 
 Object.defineProperty(server, 'hostname', {
 	get() {

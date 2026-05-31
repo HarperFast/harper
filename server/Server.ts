@@ -37,11 +37,16 @@ export interface Server {
 	shards: Map<number, string[]>;
 	hostname: string;
 	resources: Resources;
+	knownGraphQLDirectives?: string[];
+	onInvalidatedUser(callback: () => void): void;
 	replication: {
-		replicateOperation(operation: {
-			replicated: boolean;
-			[key: string]: any;
-		}): Promise<{ message: string; replicated?: unknown[] }>;
+		replicateOperation(
+			operation: {
+				replicated: boolean;
+				[key: string]: any;
+			},
+			options?: { onPeerResult?: (result: any) => void }
+		): Promise<{ message: string; replicated?: unknown[] }>;
 		monitorNodeCAs(listener: () => void): void;
 		sendOperationToNode(node: string, operation: any, options: any): Promise<any>;
 	};
@@ -56,18 +61,32 @@ export interface ServerOptions {
 	securePort?: number;
 	mtls?: boolean;
 	usageType?: string;
+	/** @deprecated Use `before` or `after` for explicit ordering instead */
+	runFirst?: boolean;
+	/** Name for this middleware entry, used by `before`/`after` in other entries. Defaults to the registering component's name. */
+	name?: string;
+	/** This middleware must run before the named middleware */
+	before?: string;
+	/** This middleware must run after the named middleware */
+	after?: string;
+	/** Only handle requests whose pathname starts with this prefix */
+	urlPath?: string;
+	/** Only handle requests for this virtual hostname */
+	host?: string;
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;
 }
-export interface UpgradeOptions {
-	port?: number;
-	securePort?: number;
-	runFirst?: boolean;
-}
+export interface UpgradeOptions extends ServerOptions {}
 
 export interface HttpOptions extends ServerOptions {
 	runFirst?: boolean;
+	logging?: {
+		id?: boolean;
+		timing?: boolean;
+		headers?: boolean;
+	};
+	lastModified?: boolean;
 }
 export interface ContentTypeHandler {
 	serialize(data: any): Buffer | string;
@@ -78,17 +97,17 @@ export interface ContentTypeHandler {
 
 export const server: Server = {
 	replication: {
-		replicateOperation(operation) {
+		replicateOperation(operation, _options) {
 			return operation.replicated
 				? Promise.reject(new Error('Replication not implemented.'))
 				: Promise.resolve({ message: '' });
 		},
-		monitorNodeCAs(_listener: () => void) {
+		monitorNodeCAs(_listener) {
 			throw new Error('Replication not implemented.');
 		},
 		sendOperationToNode() {
 			return Promise.reject(new Error('Replication not implemented.'));
 		},
 	},
-};
+} as any;
 _assignPackageExport('server', server);

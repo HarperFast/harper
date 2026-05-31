@@ -1,3 +1,6 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { testData } from '../config/envConfig.mjs';
@@ -10,7 +13,14 @@ describe('27. HTTP Header Tests', () => {
 
 	it('Add component for header/cookie tests', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'headerTests' })
+			.send({
+				operation: 'add_component',
+				project: 'headerTests',
+				template:
+					process.platform === 'win32'
+						? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz')
+						: undefined,
+			})
 			.expect((r) => {
 				const res = JSON.stringify(r.body);
 				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'), r.text);

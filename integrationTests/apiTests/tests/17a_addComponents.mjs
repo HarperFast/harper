@@ -1,3 +1,6 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { testData } from '../config/envConfig.mjs';
@@ -10,7 +13,14 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 	it('Add component for computed properties', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'computed' })
+			.send({
+				operation: 'add_component',
+				project: 'computed',
+				template:
+					process.platform === 'win32'
+						? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz')
+						: undefined,
+			})
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed'), r.text))
 			.expect(200);
 	});
@@ -43,7 +53,14 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 	it('Add component for graphql and rest tests', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'appGraphQL' })
+			.send({
+				operation: 'add_component',
+				project: 'appGraphQL',
+				template:
+					process.platform === 'win32'
+						? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz')
+						: undefined,
+			})
 			.expect((r) => {
 				const res = JSON.stringify(r.body);
 				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'), r.text);
@@ -78,7 +95,14 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 	it('Add default component for openapi endpoint', () => {
 		return req()
-			.send({ operation: 'add_component', project: 'myApp111' })
+			.send({
+				operation: 'add_component',
+				project: 'myApp111',
+				template:
+					process.platform === 'win32'
+						? 'file:' + join(__dirname, '../../fixtures/application-template-1.0.0.tgz')
+						: undefined,
+			})
 			.expect((r) =>
 				assert.ok(
 					JSON.stringify(r.body).includes('Successfully added project') ||

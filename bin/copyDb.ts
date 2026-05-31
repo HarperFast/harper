@@ -1,19 +1,21 @@
 import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases.ts';
-import { open } from 'lmdb';
+import { open, asBinary } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
-import { get } from '../utility/environment/environmentManager.js';
-import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
-import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
-import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.js';
+import { get } from '../utility/environment/environmentManager.ts';
+import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
+import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
+import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
-import { describeSchema } from '../dataLayer/schemaDescribe.js';
+import { describeSchema } from '../dataLayer/schemaDescribe.ts';
 import { updateConfigValue } from '../config/configUtils.js';
-import * as hdbLogger from '../utility/logging/harper_logger.js';
+import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
+import { encodeBlobsWithFilePath } from '../resources/blob.ts';
+import { RecordEncoder, setNextEncoding, lastMetadata, METADATA } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');
@@ -161,7 +163,7 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 	const sourceDbisDb = rootStore.dbisDb;
 	const sourceAuditStore = rootStore.auditStore;
 	const targetEnv = open(new OpenEnvironmentObject(targetDatabasePath));
-	const targetDbisDb = targetEnv.openDB(INTERNAL_DBIS_NAME);
+	const targetDbisDb = targetEnv.openDB({ name: INTERNAL_DBIS_NAME });
 	let written;
 	let outstandingWrites = 0;
 	// we use a single transaction to get a snapshot, also we can't use snapshot: false on dupsort dbs
@@ -194,8 +196,8 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 			sourceDbi.decoderCopies = false;
 			sourceDbi.encoding = 'binary';
 			dbiInit.compression = newCompression;
-			const targetDbi = targetEnv.openDB(key, dbiInit);
-			targetDbi.encoder = null;
+			const targetDbi = (targetEnv as any).openDB(key, dbiInit);
+			(targetDbi as any).encoder = null;
 			console.log('copying', key, 'from', sourceDatabase, 'to', targetDatabasePath);
 			await copyDbi(sourceDbi, targetDbi, isPrimary, transaction);
 		}
@@ -289,7 +291,7 @@ function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: b
 	}
 	let db;
 	if (options.dupSort) {
-		db = RocksDatabase.open(new RocksIndexStore(path, options));
+		db = new (RocksIndexStore as any)(path, options).open();
 	} else {
 		db = RocksDatabase.open(path, options);
 		db.encoder.name = options.name;
@@ -304,11 +306,11 @@ export async function migrateOnStart() {
 	const rootPath = get(CONFIG_PARAMS.ROOTPATH);
 	const databases = getDatabases();
 
-	updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
-
 	try {
-		for (const databaseName in databases) {
-			if (databaseName === 'system') continue;
+		let databaseNames = Object.keys(databases);
+		// system is a dontenum property, so we have to manually add it
+		if (!databaseNames.includes('system')) databaseNames.push('system');
+		for (const databaseName of databaseNames) {
 			if (databaseName.endsWith('-copy')) continue;
 			let rootStore;
 			for (const tableName in databases[databaseName]) {
@@ -358,6 +360,9 @@ export async function migrateOnStart() {
 			}
 		}
 
+		// Only clear the flag after all databases have migrated successfully
+		updateConfigValue(CONFIG_PARAMS.STORAGE_MIGRATEONSTART, false);
+
 		try {
 			resetDatabases();
 		} catch (err) {
@@ -371,7 +376,7 @@ export async function migrateOnStart() {
 	}
 }
 
-async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
+export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
 	console.log(`Migrating database ${sourceDatabase} to RocksDB at ${targetPath}`);
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
@@ -380,6 +385,16 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 		disableWAL: false,
 		name: INTERNAL_DBIS_NAME,
 	});
+
+	const STRUCTURES_KEY = Symbol.for('structures');
+	const copyStructures = (sourceDbi, storeName: string) => {
+		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
+		if (buffer) {
+			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(buffer));
+		}
+	};
+
+	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME);
 
 	let written;
 	let outstandingWrites = 0;
@@ -390,16 +405,37 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 			targetDbisDb.put(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 
-			// Open source LMDB dbi with default encoding so values are decoded
+			// Open source LMDB dbi with default encoding so values are decoded.
+			// Compression must be passed through from the attribute descriptor so lmdb-js
+			// installs its decompression layer; without it, compressed record/structure bytes
+			// are interpreted as raw msgpack, which on records that reference shared structures
+			// triggers infinite getStructures recursion → "Maximum call stack size exceeded".
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
+			dbiInit.compression = attribute.compression;
 			const sourceDbi = sourceRootStore.openDB(key, dbiInit);
+			// The primary dbi uses a RecordEncoder, whose decode resolves file-backed blob references
+			// against `rootStore`. Without it, decoding any record that holds a blob throws "No store
+			// specified, cannot load blob from storage", the error is swallowed (record decodes to null),
+			// and the record is silently dropped from the migration (HarperFast/harper#857).
+			if (isPrimary && sourceDbi.encoder) sourceDbi.encoder.rootStore = sourceRootStore;
 
 			let targetDbi;
 			if (!isPrimary) {
 				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
 			} else {
 				targetDbi = openRocksDb(targetPath, { name: key });
+				// Patch the existing encoder (encoder is a getter-only property on RocksDatabase, cannot be replaced)
+				// to install RecordEncoder's encode method so metadata headers (timestamps, HAS_BLOBS flag) are written
+				const existingEncoder = targetDbi.encoder as any;
+				existingEncoder.isRocksDB = true;
+				existingEncoder.rootStore = targetRootStore;
+				const tempEncoder = new RecordEncoder({ name: key }) as any;
+				existingEncoder.encode = tempEncoder.encode;
+				existingEncoder.saveStructures = tempEncoder.saveStructures;
+				existingEncoder.getStructures = tempEncoder.getStructures;
 			}
+
+			copyStructures(sourceDbi, key);
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
 			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction);
@@ -410,6 +446,15 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 		// A new audit store will be created automatically when the RocksDB database is opened.
 
 		await written;
+
+		// Preserve the node ID mapping from the LMDB audit store so replication can resume
+		// incrementally instead of triggering a full table copy after migration.
+		const REMOTE_NODE_IDS_KEY = Symbol.for('remote-ids');
+		const idMappingBytes = sourceRootStore.auditStore?.getBinary?.(REMOTE_NODE_IDS_KEY);
+		if (idMappingBytes) {
+			targetRootStore.putSync(REMOTE_NODE_IDS_KEY, asBinary(idMappingBytes));
+		}
+
 		console.log('migrated database ' + sourceDatabase + ' to RocksDB');
 	} finally {
 		transaction.done();
@@ -419,19 +464,46 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
-		let retries = 1000000;
+		const MAX_RETRIES = 1000;
+		let retries = MAX_RETRIES;
 		let start = null;
 		while (retries-- > 0) {
 			try {
 				if (isPrimary) {
-					for (const { key, value, version } of sourceDbi.getRange({ start, transaction, versions: true })) {
+					for (const {
+						key,
+						value,
+						version,
+						expiresAt: entryExpiresAt,
+						nodeId: entryNodeId,
+						residencyId: entryResidencyId,
+						metadataFlags: entryMetadataFlags,
+					} of sourceDbi.getRange({ start, transaction, versions: true })) {
 						try {
 							start = key;
+							if (typeof key === 'symbol') {
+								skippedRecord++;
+								continue;
+							}
 							if (value == null) {
 								skippedRecord++;
 								continue;
 							}
-							written = targetDbi.put(key, value, version);
+							// lastMetadata is set by RecordEncoder.decode for unpatched stores;
+							// entry fields are set by handleLocalTimeForGets for patched stores
+							const sourceMeta = lastMetadata;
+							setNextEncoding(
+								version,
+								entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
+								entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
+								entryNodeId ?? sourceMeta?.nodeId ?? -1,
+								entryResidencyId ?? sourceMeta?.residencyId ?? 0
+							);
+							written = encodeBlobsWithFilePath(
+								() => targetDbi.put(key, value, version),
+								typeof key === 'number' ? key : recordsCopied,
+								sourceRootStore
+							);
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;
 							if (outstandingWrites++ > 5000) {
@@ -453,6 +525,9 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 					for (const { key, value } of sourceDbi.getRange({ start, transaction })) {
 						try {
 							start = key;
+							if (typeof key === 'symbol') {
+								continue;
+							}
 							written = targetDbi.put(key, value);
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;
@@ -474,7 +549,11 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				}
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return;
-			} catch {
+			} catch (err) {
+				console.error(
+					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
+					err
+				);
 				if (typeof start === 'string') {
 					if (start === 'z') {
 						return console.error('Reached end of dbi', start, 'for', sourceDatabase);
@@ -484,5 +563,10 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				else return console.error('Unknown key type', start, 'for', sourceDatabase);
 			}
 		}
+		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and
+		// skips moving the LMDB files to backup, instead of leaving a partial copy.
+		throw new Error(
+			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${JSON.stringify(start)}`
+		);
 	}
 }

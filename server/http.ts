@@ -1,28 +1,33 @@
+// @ts-nocheck
 /**
  * This module represents the HTTP component for Harper, and receives the HTTP options and uses them to configure
  * HTTP servers
  */
+import { currentThreadId } from '@harperfast/rocksdb-js';
 import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
-import harperLogger from '../utility/logging/harper_logger.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
-import env from '../utility/environment/environmentManager.js';
+import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.js';
-import { getTicketKeys } from './threads/manageThreads.js';
-import { createTLSSelector } from '../security/keys.js';
+import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
+import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
-import { Request } from './serverHelpers/Request.ts';
+import { Request, BunRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
+import { mkdirSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
+import { makeCallbackChain as buildCallbackChain } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
 
 const { errorToString } = harperLogger;
@@ -33,9 +38,92 @@ server.upgrade = onUpgrade;
 const websocketServers = {};
 const httpServers = {},
 	httpChain = {},
-	httpResponders = [];
+	httpResponders: {
+		listener: Function;
+		port: number | string;
+		name?: string;
+		before?: string;
+		after?: string;
+		urlPath?: string;
+		host?: string;
+	}[] = [];
 let httpOptions: HttpOptions = {};
 export const universalHeaders: [string, string][] = [];
+// Bun-specific: stores fetch handler configs per port, used by threadServer.js to call Bun.serve()
+export const bunServeConfigs: Record<string | number, any> = {};
+// Bun-specific: stores non-function listeners (e.g. Fastify servers) per port for fallback delegation
+const bunFallbackServers: Record<string | number, any> = {};
+const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
+
+export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
+	udsCleanupPaths.push({ socketPath, yamlPath });
+}
+
+export function cleanupUdsFiles() {
+	for (const { socketPath, yamlPath } of udsCleanupPaths) {
+		try {
+			unlinkSync(socketPath);
+		} catch {}
+		try {
+			unlinkSync(yamlPath);
+		} catch {}
+	}
+}
+
+/** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
+export function writeUdsMetadata(yamlPath: string, port: number | string, secureServer: any) {
+	const contexts = secureServer.secureContexts;
+	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
+	yaml += `certificates:\n`;
+	if (contexts?.size > 0) {
+		const seen = new Set();
+		for (const [, ctx] of contexts) {
+			if (seen.has(ctx.name)) continue;
+			seen.add(ctx.name);
+			yaml += `  - name: ${JSON.stringify(ctx.name)}\n`;
+			yaml += `    hostnames:\n`;
+			for (const [h, c] of contexts) {
+				if (c.name === ctx.name) yaml += `      - ${JSON.stringify(h)}\n`;
+			}
+			if (ctx.options.key_file) {
+				yaml += `    privateKeyFile: ${JSON.stringify(join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'keys', ctx.options.key_file))}\n`;
+			}
+			if (ctx.options.cert) {
+				yaml += `    certificate: |\n`;
+				for (const line of ctx.options.cert.trimEnd().split('\n')) {
+					yaml += `      ${line}\n`;
+				}
+			}
+			if (ctx.certificateAuthorities?.length > 0) {
+				yaml += `    certificateAuthorities:\n`;
+				for (const [, ca] of ctx.certificateAuthorities) {
+					yaml += `      - |\n`;
+					for (const line of ca.trimEnd().split('\n')) {
+						yaml += `          ${line}\n`;
+					}
+				}
+			}
+		}
+	}
+	try {
+		writeFileSync(yamlPath, yaml);
+	} catch (error) {
+		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
+	}
+}
+
+/** Clean all files in the sockets directory. Call from main thread on process startup. */
+export function cleanupSocketsDirectory() {
+	if (!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) return;
+	const socketsDir = join(env.getHdbBasePath(), 'sockets');
+	try {
+		for (const file of readdirSync(socketsDir)) {
+			try {
+				unlinkSync(join(socketsDir, file));
+			} catch {}
+		}
+	} catch {}
+}
 
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
@@ -192,9 +280,22 @@ export function httpServer(listener, options) {
 	const servers = [];
 
 	for (const { port, secure } of getPorts(options)) {
-		servers.push(getHTTPServer(port, secure, options));
+		const getServer = isBun ? getBunHTTPServer : getHTTPServer;
+		servers.push(getServer(port, secure, options));
 		if (typeof listener === 'function') {
-			httpResponders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
+			const entry = {
+				listener,
+				port: options?.port || port,
+				name: options?.name ?? getComponentName(),
+				before: options?.before,
+				after: options?.after,
+				urlPath: options?.urlPath || undefined,
+				host: options?.host || undefined,
+			};
+			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
+		} else if (isBun) {
+			// On Bun, store non-function listeners (e.g. Fastify's http.Server) for fallback delegation
+			bunFallbackServers[port] = listener;
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
@@ -443,25 +544,300 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.isSecure = true;
 		}
 		registerServer(server, port);
+		// macOS doesn't support SO_REUSEPORT on all socket types; operations API also doesn't need it
+		if (isOperationsServer || process.platform === 'darwin') server.noReusePort = true;
+
+		// Operations API domain socket connections bypass auth (equivalent to local access)
+		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
+
+		// Create a corresponding Unix Domain Socket mirror for secure ports
+		if (secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
+			const socketsDir = join(env.getHdbBasePath(), 'sockets');
+			mkdirSync(socketsDir, { recursive: true });
+			const socketName = `${getWorkerIndex()}-${port}`;
+			const udsPath = join(socketsDir, `${socketName}.sock`);
+			const yamlPath = join(socketsDir, `${socketName}.yaml`);
+
+			// Create a plain HTTP server (no TLS) with the same request handler
+			const udsServer = createServer(
+				{
+					keepAliveTimeout,
+					headersTimeout,
+					requestTimeout,
+					highWaterMark: 128 * 1024,
+					noDelay: true,
+					keepAlive: true,
+					keepAliveInitialDelay: 600,
+					maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
+				},
+				(nodeRequest: IncomingMessage, nodeResponse: any) => {
+					const method = nodeRequest.method;
+					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
+					else throttledRequestHandler(nodeRequest, nodeResponse);
+				}
+			);
+
+			udsServer.isPerThreadSocket = true;
+			enableProxyProtocol(udsServer);
+			SERVERS[udsPath] = udsServer;
+			registerUdsCleanupPaths(udsPath, yamlPath);
+
+			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server);
+			options.SNICallback.ready.then(writeMetadata);
+			server.secureContextsListeners.push(writeMetadata);
+		}
 	}
 	return httpServers[port];
 }
 
-function makeCallbackChain(responders, portNum) {
-	let nextCallback = unhandled;
-	// go through the listeners in reverse order so each callback can be passed to the one before
-	// and then each middleware layer can call the next middleware layer
-	for (let i = responders.length; i > 0; ) {
-		const { listener, port } = responders[--i];
-		if (port === portNum || port === 'all') {
-			const callback = nextCallback;
-			nextCallback = (...args) => {
-				// for listener only layers, the response through
-				return listener(...args, callback);
-			};
+/**
+ * Bun-specific HTTP server setup. Instead of creating a Node http.Server, we store a fetch handler config
+ * that will be passed to Bun.serve() when listenOnPorts() is called in threadServer.js.
+ */
+function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions) {
+	const { usageType } = options || {};
+	const isOperationsServer = usageType === 'operations-api';
+	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
+	if (!httpServers[port]) {
+		const serverPrefix = isOperationsServer ? 'operationsApi_network' : (usageType ?? 'http');
+
+		const fetchHandler = async (webRequest: globalThis.Request, bunServer: any): Promise<Response> => {
+			const startTime = performance.now();
+			let requestId = 0;
+			try {
+				const request = new BunRequest(webRequest, bunServer, secure) as any;
+				if (isOperationsServer) request.isOperationsServer = true;
+				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
+				let response = await httpChain[port](request);
+				if (!response) {
+					response = unhandled(request);
+				}
+				if (!response.headers?.set) {
+					response.headers = new Headers(response.headers);
+				}
+				for (let [key, value] of universalHeaders) {
+					response.headers.set(key, value);
+				}
+				if (response.status === -1) {
+					const fallbackServer = bunFallbackServers[port];
+					if (fallbackServer) {
+						// Delegate to the fallback server (e.g. Fastify) via node:http compatibility.
+						// We create a Node-compatible IncomingMessage/ServerResponse and emit 'request'
+						// on the fallback server, then capture the response.
+						return await bunDelegateToNodeServer(fallbackServer, webRequest, request);
+					}
+					logBunRequest(request, 404, requestId, performance.now() - startTime);
+					return new Response('Not found\n', { status: 404 });
+				}
+				const status = response.status || 200;
+				const endTime = performance.now();
+				const executionTime = endTime - startTime;
+				let body = response.body;
+				const responseHeaders = new globalThis.Headers();
+				if (!response.handlesHeaders) {
+					const headers = response.headers || new Headers();
+					let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
+					if (response.wasCacheMiss) {
+						serverTiming += ', miss';
+					}
+					appendHeader(headers, 'Server-Timing', serverTiming, true);
+					// Convert Harper Headers to Web Headers
+					if (headers[Symbol.iterator]) {
+						for (const [name, value] of headers) {
+							if (Array.isArray(value)) {
+								for (const v of value) responseHeaders.append(name, v);
+							} else if (value != null) {
+								responseHeaders.set(name, String(value));
+							}
+						}
+					}
+					if (!body) {
+						if (request.method !== 'HEAD') {
+							responseHeaders.set('Content-Length', '0');
+						}
+						body = null;
+					} else if (body.length >= 0) {
+						if (typeof body === 'string') responseHeaders.set('Content-Length', String(Buffer.byteLength(body)));
+						else responseHeaders.set('Content-Length', String(body.length));
+					} else if (body instanceof Blob) {
+						if (body.size) responseHeaders.set('Content-Length', String(body.size));
+						body = body.stream();
+					}
+				}
+				// Propagate Connection: close so Bun closes the TCP connection after this response,
+				// preventing stale keep-alive sockets from causing silent hangs on subsequent requests.
+				if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
+					responseHeaders.set('connection', 'close');
+				}
+				const handlerPath = request.handlerPath;
+				const method = request.method;
+				recordAction(
+					executionTime,
+					'duration',
+					handlerPath,
+					method,
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
+				);
+				recordActionBinary(status < 400, 'success', handlerPath, method);
+				recordActionBinary(1, 'response_' + status, handlerPath, method);
+				logBunRequest(request, status, requestId, executionTime);
+				// Convert body to something Bun's Response can accept
+				if (body instanceof ReadableStream) {
+					return new Response(body, { status, headers: responseHeaders });
+				}
+				if (body?.[Symbol.iterator] || body?.[Symbol.asyncIterator]) {
+					body = Readable.from(body);
+				}
+				if (body?.pipe) {
+					// Some streams (e.g. SendStream from 'send') call setHeader/writeHead on the
+					// pipe destination, expecting an http.ServerResponse. Use a Writable with a
+					// minimal shim so those calls capture headers, and buffer the data before
+					// returning a Response (avoids Readable.toWeb() compat issues with Bun).
+					const chunks: Buffer[] = [];
+					const buffer = await new Promise<Buffer>((resolve, reject) => {
+						const dest = new Writable({
+							write(chunk, _encoding, callback) {
+								chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+								callback();
+							},
+							final(callback) {
+								callback();
+								resolve(Buffer.concat(chunks));
+							},
+						});
+						Object.assign(dest, {
+							setHeader: (n: string, v: string) => responseHeaders.set(n, String(v)),
+							getHeader: (n: string) => responseHeaders.get(n),
+							removeHeader: (n: string) => responseHeaders.delete(n),
+							writeHead: (_s: number, hdrs?: any) => {
+								if (hdrs) for (const [k, v] of Object.entries(hdrs)) responseHeaders.set(k, String(v));
+							},
+							statusCode: status,
+							headersSent: false,
+							// 'on-finished' (used by 'send') checks msg.finished to see if stream is done.
+							// Writable.finished is undefined in Bun (not boolean), so isFinished() returns undefined
+							// which !== false, causing on-finished to call cleanup() immediately and destroy the
+							// ReadStream before data flows. Setting finished: false makes it wait for 'finish' event.
+							finished: false,
+						});
+						body.on('error', reject);
+						dest.on('error', reject);
+						body.pipe(dest);
+					});
+					responseHeaders.set('Content-Length', String(buffer.length));
+					return new Response(buffer, { status, headers: responseHeaders });
+				}
+				if (body?.then) {
+					body = await body;
+				}
+				return new Response(body, { status, headers: responseHeaders });
+			} catch (error) {
+				const status = error.statusCode || 500;
+				logBunRequest(null, status, requestId, performance.now() - startTime);
+				if (error.statusCode) {
+					if (error.statusCode === 500) harperLogger.warn(error);
+					else harperLogger.info(error);
+				} else harperLogger.error(error);
+				return new Response(errorToString(error), { status });
+			}
+		};
+
+		// Store the config for Bun.serve() — will be started by threadServer.js listenOnPorts()
+		const config: any = {
+			fetch: fetchHandler,
+			reusePort: process.platform !== 'darwin' && process.platform !== 'win32',
+		};
+		if (secure) {
+			// TLS config for Bun
+			const mtls = env.get(serverPrefix + '_mtls');
+			const tlsSelector = createTLSSelector(usageType ?? 'server', mtls);
+			// Create a pseudo-server object so the TLS selector can store secureContexts on it
+			const pseudoServer: any = { ports: [port], secureContexts: null, secureContextsListeners: [] };
+			tlsSelector.initialize(pseudoServer);
+			config.tlsSelector = tlsSelector;
+			config.pseudoServer = pseudoServer;
+			config.isSecure = true;
+		}
+
+		// Operations API domain socket connections bypass auth
+		if (isOperationsServer && String(port).includes('/')) config.bypassLocalAuth = true;
+
+		bunServeConfigs[port] = config;
+		httpServers[port] = config; // sentinel so we don't create twice
+	}
+	return httpServers[port];
+}
+
+/**
+ * Bridge a Bun fetch request to a Node.js http.Server (e.g. Fastify) by using Fastify's inject()
+ * method to send the request through its internal router without needing a real socket.
+ */
+let bunFastifyInstances: Record<string | number, any> = {};
+export function registerBunFastifyInstance(port: string | number, instance: any) {
+	bunFastifyInstances[port] = instance;
+}
+const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
+
+async function bunDelegateToNodeServer(
+	nodeServer: any,
+	webRequest: globalThis.Request,
+	bunRequest?: any
+): Promise<Response> {
+	// Check if there's a Fastify instance registered for this port (preferred path)
+	for (const port in bunFallbackServers) {
+		if (bunFallbackServers[port] === nodeServer && bunFastifyInstances[port]) {
+			const fastify = bunFastifyInstances[port];
+			const url = new URL(webRequest.url);
+			const body = webRequest.body ? Buffer.from(await webRequest.arrayBuffer()) : undefined;
+			const headers: Record<string, string> = {};
+			webRequest.headers.forEach((value, key) => {
+				// Strip any forged pre-auth header from real clients
+				if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = value;
+			});
+			// If Harper's auth middleware authenticated this request without credentials (e.g. via
+			// AUTHORIZE_LOCAL for loopback connections in dev mode), pass the user so Fastify can
+			// skip its own auth. Only applies when there is no Authorization header — if credentials
+			// were provided, let Fastify's Passport validate them normally.
+			if (bunRequest?.user && !headers['authorization']) {
+				headers[INTERNAL_USER_HEADER] = JSON.stringify(bunRequest.user);
+			}
+			const injectResult = await fastify.inject({
+				method: webRequest.method,
+				url: url.pathname + url.search,
+				headers,
+				payload: body,
+			});
+			const webHeaders = new globalThis.Headers();
+			for (const [k, v] of Object.entries(injectResult.headers)) {
+				if (v != null) webHeaders.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+			}
+			// Propagate Connection: close so Bun closes the TCP connection after this response,
+			// preventing stale keep-alive sockets from causing silent hangs on subsequent requests.
+			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
+				webHeaders.set('connection', 'close');
+			}
+			return new Response(injectResult.rawPayload?.length > 0 ? injectResult.rawPayload : null, {
+				status: injectResult.statusCode,
+				headers: webHeaders,
+			});
 		}
 	}
-	return nextCallback;
+	// No Fastify instance found — return 404
+	return new Response('Not found\n', { status: 404 });
+}
+
+function makeCallbackChain(responders: typeof httpResponders, portNum: number | string, requestArgIndex: number = 0) {
+	return buildCallbackChain(
+		responders,
+		portNum,
+		unhandled,
+		() => {
+			harperLogger.warn(
+				`Cycle detected in middleware before/after ordering on port ${portNum}; falling back to registration order.`
+			);
+		},
+		requestArgIndex
+	);
 }
 function unhandled(request) {
 	if (request.user) {
@@ -495,7 +871,16 @@ const upgradeListeners = [],
 
 function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 	for (const { port } of getPorts(options)) {
-		upgradeListeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		const entry = {
+			listener,
+			port: options?.port || port,
+			name: options?.name ?? getComponentName(),
+			before: options?.before,
+			after: options?.after,
+			urlPath: options?.urlPath || undefined,
+			host: options?.host || undefined,
+		};
+		upgradeListeners[options?.runFirst ? 'unshift' : 'push'](entry);
 		upgradeChains[port] = makeCallbackChain(upgradeListeners, port);
 	}
 }
@@ -506,6 +891,12 @@ type OnWebSocketOptions = {
 	maxPayload?: number;
 	usageType?: string;
 	mtls?: boolean;
+	runFirst?: boolean;
+	name?: string;
+	before?: string;
+	after?: string;
+	urlPath?: string;
+	host?: string;
 };
 const websocketListeners = [],
 	websocketChains = {};
@@ -574,14 +965,83 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		servers.push(server);
 
-		websocketListeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
-		websocketChains[port] = makeCallbackChain(websocketListeners, port);
+		const wsEntry = {
+			listener,
+			port: options?.port || port,
+			name: options?.name ?? getComponentName(),
+			before: options?.before,
+			after: options?.after,
+			urlPath: options?.urlPath || undefined,
+			host: options?.host || undefined,
+		};
+		websocketListeners[options?.runFirst ? 'unshift' : 'push'](wsEntry);
+		websocketChains[port] = makeCallbackChain(websocketListeners, port, 1);
 
 		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
 		httpChain[port] = makeCallbackChain(httpResponders, port);
 	}
 
 	return servers;
+}
+
+// PROXY protocol v1 max header length per spec: 108 bytes
+const PROXY_V1_MAX_HEADER = 108;
+
+function enableProxyProtocol(httpServer) {
+	// In Node.js v24+, the HTTP parser's data path goes through the C++ stream layer
+	// and does not call socket.emit('data') via JavaScript method dispatch.
+	// Overriding socket.emit or socket.push has no effect on the HTTP parser's data intake.
+	//
+	// Instead: use process.nextTick inside the 'connection' handler to wrap the HTTP
+	// parser's 'data' listener after it has been registered (synchronously, by the HTTP
+	// parser's own 'connection' handler which runs right after ours).
+	// process.nextTick fires before any I/O callbacks, so it is guaranteed to run before
+	// the first network data chunk reaches the socket — making the interception race-free.
+	httpServer.prependListener('connection', (socket) => {
+		process.nextTick(() => {
+			// Capture the HTTP parser's 'data' listener(s) registered during this connection event.
+			const dataListeners = socket.listeners('data') as ((chunk: Buffer) => void)[];
+			if (dataListeners.length === 0) return;
+			socket.removeAllListeners('data');
+
+			let proxyDone = false;
+			socket.on('data', (chunk: Buffer) => {
+				if (!proxyDone) {
+					proxyDone = true;
+					// Fast path: PROXY v1 always starts with "PROXY " (0x50 0x52 0x4f 0x58 0x59 0x20)
+					if (
+						chunk.length >= 6 &&
+						chunk[0] === 0x50 &&
+						chunk[1] === 0x52 &&
+						chunk[2] === 0x4f &&
+						chunk[3] === 0x58 &&
+						chunk[4] === 0x59 &&
+						chunk[5] === 0x20
+					) {
+						const header = chunk.toString('latin1', 0, Math.min(PROXY_V1_MAX_HEADER, chunk.length));
+						const eol = header.indexOf('\r\n');
+						if (eol !== -1) {
+							// "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
+							const parts = header.slice(0, eol).split(' ');
+							if (parts.length === 6) {
+								// Override the UDS socket's undefined remoteAddress/remotePort with the real client values.
+								Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
+								Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
+							}
+							// Forward only the bytes after the PROXY header to the HTTP parser.
+							const rest = chunk.subarray(eol + 2);
+							if (rest.length > 0) {
+								for (const listener of dataListeners) listener.call(socket, rest);
+							}
+							return;
+						}
+					}
+				}
+				// Not a PROXY header (or already handled) — forward unchanged.
+				for (const listener of dataListeners) listener.call(socket, chunk);
+			});
+		});
+	});
 }
 
 function defaultNotFound(request, response) {
@@ -592,6 +1052,24 @@ function defaultNotFound(request, response) {
 }
 let httpLogger: any;
 
+function logBunRequest(request: any, status: number, requestId: number, executionTime?: number) {
+	const logging = httpOptions.logging;
+	if (logging) {
+		if (!httpLogger) {
+			httpLogger = harperLogger.forComponent('http');
+		}
+		const level = status < 400 ? 'info' : status === 500 ? 'error' : 'warn';
+		const method = request?.method || '?';
+		const url = request?.url || '?';
+		const protocol = request?.protocol === 'https' ? 'HTTPS' : 'HTTP';
+		httpLogger[level]?.(
+			`${method} ${url} ${protocol}/1.1${
+				logging.headers && request?.headers ? ' ' + headersToString(request.headers.asObject || {}) : ''
+			} ${status}${logging.timing && executionTime ? ' ' + executionTime.toFixed(2) + 'ms' : ''}${requestId ? ' id: ' + requestId : ''}`
+		);
+	}
+}
+
 export function logRequest(nodeRequest: IncomingMessage, status: number, requestId: number, executionTime?: number) {
 	const logging = httpOptions.logging;
 	if (logging) {
@@ -600,7 +1078,7 @@ export function logRequest(nodeRequest: IncomingMessage, status: number, request
 		}
 		const level = status < 400 ? 'info' : status === 500 ? 'error' : 'warn';
 		httpLogger[level]?.(
-			`${nodeRequest.method} ${nodeRequest.url} ${nodeRequest.socket.encrypted ? 'HTTPS' : 'HTTP'}/${nodeRequest.httpVersion}${
+			`${nodeRequest.method} ${nodeRequest.url} ${(nodeRequest.socket as any).encrypted ? 'HTTPS' : 'HTTP'}/${nodeRequest.httpVersion}${
 				logging.headers ? ' ' + headersToString(nodeRequest.headers) : ''
 			} ${status}${logging.timing && executionTime ? ' ' + executionTime.toFixed(2) + 'ms' : ''}${requestId ? ' id: ' + requestId : ''}`
 		);

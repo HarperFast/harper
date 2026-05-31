@@ -1,2 +1,5 @@
 static:
   files: 'web'
+graphqlSchema: # These reads GraphQL schemas to define the schema of database/tables/attributes.
+  files: '*.graphql' # looks for these files
+rest: true

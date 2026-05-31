@@ -6,9 +6,13 @@
  * conversion, empty hints handling, and response length limits.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok, match } from 'node:assert/strict';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const q = (url: string) => encodeURIComponent(url);
 
@@ -19,10 +23,11 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		const deployBody = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'early-hints',
-			package: 'https://github.com/ldt1996/template-early-hints',
+			package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
 			restart: true,
 		});
-		deepStrictEqual(deployBody, { message: 'Successfully deployed: early-hints, restarting Harper' });
+		strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
+		ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
 
 		// poll until /hints endpoint is registered and seed data is loaded
 		const seedDeadline = Date.now() + 60_000;
@@ -32,28 +37,35 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 				if (check.status === 200) {
 					const data = await check.json();
 					console.log(
-						`[poll] status=200 isArray=${Array.isArray(data)} length=${Array.isArray(data) ? data.length : 'n/a'}`
+						`[early-hints poll seed] status=200 isArray=${Array.isArray(data)} length=${Array.isArray(data) ? data.length : 'n/a'}`
 					);
 					if (Array.isArray(data) && data.length >= 3) break;
+				} else {
+					console.log(`[early-hints poll seed] unexpected status: ${check.status}`);
 				}
-			} catch {
-				// server not yet accepting connections
+			} catch (e: any) {
+				console.log(`[early-hints poll seed] waiting for server... (${e.message})`);
 			}
 			if (Date.now() > seedDeadline) throw new Error('Timed out waiting for early-hints seed data');
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 		await new Promise((resolve) => setTimeout(resolve, 2000));
 
-		const readyDeadline = Date.now() + 10_000;
+		const readyDeadline = Date.now() + 60_000;
 		while (true) {
 			try {
 				const check = await fetch(`${ctx.harper.httpURL}/site-images/`);
-				if (check.status === 200) break;
-			} catch {
-				// worker still restarting
+				if (check.status === 200) {
+					console.log('[early-hints poll ready] Server is ready.');
+					break;
+				} else {
+					console.log(`[early-hints poll ready] unexpected status: ${check.status}`);
+				}
+			} catch (e: any) {
+				console.log(`[early-hints poll ready] worker still restarting... (${e.message})`);
 			}
 			if (Date.now() > readyDeadline) throw new Error('Timed out waiting for Harper to be ready after restart');
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 	});
 

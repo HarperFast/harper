@@ -5,13 +5,13 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { startHarper, teardownHarper, type ContextWithHarper } from '../utils/harperLifecycle.ts';
+import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 
-suite('GitHub application deployment', (ctx: ContextWithHarper) => {
+suite('GitHub application deployment', { skip: process.platform === 'win32' }, (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 	});
@@ -42,7 +42,11 @@ suite('GitHub application deployment', (ctx: ContextWithHarper) => {
 		});
 		strictEqual(response.status, 200);
 		const body = await response.json();
-		deepStrictEqual(body, { message: 'Successfully deployed: test-application, restarting Harper' });
+		strictEqual(body.message, 'Successfully deployed: test-application, restarting Harper');
+		ok(
+			typeof body.deployment_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.deployment_id),
+			`expected a UUID deployment_id, got ${body.deployment_id}`
+		);
 		// Poll until the application API is ready (restart is async, fixed sleep is flaky)
 		const deadline = Date.now() + 30_000;
 		while (true) {

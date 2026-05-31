@@ -2,14 +2,14 @@ const fs = require('fs-extra');
 const assert = require('assert');
 const path = require('path');
 const sinon = require('sinon');
-const env_mgr = require('#js/utility/environment/environmentManager');
+const env_mgr = require('#src/utility/environment/environmentManager');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const config_utils = require('#js/config/configUtils');
 const copyDB = require('#src/bin/copyDb');
 const { resetDatabases } = require('#src/resources/databases');
-const { get: envGet } = require('#js/utility/environment/environmentManager');
-const { CONFIG_PARAMS } = require('#js/utility/hdbTerms');
+const { get: envGet } = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 describe('Test database copy and compact', () => {
 	const sandbox = sinon.createSandbox();

@@ -8,8 +8,8 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const alasql = require('alasql');
-const sql_statement_bucket = require('#js/sqlTranslator/sql_statement_bucket');
-const sql_statement_rewire = rewire('#js/sqlTranslator/sql_statement_bucket');
+const sql_statement_bucket = require('#src/sqlTranslator/sql_statement_bucket').default;
+const sql_statement_rewire = rewire('#src/sqlTranslator/sql_statement_bucket');
 
 //DELETE
 let TEST_DELETE_JSON = {
@@ -294,7 +294,7 @@ describe('Test sql_statement_bucket Class', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#js/sqlTranslator/sql_statement_bucket');
+		rewire('#src/sqlTranslator/sql_statement_bucket');
 	});
 
 	describe(`Test getDeleteAttributes`, function () {

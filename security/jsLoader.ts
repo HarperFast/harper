@@ -2,18 +2,19 @@ import { Resource } from '../resources/Resource.ts';
 import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
+import { models as harperModelsSingleton } from '../resources/models/Models.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
 import { ApplicationScope } from '../components/ApplicationScope.ts';
-import logger from '../utility/logging/harper_logger.js';
+import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
-import type { CompartmentOptions } from 'ses';
+import type {} from 'ses';
 import {
 	mkdirSync,
 	readFileSync,
@@ -38,6 +39,13 @@ const HARPER_MODULE_IDS = new Set([
 	'@harperfast/harper',
 	'@harperfast/harper-pro',
 ]);
+
+// `harper.models` (consumed by `getHarperExports`) and the top-level
+// `models` package export both point at the same process-wide `Models`
+// singleton declared in `resources/models/Models.ts`. The Models class has
+// no per-Scope or per-ApplicationScope state (registry + analytics writer
+// are process-singletons), so one shared instance is observationally
+// identical to the per-Scope instances built in `components/Scope.ts`.
 
 let lockedDown = false;
 /**
@@ -95,6 +103,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 			// is hidden behind a private symbol (arrowMessagePrivateSymbol)
 			// on the error object and the only way to access it is to use the
 			// internal util.decorateErrorStack() function
+			// @ts-ignore
 			const util = await import('internal/util');
 			util.default.decorateErrorStack(err);
 		} catch {
@@ -125,6 +134,83 @@ function parseJsonModule(source: string, url: string): any {
 		return JSON.parse(source);
 	} catch (err) {
 		throw new Error(`Failed to parse JSON module ${url}: ${err.message}`);
+	}
+}
+
+/**
+ * Walk an exports-map entry (string, array, or conditions object) with the given
+ * condition priority list and return the first matching path string, or null.
+ */
+function walkExportsConditions(entry: unknown, conditions: readonly string[]): string | null {
+	if (typeof entry === 'string') return entry;
+	if (Array.isArray(entry)) {
+		for (const e of entry) {
+			const r = walkExportsConditions(e, conditions);
+			if (r !== null) return r;
+		}
+		return null;
+	}
+	if (entry !== null && typeof entry === 'object') {
+		for (const cond of conditions) {
+			const val = (entry as Record<string, unknown>)[cond];
+			if (val !== undefined) {
+				const r = walkExportsConditions(val, conditions);
+				if (r !== null) return r;
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Resolve a bare package specifier to a file:// URL using the package's exports map
+ * with ESM import conditions. Used as a fallback when createRequire().resolve() throws
+ * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
+ * conditions and no "require").
+ */
+function resolveESMPackageExports(specifier: string, fromDir: string): string | null {
+	const isScoped = specifier.startsWith('@');
+	const parts = specifier.split('/');
+	const packageName = isScoped ? `${parts[0]}/${parts[1]}` : parts[0];
+	const subpathParts = parts.slice(isScoped ? 2 : 1);
+	const subpath = subpathParts.length > 0 ? './' + subpathParts.join('/') : '.';
+
+	let dir = fromDir;
+	while (true) {
+		const pkgRoot = join(dir, 'node_modules', packageName);
+		let pkgJson: any;
+		try {
+			pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf-8'));
+		} catch {
+			const parent = dirname(dir);
+			if (parent === dir) return null;
+			dir = parent;
+			continue;
+		}
+
+		if (!pkgJson.exports) return null;
+
+		const exportsMap = pkgJson.exports;
+		let entry: unknown;
+		if (typeof exportsMap === 'string') {
+			entry = subpath === '.' ? exportsMap : undefined;
+		} else if (exportsMap !== null && typeof exportsMap === 'object') {
+			const firstKey = Object.keys(exportsMap)[0];
+			if (firstKey?.startsWith('.')) {
+				// subpath map: { ".": ..., "./foo": ... }
+				entry = (exportsMap as Record<string, unknown>)[subpath];
+			} else {
+				// conditions map at root: { "import": ..., "require": ... }
+				entry = subpath === '.' ? exportsMap : undefined;
+			}
+		}
+
+		if (!entry) return null;
+
+		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
+		if (!relative) return null;
+
+		return pathToFileURL(join(pkgRoot, relative)).toString();
 	}
 }
 
@@ -181,11 +267,31 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (parts[0] === 'file:') {
 			return specifier;
 		}
-		const resolved = createRequire(referrer).resolve(specifier);
-		if (isAbsolute(resolved)) {
-			return pathToFileURL(resolved).toString();
+		let resolveReferrer = referrer;
+		if (referrer.startsWith('file:')) {
+			try {
+				resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
+			} catch {}
 		}
-		return resolved;
+		try {
+			const resolved = createRequire(resolveReferrer).resolve(specifier);
+			if (isAbsolute(resolved)) {
+				return pathToFileURL(resolved).toString();
+			}
+			return resolved;
+		} catch (err) {
+			if ((err as any)?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+				// Pure-ESM package: CJS resolver cannot match an exports map that only has
+				// "import" conditions (no "require"). Resolve the entry file by walking
+				// the filesystem and evaluating the exports map with ESM import conditions.
+				const referrerDir = resolveReferrer.startsWith('file:')
+					? dirname(fileURLToPath(resolveReferrer))
+					: dirname(resolveReferrer);
+				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
+				if (esmResolved) return esmResolved;
+			}
+			throw err;
+		}
 	}
 
 	/**
@@ -206,18 +312,30 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			cjsModule.exports = parseJsonModule(source, url);
 			return cjsModule;
 		}
-		const require = createRequire(url);
+		let requireUrl = url;
+		if (url.startsWith('file://')) {
+			try {
+				requireUrl = pathToFileURL(realpathSync(fileURLToPath(url))).toString();
+			} catch {}
+		}
+		const require = createRequire(requireUrl);
 
 		const cjsRequire = (spec: string) => {
-			const resolvedPath = require.resolve(spec);
-			if (isAbsolute(resolvedPath)) {
-				const source = readFileSync(resolvedPath, { encoding: 'utf-8' });
-				return loadCJS(resolvedPath, source).exports;
-			} else {
-				return require(spec);
+			const resolvedUrl = resolveModule(spec, url);
+			if (resolvedUrl === 'harper') {
+				return getHarperExports(scope);
 			}
+			if (resolvedUrl.startsWith('file://')) {
+				const source = readFileSync(new URL(resolvedUrl), { encoding: 'utf-8' });
+				return loadCJS(resolvedUrl, source).exports;
+			}
+			return require(resolvedUrl);
 		};
-		cjsRequire.resolve = require.resolve;
+		cjsRequire.resolve = (spec: string) => {
+			const resolvedUrl = resolveModule(spec, url);
+			if (resolvedUrl.startsWith('file://')) return fileURLToPath(resolvedUrl);
+			return resolvedUrl;
+		};
 
 		const cjsWrapper = `
 			(function(module, exports, require, __filename, __dirname) {
@@ -228,7 +346,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		const runOptions = {
 			filename: url,
 			async importModuleDynamically(specifier: string, script) {
-				const resolvedUrl = resolveModule(specifier, script.sourceURL);
+				const resolvedUrl = resolveModule(specifier, script?.sourceURL ?? url);
 				const useApplicationLoader = shouldUseApplicationLoader(specifier, resolvedUrl);
 				const dynamicModule = await loadModuleWithCache(resolvedUrl, useApplicationLoader);
 				return dynamicModule;
@@ -481,6 +599,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				context,
 				initializeImportMeta(meta) {
 					meta.url = url;
+					if (url.startsWith('file:')) {
+						meta.filename = fileURLToPath(url);
+						meta.dirname = dirname(meta.filename);
+					}
+					meta.resolve = (specifier: string) => resolveModule(specifier, url);
 				},
 				importModuleDynamically(specifier: string) {
 					const resolvedUrl = resolveModule(specifier, url);
@@ -526,7 +649,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 async function getCompartment(scope: ApplicationScope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
 	require('ses');
-	const compartment: CompartmentOptions = new (Compartment as typeof CompartmentOptions)(
+	const compartment: any = new (Compartment as any)(
 		globals,
 		{
 			//harperdb: { Resource, tables, databases }
@@ -660,6 +783,11 @@ function getHarperExports(scope: ApplicationScope) {
 		Resource,
 		tables,
 		databases,
+		// `harper.models` — same singleton that's surfaced as the top-level
+		// `models` package export (see `resources/models/Models.ts`).  The
+		// registry it reads from is populated at boot by
+		// `resources/models/bootstrap.ts`.
+		models: harperModelsSingleton,
 		createBlob,
 		RequestTarget,
 		getContext,
@@ -699,7 +827,7 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 			},
 		};
 const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
-const child_processConstrained = {
+const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
 	fork: createSpawn(child_process.fork, true), // this is launching node, so deemed safe
@@ -922,14 +1050,14 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
  */
 function checkAllowedModulePath(moduleUrl: string, allowedPath?: string): boolean {
 	if (moduleUrl.startsWith('file:')) {
-		let path = moduleUrl.slice(7);
+		let path = fileURLToPath(moduleUrl);
 		try {
 			path = realpathSync(path);
 		} catch {}
 		if (!allowedPath || path.startsWith(allowedPath)) {
 			return;
 		}
-		throw new Error(`Can not load module outside of allowed path`);
+		throw new Error(`Can not load module at ${path} outside of allowed path ${allowedPath}`);
 	}
 	let simpleName = moduleUrl.startsWith('node:') ? moduleUrl.slice(5) : moduleUrl;
 	simpleName = simpleName.split('/')[0];
@@ -937,14 +1065,14 @@ function checkAllowedModulePath(moduleUrl: string, allowedPath?: string): boolea
 	throw new Error(`Module ${moduleUrl} is not allowed to be imported`);
 }
 
-function getContext() {
+export function getContext() {
 	return contextStorage.getStore() ?? {};
 }
-function getUser() {
+export function getUser() {
 	return contextStorage.getStore()?.user;
 }
-function getResponse() {
-	return contextStorage.getStore()?.response;
+export function getResponse() {
+	return (contextStorage.getStore() as any)?.response;
 }
 
 export function preventFunctionConstructor() {
@@ -985,7 +1113,7 @@ function freezeIntrinsics() {
 		FinalizationRegistry,
 	]) {
 		Object.freeze(Intrinsic);
-		Object.freeze(Intrinsic.prototype);
+		Object.freeze((Intrinsic as any).prototype);
 	}
 	Object.freeze(Function);
 }

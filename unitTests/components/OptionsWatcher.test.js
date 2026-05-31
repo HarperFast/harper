@@ -534,6 +534,66 @@ describe('OptionsWatcher', () => {
 			));
 	});
 
+	describe('change event when root config value is a scalar', () => {
+		it('should handle updating from scalar to scalar without throwing', async () => {
+			const { fixture, configFilePath } = createFixture({ [NAME]: 'initialString' });
+			const options = new OptionsWatcher(NAME, configFilePath);
+			await options.ready;
+
+			const newValue = 'updatedString';
+			await assertEvent(
+				options,
+				'change',
+				() => writeFile(configFilePath, stringify({ [NAME]: newValue }), 'utf-8'),
+				(changeSpy) => {
+					assert.equal(changeSpy.callCount, 1);
+					assert.deepEqual(changeSpy.getCall(0).args, [[], newValue, newValue]);
+					assert.equal(options.getAll(), newValue);
+				}
+			);
+
+			await teardown({ fixture, options });
+		});
+
+		it('should handle updating from scalar to object without throwing', async () => {
+			const { fixture, configFilePath } = createFixture({ [NAME]: 'initialString' });
+			const options = new OptionsWatcher(NAME, configFilePath);
+			await options.ready;
+
+			const newValue = { foo: 'bar' };
+			await assertEvent(
+				options,
+				'change',
+				() => writeFile(configFilePath, stringify({ [NAME]: newValue }), 'utf-8'),
+				(changeSpy) => {
+					assert.equal(changeSpy.callCount, 1);
+					assert.deepEqual(changeSpy.getCall(0).args, [[], newValue, newValue]);
+					assert.deepEqual(options.getAll(), newValue);
+				}
+			);
+
+			await teardown({ fixture, options });
+		});
+
+		it('should handle updating from object to scalar without throwing', async () => {
+			const { fixture, configFilePath, options } = await setup();
+
+			const newValue = 'scalar';
+			await assertEvent(
+				options,
+				'change',
+				() => writeFile(configFilePath, stringify({ [NAME]: newValue }), 'utf-8'),
+				(changeSpy) => {
+					assert.equal(changeSpy.callCount, 1);
+					assert.deepEqual(changeSpy.getCall(0).args, [[], newValue, newValue]);
+					assert.equal(options.getAll(), newValue);
+				}
+			);
+
+			await teardown({ fixture, options });
+		});
+	});
+
 	it('should handle default config resolution', async () => {
 		this.timeout = 3000;
 		const { fixture, configFilePath } = createFixture();

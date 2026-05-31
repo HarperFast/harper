@@ -1,5 +1,5 @@
 import { realpathSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { Scope } from '../components/Scope';
 import send from 'send';
 
@@ -53,9 +53,10 @@ export function handleApplication(scope: Scope) {
 				// If the file is an index.html, also store it in the index entries
 				if (entry.urlPath.endsWith('index.html')) {
 					// Without trailing slash; null -> 301 redirect to trailing slash
-					indexEntries.set(dirname(entry.urlPath), null);
+					let lastSlashIndex = entry.urlPath.lastIndexOf('/');
+					indexEntries.set(entry.urlPath.slice(0, lastSlashIndex), null);
 					// With trailing slash; serves the index.html file
-					indexEntries.set(join(dirname(entry.urlPath), '/'), entry.absolutePath);
+					indexEntries.set(entry.urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
 				}
 				break;
 			case 'unlink':
@@ -63,7 +64,9 @@ export function handleApplication(scope: Scope) {
 				staticFiles.delete(entry.urlPath);
 				// If the file is an index.html, remove it from the index entries as well
 				if (entry.urlPath.endsWith('index.html')) {
-					indexEntries.delete(dirname(entry.urlPath));
+					let lastSlashIndex = entry.urlPath.lastIndexOf('/');
+					indexEntries.delete(entry.urlPath.slice(0, lastSlashIndex));
+					indexEntries.delete(entry.urlPath.slice(0, lastSlashIndex + 1));
 				}
 				break;
 		}
@@ -101,7 +104,7 @@ export function handleApplication(scope: Scope) {
 						return {
 							status: 301,
 							headers: {
-								Location: join(req.pathname, '/'),
+								Location: req.pathname + '/',
 							},
 						};
 					}
@@ -162,7 +165,7 @@ export function handleApplication(scope: Scope) {
 				body: send(req, realpathSync(notFoundPath)),
 			};
 		},
-		{ runFirst: true }
+		{ before: (scope.options.get(['before']) as string) ?? 'authentication' }
 	);
 }
 

@@ -2,8 +2,8 @@
 
 const hdbTerms = require('../hdbTerms.ts');
 const servicesConfig = require('./servicesConfig.js');
-const envMangr = require('../environment/environmentManager.js');
-const hdbLogger = require('../../utility/logging/harper_logger.js');
+const envMangr = require('../environment/environmentManager.ts');
+const hdbLogger = require('../../utility/logging/harper_logger.ts');
 const { onMessageFromWorkers } = require('../../server/threads/manageThreads.js');
 const fs = require('fs');
 const path = require('node:path');

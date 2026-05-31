@@ -1,11 +1,11 @@
 import { Readable } from 'stream';
-import * as harperLogger from '../../utility/logging/harper_logger.js';
+import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { when } from '../../utility/when.ts';
 import JSONbig from 'json-bigint-fixes';
 const JSONbigint = JSONbig({ useNativeBigInt: true });
 const BUFFER_SIZE = 10000;
 const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
-BigInt.prototype.toJSON = function () {
+(BigInt.prototype as any).toJSON = function () {
 	throw BIGINT_SERIALIZATION;
 };
 const { errorToString } = harperLogger;
@@ -14,16 +14,23 @@ export function streamAsJSON(value) {
 }
 // a readable stream for serializing a set of variables to a JSON stream
 class JSONStream extends Readable {
+	buffer: (string | Buffer)[];
+	bufferSize: number;
+	jsonIterator: Iterator<string | Buffer> | AsyncIterator<string | Buffer>;
+	activeIterators: (Iterator<any> | AsyncIterator<any>)[];
+	_amReading?: boolean;
+	done?: boolean;
+
 	constructor(options) {
 		// Calls the stream.Readable(options) constructor
 		super(options);
 		this.buffer = [];
 		this.bufferSize = 0;
-		this.iterator = this.serialize(options.value, true);
+		this.jsonIterator = this.serialize(options.value, true);
 		this.activeIterators = [];
 	}
 
-	*serialize(object) {
+	*serialize(object: any, _topLevel?: boolean): Generator<string | Buffer, string | Buffer | void, unknown> {
 		// using a generator to serialize JSON for convenience of recursive pause and resume functionality
 		// serialize a value to an iterator that can be consumed by streaming API
 		if (object && typeof object === 'object') {
@@ -112,7 +119,7 @@ class JSONStream extends Readable {
 			return this.push(null);
 		}
 		when(
-			this.readIterator(this.iterator),
+			this.readIterator(this.jsonIterator),
 			(done) => {
 				if (done) {
 					this.done = true;
@@ -152,6 +159,9 @@ class JSONStream extends Readable {
 
 	readIterator(iterator) {
 		try {
+			if (!iterator || typeof iterator.next !== 'function') {
+				console.error('DEBUG iterator is not valid:', typeof iterator, iterator);
+			}
 			// eventually we should be able to just put this around iterator.next()
 			let nextString;
 			if (iterator.childIterator) {

@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 const Stream = require('stream');
 const assert = require('assert');
 const rewire = require('rewire');
-const hdb_export = rewire('#js/dataLayer/export');
+const hdb_export = rewire('#src/dataLayer/export');
 const sinon = require('sinon');
 const fs = require('fs-extra');
 const { rm } = require('fs/promises');
@@ -34,7 +34,7 @@ describe('Test export.js', () => {
 	});
 
 	after(() => {
-		rewire('#js/dataLayer/export');
+		rewire('#src/dataLayer/export');
 		sandbox.restore();
 		try {
 			fs.removeSync(TMP_TEST_DIR);

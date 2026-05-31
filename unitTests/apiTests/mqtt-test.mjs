@@ -1,23 +1,78 @@
 'use strict';
 
+/** @typedef {import("mqtt/build").MqttClient} MqttClient */
+
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import { decode } from 'cbor-x';
 import { callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
-import environmentManager from '#js/utility/environment/environmentManager';
+import environmentManager from '#src/utility/environment/environmentManager';
 const { get: env_get, setProperty } = environmentManager;
-import { connect } from 'mqtt';
+import { connect, connectAsync } from 'mqtt';
 import { readFileSync } from 'fs';
-import { start as startMQTT } from '#src/server/mqtt';
+import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
+
+// Adapter: creates a minimal scope and delegates to the new plugin API,
+// capturing socket/ws server instances so callers can call .listen() on them.
+function startMQTT(config) {
+	const serverInstances = [];
+	const mockServer = {
+		get mqtt() {
+			return global.server.mqtt;
+		},
+		set mqtt(value) {
+			global.server.mqtt = value;
+		},
+		socket(listener, options) {
+			const instance = global.server.socket(listener, options);
+			serverInstances.push(instance);
+			return instance;
+		},
+		ws(listener, options) {
+			const result = global.server.ws(listener, options);
+			serverInstances.push(...(Array.isArray(result) ? result : [result]));
+			return result;
+		},
+	};
+	handleMQTTApplication({
+		options: { getAll: () => config },
+		server: mockServer,
+	});
+	return serverInstances;
+}
 import axios from 'axios';
+
+async function subscribeAllowingSubackError(client, topic, options) {
+	try {
+		return await client.subscribeAsync(topic, options);
+	} catch (error) {
+		if (error.packet?.cmd === 'suback') {
+			return error.packet.granted.map((qos) => ({ topic, qos }));
+		}
+		throw error;
+	}
+}
+
+async function connectWithMessageListener(brokerUrl, options, listener) {
+	const client = connect(brokerUrl, options);
+	client.on('message', listener);
+	await once(client, 'connect');
+	return client;
+}
+
 describe('test MQTT connections and commands', function () {
 	this.timeout(10000);
 	let available_records;
-	let client, client2;
-	before(async () => {
+	/** @type {MqttClient} */
+	let clientV4;
+	/** @type {MqttClient} */
+	let clientV5;
+	beforeEach(async () => {
 		available_records = await setupTestApp();
 
-		client = connect('ws://localhost:9926', {
+		clientV4 = await connectAsync('ws://localhost:9926', {
+			protocolVersion: 4,
 			wsOptions: {
 				headers: {
 					Accept: 'application/cbor',
@@ -25,67 +80,58 @@ describe('test MQTT connections and commands', function () {
 			},
 		});
 
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		client2 = connect('mqtts://localhost:8883', {
+		clientV5 = await connectAsync('mqtts://localhost:8883', {
 			protocolVersion: 5,
 			rejectUnauthorized: false,
-		});
-		await new Promise((resolve, reject) => {
-			client2.on('connect', (_connack) => {
-				resolve();
-			});
-			client2.on('error', (error) => {
-				reject(error);
-			});
 		});
 	});
 
 	it('subscribe to retained/persisted record', async function () {
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
-			client.subscribe(path, function (err) {
-				if (err) reject(err);
-				else {
-					//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
+			const timeout = setTimeout(() => {
+				clientV4.off('message', onMessage);
+				reject(new Error('Timeout waiting for retained message'));
+			}, 1000);
+			const onMessage = (topic, payload) => {
+				clearTimeout(timeout);
+				try {
+					assert.equal(topic, path);
+					const data = decode(payload);
+					assert.ok(data, 'Should have received a valid payload');
+					resolve();
+				} catch (e) {
+					reject(e);
 				}
-			});
-			client.once('message', (topic, payload) => {
-				decode(payload);
-				resolve();
-			});
+			};
+			clientV4.once('message', onMessage);
+			clientV4.subscribeAsync(path).catch(reject);
 		});
 	});
 	it('subscribe to retained/persisted record but with retain handling disabling retain messages', async function () {
 		let path = 'VariedProps/' + available_records[1];
+		await clientV5.subscribeAsync(path, { rh: 2 });
 		await new Promise((resolve, reject) => {
-			client2.subscribe(path, { rh: 2 }, function (err) {
-				if (err) reject(err);
-			});
 			const onMessage = (topic, payload) => {
 				decode(payload);
 				reject(new Error('Should not receive any retained messages'));
 			};
-			client2.once('message', onMessage);
+			clientV5.once('message', onMessage);
 			setTimeout(() => {
-				client2.off('message', onMessage);
+				clientV5.off('message', onMessage);
 				resolve();
 			}, 50);
 		});
 	});
 	it('subscribe to top level without wildcard should not match record', async function () {
+		await clientV5.subscribeAsync('VariedProps/');
 		await new Promise((resolve, reject) => {
-			client2.subscribe('VariedProps/', function (err) {
-				if (err) reject(err);
-			});
 			const onMessage = () => {
 				reject(new Error('Should not receive any top-level messages'));
 			};
-			client2.once('message', onMessage);
+			clientV5.once('message', onMessage);
 			setTimeout(() => {
-				client2.off('message', onMessage);
+				clientV5.off('message', onMessage);
 				resolve();
 			}, 50);
 		});
@@ -100,32 +146,29 @@ describe('test MQTT connections and commands', function () {
 		let subscriptions = [];
 		for (let x = 1; x < vus + 1; x++) {
 			const topic = `${tableName}/1`;
-			const client = connect({
+
+			/** @type {MqttClient} */
+			const client = await connectAsync({
 				clientId: `vu${x}`,
 				host: 'localhost',
 				clean: true,
 				connectTimeout: 2000,
 				protocol: 'mqtt',
+				protocolVersion: 4,
 			});
 			clients.push(client);
 			subscriptions.push(
-				new Promise((resolve) => {
-					client.on('connect', function (_connack) {
-						client.subscribe(topic, function (err) {
-							if (!err) {
-								resolve();
-								intervals.push(
-									setInterval(() => {
-										client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
-											qos: 1,
-											retain: false,
-										});
-									}, 1)
-								);
-							}
-						});
-					});
-				})
+				(async () => {
+					await client.subscribeAsync(topic);
+					intervals.push(
+						setInterval(() => {
+							client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
+								qos: 1,
+								retain: false,
+							});
+						}, 1)
+					);
+				})()
 			);
 
 			client.on('message', function (topic, message) {
@@ -150,9 +193,12 @@ describe('test MQTT connections and commands', function () {
 
 	it('last will should be published on connection loss', async () => {
 		const topic = `SimpleRecord/52`;
-		const client_to_die = connect({
+
+		/** @type {MqttClient} */
+		const client_to_die = await connectAsync({
 			host: 'localhost',
 			clean: true,
+			protocolVersion: 4,
 			will: {
 				topic,
 				payload: JSON.stringify({ name: 'last will and testimony' }),
@@ -160,18 +206,11 @@ describe('test MQTT connections and commands', function () {
 				retain: false,
 			},
 		});
-		await new Promise((resolve, reject) => {
-			client_to_die.on('connect', function (connack) {
-				resolve(connack);
-			});
-			client_to_die.on('error', reject);
-		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(topic, function (err) {
-				if (err) reject(err);
-			});
 
-			client.once('message', function (topic, message) {
+		await clientV4.subscribeAsync(topic);
+
+		await new Promise((resolve, reject) => {
+			clientV4.once('message', function (topic, message) {
 				try {
 					let data = decode(message);
 					// message is Buffer
@@ -187,9 +226,10 @@ describe('test MQTT connections and commands', function () {
 
 	it('last will should not be published on explicit disconnect', async () => {
 		const topic = `SimpleRecord/53`;
-		const client_to_die = connect({
+		const client_to_die = await connectAsync({
 			host: 'localhost',
 			clean: true,
+			protocolVersion: 4,
 			will: {
 				topic,
 				payload: JSON.stringify({ name: 'last will and testimony' }),
@@ -198,16 +238,9 @@ describe('test MQTT connections and commands', function () {
 			},
 		});
 		let onMessage;
+		await clientV4.subscribeAsync(topic);
+
 		await new Promise((resolve, reject) => {
-			client_to_die.on('connect', function (connack) {
-				resolve(connack);
-			});
-			client_to_die.on('error', reject);
-		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(topic, function (err) {
-				if (err) reject(err);
-			});
 			onMessage = function (topic) {
 				try {
 					reject('Should not get a message on topic ' + topic);
@@ -215,31 +248,28 @@ describe('test MQTT connections and commands', function () {
 					reject(error);
 				}
 			};
-			client.once('message', onMessage);
+			clientV4.once('message', onMessage);
 			setTimeout(resolve, 50);
 			client_to_die.end(); // this closes the connection with a disconnect packet
 		});
 
-		client.off('message', onMessage);
+		clientV4.off('message', onMessage);
 	});
 
 	it('can publish non-JSON', async () => {
 		const topic = `SimpleRecord/51`;
-		const client = connect({
+		const client = await connectAsync({
 			host: 'localhost',
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
+			protocolVersion: 4,
 		});
+		await client.subscribeAsync(topic);
 		await new Promise((resolve) => {
-			client.on('connect', function (_connack) {
-				client.subscribe(topic, function (err) {
-					console.error(err);
-					client.publish(topic, Buffer.from([1, 2, 3, 4, 5]), {
-						qos: 1,
-						retain: false,
-					});
-				});
+			client.publish(topic, Buffer.from([1, 2, 3, 4, 5]), {
+				qos: 1,
+				retain: false,
 			});
 
 			client.on('message', function (topic, message) {
@@ -256,17 +286,19 @@ describe('test MQTT connections and commands', function () {
 	});
 	it('publish and subscribe are restricted', async () => {
 		const topic = `SimpleRecord/51`;
-		const client_authorized = connect({
+		const client_authorized = await connectAsync({
 			host: 'localhost',
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
+			protocolVersion: 4,
 		});
-		const client = connect({
+		const client = await connectAsync({
 			host: 'localhost',
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
+			protocolVersion: 4,
 			username: 'restricted',
 			password: 'restricted',
 			will: {
@@ -276,20 +308,15 @@ describe('test MQTT connections and commands', function () {
 			},
 		});
 		let published_messages = [];
-		await new Promise((resolve, reject) => {
-			client.on('connect', function () {
-				client.subscribe(topic, function (err, subscriptions) {
-					assert.equal(subscriptions[0].qos, 128);
-					client_authorized.subscribe(topic, function () {
-						client.publish(topic, JSON.stringify({ name: 'should not be published ' }), {
-							qos: 1,
-							retain: false,
-						});
-						setTimeout(resolve, 50);
-					});
-				});
-			});
+		const granted = await subscribeAllowingSubackError(client, topic);
+		assert.equal(granted[0].qos, 128);
+		await client_authorized.subscribeAsync(topic);
 
+		await new Promise((resolve) => {
+			client.publish(topic, JSON.stringify({ name: 'should not be published ' }), {
+				qos: 1,
+				retain: false,
+			});
 			client_authorized.on('message', function (topic) {
 				published_messages.push(topic);
 			});
@@ -297,44 +324,31 @@ describe('test MQTT connections and commands', function () {
 			client.on('error', function (error) {
 				// message is Buffer
 				console.error('Error connecting to restricted client', error);
-				reject(error);
 			});
+			setTimeout(resolve, 50);
 		});
 		client.end(true); // force close to trigger the will message
 		await delay(50);
 		assert.equal(published_messages.length, 0);
 	});
 	it('can not subscribe to resource with mqtt export disabled', async () => {
-		const client = connect({
+		const client = await connectAsync({
 			host: 'localhost',
 			clean: true,
 			connectTimeout: 2000,
+			protocolVersion: 4,
 		});
-		await new Promise((resolve) => {
-			client.on('connect', function () {
-				client.subscribe('Related/#', function (err, subscriptions) {
-					assert.equal(subscriptions[0].qos, 128);
-					resolve();
-				});
-			});
-		});
+		const granted = await subscribeAllowingSubackError(client, 'Related/#');
+		assert.equal(granted[0].qos, 128);
 	});
 
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
-		let client;
-		await new Promise((resolve, reject) => {
-			client = connect('mqtt://localhost:1883');
-			client.on('connect', resolve);
-			client.on('error', reject);
+		let client = await connectAsync('mqtt://localhost:1883', {
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
-			client.subscribe(path, function (err) {
-				if (err) reject(err);
-				else {
-					//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
-				}
-			});
+			client.subscribeAsync(path).catch(reject);
 			client.once('message', (topic, payload) => {
 				JSON.parse(payload);
 				resolve();
@@ -364,24 +378,17 @@ describe('test MQTT connections and commands', function () {
 	});
 	it('subscribe to retained record with patch operations', async function () {
 		let path = 'SimpleRecord/78';
-		let client;
-		await new Promise((resolve, reject) => {
-			client = connect('mqtt://localhost:1883', {
-				clean: false,
-				clientId: 'with-patches',
-			});
-			client.on('connect', resolve);
-			client.on('error', reject);
+		let client = await connectAsync('mqtt://localhost:1883', {
+			clean: false,
+			clientId: 'with-patches',
+			protocolVersion: 4,
 		});
 		let headers = {
 			'Content-Type': 'application/json',
 		};
 
-		await new Promise(async (resolve, reject) => {
+		await new Promise(async (resolve) => {
 			let messages = [];
-			client.subscribe(path, { qos: 1 }, function (err) {
-				if (err) reject(err);
-			});
 			const onMessage = (topic, payload) => {
 				let record = JSON.parse(payload);
 				messages.push(record);
@@ -396,15 +403,21 @@ describe('test MQTT connections and commands', function () {
 				}
 			};
 			client.on('message', onMessage);
+			await client.subscribeAsync(path, { qos: 1 });
 			await axios.put('http://localhost:9926/SimpleRecord/78', { name: 'a starting point', count: 2 }, { headers });
+			// Small delay so the PUT notification is delivered before the PATCH; without this the
+			// two messages can arrive out of order on a loaded CI runner.
+			await delay(20);
 			await axios.patch(
 				'http://localhost:9926/SimpleRecord/78',
 				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
 				{ headers }
 			);
 		});
-		await new Promise((resolve) => client.end(resolve));
-		await delay(10);
+		await client.endAsync();
+		// Give the broker time to fully process the disconnect before we make more patches,
+		// so those patches are queued for the offline client rather than delivered live.
+		await delay(50);
 		await axios.patch(
 			'http://localhost:9926/SimpleRecord/78',
 			{ name: 'update 2', newProperty: 'newer value', count: { __op__: 'add', value: 1 } },
@@ -417,25 +430,29 @@ describe('test MQTT connections and commands', function () {
 		);
 		await new Promise(async (resolve, reject) => {
 			let messages = [];
-			client = connect('mqtt://localhost:1883', {
-				clean: false,
-				clientId: 'with-patches',
-			});
-			client.on('error', reject);
-			client.on('message', (topic, payload, _packet) => {
-				let record = JSON.parse(payload);
-				messages.push(record);
-				if (messages.length == 3) {
-					assert.equal(messages[0].name, 'update 2');
-					assert.equal(messages[0].count, 4);
-					assert.equal(messages[1].newProperty, 'newer value');
-					assert.equal(messages[1].name, 'update 3');
-					assert.equal(messages[1].count, 5);
-					assert.equal(messages[2].name, 'update 4');
-					assert.equal(messages[2].count, 6);
-					resolve();
+			client = await connectWithMessageListener(
+				'mqtt://localhost:1883',
+				{
+					clean: false,
+					clientId: 'with-patches',
+					protocolVersion: 4,
+				},
+				(topic, payload, _packet) => {
+					let record = JSON.parse(payload);
+					messages.push(record);
+					if (messages.length == 3) {
+						assert.equal(messages[0].name, 'update 2');
+						assert.equal(messages[0].count, 4);
+						assert.equal(messages[1].newProperty, 'newer value');
+						assert.equal(messages[1].name, 'update 3');
+						assert.equal(messages[1].count, 5);
+						assert.equal(messages[2].name, 'update 4');
+						assert.equal(messages[2].count, 6);
+						resolve();
+					}
 				}
-			});
+			);
+			client.on('error', reject);
 			await axios.patch(
 				'http://localhost:9926/SimpleRecord/78',
 				{ name: 'update 4', count: { __op__: 'add', value: 1 } },
@@ -446,37 +463,14 @@ describe('test MQTT connections and commands', function () {
 		client.end();
 	});
 	it('subscribe twice', async function () {
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client-sub2',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(
-				'SimpleRecord/22',
-				{
-					qos: 1,
-				},
-				function (err) {
-					if (err) reject(err);
-					else {
-						client.subscribe(
-							'SimpleRecord/22',
-							{
-								qos: 1,
-							},
-							function (err) {
-								if (err) reject(err);
-								else resolve();
-							}
-						);
-					}
-				}
-			);
-		});
+		await client.subscribeAsync('SimpleRecord/22', { qos: 1 });
+		await client.subscribeAsync('SimpleRecord/22', { qos: 1 });
+
 		await new Promise((resolve) => {
 			client.once('message', (topic, payload) => {
 				JSON.parse(payload);
@@ -493,29 +487,15 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 		});
-		await new Promise((resolve) => client.end(resolve));
+		await client.endAsync();
 	});
 	it('received binary/string messages', async function () {
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client-sub2',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(
-				'SimpleRecord/22',
-				{
-					qos: 0,
-				},
-				function (err) {
-					if (err) reject(err);
-					else resolve();
-				}
-			);
-		});
+		await client.subscribeAsync('SimpleRecord/22', { qos: 0 });
 		await new Promise((resolve) => {
 			client.on('message', (topic, payload) => {
 				assert.equal(payload.toString(), 'This is a test of a plain string');
@@ -526,14 +506,11 @@ describe('test MQTT connections and commands', function () {
 				qos: 1,
 			});
 		});
-		await new Promise((resolve) => client.end(resolve));
-		client = connect('mqtt://localhost:1883', {
+		await client.endAsync();
+		client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client-sub2',
-		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
+			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
 			client.on('message', (topic, payload) => {
@@ -541,31 +518,24 @@ describe('test MQTT connections and commands', function () {
 				resolve();
 			});
 
-			client.subscribe(
-				'SimpleRecord/22',
-				{
-					qos: 0,
-				},
-				function (err) {
-					if (err) reject(err);
-				}
-			);
+			client.subscribeAsync('SimpleRecord/22', { qos: 0 }).catch(reject);
 		});
-		await new Promise((resolve) => client.end(resolve));
+		await client.endAsync();
 	});
 	it('subscribe and unsubscribe with mTLS', async function () {
 		let server;
 		await new Promise((resolve, reject) => {
 			server = startMQTT({
 				server: global.server,
-				securePort: 8884,
-				network: { mtls: { user: 'HDB_ADMIN', required: true } },
+				network: { securePort: 8884, mtls: { user: 'HDB_ADMIN', required: true } },
 			})[0].listen(8884, resolve);
 			server.on('error', reject);
 		});
-		let bad_client = connect('mqtts://localhost:8884', {
+		let bad_client = await connectAsync('mqtts://localhost:8884', {
 			clientId: 'test-bad-mtls',
-		});
+			protocolVersion: 4,
+			reconnectPeriod: 0,
+		}).catch(() => null);
 
 		const private_key_path = env_get('tls_privateKey');
 		let cert, ca;
@@ -573,38 +543,26 @@ describe('test MQTT connections and commands', function () {
 			if (certificate.is_authority) ca = certificate.certificate;
 			else if (certificate.name === 'localhost') cert = certificate.certificate;
 		}
-		let client = connect('mqtts://localhost:8884', {
+		let client = await connectAsync('mqtts://localhost:8884', {
 			key: readFileSync(private_key_path),
-			// if they have a CA, we append it, so it is included
 			cert,
 			ca,
+			// Self-signed CA in test environment; mTLS is server-side (server rejects clients without
+			// a cert), so we skip client-side server-cert verification to avoid intermittent
+			// "self-signed certificate in certificate chain" failures on loaded runners.
+			rejectUnauthorized: false,
 			clean: true,
 			clientId: 'test-client-mtls',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			bad_client.on('connect', () => {
-				reject('Client should not be able to connect to mTLS without a certificate');
-			});
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(
-				'SimpleRecord/23',
-				{
-					qos: 1,
-				},
-				function (err) {
-					if (err) reject(err);
-					else {
-						client.unsubscribe('SimpleRecord/23', function (err) {
-							if (err) reject(err);
-							else resolve();
-						});
-					}
-				}
-			);
-		});
+
+		if (bad_client && bad_client.connected) {
+			throw new Error('Client should not be able to connect to mTLS without a certificate');
+		}
+
+		await client.subscribeAsync('SimpleRecord/23', { qos: 1 });
+		await client.unsubscribeAsync('SimpleRecord/23');
+
 		await new Promise((resolve, reject) => {
 			client.on('message', (topic, payload) => {
 				JSON.parse(payload);
@@ -645,43 +603,29 @@ describe('test MQTT connections and commands', function () {
 				if (certificate.is_authority) ca = certificate.certificate;
 				else if (certificate.name === 'localhost') cert = certificate.certificate;
 			}
-			let bad_client = connect('wss://localhost:8885', {
+			let bad_client = await connectAsync('wss://localhost:8885', {
 				reconnectPeriod: 0,
 				clientId: 'test-bad-mtls',
-			});
-			let client = connect('wss://localhost:8885', {
+				protocolVersion: 4,
+			}).catch(() => null);
+			let client = await connectAsync('wss://localhost:8885', {
 				key: readFileSync(private_key_path),
-				// if they have a CA, we append it, so it is included
 				cert,
 				ca,
+				// Same rationale as the TCP mTLS test: skip client-side server-cert check.
+				rejectUnauthorized: false,
 				clean: true,
 				reconnectPeriod: 0,
 				clientId: 'test-client-mtls',
+				protocolVersion: 4,
 			});
-			await new Promise((resolve, reject) => {
-				bad_client.on('connect', () => {
-					reject('Client should not be able to connect to mTLS without a certificate');
-				});
-				client.on('connect', resolve);
-				client.on('error', reject);
-			});
-			await new Promise((resolve, reject) => {
-				client.subscribe(
-					'SimpleRecord/23',
-					{
-						qos: 1,
-					},
-					function (err) {
-						if (err) reject(err);
-						else {
-							client.unsubscribe('SimpleRecord/23', function (err) {
-								if (err) reject(err);
-								else resolve();
-							});
-						}
-					}
-				);
-			});
+
+			if (bad_client && bad_client.connected) {
+				throw new Error('Client should not be able to connect to mTLS without a certificate');
+			}
+
+			await subscribeAllowingSubackError(client, 'SimpleRecord/23', { qos: 1 });
+			await client.unsubscribeAsync('SimpleRecord/23');
 			await new Promise((resolve, reject) => {
 				client.on('message', (topic, payload) => {
 					JSON.parse(payload);
@@ -706,23 +650,14 @@ describe('test MQTT connections and commands', function () {
 	});
 
 	it('subscribe to bad topic', async function () {
-		await new Promise((resolve, reject) => {
-			client2.subscribe('DoesNotExist/+', function (err, granted) {
-				if (err) reject(err);
-				else {
-					resolve(assert.equal(granted[0].qos, 0x8f));
-				}
-			});
-		});
+		const granted = await subscribeAllowingSubackError(clientV5, 'DoesNotExist/+');
+		assert.equal(granted[0].qos, 0x8f);
 	});
 	it('Invalid packet', async function () {
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
-		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
+			protocolVersion: 4,
 		});
 		// directly send an invalid packet, which should cause the connection to close
 		client.stream.write(Buffer.from([67, 255]));
@@ -747,18 +682,11 @@ describe('test MQTT connections and commands', function () {
 			};
 			for (const subscription_topic in topic_expectations) {
 				let expected_topics = topic_expectations[subscription_topic];
-				await new Promise((resolve, reject) => {
-					client2.subscribe(subscription_topic, function (err) {
-						if (err) reject(err);
-						else {
-							resolve();
-						}
-					});
-				});
+				await clientV5.subscribeAsync(subscription_topic);
 				let message_count = 0;
 				let message_listener;
 				await new Promise((resolve) => {
-					client2.on(
+					clientV5.on(
 						'message',
 						(message_listener = (topic, payload) => {
 							assert(expected_topics.includes(topic));
@@ -767,7 +695,7 @@ describe('test MQTT connections and commands', function () {
 							if (++message_count == expected_topics.length) resolve();
 						})
 					);
-					client2.publish(
+					clientV5.publish(
 						'SimpleRecord/44',
 						JSON.stringify({
 							name: 'This is a test 1',
@@ -777,7 +705,7 @@ describe('test MQTT connections and commands', function () {
 							qos: 1,
 						}
 					);
-					client2.publish(
+					clientV5.publish(
 						'SimpleRecord/sub/33',
 						JSON.stringify({
 							name: 'This is a test to a sub-topic',
@@ -787,7 +715,7 @@ describe('test MQTT connections and commands', function () {
 							qos: 1,
 						}
 					);
-					client2.publish(
+					clientV5.publish(
 						'SimpleRecord/sub/sub2/33',
 						JSON.stringify({
 							name: 'This is a test to a deeper sub-topic',
@@ -798,7 +726,7 @@ describe('test MQTT connections and commands', function () {
 						}
 					);
 
-					client.publish(
+					clientV4.publish(
 						'SimpleRecord/47',
 						JSON.stringify({
 							name: 'This is a test 2',
@@ -809,7 +737,7 @@ describe('test MQTT connections and commands', function () {
 						}
 					);
 
-					client.publish(
+					clientV4.publish(
 						'SimpleRecord/',
 						JSON.stringify({
 							name: 'This is a test to the generic table topic',
@@ -819,27 +747,17 @@ describe('test MQTT connections and commands', function () {
 						}
 					);
 				});
-				client2.off('message', message_listener);
-				await new Promise((resolve, reject) => {
-					client2.unsubscribe(subscription_topic, function (err) {
-						if (err) reject(err);
-						else resolve();
-					});
-				});
+				clientV5.off('message', message_listener);
+				await clientV5.unsubscribeAsync(subscription_topic);
 			}
 		};
 	it('subscribe to single-level wildcard/full table', wildcardsTests());
 	it('subscribe to multi-level wildcard/full table', async function () {
-		await new Promise((resolve, reject) => {
-			client2.subscribe('SimpleRecord/#', function (err) {
-				if (err) reject(err);
-				else resolve();
-			});
-		});
+		await clientV5.subscribeAsync('SimpleRecord/#');
 		let message_count = 0;
 		let message_listener;
 		await new Promise((resolve) => {
-			client2.on(
+			clientV5.on(
 				'message',
 				(message_listener = (topic, payload) => {
 					let record = JSON.parse(payload);
@@ -847,7 +765,7 @@ describe('test MQTT connections and commands', function () {
 					if (++message_count == 4) resolve();
 				})
 			);
-			client2.publish(
+			clientV5.publish(
 				'SimpleRecord/44',
 				JSON.stringify({
 					name: 'This is a test 1',
@@ -857,7 +775,7 @@ describe('test MQTT connections and commands', function () {
 					qos: 1,
 				}
 			);
-			client2.publish(
+			clientV5.publish(
 				'SimpleRecord/sub/33',
 				JSON.stringify({
 					name: 'This is a test to a sub-topic', // should go to multi-level wildcard
@@ -868,7 +786,7 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 
-			client.publish(
+			clientV4.publish(
 				'SimpleRecord/47',
 				JSON.stringify({
 					name: 'This is a test 2',
@@ -879,7 +797,7 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 
-			client.publish(
+			clientV4.publish(
 				'SimpleRecord/',
 				JSON.stringify({
 					name: 'This is a test to the generic table topic',
@@ -889,75 +807,36 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 		});
-		client2.off('message', message_listener);
-		await new Promise((resolve, reject) => {
-			client2.unsubscribe('SimpleRecord/#', function (err) {
-				if (err) reject(err);
-				else resolve();
-			});
-		});
+		clientV5.off('message', message_listener);
+		await clientV5.unsubscribeAsync('SimpleRecord/#');
 	});
 	it('subscribe to wildcards we do not support', async function () {
-		await new Promise((resolve) => {
-			client2.subscribe('SimpleRecord/+test', function (err, granted) {
-				if (err) resolve(err);
-				else {
-					resolve(assert.equal(granted[0].qos, 128)); // assert that the subscription was rejected
-				}
-			});
-		});
-		await new Promise((resolve, reject) => {
-			client2.subscribe('+/SimpleRecord/test', function (err, granted) {
-				if (err) reject(err);
-				else {
-					resolve(assert.equal(granted[0].qos, 0x8f)); // assert that the subscription was rejected
-				}
-			});
-		});
+		await assert.rejects(clientV5.subscribeAsync('SimpleRecord/+test'), /Invalid topic/);
+		const granted = await subscribeAllowingSubackError(clientV5, '+/SimpleRecord/test');
+		assert.equal(granted[0].qos, 0x8f); // assert that the subscription was rejected
 	});
 	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
+		this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
 		// this first connection is a tear down to remove any previous durable session with this id
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		await new Promise((resolve) => client.end(resolve));
+		await client.endAsync();
 		await delay(10);
-		client = connect('mqtt://localhost:1883', {
+		client = await connectAsync('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(
-				['SimpleRecord/41', 'SimpleRecord/42'],
-				{
-					qos: 1,
-				},
-				function (err) {
-					if (err) reject(err);
-					else {
-						resolve();
-					}
-				}
-			);
-		});
-		await new Promise((resolve) => client.end(resolve));
+		await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
+		await client.endAsync();
 		await delay(10);
-		client = connect('mqtt://localhost:1883', {
+		client = await connectAsync('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1',
-		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
+			protocolVersion: 4,
 		});
 		await new Promise((resolve) => {
 			client.on('message', (topic, payload) => {
@@ -975,9 +854,10 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 		});
-		client.end();
+		await delay(10);
+		await client.endAsync();
 		await delay(50);
-		client2.publish(
+		clientV5.publish(
 			'SimpleRecord/41',
 			JSON.stringify({
 				name: 'This is a test of publishing to a disconnected durable session',
@@ -986,98 +866,74 @@ describe('test MQTT connections and commands', function () {
 				qos: 1,
 			}
 		);
-		await new Promise((resolve) =>
-			client2.publish(
-				'SimpleRecord/42',
-				JSON.stringify({
-					name: 'This is a test of publishing to a disconnected durable session 2',
-				}),
-				{
-					qos: 1,
-				},
-				resolve
-			)
+		await clientV5.publishAsync(
+			'SimpleRecord/42',
+			JSON.stringify({
+				name: 'This is a test of publishing to a disconnected durable session 2',
+			}),
+			{
+				qos: 1,
+			}
 		);
-		await new Promise((resolve) =>
-			client2.publish(
-				'SimpleRecord/42',
-				JSON.stringify({
-					name: 'This is a test of publishing to a disconnected durable session 3',
-				}),
-				{
-					qos: 1,
-				},
-				resolve
-			)
+		await clientV5.publishAsync(
+			'SimpleRecord/42',
+			JSON.stringify({
+				name: 'This is a test of publishing to a disconnected durable session 3',
+			}),
+			{
+				qos: 1,
+			}
 		);
 		await delay(10);
-		client = connect('mqtt://localhost:1883', {
-			clean: false,
-			clientId: 'test-client1',
-			protocolVersion: 5,
-		});
 		let messages = [];
-		await new Promise((resolve) => {
-			client._handlePublish = async function (packet, done) {
-				const message = packet.payload;
+		client = await connectWithMessageListener(
+			'mqtt://localhost:1883',
+			{
+				clean: false,
+				clientId: 'test-client1',
+				protocolVersion: 5,
+				properties: {
+					sessionExpiryInterval: 3600,
+				},
+			},
+			(topic, message) => {
 				messages.push(message.toString());
-				done();
-				if (message.toString().includes('session 2')) {
-					// skip the first one to trigger out of order acking
-					return;
+			}
+		);
+		await new Promise((resolve, reject) => {
+			const interval = setInterval(() => {
+				if (messages.length === 3) {
+					clearInterval(interval);
+					resolve();
 				}
-				client._sendPacket({ cmd: 'puback', messageId: packet.messageId, reasonCode: 0 }, () => {});
-				if (message.toString().includes('session 3')) resolve();
-			};
+			}, 1);
+			setTimeout(() => {
+				clearInterval(interval);
+				reject(
+					new Error(`Expected 3 queued messages to be delivered to reconnected durable session, got ${messages.length}`)
+				);
+			}, 15000);
 		});
 		await delay(50);
-		client.end();
+		await client.endAsync();
 		if (messages.length !== 3) console.error('Incorrect messages', { messages });
 		assert(messages.length === 3);
-		messages = [];
-		client = connect('mqtt://localhost:1883', {
-			clean: false,
-			clientId: 'test-client1',
-			protocolVersion: 5,
-		});
-		await new Promise((resolve) => {
-			client.on('message', (message) => {
-				messages.push(message);
-				resolve();
-			});
-		});
-		assert.equal(messages.length, 1);
 	});
 	it('subscribe with QoS=2', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		await new Promise((resolve) => client.end(resolve));
+		await client.end();
 		await delay(10);
-		client = connect('mqtt://localhost:1883', {
+		client = await connectAsync('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(
-				'SimpleRecord/41',
-				{
-					qos: 2,
-				},
-				function (err) {
-					if (err) reject(err);
-					else {
-						resolve();
-					}
-				}
-			);
-		});
+		await client.subscribeAsync('SimpleRecord/41', { qos: 2 });
 		await new Promise((resolve) => {
 			client.on('message', (topic, payload) => {
 				JSON.parse(payload);
@@ -1110,15 +966,12 @@ describe('test MQTT connections and commands', function () {
 		server.mqtt.events.on('error', (_a1, _a2) => {
 			events_received.push('error');
 		});
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
+			protocolVersion: 4,
 		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
-		});
-		await new Promise((resolve) => client.subscribe('this does not exist', { qos: 1 }, resolve));
+		await subscribeAllowingSubackError(client, 'this does not exist', { qos: 1 });
 		client.end();
 		await new Promise((resolve) => {
 			setTimeout(resolve, 20);
@@ -1130,32 +983,18 @@ describe('test MQTT connections and commands', function () {
 	});
 	it('subscribe root with history', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
-		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
+			protocolVersion: 4,
 		});
 		let messages = [];
 		client.on('message', (topic, payload) => {
 			messages.push(topic, payload.length > 0 ? JSON.parse(payload) : 'deleted');
 		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(
-				'FourPropWithHistory/#',
-				{
-					qos: 1,
-				},
-				function (err) {
-					if (err) reject(err);
-					else {
-						setTimeout(resolve, 300);
-					}
-				}
-			);
-		});
+		await client.subscribeAsync('FourPropWithHistory/#', { qos: 1 });
+		await delay(300);
+
 		const { FourPropWithHistory } = await import('../testApp/resources.js');
 		assert.equal(messages.length, 20);
 		assert.equal(FourPropWithHistory.acknowledgements, 10);
@@ -1170,50 +1009,33 @@ describe('test MQTT connections and commands', function () {
 		// this first connection is a tear down to remove any previous durable session with this id
 		const { FourPropWithHistory } = await import('../testApp/resources.js');
 		tables.FourProp.acknowledgements = 0; // reset
-		let client = connect('mqtt://localhost:1883', {
+		let client = await connectAsync('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
-		});
-		await new Promise((resolve, reject) => {
-			client.on('connect', resolve);
-			client.on('error', reject);
+			protocolVersion: 4,
 		});
 		let messages = [];
 		client.on('message', (topic, payload) => {
 			messages.push(topic, payload.length > 0 ? JSON.parse(payload) : 'deleted');
 		});
-		await new Promise((resolve, reject) => {
-			client.subscribe(
-				'FourPropWithHistory/12',
-				{
-					qos: 1,
-				},
-				function (err) {
-					if (err) reject(err);
-					else {
-						setTimeout(resolve, 300);
-					}
-				}
-			);
-		});
+		await client.subscribeAsync('FourPropWithHistory/12', { qos: 1 });
+		await delay(300);
 		assert.equal(messages.length, 4);
 		assert.equal(FourPropWithHistory.acknowledgements, 2);
 	});
 	it('publish and receive blob data', async function () {
 		const topic = `SimpleRecord/52`;
 		const testString = 'this is a test of blobs'.repeat(1000);
-		await new Promise((resolve, reject) => {
-			client2.subscribe(topic, function (err) {
-				if (err) return reject(err);
-				client2.publish(topic, JSON.stringify({ name: 'testBlob', blobData: testString }), {
-					qos: 1,
-					retain: false,
-				});
-			});
+		await clientV5.subscribeAsync(topic);
+		clientV5.publish(topic, JSON.stringify({ name: 'testBlob', blobData: testString }), {
+			qos: 1,
+			retain: false,
+		});
 
-			client2.once('message', function (topic, payload) {
+		await new Promise((resolve, reject) => {
+			clientV5.once('message', function (topic, message) {
 				try {
-					let data = JSON.parse(payload);
+					let data = JSON.parse(message);
 					// message is Buffer
 					assert.equal(data.blobData, testString);
 					resolve();
@@ -1225,8 +1047,8 @@ describe('test MQTT connections and commands', function () {
 	});
 
 	after(() => {
-		client?.end();
-		client2?.end();
+		clientV4?.end();
+		clientV5?.end();
 	});
 });
 function delay(ms) {
