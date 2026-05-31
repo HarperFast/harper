@@ -116,7 +116,7 @@ The MCP surface mirrors the public REST surface. A Resource is filtered out of M
 server.http(Resource, { name: 'internal-thing', exportTypes: { mcp: false } });
 ```
 
-This is independent of the `http` exportType — the only switch operators set to scope MCP visibility is `mcp`.
+This is independent of the `http` exportType — the only switch that operators set to scope MCP visibility is `mcp`.
 
 ## Resources surface
 
