@@ -621,20 +621,41 @@ describe('mcp/transport', () => {
 	});
 
 	describe('GET /mcp', () => {
-		it('always returns 405 in v1 (no server-push channel yet)', async () => {
+		it('returns 400 when no Mcp-Session-Id header is present', async () => {
 			const res = await handleMcpRequest(makeReq({ method: 'GET' }));
-			assert.equal(res.status, 405);
+			assert.equal(res.status, 400);
 		});
 
-		it('Allow header lists only POST when DELETE is disabled (RFC 9110 §9.1)', async () => {
-			const res = await handleMcpRequest(makeReq({ method: 'GET' }));
-			assert.equal(res.headers.Allow, 'POST');
+		it('returns 404 when the session id is unknown', async () => {
+			const res = await handleMcpRequest(
+				makeReq({ method: 'GET', headers: { 'mcp-session-id': 'not-a-real-session' } })
+			);
+			assert.equal(res.status, 404);
 		});
 
-		it('Allow header lists POST + DELETE when DELETE is enabled', async () => {
-			envOverrides.mcp_session_allowClientDelete = true;
-			const res = await handleMcpRequest(makeReq({ method: 'GET' }));
-			assert.equal(res.headers.Allow, 'POST, DELETE');
+		it('returns 403 when the session belongs to a different user', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			const res = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					user: 'bob',
+					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(res.status, 403);
+		});
+
+		it('opens an SSE channel for an authenticated session', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			const res = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(res.status, 200);
+			assert.equal(res.headers['Content-Type'], 'text/event-stream');
+			assert.ok(res.sseIterable, 'sseIterable returned for the SSE channel');
 		});
 	});
 
@@ -642,7 +663,8 @@ describe('mcp/transport', () => {
 		it('returns 405 when allowClientDelete is not configured', async () => {
 			const res = await handleMcpRequest(makeReq({ method: 'DELETE' }));
 			assert.equal(res.status, 405);
-			assert.equal(res.headers.Allow, 'POST');
+			// GET is always allowed (server-push channel). DELETE listed iff allowClientDelete.
+			assert.equal(res.headers.Allow, 'POST, GET');
 		});
 
 		it('terminates the session and returns 204 when allowClientDelete is true', async () => {
@@ -774,14 +796,14 @@ describe('mcp/transport', () => {
 		it('returns 405 for PUT with accurate Allow header', async () => {
 			const res = await handleMcpRequest(makeReq({ method: 'PUT' }));
 			assert.equal(res.status, 405);
-			assert.equal(res.headers.Allow, 'POST');
+			assert.equal(res.headers.Allow, 'POST, GET');
 		});
 
 		it('PUT 405 advertises DELETE when allowClientDelete is enabled', async () => {
 			envOverrides.mcp_session_allowClientDelete = true;
 			const res = await handleMcpRequest(makeReq({ method: 'PUT' }));
 			assert.equal(res.status, 405);
-			assert.equal(res.headers.Allow, 'POST, DELETE');
+			assert.equal(res.headers.Allow, 'POST, GET, DELETE');
 		});
 	});
 });

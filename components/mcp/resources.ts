@@ -281,6 +281,7 @@ function enumerateTableBackedResources(): Array<{ db: string; table: string }> {
 	const seen = new Set<string>();
 	const result: Array<{ db: string; table: string }> = [];
 	for (const entry of getResources().values()) {
+		if (!isMcpExposed(entry)) continue;
 		const ResourceClass = entry.Resource;
 		const db = (ResourceClass as { databaseName?: string })?.databaseName;
 		const table = (ResourceClass as { tableName?: string })?.tableName;
@@ -298,6 +299,7 @@ function enumerateAppHttpResources(): ResourceDescriptor[] {
 	if (!prefix) return [];
 	const out: ResourceDescriptor[] = [];
 	for (const [path, entry] of getResources()) {
+		if (!isMcpExposed(entry)) continue;
 		const ResourceClass = entry.Resource as { prototype?: unknown } | undefined;
 		if (!hasRestVerbs(ResourceClass?.prototype)) continue;
 		out.push({
@@ -308,6 +310,18 @@ function enumerateAppHttpResources(): ResourceDescriptor[] {
 		});
 	}
 	return out;
+}
+
+/**
+ * Honor the per-protocol export controls operators use to scope a
+ * Resource's surface. A Resource registered with `exportTypes.mcp === false`
+ * is explicitly opted out of MCP enumeration entirely. Missing flag = opted
+ * in (mirror of how `Resources.getMatch` treats unspecified types).
+ */
+function isMcpExposed(entry: { exportTypes?: unknown }): boolean {
+	const types = entry.exportTypes as Record<string, boolean> | undefined;
+	if (!types) return true;
+	return types.mcp !== false;
 }
 
 /**
@@ -427,9 +441,11 @@ function readOperationsCatalog(user: AuthedUser, href: string): ReadResourceOk {
 
 async function readAppResource(uri: URL): Promise<ReadResourceOk | ReadResourceFail> {
 	// Strip the host:port and leading slash to get the path that
-	// Resources.getMatch expects.
+	// Resources.getMatch expects. Passing the 'mcp' export type runs the
+	// existing per-protocol gate at resources/Resources.ts:97 — an entry
+	// registered with exportTypes.mcp === false short-circuits to "no match".
 	const path = uri.pathname.replace(/^\/+/, '');
-	const entry = getResources().getMatch(path);
+	const entry = getResources().getMatch(path, 'mcp');
 	if (!entry) return { ok: false, reason: `no resource matches: ${uri.href}` };
 
 	const ResourceClass = entry.Resource as { databaseName?: string; tableName?: string } | undefined;

@@ -138,6 +138,83 @@ function parseJsonModule(source: string, url: string): any {
 }
 
 /**
+ * Walk an exports-map entry (string, array, or conditions object) with the given
+ * condition priority list and return the first matching path string, or null.
+ */
+function walkExportsConditions(entry: unknown, conditions: readonly string[]): string | null {
+	if (typeof entry === 'string') return entry;
+	if (Array.isArray(entry)) {
+		for (const e of entry) {
+			const r = walkExportsConditions(e, conditions);
+			if (r !== null) return r;
+		}
+		return null;
+	}
+	if (entry !== null && typeof entry === 'object') {
+		for (const cond of conditions) {
+			const val = (entry as Record<string, unknown>)[cond];
+			if (val !== undefined) {
+				const r = walkExportsConditions(val, conditions);
+				if (r !== null) return r;
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Resolve a bare package specifier to a file:// URL using the package's exports map
+ * with ESM import conditions. Used as a fallback when createRequire().resolve() throws
+ * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
+ * conditions and no "require").
+ */
+function resolveESMPackageExports(specifier: string, fromDir: string): string | null {
+	const isScoped = specifier.startsWith('@');
+	const parts = specifier.split('/');
+	const packageName = isScoped ? `${parts[0]}/${parts[1]}` : parts[0];
+	const subpathParts = parts.slice(isScoped ? 2 : 1);
+	const subpath = subpathParts.length > 0 ? './' + subpathParts.join('/') : '.';
+
+	let dir = fromDir;
+	while (true) {
+		const pkgRoot = join(dir, 'node_modules', packageName);
+		let pkgJson: any;
+		try {
+			pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf-8'));
+		} catch {
+			const parent = dirname(dir);
+			if (parent === dir) return null;
+			dir = parent;
+			continue;
+		}
+
+		if (!pkgJson.exports) return null;
+
+		const exportsMap = pkgJson.exports;
+		let entry: unknown;
+		if (typeof exportsMap === 'string') {
+			entry = subpath === '.' ? exportsMap : undefined;
+		} else if (exportsMap !== null && typeof exportsMap === 'object') {
+			const firstKey = Object.keys(exportsMap)[0];
+			if (firstKey?.startsWith('.')) {
+				// subpath map: { ".": ..., "./foo": ... }
+				entry = (exportsMap as Record<string, unknown>)[subpath];
+			} else {
+				// conditions map at root: { "import": ..., "require": ... }
+				entry = subpath === '.' ? exportsMap : undefined;
+			}
+		}
+
+		if (!entry) return null;
+
+		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
+		if (!relative) return null;
+
+		return pathToFileURL(join(pkgRoot, relative)).toString();
+	}
+}
+
+/**
  * Load a module using Node's vm.Module API with optional sandboxing
  * @param moduleUrl - The URL of the module to load
  * @param scope - The application scope
@@ -196,11 +273,25 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
 			} catch {}
 		}
-		const resolved = createRequire(resolveReferrer).resolve(specifier);
-		if (isAbsolute(resolved)) {
-			return pathToFileURL(resolved).toString();
+		try {
+			const resolved = createRequire(resolveReferrer).resolve(specifier);
+			if (isAbsolute(resolved)) {
+				return pathToFileURL(resolved).toString();
+			}
+			return resolved;
+		} catch (err) {
+			if ((err as any)?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+				// Pure-ESM package: CJS resolver cannot match an exports map that only has
+				// "import" conditions (no "require"). Resolve the entry file by walking
+				// the filesystem and evaluating the exports map with ESM import conditions.
+				const referrerDir = resolveReferrer.startsWith('file:')
+					? dirname(fileURLToPath(resolveReferrer))
+					: dirname(resolveReferrer);
+				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
+				if (esmResolved) return esmResolved;
+			}
+			throw err;
 		}
-		return resolved;
 	}
 
 	/**

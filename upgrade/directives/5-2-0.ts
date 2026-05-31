@@ -1,6 +1,6 @@
 'use strict';
 
-// 5.2.0 — introduces hdb_deployment (issue #641, Slice A).
+// 5.2.0 — introduces system.hdb_deployment for deployment tracking.
 //
 // Fresh installs get the table automatically via utility/mount_hdb.ts (which iterates
 // json/systemSchema.json on first boot). This directive handles the upgrade path: existing

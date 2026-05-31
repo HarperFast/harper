@@ -72,7 +72,11 @@ describe('Test serverHandlers.js module ', () => {
 
 	describe('handleServerUncaughtException()', () => {
 		it('Should send error to console and log before exiting process', () => {
+			// handleServerUncaughtException uses process._realExit when available (set
+			// by workerProcessGuard) so the worker process guard does not intercept
+			// this intentional Harper-fatal exit. Stub both names to cover either path.
 			process_exit_stub = sandbox.stub(process, 'exit').callsFake(() => {});
+			const real_exit_stub = sandbox.stub(process, '_realExit').callsFake(() => {});
 			serverHandlers_rw.handleServerUncaughtException(TEST_ERR);
 
 			assert.ok(console_stub.calledOnce === true, 'Error should be sent to console as an error');
@@ -85,10 +89,12 @@ describe('Test serverHandlers.js module ', () => {
 				fatal_log_stub.args[0][0].includes(TEST_ERR.message) === true,
 				'Error should be passed to logger.fatal()'
 			);
-			assert.ok(process_exit_stub.calledOnce === true, 'Error should cause process to exit');
-			assert.ok(process_exit_stub.args[0][0] === 1, 'Process should exit with exit code 1');
+			const exitStub = real_exit_stub.called ? real_exit_stub : process_exit_stub;
+			assert.ok(exitStub.calledOnce === true, 'Error should cause process to exit');
+			assert.ok(exitStub.args[0][0] === 1, 'Process should exit with exit code 1');
 
 			process_exit_stub.restore();
+			real_exit_stub.restore();
 		});
 	});
 

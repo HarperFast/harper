@@ -20,6 +20,9 @@ import { getConfigObj as realGetConfigObj } from '../../config/configUtils.js';
 import { createFastifyHandler } from './adapters/fastify.ts';
 import { createHarperHttpHandler } from './adapters/harperHttp.ts';
 import { ensureSessionTable } from './session.ts';
+import { initListChanged } from './listChanged.ts';
+import { registerApplicationTools } from './tools/application.ts';
+import { registerOperationsTools } from './tools/operations.ts';
 import type { McpProfile } from './transport.ts';
 
 // Indirection so tests can swap the config source.
@@ -69,6 +72,10 @@ export function registerMcpProfile({ profile, host, config, routeOptions }: Regi
 		return;
 	}
 	ensureSessionTable();
+	initListChanged();
+	if (profile === 'operations') {
+		registerOperationsTools();
+	}
 	const mountPath = profileConfig.mountPath ?? DEFAULT_MOUNT_PATH;
 	const handler = createFastifyHandler(profile);
 	// Register POST, GET, and DELETE on the same mount path. The transport
@@ -113,6 +120,8 @@ export function handleApplication(scope: ScopeLike): void {
 	}
 	applicationStarted = true;
 	ensureSessionTable();
+	initListChanged();
+	registerApplicationTools();
 	const mountPath = config.mcp.application.mountPath ?? DEFAULT_MOUNT_PATH;
 	const handler = createHarperHttpHandler('application');
 	scope.server.http(handler, { urlPath: mountPath, after: 'authentication' });

@@ -6,6 +6,7 @@
  */
 
 import { Encoder } from 'msgpackr';
+import { createStructon } from 'structon';
 import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
@@ -17,11 +18,20 @@ import {
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import './blob.ts';
-import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
+import {
+	blobsWereEncoded,
+	decodeFromDatabase,
+	deleteBlobsInObject,
+	encodeBlobsWithFilePath,
+	findBlobsInObject,
+	getFileId,
+} from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
+
+const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 export type Entry = {
 	key: any;
 	value: any;
@@ -74,7 +84,7 @@ let timestampNextEncoding = 0,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
-export class RecordEncoder extends Encoder {
+export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;
@@ -611,8 +621,19 @@ export function recordUpdater(store, tableId, auditStore) {
 			// we use resolveRecord outside of transaction, so must explicitly make it conditional
 			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
 			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
-				// delete the old blobs
-				deleteBlobsInObject(existingEntry.value);
+				// Delete the prior row's blob files — except any the new record still references.
+				// Without the retention check, updating an unrelated attribute on a row that
+				// carries a file-backed blob unlinks the blob ~deletionDelay ms later, leaving
+				// the new (otherwise valid) row pointing at a missing file. See HarperFast/harper#641
+				// (deployment tracking) for the production repro.
+				let retainedFileIds: Set<string> | undefined;
+				if (record) {
+					findBlobsInObject(record, (blob) => {
+						const fileId = getFileId(blob);
+						if (fileId) (retainedFileIds ??= new Set()).add(fileId);
+					});
+				}
+				deleteBlobsInObject(existingEntry.value, retainedFileIds);
 			}
 			let result: Promise<void>;
 			if (record !== undefined) {

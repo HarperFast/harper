@@ -2,6 +2,7 @@ import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 
 import { dirname, extname, join } from 'node:path';
 import {
@@ -21,6 +22,7 @@ import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { StringDecoder } from 'node:string_decoder';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
@@ -306,12 +308,16 @@ export async function installApplication(application: Application) {
 	// If custom install command is specified, run it
 	if (application.install?.command) {
 		const [command, ...args] = application.install.command.split(' ');
+		const customOnLine = application.onInstallLine
+			? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!(command, stream, line)
+			: undefined;
 		const { stdout, stderr, code } = await nonInteractiveSpawn(
 			application.name,
 			command,
 			args,
 			application.dirPath,
-			application.install?.timeout
+			application.install?.timeout,
+			customOnLine
 		);
 		// if it succeeds, return
 		if (code === 0) {
@@ -362,12 +368,16 @@ export async function installApplication(application: Application) {
 		// Would result in `pnpm@7` being used as the executable.
 		// Important note: an `npm` version should not be specifiable; the only valid npm version is the one installed alongside Node.js
 
+		const pmOnLine = application.onInstallLine
+			? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!(packageManager.name, stream, line)
+			: undefined;
 		const { stdout, stderr, code } = await nonInteractiveSpawn(
 			application.name,
 			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
 			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
 			application.dirPath,
-			application.install?.timeout
+			application.install?.timeout,
+			pmOnLine
 		);
 
 		// if it succeeds, return
@@ -414,12 +424,16 @@ export async function installApplication(application: Application) {
 	const npmInstallArgs = application.install?.allowInstallScripts
 		? ['install', '--force']
 		: ['install', '--force', '--ignore-scripts'];
+	const npmOnLine = application.onInstallLine
+		? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!('npm', stream, line)
+		: undefined;
 	const { stdout, stderr, code } = await nonInteractiveSpawn(
 		application.name,
 		(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + 'npm',
 		npmInstallArgs,
 		application.dirPath,
-		application.install?.timeout
+		application.install?.timeout,
+		npmOnLine
 	);
 
 	// if it succeeds, return
@@ -440,11 +454,21 @@ export async function installApplication(application: Application) {
 	throw new Error(`Failed to install dependencies for ${application.name} using npm default. Exit code: ${code}`);
 }
 
+/**
+ * Callback invoked once per complete line of install stdout/stderr from
+ * `nonInteractiveSpawn`. Threaded through `installApplication` to the underlying spawn
+ * so a deploy can stream `npm install` output back to the caller as an SSE `install`
+ * event in real time, rather than waiting for the process to exit. Line-buffered so a
+ * chunk that splits mid-line never fires a partial line.
+ */
+export type OnInstallLine = (manager: string, stream: 'stdout' | 'stderr', line: string) => void;
+
 interface ApplicationOptions {
 	name: string;
 	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
+	onInstallLine?: OnInstallLine;
 }
 
 export class Application {
@@ -452,15 +476,17 @@ export class Application {
 	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
+	onInstallLine?: OnInstallLine;
 	dirPath: string;
 	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
 
-	constructor({ name, payload, packageIdentifier, install }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
+		this.onInstallLine = onInstallLine;
 		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		if (!componentsRoot) throw new Error('componentsRoot is not configured');
 		this.dirPath = join(componentsRoot, name);
@@ -493,11 +519,24 @@ export function derivePackageIdentifier(packageIdentifier: string) {
  *
  * This method should only be called from the main thread
  *
+ * Bracketed with `deploy:start`/`deploy:end` lifecycle broadcasts so every
+ * Harper thread's file watchers can suppress restart-on-change events while
+ * the component directory is being rewritten — see harper#488 and
+ * `components/deployLifecycle.ts`. The broadcast is best-effort: if it fails
+ * (e.g. workers haven't started yet during initial install), the deploy still
+ * proceeds.
+ *
  * @param application The application to prepare.
  * @returns A promise that resolves when all preparation steps complete.
  */
-export function prepareApplication(application: Application) {
-	return extractApplication(application).then(() => installApplication(application));
+export async function prepareApplication(application: Application) {
+	await broadcastDeployStart(application.name);
+	try {
+		await extractApplication(application);
+		await installApplication(application);
+	} finally {
+		broadcastDeployEnd(application.name);
+	}
 }
 
 /**
@@ -612,12 +651,53 @@ function getGitSSHCommand() {
  * @param timeoutMs The timeout for the command in milliseconds. Defaults to 5 minutes.
  * @returns A promise that resolves when the command completes.
  */
+/**
+ * Line-buffered split that emits complete `\n`-terminated lines as they
+ * arrive, holding any partial trailing fragment until the next chunk or `flush()`.
+ * Required because `child_process` stdout/stderr `'data'` events fire per OS-level
+ * chunk, with no guarantee a chunk ends on a newline — without buffering, a long
+ * `npm install` line could be reported to the caller as two halves.
+ *
+ * Uses StringDecoder so a multi-byte UTF-8 character (e.g. the ✔ emoji npm prints
+ * for resolved packages) split across two chunks is reassembled into a single code
+ * point rather than each half being decoded as replacement characters.
+ */
+function createLineSplitter(onLine: (line: string) => void): {
+	push: (chunk: Buffer | string) => void;
+	flush: () => void;
+} {
+	const decoder = new StringDecoder('utf8');
+	let pending = '';
+	return {
+		push(chunk) {
+			pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+			let nl: number;
+			while ((nl = pending.indexOf('\n')) !== -1) {
+				const line = pending.slice(0, nl).replace(/\r$/, '');
+				pending = pending.slice(nl + 1);
+				onLine(line);
+			}
+		},
+		flush() {
+			// Drain any bytes the decoder is still holding (e.g. a multi-byte char that
+			// straddled the final chunk boundary).
+			const remaining = decoder.end();
+			if (remaining) pending += remaining;
+			if (pending.length > 0) {
+				onLine(pending);
+				pending = '';
+			}
+		},
+	};
+}
+
 export function nonInteractiveSpawn(
 	applicationName: string,
 	command: string,
 	args: string[],
 	cwd: string,
-	timeoutMs: number = 60 * 60 * 1000
+	timeoutMs: number = 60 * 60 * 1000,
+	onLine?: (stream: 'stdout' | 'stderr', line: string) => void
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
@@ -647,24 +727,31 @@ export function nonInteractiveSpawn(
 			reject(new Error(`Command\`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`));
 		}, timeoutMs);
 
+		// If a caller passed onLine, line-buffer stdout/stderr alongside the existing
+		// string accumulation so we never report a half-line.
+		const stdoutSplitter = onLine ? createLineSplitter((line) => onLine('stdout', line)) : null;
+		const stderrSplitter = onLine ? createLineSplitter((line) => onLine('stderr', line)) : null;
+
 		let stdout = '';
 		childProcess.stdout.on('data', (chunk) => {
 			// buffer stdout for later resolve
 			stdout += chunk.toString();
 			// log stdout lines immediately
-			// TODO: Technically nothing guarantees that a chunk will be a complete line so need to implement
-			// something here to buffer until a newline character, then log the complete line
 			logger.loggerWithTag(`${applicationName}:spawn:${command}:stdout`).debug?.(chunk.toString());
+			stdoutSplitter?.push(chunk);
 		});
 
 		// buffer stderr
 		let stderr = '';
 		childProcess.stderr.on('data', (chunk) => {
 			stderr += chunk.toString();
+			stderrSplitter?.push(chunk);
 		});
 
 		childProcess.on('error', (error) => {
 			clearTimeout(timeout);
+			stdoutSplitter?.flush();
+			stderrSplitter?.flush();
 			// Print out stderr before rejecting
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
@@ -674,6 +761,10 @@ export function nonInteractiveSpawn(
 
 		childProcess.on('close', (code) => {
 			clearTimeout(timeout);
+			// Flush any trailing partial lines so the caller sees process output that didn't
+			// end on a newline (some package managers do this on their final progress line).
+			stdoutSplitter?.flush();
+			stderrSplitter?.flush();
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}

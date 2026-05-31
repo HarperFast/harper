@@ -25,8 +25,13 @@
 require('../testUtils');
 const assert = require('node:assert/strict');
 const { setupTestDBPath } = require('../testUtils');
-const { table, resetDatabases } = require('#src/resources/databases');
+const { table, resetDatabases, getDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const fs = require('fs-extra');
+const path = require('node:path');
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 
 async function collect(iter) {
 	const out = [];
@@ -237,6 +242,78 @@ describe('schema-migration fragility: stale index entry from concurrent write du
 	});
 });
 
+describe('schema-migration fragility: outer catch does not persist indexingFailed when clear() throws (F4)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const TABLE = 'F4OuterCatchPersistFailed';
+	const DB = 'test';
+	const N = 5;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) {
+			last = Tbl.put({ id: 'f4-' + i, tag: 'v-' + i });
+		}
+		await last;
+	});
+
+	it('outer catch should persist indexingFailed when clear() throws before the record scan', async () => {
+		resetDatabases();
+		const Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+
+		// Intercept clear() on the tag index dbi to simulate ERR_COLUMN_FAMILY_DROPPED.
+		// This throws before the record scan begins, hitting the outer catch in runIndexing.
+		const tagIndex = Tbl.indices?.tag;
+		if (tagIndex && typeof tagIndex.clear === 'function') {
+			tagIndex.clear = async function () {
+				throw Object.assign(new Error('simulated clear failure: column family dropped'), {
+					code: 'ERR_COLUMN_FAMILY_DROPPED',
+				});
+			};
+		}
+
+		// Wait for runIndexing to finish (the outer catch swallows the error).
+		if (Tbl.indexingOperation) await Tbl.indexingOperation.catch(() => {});
+
+		// Verify: simulate restart by resetting and re-opening.
+		// The outer catch should have persisted indexingFailed=true in the attribute descriptor.
+		// A clean re-open should detect this and re-trigger runIndexing.
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(
+			Tbl2.indexingOperation,
+			'F4 fingerprint: outer catch did not persist indexingFailed — ' +
+				'table() on "restart" did not re-trigger runIndexing, so isIndexing would be stuck forever.'
+		);
+		if (Tbl2.indexingOperation) await Tbl2.indexingOperation;
+
+		// After a clean retry, all rows should be indexed.
+		const rows = await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: 'v-0' }] }));
+		assert.equal(rows.length, 1, `Expected 1 row indexed after clean re-run, got ${rows.length}`);
+	});
+});
+
 describe('schema-migration fragility: stale `changed` reused after re-fetch under lock (F1)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 
@@ -302,5 +379,68 @@ describe('schema-migration fragility: stale `changed` reused after re-fetch unde
 			!redundant,
 			'F1 fingerprint: second table() call triggered a redundant runIndexing — stale `changed` reused after re-fetch under lock.'
 		);
+	});
+});
+
+describe('schema-migration fragility: stale store reused after LMDB to RocksDB engine migration (F4)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 'F4EngineRebind';
+	const TABLE = 'Widget';
+	const testRoot = path.resolve(__dirname, '../envDir/f4EngineRebind');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+	const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];
+	const originalEngine = process.env.HARPER_STORAGE_ENGINE;
+	let preReloadStore;
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+
+		process.env.HARPER_STORAGE_ENGINE = 'lmdb';
+		resetDatabases();
+		const lmdbTable = table({ table: TABLE, database: DB, attributes });
+		await lmdbTable.put({ id: 'k', name: 'from-lmdb' });
+		const staleTable = getDatabases()[DB][TABLE];
+
+		// post-migration state: RocksDB on disk, stale LMDB table still in the registry
+		process.env.HARPER_STORAGE_ENGINE = 'rocksdb';
+		delete getDatabases()[DB];
+		await fs.remove(path.join(dbDir, `${DB}.mdb`));
+		await fs.remove(path.join(dbDir, `${DB}.mdb-lock`));
+		const rocksTable = table({ table: TABLE, database: DB, attributes });
+		await rocksTable.put({ id: 'k', name: 'from-rocks' });
+		getDatabases()[DB][TABLE] = staleTable;
+		preReloadStore = getDatabases()[DB][TABLE].primaryStore;
+
+		resetDatabases();
+	});
+
+	after(async () => {
+		if (originalEngine === undefined) delete process.env.HARPER_STORAGE_ENGINE;
+		else process.env.HARPER_STORAGE_ENGINE = originalEngine;
+		await fs.remove(testRoot);
+	});
+
+	it('starts from a stale LMDB-backed table while the data on disk is RocksDB', () => {
+		assert.ok(!(preReloadStore.rootStore instanceof RocksDatabase), 'pre-reload table should be LMDB-backed');
+		assert.ok(preReloadStore.path.endsWith('.mdb'), `pre-reload path should be .mdb, got ${preReloadStore.path}`);
+	});
+
+	it('rebinds the registry table to the RocksDB store on reload', () => {
+		const reloaded = getDatabases()[DB]?.[TABLE];
+		assert.ok(reloaded, `${DB}.${TABLE} should still be registered after reload`);
+		assert.ok(
+			reloaded.primaryStore.rootStore instanceof RocksDatabase,
+			'primaryStore should be backed by RocksDatabase'
+		);
+		const p = reloaded.primaryStore.path;
+		assert.ok(!p.endsWith('.mdb'), `primaryStore.path should be a RocksDB directory, got ${p}`);
+		assert.ok(fs.statSync(p).isDirectory(), `${p} should be a directory`);
 	});
 });

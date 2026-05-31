@@ -38,6 +38,8 @@ When `migrateOnStart` opens a source LMDB primary store to read records out for 
 
 Harper's normal `databases.ts` path already does this (search for `dbiInit.compression = primaryKeyAttribute.compression`); the migration path in `bin/copyDb.ts` has to match.
 
+The same source-dbi open has a second non-obvious requirement: assign `sourceDbi.encoder.rootStore = sourceRootStore` for the primary store. The primary dbi decodes through a `RecordEncoder`, and decoding a record that holds a file-backed blob reference resolves that reference against `rootStore` (it locates the blob file). With `rootStore` unset, the `Blob` msgpackr extension throws `No store specified, cannot load blob from storage`; `RecordEncoder.decode` swallows the error and yields `null`, and `copyDbToRocks` then skips the `null` value — so every record with a file-backed blob is silently dropped from the migration. The runtime path gets `rootStore` from `handleLocalTimeForGets`; the migration path opens the source dbi raw and must set it explicitly (issue #857).
+
 ## Schema migration and `runIndexing` internals (`databases.ts`)
 
 When `table()` is called with an attribute newly marked `indexed: true` (or with any change that requires re-building the secondary index), `runIndexing` is launched asynchronously and `Table.indexingOperation` is set to its promise. While running:
