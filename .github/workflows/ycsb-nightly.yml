@@ -1,9 +1,11 @@
 name: YCSB Nightly Load Test
 
-# Runs the YCSB-style CRUD load test against a single local Harper instance and
-# uploads the JSON results as an artifact for tracking throughput/latency over
-# time. Default-runner perf is modest, so treat absolute numbers as a trend
-# signal on a fixed runner, not a hardware-representative benchmark.
+# Runs the YCSB-style CRUD load test against a single local Harper instance,
+# records throughput/latency trends via github-action-benchmark (pushed to the
+# gh-pages branch; enable GitHub Pages on gh-pages to view the dashboard), alerts
+# on regressions, and uploads the raw JSON as an artifact. Default-runner perf is
+# modest and variable, so treat absolute numbers as a trend signal on a fixed
+# runner, not a hardware-representative benchmark.
 
 on:
   schedule:
@@ -26,7 +28,7 @@ on:
         default: 'C,B,A,F,D,E'
 
 permissions:
-  contents: read
+  contents: write # github-action-benchmark pushes trend history to the gh-pages branch
 
 jobs:
   ycsb:
@@ -61,6 +63,38 @@ jobs:
           WORKLOADS: ${{ github.event.inputs.workloads || 'C,B,A,F,D,E' }}
         run: |
           node benchmarks/ycsb/run-single-node.mts --scale="$SCALE" --workloads="$WORKLOADS"
+
+      - name: Convert results to benchmark format
+        run: node benchmarks/ycsb/to-benchmark-json.mts benchmarks/ycsb/results/ycsb-single-node-latest.json benchmarks/ycsb/bench-out
+
+      # Two suites: opposite "better" directions. auto-push only on main so manual
+      # dispatches from a branch don't pollute the trend history. Thresholds are
+      # generous to absorb shared-runner variance — tune once a stable runner is in use.
+      - name: Track throughput trend
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          name: YCSB Throughput (single-node)
+          tool: customBiggerIsBetter
+          output-file-path: benchmarks/ycsb/bench-out/throughput.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-threshold: '130%'
+          alert-comment-cc-users: '@kriszyp'
+
+      - name: Track latency (p99) trend
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          name: YCSB Latency p99 (single-node)
+          tool: customSmallerIsBetter
+          output-file-path: benchmarks/ycsb/bench-out/latency.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-threshold: '160%'
+          alert-comment-cc-users: '@kriszyp'
 
       - name: Upload results
         if: always()

@@ -84,6 +84,17 @@ The JSON includes `meta` (git commit/branch, node version, platform),
 `config` (scale, threads, engine), `load`, and per-workload throughput +
 latency stats — enough to diff runs across nights.
 
+### Trend tracking & regression alerts
+
+The nightly workflow feeds results to
+[`github-action-benchmark`](https://github.com/benchmark-action/github-action-benchmark)
+via `to-benchmark-json.mts` (throughput as bigger-is-better, p99 latency as
+smaller-is-better). History is pushed to the `gh-pages` branch and a regression
+beyond the configured threshold comments on the commit and `@`-mentions the
+maintainer. **Enable GitHub Pages on `gh-pages` to view the trend dashboard.**
+Thresholds are deliberately generous to absorb shared-runner variance — tighten
+them once the benchmark runs on a fixed/self-hosted runner.
+
 ## Notes
 
 - `threads.count` is set via `HARPER_SET_CONFIG` (defaults to 4), which takes

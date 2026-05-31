@@ -53,3 +53,4 @@ harper-*.tgz
 
 # YCSB benchmark results (generated)
 benchmarks/ycsb/results/
+benchmarks/ycsb/bench-out/
