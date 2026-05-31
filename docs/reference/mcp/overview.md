@@ -64,5 +64,5 @@ The following items are explicitly deferred to a follow-on release:
 - `resources/subscribe` (per-resource change subscriptions; `list_changed` is supported).
 - `Last-Event-ID` resumability for the GET-SSE channel.
 - Cross-worker session sharing (each MCP session is bound to the worker that accepted the GET stream).
-- TypeScript-type reflection into JSON Schema for custom `mcpTools` entries (schemas are hand-authored in v1).
+- TypeScript type reflection into JSON Schema for custom `mcpTools` entries (schemas are hand-authored in v1).
 - Global REST/operations rate limiting — only per-session/per-tool limits apply on the MCP surface.
