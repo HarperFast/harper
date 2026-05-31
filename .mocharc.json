@@ -6,5 +6,6 @@
 	"enable-source-maps": true,
 	"exclude": ["unitTests/security/jsLoader/fixtures/**"],
 	"node-option": ["expose-internals", "enable-source-maps", "experimental-vm-modules"],
+	"require": ["unitTests/mocha.init.js"],
 	"exit": true
 }
