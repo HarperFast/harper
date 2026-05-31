@@ -787,7 +787,9 @@ export function database({ database: databaseName, table: tableName }) {
 				: undefined);
 
 	if (!databasePath) {
-		throw new Error(`Unable to determine database storage path. Ensure STORAGE_PATH, HDB_ROOT, or a valid config path is set.`);
+		throw new Error(
+			`Unable to determine database storage path. Ensure STORAGE_PATH, HDB_ROOT, or a valid config path is set.`
+		);
 	}
 
 	let rootStore: RootDatabaseKind;
