@@ -154,7 +154,7 @@ Per-record reads go through the tools surface, where each Resource's `allow{Read
 After the `initialize` handshake, an MCP client opens `GET /mcp` to keep an SSE channel open for server-push frames. Harper subscribes to its existing role-cache and schema-reload event channels and, whenever one fires:
 
 1. Walks the per-worker session registry.
-2. For each session on that profile, re-resolves the bound user (so a role-perm mutation between handshake and the event fires against current permissions, not the frozen snapshot).
+2. For each session on that profile, re-resolves the bound user (so any role/permission mutations occurring between the handshake and the event are evaluated against current permissions, rather than a frozen snapshot).
 3. Recomputes the session's `tools/list` and `resources/list` against the fresh user.
 4. Compares to the snapshot taken at session start (or after the last fire).
 5. Emits `notifications/tools/list_changed` and / or `notifications/resources/list_changed` if and only if the visible set actually changed.
