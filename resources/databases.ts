@@ -786,6 +786,10 @@ export function database({ database: databaseName, table: tableName }) {
 				? join(hdbBasePath, LEGACY_DATABASES_DIR_NAME)
 				: undefined);
 
+	if (!databasePath) {
+		throw new Error(`Unable to determine database storage path. Ensure STORAGE_PATH, HDB_ROOT, or a valid config path is set.`);
+	}
+
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
 	if (useRocksdb) {
