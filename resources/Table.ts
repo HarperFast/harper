@@ -1483,8 +1483,9 @@ export function makeTable(options) {
 					return (lmdbTransaction as any).commit();
 				}
 				// RocksDB: eviction writes went directly into the raw transaction via options;
-				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes)
-				return (transaction as any)?.commit?.();
+				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
+				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
+				return Promise.resolve((transaction as any)?.commit?.());
 			}
 		}
 		/**
@@ -4546,9 +4547,9 @@ export function makeTable(options) {
 											resolution = TableResource.evict(key, record, version);
 											count++;
 										}
-										if (resolution && (resolution as any).catch) {
+										if (resolution) {
 											await outstandingCleanupOperations[cleanupIndex];
-											outstandingCleanupOperations[cleanupIndex] = (resolution as any).catch((error) => {
+											outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
 												logger.error?.('Cleanup error', error);
 											});
 											if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
