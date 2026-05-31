@@ -1471,8 +1471,14 @@ export function makeTable(options) {
 					return lmdbTransaction.commit();
 				}
 				// RocksDB: eviction writes went directly into the raw transaction via options;
+<<<<<<< HEAD
 				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes)
 				return transaction?.commit();
+=======
+				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
+				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
+				return Promise.resolve((transaction as any)?.commit?.());
+>>>>>>> ceeb57056 (fix(table): make evict() return a Promise on RocksDB)
 			}
 		}
 		/**
