@@ -91,6 +91,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#usingPolling: boolean;
 	#closed: boolean;
 	#openCount: number = 0;
+	#pendingReads: Set<Promise<void>> = new Set();
 	ready: Promise<any[]>;
 
 	constructor(name: string, filePath: string, logger?: Logger) {
@@ -119,7 +120,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	#handleChange() {
-		readFile(this.#filePath, 'utf-8')
+		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
 			.then((contents) => {
 				this.#rootConfig = yaml.parse(contents);
 				// If the extension is in the config file
@@ -160,7 +161,11 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 					return;
 				}
 				this.emit('error', error);
+			})
+			.finally(() => {
+				this.#pendingReads.delete(read);
 			});
+		this.#pendingReads.add(read);
 	}
 
 	#handleError(error: unknown) {
@@ -339,17 +344,19 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	/**
-	 * Closes the underlying file watcher, emits the `close` event, and removes any listeners on the OptionsWatcher instance
+	 * Closes the underlying file watcher and drains any pending config-file reads.
+	 * Emits `close` synchronously, removes all listeners, then returns a Promise that
+	 * resolves once the chokidar watcher has fully stopped and all in-flight reads settle.
 	 */
-	close() {
+	close(): Promise<this> {
 		this.#closed = true;
-		this.#watcher.close();
+		const pendingReads = [...this.#pendingReads];
+		const watcherClose = Promise.resolve(this.#watcher.close()).catch(() => {});
 
 		this.emit('close');
-
 		this.removeAllListeners();
 
-		return this;
+		return Promise.allSettled([watcherClose, ...pendingReads]).then(() => this);
 	}
 
 	/**
