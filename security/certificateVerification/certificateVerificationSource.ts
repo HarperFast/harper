@@ -13,11 +13,11 @@ let performOCSPCheck: any;
 // Lazy load to avoid circular dependencies
 async function loadVerificationFunctions() {
 	if (!performCRLCheck) {
-		const crlModule = await import('./crlVerification.js');
+		const crlModule = await import('./crlVerification.ts');
 		performCRLCheck = (crlModule as any).performCRLCheck;
 	}
 	if (!performOCSPCheck) {
-		const ocspModule = await import('./ocspVerification.js');
+		const ocspModule = await import('./ocspVerification.ts');
 		performOCSPCheck = (ocspModule as any).performOCSPCheck;
 	}
 }
