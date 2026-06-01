@@ -29,7 +29,8 @@ function quantizeInt8(vector: number[]): { bytes: Buffer; scale: number } {
 	const scale = max / 127 || 1;
 	const inv = 1 / scale;
 	const q = new Int8Array(vector.length);
-	for (let i = 0; i < vector.length; i++) q[i] = Math.round(vector[i] * inv);
+	// clamp guards against a float-rounding edge landing on 128 (which Int8Array would wrap to -128)
+	for (let i = 0; i < vector.length; i++) q[i] = Math.max(-127, Math.min(127, Math.round(vector[i] * inv)));
 	return { bytes: Buffer.from(q.buffer, q.byteOffset, q.byteLength), scale };
 }
 
@@ -480,7 +481,7 @@ export class HierarchicalNavigableSmallWorld {
 			// already-converted cached node. Float nodes (vector is a number[]) pass through.
 			if (node && node.vector && !Array.isArray(node.vector) && !(node.vector instanceof Int8Array)) {
 				const u8 = node.vector as Uint8Array;
-				node.vector = new Int8Array(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength));
+				node.vector = new Int8Array(u8.buffer, u8.byteOffset, u8.byteLength).slice();
 			}
 			return node;
 		} catch {
