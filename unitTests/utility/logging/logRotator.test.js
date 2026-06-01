@@ -94,15 +94,10 @@ describe('Test logRotator module', () => {
 		);
 	});
 
-	it('Test error logged if rotation path is undefined', async () => {
-		let error;
-		try {
-			await runRotator({ maxSize: '1K', path: null });
-		} catch (e) {
-			error = e;
-		}
-		expect(error.message).to.equal(
-			"'logging.rotation.path' is undefined, to enable logging rotation set this value in harperdb-config.yaml"
-		);
+	it('Defaults rotation path to <log dir>/rotated when path is not set', async () => {
+		const rotated_log_path = await runRotator({ maxSize: '1K', path: null });
+		const expectedDir = path.join(LOG_DIR_TEST, 'rotated');
+		expect(rotated_log_path.startsWith(expectedDir)).to.be.true;
+		expect(fs.pathExistsSync(rotated_log_path)).to.be.true;
 	});
 });
