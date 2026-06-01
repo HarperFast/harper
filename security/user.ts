@@ -88,7 +88,9 @@ import * as validation from '../validation/user_validation.ts';
 import * as search from '../dataLayer/search.ts';
 import * as signalling from '../utility/signalling.ts';
 import * as hdbUtility from '../utility/common_utils.ts';
-import * as validate from 'validate.js';
+import _validate from 'validate.js';
+// validate.js is a CJS module; in ESM (typestrip) the default export IS the library object.
+const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'util';
 import * as env from '../utility/environment/environmentManager.ts';
