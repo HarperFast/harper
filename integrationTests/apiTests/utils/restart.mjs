@@ -119,10 +119,12 @@ export async function restartServiceHttpWorkersWithTimeout(timeoutMs) {
 	const host = testData.host.replace(/^https?:\/\//, '');
 	const restPort = parseInt(testData.portRest, 10);
 
+	const deadline = Date.now() + budget;
+
 	// Phase 1: wait for old workers to fully release the port (avoids premature
 	// detection of old workers still holding 9926 after the restart command).
-	await waitForTcpPortClose(host, restPort, Date.now() + 30_000);
+	await waitForTcpPortClose(host, restPort, deadline);
 
 	// Phase 2: wait for new workers to bind and accept connections.
-	await waitForTcpPort(host, restPort, Date.now() + budget);
+	await waitForTcpPort(host, restPort, deadline);
 }

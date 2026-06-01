@@ -236,13 +236,10 @@ jobs:
           $deadline = (Get-Date).AddSeconds(120)
           do {
             Start-Sleep -Milliseconds 500
-            $ready = $false
-            try {
-              $tcp = New-Object System.Net.Sockets.TcpClient
-              $tcp.Connect('localhost', 9925)
-              $tcp.Close()
-              $ready = $true
-            } catch {}
+            $client = New-Object System.Net.Sockets.TcpClient
+            $connected = $client.ConnectAsync('localhost', 9925).Wait(2000)
+            if ($connected) { $client.Close(); $ready = $true }
+            else { $client.Close() }
           } until ($ready -or (Get-Date) -gt $deadline)
           if (-not $ready) { Write-Error "Harper did not start within 120s"; exit 1 }
           Write-Host "Harper is ready."
