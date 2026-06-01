@@ -1,9 +1,16 @@
 'use strict';
 
+<<<<<<< HEAD:utility/logging/logRotator.js
 const { promises: fsProm, createReadStream, createWriteStream } = require('fs');
 const { createGzip } = require('zlib');
 const { promisify } = require('util');
 const { pipeline } = require('stream');
+=======
+import { promises as fsProm, createReadStream, createWriteStream, mkdirSync } from 'fs';
+import { createGzip } from 'zlib';
+import { promisify } from 'util';
+import { pipeline } from 'stream';
+>>>>>>> c1b9669a8 (fix(logging): default rotation path to <log dir>/rotated when unset):utility/logging/logRotator.ts
 const pipe = promisify(pipeline);
 const path = require('path');
 const envMgr = require('../environment/environmentManager.js');
@@ -17,8 +24,6 @@ const { onStorageReclamation } = require('../../server/storageReclamation.ts');
 const LOG_AUDIT_INTERVAL = 60000;
 const INT_SIZE_UNDEFINED_MSG =
 	"'interval' and 'maxSize' are both undefined, to enable logging rotation at least one of these values must be defined in harperdb-config.yaml";
-const PATH_UNDEFINED_MSG =
-	"'logging.rotation.path' is undefined, to enable logging rotation set this value in harperdb-config.yaml";
 
 let lastRotationTime;
 let setIntervalId;
@@ -47,8 +52,12 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	}
 
 	if (!rotatedLogDir) {
-		throw new Error(PATH_UNDEFINED_MSG);
+		// Default to <log file dir>/rotated when path is not explicitly set in config,
+		// so rotation works out of the box when only LOGGING_ROTATION_MAXSIZE is set.
+		rotatedLogDir = path.join(path.dirname(logger.path), 'rotated');
 	}
+	// Ensure the directory exists; moveLogFile's rename would otherwise ENOENT on first rotation.
+	mkdirSync(rotatedLogDir, { recursive: true });
 
 	// Convert maxSize param to bytes.
 	let maxBytes;
