@@ -1486,7 +1486,7 @@ export function makeTable(options) {
 				// RocksDB: eviction writes went directly into the raw transaction via options;
 				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
 				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
-				return Promise.resolve((transaction as any).commit());
+				return (transaction as any).commit();
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
