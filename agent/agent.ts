@@ -9,8 +9,9 @@
  *
  * The component intentionally avoids `handleApplication`: it has nothing
  * worker-thread-shaped to do. Operator-only tools (FS, schedule, fetch) are
- * inline; registry-backed tools (#615/#617/#618) will fold in via toolset.ts
- * once those land.
+ * inline; RBAC-filtered tools from the unified MCP registry (#615/#781,
+ * Operations profile #617) fold in via `registryTools.ts` for the agent's
+ * configured user.
  */
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
@@ -21,6 +22,9 @@ import { composeToolset } from './toolset.ts';
 import { buildOperations } from './operations.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
+import { ensureOperationsToolsRegistered, composeRegistryTools } from './registryTools.ts';
+import { server } from '../server/Server.ts';
+import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
 import type { AgentConfig, AgentScopes, AgentTool } from './types.ts';
 
 const log = harperLogger.loggerWithTag('agent');
@@ -64,10 +68,22 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const models = new Models();
 	const abortControllers = new Map<string, AbortController>();
 	let liveConfig: AgentConfig = config;
+
+	// Populate the MCP registry's Operations profile (idempotent) and resolve the agent's RBAC
+	// identity, then pull the RBAC-filtered registry tools for that user. Computed once at startup:
+	// the agent acts as a single configured user, and the Operations profile is registered once on
+	// the main thread. (Application-profile per-Resource tools are a follow-up — they populate from
+	// the worker-thread Resources registry.)
+	ensureOperationsToolsRegistered();
+	const agentUser = await resolveAgentUser(liveConfig.user);
+	const registryTools = composeRegistryTools(agentUser, `agent:registry:${liveConfig.user}`);
+
 	let composed = composeToolset({
 		allowDestructive: liveConfig.allowDestructive,
 		onFollowup: handleFollowup,
+		registryTools,
 	});
+	log.info?.(`Agent: composed ${registryTools.length} RBAC-filtered registry tool(s) for user '${liveConfig.user}'`);
 
 	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
 	// every boot would flood the log without telling anyone anything actionable.
@@ -140,6 +156,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			composed = composeToolset({
 				allowDestructive: liveConfig.allowDestructive,
 				onFollowup: handleFollowup,
+				registryTools,
 			});
 		}
 		// NOTE: an already in-flight run captured its toolset (and autoApprove) at start, so flipping
@@ -159,6 +176,30 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	for (const op of operations) opts.server.registerOperation(op);
 
 	log.info?.(`Agent component initialized with ${composed.tools.length} tools`);
+}
+
+/**
+ * Resolve the agent's configured user to its full permission object so registry tools are
+ * RBAC-filtered correctly. Falls back to a super_user identity (the documented `hdb_agent`
+ * default) if the user can't be loaded yet — e.g. the system user hasn't been created, or the
+ * security layer isn't initialized in a given context. A restricted role that fails to load would
+ * over-grant under this fallback, so the failure is logged at warn.
+ */
+async function resolveAgentUser(username: string): Promise<AuthedUser> {
+	try {
+		// `server.getUser(username)` resolves the stored user incl. role/permissions. Typed loosely
+		// here because Server.ts declares extra auth params this lookup-only call doesn't need.
+		const getUser = (server as any).getUser as ((u: string) => Promise<AuthedUser>) | undefined;
+		if (typeof getUser === 'function') {
+			const user = await getUser(username);
+			if (user?.role?.permission) return user;
+		}
+	} catch (err) {
+		log.warn?.(
+			`Agent: could not resolve user '${username}' (${(err as Error)?.message ?? err}); using super_user fallback`
+		);
+	}
+	return { username, role: { permission: { super_user: true } } };
 }
 
 function resolveScopes(
