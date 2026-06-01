@@ -1,5 +1,10 @@
 'use strict';
 
+// Must run before any component code is loaded so that process.exit() called
+// from component code (e.g. Next.js's `unhandledRejection` handler) is
+// intercepted in workers.
+const { realExit } = require('./workerProcessGuard.ts');
+
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { join, isAbsolute, extname } = require('path');
 const { server } = require('../Server.ts');
@@ -654,12 +659,12 @@ if (isMainThread) {
 			harperLogger.warn('Thread did not voluntarily terminate', threadId);
 			// Note that if this occurs, you may want to use this to debug what is currently running:
 			// require('why-is-node-running')();
-			process.exit(0);
+			realExit(0);
 		}, threadTerminationTimeout).unref(); // don't block the shutdown
 	});
 	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT
 	// instead, and the worker self-exits cleanly to avoid the crash.
 	onMessageByType(FORCE_EXIT, () => {
-		process.exit(0);
+		realExit(0);
 	});
 }

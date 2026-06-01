@@ -18,7 +18,7 @@ const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
-const { DeploymentRecorder } = require('./deploymentRecorder.ts');
+const { DeploymentRecorder, awaitDeploymentRow } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 /**
@@ -387,17 +387,18 @@ async function deployComponent(req) {
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
-	// Slice A of issue #641: create a hdb_deployment row up front so the deploy is
-	// observable and auditable even if the CLI disconnects. The row also holds the payload
-	// in a Blob attribute — Slice B uses it as the rollback source.
+	// Create a hdb_deployment row up front so the deploy is observable and auditable
+	// even if the CLI disconnects. The row also holds the payload in a Blob attribute,
+	// which doubles as the source for peer replication and (later) rollback.
 	//
 	// Only the origin node records — peers receiving a replicated deploy_component skip
-	// recording so we don't accumulate one row per node for the same deploy. The row will
-	// reach peers via the table's replication once Slice B has them consume it.
+	// recording so we don't accumulate one row per node for the same deploy. The row
+	// reaches peers via the table's standard replication; the peer-side branch below
+	// reads payload_blob back from there.
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
-	// Slice B1 of #641: an SSE-bound caller already attached a ProgressEmitter (created in
-	// the server handler so it can also drive the response stream). Reuse it; otherwise
-	// spin up a fresh emitter so the recorder still gets phase events for non-SSE deploys.
+	// An SSE-bound caller already attached a ProgressEmitter (created in the server
+	// handler so it can also drive the response stream). Reuse it; otherwise spin up a
+	// fresh emitter so the recorder still gets phase events for non-SSE deploys.
 	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
 	if (emitter && !req.progress) req.progress = emitter;
 	const recorder = isReplicatedExecution
@@ -413,16 +414,29 @@ async function deployComponent(req) {
 
 	const emit = (event, data) => emitter?.emit(event, data);
 
+	// The new payload-via-replicated-row path depends on the `system` database actually
+	// being replicated on this node. If the cluster is configured with a narrower
+	// REPLICATION_DATABASES list that excludes `system`, peers won't see the
+	// hdb_deployment row and falling back to sending req.payload through the operation
+	// body is the only viable path.
+	const systemReplicated = isSystemDatabaseReplicated();
+
 	let extractionPayload = req.payload;
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
-		// from the persisted blob. This is the staging area and (in Slice B) the channel
-		// peers will replicate from. On peer nodes we skip recording entirely and use the
-		// raw payload as-is.
+		// from the persisted blob. When `system` replicates, the blob becomes the channel
+		// peers read from; when it doesn't, the blob stays local for audit and rollback.
 		if (recorder && req.payload != null) {
 			await recorder.ingestPayload(req.payload);
 			extractionPayload = recorder.row.payload_blob.stream();
+		} else if (isReplicatedExecution && req.payload == null && !req.package) {
+			// Peer received a replicated deploy without a payload — read the tarball from
+			// the replicated hdb_deployment row's payload_blob. Blob.stream() blocks on
+			// in-flight BLOB_CHUNK writes until the chunks land. If the row never arrives
+			// within the timeout, peer records a failure and origin sees it in peer_results.
+			const row = await awaitDeploymentRow(req._deploymentId);
+			extractionPayload = row.payload_blob.stream();
 		}
 
 		const application = new Application({
@@ -434,6 +448,11 @@ async function deployComponent(req) {
 				timeout: req.install_timeout,
 				allowInstallScripts: req.install_allow_scripts,
 			},
+			// Forward each complete line of install stdout/stderr to the SSE channel (and
+			// into the recorder's event_log via the same subscriber). Peers have no emitter
+			// — their install output goes to the local logger only; cross-node install
+			// streaming would need extra plumbing and isn't wired here.
+			onInstallLine: emitter ? (manager, stream, line) => emit('install', { manager, stream, line }) : undefined,
 		});
 
 		emit('phase', { phase: 'prepare', status: 'start' });
@@ -467,12 +486,36 @@ async function deployComponent(req) {
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
 		// ProgressEmitter holds function listeners that can't survive the replication
-		// channel's serialization, and the recorder is local to origin anyway. Strip both
-		// before sending so peers see a clean req.
+		// channel's serialization; strip it unconditionally.
 		delete req.progress;
+		if (systemReplicated && recorder) {
+			// The hdb_deployment row + payload_blob will reach peers via table replication,
+			// so peers can look up the payload by deployment_id. Drop req.payload to keep
+			// the operation body small (the operations channel has frame-size limits the
+			// blob-replication channel doesn't share). _deploymentId is the handoff that
+			// lets peers find the replicated row.
+			delete req.payload;
+		}
+		// As each peer settles, update the origin row so observers polling get_deployment
+		// see per-peer progress in real time rather than only at the aggregate end.
+		// replicateOperation in harper-pro accepts an optional onPeerResult callback that
+		// fires per peer; callers without the callback (older replicator) fall back to
+		// the aggregate response.replicated below.
+		const onPeerResult = recorder
+			? (result) => {
+					recorder.recordPeer(result);
+					emit('peer', result);
+				}
+			: undefined;
 		emit('phase', { phase: 'replicate', status: 'start' });
-		let response = await server.replication.replicateOperation(req);
+		let response = await server.replication.replicateOperation(req, { onPeerResult });
 		emit('phase', { phase: 'replicate', status: 'done' });
+		if (recorder && response?.replicated) {
+			// Fallback path for replicators that don't honor onPeerResult: re-record the
+			// aggregate. recordPeer's upsert-by-node-name semantics make this idempotent
+			// when the per-peer callback already fired for these.
+			recorder.recordPeers(response.replicated);
+		}
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
 			manageThreads.restartWorkers('http');
@@ -507,6 +550,37 @@ async function deployComponent(req) {
 		if (recorder) await recorder.finish('failed', err);
 		throw err;
 	}
+}
+
+/**
+ * Returns true when the `system` database is configured to replicate from this node.
+ * Mirrors the gate `shouldReplicateFromNode` applies for `REPLICATION_DATABASES` (in
+ * replication/knownNodes.ts) at the database level. We intentionally do NOT consult
+ * peer nodes' configs — handling partial system-replication across an asymmetric
+ * cluster is out of scope here; the origin's local view is the canonical signal for
+ * whether the payload-via-row path is viable on this node.
+ *
+ * Treats an unset or wildcard ('*') config as "all databases replicate" (Harper's
+ * default), and an array as a strict allowlist where `system` must appear by name
+ * (either as a plain string or as `{name: 'system', ...}`).
+ */
+function isSystemDatabaseReplicated() {
+	const databaseReplications = env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_DATABASES);
+	// Unset → Harper's default: all databases replicate.
+	if (!databaseReplications) return true;
+	// Wildcard.
+	if (databaseReplications === '*') return true;
+	// Single database name (string, not '*'): only THAT database replicates.
+	if (typeof databaseReplications === 'string') return databaseReplications === hdbTerms.SYSTEM_SCHEMA_NAME;
+	// Array allowlist: 'system' must appear by name (string entry or {name: 'system'} object).
+	if (Array.isArray(databaseReplications)) {
+		return databaseReplications.some((entry) =>
+			typeof entry === 'string' ? entry === hdbTerms.SYSTEM_SCHEMA_NAME : entry?.name === hdbTerms.SYSTEM_SCHEMA_NAME
+		);
+	}
+	// Unknown shape — be conservative and assume not replicated rather than risking a
+	// strip that strands peers.
+	return false;
 }
 
 /**

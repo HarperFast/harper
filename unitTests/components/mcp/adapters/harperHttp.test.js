@@ -114,10 +114,10 @@ describe('mcp/adapters/harperHttp', () => {
 		assert.equal(session.initialized, true);
 	});
 
-	it('returns 405 on GET (no SSE channel in v1)', async () => {
+	it('returns 400 on GET without an Mcp-Session-Id (SSE channel landed in #619)', async () => {
 		const handler = createHarperHttpHandler('application');
 		const result = await handler({ method: 'GET', headers: makeHeaders(), user: { username: 'alice' } }, next);
-		assert.equal(result.status, 405);
+		assert.equal(result.status, 400);
 	});
 
 	it('returns empty body (no JSON.stringify) for 202/204', async () => {

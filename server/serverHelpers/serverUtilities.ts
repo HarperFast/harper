@@ -104,7 +104,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 	return data;
 }
 
-const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
+export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
 server.operation = operation;
 export type OperationDefinition = {
