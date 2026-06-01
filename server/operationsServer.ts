@@ -2,24 +2,15 @@
 import cluster from 'cluster';
 import zlib from 'node:zlib';
 import * as env from '../utility/environment/environmentManager.ts';
-try {
-	env.initSync();
-} catch {
-	/* tolerate ESM cycle TDZ; bin entry will re-call later */
-}
+env.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
-import fastify, {
-	type FastifyInstance,
-	type FastifyReply,
-	type FastifyRequest,
-	type FastifyServerOptions,
-} from 'fastify';
+import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
-import requestTimePlugin from './serverHelpers/requestTimePlugin.ts';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
 import guidePath from 'path';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as globalSchema from '../utility/globalSchema.ts';
@@ -32,7 +23,7 @@ import {
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-} from './serverHelpers/serverHandlers.ts';
+} from './serverHelpers/serverHandlers.js';
 import { registerBunFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
 import { getConfigObj } from '../config/configUtils.js';
@@ -58,7 +49,7 @@ export { operationsServer as startOnMainThread };
 /**
  * Builds a Harper server.
  */
-async function operationsServer(options: ServerOptions & { resources?: Resources } = {}) {
+async function operationsServer(options: ServerOptions & { resources?: Resources }) {
 	try {
 		harperLogger.debug('In Fastify server' + process.cwd());
 		harperLogger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
