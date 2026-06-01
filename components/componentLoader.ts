@@ -41,6 +41,7 @@ import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
+import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
@@ -108,6 +109,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	loadEnv,
 	logging: harperLogger,
 	dataLoader,
+	mcp: mcpComponent,
 	/*
 	static: ...
 	login: ...
@@ -444,7 +446,14 @@ export async function loadComponent(
 
 				// New Plugin API (`handleApplication`)
 				if (resources.isWorker && extensionModule.handleApplication) {
-					const scope = new Scope(appName || 'harper', componentName, componentDirectory, configPath, applicationScope);
+					const scope = new Scope(
+						appName || 'harper',
+						componentName,
+						componentDirectory,
+						configPath,
+						applicationScope,
+						origin
+					);
 
 					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => scope.close());
 

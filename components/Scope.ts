@@ -1,16 +1,17 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'node:events';
-import { databaseEventsEmitter } from '../resources/databases.ts';
+import { databaseEventsEmitter, table } from '../resources/databases.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import { resources, type Resources } from '../resources/Resources.ts';
-import { Models } from '../resources/models/Models.ts';
+import { Models, models as modelsSingleton } from '../resources/models/Models.ts';
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
+import { deployLifecycle } from './deployLifecycle.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -20,10 +21,18 @@ export class MissingDefaultFilesOptionError extends Error {
 }
 
 export type ScopeEventsMap = {
-	all: [...args: unknown[]];
-	close: [];
-	error: [error: unknown];
-	ready: [];
+	'all': [...args: unknown[]];
+	'close': [];
+	'error': [error: unknown];
+	'ready': [];
+	// Fired on this scope just before deploy I/O begins for the parent component
+	// (extract + npm install). Plugins observing these can pause their own
+	// file-driven work to avoid acting on intermediate states.
+	'deploy:start': [componentName: string];
+	// Fired after deploy I/O completes (success or failure). The scope's
+	// EntryHandlers have been recreated by this point; subsequent `add`/`change`
+	// events reflect the post-deploy tree.
+	'deploy:end': [componentName: string];
 	[record: string]: [...args: unknown[]];
 };
 
@@ -39,10 +48,18 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#directory: string;
 	#appName: string;
 	#pluginName: string;
+	#origin: string;
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
 	#logger: Logger;
 	#pendingInitialLoads: Set<Promise<void>>;
+	#deployStartHandler: (name: string) => void;
+	#deployEndHandler: (name: string) => void;
+	// While a deploy of this component is in flight, EntryHandler events do not
+	// drive requestRestart() — the deploy itself produces hundreds of file
+	// changes that would otherwise pile up. A single coalesced restart is
+	// triggered by the post-deploy re-scan instead.
+	#deployInFlight: boolean = false;
 	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
@@ -57,12 +74,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		pluginName: string,
 		directory: string,
 		configFilePath: string,
-		applicationScope: ApplicationScope
+		applicationScope: ApplicationScope,
+		origin: string = appName
 	) {
 		super();
 
 		this.#appName = appName;
 		this.#pluginName = pluginName;
+		this.#origin = typeof origin === 'string' ? origin : appName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
@@ -70,7 +89,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
 		this.resources = applicationScope?.resources ?? resources;
-		this.models = new Models();
+		this.models = modelsSingleton;
 
 		const baseServer = applicationScope?.server ?? server;
 		const scopeRef = this;
@@ -106,6 +125,18 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));
+
+		// Bridge cross-thread deploy lifecycle events for this component. The
+		// handlers live on the scope for the lifetime of the scope and are torn
+		// down in close().
+		this.#deployStartHandler = (name) => {
+			if (name === this.#appName) this.#onDeployStart(name);
+		};
+		this.#deployEndHandler = (name) => {
+			if (name === this.#appName) this.#onDeployEnd(name);
+		};
+		deployLifecycle.on('deploy:start', this.#deployStartHandler);
+		deployLifecycle.on('deploy:end', this.#deployEndHandler);
 	}
 
 	get logger(): Logger {
@@ -128,6 +159,11 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		return this.#configFilePath;
 	}
 
+	ensureTable<TableResourceType = unknown>(options: any): TableResourceType {
+		options.origin = this.#origin;
+		return table<TableResourceType>(options);
+	}
+
 	#handleOptionsWatcherReady(): void {
 		// This previously created the default entry handler immediately, but now we wait for the user to call `handleEntry`
 		// The issue was that since the component loader was awaiting `scope.ready()` and then calling `pluginModule.handleApplication(scope)`,
@@ -143,6 +179,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	close() {
+		deployLifecycle.off('deploy:start', this.#deployStartHandler);
+		deployLifecycle.off('deploy:end', this.#deployEndHandler);
+
 		for (const entryHandler of this.#entryHandlers) {
 			entryHandler.close();
 		}
@@ -154,6 +193,49 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.removeAllListeners();
 
 		return this;
+	}
+
+	#onDeployStart(componentName: string): void {
+		this.#deployInFlight = true;
+		// Pause each EntryHandler so it stops emitting events for the
+		// intermediate filesystem state the deploy is writing, and so it
+		// releases its inotify handles while npm install is unpacking
+		// dependencies. pause() preserves the EntryHandler INSTANCE — listeners
+		// the plugin attached via scope.handleEntry(handler) remain attached.
+		for (const entryHandler of this.#entryHandlers) {
+			entryHandler.pause();
+		}
+
+		this.#safeEmit('deploy:start', componentName);
+	}
+
+	#onDeployEnd(componentName: string): void {
+		this.#deployInFlight = false;
+
+		// Resume each EntryHandler BEFORE notifying plugins. Otherwise a plugin
+		// throwing in its deploy:end handler would abort this function and
+		// leave the watchers permanently paused (surfaced by Gemini review).
+		// The fresh chokidar watcher does an initial scan and emits add events
+		// for the post-deploy tree; the existing per-event listener calls
+		// scope.requestRestart() for each, and the restart debounce in
+		// componentLoader collapses them into a single restart cycle. Plugin
+		// handlers stay attached across the pause.
+		for (const entryHandler of this.#entryHandlers) {
+			void entryHandler.resume();
+		}
+
+		this.#safeEmit('deploy:end', componentName);
+	}
+
+	// Swallow and log listener exceptions so one buggy plugin can't stop us
+	// from running the rest of the deploy-lifecycle bookkeeping. EventEmitter
+	// by default rethrows from synchronous listeners.
+	#safeEmit(event: 'deploy:start' | 'deploy:end', componentName: string): void {
+		try {
+			this.emit(event, componentName);
+		} catch (error) {
+			this.#logger.error?.(`Listener for ${event} threw for ${this.#appName}:`, error);
+		}
 	}
 
 	#createEntryHandler(config: FilesOption | FileAndURLPathConfig): EntryHandler {
@@ -329,6 +411,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	requestRestart() {
+		if (this.#deployInFlight) {
+			// Suppressed: a deploy is rewriting this component's files. The
+			// post-deploy re-scan in #onDeployEnd will trigger the coalesced
+			// restart instead.
+			this.#logger.debug?.(`Restart suppressed (deploy in flight) for ${this.#appName}`);
+			return;
+		}
 		this.#logger.debug?.(`Restart requested from ${this.#pluginName} scope for ${this.#appName}`);
 		requestRestart();
 	}

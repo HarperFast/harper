@@ -2,7 +2,7 @@ import { Resource } from '../resources/Resource.ts';
 import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
-import { Models } from '../resources/models/Models.ts';
+import { models as harperModelsSingleton } from '../resources/models/Models.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -40,17 +40,12 @@ const HARPER_MODULE_IDS = new Set([
 	'@harperfast/harper-pro',
 ]);
 
-// #629 (Phase 2 of #510): module-singleton `Models` facade used by
-// `getHarperExports` to populate `harper.models`. The Models class has no
-// per-Scope or per-ApplicationScope state (registry + analytics writer are
-// process-singletons), so a single shared instance is equivalent to the
-// per-Scope instance Phase 1 wired in `components/Scope.ts` while keeping
-// that wiring untouched.
-let _harperModels: Models | undefined;
-function harperModels(): Models {
-	if (!_harperModels) _harperModels = new Models();
-	return _harperModels;
-}
+// `harper.models` (consumed by `getHarperExports`) and the top-level
+// `models` package export both point at the same process-wide `Models`
+// singleton declared in `resources/models/Models.ts`. The Models class has
+// no per-Scope or per-ApplicationScope state (registry + analytics writer
+// are process-singletons), so one shared instance is observationally
+// identical to the per-Scope instances built in `components/Scope.ts`.
 
 let lockedDown = false;
 /**
@@ -143,6 +138,83 @@ function parseJsonModule(source: string, url: string): any {
 }
 
 /**
+ * Walk an exports-map entry (string, array, or conditions object) with the given
+ * condition priority list and return the first matching path string, or null.
+ */
+function walkExportsConditions(entry: unknown, conditions: readonly string[]): string | null {
+	if (typeof entry === 'string') return entry;
+	if (Array.isArray(entry)) {
+		for (const e of entry) {
+			const r = walkExportsConditions(e, conditions);
+			if (r !== null) return r;
+		}
+		return null;
+	}
+	if (entry !== null && typeof entry === 'object') {
+		for (const cond of conditions) {
+			const val = (entry as Record<string, unknown>)[cond];
+			if (val !== undefined) {
+				const r = walkExportsConditions(val, conditions);
+				if (r !== null) return r;
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Resolve a bare package specifier to a file:// URL using the package's exports map
+ * with ESM import conditions. Used as a fallback when createRequire().resolve() throws
+ * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
+ * conditions and no "require").
+ */
+function resolveESMPackageExports(specifier: string, fromDir: string): string | null {
+	const isScoped = specifier.startsWith('@');
+	const parts = specifier.split('/');
+	const packageName = isScoped ? `${parts[0]}/${parts[1]}` : parts[0];
+	const subpathParts = parts.slice(isScoped ? 2 : 1);
+	const subpath = subpathParts.length > 0 ? './' + subpathParts.join('/') : '.';
+
+	let dir = fromDir;
+	while (true) {
+		const pkgRoot = join(dir, 'node_modules', packageName);
+		let pkgJson: any;
+		try {
+			pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf-8'));
+		} catch {
+			const parent = dirname(dir);
+			if (parent === dir) return null;
+			dir = parent;
+			continue;
+		}
+
+		if (!pkgJson.exports) return null;
+
+		const exportsMap = pkgJson.exports;
+		let entry: unknown;
+		if (typeof exportsMap === 'string') {
+			entry = subpath === '.' ? exportsMap : undefined;
+		} else if (exportsMap !== null && typeof exportsMap === 'object') {
+			const firstKey = Object.keys(exportsMap)[0];
+			if (firstKey?.startsWith('.')) {
+				// subpath map: { ".": ..., "./foo": ... }
+				entry = (exportsMap as Record<string, unknown>)[subpath];
+			} else {
+				// conditions map at root: { "import": ..., "require": ... }
+				entry = subpath === '.' ? exportsMap : undefined;
+			}
+		}
+
+		if (!entry) return null;
+
+		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
+		if (!relative) return null;
+
+		return pathToFileURL(join(pkgRoot, relative)).toString();
+	}
+}
+
+/**
  * Load a module using Node's vm.Module API with optional sandboxing
  * @param moduleUrl - The URL of the module to load
  * @param scope - The application scope
@@ -201,11 +273,25 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				resolveReferrer = pathToFileURL(realpathSync(fileURLToPath(referrer))).toString();
 			} catch {}
 		}
-		const resolved = createRequire(resolveReferrer).resolve(specifier);
-		if (isAbsolute(resolved)) {
-			return pathToFileURL(resolved).toString();
+		try {
+			const resolved = createRequire(resolveReferrer).resolve(specifier);
+			if (isAbsolute(resolved)) {
+				return pathToFileURL(resolved).toString();
+			}
+			return resolved;
+		} catch (err) {
+			if ((err as any)?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+				// Pure-ESM package: CJS resolver cannot match an exports map that only has
+				// "import" conditions (no "require"). Resolve the entry file by walking
+				// the filesystem and evaluating the exports map with ESM import conditions.
+				const referrerDir = resolveReferrer.startsWith('file:')
+					? dirname(fileURLToPath(resolveReferrer))
+					: dirname(resolveReferrer);
+				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
+				if (esmResolved) return esmResolved;
+			}
+			throw err;
 		}
-		return resolved;
 	}
 
 	/**
@@ -697,13 +783,11 @@ function getHarperExports(scope: ApplicationScope) {
 		Resource,
 		tables,
 		databases,
-		// #629 (Phase 2 of #510): expose `harper.models` so user code can call
-		// `harper.models.embed(...)`. Uses a shared module-singleton — the
-		// `Models` facade reads ALS for per-request context and a process-wide
-		// backend registry, so per-Scope instances would carry no extra state.
-		// The registry it reads from is populated at boot by
+		// `harper.models` — same singleton that's surfaced as the top-level
+		// `models` package export (see `resources/models/Models.ts`).  The
+		// registry it reads from is populated at boot by
 		// `resources/models/bootstrap.ts`.
-		models: harperModels(),
+		models: harperModelsSingleton,
 		createBlob,
 		RequestTarget,
 		getContext,

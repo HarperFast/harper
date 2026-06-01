@@ -29,6 +29,7 @@ const serverItcHandlers = {
  * @param event
  * @returns {Promise<void>}
  */
+const schemaListeners = [];
 async function schemaHandler(event) {
 	const validate = validateEvent(event);
 	if (validate) {
@@ -39,7 +40,18 @@ async function schemaHandler(event) {
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);
+	for (let listener of schemaListeners) {
+		try {
+			listener(event?.message);
+		} catch (err) {
+			hdbLogger.error(err);
+		}
+	}
 }
+
+schemaHandler.addListener = function (listener) {
+	schemaListeners.push(listener);
+};
 
 /**
  * Switch statement to handle schema-related messages from other forked processes - i.e. if another process completes an
@@ -200,3 +212,7 @@ async function resourceOpenApiRequestHandler(event) {
 }
 
 module.exports = serverItcHandlers;
+// Named exports so consumers (e.g., MCP listChanged) can subscribe via
+// `userHandler.addListener(fn)` / `schemaHandler.addListener(fn)`.
+module.exports.userHandler = userHandler;
+module.exports.schemaHandler = schemaHandler;

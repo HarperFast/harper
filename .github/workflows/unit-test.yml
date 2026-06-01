@@ -13,9 +13,9 @@ on:
         default: 'all'
         options:
           - 'all'
-          - '20'
           - '22'
           - '24'
+          - '26'
 
 jobs:
   unit-test:
@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('[20, 22, 24]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
+        node-version: ${{ (github.event.inputs.node-version == 'all' || github.event.inputs.node-version == '') && fromJSON('[22, 24, 26]') || fromJSON(format('[{0}]', github.event.inputs.node-version)) }}
 
     steps:
       - name: Checkout code

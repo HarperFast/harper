@@ -1,5 +1,8 @@
 'use strict';
 
+// Install the worker process guard first so user job code cannot terminate
+// the worker via process.exit() or an unhandled rejection.
+import { realExit } from '../threads/workerProcessGuard.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as hdbUtils from '../../utility/common_utils.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -75,7 +78,7 @@ const JOB_ID = JOB_NAME.substring(4);
 	} finally {
 		await jobs.updateJob(jobObj);
 		setTimeout(() => {
-			process.exit(exitCode);
+			realExit(exitCode);
 		}, 3000).unref();
 	}
 })();

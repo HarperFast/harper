@@ -113,3 +113,14 @@ describe('symlinked module resolution', () => {
 		expect(result.cached).to.equal('hit');
 	});
 });
+
+describe('pure-ESM package resolution', () => {
+	// Regression test for https://github.com/HarperFast/harper/issues/826
+	// Pure-ESM packages have an exports map with only "import" conditions and no "require".
+	// createRequire().resolve() (CJS resolver) throws ERR_PACKAGE_PATH_NOT_EXPORTED for these;
+	// the fix returns the raw specifier so createModule() falls through to dynamic import().
+	it('should import a pure-ESM package (exports map with only "import" conditions, no "require")', async () => {
+		const result = await scopedImport(join(__dirname, 'fixtures', 'esm-only-test', 'uses-pure-esm-pkg.mjs'), vmScope());
+		expect(result.value).to.equal('esm-only');
+	});
+});
