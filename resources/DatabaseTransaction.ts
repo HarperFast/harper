@@ -8,6 +8,7 @@ import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { when } from '../utility/when.ts';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
@@ -21,6 +22,7 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
+const MAX_RETRIES = 40;
 let outstandingCommit, outstandingCommitStart;
 let confirmReplication;
 export function replicationConfirmation(callback) {
@@ -342,7 +344,26 @@ export class DatabaseTransaction implements Transaction {
 							});
 						},
 						(error) => {
-							throw error;
+							// Coordinated transactions surface conflicts as RETRY_NOW (handled in the
+							// resolve branch above) and never reach here with ERR_BUSY. But not every
+							// write transaction is coordinated — a write that reaches save() with no
+							// prior getReadTxn() (immediate/publish/invalidate writes) is created
+							// without coordinatedRetry and still rejects with ERR_BUSY on conflict.
+							// Keep the backoff retry as the fallback for those paths.
+							if (error.code === 'ERR_BUSY') {
+								this.retries++;
+								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								if (this.retries > 2) {
+									if (this.retries > MAX_RETRIES) {
+										throw new ServerError(
+											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+										);
+									}
+									// back off to space out transactions and avoid excessive conflicts
+									return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
+								}
+								return this.commit({ transaction }); // try again
+							} else throw error;
 						}
 					);
 				}
