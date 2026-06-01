@@ -62,7 +62,7 @@ export let testData = {
 	'my_operation_token': '',
 	'rootPath': '',
 	'restartTimeout': 45000,
-	'restartHttpWorkersTimeout': 15000,
+	'restartHttpWorkersTimeout': 90000,
 	'jobErrorMessage': '',
 	'blobsPath': '/blobs/blob/0/0/',
 };
