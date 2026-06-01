@@ -92,6 +92,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	#pausedClose?: Promise<void>;
 	#usingPolling: boolean = false;
 	#closed: boolean = false;
+	#openCount: number = 0;
 	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: Logger) {
@@ -242,6 +243,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 
 		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
 
+		this.#openCount++;
 		this.#watcher = chokidar
 			.watch(this.#component.commonPatternBase, {
 				cwd: this.#component.directory,
@@ -287,6 +289,13 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	// Test-only: whether the watcher has fallen back to polling.
 	get _usingPollingForTests(): boolean {
 		return this.#usingPolling;
+	}
+
+	// Test-only: number of times the underlying watcher has been (re)opened.
+	// Used to assert that a close()-during-fallback race didn't install a
+	// replacement watcher.
+	get _openCountForTests(): number {
+		return this.#openCount;
 	}
 
 	close(): this {

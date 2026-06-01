@@ -669,21 +669,17 @@ describe('EntryHandler', () => {
 			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 
+			assert.equal(entryHandler._openCountForTests, 1, 'one initial open');
+
+			// Trigger the fallback path, then immediately close before the inner
+			// `await this.#watcher.close()` resolves.
 			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
 			entryHandler.close();
 
 			// Allow plenty of time for the would-be reopen to (not) happen.
 			await new Promise((r) => setTimeout(r, 200));
 
-			// After close(), no further events should fire. Subsequent file writes
-			// are the strongest signal we can observe without exposing more internals.
-			const addSpy = spy();
-			entryHandler.on('add', addSpy);
-			await writeFile(join(directory, 'b.txt'), 'b');
-			// Even with the polling interval (3s for directory watchers), we should
-			// never see events because there's no active watcher of either flavor.
-			await new Promise((r) => setTimeout(r, 500));
-			assert.equal(addSpy.callCount, 0, 'no events should fire after close()');
+			assert.equal(entryHandler._openCountForTests, 1, 'reopen must be suppressed by the close-during-fallback guard');
 
 			rmSync(directory, { recursive: true, force: true });
 		}).timeout(2000);
