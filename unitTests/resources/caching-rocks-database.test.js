@@ -18,10 +18,7 @@ describe('PrimaryRocksDatabase', function () {
 		TestTable = table({
 			table: 'PrimaryRocksTest',
 			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'name' },
-			],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
 	});
 
@@ -50,10 +47,7 @@ describe('PrimaryRocksDatabase', function () {
 		// Second read: cache warm, expectedVersion passed → soft VT miss populates slot
 		const entry = await TestTable.primaryStore.getEntry(3);
 		assert(entry.version, 'entry should have a version after read');
-		assert(
-			TestTable.primaryStore.verifyVersion(3, entry.version),
-			'VT slot should be populated after two reads'
-		);
+		assert(TestTable.primaryStore.verifyVersion(3, entry.version), 'VT slot should be populated after two reads');
 	});
 
 	it('Third read hits VT fast path (no DB access needed)', async function () {
@@ -76,10 +70,7 @@ describe('PrimaryRocksDatabase', function () {
 
 		// Write clears the VT slot via LockTracker registerIntent/releaseIntent
 		await TestTable.put(4, { name: 'four updated' });
-		assert(
-			!TestTable.primaryStore.verifyVersion(4, oldVersion),
-			'VT slot should be cleared after write'
-		);
+		assert(!TestTable.primaryStore.verifyVersion(4, oldVersion), 'VT slot should be cleared after write');
 		// New read should return the updated value
 		const updated = await TestTable.get(4);
 		assert.equal(updated.name, 'four updated');
@@ -103,10 +94,7 @@ describe('PrimaryRocksDatabase', function () {
 	it('Concurrent writes to the same key both complete with coordinatedRetry', async function () {
 		await TestTable.put(7, { name: 'seven' });
 		// Fire two concurrent writes; coordinatedRetry means no ERR_BUSY thrown
-		const [, ] = await Promise.all([
-			TestTable.put(7, { name: 'seven-a' }),
-			TestTable.put(7, { name: 'seven-b' }),
-		]);
+		const [,] = await Promise.all([TestTable.put(7, { name: 'seven-a' }), TestTable.put(7, { name: 'seven-b' })]);
 		const result = await TestTable.get(7);
 		assert(
 			result.name === 'seven-a' || result.name === 'seven-b',

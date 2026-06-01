@@ -31,9 +31,7 @@ function row(label, plain, caching) {
 function header() {
 	console.log('');
 	console.log(
-		`  ${'Scenario'.padEnd(38)} | ${'cache: false'.padStart(13)}` +
-			` | ${'cache: true'.padStart(15)}` +
-			` | Speedup`
+		`  ${'Scenario'.padEnd(38)} | ${'cache: false'.padStart(13)}` + ` | ${'cache: true'.padStart(15)}` + ` | Speedup`
 	);
 	console.log('  ' + '-'.repeat(85));
 }
