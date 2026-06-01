@@ -1486,7 +1486,7 @@ export function makeTable(options) {
 				// RocksDB: eviction writes went directly into the raw transaction via options;
 				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
 				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
-				return Promise.resolve((transaction as any)?.commit?.());
+				return Promise.resolve((transaction as any).commit());
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
@@ -4549,7 +4549,7 @@ export function makeTable(options) {
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-										let resolution: Promise<void>;
+										let resolution: Promise<void> | undefined;
 										if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
 											// make sure it is still deleted when we do the removal
 											resolution = removeEntry(primaryStore, entry, version);
