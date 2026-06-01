@@ -45,11 +45,8 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	}
 
 	if (!rotatedLogDir) {
-		// Default to <log file dir>/rotated when path is not explicitly set in config,
-		// so rotation works out of the box when only LOGGING_ROTATION_MAXSIZE is set.
 		rotatedLogDir = path.join(path.dirname(logger.path), 'rotated');
 	}
-	// Ensure the directory exists; moveLogFile's rename would otherwise ENOENT on first rotation.
 	mkdirSync(rotatedLogDir, { recursive: true });
 
 	// Convert maxSize param to bytes.
