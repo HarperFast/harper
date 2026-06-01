@@ -16,11 +16,20 @@ const POLL_INTERVAL_MS = 200;
 async function waitForTcpPort(host, port, deadlineMs) {
 	while (Date.now() < deadlineMs) {
 		const connected = await new Promise((resolve) => {
-			const socket = connect({ host, port }, () => {
+			const socket = connect({ host, port });
+			socket.setTimeout(2000);
+			socket.on('connect', () => {
 				socket.destroy();
 				resolve(true);
 			});
-			socket.on('error', () => resolve(false));
+			socket.on('timeout', () => {
+				socket.destroy();
+				resolve(false);
+			});
+			socket.on('error', () => {
+				socket.destroy();
+				resolve(false);
+			});
 		});
 		if (connected) return;
 		await sleep(POLL_INTERVAL_MS);
