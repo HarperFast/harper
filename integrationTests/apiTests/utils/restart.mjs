@@ -80,10 +80,19 @@ async function waitForTcpPortClose(host, port, deadlineMs) {
 export async function restartWithTimeout(timeoutMs) {
 	const budget = timeoutMs ?? testData.restartTimeout ?? 60000;
 	await sleep(500);
-	await req()
-		.send({ operation: 'restart' })
-		.expect((r) => assert.ok(r.body.message.includes('Restarting'), r.text))
-		.expect(200);
+	try {
+		await req()
+			.send({ operation: 'restart' })
+			.expect((r) => assert.ok(r.body.message.includes('Restarting'), r.text))
+			.expect(200);
+	} catch (err) {
+		// On Windows the server may reset/refuse the connection while shutting down
+		// before the HTTP response is fully delivered. Both are valid "restart accepted"
+		// signals — proceed with the TCP poll rather than throwing.
+		const code = err.code ?? err.cause?.code;
+		const codes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE']);
+		if (!codes.has(code) && !(err instanceof AggregateError)) throw err;
+	}
 
 	// Brief pause so the process begins shutting down before we start polling.
 	await sleep(1000);
