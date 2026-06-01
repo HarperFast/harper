@@ -1441,6 +1441,7 @@ export function makeTable(options) {
 			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
 			let transaction = lmdbTransaction.getReadTxn();
 			let options = { transaction };
+			let committed = false;
 			try {
 				if (hasSourceGet || audit) {
 					if (!existingRecord) return;
@@ -1460,12 +1461,12 @@ export function makeTable(options) {
 					primaryStore.ifVersion?.(id, existingVersion, () => {
 						updateIndices(id, existingRecord, null);
 					});
-					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
 				} else {
 					updateIndices(id, existingRecord, null, options);
-					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
+					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
-			} finally {
+				committed = true;
 				if (primaryStore.ifVersion) {
 					// LMDB: committing the wrapper calls doneReadTxn(), removing it from trackedTxns
 					return lmdbTransaction.commit();
@@ -1478,7 +1479,20 @@ export function makeTable(options) {
 				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
 				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
 				return Promise.resolve((transaction as any)?.commit?.());
+<<<<<<< HEAD
 >>>>>>> ceeb57056 (fix(table): make evict() return a Promise on RocksDB)
+=======
+			} finally {
+				if (!committed) {
+					// Skip path or thrown error: abort instead of committing so we don't apply
+					// partial work and the txn handle is released.
+					if (primaryStore.ifVersion) {
+						(lmdbTransaction as any).abort?.();
+					} else {
+						(transaction as any)?.abort?.();
+					}
+				}
+>>>>>>> 3284fe47e (address review: move commit() out of finally)
 			}
 		}
 		/**
