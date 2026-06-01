@@ -15,15 +15,11 @@ import isNumber from 'is-number';
 import minimist from 'minimist';
 import * as https from 'https';
 import * as http from 'http';
-// Lazy getDatabases accessor: databases.ts → itc.ts → common_utils.ts creates a
-// circular import if we use a static top-level import. itc.ts only uses `isEmpty`
-// from this module, so we break the cycle by removing the itc.ts import of
-// common_utils.ts (see server/threads/itc.ts) and inlining `isEmpty` there instead.
-// That makes this top-level import safe.
-import { getDatabases as _getDatabases } from '../resources/databases.ts';
-function getDatabases(): any {
-	return _getDatabases();
-}
+// Lazy getDatabases accessor: importing databases.ts here creates circular deps
+// (databases.ts → Table.ts/auditStore.ts/etc → common_utils.ts). Instead we use a
+// shared registry module that has no deps of its own; databases.ts registers its
+// getter there at load time, and we read it here at call time.
+import { getDatabases } from './databasesRef.ts';
 
 const ISO_DATE =
 	/^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;

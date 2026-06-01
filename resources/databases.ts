@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { setDatabasesGetter } from '../utility/databasesRef.ts';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
@@ -246,6 +247,9 @@ export function getTables(): Tables {
  * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
  * can span any tables in the database.
  */
+// Register getter in the shared registry so common_utils.ts can access databases
+// without importing this module directly (which would create a circular dep).
+setDatabasesGetter(() => getDatabases());
 export function getDatabases(): Databases {
 	if (loadedDatabases) {
 		return databases;
