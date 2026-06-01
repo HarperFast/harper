@@ -14,6 +14,13 @@ import isNumber from 'is-number';
 import minimist from 'minimist';
 import * as https from 'https';
 import * as http from 'http';
+// Lazy binding: getDatabases is imported at module level to work in ESM (no require()).
+// The circular dependency is safe because these functions are only called at runtime,
+// never during module initialization.
+import { getDatabases as _getDatabases } from '../resources/databases.ts';
+function getDatabases() {
+	return _getDatabases();
+}
 
 const ISO_DATE =
 	/^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
@@ -456,7 +463,7 @@ export async function isPortTaken(port: number) {
  * @returns string returns a thrown message if schema and or table does not exist
  */
 export function checkGlobalSchemaTable(schemaName: string, tableName: string) {
-	let databases = require('../resources/databases').getDatabases();
+	let databases = getDatabases();
 	if (!databases[schemaName]) {
 		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaName);
 	}
@@ -540,7 +547,6 @@ export function checkSchemaTableExist(schema: string, table: string) {
  * @returns {string}
  */
 export function checkSchemaExists(schema: string) {
-	const { getDatabases } = require('../resources/databases');
 	if (!getDatabases()[schema]) {
 		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
 	}
@@ -553,7 +559,6 @@ export function checkSchemaExists(schema: string) {
  * @returns {string}
  */
 export function checkTableExists(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
 	if (!getDatabases()[schema][table]) {
 		return hdbErrors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
 	}
@@ -659,8 +664,7 @@ export function autoCastBooleanStrict(value: any) {
  * Gets a tables hash attribute from the global schema
  */
 export function getTableHashAttribute(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
-	let tableObj = getDatabases()[schema]?.[table];
+	let tableObj = getDatabases()[schema]?.[table] as any;
 	return tableObj?.primaryKey || tableObj?.hash_attribute;
 }
 
@@ -670,7 +674,6 @@ export function getTableHashAttribute(schema: string, table: string) {
  * @returns {boolean} - returns true if schema exists
  */
 export function doesSchemaExist(schema: string) {
-	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema] !== undefined;
 }
 
@@ -681,7 +684,6 @@ export function doesSchemaExist(schema: string) {
  * @returns {boolean} - returns true if table exists
  */
 export function doesTableExist(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema]?.[table] !== undefined;
 }
 
