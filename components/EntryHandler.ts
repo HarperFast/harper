@@ -246,14 +246,15 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		return this.ready;
 	}
 
-	close(): this {
-		this.#watcher?.close();
+	close(): Promise<this> {
+		const pendingReads = [...this.#pendingFileReads];
+		const watcherClose = this.#watcher ? Promise.resolve(this.#watcher.close()).catch(() => {}) : Promise.resolve();
 		this.#watcher = undefined;
 
 		this.emit('close');
 		this.removeAllListeners();
 
-		return this;
+		return Promise.allSettled([watcherClose, ...pendingReads]).then(() => this);
 	}
 
 	/**

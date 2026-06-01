@@ -178,18 +178,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.emit('error', error);
 	}
 
-	close() {
+	async close(): Promise<this> {
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
 
-		for (const entryHandler of this.#entryHandlers) {
-			entryHandler.close();
-		}
-
-		this.options.close();
+		await Promise.allSettled([...this.#entryHandlers.map((h) => h.close()), this.options.close()]);
 
 		this.emit('close');
-
 		this.removeAllListeners();
 
 		return this;

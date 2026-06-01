@@ -193,9 +193,7 @@ describe('EntryHandler', () => {
 		assert.equal(unlinkDirArg.content, undefined, 'unlinkDir event argument `content` should not be defined');
 		assert.equal(unlinkDirArg.stats, undefined, 'unlinkDir event argument `stats` should not be defined');
 
-		const closeEvent = once(entryHandler, 'close');
-		entryHandler.close();
-		await closeEvent;
+		await entryHandler.close();
 		assert.equal(closeEventSpy.callCount, 1, 'close event should be triggered once');
 
 		assert.equal(entryHandler.listenerCount('ready'), 0, 'ready event listener should be removed');
@@ -215,7 +213,7 @@ describe('EntryHandler', () => {
 		await entryHandler.ready;
 		assert.equal(readyEventSpy.callCount, 1, 'ready event should be triggered once');
 
-		entryHandler.close();
+		await entryHandler.close();
 	});
 
 	it('should emit file change events', async () => {
@@ -248,7 +246,7 @@ describe('EntryHandler', () => {
 		assert.ok(changeArg.stats !== undefined, 'change event argument `stats` should be defined');
 		assert.ok(changeArg.stats.isFile(), 'change event argument `stats` should be a file');
 
-		entryHandler.close();
+		await entryHandler.close();
 	});
 
 	it('should handle updating the config', async () => {
@@ -306,9 +304,7 @@ describe('EntryHandler', () => {
 		assert.equal(addArgB.urlPath, '/b', 'add event should be triggered with the correct arguments');
 		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should not be triggered');
 
-		const closeEvent = once(entryHandler, 'close');
-		entryHandler.close();
-		await closeEvent;
+		await entryHandler.close();
 		assert.equal(closeEventSpy.callCount, 1, 'close event should be triggered once');
 		assert.equal(entryHandler.listenerCount('ready'), 0, 'ready event listener should be removed');
 		assert.equal(entryHandler.listenerCount('close'), 0, 'close event listener should be removed');
@@ -368,8 +364,7 @@ describe('EntryHandler', () => {
 		assert.equal(addHandlerSpy.callCount, 6, 'add event should be triggered for each matching file');
 		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should be triggered for each matching directory');
 
-		entryHandler.close();
-
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -415,8 +410,7 @@ describe('EntryHandler', () => {
 			'urlPath resolution should account for similarities'
 		);
 
-		entryHandler.close();
-
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -457,8 +451,7 @@ describe('EntryHandler', () => {
 			['/a', '/b', '/static-assets/c', '/static-assets/d']
 		);
 
-		entryHandler.close();
-
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -488,7 +481,7 @@ describe('EntryHandler', () => {
 			assert.ok(event.hasContents, `File ${event.path} should have contents when ready resolves`);
 		}
 
-		entryHandler.close();
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -518,7 +511,7 @@ describe('EntryHandler', () => {
 				`resume should re-emit add for current files, got ${addSpy.callCount} total`
 			);
 
-			entryHandler.close();
+			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
 		});
 
@@ -538,7 +531,7 @@ describe('EntryHandler', () => {
 
 			assert.ok(allSpy.callCount > before, 'all listener still attached after resume');
 
-			entryHandler.close();
+			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
 		});
 
@@ -553,7 +546,7 @@ describe('EntryHandler', () => {
 			await new Promise((r) => setTimeout(r, 100));
 			assert.equal(addSpy.callCount, 0, 'resume without pause should not re-emit');
 
-			entryHandler.close();
+			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
 		});
 
@@ -580,7 +573,7 @@ describe('EntryHandler', () => {
 			await readyPromise;
 			assert.equal(readyResolved, true, '`ready` resolves after resume()');
 
-			entryHandler.close();
+			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
 		});
 	});

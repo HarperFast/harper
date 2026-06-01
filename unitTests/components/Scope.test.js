@@ -97,7 +97,7 @@ describe('Scope', () => {
 		const entryHandlerCloseSpy = spy();
 		entryHandlerNoArgs.on('close', entryHandlerCloseSpy);
 
-		scope.close();
+		await scope.close();
 		assert.equal(scopeCloseSpy.callCount, 1, 'close event should be emitted once');
 		assert.equal(scopeOptionsCloseSpy.callCount, 1, 'close event for options should be emitted once');
 		assert.equal(entryHandlerCloseSpy.callCount, 1, 'close event for entry handler should be emitted once');
@@ -154,7 +154,7 @@ describe('Scope', () => {
 		const entryHandlerCloseSpy = spy();
 		entryHandler.on('close', entryHandlerCloseSpy);
 
-		scope.close();
+		await scope.close();
 		assert.equal(scopeCloseSpy.callCount, 1, 'close event should be emitted once');
 		assert.equal(scopeOptionsCloseSpy.callCount, 1, 'close event for options should be emitted once');
 		assert.equal(entryHandlerCloseSpy.callCount, 1, 'close event for entry handler should be emitted once');
@@ -181,7 +181,7 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), true, 'requestRestart was called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	it('should call requestRestart if no options handler is provided', async () => {
@@ -208,7 +208,7 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), true, 'requestRestart was called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	it('should emit error for missing default entry handler', async () => {
@@ -249,7 +249,7 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), false, 'requestRestart should not be called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	it('should support custom entry handlers', async () => {
@@ -283,7 +283,7 @@ describe('Scope', () => {
 		customEntryHandlerPathOnlyArg.on('close', entryHandleCloseSpy1);
 		customEntryHandlerPathAndFunctionArgs.on('close', entryHandleCloseSpy2);
 
-		scope.close();
+		await scope.close();
 
 		assert.equal(entryHandleCloseSpy1.callCount, 1, 'close event for custom entry handler should be emitted once');
 		assert.equal(entryHandleCloseSpy2.callCount, 1, 'close event for custom entry handler should be emitted once');
@@ -323,7 +323,7 @@ describe('Scope', () => {
 		await waitFor(() => handleEntrySpy.callCount > 0);
 		assert.ok(handleEntrySpy.callCount > 0, 'Entry handler should be called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	describe('deploy lifecycle integration', () => {
@@ -367,7 +367,7 @@ describe('Scope', () => {
 			scope.requestRestart();
 			assert.equal(restartNeeded(), true, 'requestRestart works again after deploy:end');
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('does not suppress requestRestart for an unrelated component', async () => {
@@ -391,7 +391,7 @@ describe('Scope', () => {
 				'requestRestart for this component must not be suppressed by an unrelated deploy'
 			);
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('pauses entry handlers on deploy:start and resumes them on deploy:end without losing plugin listeners', async () => {
@@ -436,7 +436,7 @@ describe('Scope', () => {
 			await waitFor(() => handlerSpy.callCount > callsAfterResume);
 			assert.ok(handlerSpy.callCount > callsAfterResume, 'post-deploy change fires the plugin handler');
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('re-emits deploy:start and deploy:end on the scope for plugins to observe', async () => {
@@ -464,7 +464,7 @@ describe('Scope', () => {
 			assert.equal(endSpy.callCount, 1);
 			assert.deepEqual(endSpy.getCall(0).args, [this.appName]);
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('detaches deploy lifecycle listeners on scope.close()', async () => {
@@ -480,7 +480,7 @@ describe('Scope', () => {
 			await scope.ready;
 
 			const beforeClose = deployLifecycle.listenerCount('deploy:start');
-			scope.close();
+			await scope.close();
 			const afterClose = deployLifecycle.listenerCount('deploy:start');
 
 			assert.equal(
