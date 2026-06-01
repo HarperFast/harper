@@ -491,4 +491,97 @@ describe('EntryHandler', () => {
 		entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
+
+	describe('pause / resume', () => {
+		it('stops emitting while paused and re-emits add events on resume', async () => {
+			const { directory } = createFixture(['a', 'b', 'c']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const addSpy = spy();
+			entryHandler.on('add', addSpy);
+
+			await entryHandler.ready;
+			const initialAdds = addSpy.callCount;
+			assert.equal(initialAdds, 3, 'initial scan should fire 3 add events');
+
+			entryHandler.pause();
+
+			// While paused, adding a file should not emit anything (watcher is closed)
+			await writeFile(join(directory, 'd'), 'd');
+			await new Promise((r) => setTimeout(r, 100));
+			assert.equal(addSpy.callCount, initialAdds, 'no events while paused');
+
+			// Resume — fresh scan should emit add for every current file (now 4)
+			await entryHandler.resume();
+			await new Promise((r) => setTimeout(r, 200));
+			assert.ok(
+				addSpy.callCount >= initialAdds + 4,
+				`resume should re-emit add for current files, got ${addSpy.callCount} total`
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('preserves listener attachments across pause/resume', async () => {
+			const { directory } = createFixture(['a']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const allSpy = spy();
+			entryHandler.on('all', allSpy);
+
+			await entryHandler.ready;
+			const before = allSpy.callCount;
+			assert.ok(before >= 1);
+
+			entryHandler.pause();
+			await entryHandler.resume();
+			await new Promise((r) => setTimeout(r, 200));
+
+			assert.ok(allSpy.callCount > before, 'all listener still attached after resume');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('resume is a no-op when not paused', async () => {
+			const { directory } = createFixture(['a']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+			const addSpy = spy();
+			entryHandler.on('add', addSpy);
+
+			await entryHandler.resume(); // not paused
+			await new Promise((r) => setTimeout(r, 100));
+			assert.equal(addSpy.callCount, 0, 'resume without pause should not re-emit');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('awaiting `ready` after pause() does not resolve until resume()', async () => {
+			// Contract: per pause()'s docstring, awaiting `ready` while paused must
+			// wait for resume(). Naive impl (only resetting `ready` in resume) lets
+			// an already-resolved `ready` linger across pause and resolve early.
+			const { directory } = createFixture(['a']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready; // initial ready resolves
+
+			entryHandler.pause();
+
+			let readyResolved = false;
+			const readyPromise = entryHandler.ready.then(() => {
+				readyResolved = true;
+			});
+
+			// Give the microtask queue a chance to settle a stale resolved promise.
+			await new Promise((r) => setTimeout(r, 100));
+			assert.equal(readyResolved, false, '`ready` must not resolve while paused');
+
+			await entryHandler.resume();
+			await readyPromise;
+			assert.equal(readyResolved, true, '`ready` resolves after resume()');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+	});
 });

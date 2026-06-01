@@ -376,7 +376,7 @@ export async function migrateOnStart() {
 	}
 }
 
-async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
+export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
 	console.log(`Migrating database ${sourceDatabase} to RocksDB at ${targetPath}`);
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
@@ -413,6 +413,11 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
 			dbiInit.compression = attribute.compression;
 			const sourceDbi = sourceRootStore.openDB(key, dbiInit);
+			// The primary dbi uses a RecordEncoder, whose decode resolves file-backed blob references
+			// against `rootStore`. Without it, decoding any record that holds a blob throws "No store
+			// specified, cannot load blob from storage", the error is swallowed (record decodes to null),
+			// and the record is silently dropped from the migration (HarperFast/harper#857).
+			if (isPrimary && sourceDbi.encoder) sourceDbi.encoder.rootStore = sourceRootStore;
 
 			let targetDbi;
 			if (!isPrimary) {
@@ -425,9 +430,23 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				existingEncoder.isRocksDB = true;
 				existingEncoder.rootStore = targetRootStore;
 				const tempEncoder = new RecordEncoder({ name: key }) as any;
+				// msgpackr's pack closure captures `packr = this` at construction, so during
+				// re-encoding the structure callbacks resolve to tempEncoder's getStructures/
+				// saveStructures (invoked with this === tempEncoder), not existingEncoder's.
+				// tempEncoder must therefore carry the RocksDB wiring too, or getStructures hits
+				// the non-RocksDB branch where the captured super is undefined and throws.
+				tempEncoder.name = key;
+				tempEncoder.isRocksDB = true;
+				tempEncoder.rootStore = targetRootStore;
 				existingEncoder.encode = tempEncoder.encode;
-				existingEncoder.saveStructures = tempEncoder.saveStructures;
 				existingEncoder.getStructures = tempEncoder.getStructures;
+				// The shared structures dictionary is copied verbatim from the source by
+				// copyStructures() below, so re-encoding never needs to persist new structures.
+				// A no-op saveStructures avoids opening a targetRootStore.transactionSync() in the
+				// middle of each record's encode, which otherwise discards the targetDbi record writes.
+				const noopSaveStructures = () => true;
+				existingEncoder.saveStructures = noopSaveStructures;
+				tempEncoder.saveStructures = noopSaveStructures;
 			}
 
 			copyStructures(sourceDbi, key);

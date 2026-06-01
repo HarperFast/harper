@@ -17,7 +17,6 @@ export class OpenDBIObject {
 	sharedStructuresKey: symbol;
 	compression: any;
 	cache: any;
-	randomAccessStructure: boolean;
 	freezeData: boolean;
 	encoder: any;
 	/**
@@ -35,11 +34,10 @@ export class OpenDBIObject {
 		this.sharedStructuresKey = Symbol.for('structures');
 		/** @type {any} */
 		this.compression = undefined;
+		this.encoder = { Encoder: RecordEncoder };
 		if (isPrimary) {
 			this.cache = LMDB_CACHING && { validated: true };
-			this.randomAccessStructure = true;
 			this.freezeData = true;
-			this.encoder = { Encoder: RecordEncoder };
 		}
 	}
 }

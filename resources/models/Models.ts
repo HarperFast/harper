@@ -1,3 +1,4 @@
+import { _assignPackageExport } from '../../globals.js';
 import { contextStorage } from '../transaction.ts';
 import { resolveEmbedding, resolveGenerative } from './backendRegistry.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
@@ -19,7 +20,8 @@ import type {
 type CallMethod = ModelCallRecord['method'];
 
 /**
- * Public `scope.models` facade. One instance per `Scope`.
+ * Process-wide singleton. One shared instance serves all Scopes — `scope.models`,
+ * `global.models`, and `import { models } from 'harperdb'` all alias the same object.
  *
  * On every call:
  * - Resolves the configured backend via `backendRegistry`.
@@ -235,3 +237,16 @@ export class ModelPendingNotSupportedError extends ServerError {
 		this.name = 'ModelPendingNotSupportedError';
 	}
 }
+
+/**
+ * Process-wide `Models` singleton exposed to user code as the `models` global
+ * (and as `import { models } from 'harperdb'`).  The Models class itself holds
+ * no per-Scope or per-ApplicationScope state — the backend registry it reads
+ * from is process-wide and accounting context comes from ALS — so one shared
+ * instance is observationally identical to the per-Scope instances built in
+ * `components/Scope.ts`, with the advantage that user resources can call
+ * `models.embed(...)` without writing a `handleApplication` shim that stashes
+ * `scope.models` on a global.
+ */
+export const models = new Models();
+_assignPackageExport('models', models);

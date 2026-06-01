@@ -5,6 +5,7 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { hdbSchemaTable, checkValidTable, hdbTable, hdbDatabase } from './common_validators.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
+
 const { HTTP_STATUS_CODES } = hdbErrors;
 
 const searchByValueSchema = Joi.object({

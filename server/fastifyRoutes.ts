@@ -7,6 +7,7 @@ import autoload from '@fastify/autoload';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { realExit } from './threads/workerProcessGuard.ts';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
 import * as userSchema from '../security/user.ts';
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
@@ -101,7 +102,9 @@ export async function customFunctionsServer() {
 	} catch (err) {
 		harperLogger.error(`Custom Functions ${process.pid} Error: ${err}`);
 		harperLogger.error(err);
-		process.exit(1);
+		// Use realExit so this fatal worker bootstrap failure still terminates
+		// the worker even with the worker process guard installed.
+		realExit(1);
 	}
 }
 

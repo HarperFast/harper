@@ -5,6 +5,7 @@ import * as env from '../utility/environment/environmentManager.ts';
 env.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { realExit } from './threads/workerProcessGuard.ts';
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
@@ -92,7 +93,9 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 	} catch (err) {
 		console.error(`Failed to build server on ${process.pid}`, err);
 		harperLogger.fatal(err);
-		process.exit(1);
+		// Use realExit so this fatal worker bootstrap failure still terminates
+		// the worker even with the worker process guard installed.
+		realExit(1);
 	}
 }
 
@@ -196,7 +199,10 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 			profile: 'operations',
 			host: app,
 			config: fullConfig,
-			routeOptions: { preValidation: [authHandler] },
+			// Use authAndEnsureUserOnRequest (sets `req.hdb_user`) instead of
+			// authHandler (which mutates `req.body.hdb_user` — that would
+			// contaminate the JSON-RPC envelope the MCP handler reads).
+			routeOptions: { preValidation: [authAndEnsureUserOnRequest] },
 		});
 	}
 

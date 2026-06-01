@@ -40,10 +40,13 @@ export interface Server {
 	knownGraphQLDirectives?: string[];
 	onInvalidatedUser(callback: () => void): void;
 	replication: {
-		replicateOperation(operation: {
-			replicated: boolean;
-			[key: string]: any;
-		}): Promise<{ message: string; replicated?: unknown[] }>;
+		replicateOperation(
+			operation: {
+				replicated: boolean;
+				[key: string]: any;
+			},
+			options?: { onPeerResult?: (result: any) => void }
+		): Promise<{ message: string; replicated?: unknown[] }>;
 		monitorNodeCAs(listener: () => void): void;
 		sendOperationToNode(node: string, operation: any, options: any): Promise<any>;
 	};
@@ -94,7 +97,7 @@ export interface ContentTypeHandler {
 
 export const server: Server = {
 	replication: {
-		replicateOperation(operation) {
+		replicateOperation(operation, _options) {
 			return operation.replicated
 				? Promise.reject(new Error('Replication not implemented.'))
 				: Promise.resolve({ message: '' });

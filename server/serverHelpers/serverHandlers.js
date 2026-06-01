@@ -3,6 +3,7 @@
 const terms = require('../../utility/hdbTerms.ts');
 const hdbUtil = require('../../utility/common_utils.ts');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
+const { realExit } = require('../threads/workerProcessGuard.ts');
 const { handleHDBError, hdbErrors } = require('../../utility/errors/hdbError.ts');
 const { isMainThread } = require('worker_threads');
 const { Readable } = require('stream');
@@ -42,7 +43,9 @@ function handleServerUncaughtException(err) {
 	}Terminating ${isMainThread ? 'HDB' : 'thread'}.`;
 	console.error(message);
 	harperLogger.fatal(message);
-	process.exit(1);
+	// Harper-intentional fatal termination on uncaught exception. Use realExit
+	// so the worker process guard does not intercept it.
+	realExit(1);
 }
 
 function serverErrorHandler(error, req, resp) {

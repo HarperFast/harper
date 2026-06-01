@@ -1,5 +1,5 @@
 /**
- * Deployment tracking integration test (Slice A of issue #641).
+ * Deployment tracking integration test: audit row on every deploy.
  *
  * Asserts that every deploy_component call now writes a row to system.hdb_deployment,
  * that the row contains a populated payload_hash + payload_size, that list_deployments
