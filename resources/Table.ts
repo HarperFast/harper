@@ -1478,10 +1478,14 @@ export function makeTable(options) {
 =======
 				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
 				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
+<<<<<<< HEAD
 				return Promise.resolve((transaction as any)?.commit?.());
 <<<<<<< HEAD
 >>>>>>> ceeb57056 (fix(table): make evict() return a Promise on RocksDB)
 =======
+=======
+				return Promise.resolve((transaction as any).commit());
+>>>>>>> 378d55eb5 (address review: drop optional chain on commit; type resolution as Promise<void> | undefined)
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
@@ -4479,7 +4483,7 @@ export function makeTable(options) {
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-										let resolution: Promise<void>;
+										let resolution: Promise<void> | undefined;
 										if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
 											// make sure it is still deleted when we do the removal
 											resolution = removeEntry(primaryStore, entry, version);
