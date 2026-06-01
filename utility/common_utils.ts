@@ -15,11 +15,13 @@ import isNumber from 'is-number';
 import minimist from 'minimist';
 import * as https from 'https';
 import * as http from 'http';
-// Lazy binding: getDatabases is imported at module level to work in ESM (no require()).
-// The circular dependency is safe because these functions are only called at runtime,
-// never during module initialization.
+// Lazy getDatabases accessor: databases.ts → itc.ts → common_utils.ts creates a
+// circular import if we use a static top-level import. itc.ts only uses `isEmpty`
+// from this module, so we break the cycle by removing the itc.ts import of
+// common_utils.ts (see server/threads/itc.ts) and inlining `isEmpty` there instead.
+// That makes this top-level import safe.
 import { getDatabases as _getDatabases } from '../resources/databases.ts';
-function getDatabases() {
+function getDatabases(): any {
 	return _getDatabases();
 }
 

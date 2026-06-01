@@ -1,5 +1,6 @@
-import * as hdbUtils from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
+// Inline isEmpty to break the common_utils→databases→itc→common_utils circular dep.
+const isEmpty = (value: unknown) => value === undefined || value === null;
 import { ITC_ERRORS } from '../../utility/errors/commonErrors.ts';
 import { threadId } from 'worker_threads';
 import {
@@ -55,15 +56,15 @@ function validateEvent(event) {
 		return ITC_ERRORS.INVALID_ITC_DATA_TYPE;
 	}
 
-	if (!event.hasOwnProperty('type') || hdbUtils.isEmpty(event.type)) {
+	if (!event.hasOwnProperty('type') || isEmpty(event.type)) {
 		return ITC_ERRORS.MISSING_TYPE;
 	}
 
-	if (!event.hasOwnProperty('message') || hdbUtils.isEmpty(event.message)) {
+	if (!event.hasOwnProperty('message') || isEmpty(event.message)) {
 		return ITC_ERRORS.MISSING_MSG;
 	}
 
-	if (!event.message.hasOwnProperty('originator') || hdbUtils.isEmpty(event.message.originator)) {
+	if (!event.message.hasOwnProperty('originator') || isEmpty(event.message.originator)) {
 		return ITC_ERRORS.MISSING_ORIGIN;
 	}
 
