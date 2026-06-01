@@ -52,12 +52,13 @@ The relationship between applications, extensions, and Harper core:
 
 ```
 Applications
- ├── Next.js App        → @harperdb/nextjs extension
+ ├── Next.js App        → @harperfast/nextjs plugin
  ├── Apollo App         → @harperdb/apollo extension
- └── Custom Resource    → jsResource + graphqlSchema + rest extensions
+ └── Custom Resource    → jsResource + graphqlSchema + rest plugins
 
-Extensions
- ├── Custom: @harperdb/nextjs, @harperdb/apollo, @harperdb/astro
+Plugins / Extensions
+ ├── Custom Plugins: @harperfast/nextjs
+ ├── Custom Extensions: @harperdb/apollo, @harperdb/astro
  └── Built-In: graphqlSchema, jsResource, rest, static, loadEnv, ...
 
 Core
@@ -102,15 +103,14 @@ Any custom component must be configured with a `package` option for Harper to lo
 ```json
 {
 	"dependencies": {
-		"@harperdb/nextjs": "1.0.0"
+		"@harperfast/nextjs": "2.0.0"
 	}
 }
 ```
 
 ```yaml
-'@harperdb/nextjs':
-  package: '@harperdb/nextjs'
-  files: './'
+'@harperfast/nextjs':
+  package: '@harperfast/nextjs'
 ```
 
 The `package` value supports any valid npm dependency specifier: npm packages, GitHub repos, tarballs, local paths, and URLs. This is because Harper generates a `package.json` from component configurations and uses `npm install` to resolve them.
@@ -141,14 +141,17 @@ Extensions require an `extensionModule` option pointing to the extension source.
 - [`@harperdb/prometheus-exporter`](https://github.com/HarperDB/prometheus-exporter)
 - [`@harperdb/acl-connect`](https://github.com/HarperDB/acl-connect)
 
-### Extensions
+### Plugins
 
-- [`@harperdb/nextjs`](https://github.com/HarperDB/nextjs) — Run a Next.js application on Harper
-- [`@harperdb/apollo`](https://github.com/HarperDB/apollo) — Serve an Apollo GraphQL server backed by Harper
-- [`@harperdb/astro`](https://github.com/HarperDB/astro) — Run an Astro application on Harper
+- [`@harperfast/nextjs`](https://github.com/HarperFast/nextjs) — Run a Next.js application on Harper ([docs](./nextjs.md))
 - [`@harperfast/vite-plugin`](https://github.com/HarperFast/vite-plugin) — Develop and serve Vite-built front-ends from Harper, with HMR via `harper run`
 
-Each plugin owns its own documentation in its repository — refer to the linked README for installation, configuration, and version-specific details.
+### Extensions
+
+- [`@harperdb/apollo`](https://github.com/HarperFast/apollo) — Serve an Apollo GraphQL server backed by Harper
+- [`@harperdb/astro`](https://github.com/HarperFast/astro) — Run an Astro application on Harper
+
+Each component owns its own documentation in its repository — refer to the linked README for installation, configuration, and version-specific details.
 
 ## Component Status Monitoring
 

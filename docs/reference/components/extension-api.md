@@ -151,13 +151,13 @@ In addition to the `files`, `urlPath`, and `package` options, Protocol Extension
 
 Many protocol extensions accept `port` and `securePort` options for configuring networking handlers.
 
-Example using `@harperdb/nextjs`:
+Example Protocol Extension configuration:
 
 ```yaml
-'@harperdb/nextjs':
-  package: '@harperdb/nextjs'
+'@my-org/my-protocol-extension':
+  package: '@my-org/my-protocol-extension'
   files: './'
-  prebuilt: true
+  port: 9000
   dev: false
 ```
 

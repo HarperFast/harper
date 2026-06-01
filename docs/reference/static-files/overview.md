@@ -169,6 +169,12 @@ static:
 
 A request to any unmatched path returns `static/index.html` with a `200` status code, allowing the client-side router to handle navigation.
 
+## Dynamic Applications
+
+The `static` plugin handles pure static file hosting. If you need server-side rendering, API routes, or other dynamic behavior, consider using a plugin designed for that purpose:
+
+- [`@harperfast/nextjs`](../components/nextjs.md) - Run a full Next.js application (SSR, ISR, API routes) directly on Harper
+
 ## Related
 
 - [Components Overview](../components/overview.md)
