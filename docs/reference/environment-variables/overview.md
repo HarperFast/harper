@@ -13,6 +13,13 @@ Harper supports loading environment variables in Harper applications `process.en
 If you are looking for information on how to configure your Harper installation using environment variables, see [Configuration](../configuration/overview.md) section for more information.
 :::
 
+## Configuration
+
+| Option     | Type                 | Required | Description                                                                            |
+| ---------- | -------------------- | -------- | -------------------------------------------------------------------------------------- |
+| `files`    | `string \| string[]` | **Yes**  | Path(s) or glob pattern(s) to the env file(s) to load.                                 |
+| `override` | `boolean`            | No       | If `true`, loaded values override existing environment variables. Defaults to `false`. |
+
 ## Basic Usage
 
 ```yaml
