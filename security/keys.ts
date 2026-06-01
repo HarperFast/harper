@@ -3,7 +3,9 @@
 import * as path from 'path';
 import { watch } from 'chokidar';
 import fs from 'fs-extra';
-import * as forge from 'node-forge';
+import _forge from 'node-forge';
+// node-forge is CJS; in ESM typestrip the default export IS the library object.
+const forge: any = (_forge as any).default ?? _forge;
 import * as net from 'net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
 
