@@ -61,6 +61,7 @@ suite('OpenAPI endpoint', { skip: skipSuite }, (ctx) => {
 			project: 'openApiApp',
 			files: { 'schema.graphql': SCHEMA_GRAPHQL, 'resources.js': RESOURCES_JS, 'config.yaml': CONFIG_YAML },
 			probePath: '/TableName/',
+			restartTimeoutMs: 120000,
 		});
 	});
 
