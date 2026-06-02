@@ -41,6 +41,19 @@ function dequantizeInt8(q: Int8Array, scale: number): number[] {
 	return out;
 }
 
+// Auto-scaled search ef, used only when an index does not explicitly configure efConstructionSearch
+// and a query does not pass its own ef. A fixed ef makes recall decay as the graph grows (it explores
+// a shrinking fraction of the graph), so ef grows with the node count — capped to bound search cost.
+// These are conservative defaults; the exact curve should be calibrated from a recall/latency-vs-N
+// sweep (and high recall at large N also depends on build quality: efConstruction / M).
+const AUTO_EF_BASE = 50;
+const AUTO_EF_REF = 1000;
+const AUTO_EF_MAX = 512;
+function autoScaleEf(nodeCount: number): number {
+	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EF_REF)));
+	return Math.min(AUTO_EF_MAX, Math.max(AUTO_EF_BASE, scaled));
+}
+
 class MinHeap {
 	private data: Candidate[] = [];
 	get size() {
@@ -136,6 +149,7 @@ export class HierarchicalNavigableSmallWorld {
 	idIncrementer: BigInt64Array | undefined;
 	distance: (a: number[], b: number[]) => number;
 	int8 = false; // store vectors as int8-quantized bins (set via the `quantization` index option)
+	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
 	constructor(indexStore: any, options: any) {
 		this.indexStore = indexStore;
 		if (indexStore) {
@@ -144,6 +158,8 @@ export class HierarchicalNavigableSmallWorld {
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
 		this.int8 = options?.quantization === 'int8';
+		// Respect an explicitly-configured search ef (or efConstruction, which seeds it); otherwise auto-scale.
+		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
 		this.distance =
 			options?.distance === 'euclidean'
 				? euclideanDistance
@@ -620,12 +636,14 @@ export class HierarchicalNavigableSmallWorld {
 			descending,
 			distance,
 			comparator,
+			ef,
 		}: {
 			target: number[];
 			value: number;
 			descending: boolean;
 			distance: string;
 			comparator: string;
+			ef?: number;
 		},
 		context: any
 	) {
@@ -651,6 +669,16 @@ export class HierarchicalNavigableSmallWorld {
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
 
 		const options = context.transaction; // should have a nested RocksDB transaction
+		// Resolve search ef: per-query ef wins; else an explicitly-configured efConstructionSearch;
+		// else auto-scale with the graph size so recall holds as the table grows.
+		let effectiveEf = this.efConstructionSearch;
+		if (ef !== undefined && ef > 0) effectiveEf = ef;
+		else if (!this.efSearchConfigured) {
+			const nodeCount = this.indexStore.getKeysCount
+				? this.indexStore.getKeysCount()
+				: (this.indexStore.getStats?.().entryCount ?? 0);
+			effectiveEf = autoScaleEf(nodeCount);
+		}
 		let entryPoint = this.getEntryPoint(options);
 		if (!entryPoint) return [];
 		let entryPointId = entryPoint.id;
@@ -658,15 +686,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(
-				target,
-				entryPointId,
-				entryPoint,
-				this.efConstructionSearch,
-				l,
-				options,
-				distanceFunction
-			);
+			results = this.searchLayer(target, entryPointId, entryPoint, effectiveEf, l, options, distanceFunction);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
