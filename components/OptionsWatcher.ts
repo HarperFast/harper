@@ -108,7 +108,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#handleChange() {
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
 			.then((contents) => {
-				this.#rootConfig = yaml.parse(contents);
+				const parsed = yaml.parse(contents);
+				this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
 				// If the extension is in the config file
 				if (this.#rootConfig && this.#name in this.#rootConfig) {
 					// If a config object does not exist
