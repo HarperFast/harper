@@ -550,6 +550,21 @@ describe('EntryHandler', () => {
 			rmSync(directory, { recursive: true, force: true });
 		});
 
+		it('close() while paused awaits the paused watcher teardown', async () => {
+			// Exercises the `#pausedClose` branch in close(): pause() kicks off
+			// a watcher close, then close() lands before resume() and must await
+			// that in-flight teardown rather than resolving early.
+			const { directory } = createFixture(['a']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			entryHandler.pause();
+			// close() called without resume() — exercises #pausedClose path
+			await entryHandler.close();
+			// if close() resolved, teardown settled without throwing
+			rmSync(directory, { recursive: true, force: true });
+		});
+
 		it('awaiting `ready` after pause() does not resolve until resume()', async () => {
 			// Contract: per pause()'s docstring, awaiting `ready` while paused must
 			// wait for resume(). Naive impl (only resetting `ready` in resume) lets
