@@ -193,6 +193,8 @@ describe('buildRocksDBDbMetric', () => {
 			blockCacheFilterHit: 0,
 			blockCacheFilterMiss: 0,
 			stallMicros: 0,
+			memtableHit: 25,
+			memtableMiss: 7,
 			blockCacheUsage: 1024,
 			blockCacheCapacity: 8192,
 			numRunningFlushes: 0,
@@ -207,6 +209,8 @@ describe('buildRocksDBDbMetric', () => {
 		expect(metric.bytesRead).to.equal(100);
 		expect(metric.bytesWritten).to.equal(200);
 		expect(metric.blockCacheHit).to.equal(5);
+		expect(metric.memtableHit).to.equal(25);
+		expect(metric.memtableMiss).to.equal(7);
 		// Gauges pass through absolute.
 		expect(metric.blockCacheUsage).to.equal(1024);
 		expect(metric.blockCacheCapacity).to.equal(8192);
@@ -215,11 +219,20 @@ describe('buildRocksDBDbMetric', () => {
 	});
 
 	it('diffs counters and passes gauges through on subsequent samples', () => {
-		const last = { bytesRead: 100, bytesWritten: 200, blockCacheHit: 5, blockCacheUsage: 999 };
+		const last = {
+			bytesRead: 100,
+			bytesWritten: 200,
+			blockCacheHit: 5,
+			memtableHit: 10,
+			memtableMiss: 2,
+			blockCacheUsage: 999,
+		};
 		const stats = {
 			bytesRead: 350, // delta 250
 			bytesWritten: 600, // delta 400
 			blockCacheHit: 12, // delta 7
+			memtableHit: 25, // delta 15
+			memtableMiss: 7, // delta 5
 			blockCacheUsage: 2048, // gauge — absolute
 		};
 		const metric = buildRocksDBDbMetric('mydb', stats, last, now, 5000);
@@ -227,6 +240,8 @@ describe('buildRocksDBDbMetric', () => {
 		expect(metric.bytesRead).to.equal(250);
 		expect(metric.bytesWritten).to.equal(400);
 		expect(metric.blockCacheHit).to.equal(7);
+		expect(metric.memtableHit).to.equal(15);
+		expect(metric.memtableMiss).to.equal(5);
 		expect(metric.blockCacheUsage).to.equal(2048);
 	});
 
@@ -242,7 +257,7 @@ describe('buildRocksDBTableMetric', () => {
 	const now = 1_700_000_000_000;
 
 	it('includes database and table fields', () => {
-		const metric = buildRocksDBTableMetric('mydb', 'mytable', {}, undefined, now, undefined);
+		const metric = buildRocksDBTableMetric('mydb', 'mytable', {}, now, undefined);
 		expect(metric).to.include({
 			metric: 'rocksdb-stats',
 			database: 'mydb',
@@ -251,19 +266,21 @@ describe('buildRocksDBTableMetric', () => {
 		});
 	});
 
-	it('diffs memtable counters and passes compaction gauges through', () => {
-		const last = { memtableHit: 10, memtableMiss: 2 };
+	it('passes compaction gauges through and reports period', () => {
 		const stats = {
-			memtableHit: 25,
-			memtableMiss: 7,
 			numRunningCompactions: 1,
 			compactionPending: 1,
 		};
-		const metric = buildRocksDBTableMetric('mydb', 'mytable', stats, last, now, 1000);
-		expect(metric.memtableHit).to.equal(15);
-		expect(metric.memtableMiss).to.equal(5);
+		const metric = buildRocksDBTableMetric('mydb', 'mytable', stats, now, 1000);
 		expect(metric.numRunningCompactions).to.equal(1);
 		expect(metric.compactionPending).to.equal(1);
 		expect(metric.period).to.equal(1000);
+	});
+
+	it('does not emit memtable counters on the table row (they are DB-wide)', () => {
+		const stats = { memtableHit: 25, memtableMiss: 7, numRunningCompactions: 1, compactionPending: 1 };
+		const metric = buildRocksDBTableMetric('mydb', 'mytable', stats, now, 1000);
+		expect(metric).to.not.have.property('memtableHit');
+		expect(metric).to.not.have.property('memtableMiss');
 	});
 });
