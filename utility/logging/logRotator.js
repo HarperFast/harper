@@ -1,16 +1,9 @@
 'use strict';
 
-<<<<<<< HEAD:utility/logging/logRotator.js
-const { promises: fsProm, createReadStream, createWriteStream } = require('fs');
+const { promises: fsProm, createReadStream, createWriteStream, mkdirSync } = require('fs');
 const { createGzip } = require('zlib');
 const { promisify } = require('util');
 const { pipeline } = require('stream');
-=======
-import { promises as fsProm, createReadStream, createWriteStream, mkdirSync } from 'fs';
-import { createGzip } from 'zlib';
-import { promisify } from 'util';
-import { pipeline } from 'stream';
->>>>>>> c1b9669a8 (fix(logging): default rotation path to <log dir>/rotated when unset):utility/logging/logRotator.ts
 const pipe = promisify(pipeline);
 const path = require('path');
 const envMgr = require('../environment/environmentManager.js');
