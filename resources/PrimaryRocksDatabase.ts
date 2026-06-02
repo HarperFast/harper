@@ -89,7 +89,17 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	getEntry(id: any, options?: any): any {
 		this.readCount++;
 		const cache = this.#cache;
-		const cached = cache?.get(id) as Entry | undefined;
+		// The cache stores the record *value* (weakly, via setValue) rather than
+		// the Entry: a WeakRef-wrapped value lets the LRFU expirer release it once
+		// it cycles out of the LRU stages (a raw Entry stored via set() has neither
+		// a .deref nor a .cache hook, so it would never be reclaimed — an unbounded
+		// leak). The value→Entry WeakMap (entryMap) recovers the Entry metadata
+		// (version, flags) needed for the fast path while the value is live.
+		const cachedValue = cache?.getValue(id);
+		const cached =
+			cachedValue != null && typeof cachedValue === 'object'
+				? (entryMap.get(cachedValue) as Entry | undefined)
+				: undefined;
 		const expectedVersion = cached?.version;
 
 		// Build get options, always merging with caller options to preserve
@@ -112,11 +122,14 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			if (result === FRESH_VERSION_FLAG) return cached;
 			const entry = this.#processEntry(result, id);
 			if (entry == null) {
-				if (cache && cached !== undefined) cache.delete(id);
+				if (cache && cachedValue !== undefined) cache.delete(id);
 				return undefined;
 			}
-			if (entry.version != null && cache) {
-				cache.set(id, entry, (entry.size ?? 0) >> 10);
+			// Only object values can be weakly cached and mapped back to their Entry;
+			// primitive/empty values fall through uncached (no fast path, still correct).
+			if (entry.version != null && cache && entry.value != null && typeof entry.value === 'object') {
+				entryMap.set(entry.value, entry);
+				cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
 			}
 			return entry;
 		});
