@@ -213,7 +213,16 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<GenerateResu
 				if (conversation && assistantContent) {
 					await conversation.append({ role: 'assistant', content: assistantContent });
 				}
-				return opts.includeToolTrace ? { ...result, trace } : result;
+				// A `tool_calls` finishReason with no dispatchable calls (e.g. the backend
+				// dropped malformed tool-call args) is terminal — coerce it to 'stop' so an
+				// auto-mode caller never sees a `tool_calls` finishReason (auto resolves calls
+				// internally) pointing at calls that aren't there, and never a `null` content.
+				// Mirrors the streaming path's terminalReason fold.
+				const terminal: GenerateResult =
+					result.finishReason === 'tool_calls'
+						? { ...result, finishReason: 'stop', content: assistantContent }
+						: result;
+				return opts.includeToolTrace ? { ...terminal, trace } : terminal;
 			}
 
 			messages.push({ role: 'assistant', content: assistantContent, toolCalls: calls });

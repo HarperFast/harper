@@ -1605,5 +1605,19 @@ describe("agentLoop (toolMode: 'auto')", () => {
 				assert.strictEqual(chunks.at(-1).finishReason, 'stop');
 			});
 		});
+
+		describe('sync: degenerate tool_calls round (no dispatchable calls) is coerced to a terminal stop', () => {
+			it('finishReason tool_calls + empty toolCalls returns finishReason stop with coerced content (matches streaming)', async () => {
+				// OpenAI can emit finishReason: 'tool_calls' with the calls dropped if their args
+				// were malformed (parseToolCalls discards them). The streaming path already folds
+				// this to 'stop'; the sync path must too — an auto-mode caller should never see a
+				// tool_calls finishReason (calls are resolved internally) pointing at no calls.
+				backend.queue({ output: { content: null, finishReason: 'tool_calls', toolCalls: [] }, usage: {} });
+				const result = await models.generate('q', { toolMode: 'auto', includeToolTrace: true });
+				assert.strictEqual(result.finishReason, 'stop');
+				assert.strictEqual(result.content, '', 'null content coerced to empty string');
+				assert.deepStrictEqual(result.trace, [], 'no tools ran');
+			});
+		});
 	});
 });

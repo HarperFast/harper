@@ -68,6 +68,12 @@ export class Models implements ModelsContract {
 			// below and writes its own `hdb_model_calls` row. The outer auto call itself
 			// stays out of the analytics table — counting it would double-bill the round.
 			const { accounting, signal } = resolveCallContext(opts.signal);
+			// Fail loud, never silent: an auto loop that declares tools against a
+			// tools-incapable backend would run as a plain generation — the backend never
+			// receives the tool definitions (e.g. ollama drops them), so the model can't
+			// call anything and the loop returns a first-round answer, silently ignoring
+			// the caller's tools. Check up front rather than no-op.
+			if (inputHasTools(input)) requireCapability(resolveGenerative(opts.model), 'tools');
 			return runAgentLoop({ models: this, input, opts, accounting, signal });
 		}
 		const { accounting, signal } = resolveCallContext(opts.signal);
@@ -95,6 +101,10 @@ export class Models implements ModelsContract {
 			// Same rationale as `generate`: per-iteration analytics happen inside the loop
 			// when it dispatches to `this.generateStream(..., {toolMode: 'return'})`.
 			const { accounting, signal } = resolveCallContext(opts.signal);
+			// Same fail-loud guard as `generate` — a tools-incapable backend would silently
+			// stream a plain generation, ignoring the declared tools. Throws synchronously
+			// (before the iterable is returned), matching the capability-check posture below.
+			if (inputHasTools(input)) requireCapability(resolveGenerative(opts.model), 'tools');
 			return runAgentLoopStream({ models: this, input, opts, accounting, signal });
 		}
 		const { accounting, signal } = resolveCallContext(opts.signal);
@@ -223,7 +233,12 @@ function extractTenantId(user: any): string | undefined {
 	return user?.tenant ?? user?.tenantId ?? undefined;
 }
 
-function requireCapability(backend: ModelBackend, capability: 'embed' | 'generate' | 'stream'): void {
+/** True when `input` is the object form carrying a non-empty `tools` array. */
+function inputHasTools(input: GenerateInput): boolean {
+	return typeof input === 'object' && !Array.isArray(input) && Array.isArray(input.tools) && input.tools.length > 0;
+}
+
+function requireCapability(backend: ModelBackend, capability: 'embed' | 'generate' | 'stream' | 'tools'): void {
 	if (!backend.capabilities()[capability]) throw new ModelCapabilityError(backend.name, capability);
 }
 
@@ -241,7 +256,7 @@ function classifyError(err: unknown): string {
 export class ModelCapabilityError extends ServerError {
 	// Deliberately does not name the requested capability beyond what was asked for —
 	// avoids enumerating what the backend *does* support in error responses.
-	constructor(backendName: string, capability: 'embed' | 'generate' | 'stream') {
+	constructor(backendName: string, capability: 'embed' | 'generate' | 'stream' | 'tools') {
 		super(`Backend '${backendName}' does not support '${capability}'`);
 		this.name = 'ModelCapabilityError';
 	}

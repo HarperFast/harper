@@ -233,6 +233,25 @@ describe('Models facade', () => {
 					(err) => err.statusCode === 501
 				);
 			});
+
+			it('auto + tools against a tools-incapable backend fails loud (no silent no-op)', async () => {
+				// TestBackend is tools:false. Declaring tools for an auto loop against it would
+				// otherwise run as a plain generation, silently ignoring the tools.
+				await assert.rejects(
+					() =>
+						models.generate(
+							{ messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 't', description: '', parameters: {} }] },
+							{ toolMode: 'auto', toolHandlers: { t: () => ({}) } }
+						),
+					(err) => err instanceof ModelCapabilityError && /tools/.test(err.message)
+				);
+			});
+
+			it('auto WITHOUT tools is unaffected by the tools guard', async () => {
+				const result = await models.generate('hi', { toolMode: 'auto' });
+				assert.strictEqual(typeof result.content, 'string');
+				assert.strictEqual(result.finishReason, 'stop');
+			});
 		});
 	});
 
@@ -329,6 +348,19 @@ describe('Models facade', () => {
 				assert.strictEqual(writer.records.length, 1);
 				assert.strictEqual(writer.records[0].method, 'generateStream');
 				assert.strictEqual(writer.records[0].success, true);
+			});
+
+			it('auto + tools against a tools-incapable backend throws synchronously (before iteration)', () => {
+				// The guard runs in the synchronous body of generateStream, before the iterable
+				// is returned — so it throws on call, not on first `next()`.
+				assert.throws(
+					() =>
+						models.generateStream(
+							{ messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 't', description: '', parameters: {} }] },
+							{ toolMode: 'auto', toolHandlers: { t: () => ({}) } }
+						),
+					(err) => err instanceof ModelCapabilityError && /tools/.test(err.message)
+				);
 			});
 		});
 	});
