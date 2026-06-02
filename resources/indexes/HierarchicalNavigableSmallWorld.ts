@@ -136,6 +136,10 @@ type Node = {
  */
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
+	// Index options that only affect search, not the stored graph — changing them must not trigger a
+	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
+	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
+	static searchOnlyOptions = ['efConstructionSearch'];
 	indexStore: any;
 	M: number = 16; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list

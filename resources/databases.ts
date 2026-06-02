@@ -1124,17 +1124,35 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
-			// Include `embed` so a source/model change refreshes the embed registry.
-			const changed =
+			// Some index options affect only search, not the stored structure (e.g. HNSW's
+			// efConstructionSearch). Changing those should persist the new metadata but NOT trigger a
+			// reindex. A custom index declares such keys via a static `searchOnlyOptions`.
+			const indexType = attribute.indexed && typeof attribute.indexed === 'object' ? attribute.indexed.type : undefined;
+			const searchOnlyOptions: string[] = (indexType && CUSTOM_INDEXES[indexType]?.searchOnlyOptions) || [];
+			const stripSearchOnly = (indexed: any): any => {
+				if (!indexed || typeof indexed !== 'object' || searchOnlyOptions.length === 0) return indexed;
+				const copy = { ...indexed };
+				for (const key of searchOnlyOptions) delete copy[key];
+				return copy;
+			};
+			const commonChanged =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
-				JSON.stringify(attributeDescriptor.indexed) !== JSON.stringify(attribute.indexed) ||
 				attributeDescriptor.nullable !== attribute.nullable ||
 				attributeDescriptor.version !== attribute.version ||
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
+				// Include `embed` so a source/model change refreshes the embed registry.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
+			// any metadata difference (drives persistence)
+			const changed =
+				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
+			// structure-affecting difference (drives reindex) — ignores search-only option changes
+			const structurallyChanged =
+				commonChanged ||
+				JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
+					JSON.stringify(stripSearchOnly(attribute.indexed));
 			if (attribute.indexed) {
 				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
@@ -1147,7 +1165,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					exclusiveLock();
 					attributeDescriptor = attributesDbi.getSync(dbiKey);
 					if (
-						changed ||
+						structurallyChanged ||
 						attributeDescriptor.indexingFailed ||
 						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
 						attributeDescriptor.restartNumber < workerData?.restartNumber
