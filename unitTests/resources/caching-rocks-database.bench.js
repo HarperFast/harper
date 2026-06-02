@@ -8,6 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 const { RecordEncoder, recordUpdater } = require('#src/resources/RecordEncoder');
+const { Transaction } = require('@harperfast/rocksdb-js');
 const path = require('path');
 const { mkdirSync } = require('fs');
 
@@ -173,6 +174,60 @@ describe('Benchmark: PrimaryRocksDatabase cache:false vs cache:true', function (
 			const tCaching = performance.now() - t1;
 
 			row('recordUpdater put', tPlain, tCaching);
+		}
+
+		// ── Transactional reads ──
+		// Harper's reads happen inside RocksTransactions (every request opens a read
+		// txn via DatabaseTransaction.getReadTxn). These scenarios read through a
+		// per-sweep RocksTransaction so the VT path exercised is the transactional
+		// one: Transaction::GetSync, with the snapshot-current fast-skip in
+		// vtPopulateIfSettled (a current snapshot avoids the extra latest-read).
+		//
+		// Versions are written safely in the past so the single-accessible-version
+		// gate permits VT population even while the read txn's snapshot is open —
+		// without this, the gate (correctly) suppresses caching while a snapshot
+		// older than the latest write is live.
+		const readSweepInTxn = (db) => {
+			const txn = new Transaction(db.store);
+			try {
+				for (const k of keys) db.getSync(k, { transaction: txn });
+			} finally {
+				txn.abort();
+			}
+		};
+
+		// ── 7. Transactional cold read + gated populate ──
+		{
+			// Rewrite (flush WeakLRUCache + clear VT slots) with settled past versions.
+			let settled = Date.now() - 5_000;
+			for (let i = 0; i < RECORD_COUNT; i++) {
+				noCacheUpdate(keys[i], values[i], null, settled, 0, false);
+				cachingUpdate(keys[i], values[i], null, settled, 0, false);
+				settled++;
+			}
+
+			const t0 = performance.now();
+			readSweepInTxn(noCacheDb);
+			const tPlain = performance.now() - t0;
+
+			const t1 = performance.now();
+			readSweepInTxn(cachingDb); // cold: cache miss → reads + gated VT populate
+			const tCold = performance.now() - t1;
+
+			row('getSync — transactional cold (populate)', tPlain, tCold);
+		}
+
+		// ── 8. Transactional VT fast-path (cache + VT now warm from scenario 7) ──
+		{
+			const t0 = performance.now();
+			readSweepInTxn(noCacheDb);
+			const tPlain = performance.now() - t0;
+
+			const t1 = performance.now();
+			readSweepInTxn(cachingDb); // warm: VT verifyVersion hit → FRESH, no DB read
+			const tTxnHit = performance.now() - t1;
+
+			row('getSync — transactional VT fast-path', tPlain, tTxnHit);
 		}
 
 		console.log('');
