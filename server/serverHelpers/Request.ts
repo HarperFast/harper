@@ -436,6 +436,142 @@ export class BunRequest {
 	}
 }
 
+/**
+ * uWebSockets.js Request adapter. Wraps the data extracted from a uWS HttpRequest/HttpResponse
+ * (which is only valid synchronously inside the route handler) into Harper's request interface,
+ * matching BunRequest. Intended for the plaintext-UDS-behind-symphony path: TLS/mTLS are
+ * terminated upstream, so peerCertificate/authorized are not available here and the real client
+ * IP arrives via the X-Forwarded-For header.
+ */
+export class UwsRequest {
+	#body: UwsRequestBody | undefined;
+	#isSecure: boolean;
+	#ip: string | undefined;
+	#bodyBuffer: Buffer | undefined;
+	#signal: AbortSignal | undefined;
+	public _nodeRequest: any = null;
+	public _nodeResponse: any = null;
+	public method: string;
+	public url: string;
+	public headers: RequestHeaders;
+	public isWebSocket?: boolean;
+	public user?: any;
+	public response: {
+		status?: number;
+		headers: ResponseHeaders;
+	};
+	public __harperRequestUpgraded: boolean;
+
+	constructor(source: {
+		method: string;
+		url: string;
+		headers: Record<string, string | string[]>;
+		ip?: string;
+		secure?: boolean;
+		bodyBuffer?: Buffer;
+		signal?: AbortSignal;
+	}) {
+		this.method = source.method;
+		this.url = source.url;
+		this.headers = new RequestHeaders(source.headers);
+		this.#isSecure = !!source.secure;
+		this.#ip = source.ip;
+		this.#bodyBuffer = source.bodyBuffer;
+		this.#signal = source.signal;
+		this.__harperRequestUpgraded = false;
+	}
+	get absoluteURL() {
+		return this.protocol + '://' + this.host + this.url;
+	}
+	get pathname() {
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) return this.url.slice(0, queryStart);
+		return this.url;
+	}
+	set pathname(pathname) {
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) this.url = pathname + this.url.slice(queryStart);
+		else this.url = pathname;
+	}
+	get protocol() {
+		// Behind symphony the on-the-wire hop is plaintext; the original scheme is conveyed
+		// by the proxy (X-Forwarded-Proto) or assumed from the listener's secure flag.
+		const xfp = this.headers.get('x-forwarded-proto');
+		if (xfp) return Array.isArray(xfp) ? xfp[0] : xfp;
+		return this.#isSecure ? 'https' : 'http';
+	}
+	get ip() {
+		// UDS connections have no remote address; symphony forwards the real client IP via XFF.
+		const xff = this.headers.get('x-forwarded-for');
+		if (xff) return (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
+		return this.#ip ?? '';
+	}
+	get authorized() {
+		// TLS terminated upstream — client authorization not available at this hop.
+		return undefined;
+	}
+	get peerCertificate() {
+		return null;
+	}
+	get mtlsConfig() {
+		return undefined;
+	}
+	get body() {
+		return this.#body || (this.#body = new UwsRequestBody(this.#bodyBuffer));
+	}
+	get host() {
+		return this.headers.get('host') as string;
+	}
+	get hostname() {
+		return this.headers.get('host') as string;
+	}
+	get httpVersion() {
+		return '1.1';
+	}
+	get isAborted() {
+		return this.#signal?.aborted ?? false;
+	}
+	get signal(): AbortSignal {
+		return this.#signal ?? new AbortController().signal;
+	}
+	_abort(): void {
+		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+	}
+	get nodeRequest() {
+		return null;
+	}
+	sendEarlyHints(_link: string, _headers: Record<string, any> = {}) {
+		// Early hints not wired for the uWS path
+	}
+}
+
+class UwsRequestBody {
+	#buffer: Buffer | undefined;
+	#readable: Readable | undefined;
+	constructor(buffer?: Buffer) {
+		this.#buffer = buffer;
+	}
+	#getReadable() {
+		if (!this.#readable) {
+			const buffer = this.#buffer;
+			this.#readable = new Readable({
+				read() {
+					if (buffer && buffer.length) this.push(buffer);
+					this.push(null);
+				},
+			});
+		}
+		return this.#readable;
+	}
+	on(event: string, listener: (...args: any[]) => void) {
+		this.#getReadable().on(event, listener);
+		return this;
+	}
+	pipe(destination: any, options?: any) {
+		return this.#getReadable().pipe(destination, options);
+	}
+}
+
 class RequestBody {
 	#nodeRequest: IncomingMessage;
 	constructor(nodeRequest: IncomingMessage) {
