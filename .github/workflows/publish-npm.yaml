@@ -28,7 +28,8 @@ jobs:
       - name: Get release build
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download ${{ github.event.release.tag_name || inputs.tag_name }} --pattern "harper-*.tgz"
+          TAG_NAME: ${{ github.event.release.tag_name || inputs.tag_name }}
+        run: gh release download "$TAG_NAME" --pattern "harper-*.tgz"
       - name: Get version components
         id: version-components
         uses: matt-usurp/validate-semver@7bbc9584679de1aeef57aa531504ab00438481ab # v2.1.0
@@ -64,7 +65,8 @@ jobs:
       - name: Get release build
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download ${{ github.event.release.tag_name || inputs.tag_name }} --pattern "harper-*.tgz"
+          TAG_NAME: ${{ github.event.release.tag_name || inputs.tag_name }}
+        run: gh release download "$TAG_NAME" --pattern "harper-*.tgz"
       - name: Get version components
         id: version-components
         uses: matt-usurp/validate-semver@7bbc9584679de1aeef57aa531504ab00438481ab # v2.1.0
