@@ -51,6 +51,11 @@ let httpOptions: HttpOptions = {};
 export const universalHeaders: [string, string][] = [];
 // Bun-specific: stores fetch handler configs per port, used by threadServer.js to call Bun.serve()
 export const bunServeConfigs: Record<string | number, any> = {};
+// uWS spike (#914): stores { socketPath, secure, handler } configs keyed by UDS path. When
+// HARPER_UWS_UDS is set, the per-worker UDS mirror is served by uWebSockets.js instead of a Node
+// http server; threadServer.js consumes these and calls createUwsServer(). Symphony must forward
+// client identity via X-Forwarded-For (not the PROXY protocol) on these sockets, as the Bun path does.
+export const uwsServeConfigs: Record<string, any> = {};
 // Bun-specific: stores non-function listeners (e.g. Fastify servers) per port for fallback delegation
 const bunFallbackServers: Record<string | number, any> = {};
 const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
@@ -571,28 +576,40 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			// Create a plain HTTP server (no TLS) with the same request handler
-			const udsServer = createServer(
-				{
-					keepAliveTimeout,
-					headersTimeout,
-					requestTimeout,
-					highWaterMark: 128 * 1024,
-					noDelay: true,
-					keepAlive: true,
-					keepAliveInitialDelay: 600,
-					maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
-				},
-				(nodeRequest: IncomingMessage, nodeResponse: any) => {
-					const method = nodeRequest.method;
-					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-					else throttledRequestHandler(nodeRequest, nodeResponse);
-				}
-			);
+			if (process.env.HARPER_UWS_UDS) {
+				// uWS spike (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
+				// server. threadServer.js consumes uwsServeConfigs and calls createUwsServer(). uWS does
+				// not parse the PROXY protocol, so symphony must use sourceAddressHeader: 'xForwardedFor'
+				// for this socket (the same mode it uses for the Bun path).
+				uwsServeConfigs[udsPath] = {
+					socketPath: udsPath,
+					secure: true,
+					handler: makeUwsHandler(port, isOperationsServer),
+				};
+			} else {
+				// Create a plain HTTP server (no TLS) with the same request handler
+				const udsServer = createServer(
+					{
+						keepAliveTimeout,
+						headersTimeout,
+						requestTimeout,
+						highWaterMark: 128 * 1024,
+						noDelay: true,
+						keepAlive: true,
+						keepAliveInitialDelay: 600,
+						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
+					},
+					(nodeRequest: IncomingMessage, nodeResponse: any) => {
+						const method = nodeRequest.method;
+						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
+						else throttledRequestHandler(nodeRequest, nodeResponse);
+					}
+				);
 
-			udsServer.isPerThreadSocket = true;
-			enableProxyProtocol(udsServer);
-			SERVERS[udsPath] = udsServer;
+				udsServer.isPerThreadSocket = true;
+				enableProxyProtocol(udsServer);
+				SERVERS[udsPath] = udsServer;
+			}
 			registerUdsCleanupPaths(udsPath, yamlPath);
 
 			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server);
@@ -601,6 +618,82 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		}
 	}
 	return httpServers[port];
+}
+
+/**
+ * uWS spike (#914): builds the per-request handler for a uWS UDS server. Mirrors the Bun
+ * fetchHandler's post-processing (httpChain, unhandled, universalHeaders, Server-Timing,
+ * analytics, logging) but returns a plain Harper response descriptor for createUwsServer to
+ * serialize onto the uWS HttpResponse. The Fastify status===-1 fallback is not wired here.
+ */
+function makeUwsHandler(port: number | string, isOperationsServer: boolean) {
+	return async (request: any) => {
+		const startTime = performance.now();
+		let requestId = 0;
+		if (isOperationsServer) request.isOperationsServer = true;
+		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
+		let response = await httpChain[port](request);
+		if (!response) response = unhandled(request);
+		if (!response.headers?.set) response.headers = new Headers(response.headers);
+		for (const [key, value] of universalHeaders) response.headers.set(key, value);
+		if (response.status === -1) {
+			logBunRequest(request, 404, requestId, performance.now() - startTime);
+			return { status: 404, headers: new Headers({ 'content-type': 'text/plain' }), body: 'Not found\n' };
+		}
+		const status = response.status || 200;
+		const executionTime = performance.now() - startTime;
+		if (!response.handlesHeaders) {
+			let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
+			if (response.wasCacheMiss) serverTiming += ', miss';
+			appendHeader(response.headers, 'Server-Timing', serverTiming, true);
+		}
+		recordAction(
+			executionTime,
+			'duration',
+			request.handlerPath,
+			request.method,
+			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
+		);
+		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
+		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
+		logBunRequest(request, status, requestId, executionTime);
+		response.status = status;
+		response.body = await uwsBodyToBuffer(response.body);
+		return response;
+	};
+}
+
+/** uWS spike: collapse a Harper response body into a string/Buffer (the spike adapter does not stream). */
+async function uwsBodyToBuffer(body: any): Promise<string | Buffer | null> {
+	if (body == null) return null;
+	if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) return body;
+	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
+	if (typeof body.then === 'function') return uwsBodyToBuffer(await body);
+	if (typeof body.pipe === 'function') {
+		const chunks: Buffer[] = [];
+		await new Promise<void>((resolve, reject) => {
+			const dest = new Writable({
+				write(chunk, _enc, cb) {
+					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+					cb();
+				},
+				final(cb) {
+					cb();
+					resolve();
+				},
+			});
+			body.on('error', reject);
+			dest.on('error', reject);
+			body.pipe(dest);
+		});
+		return Buffer.concat(chunks);
+	}
+	if (body[Symbol.asyncIterator] || body[Symbol.iterator]) {
+		const chunks: Buffer[] = [];
+		for await (const chunk of body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		return Buffer.concat(chunks);
+	}
+	return String(body);
 }
 
 /**

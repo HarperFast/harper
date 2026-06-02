@@ -294,6 +294,25 @@ function listenOnPorts() {
 			})
 		);
 	}
+	// uWS spike (#914): start any uWebSockets.js UDS servers registered by http.ts (HARPER_UWS_UDS).
+	// These replace the Node http UDS mirror; createUwsServer binds the unix socket and bridges each
+	// request through httpChain[port] via UwsRequest.
+	const uwsServeConfigs = httpComponent.uwsServeConfigs;
+	if (uwsServeConfigs) {
+		for (const udsPath in uwsServeConfigs) {
+			const cfg = uwsServeConfigs[udsPath];
+			if (existsSync(udsPath)) unlinkSync(udsPath);
+			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
+			listening.push(
+				createUwsServer(cfg).then(({ close }) => {
+					// Register a minimal server-like entry so closeServers() can tear it down on shutdown.
+					SERVERS[udsPath] = { close, closeAllConnections: close, closeIdleConnections() {} };
+					harperLogger.info('uWS domain socket listening on ' + udsPath);
+					return { port: udsPath };
+				})
+			);
+		}
+	}
 	return Promise.all(listening);
 }
 
