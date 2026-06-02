@@ -3,6 +3,12 @@ name: Publish NPM Package
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to publish (e.g. v5.1.0-beta.1)'
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,12 +28,12 @@ jobs:
       - name: Get release build
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download ${{ github.event.release.tag_name }} --pattern "harper-*.tgz"
+        run: gh release download ${{ github.event.release.tag_name || inputs.tag_name }} --pattern "harper-*.tgz"
       - name: Get version components
         id: version-components
         uses: matt-usurp/validate-semver@7bbc9584679de1aeef57aa531504ab00438481ab # v2.1.0
         with:
-          version: ${{ github.event.release.tag_name }}
+          version: ${{ github.event.release.tag_name || inputs.tag_name }}
       - name: Set package tag
         id: package-tag
         # Once we have our first full, non-beta release, turn this back on:
@@ -58,12 +64,12 @@ jobs:
       - name: Get release build
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download ${{ github.event.release.tag_name }} --pattern "harper-*.tgz"
+        run: gh release download ${{ github.event.release.tag_name || inputs.tag_name }} --pattern "harper-*.tgz"
       - name: Get version components
         id: version-components
         uses: matt-usurp/validate-semver@7bbc9584679de1aeef57aa531504ab00438481ab # v2.1.0
         with:
-          version: ${{ github.event.release.tag_name }}
+          version: ${{ github.event.release.tag_name || inputs.tag_name }}
       - name: Rename package to '@harperfast/harper'
         run: |
           mkdir package
