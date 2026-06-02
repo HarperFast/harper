@@ -1472,24 +1472,9 @@ export function makeTable(options) {
 					return lmdbTransaction.commit();
 				}
 				// RocksDB: eviction writes went directly into the raw transaction via options;
-<<<<<<< HEAD
-				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes)
-				return transaction?.commit();
-=======
 				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
 				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
-<<<<<<< HEAD
-<<<<<<< HEAD
-				return Promise.resolve((transaction as any)?.commit?.());
-<<<<<<< HEAD
->>>>>>> ceeb57056 (fix(table): make evict() return a Promise on RocksDB)
-=======
-=======
 				return Promise.resolve((transaction as any).commit());
->>>>>>> 378d55eb5 (address review: drop optional chain on commit; type resolution as Promise<void> | undefined)
-=======
-				return (transaction as any).commit();
->>>>>>> 680992b99 (Update resources/Table.ts)
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
@@ -1500,7 +1485,6 @@ export function makeTable(options) {
 						(transaction as any)?.abort?.();
 					}
 				}
->>>>>>> 3284fe47e (address review: move commit() out of finally)
 			}
 		}
 		/**
