@@ -981,8 +981,9 @@ function makeCallbackChain(responders: typeof httpResponders, portNum: number | 
 	);
 }
 function unhandled(request) {
-	if (request.user) {
-		// pass on authentication information to the next server
+	if (request.user && request._nodeRequest) {
+		// pass on authentication information to the next server (Node fallback delegation only;
+		// the Bun/uWS adapters have no _nodeRequest and no Node fallback server to hand off to)
 		request._nodeRequest.user = request.user;
 	}
 	return {
