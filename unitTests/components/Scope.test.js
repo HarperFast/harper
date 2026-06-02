@@ -29,8 +29,17 @@ describe('Scope', () => {
 		resetRestartNeeded();
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		resetRestartNeeded();
+		// Yield to the event loop so any in-flight chokidar watcher teardown
+		// (from scope.close() in the test body) and any pending readFile
+		// promises inside EntryHandler can settle before we remove the
+		// temp directory. Otherwise, deleting test.js while a watcher event
+		// is in flight surfaces a benign ENOENT through the watcher's error
+		// path after the EntryHandler/OptionsWatcher have already removed
+		// their listeners, which mocha sees as a duplicate done() with an
+		// error. Observed flake on Node v24/v26 (tighter watcher timing).
+		await new Promise((resolve) => setImmediate(resolve));
 		try {
 			rmSync(this.directory, { recursive: true, force: true });
 			// eslint-disable-next-line sonarjs/no-ignored-exceptions

@@ -55,6 +55,13 @@ export interface InitializeFailure {
  * Negotiate protocol version, create a session, and return the JSON-RPC
  * result body. The caller (transport core) maps `ok: false` to HTTP 400.
  *
+ * Per the MCP spec: if the client requests a version the server does not
+ * support, the server MUST respond with a version it does support (so the
+ * client can decide whether to downgrade or disconnect) — NOT fail. We
+ * pick `PROTOCOL_VERSION_PREFERRED` for any unknown version. The only
+ * `ok: false` cases are a missing or non-string `protocolVersion` field,
+ * which is a protocol-level violation rather than version negotiation.
+ *
  * `instructions` is optional per spec; we omit it in v1 (it can be wired
  * later when tools land in #617 and we know which profile is active).
  */
@@ -63,22 +70,22 @@ export async function handleInitialize(
 	user: string
 ): Promise<InitializeOutcome | InitializeFailure> {
 	const requested = params?.protocolVersion;
-	if (
-		typeof requested !== 'string' ||
-		!SUPPORTED_PROTOCOL_VERSIONS.includes(requested as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])
-	) {
+	if (typeof requested !== 'string') {
 		return {
 			ok: false,
-			reason: `unsupported protocolVersion${typeof requested === 'string' ? `: ${requested}` : ''}`,
+			reason: `protocolVersion is required and must be a string`,
 			supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
 		};
 	}
-	const session = await createSession({ user, protocolVersion: requested });
+	const negotiated = SUPPORTED_PROTOCOL_VERSIONS.includes(requested as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])
+		? requested
+		: PROTOCOL_VERSION_PREFERRED;
+	const session = await createSession({ user, protocolVersion: negotiated });
 	return {
 		ok: true,
 		session,
 		result: {
-			protocolVersion: requested,
+			protocolVersion: negotiated,
 			serverInfo: SERVER_INFO,
 			capabilities: SERVER_CAPABILITIES,
 		},

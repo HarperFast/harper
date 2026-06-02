@@ -1124,6 +1124,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
+			// Include `embed` so a source/model change refreshes the embed registry.
 			const changed =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
@@ -1132,7 +1133,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributeDescriptor.version !== attribute.version ||
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
-				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements);
+				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
+				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
 			if (attribute.indexed) {
 				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (

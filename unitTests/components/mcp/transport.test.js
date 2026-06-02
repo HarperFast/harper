@@ -103,15 +103,15 @@ describe('mcp/transport', () => {
 			assert.equal(res.jsonBody.result.capabilities.tools.listChanged, true);
 		});
 
-		it('rejects unsupported protocolVersion with 400 and the supported list', async () => {
+		it('negotiates an unsupported protocolVersion down to the preferred one (spec: MUST respond with a supported version)', async () => {
 			const res = await handleMcpRequest(
 				makeReq({
 					body: jsonRpc(1, 'initialize', { protocolVersion: '1999-01-01' }),
 				})
 			);
-			assert.equal(res.status, 400);
-			assert.equal(res.jsonBody.error.code, -32602);
-			assert.deepEqual([...res.jsonBody.error.data.supportedVersions], ['2025-06-18', '2025-03-26']);
+			assert.equal(res.status, 200);
+			assert.equal(res.jsonBody.result.protocolVersion, '2025-06-18');
+			assert.ok(res.headers['Mcp-Session-Id'], 'session created on negotiated version');
 		});
 
 		it('rejects missing protocolVersion with 400', async () => {

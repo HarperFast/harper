@@ -36,7 +36,7 @@ import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource } from './resources.ts';
-import { registerSession } from './sessionRegistry.ts';
+import { registerSession, touchRegisteredSession } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolResult } from './toolRegistry.ts';
 
 export type McpProfile = 'operations' | 'application';
@@ -303,6 +303,10 @@ async function dispatchToolsCall(
 	const args = params?.arguments ?? {};
 	const callStartedAt = Date.now();
 	const user = effectiveUser(request);
+	// Keep the SSE registry's idle-prune from sweeping this session: tools/call
+	// activity counts as "alive" even if the GET stream is dormant between
+	// listChanged events.
+	touchRegisteredSession(session.id);
 
 	// Rate limit check — admit-or-deny BEFORE invoking the handler. Failures
 	// surface as `isError: true` with `kind: 'rate_limited'` (NOT a JSON-RPC

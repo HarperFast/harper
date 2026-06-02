@@ -347,6 +347,7 @@ export const SERVICE_ACTIONS_ENUM = {
 	OPERATION: 'operation',
 	RENEWCERTS: 'renew-certs',
 	COPYDB: 'copy-db',
+	MCP: 'mcp',
 } as const;
 
 /** describes the Geo Conversion types */
