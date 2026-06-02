@@ -43,10 +43,12 @@ function dequantizeInt8(q: Int8Array, scale: number): number[] {
 
 // Auto-scaled search ef, used only when an index does not explicitly configure efConstructionSearch
 // and a query does not pass its own ef. A fixed ef makes recall decay as the graph grows (it explores
-// a shrinking fraction of the graph), so ef grows with the node count — capped to bound search cost.
-// These are conservative defaults; the exact curve should be calibrated from a recall/latency-vs-N
-// sweep (and high recall at large N also depends on build quality: efConstruction / M).
-const AUTO_EF_BASE = 50;
+// a shrinking fraction of the graph), so ef grows with sqrt(node count), capped to bound search cost.
+// Constants from a recall/latency-vs-N sweep (768-dim cosine, int8): ef≈400 holds ~0.8 recall@10 from
+// 5K–30K, and the recall/latency tradeoff is steep (ef 800 at 30K ≈ 0.92 recall but ~2s p50), so the
+// cap deliberately favors latency — apps wanting higher recall set efConstructionSearch or a per-query
+// ef. Tune as graph build quality / larger-N data improves.
+const AUTO_EF_BASE = 100;
 const AUTO_EF_REF = 1000;
 const AUTO_EF_MAX = 512;
 function autoScaleEf(nodeCount: number): number {
