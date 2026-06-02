@@ -387,7 +387,7 @@ export function searchByIndex(
 		return results;
 	} else if (index && !skipIndex) {
 		if (index.customIndex) {
-			return index.customIndex.search(searchCondition, context).map((entry) => {
+			const loaded = index.customIndex.search(searchCondition, context).map((entry) => {
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
@@ -402,6 +402,24 @@ export function searchByIndex(
 				}
 				return entry;
 			});
+			// Rerank: a quantized index navigates on approximate distances, so for a nearest-neighbor
+			// (sort) query, recompute the exact distance from each loaded record's full-precision vector
+			// and re-sort — restoring exact ordering and $distance. (lt/le threshold queries still use the
+			// index's approximate distance for now; exact threshold filtering needs over-fetch — follow-up.)
+			if (
+				index.customIndex.int8 &&
+				index.customIndex.exactDistance &&
+				(comparator as any) === 'sort' &&
+				(searchCondition as any).target &&
+				typeof attribute_name === 'string'
+			) {
+				const rescored = (loaded as any[]).filter((e) => e !== SKIP && e && e.value);
+				for (const e of rescored)
+					e.distance = index.customIndex.exactDistance(searchCondition, e.value[attribute_name]);
+				rescored.sort((a, b) => a.distance - b.distance);
+				return rescored as any;
+			}
+			return loaded;
 		}
 		return index.getRange(rangeOptions).map(
 			filter

@@ -608,6 +608,33 @@ describe('HNSW int8 quantization (quantization: "int8")', () => {
 		assert.equal(await top('dotProduct'), 2, 'dotProduct should rank the max-projection first');
 		M.dropTable();
 	});
+
+	it('reranks int8 results so returned $distance is exact (recomputed from the record), sorted', async () => {
+		// The graph navigates on quantized distances, but the search layer reranks the candidates
+		// against each record's full-precision vector. So the returned $distance must equal the exact
+		// float distance to that record's own vector (within float epsilon), not the quantized value.
+		const target = vec(7);
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', 'vector', '$distance'],
+				limit: 8,
+			})
+		);
+		assert(results.length >= 1, 'expected results');
+		for (const r of results) {
+			const exact = testInstance.distance(target, r.vector); // exact cosine over the record's full vector
+			assert(
+				Math.abs(r.$distance - exact) < 1e-6,
+				`$distance ${r.$distance} should equal the exact full-precision distance ${exact} (reranked)`
+			);
+		}
+		for (let i = 1; i < results.length; i++)
+			assert(
+				results[i].$distance >= results[i - 1].$distance - 1e-9,
+				'results must be sorted ascending by exact distance'
+			);
+	});
 });
 
 async function fromAsync(iterable) {

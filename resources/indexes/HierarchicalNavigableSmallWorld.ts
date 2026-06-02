@@ -707,6 +707,24 @@ export class HierarchicalNavigableSmallWorld {
 			distance: candidate.distance,
 		}));
 	}
+	/**
+	 * Exact distance between a query and a record's FULL-precision vector, mirroring search()'s metric
+	 * selection. Used to rerank quantized (int8) results: graph traversal navigates on approximate
+	 * (quantized) distances, but the caller has the exact record vector and can restore exact ordering
+	 * and $distance.
+	 */
+	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
+		if (recordVector == null) return Infinity; // missing vector sorts last
+		const fn =
+			searchCondition.distance === 'euclidean'
+				? euclideanDistance
+				: searchCondition.distance === 'dotProduct'
+					? dotProductDistance
+					: searchCondition.distance === 'cosine'
+						? cosineDistance
+						: this.distance;
+		return fn(searchCondition.target, recordVector as number[]);
+	}
 	private checkSymmetry(id, node, options) {
 		if (!node) return;
 		let l = 0;
