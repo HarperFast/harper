@@ -416,7 +416,9 @@ export function searchByIndex(
 				const rescored = (loaded as any[]).filter((e) => e !== SKIP && e && e.value);
 				for (const e of rescored)
 					e.distance = index.customIndex.exactDistance(searchCondition, e.value[attribute_name]);
-				rescored.sort((a, b) => a.distance - b.distance);
+				// comparison-based (not subtraction) so Infinity sentinels for missing vectors
+				// sort last without producing NaN (Infinity - Infinity).
+				rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
 				return rescored as any;
 			}
 			return loaded;

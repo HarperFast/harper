@@ -682,7 +682,7 @@ export class HierarchicalNavigableSmallWorld {
 		else if (!this.efSearchConfigured) {
 			const nodeCount = this.indexStore.getKeysCount
 				? this.indexStore.getKeysCount()
-				: (this.indexStore.getStats?.().entryCount ?? 0);
+				: (this.indexStore.getStats?.()?.entryCount ?? 0);
 			effectiveEf = autoScaleEf(nodeCount);
 		}
 		let entryPoint = this.getEntryPoint(options);
@@ -715,6 +715,9 @@ export class HierarchicalNavigableSmallWorld {
 	 */
 	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
 		if (recordVector == null) return Infinity; // missing vector sorts last
+		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
+		// float[] vector, but convert defensively in case a typed array slips through.
+		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
 		const fn =
 			searchCondition.distance === 'euclidean'
 				? euclideanDistance
@@ -723,7 +726,7 @@ export class HierarchicalNavigableSmallWorld {
 					: searchCondition.distance === 'cosine'
 						? cosineDistance
 						: this.distance;
-		return fn(searchCondition.target, recordVector as number[]);
+		return fn(searchCondition.target, vec);
 	}
 	private checkSymmetry(id, node, options) {
 		if (!node) return;

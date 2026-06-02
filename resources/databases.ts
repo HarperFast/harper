@@ -1157,18 +1157,18 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
 					changed ||
-					attributeDescriptor.indexingFailed ||
-					(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
-					attributeDescriptor.restartNumber < workerData?.restartNumber
+					attributeDescriptor?.indexingFailed ||
+					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
+					attributeDescriptor?.restartNumber < workerData?.restartNumber
 				) {
 					hasChanges = true;
 					exclusiveLock();
 					attributeDescriptor = attributesDbi.getSync(dbiKey);
 					if (
 						structurallyChanged ||
-						attributeDescriptor.indexingFailed ||
-						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
-						attributeDescriptor.restartNumber < workerData?.restartNumber
+						attributeDescriptor?.indexingFailed ||
+						(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
+						attributeDescriptor?.restartNumber < workerData?.restartNumber
 					) {
 						hasChanges = true;
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
