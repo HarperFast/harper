@@ -1186,6 +1186,14 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
 							attributesToIndex.push(attribute);
 						}
+					} else if (attributeDescriptor.indexingPID) {
+						// Metadata-only change (e.g. a search-only option like efConstructionSearch) while a
+						// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
+						// indexing state instead of persisting a descriptor that looks complete — otherwise other
+						// workers / a reload would treat the still-partial index as ready and return incomplete results.
+						attribute.indexingPID = attributeDescriptor.indexingPID;
+						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
 					attributesDbi.put(dbiKey, attribute);
 				}
