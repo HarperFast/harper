@@ -445,6 +445,7 @@ export function diffRocksDBCounter(curr: number, last: number | undefined): numb
  */
 export function normalizeRocksDBStats(raw: Record<string, unknown>): Record<string, number> {
 	const out: Record<string, number> = {};
+	if (!raw) return out;
 	for (const [key, value] of Object.entries(raw)) {
 		if (typeof value === 'number') out[toRocksDBCamelCase(key)] = value;
 	}
