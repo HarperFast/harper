@@ -35,6 +35,7 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'json',
 	'skip_node_modules',
 	'skip_symlinks',
+	'preferLocal',
 ]);
 
 export { cliOperations, buildRequest };
@@ -100,7 +101,7 @@ function resolveTarget(req, allCredentials) {
 		req.target ||
 		process.env.HARPER_CLI_TARGET ||
 		process.env.CLI_TARGET ||
-		(allCredentials && allCredentials.last_target)
+		(req.preferLocal ? null : allCredentials?.last_target)
 	);
 }
 

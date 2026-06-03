@@ -41,6 +41,7 @@ help                            - Display this output
 upgrade                         - Upgrade harperdb
 version                         - Print the version
 deploy                          - Deploy the application locally or remotely with target=<remote url>
+describe_data                   - Print the tables and attributes in the local (or remote) Harper instance
 `;
 
 async function harper() {
@@ -111,6 +112,31 @@ async function harper() {
 			let sourceDb = process.argv[3];
 			let targetDbPath = process.argv[4];
 			return require('./copyDb').copyDb(sourceDb, targetDbPath);
+		}
+		case SERVICE_ACTIONS_ENUM.DESCRIBE_DATA: {
+			const req = cliOperations.buildRequest();
+			req.operation = 'describe_all';
+			// Default to local instance; only route to remote if target= was explicitly provided
+			req.preferLocal = !process.argv.slice(3).some((arg) => arg.startsWith('target='));
+			const result = await cliOperations.cliOperations(req, true);
+			if (result && typeof result === 'object') {
+				for (const [schema, tables] of Object.entries(result as Record<string, any>)) {
+					if (schema === 'resolvedTarget') continue;
+					console.log(`Schema: ${schema}`);
+					if (!tables || typeof tables !== 'object' || Object.keys(tables).length === 0) {
+						console.log('  (no tables)');
+						continue;
+					}
+					for (const [tableName, tableInfo] of Object.entries(tables as Record<string, any>)) {
+						const pk: string = tableInfo.primary_key || 'id';
+						const attrs: string = (tableInfo.attributes || [])
+							.map((a: any) => (a.attribute === pk ? `${a.attribute}*` : a.attribute))
+							.join(', ');
+						console.log(`  ${tableName}  [${attrs}]`);
+					}
+				}
+			}
+			return;
 		}
 		case SERVICE_ACTIONS_ENUM.DEV:
 			process.env.DEV_MODE = 'true';
