@@ -39,6 +39,7 @@ server.knownGraphQLDirectives.push(
  * @param resources
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+	let initialLoadComplete = false;
 	const entryHandler = scope.handleEntry(async (entry) => {
 		if (entry.eventType === 'unlink') return;
 		if (entry.entryType === 'directory') {
@@ -46,9 +47,17 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			return;
 		}
 
+		if (initialLoadComplete) {
+			scope.requestRestart();
+			return;
+		}
 		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
 	});
-	return once(entryHandler, 'initialLoadComplete');
+	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
+	initialLoadPromise.then(() => {
+		initialLoadComplete = true;
+	});
+	return initialLoadPromise;
 }
 
 async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
