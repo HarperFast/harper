@@ -384,6 +384,7 @@ async function deployComponent(req) {
 				allowInstallScripts: req.install_allow_scripts,
 			};
 		}
+		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
