@@ -21,7 +21,7 @@ const INT_SIZE_UNDEFINED_MSG =
 let lastRotationTime;
 let setIntervalId;
 
-export default logRotator;
+export { logRotator };
 
 /**
  * Rotates hdb.log using an interval and/or maxSize param to determine if log should be rotated.

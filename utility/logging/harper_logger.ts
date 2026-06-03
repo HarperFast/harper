@@ -630,7 +630,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		setTimeout(() => {
 			logger.rotator?.end();
 			if (!rotation) return;
-			const { default: logRotator } = require('./logRotator');
+			const { logRotator } = require('./logRotator');
 			try {
 				logger.rotator = logRotator({
 					logger,
