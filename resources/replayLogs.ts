@@ -22,7 +22,18 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		// cleanup loop, so without this its aged backlog only grows and enlarges each subsequent
 		// replay/full-copy. The native purge keeps any file holding unflushed entries, so this
 		// never drops data the replay below still needs. See harper#1115.
-		const purgedLogs = purgeAgedLogs(rootStore);
+		// Purging is a non-critical optimization, so a purge failure (filesystem/permission/native
+		// error) must never block the critical replay path that follows — especially here, during
+		// the recovery this fix is meant to harden.
+		let purgedLogs: string[] = [];
+		try {
+			purgedLogs = purgeAgedLogs(rootStore);
+		} catch (error) {
+			logger.warn(
+				`Failed to purge aged transaction logs before replay in ${(rootStore as any).databaseName} database`,
+				error
+			);
+		}
 		if (purgedLogs.length > 0) {
 			logger.info(
 				`Purged ${purgedLogs.length} aged transaction-log file(s) before replay in ${(rootStore as any).databaseName} database`
