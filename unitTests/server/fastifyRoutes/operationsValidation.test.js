@@ -236,24 +236,24 @@ describe('Test operationsValidation module', () => {
 
 		it('rejects urlPath without package', () => {
 			const result = validator.deployComponentValidator({ project: 'my-app', urlPath: '/api' });
-			expect(result).to.not.be.null;
+			expect(result).to.be.ok;
 			expect(result.message).to.include('urlPath');
 		});
 
 		it('rejects urlPath containing ..', () => {
 			const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', urlPath: '../etc/passwd' });
-			expect(result).to.not.be.null;
-			expect(result.message).to.include('"');
+			expect(result).to.be.ok;
+			expect(result.message).to.include('urlPath');
 		});
 
 		it('rejects empty urlPath', () => {
 			const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', urlPath: '' });
-			expect(result).to.not.be.null;
+			expect(result).to.be.ok;
 		});
 
 		it('rejects missing project', () => {
 			const result = validator.deployComponentValidator({ package: 'pkg' });
-			expect(result).to.not.be.null;
+			expect(result).to.be.ok;
 			expect(result.message).to.include('project');
 		});
 	});
