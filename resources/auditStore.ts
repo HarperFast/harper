@@ -267,6 +267,21 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
 	DEFAULT_AUDIT_CLEANUP_DELAY = defaultDelay;
 }
 
+/**
+ * One-shot purge of transaction-log files already older than the audit retention window,
+ * intended to run during startup/recovery before transaction-log replay. The steady-state
+ * cleanup loop (scheduleAuditCleanup) only starts once a worker reaches steady state, so a node
+ * that crash-loops during recovery never purges and its aged backlog only grows, enlarging the
+ * next replay/full-copy. Safe to run before replay: the native purge only deletes log files
+ * entirely before the last-flushed-to-RocksDB position, so unflushed entries that replay still
+ * needs are never removed. Returns the names of the purged files. See harper#1115.
+ */
+export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
+	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
+	if (isReadOnlyMode()) return [];
+	return rootStore.purgeLogs({ before: Date.now() - auditRetention });
+}
+
 const HAS_RECORD = 16;
 const HAS_PARTIAL_RECORD = 32; // will be used for CRDTs
 const PUT = 1;
