@@ -385,6 +385,73 @@ describe('Transactions', () => {
 			assert(auditRecord.previousAdditionalAuditRefs, 'Additional audit refs should be preserved');
 		});
 
+		// Regression for #1114: a pathologically deep audit chain (as seen during a replication
+		// full-copy of a large-history database) must not make the out-of-order reconciliation in
+		// commit() walk and buffer the whole chain — that OOMs the worker. Past the depth cap the walk
+		// is bounded and the older write is reconciled against only the most-recent retained updates.
+		it('bounds the out-of-order audit-chain walk past the depth cap and reconciles correctly (#1114)', async function () {
+			if (isLMDB) return; // RocksDB-only bounded path (LMDB keeps the exact unbounded walk)
+			const { logger } = require('#src/utility/logging/logger');
+			const id = 1114000;
+			const base = Date.now();
+			// Oldest version: a seed put with count = 0.
+			await TxnTest.put(id, { name: 'seed', count: 0 }, { timestamp: base });
+			// A chain of in-order patches deeper than MAX_OUT_OF_ORDER_AUDIT_DEPTH (1000). None is a full
+			// put, so an older out-of-order write would otherwise walk the entire chain. Each patch
+			// rewrites the same field so the chain (not the record) is what grows deep.
+			const depth = 1010;
+			for (let i = 1; i <= depth; i++) {
+				await TxnTest.patch(id, { seq: i }, { timestamp: base + 10 * i });
+			}
+			// Spy on the cap warning to assert the bounded branch actually ran (vs the normal full walk).
+			const originalWarn = logger.warn;
+			let capWarned = false;
+			logger.warn = (msg) => {
+				if (typeof msg === 'string' && msg.includes('exceeded depth cap')) capWarned = true;
+			};
+			try {
+				// A write older than every patch (newer than the seed): a commutative increment, a field
+				// that newer patches overwrite (seq), and a field no newer patch touches (fresh).
+				await TxnTest.patch(
+					id,
+					{ count: { __op__: 'add', value: 5 }, seq: 'stale', fresh: 'applied' },
+					{ timestamp: base + 5 }
+				);
+			} finally {
+				logger.warn = originalWarn;
+			}
+			assert(capWarned, 'the depth-cap bounded path should have been taken');
+			const record = await TxnTest.get(id);
+			// Commutative op is applied once, on top of the current state (count 0 -> 5).
+			assert.equal(record.count, 5, 'commutative op from the bounded out-of-order write should be applied');
+			// A newer patch overwrote seq, so the older write's stale value loses (folded against retained updates).
+			assert.equal(record.seq, depth, 'newer last-writer-wins value should survive the bounded reconciliation');
+			// A field no newer update touched is still applied from the older write.
+			assert.equal(record.fresh, 'applied', 'older field untouched by newer updates should be applied');
+			assert.equal(record.name, 'seed');
+		});
+
+		it('does not double-apply a re-delivered commutative op in the bounded path (#1114)', async function () {
+			if (isLMDB) return; // RocksDB-only bounded path (LMDB keeps the exact unbounded walk)
+			const id = 1114001;
+			const base = Date.now();
+			await TxnTest.put(id, { name: 'seed', count: 0 }, { timestamp: base });
+			const depth = 1010;
+			for (let i = 1; i <= depth; i++) {
+				await TxnTest.patch(id, { seq: i }, { timestamp: base + 10 * i });
+			}
+			const reDeliver = () => TxnTest.patch(id, { count: { __op__: 'add', value: 3 } }, { timestamp: base + 5 });
+			await reDeliver();
+			let record = await TxnTest.get(id);
+			assert.equal(record.count, 3, 'op applied once on first delivery');
+			// Full-copy audit-replay re-delivers writes; because the bounded walk stops before reaching
+			// txnTime, the inline duplicate check never runs — the explicit O(1) duplicate lookup must
+			// catch it so the increment is not applied a second time.
+			await reDeliver();
+			record = await TxnTest.get(id);
+			assert.equal(record.count, 3, 're-delivered duplicate must not double-apply the commutative op');
+		});
+
 		it('Can merge replication updates', async function () {
 			const context = {};
 			await transaction(context, async () => {
