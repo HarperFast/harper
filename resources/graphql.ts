@@ -41,16 +41,17 @@ server.knownGraphQLDirectives.push(
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	let initialLoadComplete = false;
 	const entryHandler = scope.handleEntry(async (entry) => {
+		if (initialLoadComplete) {
+			scope.requestRestart();
+			return;
+		}
+
 		if (entry.eventType === 'unlink') return;
 		if (entry.entryType === 'directory') {
 			scope.logger.warn?.('graphqlSchema currently does not handle directories. Specify file patterns only.');
 			return;
 		}
 
-		if (initialLoadComplete) {
-			scope.requestRestart();
-			return;
-		}
 		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
 	});
 	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
