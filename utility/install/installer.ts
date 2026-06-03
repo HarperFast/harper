@@ -441,9 +441,24 @@ async function createBootPropertiesFile() {
 		const homeDirPath = path.join(homeDir, hdbTerms.HDB_HOME_DIR_NAME);
 		const homeDirKeysDirPath = path.join(homeDirPath, hdbTerms.LICENSE_KEY_DIR_NAME);
 		const propsFilePath = path.join(homeDirPath, hdbTerms.BOOT_PROPS_FILE_NAME);
-		// if the properties file already exists, and we have an explicit ROOTPATH, we don't overwrite the existing
-		// properties file
-		if (!fs.existsSync(propsFilePath) || !hdbUtils.getEnvCliRootPath()) {
+		// Detect a stale boot props file: exists but points to a settings_path that no longer exists.
+		// This happens when a previous install dir was deleted (e.g. a temp CI dir) but the props
+		// file was never cleaned up. A stale file would cause every `harper` invocation to trigger
+		// the interactive install wizard because isHdbInstalled() fails.
+		const bootPropsStale =
+			fs.existsSync(propsFilePath) &&
+			(() => {
+				try {
+					const content = fs.readFileSync(propsFilePath, 'utf8');
+					const match = content.match(/settings_path\s*=\s*(.+)/);
+					return match ? !fs.existsSync(match[1].trim()) : true;
+				} catch {
+					return true;
+				}
+			})();
+		// Write boot props when: file doesn't exist, OR it's stale, OR no explicit ROOTPATH was
+		// given (no ROOTPATH means the caller accepts whatever path this install produces).
+		if (!fs.existsSync(propsFilePath) || bootPropsStale || !hdbUtils.getEnvCliRootPath()) {
 			try {
 				fs.mkdirpSync(homeDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
 				fs.mkdirpSync(homeDirKeysDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
