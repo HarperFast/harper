@@ -6,6 +6,7 @@ import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode } from 'graphql';
 import { once } from 'node:events';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -251,6 +252,11 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
 		typeDef.tableClass = table(typeDef);
+		if (getWorkerIndex() === 0) {
+			const pk = (typeDef.properties as any[]).find((p) => p.isPrimaryKey)?.name ?? 'id';
+			const schemaPart = typeDef.database ? `, schema: ${typeDef.database}` : '';
+			harperLogger.info(`Initialized table "${typeDef.table}"${schemaPart}, primaryKey: ${pk}`);
+		}
 		if (typeDef.export) {
 			// allow empty string to be used to declare a table on the root path
 			if (typeDef.export.name === '') resources.set(dirname(urlPath), typeDef.tableClass);
