@@ -114,6 +114,11 @@ const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
 const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
+// Cap for the out-of-order write reconciliation audit-chain walk in commit(). A pathologically deep
+// audit history (e.g. a replication full-copy of a large-history database) would otherwise walk and
+// buffer the entire backward chain per record, synchronously, on every worker — pinning the JS heap
+// until the worker OOMs (issue #1114). Beyond this depth we fall back to a bounded reconciliation.
+const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -1766,8 +1771,18 @@ export function makeTable(options) {
 							}
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
+							let walkSteps = 0;
+							let auditWalkCapped = false;
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
+									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
+									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
+									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
+									// shortcut below would not apply — keep its exact, unbounded reconciliation.
+									if (isRocksDB && ++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+										auditWalkCapped = true;
+										break;
+									}
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
 									if (!auditRecord) break;
 									auditedVersion = auditRecord.version;
@@ -1795,8 +1810,11 @@ export function makeTable(options) {
 										}
 										if (auditRecord.type === 'patch') {
 											logger.debug?.('out of order patch will be applied', id, auditRecord);
-											// record patches so we can reply in order
-											succeedingUpdates.push(auditRecord);
+											// Materialize the patch value now and keep only { version, value } rather than the
+											// audit record itself, so its backing transaction-log buffer and decoders can be
+											// reclaimed immediately. Only these two fields are needed for the ordered fold below;
+											// retaining the full records is what pins the heap on a deep chain (issue #1114).
+											succeedingUpdates.push({ version: auditedVersion, value: auditRecord.getValue(primaryStore) });
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
 										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
 											// There is newer full record update, so this incremental update is completely superseded
@@ -1828,6 +1846,7 @@ export function makeTable(options) {
 									nodeId = auditRecord.previousNodeId;
 								}
 								// Check if we need to scan additional audit refs from this record
+								if (auditWalkCapped) break;
 								nextRef = auditRefsToVisit.shift();
 								if (nextRef) {
 									localTime = auditedVersion = nextRef.localTime;
@@ -1835,7 +1854,7 @@ export function makeTable(options) {
 									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
 								}
 							} while (nextRef);
-							if (!localTime) {
+							if (!localTime && !auditWalkCapped) {
 								// if we reached the end of the audit trail, we can just apply the update
 								logger.debug?.(
 									'No further audit history, applying incremental updates based on available history',
@@ -1844,15 +1863,45 @@ export function makeTable(options) {
 									existingEntry
 								);
 							}
-							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
-							for (const auditRecord of succeedingUpdates) {
-								const newerUpdate = auditRecord.getValue(primaryStore);
-								logger.debug?.(
-									'Rebuilding update with future patch:',
-									new Date(auditRecord.version),
-									newerUpdate,
-									auditRecord
+							if (auditWalkCapped) {
+								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
+								// history, seen during a replication full-copy of a large-history database — issue #1114).
+								// Walking and buffering the whole chain per record OOMs the worker, so we stopped at the cap
+								// and reconcile against only the most recent MAX_OUT_OF_ORDER_AUDIT_DEPTH updates (the fold
+								// below). That is an approximation for histories deeper than the cap — updates older than the
+								// retained window are not layered in — but the authoritative full-copy record restores exact
+								// convergence. Because we stopped before reaching txnTime, the inline duplicate detection in
+								// the walk never ran; full-copy audit-replay re-delivers writes, and re-applying one would
+								// double-apply its commutative ops, so rule that out here with a single O(1) lookup at txnTime
+								// (RocksDB audit logs are keyed by version, and the cap is RocksDB-only).
+								logger.warn?.(
+									'Out-of-order audit reconciliation exceeded depth cap; reconciling against most recent updates only',
+									{
+										table: tableName,
+										id,
+										depth: walkSteps,
+									}
 								);
+								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								if (
+									duplicate &&
+									duplicate.version === txnTime &&
+									precedesExistingVersion(
+										txnTime,
+										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
+										options?.nodeId
+									) === 0
+								) {
+									write.skipped = true;
+									return; // duplicate write already applied
+								}
+							}
+							// Fold the retained succeeding updates (the full chain, or — when capped — the most recent
+							// window) onto this older write so newer fields win; for a capped walk this layers in only
+							// what we collected before the cap.
+							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
+							for (const { version: patchVersion, value: newerUpdate } of succeedingUpdates) {
+								logger.debug?.('Rebuilding update with future patch:', new Date(patchVersion), newerUpdate);
 								incrementalUpdateToApply = rebuildUpdateBefore(
 									incrementalUpdateToApply ?? recordUpdate,
 									newerUpdate,
