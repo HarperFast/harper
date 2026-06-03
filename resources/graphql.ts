@@ -253,9 +253,9 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 		// should be created if it does not exist
 		typeDef.tableClass = table(typeDef);
 		if (getWorkerIndex() === 0) {
-			const pk = (typeDef.properties as any[]).find((p) => p.isPrimaryKey)?.name ?? 'id';
+			const pk = (typeDef.properties as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';
 			const schemaPart = typeDef.database ? `, schema: ${typeDef.database}` : '';
-			harperLogger.info(`Initialized table "${typeDef.table}"${schemaPart}, primaryKey: ${pk}`);
+			harperLogger.info?.(`Initialized table "${typeDef.table}"${schemaPart}, primaryKey: ${pk}`);
 		}
 		if (typeDef.export) {
 			// allow empty string to be used to declare a table on the root path
