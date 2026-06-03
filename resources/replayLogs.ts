@@ -29,14 +29,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		try {
 			purgedLogs = purgeAgedLogs(rootStore);
 		} catch (error) {
-			logger.warn(
-				`Failed to purge aged transaction logs before replay in ${(rootStore as any).databaseName} database`,
-				error
-			);
+			logger.warn(`Failed to purge aged transaction logs before replay in ${rootStore.databaseName} database`, error);
 		}
 		if (purgedLogs.length > 0) {
 			logger.info(
-				`Purged ${purgedLogs.length} aged transaction-log file(s) before replay in ${(rootStore as any).databaseName} database`
+				`Purged ${purgedLogs.length} aged transaction-log file(s) before replay in ${rootStore.databaseName} database`
 			);
 		}
 		const tableById = new Map<number, typeof Resource>();

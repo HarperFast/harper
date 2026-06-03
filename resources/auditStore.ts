@@ -269,8 +269,6 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
  * needs are never removed. Returns the names of the purged files. See harper#1115.
  */
 export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
-	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
-	if (isReadOnlyMode()) return [];
 	return rootStore.purgeLogs({ before: Date.now() - auditRetention });
 }
 
