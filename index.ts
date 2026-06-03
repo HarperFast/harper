@@ -10,6 +10,7 @@ if (!workerThreads.isMainThread) {
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { flushDatabases } from './resources/databases.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
+export { serveStatic } from './server/static.ts';
 
 // Type only exports.
 // Anything exported here will only be available as TypeScript types, not as values.
@@ -29,6 +30,7 @@ export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
 export type { Scope } from './components/Scope.ts';
+export type { ServeStaticOptions, StaticCacheOptions } from './server/static.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export type { OptionsWatcher, Config, ConfigValue } from './components/OptionsWatcher.ts';
