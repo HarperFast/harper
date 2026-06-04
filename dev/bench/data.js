@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780476820553,
+  "lastUpdate": 1780562702765,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -56,6 +56,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E",
             "value": 1146.5,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "caeb66683673f6850c70df55222e4d6deda28a50",
+          "message": "Merge pull request #1118 from HarperFast/chore/bump-ai-review-prompts-2be0f70\n\nci: bump ai-review-prompts pin to 2be0f70",
+          "timestamp": "2026-06-03T19:52:04Z",
+          "url": "https://github.com/HarperFast/harper/commit/caeb66683673f6850c70df55222e4d6deda28a50"
+        },
+        "date": 1780562701842,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load",
+            "value": 6014.66,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C",
+            "value": 8531.99,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B",
+            "value": 8412.78,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A",
+            "value": 6739.69,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F",
+            "value": 4828.27,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D",
+            "value": 8647.48,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E",
+            "value": 939.49,
             "unit": "ops/sec"
           }
         ]
