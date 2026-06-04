@@ -8,11 +8,13 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { get as envGet } from '../../utility/environment/environmentManager.ts';
 import { validateGetAnalytics } from '../../validation/analyticsValidator.ts';
 import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
+import { getThisNodeName } from '../../server/nodeName.ts';
 
 // default to one week time window for finding custom metrics
 const defaultCustomMetricWindow = 1000 * 60 * 60 * 24 * 7;
 
-const log = forComponent('analytics').conditional;
+const logger = forComponent('analytics');
+const log = logger.conditional;
 
 async function lookupHostname(nodeId: number): Promise<string | undefined> {
 	const result = await getAnalyticsHostnameTable().get(nodeId);
@@ -26,15 +28,19 @@ function isSelected(querySelect: string[], attr: string) {
 }
 
 interface GetAnalyticsRequest {
+	operation?: string;
 	metric: string;
 	start_time?: number;
 	end_time?: number;
 	get_attributes?: string[];
 	coalesce_time?: boolean;
 	conditions?: Conditions;
+	// When true, fan the query out to every peer node and merge the results into one
+	// cluster-wide response. Cleared before forwarding so peers only return their own.
+	replicated?: boolean;
 }
 
-type GetAnalyticsResponse = Metric[];
+type GetAnalyticsResponse = AsyncIterable<Metric> | Metric[];
 
 /**
  * Validates the `get_analytics` request and returns the analytics results.
@@ -54,13 +60,75 @@ export async function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsRespo
 			true
 		);
 	}
-	return get(req.metric, {
-		getAttributes: req.get_attributes,
+	// `replicated` fans the query out to every peer node and merges each node's
+	// analytics into one cluster-wide result set. Fan-out is skipped when:
+	//  - the request did not ask for it;
+	//  - this is standalone core, which has no `server.nodes` (harper-pro populates it);
+	//  - `hdb_analytics` already replicates across the cluster, in which case a local
+	//    query already holds every node's rows and fanning out would double-count.
+	//    The DB layer marks the table `replicate === false` only when it is *not*
+	//    replicated (`analytics_replicate: false`), which is exactly when fan-out helps.
+	const analyticsReplicatedByDb = databases.system.hdb_analytics.replicate !== false;
+	const peers = req.replicated && !analyticsReplicatedByDb && server.nodes?.length ? server.nodes : undefined;
+
+	// When merging across the cluster, make sure every row keeps its origin `node`
+	// attribute so callers can tell the nodes apart. An empty/absent `get_attributes`
+	// already selects everything (including `node`), so only an explicit list needs it.
+	let getAttributes = req.get_attributes;
+	if (peers && getAttributes?.length && !getAttributes.includes('node')) {
+		getAttributes = [...getAttributes, 'node'];
+	}
+
+	const localResults = await get(req.metric, {
+		getAttributes,
 		startTime: req.start_time,
 		endTime: req.end_time,
 		coalesceTime: req.coalesce_time,
 		additionalConditions: req.conditions,
 	});
+
+	if (!peers) return localResults;
+	return mergeAnalyticsFromPeers(localResults, { ...req, get_attributes: getAttributes }, peers);
+}
+
+/**
+ * Streams the local analytics, then appends each peer node's analytics. The same
+ * query is forwarded to every peer with `replicated` cleared so each returns only
+ * its own local metrics (no recursive fan-out). Best-effort: a peer that fails is
+ * logged and omitted rather than failing the whole query.
+ */
+async function* mergeAnalyticsFromPeers(
+	localResults: AsyncIterable<Metric> | Iterable<Metric>,
+	req: GetAnalyticsRequest,
+	peers: { name: string }[]
+): AsyncGenerator<Metric> {
+	const thisNode = getThisNodeName();
+	const peerReq = { ...req, replicated: false };
+	// `sendOperationToNode` is typed for a node name string, but the replication
+	// implementation expects the full node object (the stub-vs-impl mismatch that
+	// `restart` works around the same way).
+	const sendOperationToNode = server.replication.sendOperationToNode as unknown as (
+		node: { name: string },
+		operation: unknown
+	) => Promise<{ results?: Metric[] } | Metric[]>;
+
+	const peerResults = peers
+		.filter((node) => node.name !== thisNode)
+		.map((node) =>
+			sendOperationToNode(node, peerReq).then(
+				// an array response is wrapped as `{ results }` over the replication channel
+				(response): Metric[] => (Array.isArray(response) ? response : (response?.results ?? [])),
+				(error: Error): Metric[] => {
+					logger.warn(`get_analytics replication to node '${node.name}' failed; omitting its results`, error);
+					return [];
+				}
+			)
+		);
+
+	yield* localResults;
+	for (const peerResult of peerResults) {
+		yield* await peerResult;
+	}
 }
 
 function conformCondition(condition: Condition): Condition {

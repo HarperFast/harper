@@ -4,7 +4,32 @@ const { expect } = require('chai');
 const { describe, it } = require('mocha');
 const sinon = require('sinon');
 const { METRIC } = require('#src/resources/analytics/metadata');
-const { listMetrics, describeMetric /* collectDistinctValues */ } = require('#src/resources/analytics/read');
+const { getOp, listMetrics, describeMetric /* collectDistinctValues */ } = require('#src/resources/analytics/read');
+const { getThisNodeName } = require('#src/server/nodeName');
+const hostnames = require('#src/resources/analytics/hostnames');
+
+// Mimics the Harper search iterable: array-like with a lazy async `.map`, which is
+// what resources/analytics/read.ts `get()` consumes.
+function mockSearchIterable(items) {
+	return {
+		[Symbol.asyncIterator]: async function* () {
+			for (const item of items) yield item;
+		},
+		map(fn) {
+			return {
+				[Symbol.asyncIterator]: async function* () {
+					for (const item of items) yield await fn(item);
+				},
+			};
+		},
+	};
+}
+
+async function collect(result) {
+	const out = [];
+	for await (const item of result) out.push(item);
+	return out;
+}
 
 describe('listMetrics', () => {
 	let searchStub;
@@ -299,5 +324,157 @@ describe('describeMetric', () => {
 		} catch (error) {
 			expect(error.message).to.equal('Database error');
 		}
+	});
+});
+
+describe('getOp (replicated fan-out)', () => {
+	let searchStub;
+	let sendOperationStub;
+	let originalServer;
+	let originalDatabases;
+
+	beforeEach(() => {
+		// `server` and `databases` are process-wide globals established at module load;
+		// stash and restore them rather than deleting so later test files still see them.
+		originalServer = global.server;
+		originalDatabases = global.databases;
+
+		searchStub = sinon.stub().returns(mockSearchIterable([]));
+		// `replicate === false` => analytics are NOT replicated by the DB layer, so the
+		// fan-out is needed (and enabled). The skip case is covered explicitly below.
+		global.databases = { system: { hdb_analytics: { search: searchStub, replicate: false } } };
+
+		sendOperationStub = sinon.stub();
+		global.server = {
+			hostname: 'local-host',
+			nodes: [],
+			replication: { sendOperationToNode: sendOperationStub },
+		};
+	});
+
+	afterEach(() => {
+		sinon.restore();
+		global.server = originalServer;
+		global.databases = originalDatabases;
+	});
+
+	it('merges metrics from every peer node into one flat result set', async () => {
+		global.server.nodes = [{ name: 'peer-a' }, { name: 'peer-b' }];
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-a' }))
+			.resolves({ results: [{ id: 1, metric: 'm', node: 'peer-a' }] });
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-b' }))
+			.resolves({ results: [{ id: 2, metric: 'm', node: 'peer-b' }] });
+
+		const result = await collect(await getOp({ operation: 'get_analytics', metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([
+			{ id: 1, metric: 'm', node: 'peer-a' },
+			{ id: 2, metric: 'm', node: 'peer-b' },
+		]);
+		expect(sendOperationStub.calledTwice).to.be.true;
+	});
+
+	it('forwards the query to peers with `replicated` cleared (no recursive fan-out)', async () => {
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves({ results: [] });
+
+		await collect(await getOp({ operation: 'get_analytics', metric: 'm', replicated: true }));
+
+		const forwarded = sendOperationStub.firstCall.args[1];
+		expect(forwarded.replicated).to.equal(false);
+		expect(forwarded.metric).to.equal('m');
+	});
+
+	it('skips the local node when fanning out', async () => {
+		const thisNode = getThisNodeName();
+		global.server.nodes = [{ name: thisNode }, { name: 'peer-x' }];
+		sendOperationStub.resolves({ results: [] });
+
+		await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(sendOperationStub.calledOnce).to.be.true;
+		expect(sendOperationStub.firstCall.args[0]).to.deep.equal({ name: 'peer-x' });
+	});
+
+	it('omits a peer that errors and still returns the others (best-effort)', async () => {
+		global.server.nodes = [{ name: 'peer-good' }, { name: 'peer-bad' }];
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-good' }))
+			.resolves({ results: [{ id: 1, metric: 'm', node: 'peer-good' }] });
+		sendOperationStub.withArgs(sinon.match({ name: 'peer-bad' })).rejects(new Error('connection refused'));
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([{ id: 1, metric: 'm', node: 'peer-good' }]);
+	});
+
+	it('accepts a bare-array peer response (defensive unwrap)', async () => {
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves([{ id: 5, metric: 'm', node: 'peer-a' }]);
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([{ id: 5, metric: 'm', node: 'peer-a' }]);
+	});
+
+	it('includes local node results ahead of peer results', async () => {
+		sinon
+			.stub(hostnames, 'getAnalyticsHostnameTable')
+			.returns({ get: sinon.stub().resolves({ hostname: 'local-host' }) });
+		searchStub.returns(mockSearchIterable([{ id: [10, 12345], metric: 'm', total: 1 }]));
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves({ results: [{ id: 20, metric: 'm', node: 'peer-a', total: 2 }] });
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([
+			{ id: 10, metric: 'm', total: 1, node: 'local-host' },
+			{ id: 20, metric: 'm', node: 'peer-a', total: 2 },
+		]);
+	});
+
+	it('forces the `node` attribute into an explicit get_attributes list when replicated', async () => {
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves({ results: [] });
+
+		await collect(await getOp({ metric: 'm', get_attributes: ['metric', 'total'], replicated: true }));
+
+		const forwarded = sendOperationStub.firstCall.args[1];
+		expect(forwarded.get_attributes).to.include('node');
+	});
+
+	it('does not fan out when `replicated` is not set', async () => {
+		searchStub.returns(mockSearchIterable([{ id: [10, 1], metric: 'm', total: 1 }]));
+		global.server.nodes = [{ name: 'peer-a' }];
+
+		const result = await collect(await getOp({ metric: 'm', get_attributes: ['metric', 'total'] }));
+
+		expect(sendOperationStub.called).to.be.false;
+		expect(result).to.deep.equal([{ id: 10, metric: 'm', total: 1 }]);
+	});
+
+	it('does not fan out in standalone core (no server.nodes)', async () => {
+		global.server.nodes = undefined;
+		searchStub.returns(mockSearchIterable([{ id: [10, 1], metric: 'm' }]));
+
+		const result = await collect(await getOp({ metric: 'm', get_attributes: ['metric'], replicated: true }));
+
+		expect(sendOperationStub.called).to.be.false;
+		expect(result).to.deep.equal([{ id: 10, metric: 'm' }]);
+	});
+
+	it('does not fan out when the analytics table already replicates (replicate !== false)', async () => {
+		// `analytics_replicate: true` leaves the table `replicate` undefined; a local query
+		// already holds every node's rows, so fanning out would double-count.
+		delete global.databases.system.hdb_analytics.replicate;
+		global.server.nodes = [{ name: 'peer-a' }];
+		searchStub.returns(mockSearchIterable([{ id: [10, 1], metric: 'm', total: 1 }]));
+
+		const result = await collect(await getOp({ metric: 'm', get_attributes: ['metric', 'total'], replicated: true }));
+
+		expect(sendOperationStub.called).to.be.false;
+		expect(result).to.deep.equal([{ id: 10, metric: 'm', total: 1 }]);
 	});
 });
