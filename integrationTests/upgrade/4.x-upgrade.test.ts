@@ -90,9 +90,7 @@ suite(
 
 		test('upgrade and start', async () => {
 			await killHarper(ctx); // kill old 4.x harper
-			// Upgrading 4.x -> 5.x now runs an upgrade directive (hdb_deployment table creation),
-			// so startup prompts for confirmation; auto-confirm it the way the downgrade test does.
-			await startHarper(ctx, { config: {}, env: { CONFIRM_UPGRADE: 'yes' } }); // start on v5
+			await startHarper(ctx, { config: {}, env: {} }); // start on v5 (upgrade directives run automatically, no prompt)
 			let response = await sendOperation(ctx.harper, {
 				operation: 'search_by_conditions',
 				table: 'test',
@@ -193,7 +191,7 @@ suite(
 
 			await startHarper(ctx, {
 				config: { storage: { migrateOnStart: true } },
-				env: { CONFIRM_UPGRADE: 'yes' },
+				env: {},
 			});
 
 			const testTableResponse = await sendOperation(ctx.harper, {
