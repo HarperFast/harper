@@ -90,6 +90,7 @@ export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;
+	declare _writeStruct: any;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
@@ -112,6 +113,16 @@ export class RecordEncoder extends StructonEncoder {
 
 		options.structPrototype = RecordObject.prototype;
 		super(options);
+		// structon (the StructonEncoder base) always installs the struct write hook. For DBIs
+		// that don't opt into struct mode (non-primary, e.g. __dbis__), force it to bail (return
+		// 0) so objects are written in plain msgpackr records mode — decodable by readers without
+		// struct support (msgpackr v1 / Harper v4 downgrade). We make it bail rather than clear
+		// it so msgpackr keeps the struct-safe integer boundary: top-level integers 0x20-0x3f are
+		// written as uint8 rather than bare fixints, which the retained struct READ hook would
+		// otherwise misread as struct headers (e.g. a scalar NEXT_TABLE_ID >= 32 in __dbis__).
+		// The read hook stays intact so records already written in struct mode by a prior v5 still
+		// decode.
+		if (!options.randomAccessStructure) this._writeStruct = () => 0;
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
