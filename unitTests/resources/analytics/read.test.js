@@ -419,6 +419,18 @@ describe('getOp (replicated fan-out)', () => {
 		expect(result).to.deep.equal([{ id: 5, metric: 'm', node: 'peer-a' }]);
 	});
 
+	it('treats a malformed peer response (non-array results) as empty', async () => {
+		global.server.nodes = [{ name: 'peer-good' }, { name: 'peer-weird' }];
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-good' }))
+			.resolves({ results: [{ id: 1, metric: 'm', node: 'peer-good' }] });
+		sendOperationStub.withArgs(sinon.match({ name: 'peer-weird' })).resolves({ results: 'not-an-array' });
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([{ id: 1, metric: 'm', node: 'peer-good' }]);
+	});
+
 	it('includes local node results ahead of peer results', async () => {
 		sinon
 			.stub(hostnames, 'getAnalyticsHostnameTable')

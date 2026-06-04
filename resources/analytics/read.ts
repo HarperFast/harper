@@ -116,8 +116,11 @@ async function* mergeAnalyticsFromPeers(
 		.filter((node) => node.name !== thisNode)
 		.map((node) =>
 			sendOperationToNode(node, peerReq).then(
-				// an array response is wrapped as `{ results }` over the replication channel
-				(response): Metric[] => (Array.isArray(response) ? response : (response?.results ?? [])),
+				// an array response is wrapped as `{ results }` over the replication channel;
+				// fall back to an empty list for any other (malformed) shape so a bad peer
+				// can't break the merge
+				(response): Metric[] =>
+					Array.isArray(response) ? response : Array.isArray(response?.results) ? response.results : [],
 				(error: Error): Metric[] => {
 					logger.warn(`get_analytics replication to node '${node.name}' failed; omitting its results`, error);
 					return [];
