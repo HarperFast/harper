@@ -199,6 +199,30 @@ export class RocksTransactionLogStore extends EventEmitter {
 			let nextEntries: any[];
 			let latestUpdates: number;
 			const iterators: IterableIterator<TransactionEntry>[] = [];
+			// Iterators that have permanently failed (corrupt entry stuck at the same
+			// position). Tracked by identity so the retry-poll path in next() and
+			// updateIterators() never calls .next() on them again — otherwise every
+			// subsequent drain cycle would re-throw the same RangeError, spamming logs
+			// and burning CPU.
+			const failedIterators = new WeakSet<IterableIterator<TransactionEntry>>();
+			// Per-log advance that converts a thrown corrupt-entry error from rocksdb-js
+			// into a clean `done: true` for that iterator. The reader's RangeError leaves
+			// `position` at the bad entry; re-calling next() would re-throw indefinitely.
+			// Terminating just this log lets the aggregate keep draining the other peers'
+			// logs and prevents the throw from escaping into setImmediate-scheduled
+			// consumers (notifyFromTransactionData) where it becomes an uncaughtException.
+			const safeNext = (iterator: IterableIterator<TransactionEntry>, log?: TransactionLog) => {
+				if (failedIterators.has(iterator)) return { value: undefined, done: true };
+				try {
+					return iterator.next();
+				} catch (error) {
+					failedIterators.add(iterator);
+					harperLogger.error('Transaction log iterator failed; terminating this log', error, {
+						log: log?.name,
+					});
+					return { value: undefined, done: true };
+				}
+			};
 			const updateIterators = () => {
 				if (latestUpdates !== this.updates) {
 					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
@@ -231,7 +255,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						}
 					}
 				}
-				nextEntries = iterators.map((iterator) => iterator.next());
+				nextEntries = iterators.map((iterator, i) => safeNext(iterator, logs[i]));
 			};
 			updateIterators();
 
@@ -275,7 +299,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						}
 						if (earliestIndex >= 0) {
 							// replace the entry with the next one from the iterator we pulled from
-							nextEntries[earliestIndex] = iterators[earliestIndex].next();
+							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
 								done: false,
