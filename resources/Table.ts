@@ -1733,6 +1733,32 @@ export function makeTable(options) {
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
 						if (audit) {
+							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
+							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
+							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
+							// front — before the audit-log walk below, which can miss it: the walk stops at the depth cap, or
+							// breaks early on a not-yet-visible audit entry, before reaching txnTime, and the keyed
+							// transaction-log lookup it would otherwise use can lag a back-to-back re-delivery (that lag
+							// silently double-applied the increment — #1137). This covers the re-delivery while the ref is
+							// still on the record; a later in-order write rewrites the record and drops the ref (it survives
+							// only as previousAdditionalAuditRefs on the audit log), so that case falls back to the
+							// best-effort keyed lookup in the capped block below — see #1148. precedesExistingVersion(...)
+							// === 0 is the identity tie: same version AND same node (the local node is id 0, so an undefined
+							// options?.nodeId resolves to the same 0 the ref stored).
+							if (
+								existingEntry.additionalAuditRefs?.some(
+									(ref) =>
+										ref.version === txnTime &&
+										precedesExistingVersion(
+											txnTime,
+											{ version: txnTime, localTime: txnTime, key: id, nodeId: ref.nodeId },
+											options?.nodeId
+										) === 0
+								)
+							) {
+								write.skipped = true;
+								return; // out-of-order write already folded into this record
+							}
 							// incremental CRDT updates are only available with audit logging on
 							let localTime = existingEntry.localTime;
 							let auditedVersion = existingEntry.version;
@@ -1864,7 +1890,12 @@ export function makeTable(options) {
 								// retained window are not layered in — but the authoritative full-copy record restores exact
 								// convergence. Because we stopped before reaching txnTime, the inline duplicate detection in
 								// the walk never ran; full-copy audit-replay re-delivers writes, and re-applying one would
-								// double-apply its commutative ops, so rule that out here before folding.
+								// double-apply its commutative ops. A re-delivered out-of-order write is already ruled out by
+								// the additionalAuditRefs check at the top of this block; this keyed lookup is the best-effort
+								// guard for the remaining case — a re-delivered write that was originally in-order (so it left
+								// no ref) and is now deeper than the cap. It is best-effort because the transaction-log lookup
+								// can intermittently miss an entry under load (tracked separately); the authoritative full-copy
+								// record still restores exact convergence.
 								logger.warn?.(
 									'Out-of-order audit reconciliation exceeded depth cap; reconciling against most recent updates only',
 									{
@@ -1873,24 +1904,16 @@ export function makeTable(options) {
 										depth: walkSteps,
 									}
 								);
-								// Detect a re-delivered duplicate via the record's own additionalAuditRefs rather than an
-								// audit-log lookup at txnTime. Every out-of-order write folded into this record records its
-								// {version, nodeId} ref (added in the walk above, RocksDB-only — the same condition as this
-								// cap), and the record is read with read-your-writes consistency. The transaction-log query
-								// that a keyed audit lookup would use can lag a back-to-back re-delivery — the just-committed
-								// entry is not yet visible — which silently double-applied the commutative op (#1137).
-								// precedesExistingVersion(...) === 0 is the identity tie: same version AND same node (the
-								// local node is id 0, so an undefined options?.nodeId resolves to the same 0 the ref stored).
-								const alreadyApplied = existingEntry?.additionalAuditRefs?.some(
-									(ref) =>
-										ref.version === txnTime &&
-										precedesExistingVersion(
-											txnTime,
-											{ version: txnTime, localTime: txnTime, key: id, nodeId: ref.nodeId },
-											options?.nodeId
-										) === 0
-								);
-								if (alreadyApplied) {
+								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								if (
+									duplicate &&
+									duplicate.version === txnTime &&
+									precedesExistingVersion(
+										txnTime,
+										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
+										options?.nodeId
+									) === 0
+								) {
 									write.skipped = true;
 									return; // duplicate write already applied
 								}
