@@ -96,6 +96,10 @@ export class RecordEncoder extends StructonEncoder {
 	name: string;
 	constructor(options) {
 		options.useBigIntExtension = true;
+		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
+		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
+		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
+		options.maxOwnStructures ??= 256;
 		/**
 		 * The base class for records that provides the read-only methods for accessing
 		 * metadata and will be assigned computed property getters. On its own, these instances
