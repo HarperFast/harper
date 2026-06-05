@@ -1310,6 +1310,10 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
 				outstanding++;
+				// Custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`, so the
+				// outstanding-based yield below never fires for them. Track that this row did synchronous
+				// indexing work so we can still yield the event loop after it.
+				let didSynchronousIndexing = false;
 				// every index operation needs to be guarded by the version still be the same. If it has already changed before
 				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
 				// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
@@ -1323,6 +1327,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						const value = record && (resolver ? resolver(record) : record[property]);
 						if (index.customIndex) {
 							index.customIndex.index(key, value);
+							didSynchronousIndexing = true;
 							continue;
 						}
 						const values = getIndexedValues(value, index.indexNulls);
@@ -1361,7 +1366,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					if (interrupted) return;
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
+				else if (outstanding > MIN_OUTSTANDING_INDEXING)
+					await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
+				else if (didSynchronousIndexing) await new Promise((resolve) => setImmediate(resolve)); // custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
 			}
 		}
 		// Await the last pending put. If it rejects, that is also an indexing error.
