@@ -1009,6 +1009,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 
 		let primaryStore;
+		try {
 		if (rootStore instanceof RocksDatabase) {
 			primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
 		} else {
@@ -1050,6 +1051,16 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		hasChanges = true;
 
 		attributesDbi.put(dbiName, primaryKeyAttribute);
+		} catch (error) {
+			// A failure while opening/creating the column family or writing the
+			// table id / catalog entry (e.g. into an env poisoned by a prior
+			// dangling column family) must NOT leak the exclusive
+			// 'update-attributes' spin lock. If it leaks, every subsequent
+			// create_table / attribute update on this database spins forever
+			// (a hard wedge that pins a worker at 100% CPU). Release before rethrow.
+			if (releaseExclusiveLock) releaseExclusiveLock();
+			throw error;
+		}
 	}
 	const indices = Table.indices;
 	if (!attributesDbi) {

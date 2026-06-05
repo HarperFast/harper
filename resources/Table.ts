@@ -938,26 +938,41 @@ export function makeTable(options) {
 		}
 
 		static async dropTable() {
-			delete databases[databaseName][tableName];
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 					deleteBlobsInObject(entry.value);
 				}
 			}
 			if (databaseName === databasePath) {
-				// part of a database
+				// part of a database.
+				// Drop the column families FIRST and AWAIT them. Previously the catalog
+				// metadata was removed (synchronous removeSync) before primaryStore.drop(),
+				// and the drops were fire-and-forget (their rejections swallowed). If a
+				// column family was corrupt/half-initialized the drop would fail, yet the
+				// catalog entry was already gone - an orphaned "ghost" column family that
+				// poisons same-name recreates. By awaiting the drops before touching the
+				// catalog, a failed drop throws here and the table is left intact
+				// (catalog + CF both present) rather than half-deleted.
+				const drops = [];
+				for (const attribute of attributes) {
+					const index = indices[attribute.name];
+					if (index) drops.push(index.drop());
+				}
+				drops.push(primaryStore.drop());
+				await Promise.all(drops);
+				// Column families are gone; now remove the catalog metadata and the
+				// in-memory schema entry.
 				for (const attribute of attributes) {
 					dbisDb.remove(TableResource.tableName + '/' + attribute.name);
-					const index = indices[attribute.name];
-					index?.drop();
 				}
 				dbisDb.remove(TableResource.tableName + '/');
-				primaryStore.drop();
 				await dbisDb.committed;
+				delete databases[databaseName][tableName];
 			} else {
 				// legacy table per database
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);
+				delete databases[databaseName][tableName];
 			}
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
