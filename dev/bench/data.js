@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780648772808,
+  "lastUpdate": 1780648774770,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -325,6 +325,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99",
             "value": 177.8,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "chris nelson",
+            "email": "chris.nelson@harperdb.io"
+          },
+          "committer": {
+            "name": "chris nelson",
+            "username": "sleekmountaincat",
+            "email": "sleekmountaincat@gmail.com"
+          },
+          "id": "266d5d8ba425b77d80692637e605a7c6f9e82d23",
+          "message": "fix(upgrade): run upgrade directives without interactive confirmation\n\nA directive-driven upgrade runs on the normal `harper run` startup path, where\nthe upgrade-confirmation prompt (forceUpdatePrompt) blocked on stdin — or, with\nno TTY, defaulted to \"no\" and refused to start — breaking unattended/scripted\nstarts (systemd, containers, CI). `upgrade()` only ever runs when an upgrade\ndirective applies (getVersionUpdateInfo returns an object solely when\nhasUpgradesRequired is true), so this prompt was exclusively a directive-upgrade\ngate. Remove it; directives now run automatically with a non-blocking notice\nthat keeps the release-notes link. Downgrades still confirm (forceDowngradePrompt).\n\n- bin/upgrade.js: drop the forceUpdatePrompt gate + cancel/exit branch.\n- upgrade/upgradePrompt.ts: remove the now-unused forceUpdatePrompt.\n- unitTests/bin/upgrade.test.js: remove the obsolete (skipped) upgrade() prompt\n  tests + the vars/imports they owned; runUpgrade() tests unchanged.\n- integrationTests/upgrade/4.x-upgrade.test.ts: revert the CONFIRM_UPGRADE=yes\n  workaround now that startup no longer prompts.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-04T04:23:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/266d5d8ba425b77d80692637e605a7c6f9e82d23"
+        },
+        "date": 1780648774346,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99",
+            "value": 15.41,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99",
+            "value": 15.72,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99",
+            "value": 18.63,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99",
+            "value": 18.02,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99",
+            "value": 22.6,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99",
+            "value": 17.56,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99",
+            "value": 34.95,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99",
+            "value": 15.05,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99",
+            "value": 18.42,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99",
+            "value": 194.35,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99",
+            "value": 37.49,
             "unit": "ms"
           }
         ]
