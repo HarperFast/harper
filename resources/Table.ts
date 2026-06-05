@@ -1864,8 +1864,7 @@ export function makeTable(options) {
 								// retained window are not layered in — but the authoritative full-copy record restores exact
 								// convergence. Because we stopped before reaching txnTime, the inline duplicate detection in
 								// the walk never ran; full-copy audit-replay re-delivers writes, and re-applying one would
-								// double-apply its commutative ops, so rule that out here with a single O(1) lookup at txnTime
-								// (RocksDB audit logs are keyed by version, and the cap is RocksDB-only).
+								// double-apply its commutative ops, so rule that out here before folding.
 								logger.warn?.(
 									'Out-of-order audit reconciliation exceeded depth cap; reconciling against most recent updates only',
 									{
@@ -1874,16 +1873,24 @@ export function makeTable(options) {
 										depth: walkSteps,
 									}
 								);
-								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
-								if (
-									duplicate &&
-									duplicate.version === txnTime &&
-									precedesExistingVersion(
-										txnTime,
-										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
-										options?.nodeId
-									) === 0
-								) {
+								// Detect a re-delivered duplicate via the record's own additionalAuditRefs rather than an
+								// audit-log lookup at txnTime. Every out-of-order write folded into this record records its
+								// {version, nodeId} ref (added in the walk above, RocksDB-only — the same condition as this
+								// cap), and the record is read with read-your-writes consistency. The transaction-log query
+								// that a keyed audit lookup would use can lag a back-to-back re-delivery — the just-committed
+								// entry is not yet visible — which silently double-applied the commutative op (#1137).
+								// precedesExistingVersion(...) === 0 is the identity tie: same version AND same node (the
+								// local node is id 0, so an undefined options?.nodeId resolves to the same 0 the ref stored).
+								const alreadyApplied = existingEntry?.additionalAuditRefs?.some(
+									(ref) =>
+										ref.version === txnTime &&
+										precedesExistingVersion(
+											txnTime,
+											{ version: txnTime, localTime: txnTime, key: id, nodeId: ref.nodeId },
+											options?.nodeId
+										) === 0
+								);
+								if (alreadyApplied) {
 									write.skipped = true;
 									return; // duplicate write already applied
 								}
