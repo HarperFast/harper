@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780562705469,
+  "lastUpdate": 1780648772808,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -113,6 +113,62 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E",
             "value": 939.49,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "chris nelson",
+            "email": "chris.nelson@harperdb.io"
+          },
+          "committer": {
+            "name": "chris nelson",
+            "username": "sleekmountaincat",
+            "email": "sleekmountaincat@gmail.com"
+          },
+          "id": "266d5d8ba425b77d80692637e605a7c6f9e82d23",
+          "message": "fix(upgrade): run upgrade directives without interactive confirmation\n\nA directive-driven upgrade runs on the normal `harper run` startup path, where\nthe upgrade-confirmation prompt (forceUpdatePrompt) blocked on stdin — or, with\nno TTY, defaulted to \"no\" and refused to start — breaking unattended/scripted\nstarts (systemd, containers, CI). `upgrade()` only ever runs when an upgrade\ndirective applies (getVersionUpdateInfo returns an object solely when\nhasUpgradesRequired is true), so this prompt was exclusively a directive-upgrade\ngate. Remove it; directives now run automatically with a non-blocking notice\nthat keeps the release-notes link. Downgrades still confirm (forceDowngradePrompt).\n\n- bin/upgrade.js: drop the forceUpdatePrompt gate + cancel/exit branch.\n- upgrade/upgradePrompt.ts: remove the now-unused forceUpdatePrompt.\n- unitTests/bin/upgrade.test.js: remove the obsolete (skipped) upgrade() prompt\n  tests + the vars/imports they owned; runUpgrade() tests unchanged.\n- integrationTests/upgrade/4.x-upgrade.test.ts: revert the CONFIRM_UPGRADE=yes\n  workaround now that startup no longer prompts.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-04T04:23:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/266d5d8ba425b77d80692637e605a7c6f9e82d23"
+        },
+        "date": 1780648772295,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load",
+            "value": 6079.56,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C",
+            "value": 8562.34,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B",
+            "value": 8380.27,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A",
+            "value": 6764.38,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F",
+            "value": 4776.19,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D",
+            "value": 8689.98,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E",
+            "value": 919.09,
             "unit": "ops/sec"
           }
         ]
