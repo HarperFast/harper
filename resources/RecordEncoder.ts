@@ -29,6 +29,13 @@ import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
+<<<<<<< HEAD
+=======
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import * as envMngr from '../utility/environment/environmentManager.js';
+
+const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+>>>>>>> f79e35fe5 (Merge pull request #304 from HarperFast/read_txn_expiration)
 export type Entry = {
 	key: any;
 	value: any;
@@ -483,6 +490,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				use.call(this);
 			};
 			Txn.prototype.done = function () {
+				if (this.isDone) return;
 				done.call(this);
 				this.openTimer = 0; // reset so idle pool time doesn't accumulate toward the stale-open threshold
 				if (this.isDone) {
@@ -501,16 +509,18 @@ export function handleLocalTimeForGets(store, rootStore) {
 	return store;
 }
 const trackedTxns: WeakRef<any>[] = [];
-setInterval(() => {
+const configValue = envMngr.get(CONFIG_PARAMS.STORAGE_MAX_READ_TRANSACTION_OPEN_TIME) ?? 300000;
+let READ_TXN_TIMEOUT_TICKS = Math.round(configValue / 15000);
+export function checkReadTxnTimeouts() {
 	for (let i = 0; i < trackedTxns.length; i++) {
 		const txn = trackedTxns[i].deref();
 		if (!txn || txn.isDone || txn.isCommitted) trackedTxns.splice(i--, 1);
 		else if (txn.notCurrent) {
 			if (txn.openTimer) {
 				if (txn.openTimer > 3) {
-					if (txn.openTimer > 60) {
+					if (txn.openTimer > READ_TXN_TIMEOUT_TICKS) {
 						harperLogger.error(
-							'Read transaction detected that has been open too long (over 15 minutes), ending transaction',
+							`Read transaction detected that has been open too long (over ${Math.round(READ_TXN_TIMEOUT_TICKS * 15)} seconds), ending transaction`,
 							txn
 						);
 						trackedTxns.splice(i--, 1);
@@ -531,7 +541,12 @@ setInterval(() => {
 			} else txn.openTimer = 1;
 		}
 	}
-}, 15000).unref();
+}
+setInterval(checkReadTxnTimeouts, 15000).unref();
+export function setReadTxnExpiration(ms: number) {
+	READ_TXN_TIMEOUT_TICKS = Math.round(ms / 15000);
+	return trackedTxns;
+}
 export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
