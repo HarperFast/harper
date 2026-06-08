@@ -77,6 +77,9 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 						if (typeDef.schema) typeDef.database = typeDef.schema;
 						if (!typeDef.table) typeDef.table = typeName;
 						if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';
+						// Boolean directive args arrive as actual booleans; tolerate string forms too.
+						if (typeDef.randomAccessFields !== undefined)
+							typeDef.randomAccessFields = typeDef.randomAccessFields === true || typeDef.randomAccessFields === 'true';
 						typeDef.attributes = typeDef.properties;
 						tables.push(typeDef);
 					}
