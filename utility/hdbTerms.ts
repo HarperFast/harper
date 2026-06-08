@@ -554,6 +554,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',
+	STORAGE_RANDOMACCESSFIELDS: 'storage_randomAccessFields',
 	STORAGE_COMPRESSION: 'storage_compression',
 	STORAGE_NOREADAHEAD: 'storage_noReadAhead',
 	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
