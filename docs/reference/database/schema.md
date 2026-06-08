@@ -185,6 +185,47 @@ type StrictRecord @table @sealed {
 }
 ```
 
+### `@hidden`
+
+Suppresses the type from introspectable surfaces — MCP tool descriptors and the OpenAPI document. The table still exists; data is still queryable through Harper's other interfaces subject to RBAC. `@hidden` is a **metadata-visibility** directive, not an access-control mechanism: use `attribute_permissions` on roles to control data access.
+
+```graphql
+type InternalConfig @table @hidden {
+	id: Long @primaryKey
+	value: String
+}
+```
+
+`@hidden` is also available as a [field directive](#hidden-1) to suppress individual attributes.
+
+## Documenting Types and Fields
+
+Harper picks up GraphQL's standard triple-quoted docstrings on type and field definitions. Docstrings flow through to:
+
+- **MCP** — `Table.description` (consumed as a prefix on every verb-tool description) and `inputSchema.properties[*].description` on derived tool schemas
+- **OpenAPI** — `components.schemas[*].description`, per-property `description`, and the path-level `description` for every verb on the resource
+
+```graphql
+"""
+Product catalog row — what shows up in the storefront listing,
+search, and inventory feeds. One row per SKU.
+"""
+type Product @table @export {
+	"""Stock keeping unit — globally unique across catalogs."""
+	sku: String! @primaryKey
+
+	"""Display name shown in the storefront."""
+	name: String!
+
+	"""Retail price in cents (USD)."""
+	priceCents: Int!
+}
+```
+
+Docstrings on `@hidden` fields are dropped from the descriptive surfaces alongside the field itself.
+
+> **Trust model.** Docstrings reach LLMs and public OpenAPI consumers verbatim. Treat them as code: don't put secrets, internal-only commentary, or speculative prose in them. Use `@hidden` to suppress fields that shouldn't surface publicly.
+
 ## Field Directives
 
 Field directives apply to individual attributes in a type definition.
@@ -248,6 +289,22 @@ type Event @table {
 	updatedAt: Long @updatedTime
 }
 ```
+
+### `@hidden`
+
+Suppresses the field from MCP tool descriptors and the OpenAPI document. The attribute still exists in the table; data is still queryable through other interfaces subject to RBAC. Use this for fields that should not appear in introspectable surfaces.
+
+```graphql
+type Customer @table {
+	id: Long @primaryKey
+	name: String
+
+	"""Internal — do not surface to external consumers."""
+	creditScore: Int @hidden
+}
+```
+
+`@hidden` is a metadata-visibility directive, not access control: `attribute_permissions` on roles remains the data-access enforcement mechanism.
 
 ## Relationships
 

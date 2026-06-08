@@ -439,6 +439,159 @@ The name of the primary key attribute for the table.
 
 ---
 
+## Class-level metadata for MCP and OpenAPI
+
+Resource classes — both `@table @export` Resources and programmatic Resource subclasses — can declare class-level static fields that drive the MCP tool descriptors and OpenAPI document. These statics are JSON-Schema-aligned and tool-agnostic; the same data feeds every introspectable surface.
+
+For `@table @export` Resources, `static description` and `static properties` are auto-derived from the GraphQL schema (docstrings and field types). For programmatic Resources, you declare them directly.
+
+### `static description?: string`
+
+Class-level docstring. Consumed by:
+
+- **MCP** — prefixed onto every verb-tool description (`get_X`, `search_X`, etc.) and onto the `harper://schema/{db}/{table}` resource description
+- **OpenAPI** — set as the schema-level `description` on the resource's component schema; also prepended to the `description` of every path operation (POST/GET/PUT/PATCH/DELETE)
+
+```typescript
+import { Resource } from 'harperdb';
+
+export class ProductInventory extends Resource {
+	static description =
+		'Aggregate inventory analytics computed over the Product catalog. ' +
+		'Read-only; the underlying Product table is the system of record.';
+
+	async get(id) { /* ... */ }
+}
+```
+
+### `static properties?: Record<string, JsonSchemaFragment>`
+
+JSON-Schema-shaped attribute map keyed by name. This is the canonical public API for class-level metadata. For `@table @export` Resources it's auto-derived from the GraphQL schema. For programmatic Resources, declare it directly:
+
+```typescript
+export class ProductInventory extends Resource {
+	static description = '...';
+	static properties = {
+		sku: { type: 'string', primaryKey: true,
+			description: 'Stock keeping unit; matches Product.sku.' },
+		onHand: { type: 'integer',
+			description: 'Current warehouse count.' },
+		reserved: { type: 'integer',
+			description: 'Units allocated to open orders but not yet shipped.' },
+		stockStatus: { type: 'string', enum: ['in_stock', 'out_of_stock', 'backorder'],
+			description: 'Derived from onHand vs reserved.' },
+	};
+
+	async get(id) { /* ... */ }
+}
+```
+
+For complex types and nested structures, JSON Schema vocabulary applies (`type`, `enum`, `required`, `additionalProperties`, etc.). Per-property `description` flows into both MCP `inputSchema.properties[*].description` and OpenAPI `components.schemas[*].properties[*].description`.
+
+**Inheritance composes naturally.** Extend a `@table @export` Resource and override individual entries with spread:
+
+```typescript
+const { Product } = tables;
+
+class CustomProduct extends Product {
+	static properties = {
+		...Product.properties,
+		priceCents: {
+			...Product.properties.priceCents,
+			description: 'Retail price in cents, including any per-customer adjustments.',
+		},
+	};
+}
+```
+
+The author writes against `properties` (the public API). Internal code that needs ordered iteration / index metadata continues to read `Class.attributes` (the internal Array form, also inherited).
+
+### `static outputSchemas?: { [verb: string]: JsonSchemaFragment }`
+
+Per-verb output schema overrides for programmatic Resources whose verb methods return a projection rather than the full record. When omitted, the MCP deriver falls back to `static properties` for the cheap verbs (`get`/`create`/`update`/`patch`) and a synthesized `{deleted: true, <pk>}` envelope for `delete`. `search_*` deliberately has no output schema.
+
+```typescript
+export class ProductInventory extends Resource {
+	static description = '...';
+	static properties = { /* full record shape */ };
+
+	static outputSchemas = {
+		get: {
+			type: 'object',
+			properties: {
+				sku: { type: 'string' },
+				onHand: { type: 'integer' },
+				stockStatus: { type: 'string', enum: ['in_stock', 'out_of_stock', 'backorder'] },
+			},
+			required: ['sku', 'onHand', 'stockStatus'],
+		},
+	};
+
+	async get(id) { /* returns the projection above */ }
+}
+```
+
+### `static hidden?: boolean`
+
+When `true`, the Resource is dropped from MCP tool registration and OpenAPI path generation entirely. Data remains accessible via direct Harper interfaces subject to RBAC. Equivalent to applying `@hidden` to the `@table @export` declaration.
+
+```typescript
+export class InternalDiagnostics extends Resource {
+	static hidden = true;
+	async get() { /* ... */ }
+}
+```
+
+### `static mcp?: { annotations?: { [verb: string]: Annotations } }`
+
+Narrow, MCP-only override for annotation hints that don't fit JSON Schema (such as `idempotentHint` per verb). Documented as discouraged — most authors should only need `static description` + `static properties`. Use this when you need to claim, for example, that your custom `update` semantics are observably idempotent on repeat calls.
+
+```typescript
+export class ProductInventory extends Resource {
+	static description = '...';
+	static properties = { /* ... */ };
+
+	static mcp = {
+		annotations: {
+			update: { idempotentHint: true },
+		},
+	};
+}
+```
+
+> **Under-annotate before mis-annotate.** Under MCP semantics, `idempotentHint: true` is a strong claim: the second call must produce the same observable outcome as the first. `add_*`-style operations that return "already exists" on the second call are NOT idempotent in this sense, even though they don't crash. Verify repeat-call behavior end-to-end before annotating.
+
+### `static mcpTools?: ReadonlyArray<...>`
+
+Component-author opt-in for exposing non-verb instance methods as MCP tools. Each entry maps an instance-method name to an MCP tool descriptor. RBAC is enforced by the Resource method itself; the MCP layer does not invent new ACLs.
+
+```typescript
+export class ProductInventory extends Resource {
+	static mcpTools = [
+		{
+			name: 'reconcile_inventory',
+			method: 'reconcileInventory',
+			description:
+				'Triggers an immediate reconciliation against the warehouse system. ' +
+				'Returns the diff applied. Heavy — do not call in a loop.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					sku: { type: 'string', description: 'SKU to reconcile, or omit for full sweep.' },
+				},
+			},
+			annotations: { destructiveHint: false, idempotentHint: false },
+		},
+	];
+
+	async reconcileInventory(args) { /* ... */ }
+}
+```
+
+Custom `mcpTools` declarations without a `description` or `inputSchema` are still registered, but Harper emits a warn-once log at registration time — LLM tool selection degrades without these fields.
+
+---
+
 ### `setComputedAttribute(name: string, computeFunction: (record) => any)`
 
 Define the compute function for a `@computed` schema attribute.
