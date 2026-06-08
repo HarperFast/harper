@@ -242,6 +242,14 @@ function deployComponentValidator(req) {
 		install_timeout: Joi.number().optional(),
 		install_allow_scripts: Joi.boolean().optional(),
 		force: Joi.boolean().optional(),
+		urlPath: Joi.string()
+			.min(1)
+			.custom((value, helpers) => {
+				if (value.includes('..')) return helpers.error('any.invalid');
+				return value;
+			})
+			.optional()
+			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
 		// Transient private-registry auth: never persisted, never replicated. Used only for this
 		// node's npm pack/install during the deploy.
 		registryAuth: Joi.array()
@@ -263,7 +271,7 @@ function deployComponentValidator(req) {
 				})
 			)
 			.optional(),
-	});
+	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
 }

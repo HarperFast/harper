@@ -6,6 +6,7 @@ import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode } from 'graphql';
 import { once } from 'node:events';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -39,7 +40,13 @@ server.knownGraphQLDirectives.push(
  * @param resources
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+	let initialLoadComplete = false;
 	const entryHandler = scope.handleEntry(async (entry) => {
+		if (initialLoadComplete) {
+			scope.requestRestart();
+			return;
+		}
+
 		if (entry.eventType === 'unlink') return;
 		if (entry.entryType === 'directory') {
 			scope.logger.warn?.('graphqlSchema currently does not handle directories. Specify file patterns only.');
@@ -48,7 +55,11 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 
 		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
 	});
-	return once(entryHandler, 'initialLoadComplete');
+	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
+	initialLoadPromise.then(() => {
+		initialLoadComplete = true;
+	});
+	return initialLoadPromise;
 }
 
 async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
@@ -251,6 +262,11 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
 		typeDef.tableClass = table(typeDef);
+		if (getWorkerIndex() === 0) {
+			const pk = (typeDef.properties as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';
+			const schemaPart = typeDef.database ? `, schema: ${typeDef.database}` : '';
+			harperLogger.info?.(`Initialized table "${typeDef.table}"${schemaPart}, primaryKey: ${pk}`);
+		}
 		if (typeDef.export) {
 			// allow empty string to be used to declare a table on the root path
 			if (typeDef.export.name === '') resources.set(dirname(urlPath), typeDef.tableClass);

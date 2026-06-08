@@ -12,7 +12,7 @@ const { Resources } = require('#src/resources/Resources');
 const { EntryHandler } = require('#src/components/EntryHandler');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { writeFile } = require('node:fs/promises');
-const { waitFor } = require('./waitFor.js');
+const { waitFor } = require('../waitFor.js');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { deployLifecycle, _resetForTests: resetDeployLifecycle } = require('#src/components/deployLifecycle');
 
