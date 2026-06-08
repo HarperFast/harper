@@ -6,6 +6,8 @@
  */
 
 import { Encoder } from 'msgpackr';
+import { get as envGet } from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
@@ -29,8 +31,6 @@ import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import * as envMngr from '../utility/environment/environmentManager.js';
 export type Entry = {
 	key: any;
 	value: any;
@@ -504,7 +504,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 	return store;
 }
 const trackedTxns: WeakRef<any>[] = [];
-const configValue = envMngr.get(CONFIG_PARAMS.STORAGE_MAX_READ_TRANSACTION_OPEN_TIME) ?? 300000;
+const configValue = envGet(CONFIG_PARAMS.STORAGE_MAX_READ_TRANSACTION_OPEN_TIME) ?? 300000;
 let READ_TXN_TIMEOUT_TICKS = Math.round(configValue / 15000);
 export function checkReadTxnTimeouts() {
 	for (let i = 0; i < trackedTxns.length; i++) {
