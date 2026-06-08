@@ -72,6 +72,7 @@ export class DeploymentRecorder {
 	private unsubscribe: (() => void) | null = null;
 	private pendingPut: Promise<void> | null = null;
 	private dirty = false;
+	private sealed = false;
 
 	private constructor(deploymentId: string, initial: Record<string, any>) {
 		this.deploymentId = deploymentId;
@@ -151,6 +152,12 @@ export class DeploymentRecorder {
 	// the record dirty; the chained continuation issues a follow-up put once the prior one
 	// settles. This keeps event_log writes O(1) puts per burst rather than O(N) per event.
 	private scheduleFlush(): void {
+		if (this.sealed) {
+			// Sealed: accumulate state in memory but don't write. finish() does the single
+			// terminal write. See seal() for why. The emitter still emits live SSE events.
+			this.dirty = true;
+			return;
+		}
 		if (this.pendingPut) {
 			this.dirty = true;
 			return;
@@ -262,6 +269,24 @@ export class DeploymentRecorder {
 		if (this.finished) return;
 		if (!Array.isArray(results)) return;
 		for (const result of results) this.recordPeer(result);
+	}
+
+	/**
+	 * Stop persisting intermediate row updates; accumulate them in memory so finish() writes
+	 * the terminal state in a single put. Called before the replicate phase, where the row
+	 * otherwise receives a tight burst of puts (replicate phase + per-peer + finish) within
+	 * a few ms. That burst can commit out of order on a loaded peer, where an older full
+	 * update reverts the terminal `success` write — the row stays stuck at `replicating` and
+	 * never converges (harperdb/harper#1170). Collapsing to one terminal write isolates it
+	 * from any concurrent same-key write so the receiver converges.
+	 *
+	 * Tradeoff: the origin's get_deployment *polling* view skips the transient `replicating`
+	 * status and incremental peer_results during the final phase; live SSE tailing is
+	 * unaffected (the emitter still emits in real time). Once #1170 lands this seal can be
+	 * removed to restore incremental peer_results persistence.
+	 */
+	seal(): void {
+		this.sealed = true;
 	}
 
 	async finish(status: 'success' | 'failed' | 'rolled_back', error?: unknown): Promise<void> {
