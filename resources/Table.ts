@@ -4637,13 +4637,17 @@ export function makeTable(options) {
 
 		async function commitItems(items: EvictItem[]) {
 			for (let attempt = 0; attempt < 2; attempt++) {
-				const transaction = new RocksTransaction(primaryStore.store);
+				// Create the transaction inside the try: if the store is closing mid-scan, the constructor
+				// can throw, and this promise is not always awaited (in-flight under the cap), so an
+				// uncaught throw here would surface as an unhandled rejection.
+				let transaction: RocksTransaction | undefined;
 				let staged: number;
 				try {
+					transaction = new RocksTransaction(primaryStore.store);
 					staged = stageInto(transaction, items);
 				} catch (error) {
 					try {
-						transaction.abort();
+						transaction?.abort();
 					} catch {}
 					logger.warn?.(`Eviction batch staging error for ${tableName}:`, error);
 					return;
