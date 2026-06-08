@@ -90,7 +90,7 @@ suite(
 
 		test('upgrade and start', async () => {
 			await killHarper(ctx); // kill old 4.x harper
-			await startHarper(ctx, { config: {}, env: {} }); // start on v5
+			await startHarper(ctx, { config: {}, env: {} }); // start on v5 (upgrade directives run automatically, no prompt)
 			let response = await sendOperation(ctx.harper, {
 				operation: 'search_by_conditions',
 				table: 'test',

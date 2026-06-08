@@ -233,7 +233,7 @@
 		"ses": "^1.15.0",
 		"stream-chain": "2.2.5",
 		"stream-json": "1.9.1",
-		"structon": "^1.0.4",
+		"structon": "^1.0.5",
 		"systeminformation": "^5.31.4",
 		"tar-fs": "^3.1.2",
 		"ulidx": "0.5.0",

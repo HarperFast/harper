@@ -15,7 +15,6 @@ const hdbTerms = require('../utility/hdbTerms.ts');
 const directivesManager = require('../upgrade/directivesManager.ts');
 const installation = require('../utility/installation.ts');
 const hdbInfoController = require('../dataLayer/hdbInfoController.ts');
-const upgradePrompt = require('../upgrade/upgradePrompt.ts');
 const globalSchema = require('../utility/globalSchema.ts');
 const { packageJson } = require('../utility/packageUtils.js');
 const promisify = require('util').promisify;
@@ -71,24 +70,18 @@ async function upgrade(upgradeObj) {
 		process.exit(1);
 	}
 
-	let startUpgrade;
-
-	let exitCode = 0;
-	try {
-		startUpgrade = await upgradePrompt.forceUpdatePrompt(hdbUpgradeInfo);
-	} catch (err) {
-		hdbLogger.error('There was an error when prompting user about upgrade.');
-		hdbLogger.error(err);
-		startUpgrade = false;
-		exitCode = 1;
-	}
-
-	if (!startUpgrade) {
-		console.log('Cancelled upgrade, closing Harper');
-		process.exit(exitCode);
-	}
-
-	hdbLogger.info(`Starting upgrade to version ${currentHdbVersion}`);
+	// Upgrade directives run automatically; they do NOT require interactive confirmation.
+	// `upgrade()` only runs when an upgrade directive applies (getVersionUpdateInfo returns an
+	// object only when hasUpgradesRequired is true), and it runs on the normal `harper run`
+	// startup path (bin/run.ts). Blocking on a confirmation prompt there would hang on stdin —
+	// or, with no TTY, default to "no" and refuse to start — breaking unattended/scripted
+	// starts (systemd, containers, CI). We surface the upgrade as a non-blocking notice instead.
+	// (Downgrades still confirm via forceDowngradePrompt in hdbInfoController — running older
+	// software on upgraded data is the genuinely risky, lossy direction.)
+	printToLogAndConsole(
+		`Harper is completing an update to version ${currentHdbVersion}. You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/`,
+		hdbTerms.LOG_LEVELS.INFO
+	);
 
 	await runUpgrade(hdbUpgradeInfo);
 

@@ -30,6 +30,8 @@ import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 export type Entry = {
@@ -88,6 +90,7 @@ export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;
+	declare _writeStruct: any;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
@@ -110,6 +113,16 @@ export class RecordEncoder extends StructonEncoder {
 
 		options.structPrototype = RecordObject.prototype;
 		super(options);
+		// structon (the StructonEncoder base) always installs the struct write hook. For DBIs
+		// that don't opt into struct mode (non-primary, e.g. __dbis__), force it to bail (return
+		// 0) so objects are written in plain msgpackr records mode — decodable by readers without
+		// struct support (msgpackr v1 / Harper v4 downgrade). We make it bail rather than clear
+		// it so msgpackr keeps the struct-safe integer boundary: top-level integers 0x20-0x3f are
+		// written as uint8 rather than bare fixints, which the retained struct READ hook would
+		// otherwise misread as struct headers (e.g. a scalar NEXT_TABLE_ID >= 32 in __dbis__).
+		// The read hook stays intact so records already written in struct mode by a prior v5 still
+		// decode.
+		if (!options.randomAccessStructure) this._writeStruct = () => 0;
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
@@ -486,6 +499,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				use.call(this);
 			};
 			Txn.prototype.done = function () {
+				if (this.isDone) return;
 				done.call(this);
 				this.openTimer = 0; // reset so idle pool time doesn't accumulate toward the stale-open threshold
 				if (this.isDone) {
@@ -504,16 +518,18 @@ export function handleLocalTimeForGets(store, rootStore) {
 	return store;
 }
 const trackedTxns: WeakRef<any>[] = [];
-setInterval(() => {
+const configValue = envMngr.get(CONFIG_PARAMS.STORAGE_MAX_READ_TRANSACTION_OPEN_TIME) ?? 300000;
+let READ_TXN_TIMEOUT_TICKS = Math.round(configValue / 15000);
+export function checkReadTxnTimeouts() {
 	for (let i = 0; i < trackedTxns.length; i++) {
 		const txn = trackedTxns[i].deref();
 		if (!txn || txn.isDone || txn.isCommitted) trackedTxns.splice(i--, 1);
 		else if (txn.notCurrent) {
 			if (txn.openTimer) {
 				if (txn.openTimer > 3) {
-					if (txn.openTimer > 60) {
+					if (txn.openTimer > READ_TXN_TIMEOUT_TICKS) {
 						harperLogger.error(
-							'Read transaction detected that has been open too long (over 15 minutes), ending transaction',
+							`Read transaction detected that has been open too long (over ${Math.round(READ_TXN_TIMEOUT_TICKS * 15)} seconds), ending transaction`,
 							txn
 						);
 						trackedTxns.splice(i--, 1);
@@ -534,7 +550,12 @@ setInterval(() => {
 			} else txn.openTimer = 1;
 		}
 	}
-}, 15000).unref();
+}
+setInterval(checkReadTxnTimeouts, 15000).unref();
+export function setReadTxnExpiration(ms: number) {
+	READ_TXN_TIMEOUT_TICKS = Math.round(ms / 15000);
+	return trackedTxns;
+}
 export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
