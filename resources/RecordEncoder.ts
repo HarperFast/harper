@@ -29,13 +29,8 @@ import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
-<<<<<<< HEAD
-=======
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
-
-const StructonEncoder = createStructon(Encoder) as typeof Encoder;
->>>>>>> f79e35fe5 (Merge pull request #304 from HarperFast/read_txn_expiration)
 export type Entry = {
 	key: any;
 	value: any;
