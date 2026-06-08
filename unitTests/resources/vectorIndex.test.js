@@ -637,6 +637,91 @@ describe('HNSW int8 quantization (quantization: "int8")', () => {
 	});
 });
 
+describe('HNSW int8 cold/frozen node reads (#1161)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const DIMS = 16;
+	const N = 250;
+	let T;
+	const all = [];
+
+	function vec(seed) {
+		let s = (seed * 2654435761) >>> 0;
+		const rand = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+		let cs = ((seed % 16) * 40503 + 1) >>> 0;
+		const crand = () => (cs = (cs * 1664525 + 1013904223) >>> 0) / 4294967296;
+		const out = new Array(DIMS);
+		let mag = 0;
+		for (let i = 0; i < DIMS; i++) {
+			const v = crand() * 2 - 1 + 0.15 * (rand() * 2 - 1);
+			out[i] = v;
+			mag += v * v;
+		}
+		const inv = 1 / (Math.sqrt(mag) || 1);
+		for (let i = 0; i < DIMS; i++) out[i] *= inv;
+		return out;
+	}
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWInt8Cold',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < N; i++) {
+			const v = vec(i);
+			await T.put(i, { vector: v });
+			all.push(v);
+		}
+	});
+	after(() => T.dropTable());
+
+	// The index store sets freezeData, so a node decoded from disk (a cache miss — which happens for
+	// older nodes once a table outgrows the object cache, ~3-4k rows) is a FROZEN record whose int8
+	// `vector` is an unsigned Uint8Array. safeGetSync must produce a signed Int8Array without mutating
+	// the frozen record; mutating it throws, the node is silently dropped, and the graph fragments so
+	// records become unfindable. Forcing every read to look like a freezeData disk decode makes this
+	// deterministic without depending on cache eviction timing.
+	it('still finds records when graph nodes are read cold/frozen', async () => {
+		const store = T.indices.vector.customIndex.indexStore;
+		const realGetSync = store.getSync.bind(store);
+		// Return a STABLE frozen object per key, mirroring the store's object cache returning the same
+		// decoded-from-disk (frozen, unsigned-bin) node reference on repeated hits.
+		const coldByKey = new Map();
+		store.getSync = function (key, opts) {
+			const node = realGetSync(key, opts);
+			if (node && typeof node === 'object' && node.vector != null && !Array.isArray(node.vector)) {
+				let cold = coldByKey.get(key);
+				if (!cold) {
+					const v = node.vector;
+					cold = { ...node, vector: new Uint8Array(v.buffer, v.byteOffset, v.byteLength).slice() };
+					for (let level = 0; Array.isArray(cold[level]); level++) cold[level] = Object.freeze(cold[level].slice());
+					cold = Object.freeze(cold);
+					coldByKey.set(key, cold);
+				}
+				return cold;
+			}
+			return node;
+		};
+		try {
+			let misses = 0;
+			for (let i = 0; i < N; i++) {
+				const results = await fromAsync(
+					T.search({ sort: { attribute: 'vector', target: all[i], distance: 'cosine' }, select: ['id'], limit: 5 })
+				);
+				if (!results.some((r) => r.id === i)) misses++;
+			}
+			assert.equal(misses, 0, `${misses}/${N} int8 records unfindable when graph nodes are read cold/frozen`);
+		} finally {
+			store.getSync = realGetSync;
+		}
+	});
+});
+
 async function fromAsync(iterable) {
 	let results = [];
 	for await (let entry of iterable) {
