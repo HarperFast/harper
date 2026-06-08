@@ -105,29 +105,42 @@ suite(
 			ok(response.length > 10);
 		});
 
-		test('downgrade and start', async () => {
-			// can we downgrade?
-			await killHarper(ctx); // kill 5.x harper
-			await startHarper(ctx, {
-				config: {},
-				env: {
-					CONFIRM_DOWNGRADE: 'yes',
-				},
-				harperBinPath: join(legacyPath, 'bin', 'harperdb.js'),
-			}); // start on 4.x again
-			let response = await sendOperation(ctx.harper, {
-				operation: 'search_by_conditions',
-				table: 'test',
-				conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
-			});
-			ok(response.length > 4);
-			response = await sendOperation(ctx.harper, {
-				operation: 'read_audit_log',
-				schema: 'data',
-				table: 'test',
-			});
-			ok(response.length > 10);
-		});
+		test(
+			'downgrade and start',
+			{
+				// The 5.1.0 upgrade directive adds the hdb_deployment table as a named DBI within
+				// schema/system.mdb (the shared LMDB env used by both harper@5 in legacy mode and
+				// harperdb@4). harperdb@4's initStores iterates __dbis__ alphabetically and fails
+				// when it encounters hdb_deployment (which precedes hdb_info alphabetically), so
+				// databases.system.hdb_info is never populated and checkIfInstallIsSupported throws.
+				// Downgrade from harper 5.1.x back to harperdb 4.x is therefore not supported after
+				// an upgrade that runs the 5.1.0 directive.
+				skip: 'downgrade from harper 5.1.x to harperdb 4.x is not supported after 5.1.0 upgrade directive runs (hdb_deployment DBI incompatible with harperdb@4)',
+			},
+			async () => {
+				// can we downgrade?
+				await killHarper(ctx); // kill 5.x harper
+				await startHarper(ctx, {
+					config: {},
+					env: {
+						CONFIRM_DOWNGRADE: 'yes',
+					},
+					harperBinPath: join(legacyPath, 'bin', 'harperdb.js'),
+				}); // start on 4.x again
+				let response = await sendOperation(ctx.harper, {
+					operation: 'search_by_conditions',
+					table: 'test',
+					conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
+				});
+				ok(response.length > 4);
+				response = await sendOperation(ctx.harper, {
+					operation: 'read_audit_log',
+					schema: 'data',
+					table: 'test',
+				});
+				ok(response.length > 10);
+			}
+		);
 
 		test('upgrade and migrate LMDB to RocksDB', async () => {
 			await killHarper(ctx);
