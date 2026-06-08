@@ -112,6 +112,7 @@ jobs:
           THREADS_DEBUG: false
           NODE_HOSTNAME: 'localhost'
         run: |
+          rm -rf /tmp/hdb
           mkdir -p /tmp/hdb/log
           node ./dist/bin/harper.js install > /tmp/hdb/log/install-stdout.log 2> /tmp/hdb/log/install-stderr.log
           node ./dist/bin/harper.js start > /tmp/hdb/log/start-stdout.log 2> /tmp/hdb/log/start-stderr.log &
@@ -173,6 +174,7 @@ jobs:
           THREADS_DEBUG: false
           NODE_HOSTNAME: 'localhost'
         run: |
+          rm -rf /tmp/hdb
           mkdir -p /tmp/hdb/log
           node ./dist/bin/harper.js install > /tmp/hdb/log/install-stdout.log 2> /tmp/hdb/log/install-stderr.log
           sleep 10
