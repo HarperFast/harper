@@ -1,6 +1,5 @@
 require('../../testUtils');
 const assert = require('assert');
-const sinon = require('sinon');
 const { OpenDBIObject } = require('#src/utility/lmdb/OpenDBIObject');
 const envMngr = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -10,48 +9,54 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 // in databases.ts before the store opens, bypassing this constructor branch — so a wrong config key,
 // a non-boolean value, or a hdbTerms/YAML name mismatch would go uncaught.
 //
-// The constructor reads the value via envMngr.get(CONFIG_PARAMS.STORAGE_RANDOMACCESSFIELDS), so we
-// stub that getter per-test (restored in afterEach) rather than mutating shared config state — the
-// latter is order-dependent across the full unit suite and isn't reliably isolated. callThrough()
-// keeps every other config read (e.g. STORAGE_CACHING) on the real value; only the random-access
-// key is forced, which also asserts the constructor reads the *correct* key (a wrong key would fall
-// through to the real value and fail these assertions).
-describe('OpenDBIObject storage.randomAccessFields global config', () => {
-	let getStub;
-	afterEach(() => {
-		if (getStub) {
-			getStub.restore();
-			getStub = undefined;
-		}
+// The constructor reads the value via envMngr.get(CONFIG_PARAMS.STORAGE_RANDOMACCESSFIELDS). We
+// temporarily override that single getter via defineProperty (restored in a finally) rather than
+// using sinon or envMngr.setProperty: another test in the full unit suite leaves envMngr.get wrapped
+// by sinon, which (a) makes setProperty's value invisible behind that stub and (b) makes a second
+// sinon.stub throw "already wrapped". Saving/replacing/restoring the property descriptor is immune to
+// that — the replacement delegates to whatever get currently is (real or another test's stub) for
+// every other key, and restores the exact prior descriptor afterward.
+function withRandomAccessFields(value, fn) {
+	const previousDescriptor = Object.getOwnPropertyDescriptor(envMngr, 'get');
+	const currentGet = envMngr.get;
+	Object.defineProperty(envMngr, 'get', {
+		configurable: true,
+		writable: true,
+		value: (key) => (key === CONFIG_PARAMS.STORAGE_RANDOMACCESSFIELDS ? value : currentGet(key)),
 	});
-
-	function stubRandomAccessFields(value) {
-		getStub = sinon.stub(envMngr, 'get');
-		getStub.callThrough();
-		getStub.withArgs(CONFIG_PARAMS.STORAGE_RANDOMACCESSFIELDS).returns(value);
+	try {
+		fn();
+	} finally {
+		Object.defineProperty(envMngr, 'get', previousDescriptor);
 	}
+}
 
+describe('OpenDBIObject storage.randomAccessFields global config', () => {
 	it('enables randomAccessStructure on a primary DBI when the global config is true', () => {
-		stubRandomAccessFields(true);
-		assert.strictEqual(new OpenDBIObject(false, true).randomAccessStructure, true);
+		withRandomAccessFields(true, () => {
+			assert.strictEqual(new OpenDBIObject(false, true).randomAccessStructure, true);
+		});
 	});
 
 	it('leaves randomAccessStructure off on a primary DBI when the global config is false (default)', () => {
-		stubRandomAccessFields(false);
-		assert.strictEqual(new OpenDBIObject(false, true).randomAccessStructure, false);
+		withRandomAccessFields(false, () => {
+			assert.strictEqual(new OpenDBIObject(false, true).randomAccessStructure, false);
+		});
 	});
 
 	it('treats a non-boolean truthy config value as off (strict === true)', () => {
-		// envMngr should hand back a real boolean; guard the strict comparison so a stray truthy
-		// (e.g. the string "true") can't silently flip encoding on.
-		stubRandomAccessFields('true');
-		assert.strictEqual(new OpenDBIObject(false, true).randomAccessStructure, false);
+		// envMngr should hand back a real boolean; the strict === true guards against a stray truthy
+		// (e.g. the string "true") silently flipping encoding on.
+		withRandomAccessFields('true', () => {
+			assert.strictEqual(new OpenDBIObject(false, true).randomAccessStructure, false);
+		});
 	});
 
 	it('keeps randomAccessStructure off on non-primary DBIs even when the global config is true', () => {
 		// Non-primary stores (e.g. the __dbis__ metadata DBI) must stay in records mode for
 		// v4-downgrade decodability, regardless of the global setting.
-		stubRandomAccessFields(true);
-		assert.strictEqual(new OpenDBIObject(false, false).randomAccessStructure, false);
+		withRandomAccessFields(true, () => {
+			assert.strictEqual(new OpenDBIObject(false, false).randomAccessStructure, false);
+		});
 	});
 });
