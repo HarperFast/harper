@@ -19,6 +19,7 @@ import {
 	writeFile,
 } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -203,7 +204,10 @@ export async function extractApplication(application: Application) {
 				application.name,
 				'npm',
 				['pack', '--json', application.packageIdentifier],
-				parentDirPath
+				parentDirPath,
+				undefined,
+				undefined,
+				application.npmUserconfigPath
 			);
 			if (code !== 0) {
 				if (isSSHAuthFailure(stderr)) {
@@ -317,7 +321,8 @@ export async function installApplication(application: Application) {
 			args,
 			application.dirPath,
 			application.install?.timeout,
-			customOnLine
+			customOnLine,
+			application.npmUserconfigPath
 		);
 		// if it succeeds, return
 		if (code === 0) {
@@ -377,7 +382,8 @@ export async function installApplication(application: Application) {
 			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
 			application.dirPath,
 			application.install?.timeout,
-			pmOnLine
+			pmOnLine,
+			application.npmUserconfigPath
 		);
 
 		// if it succeeds, return
@@ -433,7 +439,8 @@ export async function installApplication(application: Application) {
 		npmInstallArgs,
 		application.dirPath,
 		application.install?.timeout,
-		npmOnLine
+		npmOnLine,
+		application.npmUserconfigPath
 	);
 
 	// if it succeeds, return
@@ -469,6 +476,7 @@ interface ApplicationOptions {
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	onInstallLine?: OnInstallLine;
+	registryAuth?: RegistryAuthEntry[];
 }
 
 export class Application {
@@ -480,18 +488,44 @@ export class Application {
 	dirPath: string;
 	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
+	// Transient registry auth provided by a deploy. The token is held only in memory and a
+	// per-deploy `.npmrc`; it is never persisted to config, hdb_deployment, or replicated.
+	registryAuth?: RegistryAuthEntry[];
+	// Path to the per-deploy `.npmrc`, set by writeTransientNpmrc() during prepareApplication and
+	// passed to the spawn calls; undefined when no registry auth was provided.
+	npmUserconfigPath?: string;
+	#npmrcTempDir?: string;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine, registryAuth }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
 		this.onInstallLine = onInstallLine;
+		this.registryAuth = registryAuth;
 		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		if (!componentsRoot) throw new Error('componentsRoot is not configured');
 		this.dirPath = join(componentsRoot, name);
 		this.logger = logger.loggerWithTag(name);
 		this.packageManagerPrefix = getConfigValue(CONFIG_PARAMS.APPLICATIONS_PACKAGEMANAGERPREFIX);
+	}
+
+	// Write the transient `.npmrc` into a fresh 0700 temp dir (file mode 0600) and record its path
+	// so the deploy's npm spawns authenticate against the private registry. No-op without registry auth.
+	async writeTransientNpmrc(): Promise<void> {
+		if (!this.registryAuth?.length) return;
+		this.#npmrcTempDir = await mkdtemp(join(tmpdir(), 'harper-npmrc-'));
+		const npmrcPath = join(this.#npmrcTempDir, '.npmrc');
+		await writeFile(npmrcPath, buildNpmrcContent(this.registryAuth), { mode: 0o600 });
+		this.npmUserconfigPath = npmrcPath;
+	}
+
+	// Remove the transient `.npmrc` (and its temp dir) once the deploy's npm work is done.
+	async cleanupTransientNpmrc(): Promise<void> {
+		if (!this.#npmrcTempDir) return;
+		await rm(this.#npmrcTempDir, { recursive: true, force: true });
+		this.#npmrcTempDir = undefined;
+		this.npmUserconfigPath = undefined;
 	}
 }
 
@@ -532,9 +566,13 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 export async function prepareApplication(application: Application) {
 	await broadcastDeployStart(application.name);
 	try {
+		// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
+		// `npm install` authenticate against the private registry; always remove it afterward.
+		await application.writeTransientNpmrc();
 		await extractApplication(application);
 		await installApplication(application);
 	} finally {
+		await application.cleanupTransientNpmrc();
 		broadcastDeployEnd(application.name);
 	}
 }
@@ -638,6 +676,37 @@ function getGitSSHCommand() {
 	}
 }
 
+export interface RegistryAuthEntry {
+	registry: string;
+	token: string;
+	scope?: string;
+}
+
+// Normalize a registry to a full URL with a scheme and trailing slash, e.g.
+// `npm.pkg.github.com` or `//npm.pkg.github.com` → `https://npm.pkg.github.com/`.
+function normalizeRegistryUrl(registry: string): string {
+	let url = registry.trim();
+	if (!/^https?:\/\//i.test(url)) {
+		url = url.startsWith('//') ? `https:${url}` : `https://${url}`;
+	}
+	if (!url.endsWith('/')) url += '/';
+	return url;
+}
+
+// Build the contents of a transient `.npmrc` from registry auth entries: an auth-token line keyed
+// by npm's registry auth key (scheme stripped, leading `//`, trailing `/`) plus a
+// `@scope:registry=…` line when a scope is given.
+export function buildNpmrcContent(registryAuth: RegistryAuthEntry[]): string {
+	const lines: string[] = [];
+	for (const { registry, token, scope } of registryAuth) {
+		const registryUrl = normalizeRegistryUrl(registry);
+		const authKey = registryUrl.replace(/^https?:/i, '');
+		lines.push(`${authKey}:_authToken=${token}`);
+		if (scope) lines.push(`${scope}:registry=${registryUrl}`);
+	}
+	return lines.join('\n') + '\n';
+}
+
 /**
  * Execute a command (using `spawn`) with stdin ignored.
  *
@@ -697,7 +766,8 @@ export function nonInteractiveSpawn(
 	args: string[],
 	cwd: string,
 	timeoutMs: number = 60 * 60 * 1000,
-	onLine?: (stream: 'stdout' | 'stderr', line: string) => void
+	onLine?: (stream: 'stdout' | 'stderr', line: string) => void,
+	npmUserconfigPath?: string
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
@@ -709,6 +779,18 @@ export function nonInteractiveSpawn(
 		const gitSSHCommand = getGitSSHCommand();
 		if (gitSSHCommand) {
 			env.GIT_SSH_COMMAND = gitSSHCommand;
+		}
+
+		// A deploy carrying transient registry auth points npm at a per-deploy `.npmrc` so
+		// `npm pack`/`install` can authenticate against a private registry without the token
+		// ever touching disk durably, the package reference, config, or hdb_deployment.
+		if (npmUserconfigPath) {
+			// On case-insensitive platforms (Windows) an inherited NPM_CONFIG_USERCONFIG would
+			// shadow the lowercase key we set, so drop any existing case variant first.
+			for (const key of Object.keys(env)) {
+				if (key.toLowerCase() === 'npm_config_userconfig') delete env[key];
+			}
+			env.npm_config_userconfig = npmUserconfigPath;
 		}
 
 		if (process.platform === 'win32' && command === 'npm') {

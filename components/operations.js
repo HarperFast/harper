@@ -453,6 +453,10 @@ async function deployComponent(req) {
 			// — their install output goes to the local logger only; cross-node install
 			// streaming would need extra plumbing and isn't wired here.
 			onInstallLine: emitter ? (manager, stream, line) => emit('install', { manager, stream, line }) : undefined,
+			// Transient private-registry auth, used here for this node's npm pack/install and then
+			// stripped from req before replication (below) so the token is never persisted or sent
+			// to peers — peers authenticate via their own fabric-injected NPM_CONFIG_USERCONFIG.
+			registryAuth: req.registryAuth,
 		});
 
 		emit('phase', { phase: 'prepare', status: 'start' });
@@ -488,6 +492,11 @@ async function deployComponent(req) {
 		// ProgressEmitter holds function listeners that can't survive the replication
 		// channel's serialization; strip it unconditionally.
 		delete req.progress;
+		// The registry token was only needed for this node's npm pack/install. Strip it
+		// unconditionally so it never reaches the replication channel or a peer's operation log;
+		// peers authenticate against the private registry via their own fabric-injected
+		// NPM_CONFIG_USERCONFIG when they reinstall the package.
+		delete req.registryAuth;
 		if (systemReplicated && recorder) {
 			// The hdb_deployment row + payload_blob will reach peers via table replication,
 			// so peers can look up the payload by deployment_id. Drop req.payload to keep

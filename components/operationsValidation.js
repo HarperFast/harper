@@ -242,6 +242,19 @@ function deployComponentValidator(req) {
 		install_timeout: Joi.number().optional(),
 		install_allow_scripts: Joi.boolean().optional(),
 		force: Joi.boolean().optional(),
+		// Transient private-registry auth: never persisted, never replicated. Used only for this
+		// node's npm pack/install during the deploy.
+		registryAuth: Joi.array()
+			.items(
+				Joi.object({
+					registry: Joi.string().required(),
+					token: Joi.string().required(),
+					scope: Joi.string()
+						.pattern(/^@[a-z0-9-_.]+$/)
+						.optional(),
+				})
+			)
+			.optional(),
 	});
 
 	return validator.validateBySchema(req, deployProjSchema);

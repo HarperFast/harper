@@ -76,9 +76,10 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
 			// Need to remove auth variables, but we don't want to create an object unless
-			// the logging is actually going to happen.
+			// the logging is actually going to happen. registryAuth carries a transient private
+			// registry token on deploy_component and must never reach the operations log.
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			const { hdb_user, hdbAuthHeader, password, payload, ...cleanBody } = req.body;
+			const { hdb_user, hdbAuthHeader, password, payload, registryAuth, ...cleanBody } = req.body;
 			operationLog.info(cleanBody);
 		}
 	} catch (e) {

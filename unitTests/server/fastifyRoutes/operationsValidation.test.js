@@ -222,4 +222,39 @@ describe('Test operationsValidation module', () => {
 			expect(result.message).to.equal('Project name can only contain alphanumeric, dash and underscores characters');
 		});
 	});
+
+	describe('Test deployComponentValidator registryAuth', () => {
+		it('accepts a valid registryAuth array', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: '@myorg' }],
+			});
+			expect(result).to.equal(undefined);
+		});
+
+		it('rejects a registryAuth entry missing a token', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com' }],
+			});
+			expect(result.message).to.contain('token');
+		});
+
+		it('rejects an invalid scope', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: 'noatsign' }],
+			});
+			expect(result.message).to.contain('scope');
+		});
+
+		it('rejects registryAuth that is not an array', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: { registry: 'https://npm.pkg.github.com', token: 'tok' },
+			});
+			expect(result.message).to.contain('registryAuth');
+		});
+	});
 });
