@@ -134,15 +134,9 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	const writeBufferManagerAllowStall = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL);
 	RocksDatabase.config({
 		blockCacheSize,
-		...(typeof writeBufferManagerSize === 'number' && writeBufferManagerSize > 0
-			? { writeBufferManagerSize }
-			: {}),
-		...(typeof writeBufferManagerCostToCache === 'boolean'
-			? { writeBufferManagerCostToCache }
-			: {}),
-		...(typeof writeBufferManagerAllowStall === 'boolean'
-			? { writeBufferManagerAllowStall }
-			: {}),
+		...(typeof writeBufferManagerSize === 'number' && writeBufferManagerSize > 0 ? { writeBufferManagerSize } : {}),
+		...(typeof writeBufferManagerCostToCache === 'boolean' ? { writeBufferManagerCostToCache } : {}),
+		...(typeof writeBufferManagerAllowStall === 'boolean' ? { writeBufferManagerAllowStall } : {}),
 	});
 	if (!existsSync(path)) {
 		mkdirSync(path, { recursive: true });

@@ -218,7 +218,18 @@ export class RecordEncoder extends Encoder {
 		const superGetStructures = this.getStructures;
 		this.saveStructures = function (structures, isCompatible): boolean | undefined {
 			if (this.isRocksDB) {
-				return this.rootStore.transactionSync(
+				// transactionSync returns the callback's value on commit, but returns `undefined`
+				// when the txn was aborted (it swallows ERR_ALREADY_ABORTED). The success path here
+				// returns an explicit `true`; anything else means the shared structures were NOT
+				// durably committed (a CAS conflict → `false`, or a swallowed abort → `undefined`).
+				//
+				// We must report a non-commit as `false` (not the buggy `undefined`, which msgpackr
+				// reads as success and then writes a record referencing a structure that was never
+				// saved → later "Record id is not defined" on decode). Returning `false` makes msgpackr
+				// re-pack; paired with msgpackr 1.11.14's structures-rebuild-on-save-failure fix, the
+				// re-pack reloads the durable structures, rebuilds the transition trie, re-mints, and
+				// re-saves — so the record always references a persisted structure.
+				const committed = this.rootStore.transactionSync(
 					(txn) => {
 						const sharedStructuresKey = [Symbol.for('structures'), this.name];
 						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
@@ -231,10 +242,18 @@ export class RecordEncoder extends Encoder {
 							return false;
 						}
 						txn.putSync(sharedStructuresKey, structures);
-						this.structureUpdate = structures;
+						return true;
 					},
 					{ retryOnBusy: true }
 				);
+				// Only record the structure update once the txn has actually committed. Setting it
+				// inside the callback would leave it dangling on an aborted txn and could flag a
+				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
+				if (committed === true) {
+					this.structureUpdate = structures;
+					return true;
+				}
+				return false;
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
