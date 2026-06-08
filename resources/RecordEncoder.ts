@@ -246,12 +246,18 @@ export class RecordEncoder extends StructonEncoder {
 							return false;
 						}
 						txn.putSync(sharedStructuresKey, structures);
-						this.structureUpdate = structures;
 						return true;
 					},
 					{ retryOnBusy: true }
 				);
-				return committed === true ? true : false;
+				// Only record the structure update once the txn has actually committed. Setting it
+				// inside the callback would leave it dangling on an aborted txn and could flag a
+				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
+				if (committed === true) {
+					this.structureUpdate = structures;
+					return true;
+				}
+				return false;
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
