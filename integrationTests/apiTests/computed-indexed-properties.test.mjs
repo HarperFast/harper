@@ -44,6 +44,7 @@ suite('Computed indexed properties', { skip: skipSuite }, (ctx) => {
 			project: 'computed',
 			files: { 'schema.graphql': SCHEMA_GRAPHQL, 'resources.js': RESOURCES_JS },
 			probePath: '/Product/',
+			restartTimeoutMs: 120000,
 		});
 	});
 

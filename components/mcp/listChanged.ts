@@ -6,16 +6,18 @@
  * SSE streams.
  *
  * Per-session computation only — never broadcast. For each event, we
- * walk the per-worker session registry, recompute that session's
- * tools/list (or resources/list) under its bound user, diff against the
- * snapshot from the prior emission, and push a notification iff the
- * visible set actually changed. Sessions whose visible surface is
- * unchanged see nothing.
+ * walk the per-worker session registry, re-resolve the session's user
+ * (so the diff sees the freshly-mutated permission set, not the snapshot
+ * captured at GET-stream open), recompute that session's tools/list (or
+ * resources/list) under the fresh user, diff against the snapshot from
+ * the prior emission, and push a notification iff the visible set
+ * actually changed. Sessions whose visible surface is unchanged see
+ * nothing.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { listResources } from './resources.ts';
 import { type RegisteredSession, forEachSessionByProfile, getRegisteredSession } from './sessionRegistry.ts';
-import { listTools } from './toolRegistry.ts';
+import { listTools, type AuthedUser } from './toolRegistry.ts';
 import type { McpProfile } from './transport.ts';
 
 const MAX_TOOLS_PAGE = 1000;
@@ -61,6 +63,27 @@ function loadItcHandlers():
 		return require('../../server/itc/serverHandlers');
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged: ITC handlers unavailable (${(err as Error).message})`);
+		return undefined;
+	}
+}
+
+// Test seam: lets unit tests stub the user re-resolution without pulling in
+// security/user.ts (which initializes the system catalogs at module-load).
+let _userResolverOverride: ((username: string) => Promise<AuthedUser | undefined>) | undefined;
+
+export function _setUserResolverForTest(fn: ((username: string) => Promise<AuthedUser | undefined>) | undefined): void {
+	_userResolverOverride = fn;
+}
+
+async function resolveUser(username: string | undefined): Promise<AuthedUser | undefined> {
+	if (!username) return undefined;
+	if (_userResolverOverride) return _userResolverOverride(username);
+	try {
+		const { findAndValidateUser } = require('../../security/user');
+		const fresh = await findAndValidateUser(username, null, false);
+		return fresh as AuthedUser;
+	} catch (err) {
+		harperLogger.trace(`MCP listChanged: user re-resolve failed for ${username}: ${(err as Error).message}`);
 		return undefined;
 	}
 }
@@ -127,39 +150,64 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 }
 
 /**
+ * Snapshot the current registry as a flat list so re-resolves can happen
+ * sequentially without re-walking the live map (which a concurrent
+ * registerSession could mutate mid-iteration).
+ */
+function snapshotSessions(profile: McpProfile): RegisteredSession[] {
+	const out: RegisteredSession[] = [];
+	forEachSessionByProfile(profile, (r) => out.push(r));
+	return out;
+}
+
+async function refreshSessionUser(record: RegisteredSession): Promise<void> {
+	const fresh = await resolveUser(record.user?.username);
+	if (fresh) record.user = fresh;
+}
+
+/**
  * Fan out a user/role change: for each session on either profile,
+ * re-resolve the user (so a role-perm mutation is visible to the diff —
+ * the captured `record.user` at GET-stream open is otherwise frozen),
  * recompute the tools list and notify if changed. Resources may also
  * change visibility (table-perm-gated schema URIs), so we re-check
  * those too.
  */
-function onUserChange(): void {
-	forEachSessionByProfile('operations', (r) => {
+async function onUserChange(): Promise<void> {
+	for (const r of snapshotSessions('operations')) {
+		await refreshSessionUser(r);
 		maybeNotifyToolsChanged(r);
 		maybeNotifyResourcesChanged(r);
-	});
-	forEachSessionByProfile('application', (r) => {
+	}
+	for (const r of snapshotSessions('application')) {
+		await refreshSessionUser(r);
 		maybeNotifyToolsChanged(r);
 		maybeNotifyResourcesChanged(r);
-	});
+	}
 }
 
 /**
  * Schema changes touch both surfaces — application-profile tools are
  * generated from the Resources registry, and operations-profile
  * resources include the OPERATION list (unchanged) plus harper://schema
- * URIs (changed). Application sessions need the bigger refresh.
+ * URIs (changed). Application sessions need the bigger refresh. We also
+ * re-resolve the user here in case the schema change coincided with a
+ * role mutation (Harper sometimes fires both channels on database-level
+ * grants).
  */
-function onSchemaChange(): void {
-	forEachSessionByProfile('application', (r) => {
+async function onSchemaChange(): Promise<void> {
+	for (const r of snapshotSessions('application')) {
+		await refreshSessionUser(r);
 		maybeNotifyToolsChanged(r);
 		maybeNotifyResourcesChanged(r);
-	});
+	}
 	// Operations sessions only need resources/list refresh — there are no
 	// schema-derived operations tools, but `harper://schema/...` URIs may
 	// shift if a new table appears under a database the user can describe.
-	forEachSessionByProfile('operations', (r) => {
+	for (const r of snapshotSessions('operations')) {
+		await refreshSessionUser(r);
 		maybeNotifyResourcesChanged(r);
-	});
+	}
 }
 
 /**
@@ -173,12 +221,19 @@ export function initListChanged(): boolean {
 	if (!handlers) return false;
 	let installed = 0;
 	if (handlers.userHandler?.addListener) {
-		onUserChangeBound = onUserChange;
+		// Harper's ITC handler treats listeners as `() => void`. Our handler is
+		// async (re-resolves users); fire-and-forget with a swallow so a rejection
+		// can never escape the event emitter as an UnhandledPromiseRejection.
+		onUserChangeBound = () => {
+			onUserChange().catch((err) => harperLogger.trace(`MCP listChanged onUserChange: ${(err as Error).message}`));
+		};
 		handlers.userHandler.addListener(onUserChangeBound);
 		installed++;
 	}
 	if (handlers.schemaHandler?.addListener) {
-		onSchemaChangeBound = onSchemaChange;
+		onSchemaChangeBound = () => {
+			onSchemaChange().catch((err) => harperLogger.trace(`MCP listChanged onSchemaChange: ${(err as Error).message}`));
+		};
 		handlers.schemaHandler.addListener(onSchemaChangeBound);
 		installed++;
 	}

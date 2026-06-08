@@ -1,6 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const sinon = require('sinon');
 const rewire = require('rewire');
 
@@ -391,6 +394,112 @@ describe('storageReclamation module', function () {
 			// First path should error, but second path should still be processed
 			assert.ok(errorPathHandler.notCalled);
 			assert.ok(okPathHandler.calledOnce);
+		});
+	});
+
+	describe('quota mode', function () {
+		const QUOTA_100GB = 100 * 1024 * 1024 * 1024;
+		let tmpDir;
+		let quotaStatusPath;
+		let originalRootPath;
+
+		beforeEach(function () {
+			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-quota-test-'));
+			quotaStatusPath = path.join(tmpDir, 'quota-status.json');
+			originalRootPath = env.get('rootPath');
+			env.setProperty('rootPath', tmpDir);
+		});
+
+		afterEach(function () {
+			env.setProperty('rootPath', originalRootPath);
+			try {
+				fs.rmSync(tmpDir, { recursive: true });
+			} catch {}
+		});
+
+		describe('getQuotaStatus', function () {
+			it('returns parsed object when file is present and valid', async function () {
+				const data = { usedBytes: 50_000_000_000, quotaBytes: QUOTA_100GB, updatedAt: Date.now() };
+				fs.writeFileSync(quotaStatusPath, JSON.stringify(data));
+				assert.deepEqual(await storageReclamation.getQuotaStatus(), data);
+			});
+
+			it('returns undefined when file is absent', async function () {
+				assert.equal(await storageReclamation.getQuotaStatus(), undefined);
+			});
+
+			it('returns undefined when file contains malformed JSON', async function () {
+				fs.writeFileSync(quotaStatusPath, 'not-valid-json{');
+				assert.equal(await storageReclamation.getQuotaStatus(), undefined);
+			});
+		});
+
+		describe('defaultGetAvailableSpaceRatio', function () {
+			beforeEach(function () {
+				storageReclamation.setAvailableSpaceRatioGetter(undefined); // use real default
+			});
+
+			it('uses fresh quota-status file and triggers reclamation when headroom is low', async function () {
+				const usedBytes = 65 * 1024 * 1024 * 1024; // 65 GB → 35% remaining → below 40% threshold
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const handler = sandbox.stub().returns(Promise.resolve());
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await storageReclamation.runReclamationHandlers();
+
+				assert.ok(handler.calledOnce);
+				assert.ok(handler.firstCall.args[0] > 1); // priority = 0.4 / 0.35 ≈ 1.14
+			});
+
+			it('uses fresh quota-status file and does not trigger when headroom is sufficient', async function () {
+				const usedBytes = 50 * 1024 * 1024 * 1024; // 50% used → 50% remaining → above threshold
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const handler = sandbox.stub();
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await storageReclamation.runReclamationHandlers();
+
+				assert.ok(handler.notCalled);
+			});
+
+			it('clamps ratio to 0 and triggers reclamation when usage exceeds quota', async function () {
+				const usedBytes = 110 * 1024 * 1024 * 1024; // 10 GB over quota
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const handler = sandbox.stub().returns(Promise.resolve());
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await storageReclamation.runReclamationHandlers();
+
+				// Ratio clamped to 0 → priority = Infinity → handler called
+				assert.ok(handler.calledOnce);
+			});
+
+			it('falls back to statfs when quota-status file is absent', async function () {
+				const handler = sandbox.stub();
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await assert.doesNotReject(storageReclamation.runReclamationHandlers());
+			});
+
+			it('falls back to statfs when quota-status file is stale', async function () {
+				const staleTimestamp = Date.now() - 10 * 60 * 1000; // 10 minutes old
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes: 65 * 1024 * 1024 * 1024, quotaBytes: QUOTA_100GB, updatedAt: staleTimestamp })
+				);
+
+				const handler = sandbox.stub();
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await assert.doesNotReject(storageReclamation.runReclamationHandlers());
+			});
 		});
 	});
 });

@@ -112,11 +112,13 @@ jobs:
           THREADS_DEBUG: false
           NODE_HOSTNAME: 'localhost'
         run: |
+          rm -rf /tmp/hdb
           mkdir -p /tmp/hdb/log
           node ./dist/bin/harper.js install > /tmp/hdb/log/install-stdout.log 2> /tmp/hdb/log/install-stderr.log
-          sleep 10
           node ./dist/bin/harper.js start > /tmp/hdb/log/start-stdout.log 2> /tmp/hdb/log/start-stderr.log &
-          sleep 10
+          echo "Waiting for Harper to be ready on port 9925..."
+          timeout 120 bash -c 'until nc -z localhost 9925 2>/dev/null; do sleep 0.5; done'
+          echo "Harper is ready."
 
       - name: Run API Tests
         id: run-api-tests
@@ -172,6 +174,7 @@ jobs:
           THREADS_DEBUG: false
           NODE_HOSTNAME: 'localhost'
         run: |
+          rm -rf /tmp/hdb
           mkdir -p /tmp/hdb/log
           node ./dist/bin/harper.js install > /tmp/hdb/log/install-stdout.log 2> /tmp/hdb/log/install-stderr.log
           sleep 10
@@ -230,9 +233,18 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path ${{ runner.temp }}/hdb/log
           node ./dist/bin/harper.js install > ${{ runner.temp }}/hdb/log/install-stdout.log 2> ${{ runner.temp }}/hdb/log/install-stderr.log
-          sleep 10
           Start-Process node -ArgumentList "./dist/bin/harper.js start" -RedirectStandardOutput "${{ runner.temp }}/hdb/log/start-stdout.log" -RedirectStandardError "${{ runner.temp }}/hdb/log/start-stderr.log" -PassThru
-          sleep 10
+          Write-Host "Waiting for Harper to be ready on port 9925..."
+          $deadline = (Get-Date).AddSeconds(120)
+          do {
+            Start-Sleep -Milliseconds 500
+            $client = New-Object System.Net.Sockets.TcpClient
+            $connected = $client.ConnectAsync('localhost', 9925).Wait(2000)
+            if ($connected) { $client.Close(); $ready = $true }
+            else { $client.Close() }
+          } until ($ready -or (Get-Date) -gt $deadline)
+          if (-not $ready) { Write-Error "Harper did not start within 120s"; exit 1 }
+          Write-Host "Harper is ready."
 
       - name: Run API Tests
         id: run-api-tests
@@ -288,6 +300,9 @@ jobs:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          # Slow runners (especially under shard contention) may need more than
+          # the default 60s to reach 'successfully started'.
+          HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS: 120000
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/4
 

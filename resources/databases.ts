@@ -786,6 +786,12 @@ export function database({ database: databaseName, table: tableName }) {
 				? join(hdbBasePath, LEGACY_DATABASES_DIR_NAME)
 				: undefined);
 
+	if (!databasePath) {
+		throw new Error(
+			`Unable to determine database storage path. Ensure STORAGE_PATH, HDB_ROOT, or a valid config path is set.`
+		);
+	}
+
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
 	if (useRocksdb) {
@@ -964,6 +970,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primaryKey = primaryKeyAttribute.name;
 		primaryKeyAttribute.isPrimaryKey = true;
+		primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 		primaryKeyAttribute.schemaDefined = schemaDefined;
 		// can't change compression after the fact (except threshold), so save only when we create the table
 		primaryKeyAttribute.compression = getDefaultCompression();
@@ -1124,31 +1131,51 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
-			const changed =
+			// Some index options affect only search, not the stored structure (e.g. HNSW's
+			// efConstructionSearch). Changing those should persist the new metadata but NOT trigger a
+			// reindex. A custom index declares such keys via a static `searchOnlyOptions`.
+			const indexType = attribute.indexed && typeof attribute.indexed === 'object' ? attribute.indexed.type : undefined;
+			const searchOnlyOptions: string[] = (indexType && CUSTOM_INDEXES[indexType]?.searchOnlyOptions) || [];
+			const stripSearchOnly = (indexed: any): any => {
+				if (!indexed || typeof indexed !== 'object' || searchOnlyOptions.length === 0) return indexed;
+				const copy = { ...indexed };
+				for (const key of searchOnlyOptions) delete copy[key];
+				return copy;
+			};
+			const commonChanged =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
-				JSON.stringify(attributeDescriptor.indexed) !== JSON.stringify(attribute.indexed) ||
 				attributeDescriptor.nullable !== attribute.nullable ||
 				attributeDescriptor.version !== attribute.version ||
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
-				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements);
+				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
+				// Include `embed` so a source/model change refreshes the embed registry.
+				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
+			// any metadata difference (drives persistence)
+			const changed =
+				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
+			// structure-affecting difference (drives reindex) — ignores search-only option changes
+			const structurallyChanged =
+				commonChanged ||
+				JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
+					JSON.stringify(stripSearchOnly(attribute.indexed));
 			if (attribute.indexed) {
 				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
 					changed ||
-					attributeDescriptor.indexingFailed ||
-					(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
-					attributeDescriptor.restartNumber < workerData?.restartNumber
+					attributeDescriptor?.indexingFailed ||
+					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
+					attributeDescriptor?.restartNumber < workerData?.restartNumber
 				) {
 					hasChanges = true;
 					exclusiveLock();
 					attributeDescriptor = attributesDbi.getSync(dbiKey);
 					if (
-						changed ||
-						attributeDescriptor.indexingFailed ||
-						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
-						attributeDescriptor.restartNumber < workerData?.restartNumber
+						structurallyChanged ||
+						attributeDescriptor?.indexingFailed ||
+						(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
+						attributeDescriptor?.restartNumber < workerData?.restartNumber
 					) {
 						hasChanges = true;
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
@@ -1166,6 +1193,14 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
 							attributesToIndex.push(attribute);
 						}
+					} else if (attributeDescriptor.indexingPID) {
+						// Metadata-only change (e.g. a search-only option like efConstructionSearch) while a
+						// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
+						// indexing state instead of persisting a descriptor that looks complete — otherwise other
+						// workers / a reload would treat the still-partial index as ready and return incomplete results.
+						attribute.indexingPID = attributeDescriptor.indexingPID;
+						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
 					attributesDbi.put(dbiKey, attribute);
 				}

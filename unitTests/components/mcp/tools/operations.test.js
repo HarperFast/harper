@@ -77,6 +77,70 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(getTool('delete'), undefined);
 	});
 
+	it('excludes sensitive get_* operations from the default-allow set', () => {
+		// The DEFAULT_ALLOW list MUST NOT pull in operations that can leak
+		// secrets or source code into the LLM context. verifyPerms still
+		// gates the actual dispatch, but defaulting to "expose secrets to
+		// LLM if super_user calls it" is the wrong default. Operators who
+		// genuinely want any of these can opt in via mcp.operations.allow.
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['get_configuration', async () => ({ secrets: 'inside' })],
+				['get_custom_function', async () => ({ source: 'fn body' })],
+				['get_custom_functions', async () => ({ functions: [] })],
+				['get_components', async () => ({ components: [] })],
+				['get_component_file', async () => ({ contents: '' })],
+				['get_backup', async () => ({ backup: '' })],
+				['get_deployment', async () => ({})],
+				['get_deployment_payload', async () => ({})],
+				// These four ARE in the explicit safe list.
+				['get_job', async () => ({})],
+				['get_status', async () => ({})],
+				['get_analytics', async () => ({})],
+				['get_metrics', async () => ({})],
+			])
+		);
+
+		registerOperationsTools();
+
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		// Sensitive getters: NOT in the default surface.
+		for (const sensitive of [
+			'get_configuration',
+			'get_custom_function',
+			'get_custom_functions',
+			'get_components',
+			'get_component_file',
+			'get_backup',
+			'get_deployment',
+			'get_deployment_payload',
+		]) {
+			assert.ok(!names.has(sensitive), `${sensitive} must not be default-allowed`);
+		}
+		// Safe getters: IN the default surface.
+		for (const safe of ['get_job', 'get_status', 'get_analytics', 'get_metrics']) {
+			assert.ok(names.has(safe), `${safe} should be default-allowed`);
+		}
+	});
+
+	it('an operator can still opt sensitive getters into the surface via mcp.operations.allow', () => {
+		envOverrides.mcp_operations_allow = ['get_configuration', 'get_components'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['get_configuration', async () => ({})],
+				['get_components', async () => ({})],
+				['get_job', async () => ({})], // not on the explicit allow → excluded
+			])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		assert.ok(names.has('get_configuration'));
+		assert.ok(names.has('get_components'));
+		assert.ok(!names.has('get_job'), 'when allow is set, DEFAULT_ALLOW is replaced not merged');
+	});
+
 	it('honors a user-defined allow list', () => {
 		envOverrides.mcp_operations_allow = ['describe_*', 'insert'];
 		_setOperationFunctionMapForTest(
@@ -156,7 +220,18 @@ describe('mcp/tools/operations — registration', () => {
 	it('DEFAULT_ALLOW is exposed and matches the documented v1 surface', () => {
 		assert.deepEqual(
 			[...DEFAULT_ALLOW],
-			['describe_*', 'list_*', 'search_*', 'get_*', 'system_information', 'read_log', 'read_audit_log']
+			[
+				'describe_*',
+				'list_*',
+				'search_*',
+				'get_job',
+				'get_status',
+				'get_analytics',
+				'get_metrics',
+				'system_information',
+				'read_log',
+				'read_audit_log',
+			]
 		);
 	});
 

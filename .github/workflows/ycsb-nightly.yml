@@ -1,0 +1,106 @@
+name: YCSB Nightly Load Test
+
+# Runs the YCSB-style CRUD load test against a single local Harper instance,
+# records throughput/latency trends via github-action-benchmark (pushed to the
+# gh-pages branch; enable GitHub Pages on gh-pages to view the dashboard), alerts
+# on regressions, and uploads the raw JSON as an artifact. Default-runner perf is
+# modest and variable, so treat absolute numbers as a trend signal on a fixed
+# runner, not a hardware-representative benchmark.
+
+on:
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Workload scale'
+        required: true
+        type: choice
+        default: 'standard'
+        options:
+          - 'quick'
+          - 'standard'
+          - 'heavy'
+      workloads:
+        description: 'Comma-separated workloads (e.g. C,B,A,F,D,E)'
+        required: false
+        type: string
+        default: 'C,B,A,F,D,E'
+
+permissions:
+  contents: write # github-action-benchmark pushes trend history to the gh-pages branch
+
+jobs:
+  ycsb:
+    name: YCSB single-node (Node.js v24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build || true # repo currently has type errors; ignore per integration-tests.yml
+
+      - name: Verify build output
+        run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
+
+      - name: Run YCSB load test
+        # Pass dispatch inputs via env, not direct ${{ }} interpolation into the shell,
+        # so a free-form input value can't inject shell commands on the runner.
+        env:
+          SCALE: ${{ github.event.inputs.scale || 'standard' }}
+          WORKLOADS: ${{ github.event.inputs.workloads || 'C,B,A,F,D,E' }}
+        run: |
+          node benchmarks/ycsb/run-single-node.mts --scale="$SCALE" --workloads="$WORKLOADS"
+
+      - name: Convert results to benchmark format
+        run: node benchmarks/ycsb/to-benchmark-json.mts benchmarks/ycsb/results/ycsb-single-node-latest.json benchmarks/ycsb/bench-out
+
+      # Two suites: opposite "better" directions. auto-push only on main so manual
+      # dispatches from a branch don't pollute the trend history. Thresholds are
+      # generous to absorb shared-runner variance — tune once a stable runner is in use.
+      - name: Track throughput trend
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          name: YCSB Throughput (single-node)
+          tool: customBiggerIsBetter
+          output-file-path: benchmarks/ycsb/bench-out/throughput.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-threshold: '130%'
+          alert-comment-cc-users: '@kriszyp'
+
+      - name: Track latency (p99) trend
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          name: YCSB Latency p99 (single-node)
+          tool: customSmallerIsBetter
+          output-file-path: benchmarks/ycsb/bench-out/latency.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-threshold: '160%'
+          alert-comment-cc-users: '@kriszyp'
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ycsb-results
+          path: benchmarks/ycsb/results/*.json
+          retention-days: 90
+          if-no-files-found: warn

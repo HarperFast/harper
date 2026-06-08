@@ -3,6 +3,7 @@ const {
 	initListChanged,
 	seedSessionSnapshot,
 	_setItcHandlersForTest,
+	_setUserResolverForTest,
 	_resetListChangedForTest,
 } = require('#src/components/mcp/listChanged');
 const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
@@ -56,6 +57,7 @@ describe('mcp/listChanged', () => {
 		_resetRegistryForTest();
 		_resetListChangedForTest();
 		_setItcHandlersForTest(undefined);
+		_setUserResolverForTest(undefined);
 	});
 
 	it('subscribes to both userHandler and schemaHandler on init', () => {
@@ -140,6 +142,47 @@ describe('mcp/listChanged', () => {
 	it('init returns false when ITC handlers are unavailable', () => {
 		_setItcHandlersForTest({}); // empty — no addListener methods
 		assert.equal(initListChanged(), false);
+	});
+
+	it('re-resolves the user inside the handler so a role-perm grant fires the notification', async () => {
+		// The scenario: a tool only visible to users with a `foo.read` perm.
+		// Alice starts WITHOUT it. Some external mutation grants her the perm
+		// AND fires the user-cache invalidation. The notification dispatcher
+		// must see the FRESH alice (with foo.read), recompute the visible set,
+		// notice the diff, and emit. Without re-resolution, the diff runs
+		// against the frozen no-foo alice and silently suppresses the event.
+		const aliceWithoutFoo = {
+			username: 'alice',
+			role: { permission: {} },
+		};
+		const aliceWithFoo = {
+			username: 'alice',
+			role: { permission: { foo: { tables: { bar: { read: true } } } } },
+		};
+		addTool({
+			name: 'get_foo_bar',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: (u) => u?.role?.permission?.foo?.tables?.bar?.read === true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+
+		initListChanged();
+		const rec = registerSession('sid', 'application', aliceWithoutFoo);
+		seedSessionSnapshot('sid');
+		assert.deepEqual(rec.lastTools, [], 'before the grant, alice sees no tools');
+
+		// Now the grant lands externally; the user cache is invalidated. The
+		// test seam resolver returns the fresh alice with the new perms.
+		_setUserResolverForTest(async (username) => (username === 'alice' ? aliceWithFoo : undefined));
+
+		fakeItc._fireUser();
+		const evt = await readNextEvent(rec.queue);
+		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+		// The session's user reference should have been swapped in-place so
+		// subsequent diffs run against current perms too.
+		assert.equal(rec.user, aliceWithFoo, 'record.user updated to the freshly-resolved user');
 	});
 
 	it('schema events also fan out (application profile)', async () => {

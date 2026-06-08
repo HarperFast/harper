@@ -1,6 +1,6 @@
 'use strict';
 
-import { promises as fsProm, createReadStream, createWriteStream } from 'fs';
+import { promises as fsProm, createReadStream, createWriteStream, mkdirSync } from 'fs';
 import { createGzip } from 'zlib';
 import { promisify } from 'util';
 import { pipeline } from 'stream';
@@ -17,8 +17,6 @@ import { onStorageReclamation } from '../../server/storageReclamation.ts';
 const LOG_AUDIT_INTERVAL = 60000;
 const INT_SIZE_UNDEFINED_MSG =
 	"'interval' and 'maxSize' are both undefined, to enable logging rotation at least one of these values must be defined in harperdb-config.yaml";
-const PATH_UNDEFINED_MSG =
-	"'logging.rotation.path' is undefined, to enable logging rotation set this value in harperdb-config.yaml";
 
 let lastRotationTime;
 let setIntervalId;
@@ -47,8 +45,9 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	}
 
 	if (!rotatedLogDir) {
-		throw new Error(PATH_UNDEFINED_MSG);
+		rotatedLogDir = path.join(path.dirname(logger.path), 'rotated');
 	}
+	mkdirSync(rotatedLogDir, { recursive: true });
 
 	// Convert maxSize param to bytes.
 	let maxBytes;

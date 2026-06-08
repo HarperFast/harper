@@ -396,6 +396,194 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
+// RocksDB stat names are kebab-case with a "rocksdb." prefix (e.g. "rocksdb.block.cache.hit");
+// camelCase them to match the field shape used throughout systemInformation.
+export function toRocksDBCamelCase(key: string): string {
+	return key.replace(/^rocksdb\./, '').replace(/[-.]([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+// Every column family on the same physical RocksDB shares one Statistics object, so all ticker
+// counters returned by getStats() — including memtableHit/memtableMiss — are DB-wide, not per-CF.
+// Listing them as DB-level avoids emitting the same delta on every table row.
+const ROCKSDB_DB_COUNTERS = [
+	'bytesRead',
+	'bytesWritten',
+	'numberKeysRead',
+	'numberKeysWritten',
+	'blockCacheHit',
+	'blockCacheMiss',
+	'blockCacheDataHit',
+	'blockCacheDataMiss',
+	'blockCacheIndexHit',
+	'blockCacheIndexMiss',
+	'blockCacheFilterHit',
+	'blockCacheFilterMiss',
+	'stallMicros',
+	'memtableHit',
+	'memtableMiss',
+] as const;
+// Gauges are scalar values that are not cumulative. They go up and down over time.
+const ROCKSDB_DB_GAUGES = ['blockCacheUsage', 'blockCacheCapacity', 'numRunningFlushes'] as const;
+const ROCKSDB_TABLE_GAUGES = ['numRunningCompactions', 'compactionPending'] as const;
+
+const lastRocksDBDbStats = new Map<string, Record<string, number>>();
+let lastRocksDBStatsTime = 0;
+
+export function diffRocksDBCounter(curr: number, last: number | undefined): number {
+	// A negative delta means RocksDB itself reset the counter mid-process (e.g. an internal
+	// statistics reset). Process restarts are handled separately because the module-level
+	// last-stats maps are reinitialized, which takes the no-prior-reading path below.
+	if (last === undefined || curr < last) return curr;
+	return curr - last;
+}
+
+/**
+ * Filter a raw RocksDB stats record to numeric scalar entries, camelCasing the keys.
+ * Histogram entries (objects) are dropped — they don't fit the flat analytics row model.
+ * @param raw - The raw RocksDB stats record to normalize.
+ * @returns The normalized RocksDB stats record.
+ */
+export function normalizeRocksDBStats(raw: Record<string, unknown>): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (!raw) return out;
+	for (const [key, value] of Object.entries(raw)) {
+		if (typeof value === 'number') out[toRocksDBCamelCase(key)] = value;
+	}
+	return out;
+}
+
+/**
+ * Gathers metrics for a RocksDB database.
+ * @param dbName - The name of the database.
+ * @param stats - The stats to build the metric from.
+ * @param lastStats - The last stats to diff the stats from.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+export function buildRocksDBDbMetric(
+	dbName: string,
+	stats: Record<string, number>,
+	lastStats: Record<string, number> | undefined,
+	now: number,
+	period: number | undefined
+): Record<string, unknown> {
+	const metric: Record<string, unknown> = {
+		metric: METRIC.ROCKSDB_STATS,
+		database: dbName,
+		time: now,
+	};
+	if (period !== undefined) metric.period = period;
+	for (const field of ROCKSDB_DB_COUNTERS) {
+		metric[field] = diffRocksDBCounter(stats[field] ?? 0, lastStats?.[field]);
+	}
+	for (const field of ROCKSDB_DB_GAUGES) {
+		metric[field] = stats[field] ?? 0;
+	}
+	return metric;
+}
+
+/**
+ * Gathers metrics for a RocksDB table. Only gauges are reported per-table; ticker counters
+ * are DB-wide (see ROCKSDB_DB_COUNTERS comment) and live on the DB-level metric.
+ * @param dbName - The name of the database.
+ * @param tableName - The name of the table.
+ * @param stats - The stats to build the metric from.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+export function buildRocksDBTableMetric(
+	dbName: string,
+	tableName: string,
+	stats: Record<string, number>,
+	now: number,
+	period: number | undefined
+): Record<string, unknown> {
+	const metric: Record<string, unknown> = {
+		metric: METRIC.ROCKSDB_STATS,
+		database: dbName,
+		table: tableName,
+		time: now,
+	};
+	if (period !== undefined) metric.period = period;
+	for (const field of ROCKSDB_TABLE_GAUGES) {
+		metric[field] = stats[field] ?? 0;
+	}
+	return metric;
+}
+
+/**
+ * Stores the RocksDB stats metrics for the given databases.
+ * @param analyticsTable - The analytics table to store the metrics in.
+ * @param databases - The databases to store the metrics for.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+function storeRocksDBStatsMetrics(
+	analyticsTable: Table,
+	databases: Databases,
+	now: number,
+	period: number | undefined
+) {
+	for (const [db, tables] of Object.entries(databases)) {
+		if (!tables) continue; // no tables or not loaded/initialized yet
+		const tableEntries = Object.entries(tables);
+		const [, firstTable] = tableEntries[0] ?? [];
+		if (!(firstTable?.primaryStore instanceof RocksDatabase)) continue;
+
+		let firstNormalizedStats: Record<string, number> | undefined;
+		for (const [tableName, tbl] of tableEntries) {
+			try {
+				const tableStats = normalizeRocksDBStats(tbl.primaryStore.getStats());
+				if (!firstNormalizedStats) firstNormalizedStats = tableStats;
+				const tableMetric = buildRocksDBTableMetric(db, tableName, tableStats, now, period);
+				storeMetric(analyticsTable, tableMetric);
+			} catch (error) {
+				// A table may be removed mid-collection — keep iterating siblings.
+				log.warn?.(`Error getting RocksDB stats for table ${db}.${tableName}`, error);
+			}
+		}
+
+		if (firstNormalizedStats) {
+			// Any table's getStats() returns the same DB-wide counters; reuse the first one's.
+			const lastDbStats = lastRocksDBDbStats.get(db);
+			// Skip the first sample for a db — counters are cumulative since process start,
+			// so reporting them as a delta would produce a misleading spike.
+			if (lastDbStats !== undefined) {
+				const dbMetric = buildRocksDBDbMetric(db, firstNormalizedStats, lastDbStats, now, period);
+				storeMetric(analyticsTable, dbMetric);
+				log.trace?.(`db ${db} rocksdb stats metric: ${JSON.stringify(dbMetric)}`);
+			}
+			lastRocksDBDbStats.set(db, firstNormalizedStats);
+		}
+	}
+}
+
+/**
+ * Drop cached counter readings for databases that no longer exist, to bound memory
+ * growth across drop/recreate cycles and prevent stale baselines from producing wrong diffs.
+ * @param databases - The databases to prune the stats cache for.
+ */
+function pruneRocksDBStatsCache(databases: Databases) {
+	const activeDbs = new Set<string>(Object.keys(databases));
+	for (const key of lastRocksDBDbStats.keys()) {
+		if (!activeDbs.has(key)) lastRocksDBDbStats.delete(key);
+	}
+}
+
+/**
+ * Returns a Databases view that includes the `system` database as an enumerable property.
+ * getDatabases() marks `system` non-enumerable so general consumers skip it; analytics
+ * needs to iterate over it like any other database.
+ */
+function getDatabasesIncludingSystem(): Databases {
+	const databases = getDatabases();
+	if (!databases.system) return databases;
+	const all: Databases = Object.create(null);
+	Object.assign(all, databases);
+	all.system = databases.system;
+	return all;
+}
+
 export async function getDirectorySizeAsync(dirPath: string): Promise<number> {
 	try {
 		const entries = await readdir(dirPath, { withFileTypes: true });
@@ -619,14 +807,21 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	storeMetric(analyticsTable, cruMetric);
 	lastResourceUsage = resourceUsage;
 
+	// `system` is set as non-enumerable on the object returned by getDatabases() so most
+	// callers skip it; for analytics we want it included, so build a view where it's enumerable.
+	const databases = getDatabasesIncludingSystem();
+
 	// database-size & table-size metrics
-	const databases = getDatabases();
 	storeDBSizeMetrics(analyticsTable, databases);
-	storeDBSizeMetrics(analyticsTable, { system: databases.system });
 
 	// database storage volume metrics
 	storeVolumeMetrics(analyticsTable, databases);
-	storeVolumeMetrics(analyticsTable, { system: databases.system });
+
+	// rocksdb engine stats (only for RocksDB-backed databases)
+	const rocksDBPeriod = lastRocksDBStatsTime ? now - lastRocksDBStatsTime : undefined;
+	storeRocksDBStatsMetrics(analyticsTable, databases, now, rocksDBPeriod);
+	pruneRocksDBStatsCache(databases);
+	lastRocksDBStatsTime = now;
 
 	// node storage metric (total HDB directory size)
 	await storeNodeStorageMetric(analyticsTable);

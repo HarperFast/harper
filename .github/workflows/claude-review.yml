@@ -26,7 +26,14 @@ concurrency:
 
 jobs:
   review:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@f22bf7dcb7d22d5de94c938daa9d790f2b5c776b # main 2026-05-18 (post #37 + #38 + #40 — calibration layer update + label-gated bot-PR review; #39's workflow-level `permissions: {}` reverted in #40 because it broke reusable callers via the GH Actions calling-workflow-caps-reusable rule)
+    # Always-on toggle — see ai-review-prompts USAGE.md "Reviewers & the
+    # always-on toggle". CLAUDE_ALWAYS_ON=true (repo/org variable) → auto-
+    # review trusted-author PRs; unset → opt-in via the claude-review
+    # label. The reusable's authorize job still owns WHO is admitted.
+    # Note: the `claude-review` label name is matched there too —
+    # `_claude-review.yml`'s authorize `if:`, not in this caller.
+    if: ${{ vars.CLAUDE_ALWAYS_ON == 'true' || github.event.action == 'labeled' }}
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@2be0f702b114e39b90eed90962922ef64df58482 # main 2026-06-03 (post #52 — week-of-05-25 calibration: Harper-aware best-practices wiring, skills-ref v1.7.0, surface-findings rule, access-control blocker guidance, public-skill dedup)
     with:
       # Same SHA as the `uses:` ref above. The reusable uses this to
       # check out HarperFast/ai-review-prompts (layer files + bash
@@ -37,7 +44,7 @@ jobs:
       # introspect their own ref (`github.workflow_ref` resolves to the
       # CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
       # is parsed literally so we can't interpolate a variable.
-      ai-review-prompts-ref: f22bf7dcb7d22d5de94c938daa9d790f2b5c776b
+      ai-review-prompts-ref: 2be0f702b114e39b90eed90962922ef64df58482
       review-layers: |
         universal
         harper/common

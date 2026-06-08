@@ -493,6 +493,10 @@ function onSocket(listener, options) {
 			});
 
 			udsServer.isPerThreadSocket = true;
+			// Strip the PROXY v1 header a fronting proxy (e.g. symphony) prepends, same as the
+			// HTTP UDS mirror. Without this the header is fed to the protocol parser (e.g. MQTT),
+			// corrupting the first packet.
+			httpComponent.enableProxyProtocol(udsServer);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 

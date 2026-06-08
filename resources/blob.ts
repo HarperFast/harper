@@ -40,7 +40,6 @@ import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
 import type { RootDatabase } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
-import { HAS_BLOBS } from './auditStore.ts';
 import { getHeapStatistics } from 'node:v8';
 import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
 import { _assignPackageExport } from '../globals.js';
@@ -1230,6 +1229,7 @@ function polyfillBlob() {
  * @param database
  */
 export async function cleanupOrphans(database: any, databaseName?: string) {
+	const { HAS_BLOBS } = await import('./auditStore.ts');
 	let store: RootDatabase;
 	let auditStore: RootDatabase;
 	let orphansDeleted = 0;

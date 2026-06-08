@@ -5,6 +5,7 @@ import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode } from 'graphql';
 import { once } from 'node:events';
+import { ClientError } from '../utility/errors/hdbError.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -18,6 +19,7 @@ server.knownGraphQLDirectives.push(
 	'primaryKey',
 	'indexed',
 	'computed',
+	'embed',
 	'relationship',
 	'createdTime',
 	'updatedTime',
@@ -143,6 +145,32 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 								}
 							}
 							property.computed = property.computed || true;
+						} else if (directiveName === 'embed') {
+							// `@embed(source, model)`: on write, embed `record[source]` into this
+							// attribute and auto-index it with HNSW.
+							const embedDefinition: { source?: string; model?: string } = {};
+							for (const arg of directive.arguments || []) {
+								if (arg.value.kind !== 'StringValue')
+									throw new ClientError(
+										`@embed(${arg.name.value}: ...) on "${property.name}" expects a string literal`,
+										400
+									);
+								embedDefinition[arg.name.value] = (arg.value as StringValueNode).value;
+							}
+							if (!embedDefinition.source || !embedDefinition.model) {
+								const loc = directive.loc;
+								throw new ClientError(
+									`@embed on "${property.name}" requires both "source" and "model" arguments` +
+										(loc ? ` (line ${loc.startToken?.line ?? '?'}, column ${loc.startToken?.column ?? '?'})` : ''),
+									400
+								);
+							} else {
+								property.embed = embedDefinition;
+								// Version carries the model so a model change triggers a reindex (re-index only, not re-embed).
+								if (property.version == undefined) {
+									property.version = `embed:${embedDefinition.model}`;
+								}
+							}
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -168,6 +196,35 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 							console.warn(`@${directiveName} is an unknown directive, at`, directive.loc);
 						}
 					}
+					// @embed targets a vector column and auto-indexes it with HNSW; resolved after all
+					// directives so an explicit @indexed (in any order) is honored. The target must be an
+					// array (e.g. [Float]) — a scalar would store the vector wrong and HNSW-index a non-vector.
+					if (property.embed) {
+						const elementType =
+							property.type === 'array' ? (property as { elements?: { type?: string } }).elements?.type : undefined;
+						if (property.type !== 'array' || elementType !== 'Float')
+							throw new ClientError(
+								`@embed on "${property.name}" requires a [Float] attribute type; got "${property.type === 'array' ? `[${elementType ?? '?'}]` : property.type}"`,
+								400
+							);
+						if (!property.indexed) property.indexed = { type: 'HNSW' };
+						else if ((property.indexed as { type?: string }).type !== 'HNSW')
+							throw new ClientError(
+								`@embed on "${property.name}" auto-indexes with HNSW; remove the conflicting @indexed or set @indexed(type: "HNSW")`,
+								400
+							);
+					}
+				}
+				// @embed source must reference a declared field; a typo would silently leave
+				// the vector column unpopulated (the source key never appears in write payloads).
+				for (const prop of properties as any[]) {
+					// Object.hasOwn (not `in`): `attributesObject` is a plain object, so `in` would
+					// match inherited prototype keys (toString, constructor) and pass a bad source.
+					if (prop.embed && !Object.hasOwn(attributesObject, prop.embed.source))
+						throw new ClientError(
+							`@embed on "${prop.name}" references unknown source field "${prop.embed.source}"`,
+							400
+						);
 				}
 				typeDef.type = typeName;
 		}

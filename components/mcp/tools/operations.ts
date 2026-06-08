@@ -3,11 +3,19 @@
  * and registers one MCP tool per operation that survives the
  * `mcp.operations.allow` / `deny` filter.
  *
- * The default v1 allow list is read-only: `describe_*`, `list_*`, `search_*`,
- * `get_*`, `system_information`, `read_log`, `read_audit_log`. Operators
- * who want destructive operations on the wire opt in by adding them to
- * `mcp.operations.allow`. Destructive ops carry `destructiveHint: true`
- * so well-behaved MCP clients can surface a confirmation prompt.
+ * The default v1 allow list is read-only and intentionally narrow:
+ * `describe_*`, `list_*`, `search_*`, plus an explicit set of safe
+ * getters (`get_job`, `get_status`, `get_analytics`, `get_metrics`),
+ * `system_information`, `read_log`, `read_audit_log`. A `get_*` glob
+ * was rejected because it would have matched `get_configuration`
+ * (TLS/S3/auth secrets), `get_components` + `get_component_file` +
+ * `get_custom_function*` (component source code, which can embed
+ * secrets), `get_backup`, and `get_deployment{,_payload}` — none of
+ * which should default into the MCP surface even though
+ * `verifyPerms` still gates the actual call. Operators who want any
+ * of those opt in via `mcp.operations.allow`. Destructive ops carry
+ * `destructiveHint: true` so well-behaved MCP clients can surface a
+ * confirmation prompt.
  *
  * Tool dispatch delegates to `chooseOperation` + `processLocalTransaction`
  * — the same path Harper's REST `/operation` endpoint uses. That means
@@ -93,7 +101,14 @@ export const DEFAULT_ALLOW: readonly string[] = [
 	'describe_*',
 	'list_*',
 	'search_*',
-	'get_*',
+	// Explicit safe getters only — see file-header rationale. `get_*` would
+	// pull in `get_configuration`, `get_components`, `get_custom_function*`,
+	// `get_backup`, and `get_deployment*`, all of which can leak secrets or
+	// source code into the LLM context even with `verifyPerms` enforcing.
+	'get_job',
+	'get_status',
+	'get_analytics',
+	'get_metrics',
 	'system_information',
 	'read_log',
 	'read_audit_log',

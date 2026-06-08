@@ -118,7 +118,8 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 
 		// Probe /openapi, not a blobcache route — GET /blobcache/{id} triggers the source
 		// and creates a spurious record that breaks the single-record assertion below.
-		await restartHttpWorkers(client, '/openapi');
+		// Extended timeout for slow CI runners under shard contention.
+		await restartHttpWorkers(client, '/openapi', 120000);
 	});
 
 	after(async () => {
@@ -240,7 +241,8 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	test('restart HTTP workers and create another blob for drop_schema test', async () => {
 		// Probe /openapi, not a blobcache route — GET /blobcache/{id} triggers the source
 		// and creates a spurious record that breaks the single-record assertion below.
-		await restartHttpWorkers(client, '/openapi');
+		// Extended timeout for slow CI runners under shard contention.
+		await restartHttpWorkers(client, '/openapi', 120000);
 		await setTimeout(5000);
 		const id3 = randomInt(1000000);
 		await client.reqRest(`/blobcache/${id3}`).set('Accept', '*/*').expect(200);

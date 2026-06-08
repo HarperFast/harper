@@ -7,6 +7,7 @@ import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';
 import { RequestTarget } from './RequestTarget.ts';
 import { classifyAuditEntryForReplay } from './replayLogsGuards.ts';
+import { purgeAgedLogs } from './auditStore.ts';
 
 let warnedReplayHappening = false;
 export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void> {
@@ -16,6 +17,28 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 			resolve();
 		});
 		if (!acquired) return;
+		// Shed transaction-log files already older than the audit retention window before
+		// replaying. A node that crash-loops during recovery never reaches the steady-state
+		// cleanup loop, so without this its aged backlog only grows and enlarges each subsequent
+		// replay/full-copy. The native purge keeps any file holding unflushed entries, so this
+		// never drops data the replay below still needs. See harper#1115.
+		// Purging is a non-critical optimization, so a purge failure (filesystem/permission/native
+		// error) must never block the critical replay path that follows — especially here, during
+		// the recovery this fix is meant to harden.
+		let purgedLogs: string[] = [];
+		try {
+			purgedLogs = purgeAgedLogs(rootStore);
+		} catch (error) {
+			logger.warn(
+				`Failed to purge aged transaction logs before replay in ${(rootStore as any).databaseName} database`,
+				error
+			);
+		}
+		if (purgedLogs.length > 0) {
+			logger.info(
+				`Purged ${purgedLogs.length} aged transaction-log file(s) before replay in ${(rootStore as any).databaseName} database`
+			);
+		}
 		const tableById = new Map<number, typeof Resource>();
 		for (const tableName in tables) {
 			const table = tables[tableName];

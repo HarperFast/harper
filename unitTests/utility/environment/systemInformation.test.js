@@ -176,7 +176,7 @@ const EXPECTED_PROPERTIES = {
 		'reclaimable',
 		'writeback',
 	],
-	disk: ['io', 'read_write', 'size'],
+	disk: ['free_space_basis', 'io', 'read_write', 'size'],
 	disk_io: ['rIO', 'wIO', 'tIO'],
 	disk_read_write: ['rx', 'wx', 'tx'],
 	disk_size: ['fs', 'rw', 'type', 'size', 'used', 'use', 'mount', 'available'],
@@ -285,7 +285,7 @@ describe('test systemInformation module', () => {
 
 		env_mgr.setProperty('operationsApi_sysInfo_disk', false);
 		results = await system_information.getDiskInfo();
-		assert.deepEqual(results, {});
+		assert.deepEqual(Object.keys(results).sort(), ['free_space_basis']);
 	});
 
 	it('test getNetworkInfo function', async () => {

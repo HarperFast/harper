@@ -35,14 +35,26 @@ describe('models singleton', () => {
 	});
 });
 
+// Captures (value, metric, path) tuples that Models passes to recordAction.
+// Production wires the module-scoped recordAction; tests pass this spy so we can
+// assert exactly which aggregate metrics are emitted without touching the global
+// analytics pipeline.
+function makeMetricSpy() {
+	const calls = [];
+	const emitter = (value, metric, path) => calls.push({ value, metric, path });
+	return { calls, emitter };
+}
+
 describe('Models facade', () => {
 	let writer;
+	let metricSpy;
 	let models;
 
 	beforeEach(() => {
 		clearRegistry();
 		writer = makeMockWriter();
-		models = new Models(writer);
+		metricSpy = makeMetricSpy();
+		models = new Models(writer, metricSpy.emitter);
 		const test = new TestBackend();
 		setEmbedding('default', test);
 		setGenerative('default', test);
@@ -198,6 +210,115 @@ describe('Models facade', () => {
 		});
 	});
 
+	describe('aggregate analytics emission (recordAction)', () => {
+		it('emits model-embed count=1 with backend name as path on successful embed', async () => {
+			await models.embed('hello');
+			const countCall = metricSpy.calls.find((c) => c.metric === 'model-embed');
+			assert.ok(countCall, 'expected a model-embed metric to be emitted');
+			assert.strictEqual(countCall.value, 1);
+			assert.strictEqual(countCall.path, 'test');
+		});
+
+		it('emits model-embed-tokens with the sum from usage.embeddingTokens', async () => {
+			setEmbedding('default', {
+				name: 'tokenful-embed',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					return { status: 'completed', output: [new Float32Array(1)], usage: { embeddingTokens: 17 } };
+				},
+			});
+			await models.embed('x');
+			const tokenCall = metricSpy.calls.find((c) => c.metric === 'model-embed-tokens');
+			assert.ok(tokenCall, 'expected model-embed-tokens to be emitted');
+			assert.strictEqual(tokenCall.value, 17);
+			assert.strictEqual(tokenCall.path, 'tokenful-embed');
+		});
+
+		it('omits the tokens metric entirely when usage is absent or zero', async () => {
+			setEmbedding('default', {
+				name: 'no-usage',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					return { status: 'completed', output: [new Float32Array(1)] };
+				},
+			});
+			await models.embed('x');
+			assert.ok(
+				!metricSpy.calls.some((c) => c.metric.endsWith('-tokens')),
+				'no -tokens metric should be emitted when backend reports no usage'
+			);
+			// Count metric should still be there though.
+			assert.ok(metricSpy.calls.some((c) => c.metric === 'model-embed'));
+		});
+
+		it('sums prompt + completion tokens for generate into a single model-generate-tokens metric', async () => {
+			setGenerative('default', {
+				name: 'tokenful-gen',
+				capabilities: () => ({ embed: false, generate: true, stream: false, tools: false, adapters: false }),
+				async generate() {
+					return {
+						status: 'completed',
+						output: { content: 'hi', finishReason: 'stop' },
+						usage: { promptTokens: 12, completionTokens: 8 },
+					};
+				},
+			});
+			await models.generate('x');
+			const tokenCall = metricSpy.calls.find((c) => c.metric === 'model-generate-tokens');
+			assert.ok(tokenCall, 'expected model-generate-tokens to be emitted');
+			assert.strictEqual(tokenCall.value, 20);
+		});
+
+		it('emits a model-generateStream count + tokens at the end of a successful stream', async () => {
+			setGenerative('default', {
+				name: 'stream-with-usage',
+				capabilities: () => ({ embed: false, generate: true, stream: true, tools: false, adapters: false }),
+				async *generateStream() {
+					yield { deltaContent: 'one ' };
+					yield { deltaContent: 'two' };
+					yield { finishReason: 'stop' };
+				},
+			});
+			for await (const _chunk of models.generateStream('x')) {
+				// drain
+			}
+			// stream backend reports no usage in this test, so only the count metric
+			assert.ok(metricSpy.calls.some((c) => c.metric === 'model-generateStream' && c.value === 1));
+		});
+
+		it('does NOT emit aggregate metrics on failed calls (forensics row still goes to hdb_model_calls)', async () => {
+			setEmbedding('default', {
+				name: 'failing',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					throw new Error('upstream boom');
+				},
+			});
+			await assert.rejects(() => models.embed('x'));
+			assert.strictEqual(metricSpy.calls.length, 0, 'no aggregate metrics should fire on failure');
+			// But the per-call writer row IS there for forensics.
+			assert.strictEqual(writer.records.length, 1);
+			assert.strictEqual(writer.records[0].success, false);
+		});
+
+		it('does NOT emit aggregate metrics on pre-call backend-not-found (no billable work happened)', async () => {
+			await assert.rejects(() => models.embed('x', { model: 'no-such-name' }));
+			assert.strictEqual(metricSpy.calls.length, 0);
+		});
+
+		it('does NOT emit aggregate metrics when the backend returns status=pending', async () => {
+			setEmbedding('default', {
+				name: 'pending',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					return { status: 'pending', operationId: 'op-1' };
+				},
+			});
+			await assert.rejects(() => models.embed('x'), ModelPendingNotSupportedError);
+			assert.strictEqual(metricSpy.calls.length, 0);
+		});
+	});
+
 	describe('generate', () => {
 		it('returns unwrapped GenerateResult with content', async () => {
 			const result = await models.generate('hello');
@@ -225,6 +346,48 @@ describe('Models facade', () => {
 			assert.strictEqual(r.method, 'generate');
 			assert.strictEqual(r.success, false);
 			assert.strictEqual(r.error_code, 'backend_error');
+		});
+
+		describe("toolMode: 'auto' (entry dispatch)", () => {
+			// Loop behavior lives in `agentLoop.test.js`. Tests here cover the dispatch
+			// branch in `Models.generate` itself — that the entry point picks the right
+			// path and that `'return'` is unaffected.
+
+			it("toolMode: 'return' still flows the single-shot path", async () => {
+				const result = await models.generate('hello', { toolMode: 'return' });
+				assert.strictEqual(typeof result.content, 'string');
+				assert.strictEqual(writer.records.length, 1);
+				assert.strictEqual(writer.records[0].method, 'generate');
+				assert.strictEqual(writer.records[0].success, true);
+			});
+
+			it('still-gated modes throw 501 at the loop entry (sanity — full matrix in agentLoop.test.js)', async () => {
+				// Spot-check that the dispatch branch reaches the guarded loop body. Each
+				// deferred mode has its own assertion in `agentLoop.test.js`.
+				await assert.rejects(
+					() => models.generate('hello', { toolMode: 'auto', toolArgValidation: 'strict' }),
+					(err) => err.statusCode === 501
+				);
+			});
+
+			it('auto + tools against a tools-incapable backend fails loud (no silent no-op)', async () => {
+				// TestBackend is tools:false. Declaring tools for an auto loop against it would
+				// otherwise run as a plain generation, silently ignoring the tools.
+				await assert.rejects(
+					() =>
+						models.generate(
+							{ messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 't', description: '', parameters: {} }] },
+							{ toolMode: 'auto', toolHandlers: { t: () => ({}) } }
+						),
+					(err) => err instanceof ModelCapabilityError && /tools/.test(err.message)
+				);
+			});
+
+			it('auto WITHOUT tools is unaffected by the tools guard', async () => {
+				const result = await models.generate('hi', { toolMode: 'auto' });
+				assert.strictEqual(typeof result.content, 'string');
+				assert.strictEqual(result.finishReason, 'stop');
+			});
 		});
 	});
 
@@ -306,6 +469,35 @@ describe('Models facade', () => {
 			assert.strictEqual(writer.records[0].backend, 'no-stream');
 			assert.strictEqual(writer.records[0].error_code, 'capability_unsupported');
 			assert.strictEqual(writer.records[0].method, 'generateStream');
+		});
+
+		describe("toolMode: 'auto' (entry dispatch)", () => {
+			// Streaming auto-loop behavior is in `agentLoop.test.js`. Tests here cover
+			// the dispatch branch in `Models.generateStream` itself.
+
+			it("toolMode: 'return' still flows the single-shot stream", async () => {
+				const chunks = [];
+				for await (const chunk of models.generateStream('hello', { toolMode: 'return' })) {
+					chunks.push(chunk);
+				}
+				assert.ok(chunks.length > 1);
+				assert.strictEqual(writer.records.length, 1);
+				assert.strictEqual(writer.records[0].method, 'generateStream');
+				assert.strictEqual(writer.records[0].success, true);
+			});
+
+			it('auto + tools against a tools-incapable backend throws synchronously (before iteration)', () => {
+				// The guard runs in the synchronous body of generateStream, before the iterable
+				// is returned — so it throws on call, not on first `next()`.
+				assert.throws(
+					() =>
+						models.generateStream(
+							{ messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 't', description: '', parameters: {} }] },
+							{ toolMode: 'auto', toolHandlers: { t: () => ({}) } }
+						),
+					(err) => err instanceof ModelCapabilityError && /tools/.test(err.message)
+				);
+			});
 		});
 	});
 });

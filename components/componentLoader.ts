@@ -117,6 +117,9 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 };
 if (isMainThread) {
 	TRUSTED_RESOURCE_PLUGINS.operationsApi = require('../server/operationsServer');
+	// Built-in agent component (#626). Only loads if the root config carries an `agent:` block;
+	// the block's `enabled: false` default keeps it inert even when the key is present.
+	TRUSTED_RESOURCE_PLUGINS.agent = require('../agent/agent');
 } else {
 	// The HTTP operations API itself only binds in the main thread, but worker threads still
 	// dispatch operations — most notably, the replication WebSocket handler in workers receives
@@ -316,6 +319,16 @@ export async function loadComponent(
 			config = DEFAULT_CONFIG;
 		}
 		applicationScope.config ??= config;
+
+		// For non-root components with empty/null config (e.g., comment-only YAML),
+		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing
+		// to load; falling back to DEFAULT_CONFIG would cause OptionsWatcher to wait
+		// forever for plugins that the file doesn't actually declare.
+		if (isRoot) config ??= DEFAULT_CONFIG;
+		if (!config) {
+			// Empty/comment-only config file on a non-root component: nothing to load.
+			return undefined;
+		}
 
 		// #629 (Phase 2 of #510): populate the model-backend registry from the root
 		// config's `models:` block before any user `handleApplication(scope)` runs,

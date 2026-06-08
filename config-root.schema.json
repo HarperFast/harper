@@ -284,6 +284,16 @@
 					}
 				},
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
+				"pingInterval": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Interval (ms) between replication keep-alive pings. Default: 30000"
+				},
+				"pingTimeout": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Time (ms) without socket activity before a replication connection is considered dead and terminated. Default: 2x pingInterval"
+				},
 				"failOver": {
 					"type": "boolean",
 					"description": "Attempt fail-over to different node when unreachable. Default: true"
@@ -557,6 +567,49 @@
 							"required": ["path"]
 						}
 					}
+				}
+			}
+		},
+
+		"agent": {
+			"type": "object",
+			"description": "Built-in Harper Agent component. Disabled by default to avoid surprise LLM costs.",
+			"additionalProperties": false,
+			"properties": {
+				"enabled": { "type": "boolean", "description": "Enable the built-in agent component. Default: false" },
+				"provider": {
+					"type": "string",
+					"description": "Optional model provider override. Falls back to scope.models default when omitted."
+				},
+				"model": {
+					"type": "string",
+					"description": "Optional model id override. Falls back to scope.models default when omitted."
+				},
+				"maxTurns": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Maximum tool-call iterations per agent run. Default: 50"
+				},
+				"maxCostUsd": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Per-session cost budget. NOT YET ENFORCED — surfacing operator intent until #612 ships per-call cost telemetry. Default: 5.00"
+				},
+				"autoApprove": {
+					"type": "boolean",
+					"description": "Run without per-action approval gates. Destructive ops still require allowDestructive and approval. Default: false"
+				},
+				"allowDestructive": {
+					"type": "boolean",
+					"description": "Allow destructive operator tools (drop_component, restart, set_configuration, ...). Default: false"
+				},
+				"user": {
+					"type": "string",
+					"description": "Harper user the agent acts as. Default: hdb_agent (created at startup if missing)."
+				},
+				"componentsScope": {
+					"type": "string",
+					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
 				}
 			}
 		},

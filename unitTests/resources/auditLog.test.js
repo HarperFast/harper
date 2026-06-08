@@ -452,6 +452,98 @@ describe('Audit log', () => {
 			assert.strictEqual(sentinel.type, undefined);
 			assert.strictEqual(sentinel.version, 42, 'timestamp from the log entry is preserved so lastTxnTime advances');
 		});
+
+		// rocksdb-js >=1.4.1 hardened transaction-log readers throw a bounded
+		// RangeError ("Corrupt transaction log entry at position …: declared length …
+		// overruns the log") when an entry's length header overshoots the committed
+		// (or mapped) bound. That throw originates inside the underlying iterator's
+		// next() — upstream of the .map() callback's per-entry try/catch — so without
+		// safeNext() it escaped through the aggregate iterator into setImmediate-
+		// scheduled consumers (notifyFromTransactionData) as an uncaughtException
+		// that crashed the worker on every commit after a SIGKILL-induced torn write.
+		it('terminates the failing log iterator instead of propagating a corrupt-entry throw out of the aggregate', () => {
+			const fakeLog = { query: () => null, addEntry: () => null, on: () => null };
+			const fakeRoot = { useLog: () => fakeLog, on: () => null, listLogs: () => [] };
+			const store = new RocksTransactionLogStore(fakeRoot);
+
+			// First log: yields one good entry, then throws (mirrors a torn entry past
+			// a committed boundary). Track call count so we can confirm the failed
+			// iterator is not re-polled on later drain cycles (otherwise every commit
+			// re-throws the same RangeError, spamming logs and burning CPU).
+			let corruptNextCalls = 0;
+			const corruptLog = {
+				name: 'corrupt',
+				query: () => {
+					let calls = 0;
+					return {
+						next() {
+							corruptNextCalls++;
+							calls++;
+							if (calls === 1) {
+								return {
+									done: false,
+									value: { timestamp: 1, data: new Uint8Array(20), endTxn: false },
+								};
+							}
+							throw new RangeError(
+								'Corrupt transaction log entry at position 14fd of log 1: declared length 2046820352 overruns the log (limit=5439)'
+							);
+						},
+						[Symbol.iterator]() {
+							return this;
+						},
+					};
+				},
+				addEntry: () => null,
+				on: () => null,
+			};
+			// Second log: drains cleanly with two entries past the corrupt one's
+			// timestamp. The aggregate must keep delivering these after the first log
+			// terminates.
+			const healthyLog = {
+				name: 'healthy',
+				query: () => {
+					let i = 0;
+					const entries = [
+						{ timestamp: 2, data: new Uint8Array(20), endTxn: false },
+						{ timestamp: 3, data: new Uint8Array(20), endTxn: false },
+					];
+					return {
+						next() {
+							return i < entries.length ? { done: false, value: entries[i++] } : { done: true, value: undefined };
+						},
+						[Symbol.iterator]() {
+							return this;
+						},
+					};
+				},
+				addEntry: () => null,
+				on: () => null,
+			};
+
+			store.nodeLogs = [corruptLog, healthyLog];
+
+			const timestamps = [];
+			assert.doesNotThrow(() => {
+				for (const record of store.getRange({})) {
+					timestamps.push(record.version);
+				}
+			}, 'aggregate iteration must not propagate the corrupt-entry RangeError');
+
+			assert.deepStrictEqual(
+				timestamps,
+				[1, 2, 3],
+				'good entries from the corrupt log (before the throw) and all entries from healthy peer logs must drain'
+			);
+			// 2 = the one good entry + the call that threw. Anything higher means the
+			// retry-poll path is calling .next() on a known-bad iterator and we'll spam
+			// the log on every subsequent commit.
+			assert.strictEqual(
+				corruptNextCalls,
+				2,
+				`failed corrupt iterator must not be re-polled after it throws (next() called ${corruptNextCalls} times)`
+			);
+		});
 	});
 
 	it('addLogToMaps assigns nodeId 0 to the local log and populates nodeLogs[0]', () => {

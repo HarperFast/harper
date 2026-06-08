@@ -1,6 +1,15 @@
 const chai = require('chai');
 const expect = chai.expect;
-const { diffResourceUsage, calculateCPUUtilization, getDirectorySizeAsync } = require('#src/resources/analytics/write');
+const {
+	diffResourceUsage,
+	calculateCPUUtilization,
+	getDirectorySizeAsync,
+	toRocksDBCamelCase,
+	diffRocksDBCounter,
+	normalizeRocksDBStats,
+	buildRocksDBDbMetric,
+	buildRocksDBTableMetric,
+} = require('#src/resources/analytics/write');
 const { writeFile, mkdtemp, rm, mkdir } = require('node:fs/promises');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
@@ -113,5 +122,165 @@ describe('calculateCPUUtilization', () => {
 		const cpuUtilization = calculateCPUUtilization(ru, 60000);
 
 		expect(cpuUtilization).to.equal(0.5);
+	});
+});
+
+describe('toRocksDBCamelCase', () => {
+	it('strips the rocksdb. prefix and camelCases dotted segments', () => {
+		expect(toRocksDBCamelCase('rocksdb.block.cache.hit')).to.equal('blockCacheHit');
+	});
+
+	it('camelCases hyphenated segments', () => {
+		expect(toRocksDBCamelCase('rocksdb.bytes-read')).to.equal('bytesRead');
+	});
+
+	it('handles mixed dots and hyphens', () => {
+		expect(toRocksDBCamelCase('rocksdb.block.cache.data-hit')).to.equal('blockCacheDataHit');
+	});
+});
+
+describe('diffRocksDBCounter', () => {
+	it('returns current value when no previous reading exists', () => {
+		expect(diffRocksDBCounter(500, undefined)).to.equal(500);
+	});
+
+	it('returns the delta between samples', () => {
+		expect(diffRocksDBCounter(1000, 400)).to.equal(600);
+	});
+
+	it('returns current value when counter went backwards (process restart)', () => {
+		expect(diffRocksDBCounter(50, 1000)).to.equal(50);
+	});
+
+	it('returns 0 when counter is unchanged', () => {
+		expect(diffRocksDBCounter(1000, 1000)).to.equal(0);
+	});
+});
+
+describe('normalizeRocksDBStats', () => {
+	it('strips rocksdb. prefix and camelCases keys', () => {
+		const out = normalizeRocksDBStats({
+			'rocksdb.bytes-read': 100,
+			'rocksdb.block.cache.hit': 50,
+		});
+		expect(out).to.deep.equal({ bytesRead: 100, blockCacheHit: 50 });
+	});
+
+	it('drops non-numeric values (e.g. histogram objects)', () => {
+		const out = normalizeRocksDBStats({
+			'rocksdb.bytes-read': 100,
+			'rocksdb.db.get.micros': { p50: 1, p95: 10, p99: 50 },
+		});
+		expect(out).to.deep.equal({ bytesRead: 100 });
+	});
+});
+
+describe('buildRocksDBDbMetric', () => {
+	const now = 1_700_000_000_000;
+
+	it('builds a metric with the correct shape on first sample', () => {
+		const stats = {
+			bytesRead: 100,
+			bytesWritten: 200,
+			numberKeysRead: 10,
+			numberKeysWritten: 20,
+			blockCacheHit: 5,
+			blockCacheMiss: 1,
+			blockCacheDataHit: 4,
+			blockCacheDataMiss: 1,
+			blockCacheIndexHit: 1,
+			blockCacheIndexMiss: 0,
+			blockCacheFilterHit: 0,
+			blockCacheFilterMiss: 0,
+			stallMicros: 0,
+			memtableHit: 25,
+			memtableMiss: 7,
+			blockCacheUsage: 1024,
+			blockCacheCapacity: 8192,
+			numRunningFlushes: 0,
+		};
+		const metric = buildRocksDBDbMetric('mydb', stats, undefined, now, undefined);
+		expect(metric).to.include({
+			metric: 'rocksdb-stats',
+			database: 'mydb',
+			time: now,
+		});
+		// All counters are absolute on first sample (no previous reading).
+		expect(metric.bytesRead).to.equal(100);
+		expect(metric.bytesWritten).to.equal(200);
+		expect(metric.blockCacheHit).to.equal(5);
+		expect(metric.memtableHit).to.equal(25);
+		expect(metric.memtableMiss).to.equal(7);
+		// Gauges pass through absolute.
+		expect(metric.blockCacheUsage).to.equal(1024);
+		expect(metric.blockCacheCapacity).to.equal(8192);
+		// period omitted when undefined.
+		expect(metric).to.not.have.property('period');
+	});
+
+	it('diffs counters and passes gauges through on subsequent samples', () => {
+		const last = {
+			bytesRead: 100,
+			bytesWritten: 200,
+			blockCacheHit: 5,
+			memtableHit: 10,
+			memtableMiss: 2,
+			blockCacheUsage: 999,
+		};
+		const stats = {
+			bytesRead: 350, // delta 250
+			bytesWritten: 600, // delta 400
+			blockCacheHit: 12, // delta 7
+			memtableHit: 25, // delta 15
+			memtableMiss: 7, // delta 5
+			blockCacheUsage: 2048, // gauge — absolute
+		};
+		const metric = buildRocksDBDbMetric('mydb', stats, last, now, 5000);
+		expect(metric.period).to.equal(5000);
+		expect(metric.bytesRead).to.equal(250);
+		expect(metric.bytesWritten).to.equal(400);
+		expect(metric.blockCacheHit).to.equal(7);
+		expect(metric.memtableHit).to.equal(15);
+		expect(metric.memtableMiss).to.equal(5);
+		expect(metric.blockCacheUsage).to.equal(2048);
+	});
+
+	it('defaults missing stats to 0', () => {
+		const metric = buildRocksDBDbMetric('mydb', {}, undefined, now, undefined);
+		expect(metric.bytesRead).to.equal(0);
+		expect(metric.blockCacheUsage).to.equal(0);
+		expect(metric.numRunningFlushes).to.equal(0);
+	});
+});
+
+describe('buildRocksDBTableMetric', () => {
+	const now = 1_700_000_000_000;
+
+	it('includes database and table fields', () => {
+		const metric = buildRocksDBTableMetric('mydb', 'mytable', {}, now, undefined);
+		expect(metric).to.include({
+			metric: 'rocksdb-stats',
+			database: 'mydb',
+			table: 'mytable',
+			time: now,
+		});
+	});
+
+	it('passes compaction gauges through and reports period', () => {
+		const stats = {
+			numRunningCompactions: 1,
+			compactionPending: 1,
+		};
+		const metric = buildRocksDBTableMetric('mydb', 'mytable', stats, now, 1000);
+		expect(metric.numRunningCompactions).to.equal(1);
+		expect(metric.compactionPending).to.equal(1);
+		expect(metric.period).to.equal(1000);
+	});
+
+	it('does not emit memtable counters on the table row (they are DB-wide)', () => {
+		const stats = { memtableHit: 25, memtableMiss: 7, numRunningCompactions: 1, compactionPending: 1 };
+		const metric = buildRocksDBTableMetric('mydb', 'mytable', stats, now, 1000);
+		expect(metric).to.not.have.property('memtableHit');
+		expect(metric).to.not.have.property('memtableMiss');
 	});
 });

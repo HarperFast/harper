@@ -68,6 +68,7 @@ suite('GraphQL queries', { skip: skipSuite }, (ctx) => {
 			project: 'appGraphQL',
 			files: { 'schema.graphql': SCHEMA_GRAPHQL, 'config.yaml': CONFIG_YAML },
 			probePath: '/Related/',
+			restartTimeoutMs: 120000,
 		});
 
 		await client

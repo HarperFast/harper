@@ -193,9 +193,7 @@ describe('EntryHandler', () => {
 		assert.equal(unlinkDirArg.content, undefined, 'unlinkDir event argument `content` should not be defined');
 		assert.equal(unlinkDirArg.stats, undefined, 'unlinkDir event argument `stats` should not be defined');
 
-		const closeEvent = once(entryHandler, 'close');
-		entryHandler.close();
-		await closeEvent;
+		await entryHandler.close();
 		assert.equal(closeEventSpy.callCount, 1, 'close event should be triggered once');
 
 		assert.equal(entryHandler.listenerCount('ready'), 0, 'ready event listener should be removed');
@@ -215,7 +213,7 @@ describe('EntryHandler', () => {
 		await entryHandler.ready;
 		assert.equal(readyEventSpy.callCount, 1, 'ready event should be triggered once');
 
-		entryHandler.close();
+		await entryHandler.close();
 	});
 
 	it('should emit file change events', async () => {
@@ -248,7 +246,7 @@ describe('EntryHandler', () => {
 		assert.ok(changeArg.stats !== undefined, 'change event argument `stats` should be defined');
 		assert.ok(changeArg.stats.isFile(), 'change event argument `stats` should be a file');
 
-		entryHandler.close();
+		await entryHandler.close();
 	});
 
 	it('should handle updating the config', async () => {
@@ -306,9 +304,7 @@ describe('EntryHandler', () => {
 		assert.equal(addArgB.urlPath, '/b', 'add event should be triggered with the correct arguments');
 		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should not be triggered');
 
-		const closeEvent = once(entryHandler, 'close');
-		entryHandler.close();
-		await closeEvent;
+		await entryHandler.close();
 		assert.equal(closeEventSpy.callCount, 1, 'close event should be triggered once');
 		assert.equal(entryHandler.listenerCount('ready'), 0, 'ready event listener should be removed');
 		assert.equal(entryHandler.listenerCount('close'), 0, 'close event listener should be removed');
@@ -368,8 +364,7 @@ describe('EntryHandler', () => {
 		assert.equal(addHandlerSpy.callCount, 6, 'add event should be triggered for each matching file');
 		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should be triggered for each matching directory');
 
-		entryHandler.close();
-
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -415,8 +410,7 @@ describe('EntryHandler', () => {
 			'urlPath resolution should account for similarities'
 		);
 
-		entryHandler.close();
-
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -457,8 +451,7 @@ describe('EntryHandler', () => {
 			['/a', '/b', '/static-assets/c', '/static-assets/d']
 		);
 
-		entryHandler.close();
-
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -488,7 +481,7 @@ describe('EntryHandler', () => {
 			assert.ok(event.hasContents, `File ${event.path} should have contents when ready resolves`);
 		}
 
-		entryHandler.close();
+		await entryHandler.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -518,7 +511,7 @@ describe('EntryHandler', () => {
 				`resume should re-emit add for current files, got ${addSpy.callCount} total`
 			);
 
-			entryHandler.close();
+			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
 		});
 
@@ -538,7 +531,7 @@ describe('EntryHandler', () => {
 
 			assert.ok(allSpy.callCount > before, 'all listener still attached after resume');
 
-			entryHandler.close();
+			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
 		});
 
@@ -553,7 +546,22 @@ describe('EntryHandler', () => {
 			await new Promise((r) => setTimeout(r, 100));
 			assert.equal(addSpy.callCount, 0, 'resume without pause should not re-emit');
 
-			entryHandler.close();
+			await entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('close() while paused awaits the paused watcher teardown', async () => {
+			// Exercises the `#pausedClose` branch in close(): pause() kicks off
+			// a watcher close, then close() lands before resume() and must await
+			// that in-flight teardown rather than resolving early.
+			const { directory } = createFixture(['a']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			entryHandler.pause();
+			// close() called without resume() — exercises #pausedClose path
+			await entryHandler.close();
+			// if close() resolved, teardown settled without throwing
 			rmSync(directory, { recursive: true, force: true });
 		});
 
@@ -579,6 +587,262 @@ describe('EntryHandler', () => {
 			await entryHandler.resume();
 			await readyPromise;
 			assert.equal(readyResolved, true, '`ready` resolves after resume()');
+
+			await entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+	});
+
+	describe('polling fallback on watcher exhaustion', () => {
+		// harper#488: when the underlying chokidar watcher emits ENOSPC/EMFILE,
+		// the EntryHandler should re-open with polling rather than surfacing the
+		// error to consumers. EntryHandler's recovery path uses #watch() (which
+		// awaits the old watcher's close then checks #closed), structurally
+		// different from OptionsWatcher/RootConfigWatcher's explicit
+		// close().catch().finally() chain — so it needs its own coverage.
+
+		it('falls back to polling on ENOSPC and continues to receive change events', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errorSpy = spy();
+			entryHandler.on('error', errorSpy);
+
+			assert.equal(entryHandler._usingPollingForTests, false);
+
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+
+			// Allow the close+reopen-with-polling to settle.
+			await waitFor(() => entryHandler._usingPollingForTests === true, 2000);
+			assert.equal(entryHandler._usingPollingForTests, true);
+			assert.equal(errorSpy.callCount, 0, 'ENOSPC should be swallowed');
+
+			// The polling watcher should pick up subsequent file writes; default
+			// directory polling interval is 3s, so allow up to 5s.
+			const addSpy = spy();
+			entryHandler.on('add', addSpy);
+			await writeFile(join(directory, 'b.txt'), 'b');
+			await waitFor(() => addSpy.callCount >= 1, 5000);
+			assert.ok(addSpy.callCount >= 1, 'polling watcher should fire add');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		}).timeout(8000);
+
+		it('propagates non-exhaustion errors and does not fall back', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errorSpy = spy();
+			entryHandler.on('error', errorSpy);
+
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+			await new Promise((r) => setTimeout(r, 20));
+
+			assert.equal(entryHandler._usingPollingForTests, false);
+			assert.equal(errorSpy.callCount, 1, 'non-exhaustion error should propagate');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('swallows additional exhaustion errors during recovery', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errorSpy = spy();
+			entryHandler.on('error', errorSpy);
+
+			const enospc = () => Object.assign(new Error('boom'), { code: 'ENOSPC' });
+			entryHandler._simulateWatcherErrorForTests(enospc());
+			entryHandler._simulateWatcherErrorForTests(enospc());
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EMFILE' }));
+
+			await waitFor(() => entryHandler._usingPollingForTests === true, 1000);
+			assert.equal(errorSpy.callCount, 0, 'all exhaustion errors should be swallowed');
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('does not reopen watcher if close() is called during recovery', async () => {
+			// EntryHandler's recovery path: #handleError calls `void this.#watch()`,
+			// which does `await this.#watcher?.close(); if (this.#closed) return`.
+			// If close() lands between the ENOSPC and #watch()'s post-await check,
+			// the new chokidar watcher must not be installed.
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			assert.equal(entryHandler._openCountForTests, 1, 'one initial open');
+
+			// Trigger the fallback path, then immediately close before the inner
+			// `await this.#watcher.close()` resolves.
+			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+			entryHandler.close();
+
+			// Allow plenty of time for the would-be reopen to (not) happen.
+			await new Promise((r) => setTimeout(r, 200));
+
+			assert.equal(entryHandler._openCountForTests, 1, 'reopen must be suppressed by the close-during-fallback guard');
+
+			rmSync(directory, { recursive: true, force: true });
+		}).timeout(2000);
+	});
+
+	describe('ignored paths', () => {
+		// These cases ensure the watcher does not consume inotify handles for or fire
+		// events from transient artifacts produced by `npm install`, git operations, etc.
+		// Background: harper#488 — restart storms driven by these paths can exhaust the
+		// system file-watcher limit during component deploys.
+
+		it('should ignore top-level node_modules', async () => {
+			const { directory } = createFixture([['node_modules', [['pkg', ['index.js']]]], 'app.js']);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('node_modules')),
+				`no event should reference node_modules, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p === '/app.js'),
+				'app.js outside node_modules should still be emitted'
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore nested node_modules', async () => {
+			const { directory } = createFixture([['plugin', [['node_modules', [['dep', ['index.js']]]], 'main.js']]]);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, 'plugin/**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('node_modules')),
+				`no event should reference node_modules, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p.endsWith('main.js')),
+				'plugin/main.js should still be emitted'
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore .git directory', async () => {
+			const { directory } = createFixture([['.git', ['HEAD', 'config']], 'app.js']);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('.git')),
+				`no event should reference .git, got: ${JSON.stringify(paths)}`
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore npm atomic-rename temp directories (.tmp-*)', async () => {
+			const { directory } = createFixture([['.tmp-12345', ['package.json']], 'app.js']);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.includes('.tmp-')),
+				`no event should reference .tmp- dirs, got: ${JSON.stringify(paths)}`
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should ignore package-manager log files', async () => {
+			const { directory } = createFixture([
+				'app.js',
+				'npm-debug.log',
+				'yarn-debug.log',
+				'yarn-error.log',
+				'pnpm-debug.log',
+			]);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.every((p) => !p.endsWith('.log')),
+				`no event should reference a .log file, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p === '/app.js'),
+				'app.js should still be emitted'
+			);
+
+			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('should not over-match similar names (prefix and suffix)', async () => {
+			// The leading-and-trailing segment anchors in the ignored regex must not match
+			// substrings on either side. Directories like `notnode_modules` (prefix) and
+			// `node_modules_not` (suffix), and files like `npm-debug.log.txt`, are real user
+			// paths and must be watched.
+			const { directory } = createFixture([
+				['notnode_modules', ['data.json']],
+				['node_modules_not', ['data.json']],
+				'npm-debug.log.txt',
+				'app.js',
+			]);
+
+			const allHandlerSpy = spy();
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			entryHandler.on('all', allHandlerSpy);
+
+			await entryHandler.ready;
+
+			const paths = allHandlerSpy.getCalls().map((call) => call.args[0].urlPath);
+			assert.ok(
+				paths.some((p) => p.includes('notnode_modules')),
+				`event for notnode_modules should be emitted, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p.includes('node_modules_not')),
+				`event for node_modules_not should be emitted, got: ${JSON.stringify(paths)}`
+			);
+			assert.ok(
+				paths.some((p) => p === '/npm-debug.log.txt'),
+				`event for npm-debug.log.txt should be emitted, got: ${JSON.stringify(paths)}`
+			);
 
 			entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });

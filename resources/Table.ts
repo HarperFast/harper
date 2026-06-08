@@ -47,6 +47,7 @@ import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
 	recordUpdater,
@@ -85,6 +86,8 @@ export type Attribute = {
 	computed?: any;
 	resolve?: any;
 	computedFromExpression?: any;
+	embed?: { source: string; model: string };
+	version?: any;
 	properties?: Array<Attribute>;
 	elements?: Attribute;
 	sealed?: boolean;
@@ -111,6 +114,11 @@ const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
 const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
+// Cap for the out-of-order write reconciliation audit-chain walk in commit(). A pathologically deep
+// audit history (e.g. a replication full-copy of a large-history database) would otherwise walk and
+// buffer the entire backward chain per record, synchronously, on every worker — pinning the JS heap
+// until the worker OOMs (issue #1114). Beyond this depth we fall back to a bounded reconciliation.
+const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -256,6 +264,11 @@ export function makeTable(options) {
 		static updatedTimeProperty = updatedTimeProperty;
 		static propertyResolvers;
 		static userResolvers = {};
+		// `@embed` hook registry. `userSetEmbedders` records names set explicitly via
+		// `setEmbedAttribute` so a schema reload refreshes defaults without clobbering them.
+		static userEmbedders: { [name: string]: Embedder } = {};
+		static userSetEmbedders: Set<string> = new Set();
+		static embedAttributes: EmbedAttribute[] = (attributes as any[]).filter((a) => a?.embed);
 		static source?: typeof TableResource;
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
@@ -1234,14 +1247,14 @@ export function makeTable(options) {
 						}
 						return when(loading, () => {
 							this.#changes = updates;
-							this._writeUpdate(id, this.#changes, false);
-							return this;
+							// `when` awaits the embed hook (when `@embed` is active) before resolving,
+							// so the caller's `save()` doesn't run before the write is staged.
+							return when(this._writeUpdate(id, this.#changes, false), () => this);
 						});
 					});
 				}
 			}
-			this._writeUpdate(id, this.#changes, fullUpdate);
-			return this;
+			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
 		}
 
 		/**
@@ -1249,16 +1262,16 @@ export function makeTable(options) {
 		 */
 		save() {
 			if (this.#savingOperation) {
-				const promiseOrResult = this.#savingOperation.promise || this.#savingOperation.result;
-				const transaction = txnForContext(this.getContext());
-				if (transaction.save) {
-					try {
-						return transaction.save(this.#savingOperation) || promiseOrResult;
-					} finally {
-						this.#savingOperation = null;
-					}
+				try {
+					return this.#saveOperation(this.#savingOperation);
+				} finally {
+					this.#savingOperation = null;
 				}
 			}
+		}
+		#saveOperation(operation: any) {
+			const transaction = txnForContext(this.getContext());
+			if (transaction.save) return transaction.save(operation) || operation.promise || operation.result;
 		}
 
 		addTo(property: any, value: any) {
@@ -1453,6 +1466,7 @@ export function makeTable(options) {
 			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
 			let transaction = lmdbTransaction.getReadTxn();
 			let options = { transaction };
+			let committed = false;
 			try {
 				if (hasSourceGet || audit) {
 					if (!existingRecord) return;
@@ -1472,19 +1486,30 @@ export function makeTable(options) {
 					primaryStore.ifVersion?.(id, existingVersion, () => {
 						updateIndices(id, existingRecord, null);
 					});
-					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
 				} else {
 					updateIndices(id, existingRecord, null, options);
-					return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
+					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
-			} finally {
+				committed = true;
 				if (primaryStore.ifVersion) {
 					// LMDB: committing the wrapper calls doneReadTxn(), removing it from trackedTxns
 					return (lmdbTransaction as any).commit();
 				}
 				// RocksDB: eviction writes went directly into the raw transaction via options;
-				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes)
-				return (transaction as any)?.commit?.();
+				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
+				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
+				return (transaction as any).commit();
+			} finally {
+				if (!committed) {
+					// Skip path or thrown error: abort instead of committing so we don't apply
+					// partial work and the txn handle is released.
+					if (primaryStore.ifVersion) {
+						(lmdbTransaction as any).abort?.();
+					} else {
+						(transaction as any)?.abort?.();
+					}
+				}
 			}
 		}
 		/**
@@ -1509,9 +1534,9 @@ export function makeTable(options) {
 			record: Record & RecordObject
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
 			if (record === undefined || record instanceof URLSearchParams) {
-				// legacy argument position, shift the arguments and go through the update method for back-compat
-				(this as any).update(target, true);
-				return this.save() as any;
+				// legacy argument position, shift the arguments and go through the update method for back-compat.
+				// `when` settles the embed hook before `save()` so the write is staged first.
+				return when((this as any).update(target, true), () => this.save() as any) as any;
 			} else {
 				let allowed = true;
 				if (target == undefined) throw new TypeError('Can not put a record without a target');
@@ -1526,17 +1551,21 @@ export function makeTable(options) {
 					}
 					// standard path, handle arrays as multiple updates, and otherwise do a direct update
 					if (Array.isArray(record)) {
-						return Promise.all(
-							record.map((element) => {
-								const id = element[primaryKey];
-								this._writeUpdate(id, element, true);
-								return this.save() as any;
-							})
-						) as any;
+						// Capture each element's operation synchronously (before any async `@embed`
+						// hook resolves): `#savingOperation` is a single field that parallel writes
+						// would otherwise clobber, so a deferred `save()` would commit the wrong op
+						// — e.g. one element's save running before a later element's vector is written.
+						const writes = record.map((element) => {
+							const id = element[primaryKey];
+							const writePromise = this._writeUpdate(id, element, true);
+							const operation = this.#savingOperation;
+							return when(writePromise, () => this.#saveOperation(operation));
+						});
+						this.#savingOperation = null;
+						return Promise.all(writes) as any;
 					} else {
 						const id = requestTargetToId(target as any);
-						this._writeUpdate(id, record, true);
-						return this.save() as any;
+						return when(this._writeUpdate(id, record, true), () => this.save() as any);
 					}
 				}) as any;
 			}
@@ -1575,8 +1604,10 @@ export function makeTable(options) {
 						throw new ClientError('Record already exists', 409);
 					}
 				}
-				this._writeUpdate(id, record, true);
-				return record;
+				// `_writeUpdate` may return a promise when an `@embed` directive
+				// requires running an embedder before the per-write `commit(...)`
+				// closure. `when()` passes through synchronous returns.
+				return when(this._writeUpdate(id, record, true), () => record);
 			}) as any;
 		}
 
@@ -1586,9 +1617,9 @@ export function makeTable(options) {
 			recordUpdate: Partial<Record & RecordObject>
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
-				// legacy argument position, shift the arguments and go through the update method for back-compat
-				(this as any).update(target, false);
-				return this.save() as any;
+				// legacy argument position, shift the arguments and go through the update method for back-compat.
+				// `when` settles the embed hook before `save()` so the write is staged first.
+				return when(this.update(target, false), () => this.save() as any) as any;
 			} else {
 				// standard path, ensure there is no return object
 				return when(this.update(target, recordUpdate), () => {
@@ -1603,7 +1634,6 @@ export function makeTable(options) {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
-
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 			const writeToSource = () => {
@@ -1741,8 +1771,18 @@ export function makeTable(options) {
 							}
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
+							let walkSteps = 0;
+							let auditWalkCapped = false;
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
+									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
+									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
+									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
+									// shortcut below would not apply — keep its exact, unbounded reconciliation.
+									if (isRocksDB && ++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+										auditWalkCapped = true;
+										break;
+									}
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
 									if (!auditRecord) break;
 									auditedVersion = auditRecord.version;
@@ -1770,8 +1810,11 @@ export function makeTable(options) {
 										}
 										if (auditRecord.type === 'patch') {
 											logger.debug?.('out of order patch will be applied', id, auditRecord);
-											// record patches so we can reply in order
-											succeedingUpdates.push(auditRecord);
+											// Materialize the patch value now and keep only { version, value } rather than the
+											// audit record itself, so its backing transaction-log buffer and decoders can be
+											// reclaimed immediately. Only these two fields are needed for the ordered fold below;
+											// retaining the full records is what pins the heap on a deep chain (issue #1114).
+											succeedingUpdates.push({ version: auditedVersion, value: auditRecord.getValue(primaryStore) });
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
 										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
 											// There is newer full record update, so this incremental update is completely superseded
@@ -1803,6 +1846,7 @@ export function makeTable(options) {
 									nodeId = auditRecord.previousNodeId;
 								}
 								// Check if we need to scan additional audit refs from this record
+								if (auditWalkCapped) break;
 								nextRef = auditRefsToVisit.shift();
 								if (nextRef) {
 									localTime = auditedVersion = nextRef.localTime;
@@ -1810,7 +1854,7 @@ export function makeTable(options) {
 									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
 								}
 							} while (nextRef);
-							if (!localTime) {
+							if (!localTime && !auditWalkCapped) {
 								// if we reached the end of the audit trail, we can just apply the update
 								logger.debug?.(
 									'No further audit history, applying incremental updates based on available history',
@@ -1819,15 +1863,45 @@ export function makeTable(options) {
 									existingEntry
 								);
 							}
-							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
-							for (const auditRecord of succeedingUpdates) {
-								const newerUpdate = auditRecord.getValue(primaryStore);
-								logger.debug?.(
-									'Rebuilding update with future patch:',
-									new Date(auditRecord.version),
-									newerUpdate,
-									auditRecord
+							if (auditWalkCapped) {
+								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
+								// history, seen during a replication full-copy of a large-history database — issue #1114).
+								// Walking and buffering the whole chain per record OOMs the worker, so we stopped at the cap
+								// and reconcile against only the most recent MAX_OUT_OF_ORDER_AUDIT_DEPTH updates (the fold
+								// below). That is an approximation for histories deeper than the cap — updates older than the
+								// retained window are not layered in — but the authoritative full-copy record restores exact
+								// convergence. Because we stopped before reaching txnTime, the inline duplicate detection in
+								// the walk never ran; full-copy audit-replay re-delivers writes, and re-applying one would
+								// double-apply its commutative ops, so rule that out here with a single O(1) lookup at txnTime
+								// (RocksDB audit logs are keyed by version, and the cap is RocksDB-only).
+								logger.warn?.(
+									'Out-of-order audit reconciliation exceeded depth cap; reconciling against most recent updates only',
+									{
+										table: tableName,
+										id,
+										depth: walkSteps,
+									}
 								);
+								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								if (
+									duplicate &&
+									duplicate.version === txnTime &&
+									precedesExistingVersion(
+										txnTime,
+										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
+										options?.nodeId
+									) === 0
+								) {
+									write.skipped = true;
+									return; // duplicate write already applied
+								}
+							}
+							// Fold the retained succeeding updates (the full chain, or — when capped — the most recent
+							// window) onto this older write so newer fields win; for a capped walk this layers in only
+							// what we collected before the cap.
+							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
+							for (const { version: patchVersion, value: newerUpdate } of succeedingUpdates) {
+								logger.debug?.('Rebuilding update with future patch:', new Date(patchVersion), newerUpdate);
 								incrementalUpdateToApply = rebuildUpdateBefore(
 									incrementalUpdateToApply ?? recordUpdate,
 									newerUpdate,
@@ -1952,8 +2026,27 @@ export function makeTable(options) {
 				},
 			};
 			this.#savingOperation = write;
-			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
-			return transaction.addWrite(write as any);
+			// `@embed` hook must run before `addWrite` so the embedder's vector is on the
+			// record when `commit` runs. (The txn `before` slot runs after commit, which
+			// suits blob writes but not embedding, where the vector must be present at commit.)
+			// Known limitation of this write-time placement (a validate-time alternative was
+			// tried and reverted as a Harper-foreign pattern): the embedder sees this write's
+			// payload, before table validation — so a write that later fails validation still
+			// calls the backend, and a tracked-instance mutation (update(id,{}); row.source=…;
+			// save()) that sets the source via accessors after update() won't re-embed. A
+			// resource-layer re-embed is the proper fix; tracked as a follow-up.
+			const embedBefore = buildEmbedBefore(
+				recordUpdate,
+				context,
+				options,
+				TableResource.embedAttributes,
+				TableResource.userEmbedders
+			);
+			const proceed = (): any => {
+				write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
+				return transaction.addWrite(write as any);
+			};
+			return embedBefore ? embedBefore().then(proceed) : proceed();
 		}
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
@@ -3368,6 +3461,14 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			// Refresh on every call: schema reload mutates `attributes` in place, so the
+			// class-construction snapshot would otherwise go stale.
+			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
+			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
+			// directive doesn't leave a stale embedder or block a default refresh on re-add.
+			const embedNames = new Set(this.embedAttributes.map((a) => a.name));
+			for (const name of Object.keys(this.userEmbedders)) if (!embedNames.has(name)) delete this.userEmbedders[name];
+			for (const name of this.userSetEmbedders) if (!embedNames.has(name)) this.userSetEmbedders.delete(name);
 			propertyResolvers = this.propertyResolvers = {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
@@ -3383,6 +3484,11 @@ export function makeTable(options) {
 				attribute.resolve = null; // reset this
 				const relationship = attribute.relationship;
 				const computed = attribute.computed;
+				// Register the default embedder unless an author override is set. Sits outside
+				// the resolver chain below so `@embed` fields still flow through auto-HNSW indexing.
+				if (attribute.embed && !TableResource.userSetEmbedders.has(attribute.name)) {
+					this.userEmbedders[attribute.name] = createDefaultEmbedder(attribute.embed);
+				}
 				if (relationship) {
 					if (attribute.indexed) {
 						console.error(
@@ -3565,6 +3671,25 @@ export function makeTable(options) {
 				return;
 			}
 			this.userResolvers[attribute_name] = resolver;
+		}
+		/**
+		 * Override the default embedder for an `@embed` attribute. Return the vector to
+		 * store at `attribute_name`. The embedder receives the write payload (the fields
+		 * present in the PUT/PATCH body), not the post-merge record, so multi-field
+		 * concatenation only works when all source fields are in the same write.
+		 */
+		static setEmbedAttribute(attribute_name: string, embedder: Embedder): void {
+			const attribute = findAttribute(attributes, attribute_name);
+			if (!attribute) {
+				console.error(`The attribute "${attribute_name}" does not exist in the table "${tableName}"`);
+				return;
+			}
+			if (!attribute.embed) {
+				console.error(`The attribute "${attribute_name}" is not declared with @embed in the table "${tableName}"`);
+				return;
+			}
+			this.userEmbedders[attribute_name] = embedder;
+			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false) {
 			let completion: Promise<void>;
@@ -4428,6 +4553,19 @@ export function makeTable(options) {
 							}
 						},
 					};
+					// The cache-from-source write bypasses `_writeUpdate`, so wire the embed hook here
+					// too (always the originating node). It runs after the client GET has resolved with
+					// fresh source data, so it's a background commit: an embedder failure aborts the cache
+					// write via the outer error handler (row re-embeds next read) and never reaches the
+					// caller. Source-resolution errors are handled earlier, with the stale-data fallback.
+					const embedBefore = buildEmbedBefore(
+						updatedRecord,
+						sourceContext,
+						undefined,
+						TableResource.embedAttributes,
+						TableResource.userEmbedders
+					);
+					if (embedBefore) await embedBefore();
 					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 					dbTxn.addWrite(sourceWrite);
 				}),
@@ -4537,7 +4675,7 @@ export function makeTable(options) {
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-										let resolution: Promise<void>;
+										let resolution: Promise<void> | undefined;
 										if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
 											// make sure it is still deleted when we do the removal
 											resolution = removeEntry(primaryStore, entry, version);
@@ -4546,9 +4684,9 @@ export function makeTable(options) {
 											resolution = TableResource.evict(key, record, version);
 											count++;
 										}
-										if (resolution && (resolution as any).catch) {
+										if (resolution) {
 											await outstandingCleanupOperations[cleanupIndex];
-											outstandingCleanupOperations[cleanupIndex] = (resolution as any).catch((error) => {
+											outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
 												logger.error?.('Cleanup error', error);
 											});
 											if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;

@@ -478,6 +478,165 @@ describe('HNSW search result loading (searchByIndex)', () => {
 	});
 });
 
+describe('HNSW int8 quantization (quantization: "int8")', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const testInstance = new HierarchicalNavigableSmallWorld();
+	const DIMS = 32;
+	const CLUSTERS = 12;
+	let T;
+	let all = [];
+
+	// Deterministic clustered unit-ish vectors so genuine near-neighbours exist
+	// (purely random high-dim vectors are near-orthogonal and make recall meaningless).
+	function vec(seed) {
+		let s = (seed * 2654435761) >>> 0;
+		const rand = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+		const cluster = seed % CLUSTERS;
+		let cs = (cluster * 40503 + 1) >>> 0;
+		const crand = () => (cs = (cs * 1664525 + 1013904223) >>> 0) / 4294967296;
+		const out = new Array(DIMS);
+		let mag = 0;
+		for (let i = 0; i < DIMS; i++) {
+			const v = crand() * 2 - 1 + 0.15 * (rand() * 2 - 1);
+			out[i] = v;
+			mag += v * v;
+		}
+		const inv = 1 / (Math.sqrt(mag) || 1);
+		for (let i = 0; i < DIMS; i++) out[i] = out[i] * inv;
+		return out;
+	}
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWInt8Test',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+	});
+	after(() => {
+		T.dropTable();
+	});
+
+	it('stores the vector as a compact int8 bin + scale, not a float array', async () => {
+		for (let i = 0; i < 300; i++) {
+			const v = vec(i);
+			await T.put(i, { vector: v });
+			all.push({ id: i, v });
+		}
+		let raw;
+		for (const { key, value } of T.indices.vector.getRange({})) {
+			if (typeof key === 'number' && value && value.vector) {
+				raw = value;
+				break;
+			}
+		}
+		assert(raw, 'expected at least one stored graph node');
+		assert(!Array.isArray(raw.vector), 'int8 vector must be stored as a bin, not a number[]');
+		assert.equal(typeof raw.scale, 'number', 'int8 node must carry a dequant scale');
+	});
+
+	it('finds near-optimal neighbours through the int8 graph ($distance stays exact)', async () => {
+		// $distance is recomputed from the record's full-precision vector, so it is exact;
+		// only WHICH records the int8 graph navigates to is approximate.
+		const target = vec(7); // lands in a populated cluster
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', '$distance'],
+				limit: 10,
+			})
+		);
+		assert(results.length >= 5, `expected >=5 results, got ${results.length}`);
+		const brute = all.map(({ id, v }) => ({ id, d: testInstance.distance(target, v) })).sort((a, b) => a.d - b.d);
+		// Top results must be close to the brute-force optimum at each rank. Slightly looser
+		// tolerance than the float test to allow for quantization-induced ranking wobble.
+		const TOL = 0.1;
+		for (let i = 0; i < 3; i++) {
+			assert(Number.isFinite(results[i].$distance), `result ${i} distance not finite`);
+			assert(
+				results[i].$distance <= brute[i].d + TOL,
+				`int8 result at rank ${i} (${results[i].$distance}) too far from brute optimum (${brute[i].d})`
+			);
+		}
+		// recall@10 should remain high on this clustered set despite quantization
+		const truthTop = new Set(brute.slice(0, 10).map((t) => t.id));
+		const hits = results.filter((r) => truthTop.has(r.id)).length;
+		assert(hits >= 5, `int8 recall@10 unexpectedly low: ${hits}/10`);
+	});
+
+	it('handles update and delete on an int8 index without corruption', async () => {
+		await T.put(0, { vector: vec(50000) }); // move id 0 to a new location
+		await T.delete(5);
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: vec(50000), distance: 'cosine' }, select: ['id'], limit: 10 })
+		);
+		assert(
+			results.some((r) => r.id === 0),
+			'updated record should be findable near its new vector'
+		);
+		assert(!results.some((r) => r.id === 5), 'deleted record must not be returned');
+	});
+
+	it('ranks correctly across cosine/euclidean/dotProduct on an int8 index (incl. cosine fallback)', async () => {
+		// Default distance is euclidean, so nodes are stored WITHOUT a cached invMag — a cosine
+		// query then exercises the int8 cosine-fallback magnitude path. The three queries also
+		// exercise the inline asymmetric euclidean and dotProduct int8 distance paths.
+		const records = [
+			{ id: 0, vector: [0.1, 0.1] }, // best cosine (direction match to [1,1])
+			{ id: 1, vector: [1.2, 0.8] }, // best euclidean (closest in space)
+			{ id: 2, vector: [7.0, 8.0] }, // best dot product (max projection)
+		];
+		const M = table({
+			table: 'HNSWInt8MetricTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (const r of records) await M.put(r.id, r);
+		const target = [1, 1];
+		const top = async (distance) =>
+			(await fromAsync(M.search({ sort: { attribute: 'vector', target, distance }, select: ['id'], limit: 1 })))[0]?.id;
+		assert.equal(await top('cosine'), 0, 'cosine fallback should rank the direction match first');
+		assert.equal(await top('euclidean'), 1, 'euclidean should rank the closest-in-space first');
+		assert.equal(await top('dotProduct'), 2, 'dotProduct should rank the max-projection first');
+		M.dropTable();
+	});
+
+	it('reranks int8 results so returned $distance is exact (recomputed from the record), sorted', async () => {
+		// The graph navigates on quantized distances, but the search layer reranks the candidates
+		// against each record's full-precision vector. So the returned $distance must equal the exact
+		// float distance to that record's own vector (within float epsilon), not the quantized value.
+		const target = vec(7);
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', 'vector', '$distance'],
+				limit: 8,
+			})
+		);
+		assert(results.length >= 1, 'expected results');
+		for (const r of results) {
+			const exact = testInstance.distance(target, r.vector); // exact cosine over the record's full vector
+			assert(
+				Math.abs(r.$distance - exact) < 1e-6,
+				`$distance ${r.$distance} should equal the exact full-precision distance ${exact} (reranked)`
+			);
+		}
+		for (let i = 1; i < results.length; i++)
+			assert(
+				results[i].$distance >= results[i - 1].$distance - 1e-9,
+				'results must be sorted ascending by exact distance'
+			);
+	});
+});
+
 async function fromAsync(iterable) {
 	let results = [];
 	for await (let entry of iterable) {
