@@ -970,6 +970,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primaryKey = primaryKeyAttribute.name;
 		primaryKeyAttribute.isPrimaryKey = true;
+		primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 		primaryKeyAttribute.schemaDefined = schemaDefined;
 		// can't change compression after the fact (except threshold), so save only when we create the table
 		primaryKeyAttribute.compression = getDefaultCompression();

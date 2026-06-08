@@ -106,28 +106,29 @@ suite(
 		});
 
 		test('downgrade and start', async () => {
-			// can we downgrade?
-			await killHarper(ctx); // kill 5.x harper
-			await startHarper(ctx, {
-				config: {},
-				env: {
-					CONFIRM_DOWNGRADE: 'yes',
-				},
-				harperBinPath: join(legacyPath, 'bin', 'harperdb.js'),
-			}); // start on 4.x again
-			let response = await sendOperation(ctx.harper, {
-				operation: 'search_by_conditions',
-				table: 'test',
-				conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
-			});
-			ok(response.length > 4);
-			response = await sendOperation(ctx.harper, {
-				operation: 'read_audit_log',
-				schema: 'data',
-				table: 'test',
-			});
-			ok(response.length > 10);
-		});
+				// can we downgrade?
+				await killHarper(ctx); // kill 5.x harper
+				await startHarper(ctx, {
+					config: {},
+					env: {
+						CONFIRM_DOWNGRADE: 'yes',
+					},
+					harperBinPath: join(legacyPath, 'bin', 'harperdb.js'),
+				}); // start on 4.x again
+				let response = await sendOperation(ctx.harper, {
+					operation: 'search_by_conditions',
+					table: 'test',
+					conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
+				});
+				ok(response.length > 4);
+				response = await sendOperation(ctx.harper, {
+					operation: 'read_audit_log',
+					schema: 'data',
+					table: 'test',
+				});
+				ok(response.length > 10);
+			}
+		);
 
 		test('upgrade and migrate LMDB to RocksDB', async () => {
 			await killHarper(ctx);
