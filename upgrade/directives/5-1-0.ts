@@ -75,7 +75,9 @@ async function patchHdbDeploymentIsHashAttribute() {
 
 	primaryAttr.is_hash_attribute = true;
 	await systemTable.dbisDB.put(dbiName, primaryAttr);
-	hdbLogger.info(`Patched system.${DEPLOYMENT_TABLE} __dbis__ entry with is_hash_attribute=true for harperdb@4.x downgrade compatibility.`);
+	hdbLogger.info(
+		`Patched system.${DEPLOYMENT_TABLE} __dbis__ entry with is_hash_attribute=true for harperdb@4.x downgrade compatibility.`
+	);
 }
 
 const directive510 = {
