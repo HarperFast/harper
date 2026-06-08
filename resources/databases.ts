@@ -22,7 +22,7 @@ import harperLogger from '../utility/logging/harper_logger.js';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
-import { handleLocalTimeForGets } from './RecordEncoder.ts';
+import { handleLocalTimeForGets, IndexRecordEncoder } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
@@ -824,6 +824,12 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 	const objectStorage =
 		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	const dbiInit = createOpenDBIObject(!objectStorage, objectStorage);
+	// Custom-index object stores (e.g. HNSW vector graphs) must keep writing typed structs regardless
+	// of the storage.randomAccessFields opt-out — their internal nodes are mutated in place and depend
+	// on random-access struct encoding (see IndexRecordEncoder).
+	if (attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore) {
+		dbiInit.encoder = { Encoder: IndexRecordEncoder };
+	}
 	let dbi:
 		| LMDBDatabase
 		| (RocksDatabase & {

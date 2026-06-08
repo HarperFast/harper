@@ -6,6 +6,8 @@
  */
 
 import { Encoder } from 'msgpackr';
+import { get as envGet } from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
@@ -90,6 +92,16 @@ export class RecordEncoder extends Encoder {
 		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
 		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
 		options.maxOwnStructures ??= 256;
+		// When random-access fields are disabled (storage.randomAccessFields=false), write records as
+		// classic shared structures instead of typed random-access structures. randomAccessStructure stays
+		// on so reads still decode either form — existing typed-struct data remains readable; only new
+		// writes change. lmdb-js does not forward non-whitelisted encoder options, so the flag is derived
+		// from the global config here rather than passed through the store options. Read at construction
+		// (DBI open, a cold path) so env/CLI config overrides are applied; an explicit option still wins
+		// (e.g. rocksdb-js's option spread, or tests).
+		if (options.readOnlyStructures === undefined && envGet(CONFIG_PARAMS.STORAGE_RANDOMACCESSFIELDS) === false) {
+			options.readOnlyStructures = true;
+		}
 		/**
 		 * The base class for records that provides the read-only methods for accessing
 		 * metadata and will be assigned computed property getters. On its own, these instances
@@ -246,7 +258,14 @@ export class RecordEncoder extends Encoder {
 		let nextByte = buffer[start];
 		let metadataFlags = 0;
 		try {
-			if ((this.isRocksDB && nextByte === 66) || (nextByte < 32 && end > 2)) {
+			// The metadata/timestamp prefix is detected heuristically by the first byte. For rocksdb a
+			// local-timestamp prefix starts with 66 — but 66 (0x42) is also classic shared-structure
+			// record-id #2, so a timestamp-less classic record beginning with that id is misread as a
+			// timestamped record (8 bytes stripped → corrupt). Callers that pass a value known to have no
+			// prefix (e.g. the audit store's getValue) set options.noMetadata to skip the heuristic. Typed
+			// structs start at 0x20-0x3f and never hit this, which is why it only surfaces with classic
+			// structures (random-access fields off).
+			if (!options?.noMetadata && ((this.isRocksDB && nextByte === 66) || (nextByte < 32 && end > 2))) {
 				// record with metadata
 				// this means that the record starts with a local timestamp (that was assigned by lmdb-js).
 				// we copy it so we can decode it as float-64; we need to do it first because if structural data
@@ -341,6 +360,21 @@ export class RecordEncoder extends Encoder {
 			harperLogger.error('Error decoding record', error, 'data: ' + buffer.slice(0, 40).toString('hex'));
 			return null;
 		}
+	}
+}
+
+/**
+ * Encoder for custom-index object stores (e.g. HNSW vector graphs). These hold fixed-shape internal
+ * nodes — numeric-keyed per-level connection arrays and quantized bins — that depend on random-access
+ * struct encoding and are mutated in place during graph maintenance. Keep them writing typed structs
+ * even when storage.randomAccessFields disables structs for user tables: their node shapes are
+ * controlled, so the wide/heterogeneous OOM risk that motivates opt-out doesn't apply, and classic
+ * (frozen) decoding would break the in-place graph mutation.
+ */
+export class IndexRecordEncoder extends RecordEncoder {
+	constructor(options) {
+		options.readOnlyStructures = false;
+		super(options);
 	}
 }
 function getTimestamp() {

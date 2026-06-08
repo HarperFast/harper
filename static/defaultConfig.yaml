@@ -69,6 +69,7 @@ rootPath: null
 storage:
   writeAsync: false
   caching: true
+  randomAccessFields: true
   compression: true
   noReadAhead: false
   path: null

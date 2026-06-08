@@ -412,6 +412,10 @@
 					"description": "Disable fsync for faster writes (risk of data loss on crash). Default: false"
 				},
 				"caching": { "type": "boolean", "description": "Enable in-memory caching of records. Default: true" },
+				"randomAccessFields": {
+					"type": "boolean",
+					"description": "Encode records as typed random-access structures, optimizing for fast field access and smaller records. Best for tables with stable, homogeneous field types; wide or variably-typed schemas can set this to false to fall back to classic shared-structure encoding. Applies to each primary table on open: existing records still decode either way, only new writes change. Default: true"
+				},
 				"compression": {
 					"oneOf": [
 						{ "type": "boolean" },
