@@ -4,7 +4,7 @@ title: MCP tool payload sourcing
 
 # MCP tool payload sourcing
 
-Harper's MCP server publishes tools via the Model Context Protocol (rev 2025-06-18, Streamable HTTP transport). This page is a reference for what fields appear on each generated tool descriptor and where the data comes from. For authoring guidance, see the [Writing quality MCP and OpenAPI descriptions](../../learn/developers/mcp-and-openapi-metadata) how-to.
+Harper's MCP server publishes tools via the Model Context Protocol (rev 2025-06-18, Streamable HTTP transport). This page is a reference for what fields appear on each generated tool descriptor and where the data comes from. For authoring guidance, see the [Writing quality MCP and OpenAPI descriptions](/learn/developers/mcp-and-openapi-metadata) how-to.
 
 ## Tool descriptor fields
 
@@ -143,6 +143,6 @@ For `harper://schema/{db}/{table}` and `https://{host}/{path}` entries, the desc
 
 ## See also
 
-- [Writing quality MCP and OpenAPI descriptions](../../learn/developers/mcp-and-openapi-metadata) — authoring how-to
-- [Schema reference: docstrings and `@hidden`](../database/schema) — GraphQL surface
-- [Resource API reference: class-level metadata](../resources/resource-api#class-level-metadata-for-mcp-and-openapi) — programmatic surface
+- [Writing quality MCP and OpenAPI descriptions](/learn/developers/mcp-and-openapi-metadata) — authoring how-to
+- [Schema reference: docstrings and `@hidden`](/reference/v5/database/schema) — GraphQL surface
+- [Resource API reference: class-level metadata](/reference/v5/resources/resource-api#class-level-metadata-for-mcp-and-openapi) — programmatic surface
