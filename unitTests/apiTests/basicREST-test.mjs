@@ -1,7 +1,7 @@
 import { assert } from 'chai';
 import axios from 'axios';
 import { decode, encode } from 'cbor-x';
-import { setupTestApp } from './setupTestApp.mjs';
+import { setupTestApp, baseUrl, testHost } from './setupTestApp.mjs';
 import http from 'node:http';
 import { Request } from '#src/server/serverHelpers/Request';
 
@@ -20,7 +20,7 @@ describe('test REST calls', () => {
 			//authorization,
 		};
 		let response = await axios({
-			url: 'http://localhost:9926/VariedProps/' + available_records[1],
+			url: `${baseUrl}/VariedProps/` + available_records[1],
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers,
@@ -36,7 +36,7 @@ describe('test REST calls', () => {
 			accept: 'application/cbor',
 		};
 		let response = await axios({
-			url: 'http://localhost:9926/VariedProps/' + available_records[1],
+			url: `${baseUrl}/VariedProps/` + available_records[1],
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers,
@@ -45,7 +45,7 @@ describe('test REST calls', () => {
 		let data = decode(response.data);
 		assert.equal(available_records[1], data.id);
 		response = await axios({
-			url: 'http://localhost:9926/VariedProps/' + available_records[1],
+			url: `${baseUrl}/VariedProps/` + available_records[1],
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers: {
@@ -58,7 +58,7 @@ describe('test REST calls', () => {
 		});
 		assert.equal(response.status, 304);
 		response = await axios({
-			url: 'http://localhost:9926/VariedProps/',
+			url: `${baseUrl}/VariedProps/`,
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers,
@@ -74,7 +74,7 @@ describe('test REST calls', () => {
 			'accept': 'application/cbor',
 		};
 		let response = await axios.put(
-			'http://localhost:9926/VariedProps/33',
+			`${baseUrl}/VariedProps/33`,
 			encode({
 				id: '33',
 				name: 'new record',
@@ -85,7 +85,7 @@ describe('test REST calls', () => {
 			}
 		);
 		assert.equal(response.status, 204);
-		response = await axios('http://localhost:9926/VariedProps/33');
+		response = await axios(`${baseUrl}/VariedProps/33`);
 		assert.equal(response.data.name, 'new record');
 	});
 	it('POST with x-www-form-urlencoded data', async () => {
@@ -93,41 +93,41 @@ describe('test REST calls', () => {
 			'content-type': 'application/x-www-form-urlencoded',
 		};
 		const params = new URLSearchParams({ id: 'www-form-urlencoded-unique-id', name: 'www-form-urlencoded' });
-		let response = await axios.post('http://localhost:9926/VariedProps/', params, { headers });
+		let response = await axios.post(`${baseUrl}/VariedProps/`, params, { headers });
 		assert.equal(response.status, 201);
-		response = await axios('http://localhost:9926/VariedProps/www-form-urlencoded-unique-id');
+		response = await axios(`${baseUrl}/VariedProps/www-form-urlencoded-unique-id`);
 		assert.equal(response.data.name, 'www-form-urlencoded');
 	});
 	it('POST a new record', async () => {
-		let response = await axios.post('http://localhost:9926/VariedProps/', {
+		let response = await axios.post(`${baseUrl}/VariedProps/`, {
 			name: 'new record without an id',
 		});
 		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
 		let id = response.data;
-		response = await axios.get('http://localhost:9926/VariedProps/' + id);
+		response = await axios.get(`${baseUrl}/VariedProps/` + id);
 		assert.equal(response.data.id, id);
-		response = await axios.delete('http://localhost:9926/VariedProps/' + id);
+		response = await axios.delete(`${baseUrl}/VariedProps/` + id);
 		assert.equal(response.status, 200);
 		assert.equal(response.data, true);
 	});
 	it('POST a new record with a specified id', async () => {
-		let response = await axios.post('http://localhost:9926/VariedProps/', {
+		let response = await axios.post(`${baseUrl}/VariedProps/`, {
 			name: 'new record with an id',
 			id: '12345678901234567890',
 		});
 		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
 		assert.equal(response.data, '12345678901234567890');
-		response = await axios.get('http://localhost:9926/VariedProps/12345678901234567890');
+		response = await axios.get(`${baseUrl}/VariedProps/12345678901234567890`);
 		assert.equal(response.data.id, '12345678901234567890');
-		response = await axios.delete('http://localhost:9926/VariedProps/12345678901234567890');
+		response = await axios.delete(`${baseUrl}/VariedProps/12345678901234567890`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data, true);
 	});
 	describe('describe', function () {
 		it('table describe with root url', async () => {
-			let response = await axios('http://localhost:9926/FourProp');
+			let response = await axios(`${baseUrl}/FourProp`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.attributes.length, 7);
 			assert.equal(response.data.name, 'FourProp');
@@ -135,7 +135,7 @@ describe('test REST calls', () => {
 		});
 		it('table describe with root url and includeExpensiveRecordCountEstimates', async () => {
 			Request.prototype.includeExpensiveRecordCountEstimates = true;
-			let response = await axios('http://localhost:9926/FourProp');
+			let response = await axios(`${baseUrl}/FourProp`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.attributes.length, 7);
 			assert.equal(response.data.name, 'FourProp');
@@ -147,29 +147,29 @@ describe('test REST calls', () => {
 	});
 	describe('querying with query parameters', function () {
 		it('do query by string property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=name3');
+			let response = await axios(`${baseUrl}/FourProp/?name=name3`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 			assert.equal(response.data[0].name, 'name3');
 		});
 		it('do query by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=25');
+			let response = await axios(`${baseUrl}/FourProp/?age=25`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 			assert.equal(response.data[0].age, 25);
 		});
 		it('do query by two properties with no match', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=name2&age=28');
+			let response = await axios(`${baseUrl}/FourProp/?name=name2&age=28`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 0);
 		});
 		it('do query by two properties with one match', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=name2&age=22');
+			let response = await axios(`${baseUrl}/FourProp/?name=name2&age=22`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});
 		it('do query for missing property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?notaprop=22', {
+			let response = await axios(`${baseUrl}/FourProp/?notaprop=22`, {
 				validateStatus: function (_status) {
 					return true;
 				},
@@ -177,66 +177,66 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 404);
 		});
 		it('do query by starts with', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name==name*');
+			let response = await axios(`${baseUrl}/FourProp/?name==name*`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 10);
 		});
 		it('do query by starts with and ends with', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name==name*&name=ew=4');
+			let response = await axios(`${baseUrl}/FourProp/?name==name*&name=ew=4`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});
 		it('do query with contains', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=sw=name&name=ct=4');
+			let response = await axios(`${baseUrl}/FourProp/?name=sw=name&name=ct=4`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});
 		it('do a less than query by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=lt=25');
+			let response = await axios(`${baseUrl}/FourProp/?age=lt=25`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 24);
 		});
 		it('do a less than query or equal by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=le=25');
+			let response = await axios(`${baseUrl}/FourProp/?age=le=25`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 6);
 			assert.equal(response.data[5].age, 25);
 		});
 		it('do a less than query or equal and FIQL not-equal by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=ne=22&age=le=25');
+			let response = await axios(`${baseUrl}/FourProp/?age=ne=22&age=le=25`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 25);
 		});
 		it('do a less than query or equal and not-equal by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age!=22&age=le=25');
+			let response = await axios(`${baseUrl}/FourProp/?age!=22&age=le=25`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 25);
 		});
 		it('do a less than or equal and operator precedence', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=le=29&[age=ge=27|[age=gt=21&age=lt=23]]');
+			let response = await axios(`${baseUrl}/FourProp/?age=le=29&[age=ge=27|[age=gt=21&age=lt=23]]`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 4);
 			assert.equal(response.data[0].age, 22);
 			assert.equal(response.data[3].age, 29);
 		});
 		it('do a less than query by numeric property with limit and offset', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&limit(1,3)');
+			let response = await axios(`${baseUrl}/FourProp/?age=lt=25&limit(1,3)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1].age, 22);
 		});
 
 		it('do a less than query by numeric property with limit', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&limit(3)');
+			let response = await axios(`${baseUrl}/FourProp/?age=lt=25&limit(3)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 3);
 			assert.equal(response.data[2].age, 22);
 		});
 		it('do query by numeric computed index', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?ageInMonths=lt=300');
+			let response = await axios(`${baseUrl}/FourProp/?ageInMonths=lt=300`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 24);
@@ -246,7 +246,7 @@ describe('test REST calls', () => {
 		});
 		it('do query by numeric computed index and return computed property', async () => {
 			let response = await axios(
-				'http://localhost:9926/FourProp/?ageInMonths=288&select(id,age,ageInMonths,nameTitle)'
+				`${baseUrl}/FourProp/?ageInMonths=288&select(id,age,ageInMonths,nameTitle)`
 			);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
@@ -257,14 +257,14 @@ describe('test REST calls', () => {
 
 		it('by primary key', async () => {
 			// this test also tests to ensure deleted values are not reachable
-			let response = await axios('http://localhost:9926/VariedProps/?id=sw=8');
+			let response = await axios(`${baseUrl}/VariedProps/?id=sw=8`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[0].id[0], '8');
 		});
 
 		it('query with select two properties', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select(age,id)');
+			let response = await axios(`${baseUrl}/FourProp?age=lt=22&select(age,id)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1].age, 21);
@@ -273,32 +273,32 @@ describe('test REST calls', () => {
 			assert.equal(response.data[1].name, undefined);
 		});
 		it('query with select one properties', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select(age)');
+			let response = await axios(`${baseUrl}/FourProp?age=lt=22&select(age)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1], 21);
 		});
 		it('query with select one properties and limit', async () => {
-			let response = await axios('http://localhost:9926/FourProp?select(id)&limit(2)');
+			let response = await axios(`${baseUrl}/FourProp?select(id)&limit(2)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1], '1');
 		});
 		it('query with only limit', async () => {
-			let response = await axios('http://localhost:9926/FourProp?limit(2)');
+			let response = await axios(`${baseUrl}/FourProp?limit(2)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1].id, '1');
 		});
 		it('query with select two properties as array', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select([age,id])');
+			let response = await axios(`${baseUrl}/FourProp?age=lt=22&select([age,id])`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1][0], 21);
 			assert.equal(response.data[1][1], 1);
 		});
 		it('query by date', async () => {
-			let response = await axios('http://localhost:9926/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22');
+			let response = await axios(`${baseUrl}/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[0].birthday.slice(0, 4), '1993');
@@ -306,7 +306,7 @@ describe('test REST calls', () => {
 		});
 		it('query by typed epoch date', async () => {
 			let response = await axios(
-				'http://localhost:9926/FourProp?birthday=gt=date:727660800000&birthday=lt=date:1994-11-22'
+				`${baseUrl}/FourProp?birthday=gt=date:727660800000&birthday=lt=date:1994-11-22`
 			);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
@@ -315,12 +315,12 @@ describe('test REST calls', () => {
 		});
 		it('query by typed date compared with number', async () => {
 			// a little silly, but just verify that a date can be compared with a number in case the number is an epoch date
-			let response = await axios('http://localhost:9926/FourProp?age=lt=date:1994-11-22');
+			let response = await axios(`${baseUrl}/FourProp?age=lt=date:1994-11-22`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 10);
 		});
 		it('query and return text/csv', async () => {
-			let response = await axios('http://localhost:9926/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22', {
+			let response = await axios(`${baseUrl}/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22`, {
 				headers: { accept: 'text/csv' },
 			});
 			assert.equal(response.status, 200);
@@ -335,12 +335,12 @@ describe('test REST calls', () => {
 
 		it('query with parenthesis in value', async () => {
 			// at least shouldn't throw an error
-			let response = await axios('http://localhost:9926/FourProp?name=no(match)for this)');
+			let response = await axios(`${baseUrl}/FourProp?name=no(match)for this)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 0);
 		});
 		it('query has restricted properties for restricted user', async () => {
-			let response = await axios('http://localhost:9926/FourProp?limit(2)', {
+			let response = await axios(`${baseUrl}/FourProp?limit(2)`, {
 				headers: {
 					Authorization: 'Basic ' + Buffer.from('test:test').toString('base64'),
 				},
@@ -351,7 +351,7 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].birthday, undefined); // shouldn't be returned
 		});
 		it('query can access table that is not exported for rest', async () => {
-			let response = await axios('http://localhost:9926/ManyToMany/', {
+			let response = await axios(`${baseUrl}/ManyToMany/`, {
 				headers: {
 					Authorization: 'Basic ' + Buffer.from('test:test').toString('base64'),
 				},
@@ -363,50 +363,50 @@ describe('test REST calls', () => {
 		});
 	});
 	it('invalidate and get from cache and check headers', async () => {
-		let response = await axios.post('http://localhost:9926/SimpleCache/3', {
+		let response = await axios.post(`${baseUrl}/SimpleCache/3`, {
 			invalidate: true,
 		});
-		response = await axios('http://localhost:9926/SimpleCache/3');
+		response = await axios(`${baseUrl}/SimpleCache/3`);
 		assert.equal(response.status, 200);
 		assert(response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 		assert.equal(response.data.nameTitle, 'name3 title3'); // should include enumerable
-		response = await axios('http://localhost:9926/SimpleCache/3');
+		response = await axios(`${baseUrl}/SimpleCache/3`);
 		assert.equal(response.status, 200);
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 	});
 	it('invalidate and get from cache and check headers with loadAsInstance', async () => {
-		let response = await axios.post('http://localhost:9926/SimpleCacheLoadAsInstance/3', {
+		let response = await axios.post(`${baseUrl}/SimpleCacheLoadAsInstance/3`, {
 			invalidate: true,
 		});
-		response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/3');
+		response = await axios(`${baseUrl}/SimpleCacheLoadAsInstance/3`);
 		assert.equal(response.status, 200);
 		assert(response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
-		response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/3');
+		response = await axios(`${baseUrl}/SimpleCacheLoadAsInstance/3`);
 		assert.equal(response.status, 200);
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 	});
 	it('query from cache with errors', async () => {
 		// ensure that the error entry exists so we can query with it.
-		let response = await axios.post('http://localhost:9926/SimpleCache/error', {
+		let response = await axios.post(`${baseUrl}/SimpleCache/error`, {
 			invalidate: true,
 		});
-		response = await axios.post('http://localhost:9926/SimpleCache/error2', {
+		response = await axios.post(`${baseUrl}/SimpleCache/error2`, {
 			invalidate: true,
 		});
-		response = await axios.post('http://localhost:9926/SimpleCache/undefined', {
+		response = await axios.post(`${baseUrl}/SimpleCache/undefined`, {
 			invalidate: true,
 		});
-		response = await axios('http://localhost:9926/SimpleCache/?select(id,name)');
+		response = await axios(`${baseUrl}/SimpleCache/?select(id,name)`);
 		assert.equal(response.status, 200);
 		assert(response.data.length > 10);
 		assert(response.data[response.data.length - 2].error.includes('Error'));
 		assert(response.data[response.data.length - 2].message.includes('Test error'));
 		assert(response.data[response.data.length - 2].id.includes('error'));
-		response = await axios('http://localhost:9926/SimpleCache/?id=gt=3');
+		response = await axios(`${baseUrl}/SimpleCache/?id=gt=3`);
 		assert.equal(response.status, 200);
 		assert(response.data.length < 10);
 		assert(response.data[response.data.length - 2].message.includes('Test error'));
@@ -423,7 +423,7 @@ describe('test REST calls', () => {
 			const req = http.request(
 				{
 					method: 'DELETE',
-					hostname: 'localhost',
+					hostname: testHost,
 					port: 9926,
 					path: '/SimpleCache/35555',
 					headers: {
@@ -445,12 +445,12 @@ describe('test REST calls', () => {
 	});
 	describe('HTTP response status code caching', function () {
 		it('caches a cacheable 404 response and returns it with 404 status', async () => {
-			const response = await axios.get('http://localhost:9926/CacheOfHttp/not-found', {
+			const response = await axios.get(`${baseUrl}/CacheOfHttp/not-found`, {
 				validateStatus: () => true,
 			});
 			assert.equal(response.status, 404);
 			// second request should also return 404 (served from cache)
-			const response2 = await axios.get('http://localhost:9926/CacheOfHttp/not-found', {
+			const response2 = await axios.get(`${baseUrl}/CacheOfHttp/not-found`, {
 				validateStatus: () => true,
 			});
 			assert.equal(response2.status, 404);
@@ -458,12 +458,12 @@ describe('test REST calls', () => {
 		});
 		it('does not cache a non-cacheable 500 response', async () => {
 			const callsBefore = tables.CacheOfHttp.serverErrorCalls;
-			const response = await axios.get('http://localhost:9926/CacheOfHttp/server-error', {
+			const response = await axios.get(`${baseUrl}/CacheOfHttp/server-error`, {
 				validateStatus: () => true,
 			});
 			assert.equal(response.status, 500);
 			// second request should also hit source (not cached)
-			const response2 = await axios.get('http://localhost:9926/CacheOfHttp/server-error', {
+			const response2 = await axios.get(`${baseUrl}/CacheOfHttp/server-error`, {
 				validateStatus: () => true,
 			});
 			assert.equal(response2.status, 500);
@@ -473,13 +473,13 @@ describe('test REST calls', () => {
 			// The CacheOfHttp 'created-response' source returns a 200 with a custom header
 			// If status 200 were stored, it would appear as a field in the raw record
 			// We verify that the 200 response is served correctly without redundantly caching status
-			const response = await axios.get('http://localhost:9926/CacheOfHttp/created-response');
+			const response = await axios.get(`${baseUrl}/CacheOfHttp/created-response`);
 			assert.equal(response.status, 200);
 			assert.equal(response.headers.get('x-custom-header'), 'custom value');
 		});
 	});
 	it('post with custom response', async () => {
-		const response = await axios.post('http://localhost:9926/SimpleCache/35555', {
+		const response = await axios.post(`${baseUrl}/SimpleCache/35555`, {
 			customResponse: true,
 		});
 		assert.equal(response.status, 222);
@@ -491,10 +491,10 @@ describe('test REST calls', () => {
 			tables.SimpleCache.directURLMapping = true;
 		});
 		it('direct URL mapping', async () => {
-			let response = await axios.put('http://localhost:9926/SimpleCache/with-query?query=string', {
+			let response = await axios.put(`${baseUrl}/SimpleCache/with-query?query=string`, {
 				name: 'hello world',
 			});
-			response = await axios('http://localhost:9926/SimpleCache/with-query?query=string');
+			response = await axios(`${baseUrl}/SimpleCache/with-query?query=string`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.id, 'with-query?query=string');
 			assert.equal(response.data.name, 'hello world');
@@ -508,10 +508,10 @@ describe('test REST calls', () => {
 			tables.SimpleCache.directURLMapping = true;
 		});
 		it('direct URL mapping', async () => {
-			let response = await axios.put('http://localhost:9926/SimpleCacheLoadAsInstance/with-query?query=string', {
+			let response = await axios.put(`${baseUrl}/SimpleCacheLoadAsInstance/with-query?query=string`, {
 				name: 'hello world',
 			});
-			response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/with-query?query=string');
+			response = await axios(`${baseUrl}/SimpleCacheLoadAsInstance/with-query?query=string`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.id, 'with-query?query=string');
 			assert.equal(response.data.name, 'hello world');
@@ -528,11 +528,11 @@ describe('test REST calls', () => {
 			'accept': 'application/json',
 		};
 		before(async () => {
-			let response = await axios.put('http://localhost:9926/HasBigInt/12345678901234567890', json, { headers });
+			let response = await axios.put(`${baseUrl}/HasBigInt/12345678901234567890`, json, { headers });
 			assert.equal(response.status, 204);
 		});
 		it('GET with BigInt', async () => {
-			let response = await axios.get('http://localhost:9926/HasBigInt/12345678901234567890', {
+			let response = await axios.get(`${baseUrl}/HasBigInt/12345678901234567890`, {
 				responseType: 'arraybuffer',
 				headers,
 			});
@@ -545,7 +545,7 @@ describe('test REST calls', () => {
 			assert.equal(data.anotherBigint, -Number(bigint64BitAsString));
 		});
 		it('Query with BigInt', async () => {
-			let response = await axios.get('http://localhost:9926/HasBigInt/?id=12345678901234567890', {
+			let response = await axios.get(`${baseUrl}/HasBigInt/?id=12345678901234567890`, {
 				responseType: 'arraybuffer',
 				headers,
 			});
@@ -559,7 +559,7 @@ describe('test REST calls', () => {
 		});
 	});
 	it('conflicted endpoints return error', async () => {
-		const response = await axios.get('http://localhost:9926/Conflicted/35555', {
+		const response = await axios.get(`${baseUrl}/Conflicted/35555`, {
 			customResponse: true,
 			validateStatus: function (_status) {
 				return true;
@@ -569,7 +569,7 @@ describe('test REST calls', () => {
 		assert(response.data.title.includes('Conflicting paths'));
 	});
 	it('Returns thrown plain object', async () => {
-		const response = await axios.get('http://localhost:9926/Echo/error-plain-object', {
+		const response = await axios.get(`${baseUrl}/Echo/error-plain-object`, {
 			customResponse: true,
 			validateStatus: function (_status) {
 				return true;
@@ -579,7 +579,7 @@ describe('test REST calls', () => {
 		assert(response.data.title, 'Test error');
 	});
 	it('Returns correct error for bad body', async () => {
-		const response = await axios.get('http://localhost:9926/Echo/error-bad-body', {
+		const response = await axios.get(`${baseUrl}/Echo/error-bad-body`, {
 			customResponse: true,
 			validateStatus: function (_status) {
 				return true;
@@ -590,7 +590,7 @@ describe('test REST calls', () => {
 	});
 	it('handles async iterator content type handler', async () => {
 		// arbitrary rest request that will return multiple things to the content type handlers
-		const response = await axios.get('http://localhost:9926/FourProp/', {
+		const response = await axios.get(`${baseUrl}/FourProp/`, {
 			headers: {
 				// specify the special content type that will always return 'one' then 'two'
 				Accept: 'application/custom-async-iterator',
@@ -603,7 +603,7 @@ describe('test REST calls', () => {
 
 	it('handles iterator content type handler', async () => {
 		// arbitrary rest request that will return multiple things to the content type handlers
-		const response = await axios.get('http://localhost:9926/FourProp/', {
+		const response = await axios.get(`${baseUrl}/FourProp/`, {
 			headers: {
 				// specify the special content type that will always return 'one' then 'two'
 				Accept: 'application/custom-iterator',
@@ -615,30 +615,30 @@ describe('test REST calls', () => {
 	});
 
 	it('routes requests with nested path structure to correct resource', async () => {
-		let response1 = await axios('http://localhost:9926/api/v1/resourceA');
+		let response1 = await axios(`${baseUrl}/api/v1/resourceA`);
 		assert.equal(response1.data.name, 'ResourceA');
 
-		let response2 = await axios('http://localhost:9926/api/v1/resourceA/?queryA=1&queryB=2');
+		let response2 = await axios(`${baseUrl}/api/v1/resourceA/?queryA=1&queryB=2`);
 		assert.equal(response2.data.name, 'ResourceA');
 		assert.strictEqual(response2.data.params.search, 'queryA=1&queryB=2');
 
-		let response3 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/');
+		let response3 = await axios(`${baseUrl}/api/v1/resourceA/resourceB/`);
 		assert.equal(response3.data.name, 'ResourceB');
 		assert.strictEqual(response3.data.params.pathname, '/');
 
-		let response4 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC?queryA=2&queryB=3');
+		let response4 = await axios(`${baseUrl}/api/v1/resourceA/resourceB/subPath/ResourceC?queryA=2&queryB=3`);
 		assert.equal(response4.data.name, 'ResourceC');
 		assert.strictEqual(response4.data.params.search, 'queryA=2&queryB=3');
 
 		let response5 = await axios(
-			'http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property'
+			`${baseUrl}/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property`
 		);
 		assert.equal(response5.data.name, 'ResourceC');
 		assert.strictEqual(response5.data.params.pathname, '/some/relative/path/');
 		assert.strictEqual(response5.data.params.search, 'with=query.property');
 
 		let badResponse = await axios.post(
-			'http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/anything',
+			`${baseUrl}/api/v1/resourceA/resourceB/subPath/ResourceC/anything`,
 			{},
 			{
 				customResponse: true,

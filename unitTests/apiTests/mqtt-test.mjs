@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { decode } from 'cbor-x';
 import { callOperation } from './utility.js';
-import { setupTestApp } from './setupTestApp.mjs';
+import { setupTestApp, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
 import environmentManager from '#src/utility/environment/environmentManager';
 const { get: env_get, setProperty } = environmentManager;
 import { connect, connectAsync } from 'mqtt';
@@ -71,7 +71,7 @@ describe('test MQTT connections and commands', function () {
 	beforeEach(async () => {
 		available_records = await setupTestApp();
 
-		clientV4 = await connectAsync('ws://localhost:9926', {
+		clientV4 = await connectAsync(`${wsBaseUrl}`, {
 			protocolVersion: 4,
 			wsOptions: {
 				headers: {
@@ -80,7 +80,7 @@ describe('test MQTT connections and commands', function () {
 			},
 		});
 
-		clientV5 = await connectAsync('mqtts://localhost:8883', {
+		clientV5 = await connectAsync(mqttsUrl, {
 			protocolVersion: 5,
 			rejectUnauthorized: false,
 		});
@@ -150,7 +150,7 @@ describe('test MQTT connections and commands', function () {
 			/** @type {MqttClient} */
 			const client = await connectAsync({
 				clientId: `vu${x}`,
-				host: 'localhost',
+				host: testHost,
 				clean: true,
 				connectTimeout: 2000,
 				protocol: 'mqtt',
@@ -196,7 +196,7 @@ describe('test MQTT connections and commands', function () {
 
 		/** @type {MqttClient} */
 		const client_to_die = await connectAsync({
-			host: 'localhost',
+			host: testHost,
 			clean: true,
 			protocolVersion: 4,
 			will: {
@@ -227,7 +227,7 @@ describe('test MQTT connections and commands', function () {
 	it('last will should not be published on explicit disconnect', async () => {
 		const topic = `SimpleRecord/53`;
 		const client_to_die = await connectAsync({
-			host: 'localhost',
+			host: testHost,
 			clean: true,
 			protocolVersion: 4,
 			will: {
@@ -259,7 +259,7 @@ describe('test MQTT connections and commands', function () {
 	it('can publish non-JSON', async () => {
 		const topic = `SimpleRecord/51`;
 		const client = await connectAsync({
-			host: 'localhost',
+			host: testHost,
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
@@ -287,14 +287,14 @@ describe('test MQTT connections and commands', function () {
 	it('publish and subscribe are restricted', async () => {
 		const topic = `SimpleRecord/51`;
 		const client_authorized = await connectAsync({
-			host: 'localhost',
+			host: testHost,
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
 			protocolVersion: 4,
 		});
 		const client = await connectAsync({
-			host: 'localhost',
+			host: testHost,
 			clean: true,
 			connectTimeout: 2000,
 			protocol: 'mqtt',
@@ -333,7 +333,7 @@ describe('test MQTT connections and commands', function () {
 	});
 	it('can not subscribe to resource with mqtt export disabled', async () => {
 		const client = await connectAsync({
-			host: 'localhost',
+			host: testHost,
 			clean: true,
 			connectTimeout: 2000,
 			protocolVersion: 4,
@@ -344,7 +344,7 @@ describe('test MQTT connections and commands', function () {
 
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			protocolVersion: 4,
 		});
 		await new Promise((resolve, reject) => {
@@ -378,7 +378,7 @@ describe('test MQTT connections and commands', function () {
 	});
 	it('subscribe to retained record with patch operations', async function () {
 		let path = 'SimpleRecord/78';
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'with-patches',
 			protocolVersion: 4,
@@ -404,12 +404,12 @@ describe('test MQTT connections and commands', function () {
 			};
 			client.on('message', onMessage);
 			await client.subscribeAsync(path, { qos: 1 });
-			await axios.put('http://localhost:9926/SimpleRecord/78', { name: 'a starting point', count: 2 }, { headers });
+			await axios.put(`${baseUrl}/SimpleRecord/78`, { name: 'a starting point', count: 2 }, { headers });
 			// Small delay so the PUT notification is delivered before the PATCH; without this the
 			// two messages can arrive out of order on a loaded CI runner.
 			await delay(20);
 			await axios.patch(
-				'http://localhost:9926/SimpleRecord/78',
+				`${baseUrl}/SimpleRecord/78`,
 				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
 				{ headers }
 			);
@@ -419,19 +419,19 @@ describe('test MQTT connections and commands', function () {
 		// so those patches are queued for the offline client rather than delivered live.
 		await delay(50);
 		await axios.patch(
-			'http://localhost:9926/SimpleRecord/78',
+			`${baseUrl}/SimpleRecord/78`,
 			{ name: 'update 2', newProperty: 'newer value', count: { __op__: 'add', value: 1 } },
 			{ headers }
 		);
 		await axios.patch(
-			'http://localhost:9926/SimpleRecord/78',
+			`${baseUrl}/SimpleRecord/78`,
 			{ name: 'update 3', count: { __op__: 'add', value: 1 } },
 			{ headers }
 		);
 		await new Promise(async (resolve, reject) => {
 			let messages = [];
 			client = await connectWithMessageListener(
-				'mqtt://localhost:1883',
+				mqttUrl,
 				{
 					clean: false,
 					clientId: 'with-patches',
@@ -454,7 +454,7 @@ describe('test MQTT connections and commands', function () {
 			);
 			client.on('error', reject);
 			await axios.patch(
-				'http://localhost:9926/SimpleRecord/78',
+				`${baseUrl}/SimpleRecord/78`,
 				{ name: 'update 4', count: { __op__: 'add', value: 1 } },
 				{ headers }
 			);
@@ -463,7 +463,7 @@ describe('test MQTT connections and commands', function () {
 		client.end();
 	});
 	it('subscribe twice', async function () {
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client-sub2',
 			protocolVersion: 4,
@@ -490,7 +490,7 @@ describe('test MQTT connections and commands', function () {
 		await client.endAsync();
 	});
 	it('received binary/string messages', async function () {
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client-sub2',
 			protocolVersion: 4,
@@ -507,7 +507,7 @@ describe('test MQTT connections and commands', function () {
 			});
 		});
 		await client.endAsync();
-		client = await connectAsync('mqtt://localhost:1883', {
+		client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client-sub2',
 			protocolVersion: 4,
@@ -528,10 +528,10 @@ describe('test MQTT connections and commands', function () {
 			server = startMQTT({
 				server: global.server,
 				network: { securePort: 8884, mtls: { user: 'HDB_ADMIN', required: true } },
-			})[0].listen(8884, resolve);
+			})[0].listen(8884, testHost, resolve);
 			server.on('error', reject);
 		});
-		let bad_client = await connectAsync('mqtts://localhost:8884', {
+		let bad_client = await connectAsync(`mqtts://${testHost}:8884`, {
 			clientId: 'test-bad-mtls',
 			protocolVersion: 4,
 			reconnectPeriod: 0,
@@ -543,7 +543,7 @@ describe('test MQTT connections and commands', function () {
 			if (certificate.is_authority) ca = certificate.certificate;
 			else if (certificate.name === 'localhost') cert = certificate.certificate;
 		}
-		let client = await connectAsync('mqtts://localhost:8884', {
+		let client = await connectAsync(`mqtts://${testHost}:8884`, {
 			key: readFileSync(private_key_path),
 			cert,
 			ca,
@@ -593,7 +593,7 @@ describe('test MQTT connections and commands', function () {
 						securePort: 8885,
 						network: { mtls: { user: 'HDB_ADMIN', required: true } },
 					},
-				})[0].listen(8885, resolve);
+				})[0].listen(8885, testHost, resolve);
 				server.on('error', reject);
 			});
 
@@ -603,12 +603,12 @@ describe('test MQTT connections and commands', function () {
 				if (certificate.is_authority) ca = certificate.certificate;
 				else if (certificate.name === 'localhost') cert = certificate.certificate;
 			}
-			let bad_client = await connectAsync('wss://localhost:8885', {
+			let bad_client = await connectAsync(`wss://${testHost}:8885`, {
 				reconnectPeriod: 0,
 				clientId: 'test-bad-mtls',
 				protocolVersion: 4,
 			}).catch(() => null);
-			let client = await connectAsync('wss://localhost:8885', {
+			let client = await connectAsync(`wss://${testHost}:8885`, {
 				key: readFileSync(private_key_path),
 				cert,
 				ca,
@@ -654,7 +654,7 @@ describe('test MQTT connections and commands', function () {
 		assert.equal(granted[0].qos, 0x8f);
 	});
 	it('Invalid packet', async function () {
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client1',
 			protocolVersion: 4,
@@ -818,14 +818,14 @@ describe('test MQTT connections and commands', function () {
 	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
 		this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
 		// this first connection is a tear down to remove any previous durable session with this id
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await client.endAsync();
 		await delay(10);
-		client = await connectAsync('mqtt://localhost:1883', {
+		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
@@ -833,7 +833,7 @@ describe('test MQTT connections and commands', function () {
 		await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
 		await client.endAsync();
 		await delay(10);
-		client = await connectAsync('mqtt://localhost:1883', {
+		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
@@ -887,7 +887,7 @@ describe('test MQTT connections and commands', function () {
 		await delay(10);
 		let messages = [];
 		client = await connectWithMessageListener(
-			'mqtt://localhost:1883',
+			mqttUrl,
 			{
 				clean: false,
 				clientId: 'test-client1',
@@ -921,14 +921,14 @@ describe('test MQTT connections and commands', function () {
 	});
 	it('subscribe with QoS=2', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await client.end();
 		await delay(10);
-		client = await connectAsync('mqtt://localhost:1883', {
+		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
@@ -966,7 +966,7 @@ describe('test MQTT connections and commands', function () {
 		server.mqtt.events.on('error', (_a1, _a2) => {
 			events_received.push('error');
 		});
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client1',
 			protocolVersion: 4,
@@ -983,7 +983,7 @@ describe('test MQTT connections and commands', function () {
 	});
 	it('subscribe root with history', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client1',
 			protocolVersion: 4,
@@ -1009,7 +1009,7 @@ describe('test MQTT connections and commands', function () {
 		// this first connection is a tear down to remove any previous durable session with this id
 		const { FourPropWithHistory } = await import('../testApp/resources.js');
 		tables.FourProp.acknowledgements = 0; // reset
-		let client = await connectAsync('mqtt://localhost:1883', {
+		let client = await connectAsync(mqttUrl, {
 			clean: true,
 			clientId: 'test-client1',
 			protocolVersion: 4,

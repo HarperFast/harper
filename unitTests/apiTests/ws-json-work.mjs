@@ -4,6 +4,7 @@ import axios from 'axios';
 import { decode, encode } from 'cbor-x';
 import { getVariables } from './utility.js';
 import { WebSocket } from 'ws';
+import { setupTestApp, baseUrl, wsBaseUrl } from './setupTestApp.mjs';
 const { authorization } = getVariables();
 
 describe('test WebSocket connections', () => {
@@ -13,7 +14,7 @@ describe('test WebSocket connections', () => {
 			'content-type': 'application/cbor',
 			'accept': 'application/cbor',
 		};
-		let ws = new WebSocket('ws://localhost:9926/DenormalizedUser', {
+		let ws = new WebSocket(`${wsBaseUrl}/DenormalizedUser`, {
 			headers,
 		});
 		await new Promise((resolve, reject) => {
@@ -29,7 +30,7 @@ describe('test WebSocket connections', () => {
 		);
 		console.log('sending');
 		let response = await axios.post(
-			'http://localhost:9926/DenormalizedUser/33',
+			`${baseUrl}/DenormalizedUser/33`,
 			encode({
 				method: 'addTitle',
 				titleId: 35,
@@ -56,7 +57,7 @@ describe('test WebSocket connections', () => {
 			let id = Math.ceil(Math.random() * 1000);
 			promises.push(
 				axios.put(
-					'http://localhost:9926/our_data/' + id,
+					`${baseUrl}/our_data/` + id,
 					encode({
 						nane: 'a new record',
 						id,
@@ -87,7 +88,7 @@ describe('test WebSocket connections', () => {
 		let i = 0;
 		for (; i < 20; ) {
 			//			let ws = new WebSocket('ws+unix:/tmp/test:/our_data', {
-			let ws = new WebSocket('ws://localhost:9926/our_data', {
+			let ws = new WebSocket(`${wsBaseUrl}/our_data`, {
 				headers,
 			});
 			await new Promise((resolve, reject) => {

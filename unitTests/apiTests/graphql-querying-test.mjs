@@ -1,14 +1,14 @@
 /* eslint-disable sonarjs/no-nested-functions */
 import { assert } from 'chai';
-import { setupTestApp } from './setupTestApp.mjs';
+import { setupTestApp, baseUrl } from './setupTestApp.mjs';
 import { request } from 'undici';
 
 function restRequest(url) {
-	return fetch(new URL(url, 'http://localhost:9926'));
+	return fetch(new URL(url, baseUrl));
 }
 
 function graphqlRequest(data, method = 'POST', accept = 'application/graphql-response+json') {
-	const url = new URL('http://localhost:9926/graphql');
+	const url = new URL(`${baseUrl}/graphql`);
 
 	if (method === 'GET') {
 		for (const [key, value] of Object.entries(data)) {
@@ -496,7 +496,7 @@ describe('graphql querying', () => {
 			// 'CONNECT' isn't allowed anyways, and we will handle that when we figure out subscriptions
 			// 'HEAD', 'OPTIONS', 'TRACE' do not have a body.
 			['DELETE', 'PATCH', 'PUT', 'TRACE'].map((method) =>
-				request('http://localhost:9926/graphql', { method })
+				request(`${baseUrl}/graphql`, { method })
 					.then((response) => {
 						assert.equal(response.statusCode, 405);
 						assert.equal(response.headers['allow'], 'GET, POST');
