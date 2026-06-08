@@ -573,7 +573,7 @@ export class ProductInventory extends Resource {
 
 > **Under-annotate before mis-annotate.** Under MCP semantics, `idempotentHint: true` is a strong claim: the second call must produce the same observable outcome as the first. `add_*`-style operations that return "already exists" on the second call are NOT idempotent in this sense, even though they don't crash. Verify repeat-call behavior end-to-end before annotating.
 
-### `static mcpTools?: ReadonlyArray<...>`
+### `static mcpTools?: McpToolDefinition[]`
 
 Component-author opt-in for exposing non-verb instance methods as MCP tools. Each entry maps an instance-method name to an MCP tool descriptor. RBAC is enforced by the Resource method itself; the MCP layer does not invent new ACLs.
 

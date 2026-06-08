@@ -185,7 +185,7 @@ type StrictRecord @table @sealed {
 }
 ```
 
-### `@hidden`
+### `@hidden` (Type Directive)
 
 Suppresses the type from introspectable surfaces — MCP tool descriptors and the OpenAPI document. The table still exists; data is still queryable through Harper's other interfaces subject to RBAC. `@hidden` is a **metadata-visibility** directive, not an access-control mechanism: use `attribute_permissions` on roles to control data access.
 
@@ -196,7 +196,7 @@ type InternalConfig @table @hidden {
 }
 ```
 
-`@hidden` is also available as a [field directive](#hidden-1) to suppress individual attributes.
+`@hidden` is also available as a [field directive](#hidden-field-directive) to suppress individual attributes.
 
 ## Documenting Types and Fields
 
@@ -296,7 +296,7 @@ type Event @table {
 }
 ```
 
-### `@hidden`
+### `@hidden` (Field Directive)
 
 Suppresses the field from MCP tool descriptors and the OpenAPI document. The attribute still exists in the table; data is still queryable through other interfaces subject to RBAC. Use this for fields that should not appear in introspectable surfaces.
 
