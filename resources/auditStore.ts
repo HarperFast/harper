@@ -412,7 +412,7 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encodedRecord) {
 		return Buffer.concat([header, encodedRecord]);
-	} else return header;
+	} else return Buffer.from(header);
 	function writeValue(value) {
 		const valueLengthPosition = position;
 		position += 1;

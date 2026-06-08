@@ -453,6 +453,42 @@ describe('Audit log', () => {
 			assert.strictEqual(sentinel.version, 42, 'timestamp from the log entry is preserved so lastTxnTime advances');
 		});
 
+		// Writer-side regression. createAuditEntry's no-encodedRecord path used to return
+		// ENTRY_HEADER.subarray(0, position) — a view into the module-level header buffer.
+		// The next call wrote into ENTRY_HEADER from byte 0 and overwrote the prior return
+		// value before rocksdb-js's log.addEntry necessarily captured the bytes, producing
+		// corrupt entries on disk that surfaced as RangeError in the reader.
+		it('createAuditEntry returns a stable buffer for the no-encodedRecord path that survives a subsequent call', () => {
+			// `delete` is the no-encodedRecord path (EVENT_TYPES.delete === DELETE, no HAS_RECORD flag).
+			const first = createAuditEntry({
+				version: 1,
+				tableId: 7,
+				recordId: 1,
+				nodeId: 0,
+				user: 'u1',
+				type: 'delete',
+			});
+			// Snapshot via Buffer.from so we can compare against `first` after the next call
+			// mutates ENTRY_HEADER. If `first` is still a view, its bytes will mutate too.
+			const firstSnapshot = Buffer.from(first);
+
+			// Different values + different user length to rewrite a different region of ENTRY_HEADER.
+			createAuditEntry({
+				version: 2,
+				tableId: 9,
+				recordId: 999,
+				nodeId: 1,
+				user: 'u2-different-length',
+				type: 'delete',
+			});
+
+			assert.deepStrictEqual(
+				[...first],
+				[...firstSnapshot],
+				'first buffer must not mutate when the next createAuditEntry call rewrites ENTRY_HEADER'
+			);
+		});
+
 		// rocksdb-js >=1.4.1 hardened transaction-log readers throw a bounded
 		// RangeError ("Corrupt transaction log entry at position …: declared length …
 		// overruns the log") when an entry's length header overshoots the committed
