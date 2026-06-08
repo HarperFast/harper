@@ -66,7 +66,7 @@ import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 
@@ -104,6 +104,13 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+// RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
+// Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
+// coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
+const EVICTION_BATCH_SIZE = 100;
+// Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
+// letting an unbounded number of open transactions (and their snapshots) accumulate.
+const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
@@ -4594,6 +4601,103 @@ export function makeTable(options) {
 			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
 		return true;
 	}
+	// RocksDB-only: coalesces eviction/tombstone removals into shared transactions so the cleanup
+	// scan pays one commit per batch instead of one per record. Descriptors hold only the decoded
+	// primary key and the version seen during the scan (both stable primitives — the scanned record
+	// value lives in a reused iterator buffer, so it is re-read fresh at commit time). Each record is
+	// version-guarded inside the commit transaction, and RocksDB's optimistic conflict detection
+	// catches anything modified between staging and commit: on conflict (ERR_BUSY) we re-stage once
+	// into a fresh transaction (dropping the now-changed record) and otherwise skip the batch, leaving
+	// those records for the next cleanup cycle.
+	function createEvictionBatcher() {
+		type EvictItem = { type: 'evict' | 'tombstone'; key: any; version: number };
+		let pending: EvictItem[] = [];
+		const inFlight = new Set<Promise<void>>();
+
+		// Apply a batch's removals to the given transaction, re-reading each record fresh and skipping
+		// any that changed since the scan. Returns the number of removals actually staged.
+		function stageInto(transaction: RocksTransaction, items: EvictItem[]): number {
+			const options = { transaction };
+			let staged = 0;
+			for (const item of items) {
+				const entry = primaryStore.getEntry(item.key, options);
+				if (!entry || entry.version !== item.version) continue; // gone or changed since the scan; leave for next cycle
+				if (item.type === 'tombstone') {
+					if (entry.value != null) continue; // resurrected since the scan
+				} else {
+					if (entry.value == null) continue; // already removed
+					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
+					updateIndices(item.key, entry.value, null, options);
+				}
+				removeEntry(primaryStore, entry, options);
+				staged++;
+			}
+			return staged;
+		}
+
+		async function commitItems(items: EvictItem[]) {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const transaction = new RocksTransaction(primaryStore.store);
+				let staged: number;
+				try {
+					staged = stageInto(transaction, items);
+				} catch (error) {
+					try {
+						transaction.abort();
+					} catch {}
+					logger.warn?.(`Eviction batch staging error for ${tableName}:`, error);
+					return;
+				}
+				if (staged === 0) {
+					try {
+						transaction.abort();
+					} catch {}
+					return;
+				}
+				try {
+					await transaction.commit();
+					return;
+				} catch (error: any) {
+					try {
+						transaction.abort();
+					} catch {}
+					if (attempt === 0 && error?.code === 'ERR_BUSY') {
+						logger.debug?.(`Eviction batch conflict for ${tableName}, retrying once`);
+						continue; // re-stage into a fresh transaction; version guards drop the conflicting record(s)
+					}
+					logger.warn?.(`Eviction batch commit error for ${tableName}:`, error);
+					return;
+				}
+			}
+		}
+
+		// Track an in-flight commit and, once the cap is reached, return a promise the caller can await
+		// for backpressure (resolves as soon as any in-flight commit finishes).
+		function track(commit: Promise<void>): Promise<void> | void {
+			const tracked = commit.finally(() => inFlight.delete(tracked));
+			inFlight.add(tracked);
+			if (inFlight.size >= MAX_INFLIGHT_EVICTION_BATCHES) return Promise.race(inFlight);
+		}
+
+		return {
+			add(type: 'evict' | 'tombstone', key: any, version: number): Promise<void> | void {
+				pending.push({ type, key, version });
+				if (pending.length >= EVICTION_BATCH_SIZE) {
+					const items = pending;
+					pending = [];
+					return track(commitItems(items));
+				}
+			},
+			async drain(): Promise<void> {
+				if (pending.length > 0) {
+					const items = pending;
+					pending = [];
+					track(commitItems(items));
+				}
+				await Promise.all(inFlight);
+			},
+		};
+	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
 		let runImmediately = false;
 		if (priority) {
@@ -4665,6 +4769,10 @@ export function makeTable(options) {
 								try {
 									let count = 0;
 									let removeDeletedRecords = !audit || isRocksDB;
+									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
+									// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
+									// coalesces async writes per event turn).
+									const batcher = isRocksDB ? createEvictionBatcher() : undefined;
 									// iterate through all entries to find expired records and deleted records
 									for (const entry of primaryStore.getRange({
 										start: false,
@@ -4675,24 +4783,35 @@ export function makeTable(options) {
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-										let resolution: Promise<void> | undefined;
+										let action: 'tombstone' | 'evict' | undefined;
 										if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
-											// make sure it is still deleted when we do the removal
-											resolution = removeEntry(primaryStore, entry, version);
+											action = 'tombstone';
 										} else if (expiresAt != undefined && shouldEvict(expiresAt, version, metadataFlags, record)) {
-											// evict!
-											resolution = TableResource.evict(key, record, version);
+											action = 'evict';
 											count++;
 										}
-										if (resolution) {
-											await outstandingCleanupOperations[cleanupIndex];
-											outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
-												logger.error?.('Cleanup error', error);
-											});
-											if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
+										if (action) {
+											// Blob-bearing records delete their blob files as a non-transactional side effect, so
+											// they stay on the per-record evict() path that preserves the existing blob/commit ordering.
+											if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {
+												await batcher.add(action, key, version);
+											} else {
+												const resolution =
+													action === 'tombstone'
+														? removeEntry(primaryStore, entry, version)
+														: TableResource.evict(key, record, version);
+												if (resolution) {
+													await outstandingCleanupOperations[cleanupIndex];
+													outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
+														logger.error?.('Cleanup error', error);
+													});
+													if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
+												}
+											}
 										}
 										await rest();
 									}
+									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
