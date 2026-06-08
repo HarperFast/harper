@@ -241,7 +241,11 @@ describe('Test operationsValidation module', () => {
 		});
 
 		it('rejects urlPath containing ..', () => {
-			const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', urlPath: '../etc/passwd' });
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				urlPath: '../etc/passwd',
+			});
 			expect(result).to.be.ok;
 			expect(result.message).to.include('urlPath');
 		});
