@@ -108,6 +108,19 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+// A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
+// records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
+// a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
+// (which reports as frozen and would spread into character/index keys).
+function isFrozenRecordObject(value: any): boolean {
+	return (
+		value !== null &&
+		typeof value === 'object' &&
+		!ArrayBuffer.isView(value) &&
+		!(value instanceof ArrayBuffer) &&
+		Object.isFrozen(value)
+	);
+}
 export const INVALIDATED = 1;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
@@ -1666,6 +1679,12 @@ export function makeTable(options) {
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							transaction.checkOverloaded();
+							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
+							// caching relies on it), so mutating in place would corrupt cached/shared state.
+							// validate() coerces values and we stamp created/updated times + the primary key
+							// below, so copy-on-mutate when recordUpdate is frozen (e.g. a record decoded during
+							// log replay) instead of writing through the frozen object.
+							if (isFrozenRecordObject(recordUpdate)) recordUpdate = { ...recordUpdate };
 							this.validate(recordUpdate, !fullUpdate);
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
@@ -4382,6 +4401,10 @@ export function makeTable(options) {
 								}
 							}
 							if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
+							// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
+							// before stamping the primary key and created/updated times below (records are immutable —
+							// 5.2 record caching relies on it — so we must not write through the frozen object).
+							if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 							if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 						}
 						resolved = true;
