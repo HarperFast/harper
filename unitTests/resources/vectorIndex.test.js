@@ -637,8 +637,10 @@ describe('HNSW int8 quantization (quantization: "int8")', () => {
 	});
 });
 
-describe('HNSW int8 cold/frozen node reads (#1161)', () => {
-	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+// mocha has no `{ skip }` options arg like node:test (`it(title, {skip}, fn)` throws), so use
+// describe.skip to make the lmdb skip explicit rather than a silent early return.
+const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
+describeUnlessLmdb('HNSW int8 cold/frozen node reads (#1161)', () => {
 	const DIMS = 16;
 	const N = 250;
 	let T;
