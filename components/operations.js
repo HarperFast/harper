@@ -453,11 +453,16 @@ async function deployComponent(req) {
 			// — their install output goes to the local logger only; cross-node install
 			// streaming would need extra plumbing and isn't wired here.
 			onInstallLine: emitter ? (manager, stream, line) => emit('install', { manager, stream, line }) : undefined,
-			// Transient private-registry auth, used here for this node's npm pack/install and then
-			// stripped from req before replication (below) so the token is never persisted or sent
-			// to peers — peers authenticate via their own fabric-injected NPM_CONFIG_USERCONFIG.
+			// Transient private-registry auth, used here for this node's npm pack/install. The
+			// Application ctor captures it into application.registryAuth; we strip it from req
+			// immediately (below) so the token is never persisted or sent to peers — peers
+			// authenticate via their own fabric-injected NPM_CONFIG_USERCONFIG.
 			registryAuth: req.registryAuth,
 		});
+		// Strip the token from req immediately after the ctor captures it, so it can't survive into an
+		// error/log path if prepareApplication or loadComponent throws below (the previous strip point
+		// after loadComponent only ran on the success path, leaking the token on failure).
+		delete req.registryAuth;
 
 		emit('phase', { phase: 'prepare', status: 'start' });
 		await prepareApplication(application);
@@ -492,11 +497,9 @@ async function deployComponent(req) {
 		// ProgressEmitter holds function listeners that can't survive the replication
 		// channel's serialization; strip it unconditionally.
 		delete req.progress;
-		// The registry token was only needed for this node's npm pack/install. Strip it
-		// unconditionally so it never reaches the replication channel or a peer's operation log;
-		// peers authenticate against the private registry via their own fabric-injected
-		// NPM_CONFIG_USERCONFIG when they reinstall the package.
-		delete req.registryAuth;
+		// req.registryAuth was already deleted immediately after the Application ctor (above) so the
+		// token never reaches the replication channel or a peer's operation log; peers authenticate
+		// against the private registry via their own fabric-injected NPM_CONFIG_USERCONFIG on reinstall.
 		if (systemReplicated && recorder) {
 			// The hdb_deployment row + payload_blob will reach peers via table replication,
 			// so peers can look up the payload by deployment_id. Drop req.payload to keep

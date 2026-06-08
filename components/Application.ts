@@ -520,6 +520,8 @@ export class Application {
 	// value for a given key).
 	async writeTransientNpmrc(): Promise<void> {
 		if (!this.registryAuth?.length) return;
+		// Defensive: if called more than once, remove the prior temp dir first so it isn't leaked.
+		if (this.#npmrcTempDir) await this.cleanupTransientNpmrc();
 		this.#npmrcTempDir = await mkdtemp(join(tmpdir(), 'harper-npmrc-'));
 		const npmrcPath = join(this.#npmrcTempDir, '.npmrc');
 		let content = '';
@@ -541,9 +543,16 @@ export class Application {
 	// Remove the transient `.npmrc` (and its temp dir) once the deploy's npm work is done.
 	async cleanupTransientNpmrc(): Promise<void> {
 		if (!this.#npmrcTempDir) return;
-		await rm(this.#npmrcTempDir, { recursive: true, force: true });
-		this.#npmrcTempDir = undefined;
-		this.npmUserconfigPath = undefined;
+		try {
+			await rm(this.#npmrcTempDir, { recursive: true, force: true });
+		} catch (error) {
+			// Called from prepareApplication's finally; a throw here (e.g. a Windows file lock) would
+			// mask the original deploy error and skip broadcastDeployEnd. Log and always clear state.
+			this.logger.warn(`Failed to remove transient .npmrc dir ${this.#npmrcTempDir}:`, error);
+		} finally {
+			this.#npmrcTempDir = undefined;
+			this.npmUserconfigPath = undefined;
+		}
 	}
 }
 
