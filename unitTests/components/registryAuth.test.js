@@ -7,6 +7,7 @@
 
 const assert = require('node:assert');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 
 const testUtils = require('../testUtils.js');
@@ -15,28 +16,28 @@ testUtils.preTestPrep();
 const { buildNpmrcContent, Application } = require('#src/components/Application');
 
 describe('buildNpmrcContent', () => {
-	it('normalizes an https registry into an auth-token line keyed by //host/', () => {
+	it('emits an auth-token line plus a default registry line for a scope-less entry', () => {
 		const out = buildNpmrcContent([{ registry: 'https://npm.pkg.github.com', token: 'tok123' }]);
-		assert.strictEqual(out, '//npm.pkg.github.com/:_authToken=tok123\n');
+		assert.strictEqual(out, '//npm.pkg.github.com/:_authToken=tok123\nregistry=https://npm.pkg.github.com/\n');
 	});
 
 	it('accepts a bare host and a //-prefixed key, both normalized to //host/', () => {
 		assert.strictEqual(
 			buildNpmrcContent([{ registry: 'npm.pkg.github.com', token: 't' }]),
-			'//npm.pkg.github.com/:_authToken=t\n'
+			'//npm.pkg.github.com/:_authToken=t\nregistry=https://npm.pkg.github.com/\n'
 		);
 		assert.strictEqual(
 			buildNpmrcContent([{ registry: '//npm.pkg.github.com/', token: 't' }]),
-			'//npm.pkg.github.com/:_authToken=t\n'
+			'//npm.pkg.github.com/:_authToken=t\nregistry=https://npm.pkg.github.com/\n'
 		);
 	});
 
-	it('emits a scope:registry line pointing at the full URL when a scope is given', () => {
+	it('routes only the scope (no default registry) when a scope is given', () => {
 		const out = buildNpmrcContent([{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: '@myorg' }]);
 		assert.strictEqual(out, '//npm.pkg.github.com/:_authToken=tok\n@myorg:registry=https://npm.pkg.github.com/\n');
 	});
 
-	it('supports multiple registries in one file', () => {
+	it('supports multiple registries in one file (scoped routes scope, scope-less sets default)', () => {
 		const out = buildNpmrcContent([
 			{ registry: 'https://npm.pkg.github.com', token: 'gh', scope: '@org' },
 			{ registry: 'registry.example.com/path', token: 'ex' },
@@ -47,6 +48,7 @@ describe('buildNpmrcContent', () => {
 				'//npm.pkg.github.com/:_authToken=gh',
 				'@org:registry=https://npm.pkg.github.com/',
 				'//registry.example.com/path/:_authToken=ex',
+				'registry=https://registry.example.com/path/',
 				'',
 			].join('\n')
 		);
@@ -88,5 +90,39 @@ describe('Application transient .npmrc lifecycle', () => {
 		assert.strictEqual(app.npmUserconfigPath, undefined);
 		// cleanup is safe to call even when nothing was written
 		await app.cleanupTransientNpmrc();
+	});
+
+	it('prepends an inherited npm userconfig (e.g. fabric-injected) ahead of the transient auth', async () => {
+		const inheritedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-inherited-npmrc-'));
+		const inheritedPath = path.join(inheritedDir, '.npmrc');
+		await fs.writeFile(inheritedPath, 'proxy=http://corp-proxy:8080\n@other:registry=https://other.example.com/\n');
+		// Capture both case variants npm honors so the test is deterministic regardless of host env.
+		const prevUpper = process.env.NPM_CONFIG_USERCONFIG;
+		const prevLower = process.env.npm_config_userconfig;
+		delete process.env.npm_config_userconfig;
+		process.env.NPM_CONFIG_USERCONFIG = inheritedPath;
+		try {
+			const app = new Application({
+				name: 'merge-test',
+				packageIdentifier: 'npm:@myorg/app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
+			});
+			await app.writeTransientNpmrc();
+			const contents = await fs.readFile(app.npmUserconfigPath, 'utf8');
+			assert.ok(contents.includes('proxy=http://corp-proxy:8080'), 'inherited proxy preserved');
+			assert.ok(contents.includes('@other:registry=https://other.example.com/'), 'inherited registry preserved');
+			assert.ok(contents.includes('//npm.pkg.github.com/:_authToken=secret'), 'transient token present');
+			// Transient auth must come after inherited content so it wins on a conflicting key.
+			assert.ok(
+				contents.indexOf('_authToken=secret') > contents.indexOf('proxy=http://corp-proxy:8080'),
+				'transient auth appended after inherited content'
+			);
+			await app.cleanupTransientNpmrc();
+		} finally {
+			if (prevUpper === undefined) delete process.env.NPM_CONFIG_USERCONFIG;
+			else process.env.NPM_CONFIG_USERCONFIG = prevUpper;
+			if (prevLower !== undefined) process.env.npm_config_userconfig = prevLower;
+			await fs.rm(inheritedDir, { recursive: true, force: true });
+		}
 	});
 });

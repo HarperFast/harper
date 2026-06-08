@@ -512,11 +512,29 @@ export class Application {
 
 	// Write the transient `.npmrc` into a fresh 0700 temp dir (file mode 0600) and record its path
 	// so the deploy's npm spawns authenticate against the private registry. No-op without registry auth.
+	//
+	// Because `nonInteractiveSpawn` points npm at this single file (replacing any inherited
+	// npm_config_userconfig), prepend the contents of an already-configured userconfig — e.g. a
+	// fabric-injected file carrying cluster registries, a proxy, or a cafile — so those settings
+	// survive. The transient auth is appended last so it wins on conflict (npm honors the last
+	// value for a given key).
 	async writeTransientNpmrc(): Promise<void> {
 		if (!this.registryAuth?.length) return;
 		this.#npmrcTempDir = await mkdtemp(join(tmpdir(), 'harper-npmrc-'));
 		const npmrcPath = join(this.#npmrcTempDir, '.npmrc');
-		await writeFile(npmrcPath, buildNpmrcContent(this.registryAuth), { mode: 0o600 });
+		let content = '';
+		const inheritedUserconfig = process.env.npm_config_userconfig ?? process.env.NPM_CONFIG_USERCONFIG;
+		if (inheritedUserconfig) {
+			try {
+				const inherited = await readFile(inheritedUserconfig, 'utf8');
+				content = inherited.endsWith('\n') ? inherited : inherited + '\n';
+			} catch (error: any) {
+				// Missing inherited file is fine (npm would have created/ignored it); surface anything else.
+				if (error?.code !== 'ENOENT') throw error;
+			}
+		}
+		content += buildNpmrcContent(this.registryAuth);
+		await writeFile(npmrcPath, content, { mode: 0o600 });
 		this.npmUserconfigPath = npmrcPath;
 	}
 
@@ -694,15 +712,19 @@ function normalizeRegistryUrl(registry: string): string {
 }
 
 // Build the contents of a transient `.npmrc` from registry auth entries: an auth-token line keyed
-// by npm's registry auth key (scheme stripped, leading `//`, trailing `/`) plus a
-// `@scope:registry=…` line when a scope is given.
+// by npm's registry auth key (scheme stripped, leading `//`, trailing `/`) plus a registry-routing
+// line. A scope routes only that `@scope` to the registry (`@scope:registry=…`); without a scope
+// the entry sets npm's default `registry=…` so an unscoped package spec (e.g. `npm:my-private-app`)
+// or its transitive deps actually resolve against this registry rather than the public default.
+// A scope-less entry therefore requires its registry to serve/proxy whatever npm needs to install;
+// with multiple scope-less entries npm's last-value-wins applies to the default `registry`.
 export function buildNpmrcContent(registryAuth: RegistryAuthEntry[]): string {
 	const lines: string[] = [];
 	for (const { registry, token, scope } of registryAuth) {
 		const registryUrl = normalizeRegistryUrl(registry);
 		const authKey = registryUrl.replace(/^https?:/i, '');
 		lines.push(`${authKey}:_authToken=${token}`);
-		if (scope) lines.push(`${scope}:registry=${registryUrl}`);
+		lines.push(scope ? `${scope}:registry=${registryUrl}` : `registry=${registryUrl}`);
 	}
 	return lines.join('\n') + '\n';
 }
