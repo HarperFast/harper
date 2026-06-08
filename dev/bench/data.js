@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780908787938,
+  "lastUpdate": 1780908790802,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -726,6 +726,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99",
             "value": 42.51,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "986943d746d9d19f245dbc520355776d2b95dceb",
+          "message": "fix(replay): contain rocksdb-js corrupt-entry throws to a single log\n\nrocksdb-js@1.4.2's hardened transaction-log reader throws a bounded\nRangeError (\"Corrupt transaction log entry … declared length …\noverruns the log\") when an entry's length header overshoots the\ncommitted bound — a real condition after a SIGKILL-induced torn\nwrite. That throw originates inside the per-log iterator's next(),\nupstream of the .map() callback's per-entry try/catch, so it escaped\nthrough the aggregate iterator and landed as an uncaughtException\ninside notifyFromTransactionData (scheduled via setImmediate),\ncrashing the worker on every commit. Integration Tests shard 2\n(replay-stress) failed on every platform on main after the 1.4.2\nbump.\n\n- RocksTransactionLogStore.getRange: wrap each iterators[i].next()\n  call at the aggregate boundary in a safeNext() that logs once,\n  marks the iterator failed (WeakSet), and returns done. Subsequent\n  retry-polls skip the failed iterator, so a single corrupt log\n  doesn't spam errors or burn CPU on every commit. Other peer logs\n  keep draining.\n\n- transactionBroadcast.notifyFromTransactionData: defense-in-depth\n  try/catch around iterator.next() — a setImmediate-scheduled\n  consumer should never be a one-line patch away from an\n  uncaughtException that kills the worker.\n\n- Unit test asserting (a) iteration completes without throwing,\n  (b) good entries before the throw drain, (c) healthy peer logs\n  continue, (d) the failed iterator is not re-polled on later\n  drain cycles.\n\nRefs HarperFast/rocksdb-js#612 (the read-side hardening that\nexposed this).\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>",
+          "timestamp": "2026-06-04T03:14:40Z",
+          "url": "https://github.com/HarperFast/harper/commit/986943d746d9d19f245dbc520355776d2b95dceb"
+        },
+        "date": 1780908789981,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99",
+            "value": 16.07,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99",
+            "value": 16.03,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99",
+            "value": 18.78,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99",
+            "value": 18.7,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99",
+            "value": 24.17,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99",
+            "value": 17.92,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99",
+            "value": 35.56,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99",
+            "value": 15.47,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99",
+            "value": 18.69,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99",
+            "value": 205.82,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99",
+            "value": 39.2,
             "unit": "ms"
           }
         ]
