@@ -1973,6 +1973,19 @@ export function makeTable(options) {
 								);
 								if (!incrementalUpdateToApply) return writeCommit(false); // if all changes are overwritten, nothing left to do
 							}
+							if (fullUpdate && !incrementalUpdateToApply && precedesExisting < 0) {
+								// Out-of-order full update whose audit walk found no succeeding updates to
+								// resequence around: the existing record is strictly newer (precedesExisting < 0),
+								// so this older full update is superseded. Falling through to the shared commit
+								// below would set recordToStore = recordUpdate and revert the newer record. Bare
+								// return (no writeCommit) matches the superseded-by-newer-put branch above so no
+								// audit record is written referencing this losing update's pre-saved blobs.
+								// Gated on precedesExisting < 0 (not <= 0) so a same-transaction put-after-delete —
+								// which arrives as a tie (precedesExisting === 0) with no committed audit yet —
+								// still falls through and applies. (harperdb/harper#1170)
+								write.skipped = true;
+								return;
+							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
