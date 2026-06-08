@@ -460,7 +460,9 @@ export class ProductInventory extends Resource {
 		'Aggregate inventory analytics computed over the Product catalog. ' +
 		'Read-only; the underlying Product table is the system of record.';
 
-	async get(id) { /* ... */ }
+	async get(id) {
+		/* ... */
+	}
 }
 ```
 
@@ -472,17 +474,19 @@ JSON-Schema-shaped attribute map keyed by name. This is the canonical public API
 export class ProductInventory extends Resource {
 	static description = '...';
 	static properties = {
-		sku: { type: 'string', primaryKey: true,
-			description: 'Stock keeping unit; matches Product.sku.' },
-		onHand: { type: 'integer',
-			description: 'Current warehouse count.' },
-		reserved: { type: 'integer',
-			description: 'Units allocated to open orders but not yet shipped.' },
-		stockStatus: { type: 'string', enum: ['in_stock', 'out_of_stock', 'backorder'],
-			description: 'Derived from onHand vs reserved.' },
+		sku: { type: 'string', primaryKey: true, description: 'Stock keeping unit; matches Product.sku.' },
+		onHand: { type: 'integer', description: 'Current warehouse count.' },
+		reserved: { type: 'integer', description: 'Units allocated to open orders but not yet shipped.' },
+		stockStatus: {
+			type: 'string',
+			enum: ['in_stock', 'out_of_stock', 'backorder'],
+			description: 'Derived from onHand vs reserved.',
+		},
 	};
 
-	async get(id) { /* ... */ }
+	async get(id) {
+		/* ... */
+	}
 }
 ```
 
@@ -513,7 +517,9 @@ Per-verb output schema overrides for programmatic Resources whose verb methods r
 ```typescript
 export class ProductInventory extends Resource {
 	static description = '...';
-	static properties = { /* full record shape */ };
+	static properties = {
+		/* full record shape */
+	};
 
 	static outputSchemas = {
 		get: {
@@ -527,7 +533,9 @@ export class ProductInventory extends Resource {
 		},
 	};
 
-	async get(id) { /* returns the projection above */ }
+	async get(id) {
+		/* returns the projection above */
+	}
 }
 ```
 
@@ -538,7 +546,9 @@ When `true`, the Resource is dropped from MCP tool registration and OpenAPI path
 ```typescript
 export class InternalDiagnostics extends Resource {
 	static hidden = true;
-	async get() { /* ... */ }
+	async get() {
+		/* ... */
+	}
 }
 ```
 
@@ -549,7 +559,9 @@ Narrow, MCP-only override for annotation hints that don't fit JSON Schema (such 
 ```typescript
 export class ProductInventory extends Resource {
 	static description = '...';
-	static properties = { /* ... */ };
+	static properties = {
+		/* ... */
+	};
 
 	static mcp = {
 		annotations: {
@@ -584,7 +596,9 @@ export class ProductInventory extends Resource {
 		},
 	];
 
-	async reconcileInventory(args) { /* ... */ }
+	async reconcileInventory(args) {
+		/* ... */
+	}
 }
 ```
 

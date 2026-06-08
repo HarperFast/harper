@@ -211,13 +211,19 @@ Product catalog row — what shows up in the storefront listing,
 search, and inventory feeds. One row per SKU.
 """
 type Product @table @export {
-	"""Stock keeping unit — globally unique across catalogs."""
+	"""
+	Stock keeping unit — globally unique across catalogs.
+	"""
 	sku: String! @primaryKey
 
-	"""Display name shown in the storefront."""
+	"""
+	Display name shown in the storefront.
+	"""
 	name: String!
 
-	"""Retail price in cents (USD)."""
+	"""
+	Retail price in cents (USD).
+	"""
 	priceCents: Int!
 }
 ```
@@ -299,7 +305,9 @@ type Customer @table {
 	id: Long @primaryKey
 	name: String
 
-	"""Internal — do not surface to external consumers."""
+	"""
+	Internal — do not surface to external consumers.
+	"""
 	creditScore: Int @hidden
 }
 ```
