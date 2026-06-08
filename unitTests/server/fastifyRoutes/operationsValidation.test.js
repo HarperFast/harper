@@ -256,5 +256,30 @@ describe('Test operationsValidation module', () => {
 			});
 			expect(result.message).to.contain('registryAuth');
 		});
+
+		it('rejects a token containing a newline (.npmrc line injection)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok\nregistry=https://evil.example.com/' }],
+			});
+			expect(result.message).to.contain('token');
+		});
+
+		it('rejects a registry containing a newline (.npmrc line injection)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com\n//evil.example.com/:_authToken=x', token: 'tok' }],
+			});
+			expect(result.message).to.contain('registry');
+		});
+
+		it('still accepts a bare-host registry (newline guard must not over-restrict)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				registryAuth: [{ registry: 'npm.pkg.github.com', token: 'tok' }],
+			});
+			expect(result).to.equal(undefined);
+		});
 	});
 });

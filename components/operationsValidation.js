@@ -247,8 +247,16 @@ function deployComponentValidator(req) {
 		registryAuth: Joi.array()
 			.items(
 				Joi.object({
-					registry: Joi.string().required(),
-					token: Joi.string().required(),
+					// registry and token are written verbatim into the transient .npmrc, which is
+					// line-based; forbid CR/LF so a super_user can't inject extra npm config lines.
+					// (registry also accepts bare hosts and //host/ forms, so a strict URI validator
+					// would reject supported inputs — the newline guard is the right scope here.)
+					registry: Joi.string()
+						.pattern(/^[^\r\n]+$/)
+						.required(),
+					token: Joi.string()
+						.pattern(/^[^\r\n]+$/)
+						.required(),
 					scope: Joi.string()
 						.pattern(/^@[a-z0-9-_.]+$/)
 						.optional(),

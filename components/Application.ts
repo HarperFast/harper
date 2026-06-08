@@ -552,6 +552,9 @@ export class Application {
 		} finally {
 			this.#npmrcTempDir = undefined;
 			this.npmUserconfigPath = undefined;
+			// Drop the in-memory token array too, so it can't surface in a later heap dump or error
+			// serialization of this Application instance.
+			this.registryAuth = undefined;
 		}
 	}
 }
