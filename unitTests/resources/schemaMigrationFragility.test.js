@@ -400,14 +400,16 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
 
 		resetDatabases();
-		// Initial schema: only the primary key
+		// Initial schema: only the primary key — simulates the main thread's stale view
+		// before a worker restart expands the schema.
 		table({
 			table: TABLE,
 			database: DB,
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
-		// Simulate hot-reload: call table() again with an expanded schema (non-indexed fields).
-		// This is what the graphqlSchema plugin does in a restarted worker.
+		// Simulate a worker restart writing the expanded schema to attributesDbi.
+		// table() updates BOTH in-memory Table.attributes AND attributesDbi, so after
+		// this call attributesDbi has all four attributes.
 		table({
 			table: TABLE,
 			database: DB,
@@ -418,8 +420,15 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 				{ name: 'age' },
 			],
 		});
+		// Re-create the stale main-thread state: reset in-memory Table.attributes back to
+		// [id] only, while attributesDbi still has all four.  This is exactly the mismatch
+		// that exists on the main thread after a worker restarts and writes a new schema —
+		// the main thread's Table.attributes hasn't been updated yet.
+		const staleTable = getDatabases()[DB]?.[TABLE];
+		staleTable.attributes.splice(0, staleTable.attributes.length, { name: 'id', isPrimaryKey: true });
 		// Simulate the ITC schema-change handler calling resetDatabases() in the main thread
-		// (the path that describe_database goes through).
+		// (the path that describe_database goes through).  Without the fix, initStores()
+		// only re-syncs indexed/pk attributes and the non-indexed fields stay missing.
 		resetDatabases();
 	});
 
