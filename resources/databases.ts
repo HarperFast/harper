@@ -626,7 +626,7 @@ function initStores(
 					// hot-reload / worker restart. Without this, resetDatabases() re-reads these attributes
 					// from attributesDbi but never merges them back into table.attributes — causing stale
 					// schema metadata until a full kill+restart. (RE-7)
-					const existingIdx = existingAttributes.findIndex((ea) => ea.name === attribute.name);
+					const existingIdx = existingAttributes.findIndex((ea) => ea.name === attribute.attribute);
 					if (existingIdx >= 0) {
 						existingAttributes.splice(existingIdx, 1, attribute);
 					} else {
