@@ -68,7 +68,10 @@ async function startMockOrigin(): Promise<MockOrigin> {
 
 	return {
 		url,
-		close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
+		close: () => {
+			server.closeAllConnections();
+			return new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+		},
 		fetchCount: (key) => fetchCounts.get(key) ?? 0,
 		resetCounts: () => fetchCounts.clear(),
 		setData: (key, value) => data.set(key, value),
@@ -250,6 +253,7 @@ suite('Caching: sourcedFrom and allowStaleWhileRevalidate', (ctx: any) => {
 		const authHeader = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 
 		const r = await fetch(`${baseUrl}/CachedProduct/${id}`, { headers: { Authorization: authHeader } });
+		await r.text();
 		strictEqual(r.status, 404, 'Should return 404 when origin returns 404');
 		strictEqual(origin.fetchCount(id), 1, 'Origin should have been called once');
 	});
@@ -267,6 +271,7 @@ suite('Caching: sourcedFrom and allowStaleWhileRevalidate', (ctx: any) => {
 
 		// Populate cache
 		const r1 = await fetch(`${baseUrl}/CachedProduct/${id}`, { headers: { Authorization: authHeader } });
+		await r1.text();
 		strictEqual(r1.status, 200);
 		strictEqual(origin.fetchCount(id), 1, 'Should fetch from origin on first GET');
 
@@ -275,6 +280,7 @@ suite('Caching: sourcedFrom and allowStaleWhileRevalidate', (ctx: any) => {
 			method: 'DELETE',
 			headers: { Authorization: authHeader },
 		});
+		await rDel.text();
 		ok(rDel.status === 200 || rDel.status === 204, `DELETE should succeed, got ${rDel.status}`);
 
 		// Next GET must go back to the origin
