@@ -33,7 +33,7 @@ const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME ===
 /** Poll until `fn` resolves without throwing, or throw the last error after `maxWaitMs`. */
 async function pollUntil(fn: () => Promise<void>, maxWaitMs = MAX_WAIT_MS): Promise<void> {
 	const deadline = Date.now() + maxWaitMs;
-	let lastErr: unknown;
+	let lastErr: Error = new Error(`pollUntil timed out after ${maxWaitMs}ms`);
 	while (Date.now() < deadline) {
 		try {
 			await fn();
