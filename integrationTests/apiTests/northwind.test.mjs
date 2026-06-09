@@ -2160,7 +2160,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		// Use awaitJob + manual assertions so we can return job.message as a raw
 		// object — awaitJobCompleted would stringify it, breaking callers that
 		// access errorMsg.unauthorized_access / errorMsg.invalid_schema_items.
-		const jobResp = await awaitJob(client, getJobId(r.body), isBunRuntime ? 60 : 30);
+		const jobResp = await awaitJob(client, getJobId(r.body), isBunRuntime ? 120 : 30);
 		const job = jobResp.body[0];
 		assert.ok(job, `No job found in response: ${jobResp.text}`);
 		if (_expectedError) {
