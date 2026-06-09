@@ -413,12 +413,7 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		table({
 			table: TABLE,
 			database: DB,
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'name' },
-				{ name: 'breed' },
-				{ name: 'age' },
-			],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'breed' }, { name: 'age' }],
 		});
 		// Re-create the stale main-thread state: reset in-memory Table.attributes back to
 		// [id] only, while attributesDbi still has all four.  This is exactly the mismatch
@@ -450,21 +445,20 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		table({
 			table: TABLE,
 			database: DB,
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'name' },
-			],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
 		// table() updates in-memory Table.attributes directly (databases.ts:997), so after the
 		// call above the in-memory state is already [id, name].  Re-create the stale main-thread
 		// view — still holding the old [id, name, breed, age] — so that the removal loop in
 		// initStores() actually needs to drop breed and age.
 		const tblForRemoval = getDatabases()[DB]?.[TABLE];
-		tblForRemoval.attributes.splice(0, tblForRemoval.attributes.length,
+		tblForRemoval.attributes.splice(
+			0,
+			tblForRemoval.attributes.length,
 			{ name: 'id', isPrimaryKey: true },
 			{ name: 'name' },
 			{ name: 'breed' },
-			{ name: 'age' },
+			{ name: 'age' }
 		);
 		resetDatabases();
 		const tbl = getDatabases()[DB]?.[TABLE];
