@@ -586,6 +586,9 @@ function initStores(
 					envGet(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
 				dbiInit.compression.threshold = compressionThreshold;
 			}
+			// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
+			if (typeof primaryAttribute.randomAccessFields === 'boolean')
+				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
 					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key } as any),
@@ -710,6 +713,7 @@ interface TableDefinition {
 	sealed?: boolean;
 	splitSegments?: boolean;
 	replicate?: boolean;
+	randomAccessFields?: boolean;
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
@@ -878,6 +882,14 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 	const objectStorage =
 		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	const dbiInit = createOpenDBIObject(!objectStorage, objectStorage);
+	// Custom-index object stores (e.g. HNSW vector graphs) hold fixed-shape internal nodes —
+	// numeric-keyed per-level connection arrays and quantized bins — that rely on random-access
+	// struct encoding. Keep them in struct mode regardless of the table's storage.randomAccessFields
+	// setting: their node shapes are controlled, so the wide/variably-typed OOM + divergence risks
+	// that motivate the table-level default-off don't apply, and disabling structs corrupts the graph.
+	if (attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore) {
+		dbiInit.randomAccessStructure = true;
+	}
 	let dbi:
 		| LMDBDatabase
 		| (RocksDatabase & {
@@ -929,6 +941,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		sealed,
 		splitSegments,
 		replicate,
+		randomAccessFields,
 		trackDeletes,
 		schemaDefined,
 		origin,
@@ -970,6 +983,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primaryKey = primaryKeyAttribute.name;
 		primaryKeyAttribute.isPrimaryKey = true;
+		primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 		primaryKeyAttribute.schemaDefined = schemaDefined;
 		// can't change compression after the fact (except threshold), so save only when we create the table
 		primaryKeyAttribute.compression = getDefaultCompression();
@@ -981,6 +995,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
 		if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
 		if (typeof replicate === 'boolean') primaryKeyAttribute.replicate = replicate;
+		// An explicit directive PINS this table's encoding: we persist the boolean, so later changes
+		// to the global storage.randomAccessFields default never affect this table. Tables WITHOUT the
+		// directive are intentionally not persisted here — they follow the current global default on
+		// each open (a runtime lever to flip encoding fleet-wide). Switching either way is safe: the
+		// struct READ hook always stays on and struct (0x20-0x3f) vs classic-record (0x40-0x7f) bytes
+		// are disjoint, so already-written records still decode; only the encoding of NEW writes changes.
+		if (typeof randomAccessFields === 'boolean') primaryKeyAttribute.randomAccessFields = randomAccessFields;
 		if (origin) {
 			if (!primaryKeyAttribute.origins) primaryKeyAttribute.origins = [origin];
 			else if (!primaryKeyAttribute.origins.includes(origin)) primaryKeyAttribute.origins.push(origin);
@@ -988,6 +1009,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		logger.trace(`${tableName} table loading, opening primary store`);
 		const dbiInit = createOpenDBIObject(false, true);
 		dbiInit.compression = primaryKeyAttribute.compression;
+		// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
+		if (typeof primaryKeyAttribute.randomAccessFields === 'boolean')
+			dbiInit.randomAccessStructure = primaryKeyAttribute.randomAccessFields;
 		const dbiName = tableName + '/';
 
 		if (rootStore instanceof RocksDatabase) {
@@ -1310,6 +1334,10 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
 				outstanding++;
+				// Custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`, so the
+				// outstanding-based yield below never fires for them. Track that this row did synchronous
+				// indexing work so we can still yield the event loop after it.
+				let didSynchronousIndexing = false;
 				// every index operation needs to be guarded by the version still be the same. If it has already changed before
 				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
 				// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
@@ -1323,6 +1351,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						const value = record && (resolver ? resolver(record) : record[property]);
 						if (index.customIndex) {
 							index.customIndex.index(key, value);
+							didSynchronousIndexing = true;
 							continue;
 						}
 						const values = getIndexedValues(value, index.indexNulls);
@@ -1361,7 +1390,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					if (interrupted) return;
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
+				else if (outstanding > MIN_OUTSTANDING_INDEXING)
+					await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
+				else if (didSynchronousIndexing) await new Promise((resolve) => setImmediate(resolve)); // custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
 			}
 		}
 		// Await the last pending put. If it rejects, that is also an indexing error.

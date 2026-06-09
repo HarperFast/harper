@@ -1,5 +1,5 @@
 const { isHdbInstalled } = require('#src/utility/installation');
-const sandbox = require('sinon');
+const sinon = require('sinon');
 const { expect } = require('chai');
 const fs = require('node:fs');
 const path = require('path');
@@ -12,9 +12,11 @@ describe('Test isHdbInstalled function', () => {
 	let envStub;
 	let loggerStub;
 	let logErrorStub;
+	let sandbox;
 	const TEST_ERROR = 'I am a unit test error test';
 
 	before(() => {
+		sandbox = sinon.createSandbox();
 		fsStatStub = sandbox.stub(fs, 'statSync');
 		envStub = sandbox.stub(envMangr, 'get');
 		envStub
@@ -30,7 +32,7 @@ describe('Test isHdbInstalled function', () => {
 	});
 
 	after(() => {
-		fsStatStub.restore();
+		sandbox.restore();
 	});
 
 	it('Test two calls to fs stat with the correct arguments happy path', async () => {

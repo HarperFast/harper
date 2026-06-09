@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { waitFor } = require('../waitFor.js');
 
 describe('Caching', () => {
 	let CachingTable,
@@ -142,9 +143,7 @@ describe('Caching', () => {
 			events = [];
 			timer = 10;
 			CachingTable.get(23);
-			while (sourceRequests === 0) {
-				await new Promise((resolve) => setTimeout(resolve, 1));
-			}
+			await waitFor(() => sourceRequests > 0);
 			await CachingTable.primaryStore.committed; // wait for the record to update to updating status
 			CachingTable.get(23);
 			let result = await CachingTable.get(23);
@@ -204,18 +203,16 @@ describe('Caching', () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		let result = CachingTable.primaryStore.getSync(23);
 		assert(result); // should exist in database even though it is expired
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		result = CachingTable.primaryStore.getSync(23);
-		assert(!result); // should be evicted and no longer exist in database
+		// should be evicted and no longer exist in database
+		await waitFor(() => !CachingTable.primaryStore.getSync(23));
 	});
 
 	it('Handles eviction-only config without expiration:', async function () {
 		// { eviction: N } alone schedules the scanner and reaps records past their per-record expiresAt
 		CachingTable.setTTLExpiration({ eviction: 0.02 });
 		await CachingTable.put(99, { id: 99, name: 'expires soon' }, { expiresAt: Date.now() + 20 });
-		await new Promise((resolve) => setTimeout(resolve, 80));
-		const result = CachingTable.primaryStore.getSync(99);
-		assert(!result); // should be evicted
+		// should be evicted
+		await waitFor(() => !CachingTable.primaryStore.getSync(99));
 	});
 
 	it('Allows stale-while-revalidate', async function () {
@@ -235,8 +232,8 @@ describe('Caching', () => {
 		assert(result); // should exist in database even though it is stale
 		assert.equal(sourceRequests, 1); // the source request should be started
 		assert.equal(sourceResponses, 0); // the source request should not be completed yet
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		assert.equal(sourceResponses, 1); // the source request should be completed
+		// the source request should be completed
+		await waitFor(() => sourceResponses === 1);
 		result = await CachingTableStaleWhileRevalidate.primaryStore.get(23);
 		assert.equal(sourceRequests, 1); // should be cached again
 		assert(result);
@@ -349,10 +346,8 @@ describe('Caching', () => {
 		assert(result.getExpiresAt());
 		result = IndexedCachingTable.primaryStore.getEntry(23);
 		await IndexedCachingTable.evict(23, result, result.version);
-		await delay(10);
 		// evict should completely eliminate the record
-		result = IndexedCachingTable.primaryStore.getSync(23); // verify that the record is evicted
-		assert.strictEqual(result, undefined);
+		await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined);
 	});
 
 	it('Bigger stampede is handled', async function () {

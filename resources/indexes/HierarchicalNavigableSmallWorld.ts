@@ -156,6 +156,10 @@ export class HierarchicalNavigableSmallWorld {
 	distance: (a: number[], b: number[]) => number;
 	int8 = false; // store vectors as int8-quantized bins (set via the `quantization` index option)
 	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
+	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
+	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
+	// the frozen node — without it, every cache hit on a frozen node would re-slice and re-clone.
+	private convertedNodes = new WeakMap<object, any>();
 	constructor(indexStore: any, options: any) {
 		this.indexStore = indexStore;
 		if (indexStore) {
@@ -495,15 +499,27 @@ export class HierarchicalNavigableSmallWorld {
 
 	private safeGetSync(key: any, options?: any): any {
 		try {
-			const node = this.indexStore.getSync(key, options);
+			let node = this.indexStore.getSync(key, options);
 			// A quantized vector decodes as a bin (Uint8Array/Buffer) that is a view into the
 			// store's read buffer, which may be reused on the next getSync — so copy the bytes
 			// into a retained Int8Array (raw two's-complement reinterpret). The Int8Array guard
 			// skips re-conversion when the object store (useObjectStore) hands back an
 			// already-converted cached node. Float nodes (vector is a number[]) pass through.
 			if (node && node.vector && !Array.isArray(node.vector) && !(node.vector instanceof Int8Array)) {
+				// A node decoded from disk (a cache miss, common once the table outgrows the object
+				// cache) is frozen — the index store sets freezeData — so assigning node.vector would
+				// throw and the catch below would silently drop the node, fragmenting the graph (#1161).
+				// Clone the frozen node, memoizing the clone against the frozen node so repeated cache
+				// hits skip re-slicing/re-cloning. Mutate in place only the writable just-written object.
+				const cached = this.convertedNodes.get(node);
+				if (cached) return cached;
 				const u8 = node.vector as Uint8Array;
-				node.vector = new Int8Array(u8.buffer, u8.byteOffset, u8.byteLength).slice();
+				const vector = new Int8Array(u8.buffer, u8.byteOffset, u8.byteLength).slice();
+				if (Object.isFrozen(node)) {
+					const converted = { ...node, vector };
+					this.convertedNodes.set(node, converted);
+					node = converted;
+				} else node.vector = vector;
 			}
 			return node;
 		} catch {

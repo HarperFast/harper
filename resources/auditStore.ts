@@ -563,7 +563,10 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (!value) {
 						value = decodeFromDatabase(
-							() => store.decoder.decode(buffer.subarray(decoder.position, end)),
+							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
+							// its own time), so skip the prefix heuristic — otherwise a classic record whose
+							// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
+							() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
 							store.rootStore
 						);
 					}

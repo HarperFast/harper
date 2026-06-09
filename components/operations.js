@@ -384,6 +384,7 @@ async function deployComponent(req) {
 				allowInstallScripts: req.install_allow_scripts,
 			};
 		}
+		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
@@ -507,6 +508,11 @@ async function deployComponent(req) {
 					emit('peer', result);
 				}
 			: undefined;
+		// Seal the recorder before the replicate phase so the row's terminal write (finish())
+		// isn't part of the tight put burst that can commit out of order on a peer and revert
+		// it (harperdb/harper#1170). onPeerResult/peer_results accumulate in memory and land in
+		// finish()'s single write; live SSE 'peer' events still fire below.
+		recorder?.seal();
 		emit('phase', { phase: 'replicate', status: 'start' });
 		let response = await server.replication.replicateOperation(req, { onPeerResult });
 		emit('phase', { phase: 'replicate', status: 'done' });

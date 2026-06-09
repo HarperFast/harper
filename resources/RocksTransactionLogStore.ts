@@ -2,6 +2,7 @@ import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { getIdOfRemoteNode } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
+import { endIteratorOnCorruptFrame } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { asBinary } from 'lmdb';
@@ -20,6 +21,13 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	addLog(logName: string);
 	removeLog(logName: string);
 };
+
+// Logs (once per log) when a corrupt frame ends a query iterator early; see
+// endIteratorOnCorruptFrame in replayLogsGuards.ts for why this is end-of-log, not a crash.
+function warnCorruptFrame(logName: string) {
+	return (error: RangeError) =>
+		harperLogger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, error);
+}
 
 /**
  * Represents a transaction log store backed by RocksDB.
@@ -190,7 +198,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
-			const queryIterator = log.query(options);
+			const queryIterator = endIteratorOnCorruptFrame(log.query(options), warnCorruptFrame(log.name));
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
@@ -199,6 +207,30 @@ export class RocksTransactionLogStore extends EventEmitter {
 			let nextEntries: any[];
 			let latestUpdates: number;
 			const iterators: IterableIterator<TransactionEntry>[] = [];
+			// Iterators that have permanently failed (corrupt entry stuck at the same
+			// position). Tracked by identity so the retry-poll path in next() and
+			// updateIterators() never calls .next() on them again — otherwise every
+			// subsequent drain cycle would re-throw the same RangeError, spamming logs
+			// and burning CPU.
+			const failedIterators = new WeakSet<IterableIterator<TransactionEntry>>();
+			// Per-log advance that converts a thrown corrupt-entry error from rocksdb-js
+			// into a clean `done: true` for that iterator. The reader's RangeError leaves
+			// `position` at the bad entry; re-calling next() would re-throw indefinitely.
+			// Terminating just this log lets the aggregate keep draining the other peers'
+			// logs and prevents the throw from escaping into setImmediate-scheduled
+			// consumers (notifyFromTransactionData) where it becomes an uncaughtException.
+			const safeNext = (iterator: IterableIterator<TransactionEntry>, log?: TransactionLog) => {
+				if (failedIterators.has(iterator)) return { value: undefined, done: true };
+				try {
+					return iterator.next();
+				} catch (error) {
+					failedIterators.add(iterator);
+					harperLogger.error('Transaction log iterator failed; terminating this log', error, {
+						log: log?.name,
+					});
+					return { value: undefined, done: true };
+				}
+			};
 			const updateIterators = () => {
 				if (latestUpdates !== this.updates) {
 					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
@@ -217,7 +249,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
-							iterators.push(log.query(queryOptions));
+							iterators.push(endIteratorOnCorruptFrame(log.query(queryOptions), warnCorruptFrame(log.name)));
 						}
 					}
 					latestUpdates = this.updates;
@@ -231,7 +263,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						}
 					}
 				}
-				nextEntries = iterators.map((iterator) => iterator.next());
+				nextEntries = iterators.map((iterator, i) => safeNext(iterator, logs[i]));
 			};
 			updateIterators();
 
@@ -275,7 +307,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						}
 						if (earliestIndex >= 0) {
 							// replace the entry with the next one from the iterator we pulled from
-							nextEntries[earliestIndex] = iterators[earliestIndex].next();
+							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
 								done: false,

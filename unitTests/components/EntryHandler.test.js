@@ -6,7 +6,7 @@ const { tmpdir } = require('node:os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, mkdir } = require('node:fs/promises');
 const { spy } = require('sinon');
-const { waitFor } = require('./waitFor.js');
+const { waitFor } = require('../waitFor.js');
 
 function generateFixture(dirPath, fixture) {
 	mkdirSync(dirPath, { recursive: true });
