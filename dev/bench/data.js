@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780908790802,
+  "lastUpdate": 1780993822682,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -340,6 +340,62 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E",
             "value": 870.34,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "chris nelson",
+            "email": "chris.nelson@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "88c94e67e9a1d33562776d160d3dc3b4833616d5",
+          "message": "fix(indexing): yield the event loop during a synchronous custom-index backfill\n\nA custom index (HNSW vector index) indexes synchronously: in runIndexing's\nper-row loop, index.customIndex.index() runs inline and returns void, so it\nnever assigns lastResolution and never raises `outstanding`. The existing\nyield is gated on `outstanding > MIN_OUTSTANDING_INDEXING`, so for a\ncustom-index backfill it never fires — the entire backfill over the populated\nrows runs in a single event-loop turn, freezing the worker's main thread for\nthe whole build (starving replication keepalive, the operations API, and\nschema signalling, and never letting isIndexing be observed; vector search\nreturns 503 the entire time).\n\nTrack whether a row performed synchronous custom-index work and yield once per\nsuch row when the outstanding-based yields don't apply.\n\nValidated on a live 5.1.0-beta.1 instance with a 100ms main-thread heartbeat\nover an identical 2,000-row int8 HNSW backfill (clean A/B, same box/data):\n  before: max event-loop stall 71,030 ms (frozen for the entire 71.2s build)\n  after:  max event-loop stall    166 ms; build 67.5s (no measurable throughput cost)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-05T19:48:12Z",
+          "url": "https://github.com/HarperFast/harper/commit/88c94e67e9a1d33562776d160d3dc3b4833616d5"
+        },
+        "date": 1780993822142,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load",
+            "value": 6023.1,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C",
+            "value": 8575.83,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B",
+            "value": 8601.1,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A",
+            "value": 6686.91,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F",
+            "value": 4802.03,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D",
+            "value": 8694.32,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E",
+            "value": 923.75,
             "unit": "ops/sec"
           }
         ]
