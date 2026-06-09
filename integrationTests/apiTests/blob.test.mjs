@@ -30,6 +30,7 @@ import { setTimeout } from 'node:timers/promises';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 import { restartHttpWorkers } from './utils/lifecycle.mjs';
+import { installAppComponent } from './utils/components.mjs';
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -575,5 +576,94 @@ suite('Per-device-type LMDB database sharding', { skip: skipSuite }, (ctx) => {
 			const files = (await fs.readdir(blobDir, { recursive: true })).filter((f) => !f.startsWith('.'));
 			assert.ok(files.length > 0, `expected blob files in ${blobDir} for device type ${dbName}`);
 		}
+	});
+});
+
+// ── Brotli Blob Content-Encoding pass-through ─────────────────────────────────
+//
+// Validates that a sourced resource can store Brotli-compressed bytes as a Blob
+// and serve them back with Content-Encoding: br. Harper must pass through the
+// header rather than re-compressing or stripping it.
+//
+// Skipped under the same conditions as the parent suite (Windows crash on
+// restart_service http_workers; unreliable Bun timing).
+
+const BROTLI_SCHEMA_GRAPHQL =
+	'type BrotliCache @table(database: "brotlidb") @export {\n' +
+	'\tid: ID @primaryKey\n' +
+	'\tbrotliContent: Blob!\n' +
+	'\tcontentSize: Int\n' +
+	'\thttpStatus: Int\n' +
+	'}\n\n';
+
+const BROTLI_RESOURCES_JS =
+	"import { brotliCompressSync } from 'zlib';\n" +
+	'\n' +
+	'const { BrotliCache } = databases.brotlidb;\n' +
+	"const rawContent = Buffer.from('Brotli Content-Encoding pass-through test. '.repeat(500));\n" +
+	'const compressed = brotliCompressSync(rawContent);\n' +
+	'\n' +
+	'export class brotlicache extends BrotliCache {\n' +
+	'\tasync get() {\n' +
+	'\t\treturn {\n' +
+	'\t\t\tstatus: this.httpStatus || 200,\n' +
+	"\t\t\theaders: { 'Content-Encoding': 'br' },\n" +
+	'\t\t\tbody: this.brotliContent,\n' +
+	'\t\t};\n' +
+	'\t}\n' +
+	'}\n' +
+	'\n' +
+	'export class BrotliCacheSource extends Resource {\n' +
+	'\tasync get() {\n' +
+	'\t\tconst blob = await createBlob(compressed);\n' +
+	'\t\treturn {\n' +
+	'\t\t\tbrotliContent: blob,\n' +
+	'\t\t\tcontentSize: compressed.length,\n' +
+	'\t\t\thttpStatus: 200,\n' +
+	'\t\t};\n' +
+	'\t}\n' +
+	'}\n' +
+	'\n' +
+	'brotlicache.sourcedFrom(BrotliCacheSource);\n\n';
+
+suite('Brotli Blob Content-Encoding pass-through', { skip: skipSuite }, (ctx) => {
+	let client;
+	const brotliId = randomInt(1000000);
+
+	before(async () => {
+		await startHarper(ctx, { config: {}, env: {} });
+		client = createApiClient(ctx.harper);
+
+		// Probe the list endpoint (/brotlicache/) — it returns 404 until the component
+		// registers its routes, and 200 (empty list) once ready. Avoids triggering
+		// BrotliCacheSource on /brotlicache/{id}, which would create a spurious record.
+		await installAppComponent(client, {
+			project: 'brotliblobs',
+			files: { 'schema.graphql': BROTLI_SCHEMA_GRAPHQL, 'resources.js': BROTLI_RESOURCES_JS },
+			probePath: '/brotlicache/',
+			restartTimeoutMs: 120000,
+		});
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('GET Brotli blob triggers source and returns Content-Encoding: br', async () => {
+		const r = await client.reqRest(`/brotlicache/${brotliId}`).set('Accept', '*/*').expect(200);
+		assert.equal(
+			r.headers['content-encoding'],
+			'br',
+			`expected Content-Encoding: br in response headers, got: ${JSON.stringify(r.headers)}`
+		);
+	});
+
+	test('subsequent GET Brotli blob still returns Content-Encoding: br', async () => {
+		const r = await client.reqRest(`/brotlicache/${brotliId}`).set('Accept', '*/*').expect(200);
+		assert.equal(
+			r.headers['content-encoding'],
+			'br',
+			`expected Content-Encoding: br on cached blob, got: ${JSON.stringify(r.headers)}`
+		);
 	});
 });
