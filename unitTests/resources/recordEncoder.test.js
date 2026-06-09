@@ -177,3 +177,45 @@ describe('RecordEncoder random-access fields opt-out (readOnlyStructures)', () =
 		});
 	});
 });
+
+describe('RecordEncoder structure dictionary cap (no two-byte over-cap corruption)', () => {
+	// Regression: harper's default maxOwnStructures must keep msgpackr on the one-byte record path
+	// (maxOwnStructures + the default maxSharedStructures of 32 must stay <= 64). A larger value (the
+	// prior 256) flips on the two-byte path, which mis-serializes over-cap "own" structures when a
+	// shared-structures store is present — records written after a table exceeds the shared cap become
+	// undecodable ("Record id is not defined for N"), on both the typed default and the
+	// randomAccessFields=false opt-out. These write far more distinct shapes than the shared cap through
+	// a shared store and assert every record still decodes.
+	function diverseRecords(count) {
+		const records = [];
+		for (let i = 0; i < count; i++) {
+			const rec = { id: i };
+			const attrCount = 1 + (i % 6);
+			for (let a = 0; a < attrCount; a++) rec['attr_' + ((i * 7 + a) % 200)] = i % 2 ? 's' + i : i;
+			records.push(rec);
+		}
+		return records;
+	}
+
+	function assertAllDecode(extra) {
+		const store = sharedStore();
+		const writer = makeEncoder(store, extra);
+		const reader = makeEncoder(store, extra);
+		const records = diverseRecords(500); // far exceeds the 32 shared-structure cap
+		const buffers = records.map((r) => Buffer.from(writer.encode(r)));
+		let failures = 0;
+		for (let i = 0; i < buffers.length; i++) {
+			const decoded = reader.decode(buffers[i]);
+			if (!decoded || decoded.id !== records[i].id) failures++;
+		}
+		assert.strictEqual(failures, 0, `all ${records.length} records should decode after exceeding the shared cap`);
+	}
+
+	it('decodes every record past the shared cap on the typed path (default)', () => {
+		assertAllDecode(undefined);
+	});
+
+	it('decodes every record past the shared cap with randomAccessFields off (readOnlyStructures)', () => {
+		assertAllDecode({ readOnlyStructures: true });
+	});
+});

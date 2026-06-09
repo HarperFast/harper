@@ -88,10 +88,18 @@ export class RecordEncoder extends Encoder {
 	name: string;
 	constructor(options) {
 		options.useBigIntExtension = true;
-		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
-		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
-		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
-		options.maxOwnStructures ??= 256;
+		// Bound the per-encoder structure dictionary. It is append-only and pinned on the long-lived
+		// primary store, so a wide/sparse schema (whose records vary by per-field value width) can grow
+		// it unbounded and exhaust memory. Caller-overridable; default caps it.
+		//
+		// Must stay <= 32: with msgpackr's default maxSharedStructures (32), maxOwnStructures + 32 > 64
+		// flips on the two-byte record-id encoding, which mis-serializes over-cap "own" structures when a
+		// shared-structures store is present (the primary store always has one) — it writes an out-of-range
+		// record-id reference instead of inlining the structure, so records become undecodable
+		// ("Record id is not defined for N") once a table exceeds the shared cap. The one-byte path
+		// (<= 32) inlines over-cap shapes correctly and bounds memory at least as tightly. (A prior 256
+		// triggered this on both the typed default and the randomAccessFields=false opt-out.)
+		options.maxOwnStructures ??= 32;
 		// When random-access fields are disabled (storage.randomAccessFields=false), write records as
 		// classic shared structures instead of typed random-access structures. randomAccessStructure stays
 		// on so reads still decode either form — existing typed-struct data remains readable; only new
