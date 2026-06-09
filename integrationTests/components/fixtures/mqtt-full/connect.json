@@ -1,0 +1,33 @@
+{
+	"options": {
+		"clientId": "clientID",
+		"userName": "username",
+		"authorizations": "authGroups"
+	},
+	"acls": [
+		{
+			"topicFilter": "dog/#",
+			"publishers": ["dogPublisher"],
+			"subscribers": ["dogSubscriber"],
+			"anonymousSubscriber": false
+		},
+		{
+			"topicFilter": "public/#",
+			"publishers": [],
+			"subscribers": [],
+			"anonymousSubscriber": true
+		},
+		{
+			"topicFilter": "$SYS/#",
+			"publishers": [],
+			"subscribers": ["sysMonitor"],
+			"anonymousSubscriber": false
+		},
+		{
+			"topicFilter": "user-topics/#",
+			"publishers": ["userPub"],
+			"subscribers": ["userSub"],
+			"anonymousSubscriber": false
+		}
+	]
+}

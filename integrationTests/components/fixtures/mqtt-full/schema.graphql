@@ -1,0 +1,8 @@
+type Pet @table @export {
+	id: String @primaryKey
+	name: String
+}
+
+type Sensor @table @export {
+	id: String @primaryKey
+}

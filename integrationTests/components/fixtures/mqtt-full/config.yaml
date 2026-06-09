@@ -1,0 +1,8 @@
+rest: true
+graphqlSchema:
+  files: schema.graphql
+jsResource:
+  files: resources.js
+'@harperdb/acl-connect':
+  package: '@harperdb/acl-connect'
+  files: connect.json
