@@ -177,3 +177,45 @@ describe('RecordEncoder random-access fields opt-out (readOnlyStructures)', () =
 		});
 	});
 });
+
+describe('RecordEncoder high-cardinality round-trip (msgpackr two-byte over-cap)', () => {
+	// With the default maxOwnStructures (256) and a shared store, msgpackr uses two-byte record ids.
+	// A table whose distinct record shapes exceed the shared cap emits self-contained two-byte record
+	// definitions; msgpackr < 1.12.1 mis-read those ("Record id is not defined for N"), leaving
+	// high-cardinality records permanently undecodable — on both the typed default and the
+	// randomAccessFields=false opt-out. msgpackr 1.12.1's read fix makes them round-trip (and decodes
+	// already-written data). These write far more distinct shapes than the cap through a shared store
+	// and assert every record decodes; they fail against msgpackr 1.12.0 and pass against 1.12.1.
+	function diverseRecords(count) {
+		const records = [];
+		for (let i = 0; i < count; i++) {
+			const rec = { id: i };
+			const attrCount = 1 + (i % 6);
+			for (let a = 0; a < attrCount; a++) rec['attr_' + ((i * 7 + a) % 400)] = i % 2 ? 's' + i : i;
+			records.push(rec);
+		}
+		return records;
+	}
+
+	function assertAllDecode(extra) {
+		const store = sharedStore();
+		const writer = makeEncoder(store, extra);
+		const reader = makeEncoder(store, extra);
+		const records = diverseRecords(3000); // far exceeds the structure cap, forcing the two-byte over-cap path
+		const buffers = records.map((r) => Buffer.from(writer.encode(r)));
+		let failures = 0;
+		for (let i = 0; i < buffers.length; i++) {
+			const decoded = reader.decode(buffers[i]);
+			if (!decoded || decoded.id !== records[i].id) failures++;
+		}
+		assert.strictEqual(failures, 0, `all ${records.length} records should decode past the structure cap`);
+	}
+
+	it('decodes every record past the structure cap on the typed path (default)', () => {
+		assertAllDecode(undefined);
+	});
+
+	it('decodes every record past the structure cap with randomAccessFields off (readOnlyStructures)', () => {
+		assertAllDecode({ readOnlyStructures: true });
+	});
+});
