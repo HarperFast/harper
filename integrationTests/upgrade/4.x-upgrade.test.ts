@@ -288,12 +288,12 @@ suite(
 // table is absent (table-not-found error), and the test is skipped in that case.
 // ---------------------------------------------------------------------------
 
-let hdbStatusSeeded = false;
-
 suite(
 	'v4->v5: hdb_status GTM table backward-compat',
 	{ skip: !legacyPath || testsBun || process.platform === 'win32' },
 	(ctx: ContextWithHarper) => {
+		let hdbStatusSeeded = false;
+
 		before(async () => {
 			await startHarper(ctx, {
 				config: {},
@@ -421,10 +421,11 @@ suite(
 
 			// Write the old-style clustering: config key directly into the on-disk
 			// config file so that v5 reads it on startup (not v4 — v4 is already up).
-			// v4.3 used harperdb-config.yaml; fall back to harper-config.yaml if absent.
+			// Different v4.3.x builds may use either filename (harperdb-config.yaml or
+			// harper-config.yaml); write to both so the test works regardless of which
+			// convention the installed minor uses.
 			const legacyConfigPath = join(ctx.harper.dataRootDir, 'harperdb-config.yaml');
 			const newConfigPath = join(ctx.harper.dataRootDir, 'harper-config.yaml');
-			const configPath = existsSync(legacyConfigPath) ? legacyConfigPath : newConfigPath;
 
 			// Append the old-style clustering block to the existing config file.
 			// YAML block append: a trailing newline then a top-level clustering key.
@@ -438,7 +439,11 @@ suite(
 				'    port: 12345',
 				'',
 			].join('\n');
-			writeFileSync(configPath, clusteringYaml, { flag: 'a' });
+			// Write to whichever file(s) exist; create both if neither does so v5 picks
+			// up the config regardless of which filename convention is in play.
+			for (const configPath of [legacyConfigPath, newConfigPath]) {
+				writeFileSync(configPath, clusteringYaml, { flag: 'a' });
+			}
 		});
 
 		after(async () => {
