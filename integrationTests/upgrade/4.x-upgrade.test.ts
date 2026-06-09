@@ -316,13 +316,10 @@ suite(
 				});
 				hdbStatusSeeded = true;
 			} catch (err: any) {
-				// Table absent on this v4 minor — acceptable; the test will skip.
-				if (
-					!String(err?.message ?? err)
-						.toLowerCase()
-						.includes('not found')
-				)
-					throw err;
+				// Table or database absent on this v4 minor — acceptable; the test will skip.
+				// v4 reports "not found" for missing tables and "does not exist" for missing databases.
+				const msg = String(err?.message ?? err).toLowerCase();
+				if (!msg.includes('not found') && !msg.includes('does not exist')) throw err;
 			}
 		});
 
