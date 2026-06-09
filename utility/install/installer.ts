@@ -527,6 +527,12 @@ async function createConfigFile(installParams) {
 			if (args[cfg.toLowerCase()] === undefined) args[cfg] = DEV_MODE_CONFIG[cfg];
 		}
 	} else {
+		const defaultsMode = installParams[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE];
+		if (defaultsMode !== undefined && defaultsMode !== 'prod') {
+			const warn = `DEFAULTS_MODE value "${defaultsMode}" is not recognized (expected "dev" or "prod"). Using prod defaults.`;
+			console.error(chalk.yellow.bold(`Warning: ${warn}`));
+			hdbLogger.warn(warn);
+		}
 		if (args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()])
 			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
 		if (args[CONFIG_PARAMS.HTTP_PORT.toLowerCase()]) args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
