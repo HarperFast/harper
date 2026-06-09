@@ -77,6 +77,7 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 	}
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
+		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		cfsLoaded.push(
 			loadComponent(hdbAppFolder, resources, hdbAppFolder, {
 				isRoot: false,

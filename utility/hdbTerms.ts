@@ -604,6 +604,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_CACHING: 'storage_caching',
 	STORAGE_COMPRESSION: 'storage_compression',
 	STORAGE_NOREADAHEAD: 'storage_noReadAhead',
+	STORAGE_RANDOMACCESSFIELDS: 'storage_randomAccessFields',
 	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
 	STORAGE_ENCRYPTION: 'storage_encryption',
 	STORAGE_MAXTRANSACTIONQUEUETIME: 'storage_maxTransactionQueueTime',

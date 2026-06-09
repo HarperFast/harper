@@ -460,6 +460,10 @@
 					"description": "Max write queue time before rejecting (e.g. '45s')."
 				},
 				"noReadAhead": { "type": "boolean", "description": "Advise OS to not read ahead. Default: false" },
+				"randomAccessFields": {
+					"type": "boolean",
+					"description": "Encode records as typed random-access structures, optimizing for fast field access and smaller records. Best for tables with stable, homogeneous field types; wide or variably-typed schemas should leave this off. Applies to each primary table on open, so changing it switches encoding for tables that have not pinned the choice via the @table(randomAccessFields:) directive (safe at runtime: existing records still decode, only new writes change). Default: false"
+				},
 				"prefetchWrites": { "type": "boolean", "description": "Load data prior to write transactions. Default: true" },
 				"path": { "type": "string", "description": "Directory for all database files. Default: <rootPath>/database" },
 				"blobPaths": {

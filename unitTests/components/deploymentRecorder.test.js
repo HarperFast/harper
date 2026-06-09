@@ -161,6 +161,62 @@ describe('DeploymentRecorder.recordPeers (bulk wrapper)', () => {
 	});
 });
 
+describe('DeploymentRecorder.seal', () => {
+	let installed;
+	let putLog;
+	beforeEach(() => {
+		putLog = [];
+		const rows = new Map();
+		const mock = {
+			rows,
+			async get(id) {
+				return rows.get(id);
+			},
+			async put(row) {
+				putLog.push({ status: row.status, peerCount: (row.peer_results ?? []).length });
+				rows.set(row.deployment_id, { ...row, peer_results: [...(row.peer_results ?? [])] });
+			},
+		};
+		if (!databases.system) databases.system = {};
+		const prior = databases.system[DEPLOYMENT_TABLE];
+		databases.system[DEPLOYMENT_TABLE] = mock;
+		installed = {
+			mock,
+			restore() {
+				databases.system[DEPLOYMENT_TABLE] = prior;
+			},
+		};
+	});
+	afterEach(() => installed.restore());
+
+	it('stops persisting intermediate updates once sealed, but finish() writes the terminal state', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		const putsAfterCreate = putLog.length;
+		recorder.seal();
+		recorder.recordPeer({ node: 'a', status: 'success' });
+		recorder.recordPeer({ node: 'b', status: 'success' });
+		assert.strictEqual(recorder.row.peer_results.length, 2, 'peer_results accumulate in memory while sealed');
+		assert.strictEqual(putLog.length, putsAfterCreate, 'no puts are issued while sealed (pre-finish)');
+
+		await recorder.finish('success');
+		const terminal = putLog[putLog.length - 1];
+		assert.strictEqual(terminal.status, 'success', 'finish() persists the terminal status');
+		assert.strictEqual(terminal.peerCount, 2, 'finish() carries the accumulated peer_results');
+		const persisted = await installed.mock.get(recorder.deploymentId);
+		assert.strictEqual(persisted.status, 'success');
+		assert.strictEqual(persisted.peer_results.length, 2);
+	});
+
+	it('does not affect persistence before seal: recordPeer still flushes incrementally', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		const putsAfterCreate = putLog.length;
+		recorder.recordPeer({ node: 'a', status: 'success' });
+		// scheduleFlush issues the put asynchronously; let it settle.
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.ok(putLog.length > putsAfterCreate, 'an unsealed recordPeer persists incrementally');
+	});
+});
+
 describe('awaitDeploymentRow', () => {
 	let installed;
 	beforeEach(() => {

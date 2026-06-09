@@ -262,7 +262,14 @@ export class RecordEncoder extends StructonEncoder {
 		let nextByte = buffer[start];
 		let metadataFlags = 0;
 		try {
-			if ((this.isRocksDB && nextByte === 66) || (nextByte < 32 && end > 2)) {
+			// The metadata/timestamp prefix is detected heuristically by the first byte. For rocksdb a
+			// local-timestamp prefix starts with 66 — but 66 (0x42) is also classic shared-structure
+			// record-id #2, so a timestamp-less classic record beginning with that id is misread as a
+			// timestamped record (8 bytes stripped → corrupt). Callers that pass a value known to have no
+			// prefix (e.g. the audit store's getValue) set options.noMetadata to skip the heuristic. Typed
+			// structs start at 0x20-0x3f and never hit this, which is why it only surfaces with classic
+			// structures (typed structures off).
+			if (!options?.noMetadata && ((this.isRocksDB && nextByte === 66) || (nextByte < 32 && end > 2))) {
 				// record with metadata
 				// this means that the record starts with a local timestamp (that was assigned by lmdb-js).
 				// we copy it so we can decode it as float-64; we need to do it first because if structural data

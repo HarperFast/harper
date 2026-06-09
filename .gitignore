@@ -50,6 +50,7 @@ harper-*.tgz
 # AI
 .antigravitycli/
 .claude/
+cache/
 
 # YCSB benchmark results (generated)
 benchmarks/ycsb/results/

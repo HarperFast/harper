@@ -441,9 +441,28 @@ async function createBootPropertiesFile() {
 		const homeDirPath = path.join(homeDir, hdbTerms.HDB_HOME_DIR_NAME);
 		const homeDirKeysDirPath = path.join(homeDirPath, hdbTerms.LICENSE_KEY_DIR_NAME);
 		const propsFilePath = path.join(homeDirPath, hdbTerms.BOOT_PROPS_FILE_NAME);
-		// if the properties file already exists, and we have an explicit ROOTPATH, we don't overwrite the existing
-		// properties file
-		if (!fs.existsSync(propsFilePath) || !hdbUtils.getEnvCliRootPath()) {
+		// Write boot props when: file doesn't exist, OR no explicit ROOTPATH was given (caller
+		// accepts whatever path this install produces), OR the existing file points to a
+		// settings_path that no longer exists (stale from a deleted previous install dir).
+		let shouldWriteBootProps = !fs.existsSync(propsFilePath) || !hdbUtils.getEnvCliRootPath();
+		if (!shouldWriteBootProps) {
+			try {
+				const content = fs.readFileSync(propsFilePath, 'utf8');
+				// Anchor to line start (with /m) to avoid matching commented-out lines.
+				const match = content.match(/^[ \t]*settings_path\s*=\s*(.+)/m);
+				if (match) {
+					const settingsPath = match[1].trim().replace(/^["']|["']$/g, '');
+					if (!fs.existsSync(settingsPath)) {
+						shouldWriteBootProps = true;
+					}
+				} else {
+					shouldWriteBootProps = true;
+				}
+			} catch {
+				shouldWriteBootProps = true;
+			}
+		}
+		if (shouldWriteBootProps) {
 			try {
 				fs.mkdirpSync(homeDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
 				fs.mkdirpSync(homeDirKeysDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });

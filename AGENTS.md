@@ -43,6 +43,8 @@ npx mocha unitTests/resources/mytest.js
 
 TypeScript is stripped at runtime via `--conditions=typestrip` (Node.js native type stripping) — no compilation required for development. Use `npm run test:unit:typestrip` to run tests with this mode.
 
+**Test timing:** prefer condition-waits over fixed `delay(N)` sleeps. `await delay(N); assert(sideEffectHappened)` races against loaded runners and is the root cause of a class of flakiness (#1138). Use the shared `waitFor(condition, timeout?, interval?)` helper in `unitTests/waitFor.js` to poll until the actual condition holds. Reserve fixed sleeps for genuinely modeling elapsed time (TTL/expiry windows) or asserting a non-event (that something has _not_ happened yet).
+
 ---
 
 ## Architecture

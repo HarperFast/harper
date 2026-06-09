@@ -18,6 +18,7 @@ const {
 const { existsSync } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
+const { waitFor } = require('../waitFor.js');
 
 describe('Blob test', () => {
 	let BlobTest;
@@ -123,8 +124,7 @@ describe('Blob test', () => {
 		);
 		await assert.rejects(() => BlobTest.put({ id: 111, blob }));
 		let filePath = getFilePathForBlob(blob);
-		await delay(20); // wait for the file to be deleted
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for the file to be deleted
 	});
 	it('create a blob from a buffer and call save() but then fail validation', async () => {
 		let blob;
@@ -194,12 +194,9 @@ describe('Blob test', () => {
 		let filePath = getFilePathForBlob(blob);
 		assert(existsSync(filePath));
 		await BlobTest.delete(3);
-		await delay(50);
-		assert(!existsSync(filePath)); // should immediately be deleted
+		await waitFor(() => !existsSync(filePath)); // should be deleted
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
-		let retries = 0;
-		while (existsSync(filePath) && retries++ < 10) await delay(40); // wait for audit log removal and deletion
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for audit log removal and deletion
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
@@ -209,8 +206,7 @@ describe('Blob test', () => {
 		await delay(50); // wait for audit log removal and deletion
 		assert(existsSync(filePath)); // should still exist because it isn't deleted yet
 		await BlobTest.delete(4);
-		await delay(50); // wait for deletion
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for deletion
 
 		setAuditRetention(10); // give us time to check the blob file that is written
 		blob = await createBlob(Buffer.from(testString));
@@ -226,8 +222,7 @@ describe('Blob test', () => {
 		await delay(50); // wait for audit log removal and deletion
 		assert(existsSync(filePath)); // should still exist because it isn't replaced yet
 		await BlobTest.put({ id: 4, blob: null });
-		await delay(50); // wait for deletion
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for deletion
 	});
 	it('updating an unrelated attribute does not unlink a still-referenced blob', async () => {
 		// Regression: RecordEncoder used to call deleteBlobsInObject(existingEntry.value)
@@ -281,8 +276,9 @@ describe('Blob test', () => {
 
 		// Now explicitly drop the blob — file should get cleaned up as before.
 		await RetentionTest.put({ id: 100, blob: null, phase: 'gone' });
-		await delay(50);
-		assert(!existsSync(filePath), 'blob file should be unlinked when the new record no longer references it');
+		await waitFor(() => !existsSync(filePath), {
+			message: 'blob file should be unlinked when the new record no longer references it',
+		});
 		setDeletionDelay(500); // restore the default
 	});
 	it('slowly create a blob and save it before it is done', async () => {
@@ -473,8 +469,9 @@ describe('Blob test', () => {
 		});
 		const goodPath = getFilePathForBlob(goodBlob);
 		assert(goodPath, 'good blob was assigned a file path during pre-commit');
-		await delay(100); // wait for cleanup setTimeout
-		assert(!existsSync(goodPath), `good blob ${goodPath} should be cleaned up by abort`);
+		await waitFor(() => !existsSync(goodPath), {
+			message: `good blob ${goodPath} should be cleaned up by abort`,
+		});
 	});
 	it('superseded incremental update cleans up pre-saved blob', async () => {
 		// Establish a record at the current monotonic time.
@@ -488,8 +485,9 @@ describe('Blob test', () => {
 		});
 		const blobPath = getFilePathForBlob(olderBlob);
 		assert(blobPath, 'older blob was assigned a file path during pre-commit');
-		await delay(100); // wait for cleanup setTimeout
-		assert(!existsSync(blobPath), `superseded blob ${blobPath} should be cleaned up`);
+		await waitFor(() => !existsSync(blobPath), {
+			message: `superseded blob ${blobPath} should be cleaned up`,
+		});
 		// the original record value is preserved
 		const existing = await BlobTest.get(250);
 		assert.equal(await existing.blob.text(), 'first');

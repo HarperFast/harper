@@ -1,28 +1,87 @@
-import { describe, it, beforeEach } from 'node:test';
+/**
+ * Delete operation integration tests.
+ *
+ * Ported from legacy `apiTests/tests/8_deleteTests.mjs`. Validates:
+ * - `delete` (NoSQL) and SQL DELETE operations
+ * - Delete-before semantics (insert, verify, delete)
+ * - `drop_schema` / `drop_table` / `drop_attribute` operations
+ * - Dropping schemas/tables with numeric-string names
+ * - Insert/upsert/update/delete with attribute management
+ * - SQL DELETE with numeric hash values quoted as strings
+ *
+ * Self-contained: starts its own Harper instance and creates all schemas it needs
+ * in `before()`. The `northnwd.employees` table is created empty; tests insert
+ * their own records. `dev.rando` is pre-seeded with 4 records for the SQL
+ * delete tests.
+ */
+import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { testData } from '../config/envConfig.mjs';
-import { checkJob, getJobId } from '../utils/jobs.mjs';
 import { setTimeout } from 'node:timers/promises';
-import { req } from '../utils/request.mjs';
-import { timestamp } from '../utils/timestamp.mjs';
+import { startHarper, teardownHarper } from '@harperfast/integration-testing';
+import { createApiClient } from './utils/client.mjs';
+import { awaitJob, getJobId } from './utils/operations.mjs';
 
-describe('8. Delete Tests', () => {
-	beforeEach(timestamp);
+suite('Delete operations', (ctx) => {
+	let client;
+	// Tracks the timestamp between inserts for delete_files_before tests.
+	let insertTimestamp = '0';
+
+	before(async () => {
+		await startHarper(ctx, { config: {}, env: {} });
+		client = createApiClient(ctx.harper);
+
+		// Create northnwd.employees — tests insert their own records.
+		await client.req().send({ operation: 'create_schema', schema: 'northnwd' }).expect(200);
+		await client
+			.req()
+			.send({ operation: 'create_table', schema: 'northnwd', table: 'employees', primary_key: 'employeeid' })
+			.expect(200);
+
+		// Create dev.rando pre-seeded for the SQL numeric-hash delete tests.
+		await client.req().send({ operation: 'create_schema', schema: 'dev' }).expect(200);
+		await client
+			.req()
+			.send({ operation: 'create_table', schema: 'dev', table: 'rando', primary_key: 'id' })
+			.expect(200);
+		await client
+			.req()
+			.send({
+				operation: 'insert',
+				schema: 'dev',
+				table: 'rando',
+				records: [{ id: 987654321 }, { id: 987654322 }, { id: 987654323 }, { id: 987654324 }],
+			})
+			.expect(200);
+
+		// Numeric-string schemas/tables used by the "Drop number" tests.
+		// In the legacy suite these were created by 1_environmentSetup.mjs;
+		// here we create them in before() so the suite is fully self-contained.
+		await client.req().send({ operation: 'create_schema', schema: '123' }).expect(200);
+		await client.req().send({ operation: 'create_table', schema: '123', table: '4', primary_key: 'id' }).expect(200);
+		await client.req().send({ operation: 'create_schema', schema: '1123' }).expect(200);
+		await client.req().send({ operation: 'create_table', schema: '1123', table: '1', primary_key: 'id' }).expect(200);
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
 
 	//Delete Tests Folder
 
 	//Delete Records Before Tests
 
-	it('create test schema', async () => {
-		await req()
+	test('create test schema', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_schema', schema: 'test_delete_before' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 		await setTimeout(500);
 	});
 
-	it('create test table', async () => {
-		await req()
+	test('create test table', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_table', schema: 'test_delete_before', table: 'address', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
@@ -31,8 +90,9 @@ describe('8. Delete Tests', () => {
 
 	//Delete Records Before Alias Tests
 
-	it('Insert new records', async () => {
-		await req()
+	test('Insert new records', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
 				schema: 'test_delete_before',
@@ -57,10 +117,11 @@ describe('8. Delete Tests', () => {
 		await setTimeout(1000);
 	});
 
-	it('Insert additional new records', () => {
-		testData.insert_timestamp = new Date().toISOString();
+	test('Insert additional new records', async () => {
+		insertTimestamp = new Date().toISOString();
 
-		return req()
+		await client
+			.req()
 			.send({
 				operation: 'insert',
 				schema: 'test_delete_before',
@@ -78,23 +139,25 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records before', async () => {
-		const response = await req()
+	test('Delete records before', async () => {
+		const response = await client
+			.req()
 			.send({
 				operation: 'delete_files_before',
-				date: `${testData.insert_timestamp}`,
+				date: insertTimestamp,
 				schema: 'test_delete_before',
 				table: 'address',
 			})
 			.expect(200);
 
-		const id = await getJobId(response.body);
-		const jobResponse = await checkJob(id, 15);
+		const id = getJobId(response.body);
+		const jobResponse = await awaitJob(client, id, 15);
 		assert.ok(jobResponse.body[0].message.includes('records successfully deleted'), jobResponse.text);
 	});
 
-	it('Search by hash confirm', () => {
-		return req()
+	test('Search by hash confirm', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'test_delete_before',
@@ -125,8 +188,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Insert new records', async () => {
-		await req()
+	test('Insert new records', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
 				schema: 'test_delete_before',
@@ -151,10 +215,11 @@ describe('8. Delete Tests', () => {
 		await setTimeout(1000);
 	});
 
-	it('Insert additional new records', () => {
-		testData.insert_timestamp = new Date().toISOString();
+	test('Insert additional new records', async () => {
+		insertTimestamp = new Date().toISOString();
 
-		return req()
+		await client
+			.req()
 			.send({
 				operation: 'insert',
 				schema: 'test_delete_before',
@@ -172,23 +237,25 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records before', async () => {
-		const response = await req()
+	test('Delete records before', async () => {
+		const response = await client
+			.req()
 			.send({
 				operation: 'delete_files_before',
-				date: `${testData.insert_timestamp}`,
+				date: insertTimestamp,
 				schema: 'test_delete_before',
 				table: 'address',
 			})
 			.expect(200);
 
-		const id = await getJobId(response.body);
-		const jobResponse = await checkJob(id, 15);
+		const id = getJobId(response.body);
+		const jobResponse = await awaitJob(client, id, 15);
 		assert.ok(jobResponse.body[0].message.includes('records successfully deleted'), jobResponse.text);
 	});
 
-	it('Search by hash confirm', () => {
-		return req()
+	test('Search by hash confirm', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'test_delete_before',
@@ -221,19 +288,21 @@ describe('8. Delete Tests', () => {
 
 	//Drop schema tests
 
-	it('Create schema for drop test', () => {
-		return req()
-			.send({ operation: 'create_schema', schema: `${testData.drop_schema}` })
+	test('Create schema for drop test', async () => {
+		await client
+			.req()
+			.send({ operation: 'create_schema', schema: 'drop_schema' })
 			.expect((r) => assert.equal(r.body.message, "database 'drop_schema' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('Create table for drop test', async () => {
-		await req()
+	test('Create table for drop test', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'create_table',
-				schema: `${testData.drop_schema}`,
-				table: `${testData.drop_table}`,
+				schema: 'drop_schema',
+				table: 'drop_table',
 				primary_key: 'id',
 			})
 			.expect((r) => assert.equal(r.body.message, "table 'drop_schema.drop_table' successfully created.", r.text))
@@ -241,12 +310,13 @@ describe('8. Delete Tests', () => {
 		await setTimeout(2000);
 	});
 
-	it('Insert records for drop test', () => {
-		return req()
+	test('Insert records for drop test', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
-				schema: `${testData.drop_schema}`,
-				table: `${testData.drop_table}`,
+				schema: 'drop_schema',
+				table: 'drop_table',
 				records: [
 					{ id: 4, address: '194 Greenbrook Drive' },
 					{
@@ -261,42 +331,47 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema', () => {
-		return req()
-			.send({ operation: 'drop_schema', schema: `${testData.drop_schema}` })
+	test('Drop schema', async () => {
+		await client
+			.req()
+			.send({ operation: 'drop_schema', schema: 'drop_schema' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'drop_schema'", r.text))
 			.expect(200);
 	});
 
-	it('Confirm drop schema', () => {
-		return req()
-			.send({ operation: 'describe_schema', schema: `${testData.drop_schema}` })
+	test('Confirm drop schema', async () => {
+		await client
+			.req()
+			.send({ operation: 'describe_schema', schema: 'drop_schema' })
 			.expect((r) => assert.equal(r.body.error, "database 'drop_schema' does not exist", r.text))
 			.expect(404);
 	});
 
-	it('Create schema again', () => {
-		return req()
-			.send({ operation: 'create_schema', schema: `${testData.drop_schema}` })
+	test('Create schema again', async () => {
+		await client
+			.req()
+			.send({ operation: 'create_schema', schema: 'drop_schema' })
 			.expect((r) => assert.equal(r.body.message, "database 'drop_schema' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('Create table again', async () => {
-		await req()
+	test('Create table again', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'create_table',
-				schema: `${testData.drop_schema}`,
-				table: `${testData.drop_table}`,
+				schema: 'drop_schema',
+				table: 'drop_table',
 				primary_key: 'id',
 			})
 			.expect((r) => assert.equal(r.body.message, "table 'drop_schema.drop_table' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('Confirm correct attributes', () => {
-		return req()
-			.send({ operation: 'describe_table', schema: `${testData.drop_schema}`, table: `${testData.drop_table}` })
+	test('Confirm correct attributes', async () => {
+		await client
+			.req()
+			.send({ operation: 'describe_table', schema: 'drop_schema', table: 'drop_table' })
 			.expect((r) => {
 				// try to debug/log intermittent failure here:
 				if (!r.body.attributes) console.log('describe_table response', r.body);
@@ -305,45 +380,51 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Clean up after drop schema tests', () => {
-		return req()
-			.send({ operation: 'drop_schema', schema: `${testData.drop_schema}` })
+	test('Clean up after drop schema tests', async () => {
+		await client
+			.req()
+			.send({ operation: 'drop_schema', schema: 'drop_schema' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'drop_schema'", r.text))
 			.expect(200);
 	});
 
-	it('Create schema for wildcard test', function (t) {
+	test('Create schema for wildcard test', async (t) => {
 		if (process.platform === 'win32') return t.skip('Windows does not allow * in directory names');
-		return req()
+		await client
+			.req()
 			.send({ operation: 'create_schema', schema: 'h*rper%1' })
 			.expect((r) => assert.equal(r.body.message, "database 'h*rper%1' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('Drop wildcard schema', function (t) {
+	test('Drop wildcard schema', async (t) => {
 		if (process.platform === 'win32') return t.skip('Windows does not allow * in directory names');
-		return req()
+		await client
+			.req()
 			.send({ operation: 'drop_schema', schema: 'h*rper%1' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'h*rper%1'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number table', () => {
-		return req()
+	test('Drop number table', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_table', schema: '123', table: '4' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table '123.4'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number as string table', () => {
-		return req()
+	test('Drop number as string table', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_table', schema: '1123', table: '1' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table '1123.1'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number number table', () => {
-		return req()
+	test('Drop number number table', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_table', schema: 1123, table: 1 })
 			.expect((r) =>
 				assert.ok(JSON.stringify(r.body).includes("'schema' must be a string. 'table' must be a string"), r.text)
@@ -351,22 +432,25 @@ describe('8. Delete Tests', () => {
 			.expect(400);
 	});
 
-	it('Drop number schema', () => {
-		return req()
+	test('Drop number schema', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_schema', schema: '123' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted '123'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number as string schema', () => {
-		return req()
+	test('Drop number as string schema', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_schema', schema: '1123' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted '1123'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number number schema', () => {
-		return req()
+	test('Drop number number schema', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_schema', schema: 1123 })
 			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'schema' must be a string"), r.text))
 			.expect(400);
@@ -374,23 +458,26 @@ describe('8. Delete Tests', () => {
 
 	//Post drop attribute tests
 
-	it('create schema drop_attr', () => {
-		return req()
+	test('create schema drop_attr', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('create table test', async () => {
-		await req()
+	test('create table test', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 		await setTimeout(2000);
 	});
 
-	it('Insert records into test table', () => {
-		return req()
+	test('Insert records into test table', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
 				schema: 'drop_attr',
@@ -418,15 +505,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname', () => {
-		return req()
+	test('Drop attribute lastname', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Upsert some values', () => {
-		return req()
+	test('Upsert some values', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'upsert',
 				schema: 'drop_attr',
@@ -441,8 +530,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm upsert', () => {
-		return req()
+	test('Search by hash confirm upsert', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -459,15 +549,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute unitsnnorder', () => {
-		return req()
+	test('Drop attribute unitsnnorder', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'unitsnnorder'", r.text))
 			.expect(200);
 	});
 
-	it('Update some values', async () => {
-		await req()
+	test('Update some values', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'update',
 				schema: 'drop_attr',
@@ -487,9 +579,10 @@ describe('8. Delete Tests', () => {
 		await setTimeout(3000);
 	});
 
-	it('Search by hash confirm update', async () => {
+	test('Search by hash confirm update', async () => {
 		await setTimeout(3000);
-		return req()
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -505,15 +598,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname', () => {
-		return req()
+	test('Drop attribute lastname', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Delete a record', () => {
-		return req()
+	test('Delete a record', async () => {
+		await client
+			.req()
 			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
 			.expect((r) => {
 				assert.equal(r.body.deleted_hashes.length, 1, r.text);
@@ -523,8 +618,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm delete', () => {
-		return req()
+	test('Search by hash confirm delete', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -536,8 +632,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema drop_attr', () => {
-		return req()
+	test('Drop schema drop_attr', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
@@ -545,22 +642,25 @@ describe('8. Delete Tests', () => {
 
 	//Post drop attribute tests (second folder)
 
-	it('create schema drop_attr', () => {
-		return req()
+	test('create schema drop_attr', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('create table test', () => {
-		return req()
+	test('create table test', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', primary_key: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('Insert records into test table', () => {
-		return req()
+	test('Insert records into test table', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
 				schema: 'drop_attr',
@@ -588,15 +688,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname', () => {
-		return req()
+	test('Drop attribute lastname', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Upsert some values', () => {
-		return req()
+	test('Upsert some values', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'upsert',
 				schema: 'drop_attr',
@@ -611,8 +713,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm upsert', () => {
-		return req()
+	test('Search by hash confirm upsert', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -629,15 +732,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute unitsnnorder', () => {
-		return req()
+	test('Drop attribute unitsnnorder', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'unitsnnorder'", r.text))
 			.expect(200);
 	});
 
-	it('Update some values', async () => {
-		await req()
+	test('Update some values', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'update',
 				schema: 'drop_attr',
@@ -657,9 +762,10 @@ describe('8. Delete Tests', () => {
 		await setTimeout(3000);
 	});
 
-	it('Search by hash confirm update', async () => {
+	test('Search by hash confirm update', async () => {
 		await setTimeout(3000);
-		return req()
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -675,15 +781,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname', () => {
-		return req()
+	test('Drop attribute lastname', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Delete a record', () => {
-		return req()
+	test('Delete a record', async () => {
+		await client
+			.req()
 			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
 			.expect((r) => {
 				assert.equal(r.body.deleted_hashes.length, 1, r.text);
@@ -693,8 +801,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm delete', () => {
-		return req()
+	test('Search by hash confirm delete', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -706,8 +815,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema drop_attr', () => {
-		return req()
+	test('Drop schema drop_attr', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
@@ -715,23 +825,26 @@ describe('8. Delete Tests', () => {
 
 	//Post drop attribute tests (third folder)
 
-	it('create schema drop_attr', () => {
-		return req()
+	test('create schema drop_attr', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_schema', schema: 'drop_attr' })
 			.expect(200)
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text));
 	});
 
-	it('create table test', async () => {
-		await req()
+	test('create table test', async () => {
+		await client
+			.req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', primary_key: 'id' })
 			.expect(200)
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text));
 		await setTimeout(2000);
 	});
 
-	it('Insert records into test table', () => {
-		return req()
+	test('Insert records into test table', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
 				schema: 'drop_attr',
@@ -759,15 +872,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname', () => {
-		return req()
+	test('Drop attribute lastname', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Upsert some values', () => {
-		return req()
+	test('Upsert some values', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'upsert',
 				schema: 'drop_attr',
@@ -782,8 +897,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm upsert', () => {
-		return req()
+	test('Search by hash confirm upsert', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -800,15 +916,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute unitsnnorder', () => {
-		return req()
+	test('Drop attribute unitsnnorder', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'unitsnnorder'", r.text))
 			.expect(200);
 	});
 
-	it('Update some values', async () => {
-		await req()
+	test('Update some values', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'update',
 				schema: 'drop_attr',
@@ -828,9 +946,10 @@ describe('8. Delete Tests', () => {
 		await setTimeout(3000);
 	});
 
-	it('Search by hash confirm update', async () => {
+	test('Search by hash confirm update', async () => {
 		await setTimeout(3000);
-		await req()
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -846,15 +965,17 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname', () => {
-		return req()
+	test('Drop attribute lastname', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Delete a record', () => {
-		return req()
+	test('Delete a record', async () => {
+		await client
+			.req()
 			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
 			.expect((r) => {
 				assert.equal(r.body.deleted_hashes.length, 1, r.text);
@@ -864,8 +985,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm delete', () => {
-		return req()
+	test('Search by hash confirm delete', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
 				schema: 'drop_attr',
@@ -877,8 +999,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema drop_attr', () => {
-		return req()
+	test('Drop schema drop_attr', async () => {
+		await client
+			.req()
 			.send({ operation: 'drop_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
@@ -886,12 +1009,13 @@ describe('8. Delete Tests', () => {
 
 	//Delete Tests Main Folder
 
-	it('Insert new Employees', () => {
-		return req()
+	test('Insert new Employees', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
-				schema: `${testData.schema}`,
-				table: `${testData.emps_tb}`,
+				schema: 'northnwd',
+				table: 'employees',
 				records: [
 					{ employeeid: 924, address: '194 Greenbrook Drive' },
 					{
@@ -909,31 +1033,34 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records ending in Lane', () => {
-		return req()
+	test('Delete records ending in Lane', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'sql',
-				sql: `delete from ${testData.schema}.${testData.emps_tb} where address like '%Lane'`,
+				sql: `delete from ${'northnwd'}.${'employees'} where address like '%Lane'`,
 			})
 			.expect(200);
 	});
 
-	it('Verify records are deleted', () => {
-		return req()
+	test('Verify records are deleted', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'sql',
-				sql: `SELECT *from ${testData.schema}.${testData.emps_tb} where address like '%Lane'`,
+				sql: `SELECT *from ${'northnwd'}.${'employees'} where address like '%Lane'`,
 			})
 			.expect((r) => assert.equal(Array.isArray(r.body) && r.body.length, 0, r.text))
 			.expect(200);
 	});
 
-	it('NoSQL Delete', () => {
-		return req()
+	test('NoSQL Delete', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'delete',
-				schema: `${testData.schema}`,
-				table: `${testData.emps_tb}`,
+				schema: 'northnwd',
+				table: 'employees',
 				hash_values: [924, 927],
 			})
 			.expect((r) => {
@@ -947,12 +1074,13 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Verify records are deleted', () => {
-		return req()
+	test('NoSQL Verify records are deleted', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
-				schema: `${testData.schema}`,
-				table: `${testData.emps_tb}`,
+				schema: 'northnwd',
+				table: 'employees',
 				hash_values: [924, 925, 926, 927],
 				get_attributes: ['*'],
 			})
@@ -960,12 +1088,13 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Insert records with objects and arrays', () => {
-		return req()
+	test('Insert records with objects and arrays', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'insert',
-				schema: `${testData.schema}`,
-				table: `${testData.emps_tb}`,
+				schema: 'northnwd',
+				table: 'employees',
 				records: [
 					{
 						employeeid: 7924,
@@ -986,12 +1115,13 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records containing objects and arrays', () => {
-		return req()
+	test('Delete records containing objects and arrays', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'delete',
-				schema: `${testData.schema}`,
-				table: `${testData.emps_tb}`,
+				schema: 'northnwd',
+				table: 'employees',
 				hash_values: [7924, 7925, 7926, 7927],
 			})
 			.expect((r) => {
@@ -1005,21 +1135,23 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Verify object and array records deleted', () => {
-		return req()
+	test('Verify object and array records deleted', async () => {
+		await client
+			.req()
 			.send({
 				operation: 'search_by_hash',
-				schema: `${testData.schema}`,
-				table: `${testData.emps_tb}`,
-				hash_values: [7924, 7925, 7926, 7925],
+				schema: 'northnwd',
+				table: 'employees',
+				hash_values: [7924, 7925, 7926, 7927],
 				get_attributes: ['employeeid', 'address'],
 			})
 			.expect((r) => assert.deepEqual(r.body, [], r.text))
 			.expect(200);
 	});
 
-	it('test SQL deleting with numeric hash in single quotes', () => {
-		return req()
+	test('test SQL deleting with numeric hash in single quotes', async () => {
+		await client
+			.req()
 			.send({ operation: 'sql', sql: "DELETE FROM dev.rando WHERE id IN ('987654321', '987654322')" })
 			.expect((r) => assert.ok(r.body.message.includes('2 of 2 records successfully deleted'), r.text))
 			.expect((r) =>
@@ -1028,8 +1160,9 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('test SQL deleting with numeric no condition', () => {
-		return req()
+	test('test SQL deleting with numeric no condition', async () => {
+		await client
+			.req()
 			.send({ operation: 'sql', sql: 'DELETE FROM dev.rando' })
 			.expect((r) => assert.ok(r.body.message.includes('2 of 2 records successfully deleted'), r.text))
 			.expect((r) =>
