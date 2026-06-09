@@ -41,8 +41,8 @@ server.getUser = async function (username, password) {
 			throw new Error(msg);
 		}
 	}
-	const user = await hdbGetUser(username, password);
-	user.client_id = username;
+	const user = await hdbGetUser.call(server, username, password);
+	if (user) user.client_id = username;
 	return user;
 };
 

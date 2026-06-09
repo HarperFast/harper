@@ -126,6 +126,9 @@ function connect(url: string, opts: IClientOptions): Promise<MqttClient> {
 		};
 		const onConnect = () => {
 			client.removeListener('error', onError);
+			// Default no-op error listener prevents unhandled-exception crashes on
+			// unexpected connection drops after the connect promise settles.
+			client.on('error', () => {});
 			resolve(client);
 		};
 		client.once('error', onError);
