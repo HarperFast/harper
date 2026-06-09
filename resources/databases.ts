@@ -620,6 +620,19 @@ function initStores(
 					if (existingAttribute) existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1, attribute);
 					else existingAttributes.push(attribute);
 					attributesUpdated = true;
+				} else if (!attribute.isPrimaryKey) {
+					// Non-indexed, non-primary-key attributes (e.g. plain schema fields like `name: String`)
+					// must also be kept in sync so that describe_database reflects schema changes after a
+					// hot-reload / worker restart. Without this, resetDatabases() re-reads these attributes
+					// from attributesDbi but never merges them back into table.attributes — causing stale
+					// schema metadata until a full kill+restart. (RE-7)
+					const existingIdx = existingAttributes.findIndex((ea) => ea.name === attribute.name);
+					if (existingIdx >= 0) {
+						existingAttributes.splice(existingIdx, 1, attribute);
+					} else {
+						existingAttributes.push(attribute);
+						attributesUpdated = true;
+					}
 				}
 			} catch (error) {
 				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
@@ -645,6 +658,10 @@ function initStores(
 				}
 				if (existingAttribute.indexed) {
 					// we only remove attributes if they were indexed, in order to support dropAttribute that removes dynamic indexed attributes
+					existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
+					attributesUpdated = true;
+				} else if (!existingAttribute.isPrimaryKey) {
+					// Remove non-indexed attributes that are no longer present in the persisted schema.
 					existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
 					attributesUpdated = true;
 				}

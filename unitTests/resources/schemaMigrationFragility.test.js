@@ -382,6 +382,79 @@ describe('schema-migration fragility: stale `changed` reused after re-fetch unde
 	});
 });
 
+describe('schema-migration fragility: non-indexed attributes missing from table.attributes after resetDatabases() (RE-7)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 're7NonIndexedAttrs';
+	const TABLE = 'Pet';
+	const testRoot = path.resolve(__dirname, '../envDir/re7NonIndexedAttrs');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+
+		resetDatabases();
+		// Initial schema: only the primary key
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		// Simulate hot-reload: call table() again with an expanded schema (non-indexed fields).
+		// This is what the graphqlSchema plugin does in a restarted worker.
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'breed' },
+				{ name: 'age' },
+			],
+		});
+		// Simulate the ITC schema-change handler calling resetDatabases() in the main thread
+		// (the path that describe_database goes through).
+		resetDatabases();
+	});
+
+	after(async () => {
+		await fs.remove(testRoot);
+	});
+
+	it('table.attributes includes all non-indexed fields after resetDatabases()', () => {
+		const tbl = getDatabases()[DB]?.[TABLE];
+		assert.ok(tbl, `${DB}.${TABLE} should be registered after resetDatabases()`);
+		const attrNames = tbl.attributes.map((a) => a.name);
+		assert.ok(attrNames.includes('name'), `expected "name" in attributes, got: ${attrNames}`);
+		assert.ok(attrNames.includes('breed'), `expected "breed" in attributes, got: ${attrNames}`);
+		assert.ok(attrNames.includes('age'), `expected "age" in attributes, got: ${attrNames}`);
+	});
+
+	it('removes non-indexed attributes dropped from the schema after resetDatabases()', () => {
+		// Simulate schema shrinking (field removal), then another resetDatabases().
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+			],
+		});
+		resetDatabases();
+		const tbl = getDatabases()[DB]?.[TABLE];
+		const attrNames = tbl.attributes.map((a) => a.name);
+		assert.ok(attrNames.includes('name'), `expected "name" in attributes`);
+		assert.ok(!attrNames.includes('breed'), `"breed" should be removed, got: ${attrNames}`);
+		assert.ok(!attrNames.includes('age'), `"age" should be removed, got: ${attrNames}`);
+	});
+});
+
 describe('schema-migration fragility: stale store reused after LMDB to RocksDB engine migration (F4)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 
