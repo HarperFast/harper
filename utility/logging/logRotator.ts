@@ -18,9 +18,6 @@ const LOG_AUDIT_INTERVAL = 60000;
 const INT_SIZE_UNDEFINED_MSG =
 	"'interval' and 'maxSize' are both undefined, to enable logging rotation at least one of these values must be defined in harperdb-config.yaml";
 
-let lastRotationTime;
-let setIntervalId;
-
 export { logRotator };
 
 /**
@@ -67,9 +64,9 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 
 	let lastRotatedLogPath;
 	// convert date.now to minutes
-	lastRotationTime = Date.now();
+	let lastRotationTime = Date.now();
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
-	setIntervalId = setInterval(async () => {
+	const setIntervalId = setInterval(async () => {
 		if (maxBytes) {
 			let fileStats;
 			try {

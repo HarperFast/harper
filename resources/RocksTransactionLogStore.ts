@@ -2,6 +2,7 @@ import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { getIdOfRemoteNode } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
+import { endIteratorOnCorruptFrame } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { asBinary } from 'lmdb';
@@ -20,6 +21,13 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	addLog(logName: string);
 	removeLog(logName: string);
 };
+
+// Logs (once per log) when a corrupt frame ends a query iterator early; see
+// endIteratorOnCorruptFrame in replayLogsGuards.ts for why this is end-of-log, not a crash.
+function warnCorruptFrame(logName: string) {
+	return (error: RangeError) =>
+		harperLogger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, error);
+}
 
 /**
  * Represents a transaction log store backed by RocksDB.
@@ -190,7 +198,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
-			const queryIterator = log.query(options);
+			const queryIterator = endIteratorOnCorruptFrame(log.query(options), warnCorruptFrame(log.name));
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
@@ -241,7 +249,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
-							iterators.push(log.query(queryOptions));
+							iterators.push(endIteratorOnCorruptFrame(log.query(queryOptions), warnCorruptFrame(log.name)));
 						}
 					}
 					latestUpdates = this.updates;

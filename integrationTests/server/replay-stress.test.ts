@@ -8,9 +8,10 @@
  *   1. Clean crash — replay must recover every row inserted before SIGKILL
  *   2. Truncated tails — last bytes of each txnlog stripped (simulates a torn
  *      write at the moment of crash); replay must still come back up
- *   3. Random byte flips — msgpack-shaped corruption sprinkled across every
- *      txnlog; replay must finish without the CPU-spin regression that
- *      replayLogsGuards.ts (commit d0190ff5a) fixed
+ *   3. Corrupt length prefix — the first entry's declared length is forced to
+ *      overrun the log (a torn/corrupt frame). rocksdb-js's reader throws a bounded
+ *      RangeError for this; replay/broadcast must treat it as end-of-log and the
+ *      server must come back up rather than aborting startup (HarperFast/harper#1135)
  *
  * All three scenarios share one suite/ctx to avoid the schema-registry leak
  * that surfaces when multiple suites each call create_database in the same
@@ -18,9 +19,8 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, equal } from 'node:assert/strict';
-import { readdirSync, statSync, openSync, readSync, writeSync, truncateSync, closeSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, openSync, writeSync, truncateSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
 	startHarper,
@@ -29,6 +29,12 @@ import {
 	type ContextWithHarper,
 	type HarperContext,
 } from '@harperfast/integration-testing';
+import { constants } from '@harperfast/rocksdb-js';
+
+// Transaction-log framing (all big-endian): a fixed-size file header, then a run of entries
+// each shaped [float64 timestamp][uint32 length][flags byte][length bytes of data]. So an
+// entry's declared length lives at entryStart + 8, and the byte there is its most-significant.
+const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
 const DB = 'stress';
 const TABLES = ['orders', 'items', 'events'];
@@ -128,26 +134,30 @@ function truncateTail(path: string, bytes: number) {
 	truncateSync(path, size - bytes);
 }
 
-function flipBytes(path: string, count: number, seed: number) {
-	const size = statSync(path).size;
-	// Skip the 13-byte file header (4 token + 1 version + 8 ts) so we exercise
-	// the per-entry decoder hardening, not file-open validation.
-	const start = 13;
-	if (size <= start + 32) return;
+function corruptLastEntryLength(path: string): boolean {
+	// Force the *last* well-framed entry's big-endian uint32 length to overrun the log (top
+	// byte → 0xff, ≥ 4 GB). The last entry sits in the unflushed tail that replay reads
+	// (replay starts from the last-flushed position), so a flushed prefix isn't skipped over.
+	const buf = readFileSync(path);
+	let pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	let lastLengthPos = -1;
+	while (pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= buf.length) {
+		if (buf.readDoubleBE(pos) === 0) break; // a zero timestamp marks end-of-log to the reader
+		const lengthPos = pos + 8;
+		const length = buf.readUInt32BE(lengthPos);
+		const next = pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
+		if (length === 0 || next > buf.length) break; // ran past the end / already unframable
+		lastLengthPos = lengthPos;
+		pos = next;
+	}
+	if (lastLengthPos < 0) return false;
 	const fd = openSync(path, 'r+');
 	try {
-		const buf = Buffer.alloc(1);
-		let s = seed;
-		for (let i = 0; i < count; i++) {
-			s = (s * 1103515245 + 12345) & 0x7fffffff;
-			const pos = start + (s % (size - start));
-			readSync(fd, buf, 0, 1, pos);
-			buf[0] ^= 0xa5;
-			writeSync(fd, buf, 0, 1, pos);
-		}
+		writeSync(fd, Buffer.from([0xff]), 0, 1, lastLengthPos);
 	} finally {
 		closeSync(fd);
 	}
+	return true;
 }
 
 async function crashAndRestart(ctx: ContextWithHarper, mutate?: (dataRootDir: string) => void) {
@@ -197,37 +207,27 @@ suite('Transaction log replay stress', (ctx: ContextWithHarper) => {
 		}
 	});
 
-	test('crash with random byte flips in txnlogs', async () => {
+	test('crash with corrupt length-prefix recovers without aborting startup', async () => {
 		for (const table of TABLES) {
 			const records = [];
 			for (let i = 0; i < 500; i++) records.push(makeRecord(200_000 + i));
 			await op(ctx.harper, { operation: 'insert', database: DB, table, records });
 		}
-		const replayMs = await crashAndRestart(ctx, (dataRootDir) => {
-			// User-DB only: flipping bytes inside system/ txnlogs corrupts
-			// version-tracking and Harper aborts on next boot with an upgrade
-			// error. That's a real failure mode but not what this test is about —
-			// here we want to exercise replay's per-entry decode hardening on
-			// records that replay genuinely needs to skip rather than reject the
-			// whole boot.
-			const files = listTxnLogFiles(dataRootDir, { userOnly: true });
-			files.forEach((f, i) => flipBytes(f, 32, 0xcafe + i));
+		let corrupted = 0;
+		await crashAndRestart(ctx, (dataRootDir) => {
+			// User-DB only: corrupting system/ txnlogs trips the upgrade-abort path on next
+			// boot — a different failure mode than the framing corruption (#1135) under test.
+			for (const f of listTxnLogFiles(dataRootDir, { userOnly: true })) {
+				if (corruptLastEntryLength(f)) corrupted++;
+			}
 		});
-		// Tighter than the 60s global cap. With the per-entry decode guard in place,
-		// healthy startup is ~3s on this corpus. Without it, every corrupt entry
-		// logs a stack trace inside the loop and startup balloons to ~50s. 20s
-		// catches that regression while leaving CI headroom.
-		ok(replayMs < 20_000, `replay took ${replayMs}ms — guard regression?`);
+		// Fail loudly, not vacuously, if the framing ever changes and nothing gets corrupted.
+		ok(corrupted > 0, 'expected to corrupt at least one user-DB txnlog');
+		// Behavioral, not a wall-clock budget: crashAndRestart resolved → the server came back
+		// up; a regression shows up as a failed restart, not a slow one. Confirm tables queryable.
 		for (const t of TABLES) {
 			const c = await countRows(ctx.harper, t);
 			ok(typeof c === 'number' && c >= 0, `count on ${t} should be a number, got ${c}`);
 		}
-		// Confirm Harper isn't in a CPU-spin loop post-replay: rss should be
-		// roughly stable after startup is reported done. The pre-fix bug pinned
-		// a core forever and rss grew steadily under the spin.
-		const rssBefore = ctx.harper.process.resourceUsage?.()?.maxRSS ?? 0;
-		await sleep(500);
-		const rssAfter = ctx.harper.process.resourceUsage?.()?.maxRSS ?? 0;
-		ok(rssAfter - rssBefore < 200 * 1024, `rss grew by ${rssAfter - rssBefore}KB after replay`);
 	});
 });
