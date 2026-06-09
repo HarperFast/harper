@@ -308,7 +308,7 @@ suite('Caching: sourcedFrom and allowStaleWhileRevalidate', (ctx: any) => {
 			strictEqual(body1.revision, 1, 'Should get revision 1 on first fetch');
 			strictEqual(origin.fetchCount(id), 1, 'Origin called once to prime cache');
 
-			// Update origin to revision 2 and wait for TTL to expire (expiration: 0.05 s = 50 ms)
+			// Update origin to revision 2 and wait for TTL to expire (expiration: 0.1 s = 100 ms)
 			origin.setData(id, { id, name: 'Fresh Widget', revision: 2 });
 			await delay(250); // wait longer than the 100 ms TTL so the entry is stale but not evicted
 			origin.resetCounts();
