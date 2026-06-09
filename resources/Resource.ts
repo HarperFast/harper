@@ -524,6 +524,7 @@ function transactional(
 				if (
 					typeof idOrQuery === 'object' &&
 					idOrQuery &&
+					!(idOrQuery instanceof RequestTarget) &&
 					(!Array.isArray(idOrQuery) || typeof idOrQuery[0] === 'object')
 				) {
 					// (data, context) form

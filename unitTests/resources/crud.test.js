@@ -307,3 +307,43 @@ describe('CRUD operations with the Resource API', () => {
 		analytics.setAnalyticsEnabled(false); // restore to normal unit test behavior
 	});
 });
+
+describe('transactional argument normalization with RequestTarget', () => {
+	let BaseTable, SubTable;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		BaseTable = table({
+			table: 'NormTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'stamped' }],
+		});
+		// Subclass that overrides static put and calls super.put(RequestTarget, body) —
+		// the form that previously misidentified (RequestTarget, data) as (data, context).
+		SubTable = class extends BaseTable {
+			static async put(target, data) {
+				const body = await data;
+				body.stamped = true;
+				return super.put(target, body);
+			}
+		};
+		Object.defineProperty(SubTable, 'name', { value: 'SubTable' });
+	});
+
+	it('super.put(RequestTarget, body) stores body data, not the RequestTarget', async function () {
+		const target = new RequestTarget('/rt-test-1');
+		await SubTable.put(target, { title: 'hello' });
+		const record = await SubTable.get('rt-test-1');
+		assert.equal(record.title, 'hello', 'body data should be stored');
+		assert.equal(record.stamped, true, 'override logic should have run');
+		assert.equal(record.id, 'rt-test-1', 'id should come from the RequestTarget path');
+		assert.ok(!record.pathname, 'RequestTarget descriptor fields must not be stored as record data');
+	});
+
+	it('super.put(string_id, body) continues to work', async function () {
+		await SubTable.put('rt-test-2', { title: 'world' });
+		const record = await SubTable.get('rt-test-2');
+		assert.equal(record.title, 'world');
+		assert.equal(record.stamped, true);
+	});
+});
