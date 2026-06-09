@@ -4,7 +4,7 @@ import axios from 'axios';
 import { decode, encode } from 'cbor-x';
 import { getVariables } from './utility.js';
 import { WebSocket } from 'ws';
-import { setupTestApp, baseUrl, wsBaseUrl } from './setupTestApp.mjs';
+import { baseUrl, wsBaseUrl } from './setupTestApp.mjs';
 const { authorization } = getVariables();
 
 describe('test WebSocket connections', () => {

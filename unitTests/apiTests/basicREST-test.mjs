@@ -245,9 +245,7 @@ describe('test REST calls', () => {
 			// default
 		});
 		it('do query by numeric computed index and return computed property', async () => {
-			let response = await axios(
-				`${baseUrl}/FourProp/?ageInMonths=288&select(id,age,ageInMonths,nameTitle)`
-			);
+			let response = await axios(`${baseUrl}/FourProp/?ageInMonths=288&select(id,age,ageInMonths,nameTitle)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 			assert.equal(response.data[0].age, 24);
@@ -305,9 +303,7 @@ describe('test REST calls', () => {
 			assert.equal(response.data[1].birthday.slice(0, 4), '1994');
 		});
 		it('query by typed epoch date', async () => {
-			let response = await axios(
-				`${baseUrl}/FourProp?birthday=gt=date:727660800000&birthday=lt=date:1994-11-22`
-			);
+			let response = await axios(`${baseUrl}/FourProp?birthday=gt=date:727660800000&birthday=lt=date:1994-11-22`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[0].birthday.slice(0, 4), '1993');

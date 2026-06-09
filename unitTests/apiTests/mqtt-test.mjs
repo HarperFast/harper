@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { decode } from 'cbor-x';
 import { callOperation } from './utility.js';
-import { setupTestApp, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
+import { setupTestApp, baseUrl, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
 import environmentManager from '#src/utility/environment/environmentManager';
 const { get: env_get, setProperty } = environmentManager;
 import { connect, connectAsync } from 'mqtt';
