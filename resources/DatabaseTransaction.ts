@@ -336,7 +336,13 @@ export class DatabaseTransaction implements Transaction {
 							});
 						},
 						(error) => {
-							if (error.code === 'ERR_BUSY') {
+							// ERR_BUSY: optimistic-transaction write conflict. ERR_TRY_AGAIN: RocksDB kTryAgain —
+							// the transaction's snapshot sequence fell outside the memtable conflict-check window
+							// (max_write_buffer_size_to_maintain), which happens under bulk-ingest bursts such as a
+							// migration full-table copy. Both are transient and retryable. Before ERR_TRY_AGAIN was
+							// retried here, the rejection propagated out of the unawaited onCommit() handler as an
+							// unhandled rejection and the write was silently dropped — records lost mid-copy (#308).
+							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
 								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 								// for future transactions
 								this.retries++;
