@@ -1,6 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
-const { RecordEncoder } = require('#src/resources/RecordEncoder');
+const { RecordEncoder, isMissingStructureError } = require('#src/resources/RecordEncoder');
+const harperLogger = require('#src/utility/logging/harper_logger');
 const { Encoder } = require('msgpackr');
 
 // Shared structures persisted as an encoded buffer (mirrors how a DBI stores them under
@@ -81,5 +82,73 @@ describe('RecordEncoder struct-mode gating', () => {
 		assert.strictEqual(decoded.name, record.name);
 		assert.strictEqual(decoded.type, record.type);
 		assert.strictEqual(decoded.indexed, record.indexed);
+	});
+});
+
+describe('RecordEncoder missing-structure handling (harper#1163)', () => {
+	let warnings, errors, restoreWarn, restoreError;
+	beforeEach(() => {
+		warnings = [];
+		errors = [];
+		restoreWarn = harperLogger.warn;
+		restoreError = harperLogger.error;
+		harperLogger.warn = (...args) => warnings.push(args);
+		harperLogger.error = (...args) => errors.push(args);
+	});
+	afterEach(() => {
+		harperLogger.warn = restoreWarn;
+		harperLogger.error = restoreError;
+	});
+
+	it('returns null (non-fatal) and warns distinctly when a typed structure is absent on this node', () => {
+		// A record references a typed (random-access) structure that this node's structures buffer does
+		// not contain. structon's readStruct reloads from the (still-empty) store and then throws;
+		// RecordEncoder must keep internal reads non-fatal (return null) while surfacing the dropped
+		// record distinctly rather than via the generic error path.
+		const writer = makeEncoder(true, sharedStore());
+		const bytes = Buffer.from(writer.encode(record));
+
+		// Reader on a different node that never received the structure-buffer update.
+		const reader = makeEncoder(true, sharedStore());
+		assert.strictEqual(reader.decode(bytes), null, 'missing structure should decode to null, not throw');
+		assert.strictEqual(warnings.length, 1, 'should emit exactly one distinct warning');
+		assert.match(warnings[0][0], /shared structure missing/);
+		assert.strictEqual(errors.length, 0, 'should not use the generic error path for a missing structure');
+	});
+
+	it('recovers (decodes, no throw) once the typed structure is present on this node', () => {
+		// Writer and reader share the same structures store, so the reader's on-miss reload finds it.
+		const store = sharedStore();
+		const writer = makeEncoder(true, store);
+		const bytes = Buffer.from(writer.encode(record));
+		const reader = makeEncoder(true, store);
+		const decoded = reader.decode(bytes);
+		assert.ok(decoded, 'record should decode when the structure is available');
+		assert.strictEqual(decoded.name, record.name);
+	});
+
+	it('detects both typed and classic missing-structure errors, and only those', () => {
+		// classic-structure miss (msgpackr createSecondByteReader) is the relevant variant on 5.1 where
+		// typed structs are off by default; we cannot easily manufacture a real classic shared-structure
+		// miss in this harness, so assert the detection contract directly against the dependency's
+		// terminal error messages.
+		assert.ok(isMissingStructureError(new Error('Could not find typed structure 1')));
+		assert.ok(isMissingStructureError(new Error('Record id is not defined for 42')));
+		assert.ok(!isMissingStructureError(new Error('Data read, but end of buffer not reached 64')));
+		assert.ok(!isMissingStructureError(new RangeError('Offset is outside the bounds of the DataView')));
+		assert.ok(!isMissingStructureError(undefined));
+	});
+
+	it('still returns null (tolerant) for a decode failure that is not a missing structure', () => {
+		// Truncate a valid struct-mode record mid-body: the structure IS present, but the buffer is too
+		// short, so decoding throws a non-missing-structure error (e.g. out-of-bounds). That genuine
+		// corruption keeps the existing log-and-null behavior.
+		const store = sharedStore();
+		const enc = makeEncoder(true, store);
+		const bytes = Buffer.from(enc.encode(record));
+		const truncated = bytes.subarray(0, 2);
+		assert.strictEqual(enc.decode(truncated), null, 'corrupt (non-structure) decode should still return null');
+		assert.strictEqual(errors.length, 1, 'genuine corruption should use the generic error path');
+		assert.strictEqual(warnings.length, 0, 'genuine corruption should not use the missing-structure warning');
 	});
 });
