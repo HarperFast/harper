@@ -634,13 +634,13 @@ suite('Brotli Blob Content-Encoding pass-through', { skip: skipSuite }, (ctx) =>
 		await startHarper(ctx, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
 
-		// Probe the list endpoint (/brotlicache/) — it returns 404 until the component
-		// registers its routes, and 200 (empty list) once ready. Avoids triggering
-		// BrotliCacheSource on /brotlicache/{id}, which would create a spurious record.
+		// Probe /openapi — the same signal used by the blob suite above. Using
+		// /brotlicache/ would cause supertest to attempt automatic brotli decompression
+		// on the list response and throw "Decompression failed" during polling.
 		await installAppComponent(client, {
 			project: 'brotliblobs',
 			files: { 'schema.graphql': BROTLI_SCHEMA_GRAPHQL, 'resources.js': BROTLI_RESOURCES_JS },
-			probePath: '/brotlicache/',
+			probePath: '/openapi',
 			restartTimeoutMs: 120000,
 		});
 	});
