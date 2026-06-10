@@ -17,13 +17,19 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
-import { createApiClient } from './utils/client.mjs';
+import { createApiClient } from '../apiTests/utils/client.mjs';
 // @ts-expect-error utils/components.mjs has no type declarations; runtime resolves fine
-import { installAppComponent } from './utils/components.mjs';
+import { installAppComponent } from '../apiTests/utils/components.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_DIR = join(__dirname, '../fixtures/ttl-test');
 
 const MAX_WAIT_MS = 15_000;
 const POLL_INTERVAL_MS = 250;
@@ -46,40 +52,6 @@ async function pollUntil(fn: () => Promise<void>, maxWaitMs = MAX_WAIT_MS): Prom
 	throw lastErr;
 }
 
-/**
- * Schema for TTL edge-case tests.
- *
- * - ShortLived: 5s TTL — used for expiry-reset and cross-table-bleed tests
- * - LongLived: no TTL — used to verify cross-table isolation
- * - BulkExpiry: 5s TTL — used for high-volume expiry test
- *
- * Note: max-age query-param override (`?max-age=<seconds>`) is NOT yet implemented
- * in Harper's REST layer. The `cache-control: max-age` header is supported but only
- * on resources that set `isCaching = true`. The query-param form is tracked as a
- * future enhancement; see server/REST.ts for the existing header-based path.
- */
-const SCHEMA_GRAPHQL = `
-type ShortLived @table(expiration: 5) @export {
-	id: ID @primaryKey
-	value: String
-}
-
-type LongLived @table @export {
-	id: ID @primaryKey
-	value: String
-}
-
-type BulkExpiry @table(expiration: 5) @export {
-	id: ID @primaryKey
-	value: String
-}
-`;
-
-const CONFIG_YAML = `rest: true
-graphqlSchema:
-  files: '*.graphql'
-`;
-
 suite('TTL edge cases', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
 
@@ -90,8 +62,8 @@ suite('TTL edge cases', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 		await installAppComponent(client, {
 			project: 'ttledge',
 			files: {
-				'schema.graphql': SCHEMA_GRAPHQL,
-				'config.yaml': CONFIG_YAML,
+				'schema.graphql': readFileSync(join(FIXTURE_DIR, 'schema.graphql'), 'utf8'),
+				'config.yaml': readFileSync(join(FIXTURE_DIR, 'config.yaml'), 'utf8'),
 			},
 			probePath: '/ShortLived/',
 			restartTimeoutMs: 120_000,

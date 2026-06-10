@@ -1,0 +1,14 @@
+type ShortLived @table(expiration: 5) @export {
+	id: ID @primaryKey
+	value: String
+}
+
+type LongLived @table @export {
+	id: ID @primaryKey
+	value: String
+}
+
+type BulkExpiry @table(expiration: 5) @export {
+	id: ID @primaryKey
+	value: String
+}
