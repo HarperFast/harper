@@ -28,7 +28,7 @@ export async function awaitJob(client, jobId, timeoutSeconds = 15) {
 	let elapsed = 0;
 	do {
 		response = await client.req().send({ operation: 'get_job', id: jobId }).expect(200);
-		const status = response.body[0]?.status;
+		const status = response.body?.[0]?.status;
 		// Stop only on a terminal status. A freshly-started job is briefly
 		// CREATED (queued, before the worker flips it to IN_PROGRESS) and a
 		// just-created job record can momentarily come back empty; returning on
@@ -87,6 +87,10 @@ export async function awaitJobCompleted(client, jobId, options = {}) {
  * an asynchronous side effect — the source of the fixed-delay races in #1222.
  *
  * @template T
+ * A transient failure from `produce`/`until` (e.g. a momentary non-200 under CI
+ * contention) is swallowed and retried; the error is re-thrown only if it
+ * happens on the final attempt, so a persistent failure still surfaces.
+ *
  * @param {() => Promise<T> | T} produce  Produces the current value (e.g. runs a query).
  * @param {{ until: (value: T) => boolean, timeoutSeconds?: number, intervalMs?: number }} options
  * @returns {Promise<T>} the last produced value (satisfying `until`, or the final attempt on timeout)
@@ -95,8 +99,12 @@ export async function waitFor(produce, { until, timeoutSeconds = 30, intervalMs 
 	const attempts = Math.max(1, Math.ceil((timeoutSeconds * 1000) / intervalMs));
 	let value;
 	for (let attempt = 0; attempt < attempts; attempt++) {
-		value = await produce();
-		if (until(value)) return value;
+		try {
+			value = await produce();
+			if (until(value)) return value;
+		} catch (error) {
+			if (attempt === attempts - 1) throw error;
+		}
 		if (attempt < attempts - 1) await setTimeout(intervalMs);
 	}
 	return value;

@@ -8760,7 +8760,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 						.expect(200),
 				{ until: (res) => res.body?.[0]?.row_count === 30, timeoutSeconds: isBunRuntime ? 60 : 15 }
 			);
-			assert.equal(r.body[0].row_count, 30, r.text);
+			assert.equal(r.body?.[0]?.row_count, 30, r.text);
 		});
 
 		test.skip('Import CSV from S3 to table w/ full attr perms - update', async () => {
