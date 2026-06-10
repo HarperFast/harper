@@ -938,6 +938,19 @@ export function makeTable(options) {
 		}
 
 		static async dropTable() {
+			if (databaseName === databasePath) {
+				// Persist a drop tombstone on the primary catalog entry BEFORE any
+				// destructive work. If the process dies or a column family drop fails
+				// partway through, the tombstone survives with the catalog rows, and
+				// the next startup completes the drop (see the interrupted-drop
+				// reconcile in databases.ts) instead of resurrecting the table.
+				const primaryCatalogKey = TableResource.tableName + '/';
+				const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+				if (primaryMeta && !primaryMeta.dropping) {
+					primaryMeta.dropping = true;
+					(dbisDb as any).put(primaryCatalogKey, primaryMeta);
+				}
+			}
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 					deleteBlobsInObject(entry.value);

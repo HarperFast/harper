@@ -527,6 +527,39 @@ function initStores(
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
 	}
 
+	// Complete any drops that were interrupted mid-flight. dropTable persists a
+	// `dropping` tombstone on the table's primary catalog entry before removing
+	// column families; if the process died or a column family drop failed
+	// partway, the tombstone survives alongside the catalog rows. Without this
+	// reconcile, those rows would silently resurrect the table below
+	// (recreating any missing column families as empty stores).
+	for (const [tableName, tableDef] of tablesToLoad) {
+		if (!tableDef.primary?.dropping) continue;
+		logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+		try {
+			if (rootStore instanceof RocksDatabase) {
+				for (const columnName of (rootStore as any).columns) {
+					if (columnName.startsWith(tableName + '/')) {
+						const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
+						columnStore.dropSync();
+						columnStore.close();
+					}
+				}
+			}
+			for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+				attributesDbi.remove(key);
+			}
+			definedTables?.delete(tableName);
+		} catch (error) {
+			logger.error(
+				`Failed to complete interrupted drop of table ${databaseName}.${tableName}; will retry on next start`,
+				error
+			);
+		}
+		// whether or not cleanup succeeded, never load a table that was being dropped
+		tablesToLoad.delete(tableName);
+	}
+
 	for (const [tableName, tableDef] of tablesToLoad) {
 		let { attributes, primary: primaryAttribute } = tableDef;
 		if (!primaryAttribute) {
@@ -1010,47 +1043,47 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 		let primaryStore;
 		try {
-		if (rootStore instanceof RocksDatabase) {
-			primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
-		} else {
-			primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
-		}
-		primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
-		rootStore.databaseName = databaseName;
-		primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
-		logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
-		if (!primaryStore.tableId) primaryStore.tableId = 1;
-		attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
+			if (rootStore instanceof RocksDatabase) {
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
+			} else {
+				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
+			}
+			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
+			rootStore.databaseName = databaseName;
+			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
+			logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
+			if (!primaryStore.tableId) primaryStore.tableId = 1;
+			attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
-		primaryKeyAttribute.tableId = primaryStore.tableId;
-		Table = setTable(
-			tables,
-			tableName,
-			makeTable({
-				primaryStore,
-				auditStore,
-				audit,
-				sealed,
-				splitSegments,
-				replicate,
-				trackDeletes,
-				expirationMS: expiration && expiration * 1000,
-				evictionMS: eviction && eviction * 1000,
-				primaryKey,
+			primaryKeyAttribute.tableId = primaryStore.tableId;
+			Table = setTable(
+				tables,
 				tableName,
-				tableId: primaryStore.tableId,
-				databasePath: databaseName,
-				databaseName,
-				indices: {},
-				attributes,
-				schemaDefined,
-				dbisDB: attributesDbi,
-			})
-		);
-		Table.schemaVersion = 1;
-		hasChanges = true;
+				makeTable({
+					primaryStore,
+					auditStore,
+					audit,
+					sealed,
+					splitSegments,
+					replicate,
+					trackDeletes,
+					expirationMS: expiration && expiration * 1000,
+					evictionMS: eviction && eviction * 1000,
+					primaryKey,
+					tableName,
+					tableId: primaryStore.tableId,
+					databasePath: databaseName,
+					databaseName,
+					indices: {},
+					attributes,
+					schemaDefined,
+					dbisDB: attributesDbi,
+				})
+			);
+			Table.schemaVersion = 1;
+			hasChanges = true;
 
-		attributesDbi.put(dbiName, primaryKeyAttribute);
+			attributesDbi.put(dbiName, primaryKeyAttribute);
 		} catch (error) {
 			// A failure while opening/creating the column family or writing the
 			// table id / catalog entry (e.g. into an env poisoned by a prior
