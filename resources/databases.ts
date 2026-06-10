@@ -638,6 +638,10 @@ function initStores(
 				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
 			}
 		}
+		// Collect removals first; splicing while iterating `existingAttributes` skips adjacent
+		// elements, which would silently leave stale fields behind when two or more were dropped
+		// in the same reload.
+		const toRemove = [];
 		for (const existingAttribute of existingAttributes) {
 			const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 			if (!attribute) {
@@ -658,14 +662,21 @@ function initStores(
 				}
 				if (existingAttribute.indexed) {
 					// we only remove attributes if they were indexed, in order to support dropAttribute that removes dynamic indexed attributes
-					existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
-					attributesUpdated = true;
+					toRemove.push(existingAttribute);
 				} else if (!existingAttribute.isPrimaryKey) {
-					// Remove non-indexed attributes that are no longer present in the persisted schema.
-					existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
-					attributesUpdated = true;
+					// Skip runtime-only attributes (e.g. relationship attrs — table()'s persistence loop
+					// `continue`s past them at line 1138). They are present in `existingAttributes` but
+					// never in the `attributes` list rebuilt from attributesDbi; removing them would drop
+					// the resolver/search support added by updatedAttributes(). Computed attrs ARE
+					// persisted, so only `relationship` is excluded here.
+					if (existingAttribute.relationship) continue;
+					toRemove.push(existingAttribute);
 				}
 			}
+		}
+		for (const existingAttribute of toRemove) {
+			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
+			attributesUpdated = true;
 		}
 		if (table && !recreateForEngineChange) {
 			if (attributesUpdated) {

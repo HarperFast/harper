@@ -450,7 +450,10 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		// table() updates in-memory Table.attributes directly (databases.ts:997), so after the
 		// call above the in-memory state is already [id, name].  Re-create the stale main-thread
 		// view — still holding the old [id, name, breed, age] — so that the removal loop in
-		// initStores() actually needs to drop breed and age.
+		// initStores() actually needs to drop breed and age.  Two adjacent removals (breed AND
+		// age) also guard against a regression of the splice-while-iterating bug: splicing the
+		// array being iterated by `for...of` skipped the next element, so the loop must collect
+		// removals first and apply them after the iteration.
 		const tblForRemoval = getDatabases()[DB]?.[TABLE];
 		tblForRemoval.attributes.splice(
 			0,
@@ -466,6 +469,33 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		assert.ok(attrNames.includes('name'), `expected "name" in attributes`);
 		assert.ok(!attrNames.includes('breed'), `"breed" should be removed, got: ${attrNames}`);
 		assert.ok(!attrNames.includes('age'), `"age" should be removed, got: ${attrNames}`);
+	});
+
+	it('preserves runtime-only relationship attributes across resetDatabases()', () => {
+		// Relationship attrs are runtime-only — table()'s persistence loop skips them
+		// (databases.ts:1138, `if (attribute.relationship) continue`), so they are present in
+		// table.attributes but never written to attributesDbi.  After resetDatabases(),
+		// initStores() rebuilds `attributes` from attributesDbi only — so the relationship attr
+		// won't appear there.  The removal loop must not drop it; otherwise updatedAttributes()
+		// would strip the resolver/search support and downstream GraphQL nested queries return
+		// undefined (the integration symptom: graphql-querying-test "handles query by nested
+		// attribute" assertions).
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		const tblWithRel = getDatabases()[DB]?.[TABLE];
+		// Inject a runtime-only relationship attribute, mirroring what graphql.ts does after
+		// parsing a `@relationship` directive — these never round-trip through attributesDbi.
+		tblWithRel.attributes.push({ name: 'related', relationship: { from: 'relatedId' } });
+		resetDatabases();
+		const tbl = getDatabases()[DB]?.[TABLE];
+		const attrNames = tbl.attributes.map((a) => a.name);
+		assert.ok(
+			attrNames.includes('related'),
+			`relationship attribute "related" should survive resetDatabases() but was dropped — got: ${attrNames}`
+		);
 	});
 });
 
