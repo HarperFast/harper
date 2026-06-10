@@ -15,6 +15,7 @@ import { cloneDeep } from 'lodash';
 
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
+import { parentPort } from 'node:worker_threads';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;
@@ -26,12 +27,6 @@ const JOB_ID = JOB_NAME.substring(4);
  * @returns {Promise<void>}
  */
 (async function job() {
-	// Bun's event loop does not keep the loop alive for pending NAPI async callbacks
-	// (e.g. RocksDB transaction commit passing resolve/reject into native code). Job
-	// workers have no other ref'd work (HTTP server, ref'd ports), so Bun exits the
-	// loop before the callback fires. A ref'd interval prevents that.
-	const bunEventLoopKeepAlive =
-		typeof (globalThis as any).Bun !== 'undefined' ? setInterval(() => {}, 1000) : undefined;
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
@@ -83,7 +78,11 @@ const JOB_ID = JOB_NAME.substring(4);
 		jobObj.end_datetime = moment().valueOf();
 	} finally {
 		await jobs.updateJob(jobObj);
-		if (bunEventLoopKeepAlive) clearInterval(bunEventLoopKeepAlive);
+		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
+		// while sibling workers are running causes a NAPI fatal error crash. Unref
+		// parentPort (which broadcastWithAcknowledgement may have ref'd during schema
+		// changes) so the event loop drains naturally without calling process.exit().
+		parentPort?.unref();
 		setTimeout(() => {
 			realExit(exitCode);
 		}, 3000).unref();
