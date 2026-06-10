@@ -13,19 +13,19 @@ Every model call is recorded for observability and usage accounting, at two leve
 
 Each `embed()`, `generate()`, and `generateStream()` call writes one row to the `hdb_model_calls` system table — on success and on failure. With `toolMode: 'auto'`, each backend round inside the loop records its own row (the outer loop itself does not add one).
 
-| Field               | Description                                                                               |
-| ------------------- | ----------------------------------------------------------------------------------------- |
-| `tenant`            | Tenant identifier, when the call carried one                                              |
-| `app`               | Resource path of the calling resource, when called from one                               |
-| `model`             | Logical model name the caller used                                                        |
-| `backend`           | Backend that served the call (`ollama`, `openai`, …); `unknown` for pre-dispatch failures |
-| `method`            | `embed`, `generate`, or `generateStream`                                                  |
-| `prompt_tokens`     | Prompt token count, when the backend reported usage                                       |
-| `completion_tokens` | Completion token count, when the backend reported usage                                   |
-| `embedding_tokens`  | Embedding token count, when the backend reported usage                                    |
-| `latency_ms`        | Wall-clock call duration                                                                  |
-| `success`           | Whether the call completed                                                                |
-| `error_code`        | On failure: `backend_error`, `aborted`, `capability_unsupported`, or `backend_not_found`  |
+| Field               | Description                                                                                                     |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `tenant`            | Tenant identifier, when the call carried one                                                                    |
+| `app`               | Resource path of the calling resource, when called from one                                                     |
+| `model`             | Logical model name the caller used                                                                              |
+| `backend`           | Backend that served the call (`ollama`, `openai`, …); `unknown` for pre-dispatch failures                       |
+| `method`            | `embed`, `generate`, or `generateStream`                                                                        |
+| `prompt_tokens`     | Prompt token count, when the backend reported usage                                                             |
+| `completion_tokens` | Completion token count, when the backend reported usage                                                         |
+| `embedding_tokens`  | Embedding token count, when the backend reported usage                                                          |
+| `latency_ms`        | Wall-clock call duration                                                                                        |
+| `success`           | Whether the call completed                                                                                      |
+| `error_code`        | On failure: `backend_error`, `aborted`, `capability_unsupported`, `backend_not_found`, or `pending_unsupported` |
 
 Rows are buffered in memory and flushed every 10 seconds, or immediately once 1,000 rows accumulate; rows older than 90 days are purged. Buffered rows may be lost on abrupt shutdown — treat the table as operational telemetry, not an audit log.
 

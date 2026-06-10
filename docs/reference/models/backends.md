@@ -133,4 +133,4 @@ models:
 | `region` | — (required) | AWS region hosting the Bedrock models                                  |
 | `model`  | —            | Bedrock model identifier; the vendor prefix selects the request format |
 
-The model identifier's vendor prefix (`anthropic.`, `meta.`, `amazon.titan-`, `cohere.`) determines the request/response format Harper uses. Tool support depends on the underlying model family. Bedrock embedding APIs accept one text per request, so batch `embed()` calls are issued sequentially.
+The model identifier's vendor prefix (`anthropic.`, `meta.`, `amazon.titan-`, `cohere.`, `mistral.`) determines the request/response format Harper uses; an unrecognized prefix is rejected with an error. Tool support depends on the underlying model family. Bedrock embedding APIs accept one text per request, so batch `embed()` calls are issued sequentially.
