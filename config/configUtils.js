@@ -171,7 +171,7 @@ function createConfigFile(args, skipFsValidation = false) {
 
 	if (schemasArgs) setSchemasConfig(configDoc, schemasArgs);
 
-	// Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variables BEFORE validation
+	// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables BEFORE validation
 	// This allows runtime env vars to resolve port conflicts before validation
 	// Must be called AFTER rootPath is set in configDoc
 	// Mutates configDoc in place
@@ -352,7 +352,7 @@ function initConfig(force = false) {
 
 		checkForUpdatedConfig(configDoc, configFilePath);
 
-		// Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variables
+		// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables
 		applyRuntimeEnvVarConfig(configDoc, configFilePath);
 
 		// Validates config doc and if required sets default values for some parameters.
@@ -848,15 +848,16 @@ function parseYamlDoc(filePath) {
 }
 
 /**
- * Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variables at runtime
+ * Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables at runtime
  *
  * This function performs the following:
  * 1. Loads configuration state to track sources
  * 2. Detects user edits (drift) to protect them from HARPER_DEFAULT_CONFIG
  * 3. Applies HARPER_DEFAULT_CONFIG (respects user edits)
- * 4. Applies HARPER_SET_CONFIG (overrides everything)
- * 5. Handles deletions when keys removed from env vars
- * 6. Saves updated state and persists changes to config file (if configFilePath provided)
+ * 4. Applies HARPER_CONFIG (merge layer: reasserts its keys, yields only to HARPER_SET_CONFIG)
+ * 5. Applies HARPER_SET_CONFIG (overrides everything)
+ * 6. Handles deletions when keys removed from env vars
+ * 7. Saves updated state and persists changes to config file (if configFilePath provided)
  *
  * NOTE: This function performs multiple conversions (YAML → JSON → YAML) which is not
  * efficient but provides clear separation of concerns. The conversions are necessary
@@ -869,10 +870,11 @@ function parseYamlDoc(filePath) {
  */
 function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
+	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
 	// No env vars set, skip entirely (zero overhead)
-	if (!defaultEnvValue && !setEnvValue) return;
+	if (!defaultEnvValue && !configEnvValue && !setEnvValue) return;
 
 	const { applyRuntimeEnvConfig } = require('./harperConfigEnvVars.ts');
 
