@@ -5,7 +5,7 @@
  *   - $SYS/monitor/con/# monitoring events
  *   - JWT RS256 signature verification (server rejects tampered tokens)
  *
- * Fixture: integrationTests/components/fixtures/mqtt-user-sub
+ * Fixture: integrationTests/mqtt/fixtures/mqtt-user-sub
  * Implements RS256 JWT auth, chat/%u/# per-user topics, broadcast/# anonymous
  * subscribe, and $SYS/# sys-monitor group ACL.
  *
