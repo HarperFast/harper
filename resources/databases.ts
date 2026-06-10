@@ -535,20 +535,8 @@ function initStores(
 	// (recreating any missing column families as empty stores).
 	for (const [tableName, tableDef] of tablesToLoad) {
 		if (!tableDef.primary?.dropping) continue;
-		logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 		try {
-			if (rootStore instanceof RocksDatabase) {
-				for (const columnName of (rootStore as any).columns) {
-					if (columnName.startsWith(tableName + '/')) {
-						const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
-						columnStore.dropSync();
-						columnStore.close();
-					}
-				}
-			}
-			for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-				attributesDbi.remove(key);
-			}
+			completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
 			definedTables?.delete(tableName);
 		} catch (error) {
 			logger.error(
@@ -1034,7 +1022,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 
 		exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
-		if ((attributesDbi as any).getSync(dbiName)) {
+		const existingTableMeta = (attributesDbi as any).getSync(dbiName);
+		if (existingTableMeta && !existingTableMeta.dropping) {
 			// table was created while we were setting up
 			if (releaseExclusiveLock) releaseExclusiveLock();
 			resetDatabases();
@@ -1043,6 +1032,14 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 		let primaryStore;
 		try {
+			if (existingTableMeta?.dropping) {
+				// A previous drop of this table was interrupted after its tombstone
+				// was written. Complete it now (under the exclusive lock) so the
+				// create below starts from a clean slate; treating the tombstoned
+				// entry as an existing table would recurse forever on the stale
+				// catalog row.
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+			}
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
 			} else {
@@ -1490,6 +1487,50 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		} catch (persistError) {
 			logger.warn('Failed to persist indexing failure state', persistError);
 		}
+	}
+}
+
+/**
+ * Completes a table drop that was interrupted after its `dropping` tombstone
+ * was written: drops any surviving table stores and removes the table's
+ * catalog rows. Called from the boot-time schema load and from the create
+ * path when a same-named table is created over a tombstoned entry. Callers
+ * are expected to hold the database's exclusive lock or be in single-threaded
+ * startup; the per-store drops tolerate races (another worker may be
+ * completing the same drop concurrently).
+ */
+function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
+	logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	if (rootStore instanceof RocksDatabase) {
+		for (const columnName of (rootStore as any).columns) {
+			if (columnName.startsWith(tableName + '/')) {
+				try {
+					const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
+					columnStore.dropSync();
+					columnStore.close();
+				} catch (error) {
+					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, error);
+				}
+			}
+		}
+	} else {
+		// LMDB reuses an existing named sub-database on open, so the stores must
+		// be dropped too; removing only the catalog rows would let a same-name
+		// recreate silently inherit the previous table's records.
+		for (const { key, value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			try {
+				const objectStorage =
+					value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+				const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
+				// lmdb drop commits with the env's next transaction
+				store.drop?.();
+			} catch (error) {
+				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
+			}
+		}
+	}
+	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		attributesDbi.remove(key);
 	}
 }
 
