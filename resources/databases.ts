@@ -629,6 +629,7 @@ function initStores(
 					const existingIdx = existingAttributes.findIndex((ea) => ea.name === attribute.attribute);
 					if (existingIdx >= 0) {
 						existingAttributes.splice(existingIdx, 1, attribute);
+						attributesUpdated = true;
 					} else {
 						existingAttributes.push(attribute);
 						attributesUpdated = true;
