@@ -57,8 +57,10 @@ See [Backends](./backends) for the full set of configuration fields supported by
 
 ### Credentials
 
-String values in model entries support environment-variable indirection with `${VAR_NAME}` syntax, resolved at startup. Use this for API keys rather than placing the literal key in the configuration file — Harper logs a warning at startup when a credential field contains a literal value. If the referenced environment variable is unset, the placeholder is left as-is and the backend's required-field validation reports it.
+String values in model entries support environment-variable indirection with `${VAR_NAME}` syntax, resolved at startup. Use this for API keys rather than placing the literal key in the configuration file — Harper logs a warning at startup when a credential field contains a literal value. If the referenced environment variable is unset, the placeholder is left as-is and the backend's required-field validation reports it. Indirection applies to string-typed fields only; numeric fields such as `requestTimeoutMs` must be literal values.
 
 ### Startup behavior
 
-Model entries are registered when Harper boots, before components load, so `models` is usable from component initialization onward. A misconfigured entry is logged and skipped — it does not prevent Harper from starting or block other model entries.
+Model entries are registered when Harper boots, before components load, so `models` is usable from component initialization onward.
+
+Model entries are validated with the rest of the configuration file at startup: a structurally invalid entry — a missing required field such as `apiKey`, an unrecognized field name, or a wrong value type — fails configuration validation and prevents Harper from starting, like any other configuration error. Errors at registration time (for example, an unrecognized `backend` name) are logged and skipped without blocking startup or other model entries.
