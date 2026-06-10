@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780993824578,
+  "lastUpdate": 1781080834430,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -396,6 +396,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E",
             "value": 923.75,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7845a096ece532e116275d23033bbd48c6bd2bf0",
+          "message": "Merge pull request #1217 from HarperFast/feat/config-union-directive\n\nfeat(config): add `$union` array directive for config env vars",
+          "timestamp": "2026-06-10T04:21:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/7845a096ece532e116275d23033bbd48c6bd2bf0"
+        },
+        "date": 1781080833920,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load",
+            "value": 5872.86,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C",
+            "value": 8294.84,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B",
+            "value": 7968.52,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A",
+            "value": 6516.38,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F",
+            "value": 4586.22,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D",
+            "value": 8201.85,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E",
+            "value": 935.35,
             "unit": "ops/sec"
           }
         ]
