@@ -75,14 +75,14 @@ jobs:
           retention-days: 1
 
   run-integration-tests:
-    name: Integration Tests ${{matrix.shard}}/4 (Node.js v${{ matrix.node-version }})
+    name: Integration Tests ${{matrix.shard}}/6 (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
     needs: [generate-node-version-matrix, build]
     strategy:
       fail-fast: false
       matrix:
         node-version: ${{ fromJSON(needs.generate-node-version-matrix.outputs.node-versions) }}
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
       - name: Checkout code
@@ -116,7 +116,7 @@ jobs:
           # the default 60s to reach 'successfully started'.
           HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS: 120000
         run: |
-          npm run test:integration:all -- --shard=${{ matrix.shard }}/4
+          npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
       - name: Upload Harper server logs
         if: failure()
@@ -160,13 +160,13 @@ jobs:
           retention-days: 1
 
   run-integration-tests-windows:
-    name: Integration Tests ${{matrix.shard}}/4 (Windows, Node.js v24)
+    name: Integration Tests ${{matrix.shard}}/6 (Windows, Node.js v24)
     runs-on: windows-latest
     needs: [build-windows]
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
       - name: Checkout code
@@ -198,7 +198,7 @@ jobs:
           # default 60s startHarper timeout is not enough for the per-test
           # install + start sequence (see CRL fail-closed-timeout suite).
           HARPER_INTEGRATION_TEST_STARTUP_TIMEOUT_MS: 180000
-        run: npm run test:integration:all -- --shard=${{ matrix.shard }}/4
+        run: npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
       - name: Upload Harper server logs
         if: failure()
@@ -210,13 +210,13 @@ jobs:
           if-no-files-found: ignore
 
   run-integration-tests-bun:
-    name: Integration Tests ${{matrix.shard}}/4 (Bun)
+    name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
     needs: [build]
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
       - name: Checkout code
@@ -245,7 +245,7 @@ jobs:
           HARPER_RUNTIME: bun
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
         run: |
-          npm run test:integration:all -- --shard=${{ matrix.shard }}/4
+          npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
       - name: Upload Harper server logs
         if: failure()
