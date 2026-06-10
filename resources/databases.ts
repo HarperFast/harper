@@ -506,6 +506,7 @@ function initStores(
 
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
+		if (value == null) continue;
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
 			// primary key
@@ -1104,6 +1105,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	Table.dbisDB = attributesDbi;
 	const indicesToRemove = [];
 	for (const { key, value } of attributesDbi.getRange({ start: true })) {
+		if (value == null) continue;
 		let [attributeTableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') attribute_name = value.name; // primary key
 		if (attribute_name) {

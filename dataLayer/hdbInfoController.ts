@@ -237,7 +237,7 @@ function checkIfInstallIsSupported(dataVNum) {
 		'In order to upgrade to this version, you must do a fresh install. If you need support, ' +
 		`please contact ${hdbTerms.HDB_SUPPORT_ADDRESS}`;
 
-	if (!('hdb_info' in tableLoader.databases.system)) {
+	if (!tableLoader.databases.system || !('hdb_info' in tableLoader.databases.system)) {
 		console.log(errMsg);
 		throw new Error(errMsg);
 	}
