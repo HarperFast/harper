@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781080834430,
+  "lastUpdate": 1781080836429,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -992,6 +992,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99",
             "value": 39.9,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7845a096ece532e116275d23033bbd48c6bd2bf0",
+          "message": "Merge pull request #1217 from HarperFast/feat/config-union-directive\n\nfeat(config): add `$union` array directive for config env vars",
+          "timestamp": "2026-06-10T04:21:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/7845a096ece532e116275d23033bbd48c6bd2bf0"
+        },
+        "date": 1781080836023,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99",
+            "value": 15.81,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99",
+            "value": 16.68,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99",
+            "value": 19.44,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99",
+            "value": 18.77,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99",
+            "value": 23.59,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99",
+            "value": 18.39,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99",
+            "value": 36.78,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99",
+            "value": 15.93,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99",
+            "value": 18.94,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99",
+            "value": 40.32,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99",
+            "value": 187.93,
             "unit": "ms"
           }
         ]
