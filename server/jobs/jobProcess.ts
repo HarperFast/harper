@@ -26,6 +26,12 @@ const JOB_ID = JOB_NAME.substring(4);
  * @returns {Promise<void>}
  */
 (async function job() {
+	// Bun's event loop does not keep the loop alive for pending NAPI async callbacks
+	// (e.g. RocksDB transaction commit passing resolve/reject into native code). Job
+	// workers have no other ref'd work (HTTP server, ref'd ports), so Bun exits the
+	// loop before the callback fires. A ref'd interval prevents that.
+	const bunEventLoopKeepAlive =
+		typeof (globalThis as any).Bun !== 'undefined' ? setInterval(() => {}, 1000) : undefined;
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
@@ -77,6 +83,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		jobObj.end_datetime = moment().valueOf();
 	} finally {
 		await jobs.updateJob(jobObj);
+		if (bunEventLoopKeepAlive) clearInterval(bunEventLoopKeepAlive);
 		setTimeout(() => {
 			realExit(exitCode);
 		}, 3000).unref();
