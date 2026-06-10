@@ -15,6 +15,7 @@ import {
 	HAS_BLOBS,
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
+	LOCAL_ONLY,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import './blob.ts';
@@ -662,6 +663,13 @@ export function recordUpdater(store, tableId, auditStore) {
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
 				extendedType |= HAS_ADDITIONAL_AUDIT_REFS_AUDIT;
+			}
+			if (options?.localOnly) {
+				// Mark this write as local-only: set the bit in BOTH the persisted record metadata
+				// (so the full-copy send loop, which reads entry.metadataFlags, skips it) AND the audit
+				// entry's extendedType (so the audit-forward send path skips it by bitmask without decode).
+				metadataInNextEncoding |= LOCAL_ONLY;
+				extendedType |= LOCAL_ONLY;
 			}
 			if (previousResidencyId !== residencyId) {
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;
