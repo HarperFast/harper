@@ -18,17 +18,24 @@
  * The fixture pre-defines DesktopPage and MobilePage tables in separate databases.
  * blobPaths are supplied at start time via `storage.blobPaths` in the config option.
  *
+ * Note on Bytes vs Blob and blobPaths: `storage.blobPaths` controls where file-backed
+ * `Blob`-type columns are written. This suite uses `Bytes` (inline DB storage) so it
+ * tests that the blobPaths configuration does not interfere with normal table I/O.
+ * Full Blob-type striping coverage (verifying files land in both paths) requires a
+ * custom component resource that calls `createBlob()`, which is left to a future test.
+ *
  * Note on Bytes round-trip: the REST layer accepts a Bytes field as a JSON string
  * (stored as Buffer.from(value, 'utf8')) and returns it as
  * `{"type":"Buffer","data":[...utf8 byte values...]}` (Node.js Buffer.toJSON format).
- * Tests verify the decoded Buffer matches the original string bytes.
+ * Tests verify the decoded Buffer matches the original string bytes. Content uses
+ * printable ASCII so the UTF-8 round-trip is lossless.
  *
  * Skipped on Windows: depends on `restart_service http_workers` (HarperFast/harper#549).
  * Skipped on Bun: component install is not reliable under Harper-on-Bun in CI.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, notStrictEqual } from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
@@ -91,6 +98,14 @@ suite('blob-advanced', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 
 	after(async () => {
 		await teardownHarper(ctx);
+		// Clean up temporary blob directories
+		for (const dir of [blobDir1, blobDir2]) {
+			try {
+				rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// best-effort; test isolation is more important than strict cleanup
+			}
+		}
 	});
 
 	/**
@@ -104,6 +119,20 @@ suite('blob-advanced', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	 * Harper's Bytes field accepts JSON strings and stores them as UTF-8 Buffers.
 	 */
 	test('per-device-type DB sharding: no cross-DB bleed', { timeout: 30_000 }, async () => {
+		// Verify the tables are in the correct separate databases before writing any data
+		const describeResp = await client.req().send({ operation: 'describe_all' }).expect(200);
+		const schema = describeResp.body;
+		ok(
+			schema?.cache_desktop?.DesktopPage,
+			`DesktopPage must be in cache_desktop schema; got: ${JSON.stringify(Object.keys(schema))}`
+		);
+		ok(
+			schema?.cache_mobile?.MobilePage,
+			`MobilePage must be in cache_mobile schema; got: ${JSON.stringify(Object.keys(schema))}`
+		);
+		ok(!schema?.cache_desktop?.MobilePage, 'MobilePage must NOT appear in cache_desktop (schema isolation check)');
+		ok(!schema?.cache_mobile?.DesktopPage, 'DesktopPage must NOT appear in cache_mobile (schema isolation check)');
+
 		const desktopStr = '<html>desktop</html>';
 		const mobileStr = '<html>mobile</html>';
 		const desktopExpected = Buffer.from(desktopStr);
