@@ -17,19 +17,16 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
-import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error utils/components.mjs has no type declarations; runtime resolves fine
-import { installAppComponent } from '../apiTests/utils/components.mjs';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const FIXTURE_DIR = join(__dirname, '../fixtures/ttl-test');
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const FIXTURE_PATH = resolve(__dirname, '../fixtures/ttl-test');
 
 const MAX_WAIT_MS = 15_000;
 const POLL_INTERVAL_MS = 250;
@@ -56,18 +53,13 @@ suite('TTL edge cases', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
 
 	before(async () => {
-		await startHarper(ctx, { config: {}, env: {} });
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
-
-		await installAppComponent(client, {
-			project: 'ttledge',
-			files: {
-				'schema.graphql': readFileSync(join(FIXTURE_DIR, 'schema.graphql'), 'utf8'),
-				'config.yaml': readFileSync(join(FIXTURE_DIR, 'config.yaml'), 'utf8'),
-			},
-			probePath: '/ShortLived/',
-			restartTimeoutMs: 120_000,
-		});
+		// Wait for the component routes to be available (fixture is pre-installed but
+		// the HTTP workers may not have finished registering routes yet).
+		await pollUntil(async () => {
+			await client.reqRest('/ShortLived/').timeout(3_000).expect(200);
+		}, 120_000);
 	});
 
 	after(async () => {
