@@ -495,19 +495,25 @@ export function makeTable(options) {
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
 									// outrun the commit/conflict-check window, and guarantees the sequence id never
 									// advances past an uncommitted write (which would diverge this node from its peers).
-									if (txnInProgress) await txnInProgress.committed;
+									const committed = txnInProgress ? await txnInProgress.committed : undefined;
 									if (event.onCommit) {
 										// the onCommit callback can be async and carry associated work (e.g. blob transfer);
-										// wait for it too before recording the sequence id.
-										await event.onCommit();
+										// wait for it too before recording the sequence id. Pass the commit resolution
+										// through, as callbacks may use the committed txn time.
+										await event.onCommit(committed);
 									}
 									if (updateRecordedSequenceId) updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
 									if (event.beginTxn) {
-										// if we are starting a new transaction, finish the existing one
+										// Starting a new transaction closes the existing one. When transactions are
+										// delimited by consecutive beginTxn events (end_txn only arrives after the final
+										// one), this is the backpressure point for all but the last transaction: wait for
+										// the prior commit to land before applying the next so the sequence id can't
+										// advance past an uncommitted write.
 										txnInProgress.resolve();
+										await txnInProgress.committed;
 									} else {
 										// write in the current transaction if one is in progress
 										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));
@@ -580,9 +586,10 @@ export function makeTable(options) {
 										if (commitResolution) commitResolution.then(event.onCommit);
 										else event.onCommit();
 									} else {
-										// standalone write: backpressure on the commit before pulling the next event.
-										if (commitResolution) await commitResolution;
-										await event.onCommit();
+										// standalone write: backpressure on the commit before pulling the next event,
+										// and pass the commit resolution through to the callback.
+										const committed = commitResolution ? await commitResolution : undefined;
+										await event.onCommit(committed);
 									}
 								} else if (commitResolution && !txnInProgress) {
 									// standalone write with no onCommit: still backpressure on the commit.
