@@ -1,6 +1,6 @@
 import { callOperation } from './utility.js';
 import axios from 'axios';
-import { setupTestApp } from './setupTestApp.mjs';
+import { setupTestApp, baseUrl } from './setupTestApp.mjs';
 import { expect } from 'chai';
 
 describe('test declared role', () => {
@@ -32,13 +32,13 @@ describe('test declared role', () => {
 			headers
 		);
 		expect(response.status).to.eq(200);
-		response = await axios('http://localhost:9926/SimpleRecord/6', {
+		response = await axios(`${baseUrl}/SimpleRecord/6`, {
 			headers,
 		});
 		expect(response.status).to.eq(200);
 		let perm_error;
 		try {
-			response = await axios.put('http://localhost:9926/SimpleRecord/6', { name: 'test change' }, { headers });
+			response = await axios.put(`${baseUrl}/SimpleRecord/6`, { name: 'test change' }, { headers });
 		} catch (error) {
 			perm_error = error;
 		}
