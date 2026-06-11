@@ -54,6 +54,8 @@ HTTP_PORT=9926 harper
 
 > **Note:** Component configuration cannot be set via environment variables or CLI arguments.
 
+To set multiple values (or a whole config object) from a single environment variable, use `HARPER_CONFIG` — see [Environment Variable-Based Configuration](#environment-variable-based-configuration).
+
 ### 3. CLI Arguments
 
 Same naming convention as environment variables, prefixed with `--`:
@@ -91,7 +93,7 @@ hdb/backup/2026-05-06T14-22-08.123Z-harper-config.yaml.bak
 Notes:
 
 - Backups are not produced when you edit `harper-config.yaml` directly — Harper only sees that change on its next start.
-- The `HARPER_DEFAULT_CONFIG` and `HARPER_SET_CONFIG` mechanisms do not produce timestamped backups; their provenance is tracked separately in `{rootPath}/backup/.harper-config-state.json` (see [State Tracking](#state-tracking)).
+- The `HARPER_CONFIG`, `HARPER_DEFAULT_CONFIG`, and `HARPER_SET_CONFIG` mechanisms do not produce timestamped backups; their provenance is tracked separately in `{rootPath}/backup/.harper-config-state.json` (see [State Tracking](#state-tracking)).
 - Backups are not rotated. Old `.bak` files accumulate in `{rootPath}/backup/` until you remove them.
 - A failure to write the backup is logged at `error` level and does not block the configuration update.
 
@@ -115,11 +117,44 @@ HDB_CONFIG=/existing/rootpath/harper-config.yaml harper
 
 <VersionBadge version="v4.7.2" />
 
-Harper provides two special environment variables for managing configuration across deployments: `HARPER_DEFAULT_CONFIG` and `HARPER_SET_CONFIG`. Both accept JSON-formatted configuration that mirrors the structure of `harper-config.yaml`.
+Harper provides three special environment variables for managing configuration across deployments: `HARPER_CONFIG`, `HARPER_DEFAULT_CONFIG`, and `HARPER_SET_CONFIG`. All accept JSON-formatted configuration that mirrors the structure of `harper-config.yaml`, and all **merge** into the configuration — they set only the keys you name, leaving every other key untouched.
 
 ```bash
-export HARPER_DEFAULT_CONFIG='{"http":{"port":8080},"logging":{"level":"info"}}'
+# Recommended: set configuration from the environment
+export HARPER_CONFIG='{"http":{"port":8080},"logging":{"level":"info"}}'
+
+# Specialized: defaults that yield to other sources, and forced/locked values
+export HARPER_DEFAULT_CONFIG='{"logging":{"level":"info"}}'
 export HARPER_SET_CONFIG='{"authentication":{"enabled":true}}'
+```
+
+`HARPER_CONFIG` <VersionBadge version="v5.1.0" /> is the recommended choice for "how do I set configuration from the environment?" — it applies with least-surprise merge semantics. Reach for `HARPER_DEFAULT_CONFIG` only when you specifically need overridable defaults, and `HARPER_SET_CONFIG` only when you need to force a value and lock it against drift.
+
+### HARPER_CONFIG
+
+<VersionBadge version="v5.1.0" />
+
+The recommended way to set configuration from the environment. It applies as a **merge on top of** the existing configuration: it sets exactly the keys you name (at any depth) and leaves everything else — including sibling keys — untouched.
+
+- Sets only the keys it names; unspecified keys at any depth are preserved
+- **Reasserts its keys on every restart** — while the variable names a key, that value wins over the config file and over manual edits (a hand-edit to a named key is reapplied on the next restart)
+- Yields only to `HARPER_SET_CONFIG`
+- Individual environment variables and CLI arguments (e.g. `HTTP_PORT`) still win over `HARPER_CONFIG` for the specific keys they set
+- When a key is removed from the variable, its original value is restored (or the key is deleted if `HARPER_CONFIG` introduced it)
+
+**Example:**
+
+```bash
+export HARPER_CONFIG='{"http":{"port":8080},"logging":{"level":"info"}}'
+harper
+
+# http.port and logging.level are set to these values on every restart.
+# http.securePort, other logging keys, and the rest of the config are untouched.
+
+# If an administrator edits http.port to 9000 in harper-config.yaml,
+# it is reset to 8080 on the next restart (the variable still names http.port).
+
+# If http.port is later removed from HARPER_CONFIG, the original value is restored.
 ```
 
 ### HARPER_DEFAULT_CONFIG
@@ -158,7 +193,7 @@ Forces configuration values that cannot be overridden by user edits. Designed fo
 **At runtime:**
 
 - Always overrides all other configuration sources
-- Takes precedence over user edits, file values, and `HARPER_DEFAULT_CONFIG`
+- Takes precedence over user edits, file values, `HARPER_CONFIG`, and `HARPER_DEFAULT_CONFIG`
 - When a key is removed from the variable, it is deleted from the config (not restored)
 
 **Example:**
@@ -171,31 +206,57 @@ harper
 # overridden on the next restart.
 ```
 
-### Combining Both Variables
+### Array values and the `$union` directive
+
+<VersionBadge version="v5.1.0" />
+
+By default an array in any of these variables **replaces** the existing array wholesale — the same as a plain value. To instead **compose** an array, wrap it in a `$union` directive:
 
 ```bash
+export HARPER_SET_CONFIG='{"tls":{"uses":{"$union":["server","operations-api"]}}}'
+```
+
+`$union` guarantees the listed items are present in the target array while preserving any entries already there — the order-preserving union of (existing ∪ listed). It is:
+
+- **Idempotent** — reapplying the same `$union` on every restart is a no-op; it never grows duplicates
+- **Non-destructive** — it only adds the items it names and never removes other entries, even under `HARPER_SET_CONFIG`'s drift handling
+
+This lets a platform layer guarantee required array entries (for example `tls.uses`) on every restart without clobbering entries an application adds. `$union` works in all three variables. A bare array (no `$union`) still replaces, which remains the default.
+
+> **Note:** Only `$`-prefixed keys that Harper recognizes as directives (currently `$union`) are treated specially. Other `$`-prefixed keys — such as a JSON Schema's `$schema` or `$ref` inside component configuration — pass through as ordinary configuration values.
+
+### Combining the variables
+
+```bash
+# Recommended: set configuration from the environment
+export HARPER_CONFIG='{"http":{"port":8080,"cors":true},"logging":{"level":"info"}}'
+
 # Provide sensible defaults (can be overridden by admins)
-export HARPER_DEFAULT_CONFIG='{"http":{"port":8080,"cors":true},"logging":{"level":"info"}}'
+export HARPER_DEFAULT_CONFIG='{"operationsApi":{"network":{"port":9925}}}'
 
 # Enforce critical settings (cannot be changed)
 export HARPER_SET_CONFIG='{"authentication":{"enabled":true}}'
 ```
 
+Because each variable holds a single string, two parties cannot both write the _same_ variable without one overwriting the other. The split lets them coexist: a platform layer can pin values via `HARPER_SET_CONFIG` (with `$union` for required array entries) while an application sets its own keys via `HARPER_CONFIG`, and the two merge rather than clobbering each other.
+
 ### Configuration Precedence
 
 From highest to lowest:
 
-1. **`HARPER_SET_CONFIG`** — Always wins
-2. **User manual edits** — Detected via drift detection
-3. **`HARPER_DEFAULT_CONFIG`** — Applied if no user edits detected
-4. **File defaults** — Original template values
+1. **`HARPER_SET_CONFIG`** — Always wins; locked against drift
+2. **Individual env vars / CLI arguments** (e.g. `HTTP_PORT`) — for the specific keys they set
+3. **`HARPER_CONFIG`** — Reasserted on every restart; wins over the config file and user edits
+4. **User manual edits** — Detected via drift detection (relative to `HARPER_DEFAULT_CONFIG`)
+5. **`HARPER_DEFAULT_CONFIG`** — Applied if no user edits detected
+6. **File defaults** — Original template values
 
 ### State Tracking
 
 Harper maintains a state file at `{rootPath}/backup/.harper-config-state.json` to track the source of each configuration value. This enables:
 
-- **Drift detection**: Identifying when users manually edit values set by `HARPER_DEFAULT_CONFIG`
-- **Restoration**: Restoring original values when keys are removed from `HARPER_DEFAULT_CONFIG`
+- **Drift detection**: Identifying when users manually edit values set by `HARPER_DEFAULT_CONFIG` (and, for `HARPER_CONFIG`, reasserting the configured value)
+- **Restoration**: Restoring original values when keys are removed from `HARPER_CONFIG` or `HARPER_DEFAULT_CONFIG`
 - **Conflict resolution**: Determining which source should take precedence
 
 ### Format Reference
@@ -222,7 +283,7 @@ logging:
 
 ### Important Notes
 
-- Both variables must contain valid JSON matching the structure of `harper-config.yaml`
+- All three variables must contain valid JSON matching the structure of `harper-config.yaml`
 - Invalid values are caught by Harper's configuration validator at startup
 - Changes to these variables require a Harper restart to take effect
 - The state file is per-instance (stored in the root path)
