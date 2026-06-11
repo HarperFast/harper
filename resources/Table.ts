@@ -2097,6 +2097,8 @@ export function makeTable(options) {
 								transaction,
 								tableToTrack: databaseName === 'system' ? null : options?.replay ? null : tableName, // don't track analytics on system tables
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
+								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
+								localOnly: options?.localOnly,
 							},
 							type,
 							false,

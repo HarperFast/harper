@@ -301,6 +301,16 @@ export const HAS_ORIGINATING_OPERATION = 2048;
 export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
 export const HAS_BLOBS = 0x2000;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x4000;
+/**
+ * Marks a record (and its audit entry) as local-only: it is persisted on this node but must
+ * never be forwarded to replication peers. The bit lives in the record metadata bitmap (and is
+ * mirrored into the audit entry's extendedType) so the replication send path can skip it by a
+ * bitmask test on the already-decoded metadataFlags/extendedType integer — without decoding the
+ * record value (a critical send-path throughput optimization). Bit 15 (0x8000) was confirmed
+ * unused across the record metadata bitmap and the audit extendedType space; it sits below the
+ * lower-byte action region (which extendedType forbids) and within the always-32-bit metadata form.
+ */
+export const LOCAL_ONLY = 0x8000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
