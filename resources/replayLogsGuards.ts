@@ -42,22 +42,24 @@ export function classifyAuditEntryForReplay(
 }
 
 /**
- * Whether an audit entry is a validated write (`put`/`patch`) whose record body failed to
- * decode, and so must be skipped during replay.
+ * Whether an audit entry runs `validate()` during replay but its record body failed to decode,
+ * and so must be skipped.
  *
  * `RecordEncoder.decode` returns `null` (not `undefined`, and it does not throw) when a value
  * fails to decode — e.g. structure-dictionary divergence, which surfaces as msgpackr's
  * "Data read, but end of buffer not reached". `classifyAuditEntryForReplay` only catches a
- * `undefined` body, so a `null` slips through; for `put`/`patch` the replay path then calls
- * `save()` → `validate()`, which dereferences the record and crashes on the missing body.
+ * `undefined` body, so a `null` slips through; the replay path then calls `validate()`, which
+ * dereferences the record and crashes on the missing body.
  *
- * This is deliberately scoped to `put`/`patch` (the only replay actions that run `validate()`).
- * Other record-bearing actions must NOT be skipped on a `null` body — notably `invalidate`,
- * which legitimately stores a `null` partial record on a table with no index fields and never
- * reaches `validate()`. See harper#1255.
+ * Scoped to the actions whose replay reaches `validate()`: `put`/`patch` (via `_writeUpdate` →
+ * `save()`) and `message` (via `_writePublish` → `transaction.addWrite` → `save()`; the publish
+ * `validate` hook fires whenever the replay context has no `source`, which it never does). Other
+ * record-bearing actions must NOT be skipped on a `null` body — notably `invalidate`, which
+ * legitimately stores a `null` partial record on a table with no index fields and never reaches
+ * `validate()`; `relocate`/`delete` ignore the body entirely. See harper#1255.
  */
 export function isUndecodableValidatedWrite(type: string | undefined, record: unknown): boolean {
-	return record == null && (type === 'put' || type === 'patch');
+	return record == null && (type === 'put' || type === 'patch' || type === 'message');
 }
 
 /**

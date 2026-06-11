@@ -68,21 +68,25 @@ describe('classifyAuditEntryForReplay', () => {
 describe('isUndecodableValidatedWrite', () => {
 	// Regression for harper#1255: RecordEncoder.decode returns `null` (not `undefined`) on a
 	// failed value decode (e.g. structure-dictionary divergence), so classify() — which only
-	// catches `undefined` — lets it through. For put/patch the replay then calls save() ->
-	// validate(), which crashes on the null body ("Cannot read properties of undefined
-	// (reading 'id')"). This guard skips exactly those, and ONLY those.
-	it('skips put/patch whose body failed to decode (null or undefined)', () => {
+	// catches `undefined` — lets it through. The replay then calls validate() on the null body
+	// and crashes ("Cannot read properties of undefined (reading 'id')"). This guard skips the
+	// actions whose replay reaches validate(): put/patch (via _writeUpdate) and message (via
+	// _writePublish -> addWrite -> save) — and ONLY those.
+	it('skips put/patch/message whose body failed to decode (null or undefined)', () => {
 		assert.strictEqual(isUndecodableValidatedWrite('put', null), true);
 		assert.strictEqual(isUndecodableValidatedWrite('put', undefined), true);
 		assert.strictEqual(isUndecodableValidatedWrite('patch', null), true);
 		assert.strictEqual(isUndecodableValidatedWrite('patch', undefined), true);
+		assert.strictEqual(isUndecodableValidatedWrite('message', null), true);
+		assert.strictEqual(isUndecodableValidatedWrite('message', undefined), true);
 	});
 
-	it('does not skip put/patch with a decoded body, including falsy primitives', () => {
+	it('does not skip put/patch/message with a decoded body, including falsy primitives', () => {
 		assert.strictEqual(isUndecodableValidatedWrite('put', { id: 1 }), false);
 		assert.strictEqual(isUndecodableValidatedWrite('patch', 0), false);
 		assert.strictEqual(isUndecodableValidatedWrite('put', ''), false);
 		assert.strictEqual(isUndecodableValidatedWrite('patch', false), false);
+		assert.strictEqual(isUndecodableValidatedWrite('message', 0), false);
 	});
 
 	it('never skips invalidate on a null body — a no-index table stores a legitimate null partial record', () => {
@@ -92,9 +96,8 @@ describe('isUndecodableValidatedWrite', () => {
 		assert.strictEqual(isUndecodableValidatedWrite('invalidate', undefined), false);
 	});
 
-	it('does not skip other record-bearing / non-validated actions on a null body', () => {
-		// Only put/patch run validate(); message/relocate/delete must pass through untouched.
-		assert.strictEqual(isUndecodableValidatedWrite('message', null), false);
+	it('does not skip non-validated actions on a null body', () => {
+		// relocate/delete ignore the body and never call validate(), so they pass through untouched.
 		assert.strictEqual(isUndecodableValidatedWrite('relocate', null), false);
 		assert.strictEqual(isUndecodableValidatedWrite('delete', null), false);
 		assert.strictEqual(isUndecodableValidatedWrite(undefined, null), false);
