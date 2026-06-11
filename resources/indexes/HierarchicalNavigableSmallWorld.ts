@@ -771,7 +771,7 @@ export class HierarchicalNavigableSmallWorld {
 		}
 		// For quantized (int8) threshold queries, suppress the distance limit so the full candidate
 		// set is returned; rescoreResults() re-filters on exact full-precision distances post-load.
-		if (this.int8 && limit) limit = 0;
+		if (this.int8 && limit !== undefined) limit = undefined;
 		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
 		let distanceFunction: (a: number[], b: number[]) => number;
 		if (distance === 'cosine') distanceFunction = cosineDistance;
