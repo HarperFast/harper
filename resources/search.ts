@@ -413,37 +413,9 @@ export function searchByIndex(
 				}
 				return entry;
 			});
-			// Rerank: a quantized index navigates on approximate distances, so for a nearest-neighbor
-			// (sort) query, recompute the exact distance from each loaded record's full-precision vector
-			// and re-sort — restoring exact ordering and $distance.
-			if (
-				index.customIndex.int8 &&
-				index.customIndex.exactDistance &&
-				(comparator as any) === 'sort' &&
-				(searchCondition as any).target &&
-				typeof attribute_name === 'string'
-			) {
-				const rescored = (loaded as any[]).filter((e) => e !== SKIP && e && e.value);
-				for (const e of rescored) {
-					const d = index.customIndex.exactDistance(searchCondition, e.value[attribute_name]);
-					// Non-finite exact distances (NaN from a corrupt record vector, Infinity from a
-					// missing vector) sort last — consistent with the missing-vector sentinel in exactDistance.
-					e.distance = Number.isFinite(d) ? d : Infinity;
-				}
-				// comparison-based (not subtraction) so Infinity sentinels for missing vectors
-				// sort last without producing NaN (Infinity - Infinity).
-				rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
-				return rescored as any;
-			}
-			// Re-filter threshold queries on exact distances (over-fetched above without the HNSW limit).
-			if (isInt8Threshold) {
-				const thresholdValue = (searchCondition as any).value;
-				const rescored = (loaded as any[]).filter((e) => e !== SKIP && e && e.value);
-				for (const e of rescored)
-					e.distance = index.customIndex.exactDistance(searchCondition, e.value[attribute_name]);
-				return rescored.filter((e) =>
-					(comparator as any) === 'le' ? e.distance <= thresholdValue : e.distance < thresholdValue
-				) as any;
+			if (index.customIndex.rescoreResults) {
+				const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
+				if (rescored != null) return rescored as any;
 			}
 			return loaded;
 		}

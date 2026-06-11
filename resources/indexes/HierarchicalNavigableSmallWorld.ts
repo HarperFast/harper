@@ -4,6 +4,7 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { SKIP } from '@harperfast/extended-iterable';
 
 const logger = loggerWithTag('HNSW');
 
@@ -834,6 +835,43 @@ export class HierarchicalNavigableSmallWorld {
 						? cosineDistance
 						: this.distance;
 		return fn(searchCondition.target, vec);
+	}
+	/**
+	 * Post-load rescoring hook called by search.ts after full records have been loaded.
+	 * Handles two quantized (int8) cases:
+	 *   - 'sort': recompute exact distances and re-sort for correct nearest-neighbor ordering.
+	 *   - 'lt'/'le': recompute exact distances and re-filter by the threshold value (over-fetch
+	 *     was applied before the search to ensure enough candidates).
+	 * Returns null when rescoring doesn't apply so the caller uses the loaded iterable as-is.
+	 */
+	rescoreResults(
+		loaded: any[],
+		searchCondition: { target: number[]; distance?: string; value?: any },
+		comparator: string,
+		attributeName: string,
+	): any[] | null {
+		if (!this.int8 || !searchCondition.target || typeof attributeName !== 'string') return null;
+		if (comparator === 'sort') {
+			const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
+			for (const e of rescored) {
+				const d = this.exactDistance(searchCondition, e.value[attributeName]);
+				// Non-finite exact distances (NaN from a corrupt record vector, Infinity from a
+				// missing vector) sort last — consistent with the missing-vector sentinel in exactDistance.
+				e.distance = Number.isFinite(d) ? d : Infinity;
+			}
+			// comparison-based (not subtraction) so Infinity sentinels for missing vectors
+			// sort last without producing NaN (Infinity - Infinity).
+			rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
+			return rescored;
+		}
+		if (comparator === 'lt' || comparator === 'le') {
+			const thresholdValue = searchCondition.value;
+			const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
+			for (const e of rescored)
+				e.distance = this.exactDistance(searchCondition, e.value[attributeName]);
+			return rescored.filter((e) => (comparator === 'le' ? e.distance <= thresholdValue : e.distance < thresholdValue));
+		}
+		return null;
 	}
 	private checkSymmetry(id, node, options) {
 		if (!node) return;
