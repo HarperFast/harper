@@ -190,6 +190,9 @@ export function makeTable(options) {
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
+	// Eviction without explicit expiration means expiration:0. Apply at construction so
+	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
+	if (evictionMs > 0 && expirationMs === undefined) expirationMs = 0;
 	let { attributes, properties }: { attributes: Attribute[]; properties?: Record<string, JsonSchemaFragment> } =
 		options;
 	if (!attributes) attributes = [];

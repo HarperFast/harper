@@ -1014,6 +1014,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// it table already exists, get the split segments setting
 		if (splitSegments == undefined) splitSegments = Table.splitSegments;
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
+		// Re-assert from the live declaration so a stale `false` on disk (replicated event,
+		// v4-era backfill) is corrected on every reload, not stuck across the existing-Table branch.
+		Table.schemaDefined = schemaDefined;
 		// Refresh class-level schema metadata to track docstring/directive changes across reloads.
 		Table.description = description;
 		Table.properties = properties;
