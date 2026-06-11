@@ -757,6 +757,16 @@ export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 }
 
 /**
+ * True if a config-state file exists with tracked env-var snapshots. Callers use this to
+ * decide whether applyRuntimeEnvConfig must run even when no config env vars are currently
+ * set — e.g. to restore originals and clear the snapshot after a var was applied on a prior
+ * boot and then removed. Cheap: returns false without reading when no state file exists.
+ */
+export function hasPersistedEnvConfigState(rootPath: string): boolean {
+	return Object.keys(loadConfigState(rootPath).snapshots).length > 0;
+}
+
+/**
  * Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG (in that order —
  * later wins). Can be used for both install-time and runtime.
  */

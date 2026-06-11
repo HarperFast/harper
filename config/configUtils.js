@@ -872,18 +872,23 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
+	const anyEnvValue = defaultEnvValue || configEnvValue || setEnvValue;
 
-	// No env vars set, skip entirely (zero overhead)
-	if (!defaultEnvValue && !configEnvValue && !setEnvValue) return;
-
-	const { applyRuntimeEnvConfig } = require('./harperConfigEnvVars.ts');
+	const { applyRuntimeEnvConfig, hasPersistedEnvConfigState } = require('./harperConfigEnvVars.ts');
 
 	// Get rootPath for state file location
 	const rootPath = configDoc.getIn(['rootPath']);
 	if (!rootPath) {
-		logger.warn('Cannot apply runtime env config: rootPath not found in config');
+		// Only an error if there is config to apply; otherwise there is simply nothing to do.
+		if (anyEnvValue) logger.warn('Cannot apply runtime env config: rootPath not found in config');
 		return;
 	}
+
+	// Skip entirely (zero overhead) only when nothing is set AND there is no prior state to
+	// clean up. If a var was applied on a previous boot and then removed, all three env vars
+	// are absent now but applyRuntimeEnvConfig must still run to restore originals and clear
+	// the snapshot — so don't short-circuit in that case.
+	if (!anyEnvValue && !hasPersistedEnvConfigState(rootPath)) return;
 
 	// Convert to JSON for processing
 	const configObj = configDoc.toJSON();

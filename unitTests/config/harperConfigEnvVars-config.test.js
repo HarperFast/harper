@@ -10,6 +10,7 @@ const harperConfigEnvVars = rewire('#src/config/harperConfigEnvVars');
 const applyRuntimeEnvConfig = harperConfigEnvVars.__get__('applyRuntimeEnvConfig');
 const composeConfigFromEnv = harperConfigEnvVars.__get__('composeConfigFromEnv');
 const filterArgsAgainstRuntimeConfig = harperConfigEnvVars.__get__('filterArgsAgainstRuntimeConfig');
+const hasPersistedEnvConfigState = harperConfigEnvVars.__get__('hasPersistedEnvConfigState');
 
 const ENV_VARS = ['HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG', 'HARPER_SET_CONFIG'];
 
@@ -208,6 +209,17 @@ describe('HARPER_CONFIG', function () {
 			const filtered = filterArgsAgainstRuntimeConfig(args);
 
 			assert.deepStrictEqual(filtered, args, 'individual env vars win over HARPER_CONFIG');
+		});
+	});
+
+	describe('hasPersistedEnvConfigState', function () {
+		it('is false for a fresh root and true once a var has been applied', function () {
+			assert.strictEqual(hasPersistedEnvConfigState(testRoot), false, 'no state file yet');
+
+			process.env.HARPER_CONFIG = JSON.stringify({ http: { port: 8080 } });
+			applyRuntimeEnvConfig({ http: { port: 9925 } }, testRoot);
+
+			assert.strictEqual(hasPersistedEnvConfigState(testRoot), true, 'snapshot persisted after apply');
 		});
 	});
 
