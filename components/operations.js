@@ -659,8 +659,12 @@ async function getComponents() {
 		entries: [],
 	});
 	for (let entry of results.entries) {
-		const sourcePackage = rootConfig[entry.name]?.package;
-		if (sourcePackage) entry.package = sourcePackage;
+		const componentConfig = rootConfig?.[entry.name];
+		if (!componentConfig) continue;
+		if (componentConfig.package) entry.package = componentConfig.package;
+		if (componentConfig.urlPath) entry.urlPath = componentConfig.urlPath;
+		if (componentConfig.host) entry.host = componentConfig.host;
+		if (componentConfig.loadComponent) entry.loadComponent = componentConfig.loadComponent;
 	}
 
 	const { internal: statusInternal } = require('./status/index.ts');

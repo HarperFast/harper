@@ -153,6 +153,9 @@ describe('Test custom functions operations', () => {
 			sandbox.stub(configUtils, 'getConfiguration').returns({
 				'my-other-component': {
 					package: '@my-org/my-other-component',
+					urlPath: '/other',
+					host: 'other.example.com',
+					loadComponent: 'if-installed',
 				},
 			});
 		}
@@ -170,9 +173,14 @@ describe('Test custom functions operations', () => {
 			expect(coolComponent).to.exist;
 			expect(coolComponent.entries.length).to.equal(3);
 			expect(coolComponent.package).to.be.undefined;
+			expect(coolComponent.urlPath).to.be.undefined;
+			expect(coolComponent.host).to.be.undefined;
 			expect(otherComponent).to.exist;
 			expect(otherComponent.entries.find((e) => e.name === 'config.yaml')).to.exist;
 			expect(otherComponent.package).to.equal('@my-org/my-other-component');
+			expect(otherComponent.urlPath).to.equal('/other');
+			expect(otherComponent.host).to.equal('other.example.com');
+			expect(otherComponent.loadComponent).to.equal('if-installed');
 		});
 
 		it('Test getComponents includes status information when component status exists', async () => {
