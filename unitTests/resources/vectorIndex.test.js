@@ -840,7 +840,7 @@ describeUnlessLmdb('HNSW data-integrity fixes (5.1 GA)', () => {
 		it('le returns records at exactly the threshold distance', () => {
 			const store = makeMockStore();
 			// euclidean: distance([0], [d]) = d^2  — use 1D so we can predict exact distances
-			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean' });
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', quantization: 'none' });
 			// Insert vectors at known euclidean-squared distances from [0]: 0.04, 0.09, 0.16, 0.25
 			hnsw.index('d0.04', [0.2], null, {});
 			hnsw.index('d0.09', [0.3], null, {});
@@ -870,7 +870,7 @@ describeUnlessLmdb('HNSW data-integrity fixes (5.1 GA)', () => {
 
 		it('le with a threshold of 0 filters to exact matches (0 is a valid threshold)', () => {
 			const store = makeMockStore();
-			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean' });
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', quantization: 'none' });
 			hnsw.index('exact', [0.2], null, {});
 			hnsw.index('near', [0.3], null, {});
 			hnsw.index('far', [0.9], null, {});
