@@ -660,7 +660,7 @@ async function getComponents() {
 	});
 	for (let entry of results.entries) {
 		const componentConfig = rootConfig?.[entry.name];
-		if (!componentConfig) continue;
+		if (!componentConfig || typeof componentConfig !== 'object') continue;
 		if (componentConfig.package) entry.package = componentConfig.package;
 		if (componentConfig.urlPath) entry.urlPath = componentConfig.urlPath;
 		if (componentConfig.host) entry.host = componentConfig.host;
