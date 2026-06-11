@@ -851,7 +851,7 @@ export class HierarchicalNavigableSmallWorld {
 		loaded: any[],
 		searchCondition: { target: number[]; distance?: string; value?: any },
 		comparator: string,
-		attributeName: string,
+		attributeName: string
 	): any[] | null {
 		if (!this.int8 || !searchCondition.target || typeof attributeName !== 'string') return null;
 		if (comparator === 'sort') {
@@ -870,8 +870,7 @@ export class HierarchicalNavigableSmallWorld {
 		if (comparator === 'lt' || comparator === 'le') {
 			const thresholdValue = searchCondition.value;
 			const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
-			for (const e of rescored)
-				e.distance = this.exactDistance(searchCondition, e.value[attributeName]);
+			for (const e of rescored) e.distance = this.exactDistance(searchCondition, e.value[attributeName]);
 			return rescored.filter((e) => (comparator === 'le' ? e.distance <= thresholdValue : e.distance < thresholdValue));
 		}
 		return null;

@@ -1219,7 +1219,8 @@ describeUnlessLmdb('HNSW int8 threshold queries (lt/le) — exact boundary after
 		);
 		const ids = new Set(results.map((r) => r.id));
 		for (const { id, sqDist } of records) {
-			if (sqDist < threshold) assert(ids.has(id), `record id=${id} (sq_dist=${sqDist}) must appear with lt ${threshold}`);
+			if (sqDist < threshold)
+				assert(ids.has(id), `record id=${id} (sq_dist=${sqDist}) must appear with lt ${threshold}`);
 			else assert(!ids.has(id), `record id=${id} (sq_dist=${sqDist}) must not appear with lt ${threshold}`);
 		}
 	});
