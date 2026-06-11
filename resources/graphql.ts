@@ -109,6 +109,9 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 						for (const arg of directive.arguments) {
 							typeDef[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
+						// @table is the canonical schema-defined declaration; pass the flag explicitly so
+						// the existing-Table re-assert in databases.ts::table() fires on every reload.
+						typeDef.schemaDefined = true;
 						if (typeDef.schema) typeDef.database = typeDef.schema;
 						if (!typeDef.table) typeDef.table = typeName;
 						if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';
