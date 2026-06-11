@@ -1049,6 +1049,220 @@ describeUnlessLmdb('HNSW data-integrity fixes (5.1 GA)', () => {
 	});
 });
 
+// Benchmark: int8 recall on unnormalized high-dynamic-range vectors (euclidean distance).
+// The per-vector scale = max|component|/127 squashes small components when one dimension
+// dominates. This suite measures whether recall stays acceptable in that worst-case shape,
+// and serves as a regression baseline for default-on quantization decisions.
+describeUnlessLmdb('HNSW int8 recall — unnormalized euclidean (high dynamic range)', () => {
+	const DIMS = 16;
+	const N = 300;
+	const testInstance = new HierarchicalNavigableSmallWorld();
+	let TFloat, TInt8;
+	const allFloat = [];
+
+	// Vectors with one large outlier component so the per-vector max-abs scale is set by that
+	// outlier, leaving most other components at only a few quantization levels.
+	function hdrVec(seed) {
+		let s = (seed * 2654435761) >>> 0;
+		const rand = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
+		const out = new Array(DIMS);
+		// first component is the outlier (range ±10), the rest are small (range ±0.1)
+		out[0] = rand() * 10;
+		for (let i = 1; i < DIMS; i++) out[i] = rand() * 0.1;
+		return out;
+	}
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		TFloat = table({
+			table: 'HNSWHdrFloat',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' },
+			],
+		});
+		TInt8 = table({
+			table: 'HNSWHdrInt8',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < N; i++) {
+			const v = hdrVec(i);
+			allFloat.push({ id: i, v });
+			await TFloat.put(i, { vector: v });
+			await TInt8.put(i, { vector: v });
+		}
+	});
+	after(() => {
+		TFloat.dropTable();
+		TInt8.dropTable();
+	});
+
+	it('int8 recall@10 on HDR euclidean is at least 0.5 (documenting known lossy case)', async () => {
+		// HDR vectors where small components are quantized to 0 represent a worst-case for int8.
+		// A floor of 0.5 is deliberately lenient — this test documents current behavior and gives
+		// us a regression signal, not a quality guarantee. If we raise this floor, that's progress.
+		const K = 10;
+		const QUERIES = 20;
+		let totalHits = 0;
+		for (let q = 0; q < QUERIES; q++) {
+			const target = hdrVec(N + q);
+			const brute = allFloat
+				.map(({ id, v }) => ({ id, d: euclideanDist(target, v) }))
+				.sort((a, b) => a.d - b.d)
+				.slice(0, K);
+			const truth = new Set(brute.map((x) => x.id));
+			const results = await fromAsync(
+				TInt8.search({ sort: { attribute: 'vector', target, distance: 'euclidean' }, select: ['id'], limit: K })
+			);
+			totalHits += results.filter((r) => truth.has(r.id)).length;
+		}
+		const recall = totalHits / (QUERIES * K);
+		console.log(`int8 HDR euclidean recall@${K} over ${QUERIES} queries: ${(recall * 100).toFixed(1)}%`);
+		assert(recall >= 0.5, `int8 HDR euclidean recall@${K} too low: ${(recall * 100).toFixed(1)}%`);
+	});
+
+	it('float baseline recall@10 on same HDR euclidean vectors is at least 0.8', async () => {
+		// The float index is the control: if it also underperforms, the issue is graph quality,
+		// not quantization. Failure here means the HDR vectors create a hard graph structure.
+		const K = 10;
+		const QUERIES = 20;
+		let totalHits = 0;
+		for (let q = 0; q < QUERIES; q++) {
+			const target = hdrVec(N + q);
+			const brute = allFloat
+				.map(({ id, v }) => ({ id, d: euclideanDist(target, v) }))
+				.sort((a, b) => a.d - b.d)
+				.slice(0, K);
+			const truth = new Set(brute.map((x) => x.id));
+			const results = await fromAsync(
+				TFloat.search({ sort: { attribute: 'vector', target, distance: 'euclidean' }, select: ['id'], limit: K })
+			);
+			totalHits += results.filter((r) => truth.has(r.id)).length;
+		}
+		const recall = totalHits / (QUERIES * K);
+		console.log(`float HDR euclidean recall@${K} over ${QUERIES} queries: ${(recall * 100).toFixed(1)}%`);
+		assert(recall >= 0.8, `float HDR euclidean recall@${K} too low: ${(recall * 100).toFixed(1)}%`);
+	});
+
+	function euclideanDist(a, b) {
+		let sum = 0;
+		for (let i = 0; i < a.length; i++) sum += (a[i] - b[i]) ** 2;
+		return Math.sqrt(sum);
+	}
+});
+
+// int8 threshold queries now over-fetch from HNSW (suppressing the approximate distance filter)
+// and re-filter on exact full-precision distances after loading records. All boundary assertions
+// are exact: every record whose true distance satisfies the predicate must appear, and every
+// record outside must not.
+//
+// Note: the euclidean distance function (vector.ts) returns SQUARED euclidean for ranking
+// efficiency — threshold values and $distance are in that same squared space.
+describeUnlessLmdb('HNSW int8 threshold queries (lt/le) — exact boundary after rerank', () => {
+	let T;
+	const records = [];
+
+	// Vectors on the x-axis: target=[0,0], record at [d,0] has squared-euclidean distance d².
+	// Choosing d² values that are exactly representable in float64 makes boundary assertions
+	// unambiguous (no floating-point fuzz to worry about).
+	// id 0: d=0.5  → sq_dist=0.25
+	// id 1: d=0.75 → sq_dist=0.5625
+	// id 2: d=1.0  → sq_dist=1.0   ← used as exact le/lt boundary
+	// id 3: d=1.5  → sq_dist=2.25
+	// id 4: d=2.0  → sq_dist=4.0
+	const VECTORS = [0.5, 0.75, 1.0, 1.5, 2.0];
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWInt8Threshold',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < VECTORS.length; i++) {
+			const d = VECTORS[i];
+			records.push({ id: i, sqDist: d * d, vector: [d, 0] });
+			await T.put(i, { vector: [d, 0] });
+		}
+	});
+	after(() => T.dropTable());
+
+	it('lt returns exactly the records whose squared-euclidean distance is strictly less than the threshold', async () => {
+		// threshold=1.5 → includes id=0 (sq=0.25) and id=1 (sq=0.5625), excludes id=2 (sq=1.0)..id=4
+		const threshold = 1.5;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'lt', value: threshold, target: [0, 0] }],
+				select: ['id'],
+			})
+		);
+		const ids = new Set(results.map((r) => r.id));
+		for (const { id, sqDist } of records) {
+			if (sqDist < threshold) assert(ids.has(id), `record id=${id} (sq_dist=${sqDist}) must appear with lt ${threshold}`);
+			else assert(!ids.has(id), `record id=${id} (sq_dist=${sqDist}) must not appear with lt ${threshold}`);
+		}
+	});
+
+	it('le includes the record at exactly the threshold; lt excludes it', async () => {
+		// id=2 has sq_dist=1.0; threshold=1.0 sits exactly on the boundary.
+		const threshold = 1.0;
+		const ltResults = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'lt', value: threshold, target: [0, 0] }],
+				select: ['id'],
+			})
+		);
+		const leResults = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'le', value: threshold, target: [0, 0] }],
+				select: ['id'],
+			})
+		);
+		const ltIds = new Set(ltResults.map((r) => r.id));
+		const leIds = new Set(leResults.map((r) => r.id));
+
+		assert(!ltIds.has(2), 'lt must exclude the record at exactly sq_dist=threshold');
+		assert(leIds.has(2), 'le must include the record at exactly sq_dist=threshold');
+
+		// Records strictly inside are in both
+		for (const { id, sqDist } of records) {
+			if (sqDist < threshold) {
+				assert(ltIds.has(id), `record id=${id} (sq_dist=${sqDist}) must appear in lt`);
+				assert(leIds.has(id), `record id=${id} (sq_dist=${sqDist}) must appear in le`);
+			}
+		}
+	});
+
+	it('$distance on threshold results is the exact squared-euclidean from the full-precision record vector', async () => {
+		const threshold = 2.0;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'lt', value: threshold, target: [0, 0] }],
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+		assert(results.length > 0, 'expected results');
+		for (const r of results) {
+			// euclideanDistance returns squared distance (see vector.ts)
+			const exact = r.vector[0] ** 2 + r.vector[1] ** 2;
+			assert(
+				Math.abs(r.$distance - exact) < 1e-10,
+				`$distance ${r.$distance} should equal exact sq-euclidean ${exact} for record id=${r.id}`
+			);
+		}
+	});
+});
+
 async function fromAsync(iterable) {
 	let results = [];
 	for await (let entry of iterable) {

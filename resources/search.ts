@@ -387,7 +387,18 @@ export function searchByIndex(
 		return results;
 	} else if (index && !skipIndex) {
 		if (index.customIndex) {
-			const loaded = index.customIndex.search(searchCondition, context).map((entry) => {
+			// For int8 threshold (lt/le) queries, suppress HNSW's approximate distance filter so we
+			// can over-fetch and re-filter on exact full-precision distances after loading records.
+			const isInt8Threshold =
+				index.customIndex.int8 &&
+				index.customIndex.exactDistance &&
+				((comparator as any) === 'lt' || (comparator as any) === 'le') &&
+				(searchCondition as any).target &&
+				typeof attribute_name === 'string';
+			const hnswCondition = isInt8Threshold
+				? { ...(searchCondition as any), comparator: 'sort', value: undefined }
+				: searchCondition;
+			const loaded = index.customIndex.search(hnswCondition, context).map((entry) => {
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
@@ -404,8 +415,7 @@ export function searchByIndex(
 			});
 			// Rerank: a quantized index navigates on approximate distances, so for a nearest-neighbor
 			// (sort) query, recompute the exact distance from each loaded record's full-precision vector
-			// and re-sort — restoring exact ordering and $distance. (lt/le threshold queries still use the
-			// index's approximate distance for now; exact threshold filtering needs over-fetch — follow-up.)
+			// and re-sort — restoring exact ordering and $distance.
 			if (
 				index.customIndex.int8 &&
 				index.customIndex.exactDistance &&
@@ -424,6 +434,16 @@ export function searchByIndex(
 				// sort last without producing NaN (Infinity - Infinity).
 				rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
 				return rescored as any;
+			}
+			// Re-filter threshold queries on exact distances (over-fetched above without the HNSW limit).
+			if (isInt8Threshold) {
+				const thresholdValue = (searchCondition as any).value;
+				const rescored = (loaded as any[]).filter((e) => e !== SKIP && e && e.value);
+				for (const e of rescored)
+					e.distance = index.customIndex.exactDistance(searchCondition, e.value[attribute_name]);
+				return rescored.filter((e) =>
+					(comparator as any) === 'le' ? e.distance <= thresholdValue : e.distance < thresholdValue
+				) as any;
 			}
 			return loaded;
 		}
