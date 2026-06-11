@@ -99,6 +99,10 @@ export class DatabaseTransaction implements Transaction {
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
+	// Set when this transaction is applying data from a canonical source of truth (replication peer
+	// or external caching source); its commits retry transient conflicts without the request-path
+	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
+	declare sourceApply?: boolean;
 
 	getReadTxn(): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -362,7 +366,7 @@ export class DatabaseTransaction implements Transaction {
 									// permanently diverged (harper-pro#348). Such transactions retry without a cap; the source
 									// apply loop serializes commits (backpressure), so contention clears rather than
 									// compounding. Request-path transactions keep the MAX_RETRIES cap and surface a loud error.
-									const neverDropOnConflict = (this.#context as any)?.sourceApply;
+									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES && !neverDropOnConflict) {
 										throw new ServerError(
 											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`

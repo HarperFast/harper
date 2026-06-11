@@ -529,6 +529,12 @@ export function makeTable(options) {
 										txnInProgress.resolve();
 										try {
 											await txnInProgress.committed;
+										} catch (error) {
+											// Transient conflicts retry without limit and never reach here, so this is a
+											// non-retryable commit failure on the prior transaction. Log and continue (rather
+											// than rethrow) so the current beginTxn still starts a fresh transaction with
+											// correct boundaries instead of having its writes applied as standalone ones.
+											logger.error?.('source-applied transaction commit failed during apply', error);
 										} finally {
 											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
 											// next beginTxn (which would brick the apply loop).
@@ -4244,6 +4250,9 @@ export function makeTable(options) {
 				if (!nextTxn) {
 					// no next one, then add our database
 					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
+					// drop the canonical write when a secondary store hits a transient conflict.
+					transaction.next.sourceApply = transaction.sourceApply;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
