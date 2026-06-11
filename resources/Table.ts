@@ -495,13 +495,23 @@ export function makeTable(options) {
 									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
 									// outrun the commit/conflict-check window, and guarantees the sequence id never
 									// advances past an uncommitted write (which would diverge this node from its peers).
-									const committed = txnInProgress ? await txnInProgress.committed : undefined;
-									if (event.onCommit) {
-										// the onCommit callback can be async and carry associated work (e.g. blob transfer);
-										// wait for it too before recording the sequence id. Pass the commit resolution
-										// through, as callbacks may use the committed txn time.
-										await event.onCommit(committed);
+									let committed;
+									try {
+										committed = txnInProgress ? await txnInProgress.committed : undefined;
+										if (event.onCommit) {
+											// the onCommit callback can be async and carry associated work (e.g. blob
+											// transfer); wait for it too before recording the sequence id. Pass the commit
+											// resolution through, as callbacks may use the committed txn time.
+											await event.onCommit(committed);
+										}
+									} finally {
+										// Always clear the completed transaction so a later standalone write isn't appended
+										// to it (and lost), and a failed commit's rejected promise isn't re-awaited on the
+										// next beginTxn (which would brick the apply loop).
+										txnInProgress = undefined;
 									}
+									// Only reached when the commit succeeded; a failure propagates to the handler's catch
+									// and the sequence id is intentionally not advanced past the unapplied write.
 									if (updateRecordedSequenceId) updateRecordedSequenceId();
 									continue;
 								}
@@ -513,7 +523,13 @@ export function makeTable(options) {
 										// the prior commit to land before applying the next so the sequence id can't
 										// advance past an uncommitted write.
 										txnInProgress.resolve();
-										await txnInProgress.committed;
+										try {
+											await txnInProgress.committed;
+										} finally {
+											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
+											// next beginTxn (which would brick the apply loop).
+											txnInProgress = undefined;
+										}
 									} else {
 										// write in the current transaction if one is in progress
 										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));

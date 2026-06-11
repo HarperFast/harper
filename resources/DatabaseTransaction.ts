@@ -299,11 +299,12 @@ export class DatabaseTransaction implements Transaction {
 					const completions = [];
 					return commitResolution.then(
 						() => {
-							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'); fold its
-							// result into the commit completions so a rejection propagates instead of becoming a
-							// silent unhandled rejection.
+							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
+							// rejection via logging rather than letting it become a silent unhandled rejection — but
+							// don't fail the commit on it, the write is already durable.
 							const onCommitResult = (transaction as any).onCommit?.();
-							if (onCommitResult?.then) completions.push(onCommitResult);
+							if (onCommitResult?.then)
+								onCommitResult.catch((error) => harperLogger.warn?.('onCommit handler failed after commit', error));
 							if (this.next) {
 								completions.push(this.next.commit(options));
 							}
