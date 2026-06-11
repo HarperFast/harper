@@ -304,11 +304,15 @@ export class DatabaseTransaction implements Transaction {
 					return commitResolution.then(
 						() => {
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
-							// rejection via logging rather than letting it become a silent unhandled rejection — but
-							// don't fail the commit on it, the write is already durable.
-							const onCommitResult = (transaction as any).onCommit?.();
-							if (onCommitResult?.then)
-								onCommitResult.catch((error) => harperLogger.warn?.('onCommit handler failed after commit', error));
+							// rejection — or a synchronous throw — via logging rather than failing the commit, since
+							// the write is already durable.
+							try {
+								const onCommitResult = (transaction as any).onCommit?.();
+								if (onCommitResult?.then)
+									onCommitResult.catch((error) => harperLogger.warn?.('onCommit handler failed after commit', error));
+							} catch (error) {
+								harperLogger.warn?.('onCommit handler failed after commit', error);
+							}
 							if (this.next) {
 								completions.push(this.next.commit(options));
 							}
@@ -367,10 +371,19 @@ export class DatabaseTransaction implements Transaction {
 									// apply loop serializes commits (backpressure), so contention clears rather than
 									// compounding. Request-path transactions keep the MAX_RETRIES cap and surface a loud error.
 									const neverDropOnConflict = this.sourceApply;
-									if (this.retries > MAX_RETRIES && !neverDropOnConflict) {
-										throw new ServerError(
-											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
-										);
+									if (this.retries > MAX_RETRIES) {
+										if (!neverDropOnConflict) {
+											throw new ServerError(
+												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+											);
+										}
+										// Uncapped retry can otherwise stall silently (debug logging is off in production);
+										// surface periodic visibility into a stalled source-apply commit.
+										if (this.retries % MAX_RETRIES === 0) {
+											harperLogger.warn?.(
+												`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} retries; continuing to retry`
+											);
+										}
 									}
 									// start delaying, back off to try to space out transactions and avoid excessive conflicts
 									return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
