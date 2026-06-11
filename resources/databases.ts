@@ -993,6 +993,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	let primaryKey;
 	let primaryKeyAttribute;
 	let attributesDbi;
+	// Track whether the caller explicitly supplied schemaDefined; callers that omit it (cluster
+	// schema-replication in Table.ts, dataLoader.ts) are operating on already-live tables whose
+	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
+	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -1014,9 +1018,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// it table already exists, get the split segments setting
 		if (splitSegments == undefined) splitSegments = Table.splitSegments;
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
-		// Re-assert from the live declaration so a stale `false` on disk (replicated event,
-		// v4-era backfill) is corrected on every reload, not stuck across the existing-Table branch.
-		Table.schemaDefined = schemaDefined;
+		// Re-assert from the live declaration so a stale value on disk (replicated event,
+		// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
+		// callers that omit the flag (cluster schema-replication, data loader) don't flip a
+		// dynamic table to true via the default at the top of table().
+		if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
 		// Refresh class-level schema metadata to track docstring/directive changes across reloads.
 		Table.description = description;
 		Table.properties = properties;

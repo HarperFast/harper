@@ -67,14 +67,24 @@ suite('describe_all metadata upgrade phase 1: install component on first boot', 
 			probePath: '/SeoPageCache/',
 			restartTimeoutMs: 120_000,
 		});
+		// Create a dynamic table via the operations API (no attributes → schema_defined: false).
+		// Asserting this stays false through the reboot guards against the existing-Table branch
+		// flipping it to true via the schemaDefined default when omitting callers re-enter table().
+		await client
+			.req()
+			.send({ operation: 'create_table', database: 'dynamic', table: 'Loose', primary_key: 'id' })
+			.expect(200);
 		const body = await describeAll(client);
 		const pc = body.seo?.PageCache ?? body.data?.seo?.PageCache;
 		const lm = body.metadata?.LifecycleMeta ?? body.data?.metadata?.LifecycleMeta;
+		const loose = body.dynamic?.Loose ?? body.data?.dynamic?.Loose;
 		ok(pc, 'seo.PageCache must be in describe_all phase 1');
 		ok(lm, 'metadata.LifecycleMeta must be in describe_all phase 1');
+		ok(loose, 'dynamic.Loose must be in describe_all phase 1');
 		strictEqual(pc.schema_defined, true, 'PageCache.schema_defined should be true phase 1');
 		strictEqual(pc.expiration, '0s', 'PageCache.expiration should be "0s" phase 1');
 		strictEqual(lm.schema_defined, true, 'LifecycleMeta.schema_defined should be true phase 1');
+		strictEqual(loose.schema_defined, false, 'dynamic.Loose.schema_defined should be false phase 1');
 	});
 });
 
@@ -91,15 +101,18 @@ suite('describe_all metadata upgrade phase 2: reboot on same data dir, metadata 
 		} catch {}
 	});
 
-	test('phase 2 describe_all preserves schema_defined: true and expiration: "0s"', async () => {
+	test('phase 2 describe_all preserves schema_defined and expiration across reboot', async () => {
 		const client = createApiClient(ctx.harper);
 		const body = await describeAll(client);
 		const pc = body.seo?.PageCache ?? body.data?.seo?.PageCache;
 		const lm = body.metadata?.LifecycleMeta ?? body.data?.metadata?.LifecycleMeta;
+		const loose = body.dynamic?.Loose ?? body.data?.dynamic?.Loose;
 		ok(pc, 'seo.PageCache must be in describe_all phase 2');
 		ok(lm, 'metadata.LifecycleMeta must be in describe_all phase 2');
+		ok(loose, 'dynamic.Loose must be in describe_all phase 2');
 		strictEqual(pc.schema_defined, true, 'PageCache.schema_defined must remain true after restart');
 		strictEqual(pc.expiration, '0s', 'PageCache.expiration must remain "0s" after restart');
 		strictEqual(lm.schema_defined, true, 'LifecycleMeta.schema_defined must remain true after restart');
+		strictEqual(loose.schema_defined, false, 'dynamic.Loose.schema_defined must remain false after restart');
 	});
 });
