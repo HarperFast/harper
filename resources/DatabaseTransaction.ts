@@ -22,6 +22,9 @@ export const TRANSACTION_STATE = {
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
 const MAX_RETRIES = 40;
+// Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
+// cap (see the commit rejection handler), don't grow the delay unbounded.
+const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
 let confirmReplication;
 export function replicationConfirmation(callback) {
@@ -296,7 +299,11 @@ export class DatabaseTransaction implements Transaction {
 					const completions = [];
 					return commitResolution.then(
 						() => {
-							(transaction as any).onCommit?.();
+							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'); fold its
+							// result into the commit completions so a rejection propagates instead of becoming a
+							// silent unhandled rejection.
+							const onCommitResult = (transaction as any).onCommit?.();
+							if (onCommitResult?.then) completions.push(onCommitResult);
 							if (this.next) {
 								completions.push(this.next.commit(options));
 							}
@@ -348,13 +355,22 @@ export class DatabaseTransaction implements Transaction {
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
 								if (this.retries > 2) {
-									if (this.retries > MAX_RETRIES) {
+									// Transactions applying data from a canonical source of truth (replication peer or
+									// external caching source) must never drop a write on a transient conflict: there is no
+									// re-subscribe / sequence-id-resume path, so a dropped write would leave this node
+									// permanently diverged (harper-pro#348). Such transactions retry without a cap; the source
+									// apply loop serializes commits (backpressure), so contention clears rather than
+									// compounding. Request-path transactions keep the MAX_RETRIES cap and surface a loud error.
+									const neverDropOnConflict = (this.#context as any)?.sourceApply;
+									if (this.retries > MAX_RETRIES && !neverDropOnConflict) {
 										throw new ServerError(
 											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 										);
 									}
 									// start delaying, back off to try to space out transactions and avoid excessive conflicts
-									return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
+									return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
+										this.commit({ transaction })
+									);
 								}
 								return this.commit({ transaction }); // try again
 							} else throw error;

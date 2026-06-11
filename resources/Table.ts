@@ -436,6 +436,11 @@ export function makeTable(options) {
 									continue;
 								}
 								event.source = source;
+								// Writes applied here come from the canonical source of truth (a replication peer or an
+								// external caching source), so a transient write conflict must never drop the write —
+								// there is no re-subscribe / sequence-id-resume path to recover it. Mark the context so the
+								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
+								event.sourceApply = true;
 								if (event.type === 'end_txn') {
 									txnInProgress?.resolve();
 									let updateRecordedSequenceId: () => void;
@@ -486,18 +491,17 @@ export function makeTable(options) {
 											lastSequenceId = event.localTime;
 										}
 									}
+									// Backpressure: wait for the transaction's commit to land before recording the sequence
+									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
+									// outrun the commit/conflict-check window, and guarantees the sequence id never
+									// advances past an uncommitted write (which would diverge this node from its peers).
+									if (txnInProgress) await txnInProgress.committed;
 									if (event.onCommit) {
-										// if there was an onCommit callback, call that. This function can be async
-										// and if so, we want to delay the recording of the sequence id until it finished
-										// (as it can be used to indicate more associated actions, like blob transfer, are in flight)
-										const onCommitFinished = txnInProgress
-											? txnInProgress.committed.then(event.onCommit)
-											: event.onCommit();
-										if (updateRecordedSequenceId) {
-											if (onCommitFinished?.then) onCommitFinished.then(updateRecordedSequenceId);
-											else updateRecordedSequenceId();
-										}
-									} else if (updateRecordedSequenceId) updateRecordedSequenceId();
+										// the onCommit callback can be async and carry associated work (e.g. blob transfer);
+										// wait for it too before recording the sequence id.
+										await event.onCommit();
+									}
+									if (updateRecordedSequenceId) updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
@@ -570,8 +574,19 @@ export function makeTable(options) {
 								}
 
 								if (event.onCommit) {
-									if (commitResolution) commitResolution.then(event.onCommit);
-									else event.onCommit();
+									if (txnInProgress) {
+										// begin_txn: commitResolution stays pending until the matching end_txn, so it
+										// can't be awaited here; onCommit is awaited at end_txn once the commit lands.
+										if (commitResolution) commitResolution.then(event.onCommit);
+										else event.onCommit();
+									} else {
+										// standalone write: backpressure on the commit before pulling the next event.
+										if (commitResolution) await commitResolution;
+										await event.onCommit();
+									}
+								} else if (commitResolution && !txnInProgress) {
+									// standalone write with no onCommit: still backpressure on the commit.
+									await commitResolution;
 								}
 							} catch (error) {
 								logger.error?.('error in subscription handler', error);
