@@ -88,31 +88,34 @@ suite('describe_all metadata upgrade phase 1: install component on first boot', 
 	});
 });
 
-suite('describe_all metadata upgrade phase 2: reboot on same data dir, metadata must survive', (ctx: ContextWithHarper) => {
-	before(async () => {
-		ctx.harper = { dataRootDir: PINNED_DATA_DIR } as any;
-		await startHarper(ctx, { config: { threads: { count: 2 } }, env: {} } as any);
-	});
+suite(
+	'describe_all metadata upgrade phase 2: reboot on same data dir, metadata must survive',
+	(ctx: ContextWithHarper) => {
+		before(async () => {
+			ctx.harper = { dataRootDir: PINNED_DATA_DIR } as any;
+			await startHarper(ctx, { config: { threads: { count: 2 } }, env: {} } as any);
+		});
 
-	after(async () => {
-		await teardownHarper(ctx);
-		try {
-			rmSync(PINNED_DATA_DIR, { recursive: true, force: true });
-		} catch {}
-	});
+		after(async () => {
+			await teardownHarper(ctx);
+			try {
+				rmSync(PINNED_DATA_DIR, { recursive: true, force: true });
+			} catch {}
+		});
 
-	test('phase 2 describe_all preserves schema_defined and expiration across reboot', async () => {
-		const client = createApiClient(ctx.harper);
-		const body = await describeAll(client);
-		const pc = body.seo?.PageCache ?? body.data?.seo?.PageCache;
-		const lm = body.metadata?.LifecycleMeta ?? body.data?.metadata?.LifecycleMeta;
-		const loose = body.dynamic?.Loose ?? body.data?.dynamic?.Loose;
-		ok(pc, 'seo.PageCache must be in describe_all phase 2');
-		ok(lm, 'metadata.LifecycleMeta must be in describe_all phase 2');
-		ok(loose, 'dynamic.Loose must be in describe_all phase 2');
-		strictEqual(pc.schema_defined, true, 'PageCache.schema_defined must remain true after restart');
-		strictEqual(pc.expiration, '0s', 'PageCache.expiration must remain "0s" after restart');
-		strictEqual(lm.schema_defined, true, 'LifecycleMeta.schema_defined must remain true after restart');
-		strictEqual(loose.schema_defined, false, 'dynamic.Loose.schema_defined must remain false after restart');
-	});
-});
+		test('phase 2 describe_all preserves schema_defined and expiration across reboot', async () => {
+			const client = createApiClient(ctx.harper);
+			const body = await describeAll(client);
+			const pc = body.seo?.PageCache ?? body.data?.seo?.PageCache;
+			const lm = body.metadata?.LifecycleMeta ?? body.data?.metadata?.LifecycleMeta;
+			const loose = body.dynamic?.Loose ?? body.data?.dynamic?.Loose;
+			ok(pc, 'seo.PageCache must be in describe_all phase 2');
+			ok(lm, 'metadata.LifecycleMeta must be in describe_all phase 2');
+			ok(loose, 'dynamic.Loose must be in describe_all phase 2');
+			strictEqual(pc.schema_defined, true, 'PageCache.schema_defined must remain true after restart');
+			strictEqual(pc.expiration, '0s', 'PageCache.expiration must remain "0s" after restart');
+			strictEqual(lm.schema_defined, true, 'LifecycleMeta.schema_defined must remain true after restart');
+			strictEqual(loose.schema_defined, false, 'dynamic.Loose.schema_defined must remain false after restart');
+		});
+	}
+);
