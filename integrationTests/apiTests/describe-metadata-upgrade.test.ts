@@ -40,7 +40,7 @@ graphqlSchema:
   files: '*.graphql'
 `;
 
-const PINNED_DATA_DIR = mkdtempSync(join(tmpdir(), 'fix-1132-'));
+const PINNED_DATA_DIR = mkdtempSync(join(tmpdir(), 'describe-metadata-upgrade-'));
 
 async function describeAll(client: ReturnType<typeof createApiClient>) {
 	const res = await client.req().send({ operation: 'describe_all' });
@@ -48,7 +48,7 @@ async function describeAll(client: ReturnType<typeof createApiClient>) {
 	return res.body;
 }
 
-suite('INVESTIGATION-1132 fix phase 1: install component on first boot', (ctx: ContextWithHarper) => {
+suite('describe_all metadata upgrade phase 1: install component on first boot', (ctx: ContextWithHarper) => {
 	before(async () => {
 		ctx.harper = { dataRootDir: PINNED_DATA_DIR } as any;
 		await startHarper(ctx, { config: { threads: { count: 2 } }, env: {} } as any);
@@ -62,7 +62,7 @@ suite('INVESTIGATION-1132 fix phase 1: install component on first boot', (ctx: C
 	test('install component and capture first describe_all', async () => {
 		const client = createApiClient(ctx.harper);
 		await installAppComponent(client, {
-			project: 'fix1132',
+			project: 'describemetadataupgrade',
 			files: { 'schema.graphql': SCHEMA, 'config.yaml': CONFIG },
 			probePath: '/SeoPageCache/',
 			restartTimeoutMs: 120_000,
@@ -78,7 +78,7 @@ suite('INVESTIGATION-1132 fix phase 1: install component on first boot', (ctx: C
 	});
 });
 
-suite('INVESTIGATION-1132 fix phase 2: reboot on same data dir, metadata must survive', (ctx: ContextWithHarper) => {
+suite('describe_all metadata upgrade phase 2: reboot on same data dir, metadata must survive', (ctx: ContextWithHarper) => {
 	before(async () => {
 		ctx.harper = { dataRootDir: PINNED_DATA_DIR } as any;
 		await startHarper(ctx, { config: { threads: { count: 2 } }, env: {} } as any);
