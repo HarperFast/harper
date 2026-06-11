@@ -387,18 +387,7 @@ export function searchByIndex(
 		return results;
 	} else if (index && !skipIndex) {
 		if (index.customIndex) {
-			// For int8 threshold (lt/le) queries, suppress HNSW's approximate distance filter so we
-			// can over-fetch and re-filter on exact full-precision distances after loading records.
-			const isInt8Threshold =
-				index.customIndex.int8 &&
-				index.customIndex.exactDistance &&
-				((comparator as any) === 'lt' || (comparator as any) === 'le') &&
-				(searchCondition as any).target &&
-				typeof attribute_name === 'string';
-			const hnswCondition = isInt8Threshold
-				? { ...(searchCondition as any), comparator: 'sort', value: undefined }
-				: searchCondition;
-			const loaded = index.customIndex.search(hnswCondition, context).map((entry) => {
+			const loaded = index.customIndex.search(searchCondition, context).map((entry) => {
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
