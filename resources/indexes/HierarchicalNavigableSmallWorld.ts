@@ -7,17 +7,17 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 
 const logger = loggerWithTag('HNSW');
 
-// Optional int8 scalar quantization of stored vectors, enabled per-index via the
-// schema directive: `@indexed(type: "HNSW", quantization: "int8")`. The stored
-// graph node holds the vector as a compact int8 `bin` plus a per-vector `scale`,
-// roughly a 5x size reduction over the float32 array and ~10x cheaper to decode
-// (a single typed-array view instead of decoding 768 individually-tagged floats
-// into a boxed Array). The full-precision vector still lives on the record, so
-// only graph navigation is approximate; quantization recall loss is ~1%.
+// int8 scalar quantization of stored graph nodes is ON by default. Each node holds the
+// vector as a compact int8 `bin` plus a per-vector `scale`, roughly a 5x size reduction
+// over float32 and ~10x cheaper to decode (a single typed-array view instead of decoding
+// 768 individually-tagged floats into a boxed Array). The full-precision vector still lives
+// on the record, so only graph navigation is approximate:
+//   - sort (nearest-neighbor) queries: reranked on exact distances after loading records (~0% recall loss)
+//   - lt/le threshold queries: over-fetched and re-filtered on exact distances after loading records
+// Opt out per-index with `@indexed(type: "HNSW", quantization: "none")`.
 //
-// Decode auto-detects the stored format (number[] = float, bin = int8), so an
-// int8-enabled index transparently reads legacy float nodes written before the
-// option was set.
+// Decode auto-detects the stored format (number[] = float, bin = int8), so indexes written
+// before this default change (float nodes) continue to work transparently.
 
 /** Symmetric int8 scalar-quantize a float vector. scale = max|component| / 127. */
 function quantizeInt8(vector: number[]): { bytes: Buffer; scale: number } {
@@ -154,7 +154,7 @@ export class HierarchicalNavigableSmallWorld {
 
 	idIncrementer: BigInt64Array | undefined;
 	distance: (a: number[], b: number[]) => number;
-	int8 = false; // store vectors as int8-quantized bins (set via the `quantization` index option)
+	int8 = true; // store vectors as int8-quantized bins by default; opt out with `quantization: "none"`
 	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
 	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
 	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
@@ -167,7 +167,7 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
-		this.int8 = options?.quantization === 'int8';
+		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured search ef (or efConstruction, which seeds it); otherwise auto-scale.
 		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
 		this.distance =

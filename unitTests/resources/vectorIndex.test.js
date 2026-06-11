@@ -309,6 +309,18 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			results
 		);
 	}
+	// Graph nodes may store vectors as Int8Array (int8 default) or number[] (float opt-out).
+	// Dequantize to a plain number[] so distance functions (which guard on Array.isArray) work.
+	function toFloatVec(node) {
+		if (!node || !node.vector) return null;
+		if (Array.isArray(node.vector)) return node.vector;
+		const buf = node.vector;
+		const i8 = new Int8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+		const scale = node.scale || 1;
+		const out = new Array(i8.length);
+		for (let i = 0; i < i8.length; i++) out[i] = i8[i] * scale;
+		return out;
+	}
 	function verifyIntegrity() {
 		// now verify integrity and proper distance/distancing across levels
 		let invertedSimiliarities = 0;
@@ -334,7 +346,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 						console.log('asymmetry in the graph', neighborNode?.[l], 'does not have key', key);
 						asymmetries++;
 					}
-					let distance = neighborNode ? testInstance.distance(value.vector, neighborNode.vector) : 0;
+					let distance = neighborNode ? testInstance.distance(toFloatVec(value), toFloatVec(neighborNode)) : 0;
 					totalDistance += distance;
 				}
 				assert(asymmetries < 5);
