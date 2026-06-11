@@ -4,6 +4,7 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { SKIP } from '@harperfast/extended-iterable';
 
 const logger = loggerWithTag('HNSW');
 
@@ -727,6 +728,28 @@ export class HierarchicalNavigableSmallWorld {
 						? cosineDistance
 						: this.distance;
 		return fn(searchCondition.target, vec);
+	}
+	/**
+	 * Post-load rescoring hook called by search.ts after full records have been loaded. For a
+	 * quantized (int8) nearest-neighbor query, recomputes exact distances from full-precision vectors
+	 * and re-sorts. Returns null when rescoring doesn't apply (non-quantized index, threshold query,
+	 * etc.) so the caller can use the loaded iterable as-is.
+	 */
+	rescoreResults(
+		loaded: any[],
+		searchCondition: { target: number[]; distance?: string },
+		comparator: string,
+		attributeName: string,
+	): any[] | null {
+		if (!this.int8 || comparator !== 'sort' || !searchCondition.target || typeof attributeName !== 'string')
+			return null;
+		const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
+		for (const e of rescored)
+			e.distance = this.exactDistance(searchCondition, e.value[attributeName]);
+		// comparison-based (not subtraction) so Infinity sentinels for missing vectors
+		// sort last without producing NaN (Infinity - Infinity).
+		rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
+		return rescored;
 	}
 	private checkSymmetry(id, node, options) {
 		if (!node) return;
