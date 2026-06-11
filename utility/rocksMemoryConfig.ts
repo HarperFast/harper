@@ -30,15 +30,18 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 		configuredAllowStall,
 		availableMemory,
 	} = input;
-	// Block cache: an explicit positive number wins, otherwise 25% of available memory.
-	const blockCacheSize =
+	// Block cache: an explicit positive number wins, otherwise 25% of available memory. Floored
+	// because RocksDB expects integer byte counts and the percentage math produces fractions.
+	const blockCacheSize = Math.floor(
 		typeof configuredBlockCacheSize === 'number' && configuredBlockCacheSize > 0
 			? configuredBlockCacheSize
-			: availableMemory * 0.25;
+			: availableMemory * 0.25
+	);
 	// WriteBufferManager size: an explicit number is honored (0 disables); any other value
-	// (unset/misconfigured) defaults to 1/3 of the block cache.
-	const writeBufferManagerSize =
-		typeof configuredWriteBufferManagerSize === 'number' ? configuredWriteBufferManagerSize : blockCacheSize / 3;
+	// (unset/misconfigured) defaults to 1/3 of the block cache. Floored for the same reason.
+	const writeBufferManagerSize = Math.floor(
+		typeof configuredWriteBufferManagerSize === 'number' ? configuredWriteBufferManagerSize : blockCacheSize / 3
+	);
 	const config: RocksMemoryConfig = { blockCacheSize };
 	// costToCache and allowStall only matter when the WBM is enabled. allowStall defaults to true
 	// so the buffer applies write backpressure rather than letting memtables grow unbounded, which

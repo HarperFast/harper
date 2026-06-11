@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('assert');
+const assert = require('node:assert/strict');
 const { resolveRocksMemoryConfig } = require('#src/utility/rocksMemoryConfig');
 
 const GB = 1024 * 1024 * 1024;
@@ -36,7 +36,7 @@ describe('resolveRocksMemoryConfig', function () {
 	describe('WriteBufferManager size', function () {
 		it('defaults to 1/3 of the resolved block cache when unset', function () {
 			const config = resolve({});
-			assert.strictEqual(config.writeBufferManagerSize, (2 * GB) / 3);
+			assert.strictEqual(config.writeBufferManagerSize, Math.floor((2 * GB) / 3));
 		});
 
 		it('defaults relative to an explicit block cache size', function () {
@@ -59,7 +59,30 @@ describe('resolveRocksMemoryConfig', function () {
 		});
 
 		it('falls back to the default for non-number values', function () {
-			assert.strictEqual(resolve({ configuredWriteBufferManagerSize: 'lots' }).writeBufferManagerSize, (2 * GB) / 3);
+			assert.strictEqual(
+				resolve({ configuredWriteBufferManagerSize: 'lots' }).writeBufferManagerSize,
+				Math.floor((2 * GB) / 3)
+			);
+		});
+	});
+
+	describe('integer flooring', function () {
+		it('floors a fractional block cache default', function () {
+			// 10 * 0.25 = 2.5 -> 2
+			assert.strictEqual(resolve({ availableMemory: 10 }).blockCacheSize, 2);
+		});
+
+		it('floors a fractional WriteBufferManager default', function () {
+			// floor(10 / 3) = 3
+			const config = resolve({ configuredBlockCacheSize: 10 });
+			assert.strictEqual(config.writeBufferManagerSize, 3);
+		});
+
+		it('produces integer sizes for a realistic constrained memory limit', function () {
+			// 6 GB cgroup limit: block cache 1.5 GB, WBM 1.5 GB / 3
+			const config = resolve({ availableMemory: 6 * GB });
+			assert.ok(Number.isInteger(config.blockCacheSize));
+			assert.ok(Number.isInteger(config.writeBufferManagerSize));
 		});
 	});
 
