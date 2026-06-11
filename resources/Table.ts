@@ -442,7 +442,11 @@ export function makeTable(options) {
 								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
 								event.sourceApply = true;
 								if (event.type === 'end_txn') {
-									txnInProgress?.resolve();
+									// Capture the in-progress transaction in a stable local: the loop variable is reset
+									// once this transaction completes (below), but the seq-id closure and the commit await
+									// still need to reference it afterward.
+									const committingTxn = txnInProgress;
+									committingTxn?.resolve();
 									let updateRecordedSequenceId: () => void;
 									if (event.localTime && lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
@@ -469,7 +473,7 @@ export function makeTable(options) {
 														nodeStates.push(nodeState);
 													}
 													nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-													if (nodeId === txnInProgress?.nodeId) {
+													if (nodeId === committingTxn?.nodeId) {
 														nodeState.lastTxnTime = event.timestamp;
 													}
 												}
@@ -497,7 +501,7 @@ export function makeTable(options) {
 									// advances past an uncommitted write (which would diverge this node from its peers).
 									let committed;
 									try {
-										committed = txnInProgress ? await txnInProgress.committed : undefined;
+										committed = committingTxn ? await committingTxn.committed : undefined;
 										if (event.onCommit) {
 											// the onCommit callback can be async and carry associated work (e.g. blob
 											// transfer); wait for it too before recording the sequence id. Pass the commit
