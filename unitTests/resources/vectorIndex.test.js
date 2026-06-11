@@ -1068,7 +1068,6 @@ describeUnlessLmdb('HNSW data-integrity fixes (5.1 GA)', () => {
 describeUnlessLmdb('HNSW int8 recall — unnormalized euclidean (high dynamic range)', () => {
 	const DIMS = 16;
 	const N = 300;
-	const testInstance = new HierarchicalNavigableSmallWorld();
 	let TFloat, TInt8;
 	const allFloat = [];
 
@@ -1092,7 +1091,7 @@ describeUnlessLmdb('HNSW int8 recall — unnormalized euclidean (high dynamic ra
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
 			],
 		});
 		TInt8 = table({
