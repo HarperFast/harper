@@ -4,6 +4,7 @@ const assert = require('node:assert');
 // the full Resource/RocksDB module graph (which has a circular require chain).
 const {
 	classifyAuditEntryForReplay,
+	isUndecodableValidatedWrite,
 	RECORD_BEARING_FLAGS,
 	endIteratorOnCorruptFrame,
 } = require('#src/resources/replayLogsGuards');
@@ -61,6 +62,42 @@ describe('classifyAuditEntryForReplay', () => {
 		// Lock the mask: the audit writer in auditStore.ts uses these exact bit values.
 		// Silent drift here would re-introduce the crash.
 		assert.strictEqual(RECORD_BEARING_FLAGS, HAS_RECORD | HAS_PARTIAL_RECORD);
+	});
+});
+
+describe('isUndecodableValidatedWrite', () => {
+	// Regression for harper#1255: RecordEncoder.decode returns `null` (not `undefined`) on a
+	// failed value decode (e.g. structure-dictionary divergence), so classify() — which only
+	// catches `undefined` — lets it through. For put/patch the replay then calls save() ->
+	// validate(), which crashes on the null body ("Cannot read properties of undefined
+	// (reading 'id')"). This guard skips exactly those, and ONLY those.
+	it('skips put/patch whose body failed to decode (null or undefined)', () => {
+		assert.strictEqual(isUndecodableValidatedWrite('put', null), true);
+		assert.strictEqual(isUndecodableValidatedWrite('put', undefined), true);
+		assert.strictEqual(isUndecodableValidatedWrite('patch', null), true);
+		assert.strictEqual(isUndecodableValidatedWrite('patch', undefined), true);
+	});
+
+	it('does not skip put/patch with a decoded body, including falsy primitives', () => {
+		assert.strictEqual(isUndecodableValidatedWrite('put', { id: 1 }), false);
+		assert.strictEqual(isUndecodableValidatedWrite('patch', 0), false);
+		assert.strictEqual(isUndecodableValidatedWrite('put', ''), false);
+		assert.strictEqual(isUndecodableValidatedWrite('patch', false), false);
+	});
+
+	it('never skips invalidate on a null body — a no-index table stores a legitimate null partial record', () => {
+		// invalidate carries HAS_PARTIAL_RECORD but never reaches validate(); skipping it would
+		// leave the record un-invalidated/stale after recovery.
+		assert.strictEqual(isUndecodableValidatedWrite('invalidate', null), false);
+		assert.strictEqual(isUndecodableValidatedWrite('invalidate', undefined), false);
+	});
+
+	it('does not skip other record-bearing / non-validated actions on a null body', () => {
+		// Only put/patch run validate(); message/relocate/delete must pass through untouched.
+		assert.strictEqual(isUndecodableValidatedWrite('message', null), false);
+		assert.strictEqual(isUndecodableValidatedWrite('relocate', null), false);
+		assert.strictEqual(isUndecodableValidatedWrite('delete', null), false);
+		assert.strictEqual(isUndecodableValidatedWrite(undefined, null), false);
 	});
 });
 

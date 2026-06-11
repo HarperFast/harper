@@ -42,6 +42,25 @@ export function classifyAuditEntryForReplay(
 }
 
 /**
+ * Whether an audit entry is a validated write (`put`/`patch`) whose record body failed to
+ * decode, and so must be skipped during replay.
+ *
+ * `RecordEncoder.decode` returns `null` (not `undefined`, and it does not throw) when a value
+ * fails to decode — e.g. structure-dictionary divergence, which surfaces as msgpackr's
+ * "Data read, but end of buffer not reached". `classifyAuditEntryForReplay` only catches a
+ * `undefined` body, so a `null` slips through; for `put`/`patch` the replay path then calls
+ * `save()` → `validate()`, which dereferences the record and crashes on the missing body.
+ *
+ * This is deliberately scoped to `put`/`patch` (the only replay actions that run `validate()`).
+ * Other record-bearing actions must NOT be skipped on a `null` body — notably `invalidate`,
+ * which legitimately stores a `null` partial record on a table with no index fields and never
+ * reaches `validate()`. See harper#1255.
+ */
+export function isUndecodableValidatedWrite(type: string | undefined, record: unknown): boolean {
+	return record == null && (type === 'put' || type === 'patch');
+}
+
+/**
  * Wraps a transaction-log query iterator so a corrupt/torn frame ends that log's iteration
  * cleanly instead of escaping as an uncaughtException. rocksdb-js throws a bounded RangeError
  * when an entry's framing is broken; framing loss means the next entry can't be located, so the

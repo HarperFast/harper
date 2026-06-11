@@ -6,7 +6,7 @@ import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';
 import { RequestTarget } from './RequestTarget.ts';
-import { classifyAuditEntryForReplay } from './replayLogsGuards.ts';
+import { classifyAuditEntryForReplay, isUndecodableValidatedWrite } from './replayLogsGuards.ts';
 import { purgeAgedLogs } from './auditStore.ts';
 
 let warnedReplayHappening = false;
@@ -99,7 +99,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					skipped++;
 					continue;
 				}
-				if (classifyAuditEntryForReplay(extendedType, tableId, record !== undefined) === 'missing-record') {
+				if (
+					classifyAuditEntryForReplay(extendedType, tableId, record !== undefined) === 'missing-record' ||
+					isUndecodableValidatedWrite(type, record)
+				) {
 					skipped++;
 					continue;
 				}
