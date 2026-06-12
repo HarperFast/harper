@@ -40,3 +40,50 @@ export function classifyAuditEntryForReplay(
 	if ((action & RECORD_BEARING_FLAGS) !== 0 && !hasRecord) return 'missing-record';
 	return null;
 }
+
+// A node that crashed unclean replays its unflushed audit backlog on boot. When that backlog is
+// dominated by entries that can't be written — undecodable values (the #1163 structure-dictionary
+// divergence), corrupt headers, or entries for a dropped table — every iteration makes no forward
+// progress. A large enough backlog then grinds the main thread for minutes with zero progress,
+// blocking startup entirely (harper#1266). These bounds let replay give up on a run that is making
+// no progress so boot can proceed; the operator then sheds/relocates the offending peer log (or
+// re-clones). They are deliberately conservative: a healthy replay produces writes, which reset
+// the progress tracking, so neither bound can trip on it.
+
+// Max consecutive no-progress entries (since the last successful write) before the replay is
+// treated as stalled. ~100k contiguous unwritable entries is unambiguously degenerate and caps the
+// wasted grind well below the multi-minute hangs observed in prod.
+export const REPLAY_NO_PROGRESS_COUNT_LIMIT = 100_000;
+
+// Max wall-clock time (ms) since the last successful write before the replay is treated as stalled.
+// Belt-and-suspenders for the count bound: if individual entries are slow enough that fewer than the
+// count limit still burns minutes, this still bounds the hang.
+export const REPLAY_NO_PROGRESS_TIME_LIMIT_MS = 60_000;
+
+// The time bound only applies once a substantial no-progress run has built up. Without this floor a
+// single skipped entry followed by an unrelated latency spike (a GC pause, disk throttling, one
+// slow write) would trip the time bound and abort an otherwise-healthy replay; requiring a real run
+// of no-progress entries keeps the time bound a signal of a genuine grind, not a transient stall.
+export const REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR = 1_000;
+
+/**
+ * Whether boot replay should abort because it is making no forward progress — a backlog of
+ * unwritable entries (undecodable/corrupt, or for a dropped table) that produces no writes
+ * (harper#1266). Returns `true` once the contiguous run of no-progress entries since the last
+ * successful write crosses the count bound, or once it has both built up past the time-skip floor
+ * AND burned the time bound. All inputs are measured since the last write, so a productive replay
+ * (which keeps resetting them) never trips this; only a genuinely stalled, write-free grind does.
+ *
+ * @param noProgressRun   consecutive entries processed without a successful write
+ * @param msSinceProgress wall-clock ms elapsed since the last successful write
+ */
+export function shouldAbortStalledReplay(
+	noProgressRun: number,
+	msSinceProgress: number,
+	countLimit = REPLAY_NO_PROGRESS_COUNT_LIMIT,
+	timeLimitMs = REPLAY_NO_PROGRESS_TIME_LIMIT_MS,
+	timeSkipFloor = REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR
+): boolean {
+	if (noProgressRun >= countLimit) return true;
+	return noProgressRun >= timeSkipFloor && msSinceProgress >= timeLimitMs;
+}

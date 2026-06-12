@@ -6,7 +6,7 @@ import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';
 import { RequestTarget } from './RequestTarget.ts';
-import { classifyAuditEntryForReplay } from './replayLogsGuards.ts';
+import { classifyAuditEntryForReplay, shouldAbortStalledReplay } from './replayLogsGuards.ts';
 import { purgeAgedLogs } from './auditStore.ts';
 
 let warnedReplayHappening = false;
@@ -46,8 +46,21 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let lastTimestamp = 0;
 		let writes = 0;
 		let skipped = 0;
+		// Track forward progress so a backlog of unwritable entries can't grind the boot thread
+		// forever (harper#1266). `noProgressRun` counts every entry processed without a successful
+		// write since the last one — undecodable/corrupt skips AND entries for a dropped table — and
+		// is reset to 0 the moment a write succeeds, so the stall bound only fires on a genuinely
+		// write-free run.
+		let noProgressRun = 0;
+		let lastProgressTime = Date.now();
 		const txnLog: RocksTransactionLogStore = rootStore.auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true })) {
+			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, Date.now() - lastProgressTime)) {
+				logger.fatal(
+					`Aborting transaction-log replay in ${rootStore.databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table. Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
+				);
+				break;
+			}
 			const {
 				type,
 				tableId,
@@ -63,10 +76,17 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 			try {
 				if (classifyAuditEntryForReplay(extendedType, tableId, true) === 'corrupt-header') {
 					skipped++;
+					noProgressRun++;
 					continue;
 				}
 				const Table = tableById.get(tableId);
-				if (!Table) continue;
+				if (!Table) {
+					// Entry for a table this node no longer has (dropped/foreign). Not an
+					// unrecoverable skip, but still a no-progress entry — a large backlog of them
+					// must trip the stall bound rather than grind the boot thread.
+					noProgressRun++;
+					continue;
+				}
 				const context: Context = { nodeId, alreadyLogged: true, version, expiresAt, user: { name: username } };
 				const { primaryStore } = Table;
 				const target = new RequestTarget();
@@ -88,10 +108,12 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					// (millions of these were observed in prod). The total skip count is logged
 					// once at the end of replay.
 					skipped++;
+					noProgressRun++;
 					continue;
 				}
 				if (classifyAuditEntryForReplay(extendedType, tableId, record !== undefined) === 'missing-record') {
 					skipped++;
+					noProgressRun++;
 					continue;
 				}
 				if (lastTimestamp !== version) {
@@ -166,6 +188,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 						primaryStore.decoder.structure = updatedStructures;
 					}
 				}
+				// Forward progress: a write was staged successfully, so reset the no-progress
+				// trackers. Doing this AFTER the switch (not before) means a slow or throwing
+				// write is neither counted as progress nor charged to the stall bound (harper#1266).
+				noProgressRun = 0;
+				lastProgressTime = Date.now();
 			} catch (err) {
 				logger.error(`Error writing from replay of log`, err, {
 					version,
