@@ -2225,7 +2225,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	// checkJobCompleted shim — handles both success and expected-error outcomes.
 	// Returns the raw job message (may be string or object) for caller assertions.
 	async function checkJobCompleted(jobId, expectedErrorMsg, expectedCompleteMsg) {
-		const jobResp = await awaitJob(client, jobId, 60);
+		const jobResp = await awaitJob(client, jobId, isBunRuntime ? 120 : 60);
 		const job = jobResp.body[0];
 		assert.ok(job, `No job found in response: ${jobResp.text}`);
 		if (expectedErrorMsg) {
