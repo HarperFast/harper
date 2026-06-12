@@ -252,5 +252,42 @@ suite(
 				widgetsCF.close();
 			}
 		});
+
+		// Regression test for harper#1260: before the fix, the __dbis__ CF encoder
+		// minted own structure IDs (starting at 0x40) that were never persisted on
+		// restart → initStores crash-looped with "Data read, but end of buffer not
+		// reached 64". Verify that a cold restart after migration decodes all records.
+		test('cold restart after LMDB→RocksDB migration reads tables and records', async () => {
+			await startHarper(ctx, { config: {}, env: {} });
+
+			const testTableResponse = await sendOperation(ctx.harper, {
+				operation: 'search_by_conditions',
+				table: 'test',
+				conditions: [{ attribute: 'id', comparator: 'greater_than', value: 'id-4' }],
+			});
+			ok(testTableResponse.length > 4, 'test table must have records after cold restart post-migration');
+
+			for (const expected of widgets) {
+				const rows = await sendOperation(ctx.harper, {
+					operation: 'search_by_conditions',
+					table: 'widgets',
+					conditions: [{ attribute: 'id', comparator: 'equals', value: expected.id }],
+				});
+				ok(rows.length === 1, `expected exactly 1 row for ${expected.id} after cold restart, got ${rows.length}`);
+				const actual = rows[0];
+				deepStrictEqual(
+					{
+						id: actual.id,
+						name: actual.name,
+						category: actual.category,
+						price: actual.price,
+						inStock: actual.inStock,
+						tags: actual.tags,
+					},
+					expected,
+					`record ${expected.id} did not survive cold restart post-migration`
+				);
+			}
+		});
 	}
 );
