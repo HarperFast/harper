@@ -16,6 +16,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as globalSchema from '../utility/globalSchema.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import * as userSchema from '../security/user.ts';
+import { authentication } from '../security/auth.ts';
 import { server as serverRegistration, type ServerOptions } from '../server/Server.ts';
 import {
 	authHandler,
@@ -74,6 +75,17 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
 			serverRegistration.http(server.server, options);
+			// The operations API runs only on the main thread, where auth's worker-only
+			// handleApplication never registers the authentication middleware. Register it here
+			// (after the node server, so its port already exists) so operations requests get
+			// `request.login`/`session`/`user` set up — without it the `login` operation that
+			// Studio uses to bootstrap a new instance fails with "No session for login".
+			// Register per port: `http()` tags each responder entry with `options.port || port`,
+			// so passing both ports in one call would mis-tag the secure entry with the plain
+			// port and leave the secure listener's chain without authentication.
+			if (options.port) serverRegistration.http(authentication, { port: options.port });
+			if (options.securePort) serverRegistration.http(authentication, { securePort: options.securePort });
+			if (!options.port && !options.securePort) serverRegistration.http(authentication, { port: 'all' });
 			// On Bun, register the Fastify instance so requests can be delegated via inject()
 			if (typeof globalThis.Bun !== 'undefined') {
 				const port = options.port || options.securePort || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
