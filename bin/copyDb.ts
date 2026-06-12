@@ -396,7 +396,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	});
 
 	const STRUCTURES_KEY = Symbol.for('structures');
-	const copyStructures = (sourceDbi, storeName: string, extraTarget?: any) => {
+	const copyStructures = (sourceDbi, storeName: string, extraTarget?: RocksDatabase) => {
 		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
 		if (buffer) {
 			const binaryBuffer = asBinary(buffer);
