@@ -167,7 +167,7 @@
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^9.1.3",
 		"@harperfast/extended-iterable": "^1.0.1",
-		"@harperfast/rocksdb-js": "^2.0.0",
+		"@harperfast/rocksdb-js": "^2.1.0",
 		"@turf/area": "6.5.0",
 		"@turf/boolean-contains": "6.5.0",
 		"@turf/boolean-disjoint": "6.5.0",
