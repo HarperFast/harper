@@ -80,12 +80,17 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 			// (after the node server, so its port already exists) so operations requests get
 			// `request.login`/`session`/`user` set up — without it the `login` operation that
 			// Studio uses to bootstrap a new instance fails with "No session for login".
-			// Register per port: `http()` tags each responder entry with `options.port || port`,
-			// so passing both ports in one call would mis-tag the secure entry with the plain
-			// port and leave the secure listener's chain without authentication.
-			if (options.port) serverRegistration.http(authentication, { port: options.port });
-			if (options.securePort) serverRegistration.http(authentication, { securePort: options.securePort });
-			if (!options.port && !options.securePort) serverRegistration.http(authentication, { port: 'all' });
+			// Node only: on Bun the ops API is served by delegating to Fastify via inject(), and
+			// auth is applied through fastifyAuth's Bun shim (there is no `_nodeRequest` for the
+			// auth middleware to attach the resolved user to). Register per port because `http()`
+			// tags each responder entry with `options.port || port`, so passing both ports in one
+			// call would mis-tag the secure entry with the plain port and leave the secure
+			// listener's chain without authentication.
+			if (typeof globalThis.Bun === 'undefined') {
+				if (options.port) serverRegistration.http(authentication, { port: options.port });
+				if (options.securePort) serverRegistration.http(authentication, { securePort: options.securePort });
+				if (!options.port && !options.securePort) serverRegistration.http(authentication, { port: 'all' });
+			}
 			// On Bun, register the Fastify instance so requests can be delegated via inject()
 			if (typeof globalThis.Bun !== 'undefined') {
 				const port = options.port || options.securePort || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);

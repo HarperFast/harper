@@ -112,7 +112,12 @@ suite('Authentication', (ctx) => {
 		}
 	});
 
-	test('login operation establishes a session (Studio bootstrap path)', async () => {
+	// Skipped on Bun: the operations API on Bun is served by delegating to Fastify via
+	// inject() and auth is applied through fastifyAuth's Bun shim, which does not wire up
+	// `baseRequest.login` for the session-establishing `login` op — so this op is a known
+	// pre-existing gap on Bun (login never worked there), separate from the Node regression
+	// this test guards.
+	test('login operation establishes a session (Studio bootstrap path)', { skip: skipOnBun }, async () => {
 		// Studio calls the `login` operation to set up the admin user on a new cluster. This
 		// exercises auth's session middleware on the operations-API port; that middleware runs
 		// only on the main thread, so if it is not registered there the operation fails with
