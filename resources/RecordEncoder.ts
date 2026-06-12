@@ -119,10 +119,19 @@ export class RecordEncoder extends StructonEncoder {
 	name: string;
 	constructor(options) {
 		options.useBigIntExtension = true;
-		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
-		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
-		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
-		options.maxOwnStructures ??= 256;
+		// Bound the per-encoder structure dictionary. It is append-only and pinned on the long-lived
+		// primary store, so a wide/sparse schema (whose records vary by per-field value width) can grow
+		// it unbounded and exhaust memory. Caller-overridable; default caps it.
+		//
+		// Must stay <= 32: with msgpackr's default maxSharedStructures (32), maxOwnStructures + 32 > 64
+		// flips on the two-byte record-id encoding, which mis-serializes over-cap "own" structures when a
+		// shared-structures store is present (the primary store always has one). The mis-read consumes
+		// an extra byte as a phantom high byte of the record id, leaving the structure decoder offset by
+		// one and surfacing as "Data read, but end of buffer not reached <N>" or "Record id is not
+		// defined for N" — observed in v4 to v5 migration on records with custom-type embedded fields
+		// (harper#1260). The one-byte path (<= 32) inlines over-cap shapes correctly and bounds memory
+		// at least as tightly.
+		options.maxOwnStructures ??= 32;
 		/**
 		 * The base class for records that provides the read-only methods for accessing
 		 * metadata and will be assigned computed property getters. On its own, these instances
