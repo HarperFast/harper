@@ -1175,8 +1175,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
 				// but other workers' next disk-load re-reads the stale value.
-				const schemaDefinedMismatch =
-					schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
+				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
 					schemaDefinedMismatch ||
