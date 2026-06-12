@@ -381,20 +381,33 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
 	const targetRootStore = openRocksDb(targetPath, { disableWAL: false });
+	// sharedStructuresKey wires the rocksdb-js getStructures/saveStructures closures
+	// so that the plain msgpackr.Encoder used here persists structures within the
+	// __dbis__ CF at Symbol.for('structures'). The runtime attributesDbi RecordEncoder
+	// takes the non-isRocksDB path (handleLocalTimeForGets is never called on it) and
+	// reads from the same CF key via superGetStructures. Without this, own structure
+	// IDs starting at 0x40 are minted in-memory and silently lost on restart →
+	// runtime decoder interprets 0x40 as fixint 64 → "Data read, but end of buffer
+	// not reached 64" (harper#1260).
 	const targetDbisDb = openRocksDb(targetPath, {
 		disableWAL: false,
 		name: INTERNAL_DBIS_NAME,
+		sharedStructuresKey: Symbol.for('structures'),
 	});
 
 	const STRUCTURES_KEY = Symbol.for('structures');
-	const copyStructures = (sourceDbi, storeName: string) => {
+	const copyStructures = (sourceDbi, storeName: string, extraTarget?: RocksDatabase) => {
 		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
 		if (buffer) {
-			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(buffer));
+			const binaryBuffer = asBinary(buffer);
+			targetRootStore.putSync([STRUCTURES_KEY, storeName], binaryBuffer);
+			// Also write to the extra target CF when provided (e.g. __dbis__ CF,
+			// which the runtime RecordEncoder reads via its superGetStructures path).
+			extraTarget?.putSync(STRUCTURES_KEY, binaryBuffer);
 		}
 	};
 
-	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME);
+	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME, targetDbisDb);
 
 	let written;
 	let outstandingWrites = 0;

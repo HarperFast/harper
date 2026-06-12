@@ -1017,6 +1017,29 @@ export function makeTable(options) {
 		}
 
 		static async dropTable() {
+			if (databaseName === databasePath) {
+				// Persist a drop tombstone on the primary catalog entry BEFORE any
+				// destructive work. If the process dies or a column family drop fails
+				// partway through, the tombstone survives with the catalog rows, and
+				// the next startup (or a same-name create) completes the drop via
+				// completeInterruptedDrop in databases.ts instead of resurrecting
+				// the table.
+				const primaryCatalogKey = TableResource.tableName + '/';
+				const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+				if (primaryMeta && !primaryMeta.dropping) {
+					primaryMeta.dropping = true;
+					// put is rebound to putSync on RocksDB stores; on LMDB it returns
+					// a promise, so await it to make the tombstone durable before the
+					// destructive work below
+					const tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+					if (tombstoneWrite?.then) await tombstoneWrite;
+				}
+			}
+			// Remove the table from the in-memory schema immediately so concurrent
+			// requests get "table does not exist" instead of racing the column
+			// family drops below. If a drop fails past this point the table stays
+			// invisible, and the tombstone guarantees the drop completes on the
+			// next startup (or on a same-name create).
 			delete databases[databaseName][tableName];
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
@@ -1024,14 +1047,28 @@ export function makeTable(options) {
 				}
 			}
 			if (databaseName === databasePath) {
-				// part of a database
+				// part of a database.
+				// Drop the column families and AWAIT them. Previously the catalog
+				// metadata was removed (synchronous removeSync) before primaryStore.drop(),
+				// and the drops were fire-and-forget (their rejections swallowed). If a
+				// column family was corrupt/half-initialized the drop would fail, yet the
+				// catalog entry was already gone - an orphaned "ghost" column family that
+				// poisons same-name recreates. By awaiting the drops before touching the
+				// catalog, a failed drop surfaces as the operation's error and the
+				// tombstoned catalog rows survive for the startup reconcile.
+				const drops = [];
+				for (const attribute of attributes) {
+					const index = indices[attribute.name];
+					if (index) drops.push(index.drop());
+				}
+				drops.push(primaryStore.drop());
+				await Promise.all(drops);
+				// Column families are gone; remove the catalog metadata (including
+				// the tombstoned primary entry).
 				for (const attribute of attributes) {
 					dbisDb.remove(TableResource.tableName + '/' + attribute.name);
-					const index = indices[attribute.name];
-					index?.drop();
 				}
 				dbisDb.remove(TableResource.tableName + '/');
-				primaryStore.drop();
 				await dbisDb.committed;
 			} else {
 				// legacy table per database

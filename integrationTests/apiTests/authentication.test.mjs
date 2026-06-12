@@ -112,6 +112,32 @@ suite('Authentication', (ctx) => {
 		}
 	});
 
+	// Skipped on Bun: the operations API on Bun is served by delegating to Fastify via
+	// inject() and auth is applied through fastifyAuth's Bun shim, which does not wire up
+	// `baseRequest.login` for the session-establishing `login` op — so this op is a known
+	// pre-existing gap on Bun (login never worked there), separate from the Node regression
+	// this test guards.
+	test('login operation establishes a session (Studio bootstrap path)', { skip: skipOnBun }, async () => {
+		// Studio calls the `login` operation to set up the admin user on a new cluster. This
+		// exercises auth's session middleware on the operations-API port; that middleware runs
+		// only on the main thread, so if it is not registered there the operation fails with
+		// "No session for login". Guards the regression from removing auth's main-thread
+		// registration.
+		const response = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({ operation: 'login', username: admin.username, password: admin.password })
+			.expect((r) => assert.ok(r.text.includes('Login successful'), r.text))
+			.expect(200);
+
+		// A successful login must establish a session cookie — Studio relies on it.
+		const setCookie = response.headers['set-cookie'];
+		assert.ok(
+			Array.isArray(setCookie) && setCookie.some((c) => c.includes('hdb-session=')),
+			`expected an hdb-session cookie, got ${JSON.stringify(setCookie)}`
+		);
+	});
+
 	test('create_authentication_tokens with valid credentials returns operation token', async () => {
 		const response = await request(client.operationsURL)
 			.post('')

@@ -521,6 +521,27 @@ function initStores(
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
 	}
 
+	// Complete any drops that were interrupted mid-flight. dropTable persists a
+	// `dropping` tombstone on the table's primary catalog entry before removing
+	// column families; if the process died or a column family drop failed
+	// partway, the tombstone survives alongside the catalog rows. Without this
+	// reconcile, those rows would silently resurrect the table below
+	// (recreating any missing column families as empty stores).
+	for (const [tableName, tableDef] of tablesToLoad) {
+		if (!tableDef.primary?.dropping) continue;
+		try {
+			completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+			definedTables?.delete(tableName);
+		} catch (error) {
+			logger.error(
+				`Failed to complete interrupted drop of table ${databaseName}.${tableName}; will retry on next start`,
+				error
+			);
+		}
+		// whether or not cleanup succeeded, never load a table that was being dropped
+		tablesToLoad.delete(tableName);
+	}
+
 	for (const [tableName, tableDef] of tablesToLoad) {
 		let { attributes, primary: primaryAttribute } = tableDef;
 		if (!primaryAttribute) {
@@ -1067,7 +1088,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 
 		exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
-		if ((attributesDbi as any).getSync(dbiName)) {
+		const existingTableMeta = (attributesDbi as any).getSync(dbiName);
+		if (existingTableMeta && !existingTableMeta.dropping) {
 			// table was created while we were setting up
 			if (releaseExclusiveLock) releaseExclusiveLock();
 			resetDatabases();
@@ -1075,50 +1097,69 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 
 		let primaryStore;
-		if (rootStore instanceof RocksDatabase) {
-			primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
-		} else {
-			primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
-		}
-		primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
-		rootStore.databaseName = databaseName;
-		primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
-		logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
-		if (!primaryStore.tableId) primaryStore.tableId = 1;
-		attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
+		try {
+			if (existingTableMeta?.dropping) {
+				// A previous drop of this table was interrupted after its tombstone
+				// was written. Complete it now (under the exclusive lock) so the
+				// create below starts from a clean slate; treating the tombstoned
+				// entry as an existing table would recurse forever on the stale
+				// catalog row.
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+			}
+			if (rootStore instanceof RocksDatabase) {
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
+			} else {
+				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
+			}
+			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
+			rootStore.databaseName = databaseName;
+			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
+			logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
+			if (!primaryStore.tableId) primaryStore.tableId = 1;
+			attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
-		primaryKeyAttribute.tableId = primaryStore.tableId;
-		Table = setTable(
-			tables,
-			tableName,
-			makeTable({
-				primaryStore,
-				auditStore,
-				audit,
-				sealed,
-				splitSegments,
-				replicate,
-				trackDeletes,
-				expirationMS: expiration && expiration * 1000,
-				evictionMS: eviction && eviction * 1000,
-				primaryKey,
+			primaryKeyAttribute.tableId = primaryStore.tableId;
+			Table = setTable(
+				tables,
 				tableName,
-				tableId: primaryStore.tableId,
-				databasePath: databaseName,
-				databaseName,
-				indices: {},
-				attributes,
-				schemaDefined,
-				dbisDB: attributesDbi,
-				description,
-				properties,
-				hidden,
-			})
-		);
-		Table.schemaVersion = 1;
-		hasChanges = true;
+				makeTable({
+					primaryStore,
+					auditStore,
+					audit,
+					sealed,
+					splitSegments,
+					replicate,
+					trackDeletes,
+					expirationMS: expiration && expiration * 1000,
+					evictionMS: eviction && eviction * 1000,
+					primaryKey,
+					tableName,
+					tableId: primaryStore.tableId,
+					databasePath: databaseName,
+					databaseName,
+					indices: {},
+					attributes,
+					schemaDefined,
+					dbisDB: attributesDbi,
+					description,
+					properties,
+					hidden,
+				})
+			);
+			Table.schemaVersion = 1;
+			hasChanges = true;
 
-		attributesDbi.put(dbiName, primaryKeyAttribute);
+			attributesDbi.put(dbiName, primaryKeyAttribute);
+		} catch (error) {
+			// A failure while opening/creating the column family or writing the
+			// table id / catalog entry (e.g. into an env poisoned by a prior
+			// dangling column family) must NOT leak the exclusive
+			// 'update-attributes' spin lock. If it leaks, every subsequent
+			// create_table / attribute update on this database spins forever
+			// (a hard wedge that pins a worker at 100% CPU). Release before rethrow.
+			if (releaseExclusiveLock) releaseExclusiveLock();
+			throw error;
+		}
 	}
 	const indices = Table.indices;
 	if (!attributesDbi) {
@@ -1171,8 +1212,14 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
+				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
+				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
+				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
+				// but other workers' next disk-load re-reads the stale value.
+				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
+					schemaDefinedMismatch ||
 					(audit !== undefined && audit !== Table.audit) ||
 					(sealed !== undefined && sealed !== Table.sealed) ||
 					(replicate !== undefined && replicate !== Table.replicate) ||
@@ -1190,6 +1237,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
 					hasChanges = true; // send out notification of the change
 					exclusiveLock();
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
@@ -1535,6 +1583,50 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		} catch (persistError) {
 			logger.warn('Failed to persist indexing failure state', persistError);
 		}
+	}
+}
+
+/**
+ * Completes a table drop that was interrupted after its `dropping` tombstone
+ * was written: drops any surviving table stores and removes the table's
+ * catalog rows. Called from the boot-time schema load and from the create
+ * path when a same-named table is created over a tombstoned entry. Callers
+ * are expected to hold the database's exclusive lock or be in single-threaded
+ * startup; the per-store drops tolerate races (another worker may be
+ * completing the same drop concurrently).
+ */
+function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
+	logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	if (rootStore instanceof RocksDatabase) {
+		for (const columnName of (rootStore as any).columns) {
+			if (columnName.startsWith(tableName + '/')) {
+				try {
+					const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
+					columnStore.dropSync();
+					columnStore.close();
+				} catch (error) {
+					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, error);
+				}
+			}
+		}
+	} else {
+		// LMDB reuses an existing named sub-database on open, so the stores must
+		// be dropped too; removing only the catalog rows would let a same-name
+		// recreate silently inherit the previous table's records.
+		for (const { key, value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			try {
+				const objectStorage =
+					value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+				const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
+				// lmdb drop commits with the env's next transaction
+				store.drop?.();
+			} catch (error) {
+				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
+			}
+		}
+	}
+	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		attributesDbi.remove(key);
 	}
 }
 

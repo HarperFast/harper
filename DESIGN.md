@@ -107,3 +107,27 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
+
+## Table drops, the `dropping` tombstone, and ghost tables
+
+A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
+in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
+persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
+destructive work, then drops the column families (awaited - a failed drop must surface as the
+operation's error, never a swallowed rejection), then removes the catalog rows. If the process
+dies or a drop fails partway, the tombstone survives; both the boot-time schema load in
+`databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
+interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
+silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
+(with their data, if the column families were never actually removed).
+
+Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
+lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
+subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a
+same-named table within one process requires @harperfast/rocksdb-js >= the column-family
+eviction fix (1.4.3 / rocksdb-js#<main PR>): older bindings keep the dropped column family's
+by-name registry entry alive whenever other worker threads hold handles, so the recreate
+silently reuses a dangling handle and every write fails with "Invalid column family specified
+in write batch", poisoning the whole database env until restart. The regression suite for all
+of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
+bindings).
