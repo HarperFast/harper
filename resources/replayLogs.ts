@@ -1,4 +1,4 @@
-import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { Resource } from './Resource.ts';
 import type { Context } from './ResourceInterface.ts';
 import * as logger from '../utility/logging/harper_logger.js';
@@ -145,36 +145,51 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 						tableInstance._writeInvalidate(recordId, record, options);
 						break;
 					case 'structures': {
-						const rocksTransaction = new RocksTransaction(primaryStore.store);
 						const structuresAsBinary = auditRecord.getBinaryValue(primaryStore);
 						const updatedStructures = structuresAsBinary ? primaryStore.decoder.decode(structuresAsBinary) : undefined;
-						const existingStructures = primaryStore.getSync(Symbol.for('structures'), {
-							transaction: rocksTransaction,
-						});
-						if (existingStructures) {
-							if (existingStructures instanceof Array) {
-								if (updatedStructures.length < existingStructures.length) {
-									logger.warn(
-										`Found ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using ${updatedStructures.length} structures.`
-									);
+						// Persist replayed structures where the decoder actually reads them. The RocksDB decode
+						// path (RecordEncoder.getStructures) reads `rootStore` at the COMPOSITE key
+						// [Symbol.for('structures'), name]; this previously wrote `primaryStore` at the PLAIN key
+						// Symbol.for('structures'), which getStructures never consults. A structure delivered only
+						// via replication therefore stayed invisible to the decoder — records referencing it threw
+						// "Record id is not defined" and decoded as null — until a full-copy resync rewrote the row
+						// through saveStructures (composite key). See harper-pro#362 (and the #352 auth-path wedge).
+						// Mirror saveStructures exactly: same store, same composite key, same transaction shape.
+						const encoder = primaryStore.decoder;
+						const sharedStructuresKey = [Symbol.for('structures'), encoder.name];
+						encoder.rootStore.transactionSync(
+							(txn) => {
+								const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
+								const existingStructures = existingStructuresBuffer
+									? encoder.decode(existingStructuresBuffer)
+									: undefined;
+								if (existingStructures) {
+									if (existingStructures instanceof Array) {
+										if (updatedStructures.length < existingStructures.length) {
+											logger.warn(
+												`Found ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using ${updatedStructures.length} structures.`
+											);
+										}
+									} else {
+										if (existingStructures.get('named').length > updatedStructures.get('named').length) {
+											logger.warn(
+												`Found named ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using named ${updatedStructures.length} structures.`
+											);
+										}
+										if (existingStructures.get('typed').length > updatedStructures.get('typed').length) {
+											logger.warn(
+												`Found named ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using named ${updatedStructures.length} structures.`
+											);
+										}
+									}
 								}
-							} else {
-								if (existingStructures.get('named').length > updatedStructures.get('named').length) {
-									logger.warn(
-										`Found named ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using named ${updatedStructures.length} structures.`
-									);
-								}
-								if (existingStructures.get('typed').length > updatedStructures.get('typed').length) {
-									logger.warn(
-										`Found named ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using named ${updatedStructures.length} structures.`
-									);
-								}
-							}
-						}
-						primaryStore.putSync(Symbol.for('structures'), asBinary(structuresAsBinary), {
-							transaction: rocksTransaction,
-						});
-						rocksTransaction.commitSync();
+								txn.putSync(sharedStructuresKey, asBinary(structuresAsBinary));
+							},
+							{ retryOnBusy: true }
+						);
+						// Load in-memory so the remainder of this replay can decode records that reference these
+						// structures. We deliberately do NOT route through saveStructures, which would set
+						// structureUpdate and re-log the structure as a fresh audit entry during replay.
 						primaryStore.decoder.structure = updatedStructures;
 					}
 				}
