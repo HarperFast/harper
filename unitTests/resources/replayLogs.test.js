@@ -8,7 +8,7 @@ const {
 	RECORD_BEARING_FLAGS,
 	endIteratorOnCorruptFrame,
 	shouldAbortStalledReplay,
-	REPLAY_NO_PROGRESS_SKIP_LIMIT,
+	REPLAY_NO_PROGRESS_COUNT_LIMIT,
 	REPLAY_NO_PROGRESS_TIME_LIMIT_MS,
 	REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR,
 } = require('#src/resources/replayLogsGuards');
@@ -217,7 +217,7 @@ describe('endIteratorOnCorruptFrame', () => {
 // a single skip followed by an unrelated latency spike.
 describe('shouldAbortStalledReplay', () => {
 	it('exposes conservative default bounds', () => {
-		assert.strictEqual(REPLAY_NO_PROGRESS_SKIP_LIMIT, 100_000);
+		assert.strictEqual(REPLAY_NO_PROGRESS_COUNT_LIMIT, 100_000);
 		assert.strictEqual(REPLAY_NO_PROGRESS_TIME_LIMIT_MS, 60_000);
 		assert.strictEqual(REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR, 1_000);
 	});
@@ -225,13 +225,13 @@ describe('shouldAbortStalledReplay', () => {
 	it('does not abort while the no-progress run is below both bounds', () => {
 		assert.strictEqual(shouldAbortStalledReplay(0, 0), false);
 		assert.strictEqual(shouldAbortStalledReplay(1, 0), false);
-		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_SKIP_LIMIT - 1, 0), false);
+		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_COUNT_LIMIT - 1, 0), false);
 		assert.strictEqual(shouldAbortStalledReplay(50_000, REPLAY_NO_PROGRESS_TIME_LIMIT_MS - 1), false);
 	});
 
 	it('aborts once the no-progress count reaches the limit', () => {
-		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_SKIP_LIMIT, 0), true);
-		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_SKIP_LIMIT + 1, 0), true);
+		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_COUNT_LIMIT, 0), true);
+		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_COUNT_LIMIT + 1, 0), true);
 	});
 
 	it('does NOT trip the time bound on a tiny no-progress run (a single skip + a latency spike)', () => {
@@ -258,7 +258,7 @@ describe('shouldAbortStalledReplay', () => {
 	});
 
 	it('honors caller-supplied bounds (used to keep unit tests fast/deterministic)', () => {
-		// signature: (noProgressRun, msSinceProgress, skipLimit, timeLimitMs, timeSkipFloor)
+		// signature: (noProgressRun, msSinceProgress, countLimit, timeLimitMs, timeSkipFloor)
 		assert.strictEqual(shouldAbortStalledReplay(3, 0, 5, 1000, 2), false);
 		assert.strictEqual(shouldAbortStalledReplay(5, 0, 5, 1000, 2), true);
 		assert.strictEqual(shouldAbortStalledReplay(2, 1000, 5, 1000, 2), true);

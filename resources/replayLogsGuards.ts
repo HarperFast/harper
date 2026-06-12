@@ -72,7 +72,7 @@ export function isUndecodableValidatedWrite(type: string | undefined, record: un
 // Max consecutive no-progress entries (since the last successful write) before the replay is
 // treated as stalled. ~100k contiguous unwritable entries is unambiguously degenerate and caps the
 // wasted grind well below the multi-minute hangs observed in prod.
-export const REPLAY_NO_PROGRESS_SKIP_LIMIT = 100_000;
+export const REPLAY_NO_PROGRESS_COUNT_LIMIT = 100_000;
 
 // Max wall-clock time (ms) since the last successful write before the replay is treated as stalled.
 // Belt-and-suspenders for the count bound: if individual entries are slow enough that fewer than the
@@ -99,11 +99,11 @@ export const REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR = 1_000;
 export function shouldAbortStalledReplay(
 	noProgressRun: number,
 	msSinceProgress: number,
-	skipLimit = REPLAY_NO_PROGRESS_SKIP_LIMIT,
+	countLimit = REPLAY_NO_PROGRESS_COUNT_LIMIT,
 	timeLimitMs = REPLAY_NO_PROGRESS_TIME_LIMIT_MS,
 	timeSkipFloor = REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR
 ): boolean {
-	if (noProgressRun >= skipLimit) return true;
+	if (noProgressRun >= countLimit) return true;
 	return noProgressRun >= timeSkipFloor && msSinceProgress >= timeLimitMs;
 }
 
