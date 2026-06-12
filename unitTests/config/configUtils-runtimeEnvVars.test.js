@@ -10,6 +10,7 @@ const applyRuntimeEnvVarConfig = configUtils.__get__('applyRuntimeEnvVarConfig')
 describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	let mockConfigDoc;
 	let applyRuntimeEnvConfigStub;
+	let hasPersistedEnvConfigStateStub;
 	let fsWriteFileSyncStub;
 	let fsRenameSyncStub;
 	let loggerStub;
@@ -18,6 +19,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	before(function () {
 		// Create stubs for dependencies
 		applyRuntimeEnvConfigStub = sinon.stub();
+		hasPersistedEnvConfigStateStub = sinon.stub();
 		fsWriteFileSyncStub = sinon.stub();
 		fsRenameSyncStub = sinon.stub();
 		loggerStub = {
@@ -40,7 +42,10 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		// Mock harperConfigEnvVars module
 		configUtils.__set__('require', function (modulePath) {
 			if (modulePath.startsWith('./harperConfigEnvVars')) {
-				return { applyRuntimeEnvConfig: applyRuntimeEnvConfigStub };
+				return {
+					applyRuntimeEnvConfig: applyRuntimeEnvConfigStub,
+					hasPersistedEnvConfigState: hasPersistedEnvConfigStateStub,
+				};
 			}
 			return require(modulePath);
 		});
@@ -49,6 +54,8 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	beforeEach(function () {
 		// Reset stubs
 		applyRuntimeEnvConfigStub.reset();
+		hasPersistedEnvConfigStateStub.reset();
+		hasPersistedEnvConfigStateStub.returns(false); // default: no prior state
 		fsWriteFileSyncStub.reset();
 		fsRenameSyncStub.reset();
 		loggerStub.debug.reset();
@@ -77,14 +84,31 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		sinon.restore();
 	});
 
-	it('should skip when no env vars set', function () {
+	it('should skip when no env vars set and no prior state', function () {
 		delete process.env.HARPER_DEFAULT_CONFIG;
+		delete process.env.HARPER_CONFIG;
 		delete process.env.HARPER_SET_CONFIG;
+		hasPersistedEnvConfigStateStub.returns(false);
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
 		assert.strictEqual(applyRuntimeEnvConfigStub.called, false);
 		assert.strictEqual(fsWriteFileSyncStub.called, false);
+	});
+
+	it('should run cleanup when no env vars set but prior state exists (var removed)', function () {
+		// All three vars were applied on a prior boot and then removed: the wrapper must NOT
+		// short-circuit — applyRuntimeEnvConfig has to restore originals and clear the snapshot.
+		delete process.env.HARPER_DEFAULT_CONFIG;
+		delete process.env.HARPER_CONFIG;
+		delete process.env.HARPER_SET_CONFIG;
+		hasPersistedEnvConfigStateStub.returns(true);
+
+		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
+
+		assert.strictEqual(applyRuntimeEnvConfigStub.called, true, 'cleanup must run when state exists');
+		assert.strictEqual(applyRuntimeEnvConfigStub.firstCall.args[1], '/test/root');
+		assert.strictEqual(fsWriteFileSyncStub.called, true);
 	});
 
 	it('should apply HARPER_DEFAULT_CONFIG when set', function () {

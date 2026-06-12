@@ -175,4 +175,16 @@ describe('validateGetAnalytics', function () {
 		const error = validateGetAnalytics({ metric: 'cpu-usage', conditions: [{ attribute: 'path' }] });
 		assert.ok(error instanceof Error);
 	});
+
+	// ── replicated ───────────────────────────────────────────────────────────
+
+	it('should accept replicated as a boolean', function () {
+		assert.strictEqual(validateGetAnalytics({ metric: 'cpu-usage', replicated: true }), undefined);
+	});
+
+	it('should reject replicated as the string "true"', function () {
+		const error = validateGetAnalytics({ metric: 'cpu-usage', replicated: 'true' });
+		assert.ok(error instanceof Error);
+		assert.ok(error.message.includes('replicated'), `expected "replicated" in: ${error.message}`);
+	});
 });

@@ -242,4 +242,60 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 		},
 		description: 'Returns host metrics: CPU, memory, disk, network, replication state.',
 	},
+	get_status: {
+		type: 'object',
+		properties: {
+			id: {
+				type: 'string',
+				description: 'Status entry id. When omitted, returns aggregated status across threads.',
+			},
+		},
+	},
+	get_analytics: {
+		type: 'object',
+		properties: {
+			metric: { type: 'string', description: 'Metric name (use list_metrics to discover available metrics).' },
+			get_attributes: {
+				type: 'array',
+				items: { type: 'string' },
+				description: 'Attribute names to project; defaults to all.',
+			},
+			start_time: {
+				type: ['number', 'string'],
+				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
+			},
+			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
+		},
+		required: ['metric'],
+	},
+	describe_metric: {
+		type: 'object',
+		properties: {
+			metric: { type: 'string', description: 'Metric name to describe (use list_metrics to discover).' },
+		},
+		required: ['metric'],
+	},
+	list_agent_sessions: {
+		type: 'object',
+		properties: {
+			limit: { type: 'integer', minimum: 1, description: 'Max sessions to return.' },
+		},
+	},
+	get_metrics: {
+		type: 'object',
+		properties: {
+			metric: { type: 'string', description: 'Metric name (use list_metrics to discover available metrics).' },
+			get_attributes: {
+				type: 'array',
+				items: { type: 'string' },
+				description: 'Attribute names to project; defaults to all.',
+			},
+			start_time: {
+				type: ['number', 'string'],
+				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
+			},
+			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
+		},
+		required: ['metric'],
+	},
 };

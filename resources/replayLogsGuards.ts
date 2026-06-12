@@ -40,3 +40,67 @@ export function classifyAuditEntryForReplay(
 	if ((action & RECORD_BEARING_FLAGS) !== 0 && !hasRecord) return 'missing-record';
 	return null;
 }
+
+/**
+ * Whether an audit entry is a validated write (`put`/`patch`) whose record body failed to
+ * decode, and so must be skipped during replay.
+ *
+ * `RecordEncoder.decode` returns `null` (not `undefined`, and it does not throw) when a value
+ * fails to decode — e.g. structure-dictionary divergence, which surfaces as msgpackr's
+ * "Data read, but end of buffer not reached". `classifyAuditEntryForReplay` only catches a
+ * `undefined` body, so a `null` slips through; for `put`/`patch` the replay path then calls
+ * `save()` → `validate()`, which dereferences the record and crashes on the missing body.
+ *
+ * This is deliberately scoped to `put`/`patch` (the only replay actions that run `validate()`).
+ * Other record-bearing actions must NOT be skipped on a `null` body — notably `invalidate`,
+ * which legitimately stores a `null` partial record on a table with no index fields and never
+ * reaches `validate()`. See harper#1255.
+ */
+export function isUndecodableValidatedWrite(type: string | undefined, record: unknown): boolean {
+	return record == null && (type === 'put' || type === 'patch');
+}
+
+/**
+ * Wraps a transaction-log query iterator so a corrupt/torn frame ends that log's iteration
+ * cleanly instead of escaping as an uncaughtException. rocksdb-js throws a bounded RangeError
+ * when an entry's framing is broken; framing loss means the next entry can't be located, so the
+ * frame marks end-of-log (entries before it were already yielded) and startup replay /
+ * replication broadcast continue. `onCorruptFrame` fires once, latched — kept a callback (not a
+ * direct log) so this module stays out of the Harper module graph and is unit-testable.
+ */
+export function endIteratorOnCorruptFrame<T>(
+	iterator: Iterator<T>,
+	onCorruptFrame: (error: RangeError) => void
+): IterableIterator<T> {
+	let stopped = false;
+	return {
+		[Symbol.iterator]() {
+			return this;
+		},
+		next(): IteratorResult<T> {
+			if (stopped) return { done: true, value: undefined };
+			try {
+				return iterator.next();
+			} catch (error) {
+				// Key on the class, not the message: the framing RangeError's wording is
+				// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
+				if (!(error instanceof RangeError)) throw error;
+				stopped = true;
+				onCorruptFrame(error);
+				return { done: true, value: undefined };
+			}
+		},
+		// Forward early termination (for-of break/return/throw) so the source's cleanup runs;
+		// mark stopped first. Current rocksdb-js implements neither — hence the protocol defaults.
+		return(value?: any): IteratorResult<T> {
+			stopped = true;
+			if (typeof iterator.return === 'function') return iterator.return(value);
+			return { done: true, value };
+		},
+		throw(error?: any): IteratorResult<T> {
+			stopped = true;
+			if (typeof iterator.throw === 'function') return iterator.throw(error);
+			throw error;
+		},
+	};
+}

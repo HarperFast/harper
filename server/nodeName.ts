@@ -65,6 +65,7 @@ function getPortFromListeningPort(key: string) {
 }
 
 export function hostnameToUrl(hostname) {
+	if (!hostname) return undefined;
 	let port = getPortFromListeningPort('replication_port');
 	if (port) return `ws://${hostname}:${port}`;
 	port = getPortFromListeningPort('replication_secureport');

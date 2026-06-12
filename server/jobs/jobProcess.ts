@@ -15,6 +15,7 @@ import { cloneDeep } from 'lodash';
 
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
+import { parentPort } from 'node:worker_threads';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;
@@ -77,6 +78,11 @@ const JOB_ID = JOB_NAME.substring(4);
 		jobObj.end_datetime = moment().valueOf();
 	} finally {
 		await jobs.updateJob(jobObj);
+		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
+		// while sibling workers are running causes a NAPI fatal error crash. Unref
+		// parentPort (which broadcastWithAcknowledgement may have ref'd during schema
+		// changes) so the event loop drains naturally without calling process.exit().
+		parentPort?.unref();
 		setTimeout(() => {
 			realExit(exitCode);
 		}, 3000).unref();

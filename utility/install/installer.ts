@@ -441,9 +441,28 @@ async function createBootPropertiesFile() {
 		const homeDirPath = path.join(homeDir, hdbTerms.HDB_HOME_DIR_NAME);
 		const homeDirKeysDirPath = path.join(homeDirPath, hdbTerms.LICENSE_KEY_DIR_NAME);
 		const propsFilePath = path.join(homeDirPath, hdbTerms.BOOT_PROPS_FILE_NAME);
-		// if the properties file already exists, and we have an explicit ROOTPATH, we don't overwrite the existing
-		// properties file
-		if (!fs.existsSync(propsFilePath) || !hdbUtils.getEnvCliRootPath()) {
+		// Write boot props when: file doesn't exist, OR no explicit ROOTPATH was given (caller
+		// accepts whatever path this install produces), OR the existing file points to a
+		// settings_path that no longer exists (stale from a deleted previous install dir).
+		let shouldWriteBootProps = !fs.existsSync(propsFilePath) || !hdbUtils.getEnvCliRootPath();
+		if (!shouldWriteBootProps) {
+			try {
+				const content = fs.readFileSync(propsFilePath, 'utf8');
+				// Anchor to line start (with /m) to avoid matching commented-out lines.
+				const match = content.match(/^[ \t]*settings_path\s*=\s*(.+)/m);
+				if (match) {
+					const settingsPath = match[1].trim().replace(/^["']|["']$/g, '');
+					if (!fs.existsSync(settingsPath)) {
+						shouldWriteBootProps = true;
+					}
+				} else {
+					shouldWriteBootProps = true;
+				}
+			} catch {
+				shouldWriteBootProps = true;
+			}
+		}
+		if (shouldWriteBootProps) {
 			try {
 				fs.mkdirpSync(homeDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
 				fs.mkdirpSync(homeDirKeysDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });
@@ -468,19 +487,22 @@ async function createBootPropertiesFile() {
 }
 
 /**
- * Calls the util function that creates the Harper config file.
- * If an error occurs during the create install is rolled backed.
- * @param installParams
- * @returns {Promise<void>}
+ * Applies the install-mode ('dev' | anything else => prod) config defaults to the given config args and
+ * returns them.
+ *
+ * Pure: it does not read or mutate process.env, touch the filesystem, or log — the returned args are simply
+ * what gets persisted to the config file. In particular a 'dev' install must NOT set process.env.DEV_MODE:
+ * that flag is owned solely by the `harper dev` command (bin/harper.ts) and is the source of truth for
+ * dev-only runtime behavior such as the component auto-reload watcher. Because install can run in-process
+ * from `harper run .` (first-run install), setting it here would leak dev runtime behavior into a plain
+ * `run` until the next restart. The dev defaults are still persisted to the config file regardless.
+ *
+ * @param args - config args (cmd/env values already merged with install params)
+ * @param defaultsMode - the resolved DEFAULTS_MODE install param ('dev' or 'prod')
+ * @returns the same args object, mutated in place, for convenience
  */
-async function createConfigFile(installParams) {
-	hdbLogger.trace('Creating Harper config file');
-	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
-	Object.assign(args, installParams);
-
-	// If installing in dev mode set dev config defaults
-	if (installParams[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE] === 'dev') {
-		process.env.DEV_MODE = 'true';
+export function applyInstallModeDefaults(args, defaultsMode) {
+	if (defaultsMode === 'dev') {
 		for (const cfg in DEV_MODE_CONFIG) {
 			// Before setting http.port check that secure port is not being passed
 			if (cfg === CONFIG_PARAMS.HTTP_PORT && args[CONFIG_PARAMS.HTTP_SECUREPORT.toLowerCase()] === undefined) {
@@ -512,6 +534,27 @@ async function createConfigFile(installParams) {
 			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
 		if (args[CONFIG_PARAMS.HTTP_PORT.toLowerCase()]) args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
 	}
+	return args;
+}
+
+/**
+ * Calls the util function that creates the Harper config file.
+ * If an error occurs during the create install is rolled backed.
+ * @param installParams
+ * @returns {Promise<void>}
+ */
+async function createConfigFile(installParams) {
+	hdbLogger.trace('Creating Harper config file');
+	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
+	Object.assign(args, installParams);
+
+	const defaultsMode = installParams[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE];
+	if (defaultsMode !== undefined && defaultsMode !== 'dev' && defaultsMode !== 'prod') {
+		const warn = `DEFAULTS_MODE value "${defaultsMode}" is not recognized (expected "dev" or "prod"). Using prod defaults.`;
+		console.error(chalk.yellow.bold(`Warning: ${warn}`));
+		hdbLogger.warn(warn);
+	}
+	applyInstallModeDefaults(args, defaultsMode);
 
 	try {
 		if (!cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG]) {

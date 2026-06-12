@@ -69,6 +69,7 @@ import { throttle } from '../server/throttle.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
+import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -76,6 +77,8 @@ const { validateAttribute } = lmdbProcessRows;
 export type Attribute = {
 	name: string;
 	type: 'ID' | 'Int' | 'Float' | 'Long' | 'String' | 'Boolean' | 'Date' | 'Bytes' | 'Any' | 'BigInt' | 'Blob' | string;
+	description?: string;
+	hidden?: boolean;
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
 	nullable?: boolean;
@@ -108,6 +111,19 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+// A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
+// records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
+// a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
+// (which reports as frozen and would spread into character/index keys).
+function isFrozenRecordObject(value: any): boolean {
+	return (
+		value !== null &&
+		typeof value === 'object' &&
+		!ArrayBuffer.isView(value) &&
+		!(value instanceof ArrayBuffer) &&
+		Object.isFrozen(value)
+	);
+}
 export const INVALIDATED = 1;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
@@ -142,6 +158,9 @@ export interface Table {
 	indexingOperations?: Promise<void>;
 	source?: new () => ResourceInterface;
 	Transaction: ReturnType<typeof makeTable>;
+	description?: string;
+	properties?: Record<string, JsonSchemaFragment>;
+	hidden?: boolean;
 }
 type ResidencyDefinition = number | string[] | void;
 
@@ -166,11 +185,18 @@ export function makeTable(options) {
 		sealed,
 		splitSegments,
 		replicate,
+		description,
+		hidden,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
-	let { attributes }: { attributes: Attribute[] } = options;
+	// Eviction without explicit expiration means expiration:0. Apply at construction so
+	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
+	if (evictionMs > 0 && expirationMs === undefined) expirationMs = 0;
+	let { attributes, properties }: { attributes: Attribute[]; properties?: Record<string, JsonSchemaFragment> } =
+		options;
 	if (!attributes) attributes = [];
+	if (!properties) properties = projectAttributesToProperties(attributes);
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
@@ -257,6 +283,11 @@ export function makeTable(options) {
 		static databasePath = databasePath;
 		static databaseName = databaseName;
 		static attributes = attributes;
+		static description = description;
+		static properties = properties;
+		static hidden = hidden;
+		static outputSchemas: { [verb: string]: JsonSchemaFragment } | undefined;
+		static mcp: { annotations?: { [verb: string]: any } } | undefined;
 		static replicate = replicate;
 		static sealed = sealed;
 		static splitSegments = splitSegments ?? true;
@@ -405,8 +436,17 @@ export function makeTable(options) {
 									continue;
 								}
 								event.source = source;
+								// Writes applied here come from the canonical source of truth (a replication peer or an
+								// external caching source), so a transient write conflict must never drop the write —
+								// there is no re-subscribe / sequence-id-resume path to recover it. Mark the context so the
+								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
+								event.sourceApply = true;
 								if (event.type === 'end_txn') {
-									txnInProgress?.resolve();
+									// Capture the in-progress transaction in a stable local: the loop variable is reset
+									// once this transaction completes (below), but the seq-id closure and the commit await
+									// still need to reference it afterward.
+									const committingTxn = txnInProgress;
+									committingTxn?.resolve();
 									let updateRecordedSequenceId: () => void;
 									if (event.localTime && lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
@@ -433,7 +473,7 @@ export function makeTable(options) {
 														nodeStates.push(nodeState);
 													}
 													nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-													if (nodeId === txnInProgress?.nodeId) {
+													if (nodeId === committingTxn?.nodeId) {
 														nodeState.lastTxnTime = event.timestamp;
 													}
 												}
@@ -455,24 +495,51 @@ export function makeTable(options) {
 											lastSequenceId = event.localTime;
 										}
 									}
-									if (event.onCommit) {
-										// if there was an onCommit callback, call that. This function can be async
-										// and if so, we want to delay the recording of the sequence id until it finished
-										// (as it can be used to indicate more associated actions, like blob transfer, are in flight)
-										const onCommitFinished = txnInProgress
-											? txnInProgress.committed.then(event.onCommit)
-											: event.onCommit();
-										if (updateRecordedSequenceId) {
-											if (onCommitFinished?.then) onCommitFinished.then(updateRecordedSequenceId);
-											else updateRecordedSequenceId();
+									// Backpressure: wait for the transaction's commit to land before recording the sequence
+									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
+									// outrun the commit/conflict-check window, and guarantees the sequence id never
+									// advances past an uncommitted write (which would diverge this node from its peers).
+									let committed;
+									try {
+										committed = committingTxn ? await committingTxn.committed : undefined;
+										if (event.onCommit) {
+											// the onCommit callback can be async and carry associated work (e.g. blob
+											// transfer); wait for it too before recording the sequence id. Pass the commit
+											// resolution through, as callbacks may use the committed txn time.
+											await event.onCommit(committed);
 										}
-									} else if (updateRecordedSequenceId) updateRecordedSequenceId();
+									} finally {
+										// Always clear the completed transaction so a later standalone write isn't appended
+										// to it (and lost), and a failed commit's rejected promise isn't re-awaited on the
+										// next beginTxn (which would brick the apply loop).
+										txnInProgress = undefined;
+									}
+									// Only reached when the commit succeeded; a failure propagates to the handler's catch
+									// and the sequence id is intentionally not advanced past the unapplied write.
+									if (updateRecordedSequenceId) updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
 									if (event.beginTxn) {
-										// if we are starting a new transaction, finish the existing one
+										// Starting a new transaction closes the existing one. When transactions are
+										// delimited by consecutive beginTxn events (end_txn only arrives after the final
+										// one), this is the backpressure point for all but the last transaction: wait for
+										// the prior commit to land before applying the next so the sequence id can't
+										// advance past an uncommitted write.
 										txnInProgress.resolve();
+										try {
+											await txnInProgress.committed;
+										} catch (error) {
+											// Transient conflicts retry without limit and never reach here, so this is a
+											// non-retryable commit failure on the prior transaction. Log and continue (rather
+											// than rethrow) so the current beginTxn still starts a fresh transaction with
+											// correct boundaries instead of having its writes applied as standalone ones.
+											logger.error?.('source-applied transaction commit failed during apply', error);
+										} finally {
+											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
+											// next beginTxn (which would brick the apply loop).
+											txnInProgress = undefined;
+										}
 									} else {
 										// write in the current transaction if one is in progress
 										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));
@@ -539,8 +606,20 @@ export function makeTable(options) {
 								}
 
 								if (event.onCommit) {
-									if (commitResolution) commitResolution.then(event.onCommit);
-									else event.onCommit();
+									if (txnInProgress) {
+										// begin_txn: commitResolution stays pending until the matching end_txn, so it
+										// can't be awaited here; onCommit is awaited at end_txn once the commit lands.
+										if (commitResolution) commitResolution.then(event.onCommit);
+										else event.onCommit();
+									} else {
+										// standalone write: backpressure on the commit before pulling the next event,
+										// and pass the commit resolution through to the callback.
+										const committed = commitResolution ? await commitResolution : undefined;
+										await event.onCommit(committed);
+									}
+								} else if (commitResolution && !txnInProgress) {
+									// standalone write with no onCommit: still backpressure on the commit.
+									await commitResolution;
 								}
 							} catch (error) {
 								logger.error?.('error in subscription handler', error);
@@ -1703,6 +1782,12 @@ export function makeTable(options) {
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							transaction.checkOverloaded();
+							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
+							// caching relies on it), so mutating in place would corrupt cached/shared state.
+							// validate() coerces values and we stamp created/updated times + the primary key
+							// below, so copy-on-mutate when recordUpdate is frozen (e.g. a record decoded during
+							// log replay) instead of writing through the frozen object.
+							if (isFrozenRecordObject(recordUpdate)) recordUpdate = { ...recordUpdate };
 							this.validate(recordUpdate, !fullUpdate);
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
@@ -1778,6 +1863,32 @@ export function makeTable(options) {
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
 						if (audit) {
+							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
+							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
+							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
+							// front — before the audit-log walk below, which can miss it: the walk stops at the depth cap, or
+							// breaks early on a not-yet-visible audit entry, before reaching txnTime, and the keyed
+							// transaction-log lookup it would otherwise use can lag a back-to-back re-delivery (that lag
+							// silently double-applied the increment — #1137). This covers the re-delivery while the ref is
+							// still on the record; a later in-order write rewrites the record and drops the ref (it survives
+							// only as previousAdditionalAuditRefs on the audit log), so that case falls back to the
+							// best-effort keyed lookup in the capped block below — see #1148. precedesExistingVersion(...)
+							// === 0 is the identity tie: same version AND same node (the local node is id 0, so an undefined
+							// options?.nodeId resolves to the same 0 the ref stored).
+							if (
+								existingEntry.additionalAuditRefs?.some(
+									(ref) =>
+										ref.version === txnTime &&
+										precedesExistingVersion(
+											txnTime,
+											{ version: txnTime, localTime: txnTime, key: id, nodeId: ref.nodeId },
+											options?.nodeId
+										) === 0
+								)
+							) {
+								write.skipped = true;
+								return; // out-of-order write already folded into this record
+							}
 							// incremental CRDT updates are only available with audit logging on
 							let localTime = existingEntry.localTime;
 							let auditedVersion = existingEntry.version;
@@ -1909,8 +2020,12 @@ export function makeTable(options) {
 								// retained window are not layered in — but the authoritative full-copy record restores exact
 								// convergence. Because we stopped before reaching txnTime, the inline duplicate detection in
 								// the walk never ran; full-copy audit-replay re-delivers writes, and re-applying one would
-								// double-apply its commutative ops, so rule that out here with a single O(1) lookup at txnTime
-								// (RocksDB audit logs are keyed by version, and the cap is RocksDB-only).
+								// double-apply its commutative ops. A re-delivered out-of-order write is already ruled out by
+								// the additionalAuditRefs check at the top of this block; this keyed lookup is the best-effort
+								// guard for the remaining case — a re-delivered write that was originally in-order (so it left
+								// no ref) and is now deeper than the cap. It is best-effort because the transaction-log lookup
+								// can intermittently miss an entry under load (tracked separately); the authoritative full-copy
+								// record still restores exact convergence.
 								logger.warn?.(
 									'Out-of-order audit reconciliation exceeded depth cap; reconciling against most recent updates only',
 									{
@@ -1945,6 +2060,19 @@ export function makeTable(options) {
 									fullUpdate
 								);
 								if (!incrementalUpdateToApply) return writeCommit(false); // if all changes are overwritten, nothing left to do
+							}
+							if (fullUpdate && !incrementalUpdateToApply && precedesExisting < 0) {
+								// Out-of-order full update whose audit walk found no succeeding updates to
+								// resequence around: the existing record is strictly newer (precedesExisting < 0),
+								// so this older full update is superseded. Falling through to the shared commit
+								// below would set recordToStore = recordUpdate and revert the newer record. Bare
+								// return (no writeCommit) matches the superseded-by-newer-put branch above so no
+								// audit record is written referencing this losing update's pre-saved blobs.
+								// Gated on precedesExisting < 0 (not <= 0) so a same-transaction put-after-delete —
+								// which arrives as a tie (precedesExisting === 0) with no committed audit yet —
+								// still falls through and applies. (harperdb/harper#1170)
+								write.skipped = true;
+								return;
 							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
@@ -2054,6 +2182,8 @@ export function makeTable(options) {
 								transaction,
 								tableToTrack: databaseName === 'system' ? null : options?.replay ? null : tableName, // don't track analytics on system tables
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
+								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
+								localOnly: options?.localOnly,
 							},
 							type,
 							false,
@@ -4157,6 +4287,9 @@ export function makeTable(options) {
 				if (!nextTxn) {
 					// no next one, then add our database
 					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
+					// drop the canonical write when a secondary store hits a transient conflict.
+					transaction.next.sourceApply = transaction.sourceApply;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
@@ -4419,6 +4552,10 @@ export function makeTable(options) {
 								}
 							}
 							if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
+							// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
+							// before stamping the primary key and created/updated times below (records are immutable —
+							// 5.2 record caching relies on it — so we must not write through the frozen object).
+							if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 							if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 						}
 						resolved = true;

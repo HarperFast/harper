@@ -21,10 +21,14 @@ import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
 	deriveCreateSchema,
+	deriveCreateOutputSchema,
 	deriveDeleteSchema,
 	deriveGetSchema,
+	deriveGetOutputSchema,
+	derivePatchOutputSchema,
 	deriveSearchSchema,
 	deriveUpdateSchema,
+	deriveUpdateOutputSchema,
 } from './schemas/derive.ts';
 
 type ExportTypes = Record<string, boolean> | undefined;
@@ -43,6 +47,11 @@ interface ResourceClassLike {
 	tableName?: string;
 	primaryKey?: string;
 	attributes?: HarperAttribute[];
+	description?: string;
+	hidden?: boolean;
+	properties?: Record<string, unknown>;
+	outputSchemas?: { [verb: string]: object };
+	mcp?: { annotations?: { [verb: string]: ToolAnnotationsLike } };
 	get?: (target: unknown, request: unknown, data?: unknown) => unknown;
 	put?: (target: unknown, data: unknown, request: unknown) => unknown;
 	post?: (target: unknown, data: unknown, request: unknown) => unknown;
@@ -51,8 +60,8 @@ interface ResourceClassLike {
 	search?: (target: unknown, request: unknown) => unknown;
 	loadAsInstance?: boolean;
 	/**
-	 * Component-author opt-in (#622): expose non-verb instance methods as MCP
-	 * tools. Each entry maps an instance-method name to an MCP tool descriptor.
+	 * Component-author opt-in: expose non-verb instance methods as MCP tools.
+	 * Each entry maps an instance-method name to an MCP tool descriptor.
 	 * RBAC stays as whatever the Resource's method itself enforces; the MCP
 	 * layer does not invent new ACLs for these.
 	 */
@@ -61,8 +70,15 @@ interface ResourceClassLike {
 		method: string;
 		description?: string;
 		inputSchema?: object;
-		annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
+		annotations?: ToolAnnotationsLike;
 	}>;
+}
+
+interface ToolAnnotationsLike {
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
 }
 
 type ResourcesRegistry = Map<string, ResourceRegistryEntry>;
@@ -402,21 +418,96 @@ function shouldEnumerate(entry: ResourceRegistryEntry): boolean {
  * for users with restricted permissions; at registration time we treat
  * the schema as "all attributes". Runtime enforcement is the real gate.
  */
+type Verb = 'get' | 'search' | 'create' | 'update' | 'patch' | 'delete';
+
+/**
+ * Per-verb sentence templates. Replaces the prior mechanical
+ * `"${verb} on resource '/X'"` output with prose grounded in the actual verb.
+ */
+const VERB_SENTENCES: Record<Verb, (ctx: { tableName?: string; primaryKey?: string; path: string }) => string> = {
+	get: ({ tableName, primaryKey, path }) => `Fetches a single ${tableName ?? path} record by ${primaryKey ?? 'id'}.`,
+	search: ({ tableName, path }) => `Searches ${tableName ?? path} records by attribute conditions.`,
+	create: ({ tableName, path }) => `Creates a new ${tableName ?? path} record.`,
+	update: ({ tableName, primaryKey, path }) =>
+		`Replaces a ${tableName ?? path} record by ${primaryKey ?? 'id'} (PUT semantics).`,
+	patch: ({ tableName, primaryKey, path }) =>
+		`Partially updates a ${tableName ?? path} record by ${primaryKey ?? 'id'}.`,
+	delete: ({ tableName, primaryKey, path }) => `Deletes a ${tableName ?? path} record by ${primaryKey ?? 'id'}.`,
+};
+
+interface VerbDescriptionContext {
+	tableDoc?: string;
+	tableName?: string;
+	primaryKey?: string;
+	path: string;
+}
+
+/**
+ * Map each verb to the Resource RBAC method that gates it at runtime.
+ * Harper exposes four predicates — allowRead / allowCreate / allowUpdate /
+ * allowDelete — so multiple verbs share the same method (get + search both
+ * gate on allowRead; update + patch both gate on allowUpdate).
+ */
+const VERB_TO_RBAC_METHOD: Record<Verb, string> = {
+	get: 'allowRead',
+	search: 'allowRead',
+	create: 'allowCreate',
+	update: 'allowUpdate',
+	patch: 'allowUpdate',
+	delete: 'allowDelete',
+};
+
+/**
+ * Compose the per-verb tool description. When the Resource carries a
+ * `static description` (or a `Table.description` from the GraphQL parser),
+ * prefix it; then the verb-specific sentence; then the runtime-RBAC note.
+ */
+function verbDescription(verb: Verb, ctx: VerbDescriptionContext): string {
+	const prefix = ctx.tableDoc ? `${ctx.tableDoc}\n\n` : '';
+	const sentence = VERB_SENTENCES[verb](ctx);
+	const allowMethod = VERB_TO_RBAC_METHOD[verb];
+	return `${prefix}${sentence} Runtime RBAC (${allowMethod}) enforces per-record access at call time.`;
+}
+
+/**
+ * Merge per-verb annotation overrides from `ResourceClass.mcp.annotations[verb]`
+ * over the defaults. Used for narrow MCP-only knobs that don't fit JSON Schema
+ * (e.g. `idempotentHint` overrides per verb).
+ */
+function mergeAnnotations(
+	verb: Verb,
+	defaults: ToolAnnotationsLike,
+	ResourceClass: ResourceClassLike
+): ToolAnnotationsLike {
+	const override = ResourceClass.mcp?.annotations?.[verb];
+	return override ? { ...defaults, ...override } : defaults;
+}
+
+/**
+ * Operations a Resource may opt into via `static mcp.annotations.<verb>.idempotentHint`.
+ * Default-empty: under MCP semantics `idempotentHint: true` means same observable
+ * outcome on repeat call; we under-annotate before mis-annotate. `update_*` (PUT
+ * semantics) is the only built-in default; `patch_*`/`delete_*` annotations are
+ * deferred until repeat-call behavior is verified end-to-end.
+ */
 function registerVerbTools(ctx: ResourceContext): number {
 	let count = 0;
-	const { suffix, ResourceClass, attributes, verbs, tableName, databaseName } = ctx;
-	const baseDescription = (verb: string) =>
-		`${verb} on resource '${ctx.path}'${tableName ? ` (table ${tableName})` : ''}. ` +
-		`Runtime RBAC (allow${verb[0].toUpperCase() + verb.slice(1)}) enforces per-record access at call time.`;
+	const { suffix, ResourceClass, attributes, verbs, tableName, databaseName, path } = ctx;
+	const tableDoc = ResourceClass.description;
+	const primaryKey = ResourceClass.primaryKey;
+	const ctxForVerb: VerbDescriptionContext = { tableDoc, tableName, primaryKey, path };
+
+	const overrideOutput = (verb: Verb): object | undefined => ResourceClass.outputSchemas?.[verb];
 
 	if (verbs.get) {
 		const name = `get_${suffix}`;
 		addTool({
 			name,
-			description: baseDescription('get'),
+			description: verbDescription('get', ctxForVerb),
 			inputSchema: deriveGetSchema(attributes, undefined),
+			outputSchema: overrideOutput('get') ?? deriveGetOutputSchema(attributes, undefined),
 			profile: 'application',
-			annotations: { readOnlyHint: true },
+			annotations: mergeAnnotations('get', { readOnlyHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeGetHandler(name, ResourceClass),
 		});
@@ -424,12 +515,14 @@ function registerVerbTools(ctx: ResourceContext): number {
 	}
 	if (verbs.search) {
 		const name = `search_${suffix}`;
+		// search_* deliberately omits outputSchema — envelope shape (records vs
+		// data, cursor vs nextCursor) is tracked in the sibling envelope issue.
 		addTool({
 			name,
-			description: baseDescription('search'),
+			description: verbDescription('search', ctxForVerb),
 			inputSchema: deriveSearchSchema(attributes, undefined),
 			profile: 'application',
-			annotations: { readOnlyHint: true },
+			annotations: mergeAnnotations('search', { readOnlyHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeSearchHandler(name, ResourceClass),
 		});
@@ -439,9 +532,11 @@ function registerVerbTools(ctx: ResourceContext): number {
 		const name = `create_${suffix}`;
 		addTool({
 			name,
-			description: baseDescription('create'),
+			description: verbDescription('create', ctxForVerb),
 			inputSchema: deriveCreateSchema(attributes, undefined),
+			outputSchema: overrideOutput('create') ?? deriveCreateOutputSchema(attributes, undefined),
 			profile: 'application',
+			annotations: mergeAnnotations('create', {}, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'insert'),
 			handler: makeCreateHandler(name, ResourceClass),
 		});
@@ -451,9 +546,13 @@ function registerVerbTools(ctx: ResourceContext): number {
 		const name = `update_${suffix}`;
 		addTool({
 			name,
-			description: baseDescription('update'),
+			description: verbDescription('update', ctxForVerb),
 			inputSchema: deriveUpdateSchema(attributes, undefined),
+			outputSchema: overrideOutput('update') ?? deriveUpdateOutputSchema(attributes, undefined),
 			profile: 'application',
+			// PUT semantics: replacing with the same payload yields the same state,
+			// so the observable outcome on repeat call is identical.
+			annotations: mergeAnnotations('update', { idempotentHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, ResourceClass, 'put'),
 		});
@@ -462,9 +561,13 @@ function registerVerbTools(ctx: ResourceContext): number {
 		const name = `patch_${suffix}`;
 		addTool({
 			name,
-			description: baseDescription('patch'),
+			description: verbDescription('patch', ctxForVerb),
 			inputSchema: deriveUpdateSchema(attributes, undefined),
+			outputSchema: overrideOutput('patch') ?? derivePatchOutputSchema(attributes, undefined),
 			profile: 'application',
+			// patch_* idempotency depends on partial-update semantics; default
+			// omitted, opt-in via static mcp.annotations.patch.idempotentHint.
+			annotations: mergeAnnotations('patch', {}, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, ResourceClass, 'patch'),
 		});
@@ -472,12 +575,23 @@ function registerVerbTools(ctx: ResourceContext): number {
 	}
 	if (verbs.delete) {
 		const name = `delete_${suffix}`;
+		// outputSchema deliberately omitted (matches the search_* precedent).
+		// `Table.delete` returns Promise<boolean>; `makeDeleteHandler` wraps it as
+		// `wrapResult(data ?? { ok: true })`, and wrapResult only sets
+		// `structuredContent` when data is an object. So a boolean handler
+		// return produces text content only — no structuredContent for an
+		// outputSchema to validate. An author who returns a structured
+		// envelope can opt in via `static outputSchemas.delete`.
+		const deleteOverride = overrideOutput('delete');
 		addTool({
 			name,
-			description: baseDescription('delete'),
+			description: verbDescription('delete', ctxForVerb),
 			inputSchema: deriveDeleteSchema(attributes, undefined),
+			...(deleteOverride ? { outputSchema: deleteOverride } : {}),
 			profile: 'application',
-			annotations: { destructiveHint: true },
+			// delete_* idempotency depends on delete-of-deleted behavior; default
+			// omits idempotentHint until verified end-to-end.
+			annotations: mergeAnnotations('delete', { destructiveHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'delete'),
 			handler: makeDeleteHandler(name, ResourceClass),
 		});
@@ -500,6 +614,18 @@ function registerVerbTools(ctx: ResourceContext): number {
  * the Resource is responsible for its own ACLs. An LLM that calls a tool
  * it shouldn't gets the Resource's natural error back as `isError: true`.
  */
+// Dedup keys for warn-once telemetry on missing description / inputSchema.
+// Keyed by `${path}:${name}`. Survives across `registerApplicationTools()`
+// re-invocations so re-registering the same Resource doesn't re-spam the log.
+// Test seam below resets these.
+const _warnedMissingDesc = new Set<string>();
+const _warnedMissingInput = new Set<string>();
+
+export function _resetCustomToolWarningsForTest(): void {
+	_warnedMissingDesc.clear();
+	_warnedMissingInput.clear();
+}
+
 function registerCustomMcpTools(ResourceClass: ResourceClassLike, path: string): number {
 	const tools = ResourceClass.mcpTools;
 	if (!Array.isArray(tools) || tools.length === 0) return 0;
@@ -518,12 +644,38 @@ function registerCustomMcpTools(ResourceClass: ResourceClassLike, path: string):
 			);
 			continue;
 		}
+		// Nudge component authors toward shipping description + inputSchema. Both
+		// materially affect LLM tool selection: description tells the model WHICH
+		// tool to pick; inputSchema tells it HOW to fill the arguments. Falling
+		// back to a generic description + `additionalProperties: true` makes the
+		// tool callable but hard to invoke correctly.
+		const dedupKey = `${path}:${def.name}`;
+		let description = def.description;
+		if (!description) {
+			if (!_warnedMissingDesc.has(dedupKey)) {
+				_warnedMissingDesc.add(dedupKey);
+				harperLogger.warn(
+					`MCP application: Resource '${path}' exposes mcpTool '${def.name}' without a description. ` +
+						`LLM tool selection degrades without one; add { description: '...' } to the mcpTools entry.`
+				);
+			}
+			description = `Custom MCP tool exposed by Resource '${path}' (method '${methodName}'). RBAC is enforced by the Resource itself.`;
+		}
+		let inputSchema = def.inputSchema;
+		if (!inputSchema) {
+			if (!_warnedMissingInput.has(dedupKey)) {
+				_warnedMissingInput.add(dedupKey);
+				harperLogger.warn(
+					`MCP application: Resource '${path}' exposes mcpTool '${def.name}' without an inputSchema. ` +
+						`LLM cannot construct typed arguments; add { inputSchema: { type: 'object', properties: {...}, required: [...] } } to the mcpTools entry.`
+				);
+			}
+			inputSchema = { type: 'object', additionalProperties: true };
+		}
 		addTool({
 			name: def.name,
-			description:
-				def.description ??
-				`Custom MCP tool exposed by Resource '${path}' (method '${methodName}'). RBAC is enforced by the Resource itself.`,
-			inputSchema: def.inputSchema ?? { type: 'object', additionalProperties: true },
+			description,
+			inputSchema,
 			profile: 'application',
 			...(def.annotations ? { annotations: def.annotations } : {}),
 			// Per the design: custom-tool RBAC is delegated to the Resource. No
@@ -575,6 +727,12 @@ export function registerApplicationTools(): void {
 		resourcesConsidered++;
 		if (!shouldEnumerate(entry)) continue;
 		const ResourceClass = entry.Resource;
+		// @hidden type-level: suppress the Resource from MCP tool listing entirely.
+		// Data remains accessible via direct query/RBAC; only descriptive surfaces drop it.
+		if (ResourceClass?.hidden === true) {
+			harperLogger.trace(`MCP application: '/${path}' suppressed from tool listing (@hidden)`);
+			continue;
+		}
 		const verbs = detectVerbs(ResourceClass);
 		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;

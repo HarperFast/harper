@@ -90,6 +90,9 @@ export interface Context {
 	replicateTo?: string[];
 	replicateFrom?: boolean;
 	replicatedConfirmation?: number;
+	/** Set when applying a write from a canonical source of truth (replication peer or external
+	 * caching source); such commits retry transient conflicts without the request-path retry cap. */
+	sourceApply?: boolean;
 	originatingOperation?: OperationFunctionName;
 	previousResidency?: string[];
 	loadedFromSource?: boolean;

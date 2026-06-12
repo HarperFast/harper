@@ -31,6 +31,7 @@ import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
+import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 
 /**
@@ -158,30 +159,22 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	}
 	// Read RocksDB memory config lazily so env/CLI overrides applied after module load are
 	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
-	// configured; the WriteBufferManager is opt-in (0 disables).
-	//
-	// We enforce types rather than coerce — values from YAML config and env vars flow
-	// through configUtils.castConfigValue which produces proper numbers/booleans/null,
-	// so anything else is misconfiguration and should fall through to the default.
+	// configured; the WriteBufferManager defaults to 1/3 of the block cache size (set its size
+	// to 0 to disable). See resolveRocksMemoryConfig for the defaulting rules.
 	//
 	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
 	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
 	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
 	// In practice that's fine — these come from process-level config that doesn't change.
-	const configuredBlockCacheSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE);
-	const blockCacheSize =
-		typeof configuredBlockCacheSize === 'number' && configuredBlockCacheSize > 0
-			? configuredBlockCacheSize
-			: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25;
-	const writeBufferManagerSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE);
-	const writeBufferManagerCostToCache = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE);
-	const writeBufferManagerAllowStall = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL);
-	RocksDatabase.config({
-		blockCacheSize,
-		...(typeof writeBufferManagerSize === 'number' && writeBufferManagerSize > 0 ? { writeBufferManagerSize } : {}),
-		...(typeof writeBufferManagerCostToCache === 'boolean' ? { writeBufferManagerCostToCache } : {}),
-		...(typeof writeBufferManagerAllowStall === 'boolean' ? { writeBufferManagerAllowStall } : {}),
-	});
+	RocksDatabase.config(
+		resolveRocksMemoryConfig({
+			configuredBlockCacheSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE),
+			configuredWriteBufferManagerSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE),
+			configuredCostToCache: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE),
+			configuredAllowStall: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL),
+			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
+		})
+	);
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
 		if (isReadOnlyMode()) {
@@ -506,6 +499,7 @@ function initStores(
 
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
+		if (value == null) continue;
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
 			// primary key
@@ -607,6 +601,9 @@ function initStores(
 					envGet(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
 				dbiInit.compression.threshold = compressionThreshold;
 			}
+			// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
+			if (typeof primaryAttribute.randomAccessFields === 'boolean')
+				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
 					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key } as any),
@@ -638,11 +635,29 @@ function initStores(
 					if (existingAttribute) existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1, attribute);
 					else existingAttributes.push(attribute);
 					attributesUpdated = true;
+				} else if (!attribute.isPrimaryKey) {
+					// Non-indexed, non-primary-key attributes (e.g. plain schema fields like `name: String`)
+					// must also be kept in sync so that describe_database reflects schema changes after a
+					// hot-reload / worker restart. Without this, resetDatabases() re-reads these attributes
+					// from attributesDbi but never merges them back into table.attributes — causing stale
+					// schema metadata until a full kill+restart. (RE-7)
+					const existingIdx = existingAttributes.findIndex((ea) => ea.name === attribute.attribute);
+					if (existingIdx >= 0) {
+						existingAttributes.splice(existingIdx, 1, attribute);
+						attributesUpdated = true;
+					} else {
+						existingAttributes.push(attribute);
+						attributesUpdated = true;
+					}
 				}
 			} catch (error) {
 				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
 			}
 		}
+		// Collect removals first; splicing while iterating `existingAttributes` skips adjacent
+		// elements, which would silently leave stale fields behind when two or more were dropped
+		// in the same reload.
+		const toRemove = [];
 		for (const existingAttribute of existingAttributes) {
 			const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 			if (!attribute) {
@@ -663,10 +678,21 @@ function initStores(
 				}
 				if (existingAttribute.indexed) {
 					// we only remove attributes if they were indexed, in order to support dropAttribute that removes dynamic indexed attributes
-					existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
-					attributesUpdated = true;
+					toRemove.push(existingAttribute);
+				} else if (!existingAttribute.isPrimaryKey) {
+					// Skip runtime-only attributes (e.g. relationship attrs — table()'s persistence loop
+					// `continue`s past them at line 1138). They are present in `existingAttributes` but
+					// never in the `attributes` list rebuilt from attributesDbi; removing them would drop
+					// the resolver/search support added by updatedAttributes(). Computed attrs ARE
+					// persisted, so only `relationship` is excluded here.
+					if (existingAttribute.relationship) continue;
+					toRemove.push(existingAttribute);
 				}
 			}
+		}
+		for (const existingAttribute of toRemove) {
+			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
+			attributesUpdated = true;
 		}
 		if (table && !recreateForEngineChange) {
 			if (attributesUpdated) {
@@ -731,10 +757,14 @@ interface TableDefinition {
 	sealed?: boolean;
 	splitSegments?: boolean;
 	replicate?: boolean;
+	randomAccessFields?: boolean;
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
 	origin?: string;
+	description?: string;
+	properties?: Record<string, any>;
+	hidden?: boolean;
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -899,6 +929,14 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 	const objectStorage =
 		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	const dbiInit = createOpenDBIObject(!objectStorage, objectStorage);
+	// Custom-index object stores (e.g. HNSW vector graphs) hold fixed-shape internal nodes —
+	// numeric-keyed per-level connection arrays and quantized bins — that rely on random-access
+	// struct encoding. Keep them in struct mode regardless of the table's storage.randomAccessFields
+	// setting: their node shapes are controlled, so the wide/variably-typed OOM + divergence risks
+	// that motivate the table-level default-off don't apply, and disabling structs corrupts the graph.
+	if (attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore) {
+		dbiInit.randomAccessStructure = true;
+	}
 	let dbi:
 		| LMDBDatabase
 		| (RocksDatabase & {
@@ -950,9 +988,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		sealed,
 		splitSegments,
 		replicate,
+		randomAccessFields,
 		trackDeletes,
 		schemaDefined,
 		origin,
+		description,
+		properties,
+		hidden,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	const rootStore = database({ database: databaseName, table: tableName });
@@ -965,6 +1007,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	let primaryKey;
 	let primaryKeyAttribute;
 	let attributesDbi;
+	// Track whether the caller explicitly supplied schemaDefined; callers that omit it (cluster
+	// schema-replication in Table.ts, dataLoader.ts) are operating on already-live tables whose
+	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
+	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -986,11 +1032,21 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// it table already exists, get the split segments setting
 		if (splitSegments == undefined) splitSegments = Table.splitSegments;
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
+		// Re-assert from the live declaration so a stale value on disk (replicated event,
+		// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
+		// callers that omit the flag (cluster schema-replication, data loader) don't flip a
+		// dynamic table to true via the default at the top of table().
+		if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
+		// Refresh class-level schema metadata to track docstring/directive changes across reloads.
+		Table.description = description;
+		Table.properties = properties;
+		Table.hidden = hidden;
 	} else {
 		const auditStore = rootStore.auditStore;
 		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primaryKey = primaryKeyAttribute.name;
 		primaryKeyAttribute.isPrimaryKey = true;
+		primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 		primaryKeyAttribute.schemaDefined = schemaDefined;
 		// can't change compression after the fact (except threshold), so save only when we create the table
 		primaryKeyAttribute.compression = getDefaultCompression();
@@ -1002,6 +1058,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
 		if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
 		if (typeof replicate === 'boolean') primaryKeyAttribute.replicate = replicate;
+		// An explicit directive PINS this table's encoding: we persist the boolean, so later changes
+		// to the global storage.randomAccessFields default never affect this table. Tables WITHOUT the
+		// directive are intentionally not persisted here — they follow the current global default on
+		// each open (a runtime lever to flip encoding fleet-wide). Switching either way is safe: the
+		// struct READ hook always stays on and struct (0x20-0x3f) vs classic-record (0x40-0x7f) bytes
+		// are disjoint, so already-written records still decode; only the encoding of NEW writes changes.
+		if (typeof randomAccessFields === 'boolean') primaryKeyAttribute.randomAccessFields = randomAccessFields;
 		if (origin) {
 			if (!primaryKeyAttribute.origins) primaryKeyAttribute.origins = [origin];
 			else if (!primaryKeyAttribute.origins.includes(origin)) primaryKeyAttribute.origins.push(origin);
@@ -1009,6 +1072,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		logger.trace(`${tableName} table loading, opening primary store`);
 		const dbiInit = createOpenDBIObject(false, true);
 		dbiInit.compression = primaryKeyAttribute.compression;
+		// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
+		if (typeof primaryKeyAttribute.randomAccessFields === 'boolean')
+			dbiInit.randomAccessStructure = primaryKeyAttribute.randomAccessFields;
 		const dbiName = tableName + '/';
 
 		if (rootStore instanceof RocksDatabase) {
@@ -1075,6 +1141,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					attributes,
 					schemaDefined,
 					dbisDB: attributesDbi,
+					description,
+					properties,
+					hidden,
 				})
 			);
 			Table.schemaVersion = 1;
@@ -1108,6 +1177,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	Table.dbisDB = attributesDbi;
 	const indicesToRemove = [];
 	for (const { key, value } of attributesDbi.getRange({ start: true })) {
+		if (value == null) continue;
 		let [attributeTableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') attribute_name = value.name; // primary key
 		if (attribute_name) {
@@ -1225,7 +1295,19 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							break;
 						}
 						if (hasExistingData) {
-							attribute.lastIndexedKey = attributeDescriptor?.lastIndexedKey ?? undefined;
+							// When the index definition itself has structurally changed (different distance
+							// metric, M, quantization, etc.), any
+							// previous lastIndexedKey checkpoint is for a graph built under the old options —
+							// resuming from it would mix two incompatible graphs. Reset to undefined so
+							// runIndexing clears the dbi and starts from scratch.
+							// For pure crash-recovery (same options, different PID/restartNumber), preserve
+							// the checkpoint so the backfill resumes rather than restarts.
+							const indexOptionsChanged =
+								JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
+								JSON.stringify(stripSearchOnly(attribute.indexed));
+							attribute.lastIndexedKey = indexOptionsChanged
+								? undefined
+								: (attributeDescriptor?.lastIndexedKey ?? undefined);
 							attribute.indexingPID = process.pid;
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
@@ -1351,6 +1433,10 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
 				outstanding++;
+				// Custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`, so the
+				// outstanding-based yield below never fires for them. Track that this row did synchronous
+				// indexing work so we can still yield the event loop after it.
+				let didSynchronousIndexing = false;
 				// every index operation needs to be guarded by the version still be the same. If it has already changed before
 				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
 				// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
@@ -1364,6 +1450,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						const value = record && (resolver ? resolver(record) : record[property]);
 						if (index.customIndex) {
 							index.customIndex.index(key, value);
+							didSynchronousIndexing = true;
 							continue;
 						}
 						const values = getIndexedValues(value, index.indexNulls);
@@ -1402,7 +1489,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					if (interrupted) return;
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
+				else if (outstanding > MIN_OUTSTANDING_INDEXING)
+					await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
+				else if (didSynchronousIndexing) await new Promise((resolve) => setImmediate(resolve)); // custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
 			}
 		}
 		// Await the last pending put. If it rejects, that is also an indexing error.

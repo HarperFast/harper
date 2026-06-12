@@ -14,6 +14,8 @@
 export interface HarperAttribute {
 	name: string;
 	type?: string;
+	description?: string;
+	hidden?: boolean;
 	nullable?: boolean;
 	isPrimaryKey?: boolean;
 	properties?: HarperAttribute[];
@@ -67,7 +69,7 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 }
 
 function attributeToProperty(attr: HarperAttribute): object {
-	let base: object;
+	let base: { type?: string | string[]; description?: string; [key: string]: unknown };
 	if (attr.type === 'Object' && attr.properties) {
 		base = {
 			type: 'object',
@@ -79,14 +81,17 @@ function attributeToProperty(attr: HarperAttribute): object {
 			items: attributeToProperty(attr.elements),
 		};
 	} else {
-		base = harperTypeToJsonSchema(attr.type);
+		base = harperTypeToJsonSchema(attr.type) as typeof base;
 	}
-	if (attr.nullable && 'type' in (base as { type?: unknown })) {
-		const t = (base as { type: string | string[] }).type;
-		const types = Array.isArray(t) ? t : [t];
+	if (attr.nullable && 'type' in base) {
+		const t = base.type;
+		const types = Array.isArray(t) ? t : [t as string];
 		if (!types.includes('null')) {
-			(base as { type: string[] }).type = [...types, 'null'];
+			base.type = [...types, 'null'];
 		}
+	}
+	if (attr.description && !base.description) {
+		base.description = attr.description;
 	}
 	return base;
 }
@@ -108,6 +113,22 @@ function attributeAllowed(
 }
 
 /**
+ * Composed visibility: an attribute is visible when it is NOT @hidden AND the
+ * caller is allowed under attribute_permissions for the requested mode. The
+ * `@hidden` directive is a metadata-visibility signal — it suppresses the
+ * attribute from MCP descriptors and OpenAPI emit. RBAC remains the
+ * enforcement mechanism for data access.
+ */
+function attributeVisible(
+	attr: HarperAttribute,
+	permissions: AttributePermissionEntry[] | undefined,
+	mode: Mode
+): boolean {
+	if (attr.hidden) return false;
+	return attributeAllowed(attr.name, permissions, mode);
+}
+
+/**
  * Build a JSON Schema object covering some subset of the table's attributes.
  * `mode` controls how attribute_permissions are interpreted; `include`
  * optionally limits to a subset (e.g. primary-key-only for `delete_*`).
@@ -122,7 +143,7 @@ function buildPropertiesObject(
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (include && !include(attr)) continue;
-		if (!attributeAllowed(attr.name, permissions, mode)) continue;
+		if (!attributeVisible(attr, permissions, mode)) continue;
 		// Skip auto-managed columns from write inputs — Harper assigns them.
 		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
 		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
@@ -164,7 +185,7 @@ export function deriveSearchSchema(
 ): object {
 	// `conditions` is freeform — Harper supports many comparators; we expose
 	// the common subset and rely on server-side validation for the rest.
-	const readableAttrs = attributes.filter((a) => attributeAllowed(a.name, permissions, 'read'));
+	const readableAttrs = attributes.filter((a) => attributeVisible(a, permissions, 'read'));
 	const attrNames = readableAttrs.map((a) => a.name);
 	return {
 		type: 'object',
@@ -252,5 +273,84 @@ export function deriveDeleteSchema(
 				: { type: 'string', description: 'Primary key.' },
 		},
 		required: ['id'],
+	};
+}
+
+/**
+ * Full record shape — every visible attribute as it appears in returned records.
+ * Used as the outputSchema for get/create/update/patch. Reflects what the
+ * server returns, not what the client sends: server-assigned fields
+ * (@createdTime, @updatedTime, @primaryKey) appear as required in output even
+ * though they're optional on input.
+ *
+ * `search_*` deliberately omits outputSchema — envelope shape (records vs
+ * data, cursor vs nextCursor) is tracked in the sibling issue.
+ */
+function deriveRecordSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	const properties: Record<string, object> = {};
+	const required: string[] = [];
+	for (const attr of attributes) {
+		if (!attributeVisible(attr, permissions, 'read')) continue;
+		properties[attr.name] = attributeToProperty(attr);
+		const requiredOnOutput =
+			attr.nullable === false || attr.assignCreatedTime || attr.assignUpdatedTime || attr.isPrimaryKey;
+		if (requiredOnOutput) required.push(attr.name);
+	}
+	const schema: {
+		type: string;
+		properties: Record<string, object>;
+		required?: string[];
+		additionalProperties: boolean;
+	} = {
+		type: 'object',
+		properties,
+		additionalProperties: false,
+	};
+	if (required.length > 0) schema.required = required;
+	return schema;
+}
+
+export function deriveGetOutputSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveRecordSchema(attributes, permissions);
+}
+
+export function deriveCreateOutputSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveRecordSchema(attributes, permissions);
+}
+
+export function deriveUpdateOutputSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveRecordSchema(attributes, permissions);
+}
+
+export function derivePatchOutputSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveRecordSchema(attributes, permissions);
+}
+
+/**
+ * Output schema for delete responses. Table.delete returns Promise<boolean>;
+ * makeDeleteHandler wraps it as wrapResult(data ?? { ok: true }) — so on
+ * success the MCP response carries a text content of "true" with no
+ * structuredContent. Advertise the actual contract (boolean) rather than a
+ * synthesized object envelope the handler never produces.
+ */
+export function deriveDeleteOutputSchema(_attributes: HarperAttribute[]): object {
+	return {
+		type: 'boolean',
+		description: 'True when the record was deleted; false when no record matched the primary key.',
 	};
 }

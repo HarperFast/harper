@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert/strict');
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
@@ -518,5 +519,38 @@ describe.skip('Test installer module', () => {
 			const configPath = path.join(testRoot, 'harperdb-config.yaml');
 			expect(fs.existsSync(configPath)).to.be.true;
 		});
+	});
+});
+
+// Regression guard for applyInstallModeDefaults: a 'dev' install must persist the dev config defaults but
+// must NOT set process.env.DEV_MODE. That env var is set only by the `harper dev` command and is the sole
+// source of truth for dev-only runtime behavior (component auto-reload watcher, dev-only components). When
+// install runs in-process from `harper run .` (first-run install), leaking it would make a plain `run`
+// behave like `dev` until the next restart. Tested against the real exported helper (no sinon/rewire).
+describe('applyInstallModeDefaults', () => {
+	const { applyInstallModeDefaults } = require('#js/utility/install/installer');
+
+	const readDevMode = () =>
+		Object.prototype.hasOwnProperty.call(process.env, 'DEV_MODE') ? process.env.DEV_MODE : undefined;
+
+	it('persists the dev config defaults for a dev install', () => {
+		const args = applyInstallModeDefaults({}, 'dev');
+		// Representative dev defaults that must survive into the persisted config.
+		assert.equal(args.threads_count, 1);
+		assert.equal(args.authentication_authorizeLocal, true);
+		assert.equal(args.http_cors, true);
+	});
+
+	it('does not mutate process.env.DEV_MODE for a dev install', () => {
+		const before = readDevMode();
+		applyInstallModeDefaults({}, 'dev');
+		assert.equal(readDevMode(), before);
+	});
+
+	it('does not apply dev defaults for a prod install', () => {
+		const args = applyInstallModeDefaults({}, 'prod');
+		assert.equal(args.threads_count, undefined);
+		assert.equal(args.authentication_authorizeLocal, undefined);
+		assert.equal(args.http_cors, undefined);
 	});
 });

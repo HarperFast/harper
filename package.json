@@ -1,7 +1,7 @@
 {
 	"name": "harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
-	"version": "5.1.0-beta.1",
+	"version": "5.1.0-beta.3",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -59,7 +59,6 @@
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
-		"test:integration:api-tests": "node --test integrationTests/apiTests/tests/testSuite.mjs",
 		"test:integration": "harper-integration-test-run",
 		"test:integration:all": "npm run test:integration -- \"integrationTests/**/*.test.ts\" \"integrationTests/**/*.test.mjs\"",
 		"test:integration:mcp": "npm run test:integration -- \"integrationTests/mcp/**/*.test.ts\"",
@@ -104,8 +103,7 @@
 		}
 	},
 	"engines": {
-		"node": ">=20",
-		"minimum-node": "20.0.0"
+		"node": "^22.18.0 || >=24.0.0"
 	},
 	"devEngines": {
 		"runtime": {
@@ -169,7 +167,7 @@
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^9.1.3",
 		"@harperfast/extended-iterable": "^1.0.1",
-		"@harperfast/rocksdb-js": "^1.4.2",
+		"@harperfast/rocksdb-js": "^2.0.0",
 		"@turf/area": "6.5.0",
 		"@turf/boolean-contains": "6.5.0",
 		"@turf/boolean-disjoint": "6.5.0",
@@ -212,7 +210,7 @@
 		"minimist": "1.2.8",
 		"moment": "2.30.1",
 		"mqtt-packet": "~9.0.1",
-		"msgpackr": "^2.0.1",
+		"msgpackr": "^2.0.4",
 		"needle": "3.5.0",
 		"node-forge": "^1.3.1",
 		"node-stream-zip": "1.15.0",
@@ -233,7 +231,7 @@
 		"ses": "^1.15.0",
 		"stream-chain": "2.2.5",
 		"stream-json": "1.9.1",
-		"structon": "^1.0.4",
+		"structon": "^1.0.7",
 		"systeminformation": "^5.31.4",
 		"tar-fs": "^3.1.2",
 		"ulidx": "0.5.0",

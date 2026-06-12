@@ -222,4 +222,43 @@ describe('Test operationsValidation module', () => {
 			expect(result.message).to.equal('Project name can only contain alphanumeric, dash and underscores characters');
 		});
 	});
+
+	describe('Test deployComponentValidator function', () => {
+		it('accepts valid package-based deploy request', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', package: '@scope/pkg' });
+			expect(result).to.be.undefined;
+		});
+
+		it('accepts urlPath alongside package', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', package: '@scope/pkg', urlPath: '/api' });
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects urlPath without package', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', urlPath: '/api' });
+			expect(result).to.be.ok;
+			expect(result.message).to.include('urlPath');
+		});
+
+		it('rejects urlPath containing ..', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				urlPath: '../etc/passwd',
+			});
+			expect(result).to.be.ok;
+			expect(result.message).to.include('urlPath');
+		});
+
+		it('rejects empty urlPath', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', urlPath: '' });
+			expect(result).to.be.ok;
+		});
+
+		it('rejects missing project', () => {
+			const result = validator.deployComponentValidator({ package: 'pkg' });
+			expect(result).to.be.ok;
+			expect(result.message).to.include('project');
+		});
+	});
 });

@@ -52,7 +52,7 @@ jobs:
     # Note: the `gemini-review` label name is matched there too —
     # `_gemini-review.yml`'s authorize `if:`, not in this caller.
     if: ${{ vars.GEMINI_ALWAYS_ON == 'true' || github.event.action == 'labeled' }}
-    uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@2be0f702b114e39b90eed90962922ef64df58482 # main 2026-06-03 (post #52 — calibration: Harper-aware wiring for the Gemini leg, skills-ref v1.7.0, surface-findings rule, access-control blocker guidance, public-skill dedup)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@3f2300a39910a0983eb74967dedeebd8c3c98adc # main 2026-06-08 (post #57 — week-of-06-01 calibration: severity-discipline non-blocker bullets, async-commit-ordering check, non-critical-work-on-critical-path guard)
     # Caller-side permissions at the calling-job level (NOT workflow-
     # level — that placement caps the reusable's per-job grants below
     # what they need and breaks the workflow at startup; see
@@ -70,7 +70,7 @@ jobs:
       # duplication is unavoidable: reusable workflows can't introspect
       # their own ref (`github.workflow_ref` resolves to the CALLER's
       # ref in workflow_call context), and `uses: …@<ref>` is literal.
-      ai-review-prompts-ref: 2be0f702b114e39b90eed90962922ef64df58482
+      ai-review-prompts-ref: 3f2300a39910a0983eb74967dedeebd8c3c98adc
       review-layers: |
         universal
         harper/common

@@ -258,11 +258,12 @@ function enumerate(profile: McpProfile): ResourceDescriptor[] {
 
 		// harper://schema/{database}/{table} — one entry per table backing a Resource.
 		// No list-time RBAC filter; readTableSchema enforces describe/read perms.
-		for (const { db, table } of enumerateTableBackedResources()) {
+		for (const { db, table, description: tableDoc } of enumerateTableBackedResources()) {
+			const base = `Attribute definitions for ${db}.${table}, filtered at read time by your role's attribute_permissions.`;
 			out.push({
 				uri: `harper://schema/${db}/${table}`,
 				name: `${db}.${table} schema`,
-				description: `Attribute definitions for ${db}.${table}, filtered at read time by your role's attribute_permissions.`,
+				description: tableDoc ? `${tableDoc} ${base}` : base,
 				mimeType: 'application/json',
 			});
 		}
@@ -277,19 +278,26 @@ function enumerate(profile: McpProfile): ResourceDescriptor[] {
 	return out;
 }
 
-function enumerateTableBackedResources(): Array<{ db: string; table: string }> {
+function enumerateTableBackedResources(): Array<{ db: string; table: string; description?: string }> {
 	const seen = new Set<string>();
-	const result: Array<{ db: string; table: string }> = [];
+	const result: Array<{ db: string; table: string; description?: string }> = [];
 	for (const entry of getResources().values()) {
 		if (!isMcpExposed(entry)) continue;
-		const ResourceClass = entry.Resource;
-		const db = (ResourceClass as { databaseName?: string })?.databaseName;
-		const table = (ResourceClass as { tableName?: string })?.tableName;
+		const ResourceClass = entry.Resource as {
+			databaseName?: string;
+			tableName?: string;
+			description?: string;
+			hidden?: boolean;
+		};
+		// @hidden suppresses the Resource from descriptive surfaces (MCP + OpenAPI).
+		if (ResourceClass?.hidden === true) continue;
+		const db = ResourceClass?.databaseName;
+		const table = ResourceClass?.tableName;
 		if (!db || !table) continue;
 		const key = `${db}/${table}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		result.push({ db, table });
+		result.push({ db, table, description: ResourceClass?.description });
 	}
 	return result;
 }
@@ -300,12 +308,18 @@ function enumerateAppHttpResources(): ResourceDescriptor[] {
 	const out: ResourceDescriptor[] = [];
 	for (const [path, entry] of getResources()) {
 		if (!isMcpExposed(entry)) continue;
-		const ResourceClass = entry.Resource as { prototype?: unknown } | undefined;
+		const ResourceClass = entry.Resource as { prototype?: unknown; description?: string; hidden?: boolean } | undefined;
+		// @hidden suppresses the Resource from descriptive surfaces (MCP + OpenAPI).
+		if (ResourceClass?.hidden === true) continue;
 		if (!hasRestVerbs(ResourceClass?.prototype)) continue;
+		const tableDoc = ResourceClass?.description;
+		const description = tableDoc
+			? `${tableDoc} Application resource at /${path}. Resolves in-process via Resources.getMatch.`
+			: `Application resource at /${path}. Resolves in-process via Resources.getMatch.`;
 		out.push({
 			uri: `${prefix}/${path}`,
 			name: path,
-			description: `Application resource at /${path}. Resolves in-process via Resources.getMatch.`,
+			description,
 			mimeType: 'application/json',
 		});
 	}

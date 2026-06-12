@@ -3,6 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { setTxnExpiration } = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
+const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -60,5 +61,67 @@ describe('Txn Expiration', () => {
 	});
 	after(function () {
 		setTxnExpiration(30000);
+	});
+});
+
+describe('Read Txn Expiration', () => {
+	let SlowReadResource;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		let BasicTable = table({
+			table: 'ReadTxnTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		SlowReadResource = class extends BasicTable {
+			async get(query) {
+				const result = super.get(query);
+				await delay(50);
+				return result;
+			}
+		};
+		if (SlowReadResource.primaryStore instanceof RocksDatabase) this.skip();
+	});
+
+	it('Read txn will be ended after timeout', async function () {
+		await SlowReadResource.put(1, { name: 'one' });
+
+		// set timeout to minimum, 15s = 1 tick, openTimer > 1 means txn is expired
+		const trackedTxns = setReadTxnExpiration(15000);
+
+		const readPromise = SlowReadResource.get(1);
+		await delay(20);
+
+		const before = trackedTxns.length;
+		checkReadTxnTimeouts();
+		checkReadTxnTimeouts();
+		checkReadTxnTimeouts();
+		checkReadTxnTimeouts();
+		checkReadTxnTimeouts();
+
+		assert.ok(
+			trackedTxns.length < before,
+			`expected a txn to be removed; trackedTxns went ${before} -> ${trackedTxns.length}`
+		);
+		await readPromise;
+	});
+
+	it('Read txn below threshold is not expired', async function () {
+		setReadTxnExpiration(60000);
+
+		await SlowReadResource.put(2, { name: 'two' });
+		const readPromise = SlowReadResource.get(2);
+		await delay(20);
+
+		// only 2 ticks
+		checkReadTxnTimeouts();
+
+		const result = await readPromise;
+		assert.equal(result.name, 'two');
+	});
+
+	after(function () {
+		setReadTxnExpiration(300000);
 	});
 });

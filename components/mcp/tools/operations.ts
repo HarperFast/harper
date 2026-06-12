@@ -28,6 +28,7 @@ import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
 import { addTool, canRoleInvokeOperation, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
 import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
+import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 
 // Eager-resolved at module load. The map is built at Harper boot and
 // doesn't mutate, so caching here is safe.
@@ -147,6 +148,26 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 const READ_ONLY_PREFIXES: readonly string[] = ['describe_', 'list_', 'search_', 'get_', 'read_'];
 const READ_ONLY_NAMES: ReadonlySet<string> = new Set(['system_information', 'status']);
 
+/**
+ * Operations annotated with `idempotentHint: true`. Under MCP semantics this
+ * is a STRONGER claim than "doesn't crash on retry": the second call must
+ * produce the same observable outcome as the first. `add_user` is NOT
+ * idempotent in this sense — the second call returns an "already exists"
+ * error rather than the created user.
+ *
+ * Default-empty. Entries are added only after verifying the handler's
+ * repeat-call behavior end-to-end. Under-annotate before mis-annotate.
+ *
+ * Note: read-only operations (DESCRIBE_*, LIST_*, SEARCH_*, GET_*, READ_*,
+ * system_information) are covered by `readOnlyHint: true` — that's the
+ * stronger and correct signal for queries.
+ */
+const IDEMPOTENT_OPERATIONS: ReadonlySet<string> = new Set([
+	// Intentionally empty for v1. Candidates that need pre-merge verification:
+	// - upsert (atomic insert-or-update; same payload should yield same state)
+	// - set_configuration (state-set semantics — confirm; if it's state-merge, NOT idempotent)
+]);
+
 function isReadOnly(operationName: string): boolean {
 	if (READ_ONLY_NAMES.has(operationName)) return true;
 	return READ_ONLY_PREFIXES.some((p) => operationName.startsWith(p));
@@ -154,6 +175,10 @@ function isReadOnly(operationName: string): boolean {
 
 function isDestructive(operationName: string): boolean {
 	return DESTRUCTIVE_OPERATIONS.has(operationName);
+}
+
+function isIdempotent(operationName: string): boolean {
+	return IDEMPOTENT_OPERATIONS.has(operationName);
 }
 
 /**
@@ -193,6 +218,8 @@ function getOperationsConfig(): OperationsConfig {
 }
 
 function buildDescription(operationName: string, hasCuratedSchema: boolean): string {
+	const curated = OPERATION_DESCRIPTIONS[operationName];
+	if (curated) return curated;
 	const base = `Harper operation '${operationName}'.`;
 	const schemaNote = hasCuratedSchema
 		? ' Arguments validated against the curated schema below.'
@@ -265,9 +292,10 @@ export function registerOperationsTools(): void {
 	for (const operationName of opMap.keys()) {
 		if (!isOperationAllowed(operationName, config)) continue;
 		const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
-		const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean } = {};
+		const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
 		if (isReadOnly(operationName)) annotations.readOnlyHint = true;
 		if (isDestructive(operationName)) annotations.destructiveHint = true;
+		if (isIdempotent(operationName)) annotations.idempotentHint = true;
 		addTool({
 			name: operationName,
 			description: buildDescription(operationName, operationName in OPERATION_INPUT_SCHEMAS),

@@ -38,16 +38,12 @@ jobs:
           version: ${{ github.event.release.tag_name || inputs.tag_name }}
       - name: Set package tag
         id: package-tag
-        # Once we have our first full, non-beta release, turn this back on:
-        #        run: |
-        #          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
-        #            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
-        #          else
-        #            echo "packageTag=next" >> "$GITHUB_OUTPUT"
-        #          fi
-        # and get rid of this hard coded latest tagging:
         run: |
-          echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
+            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "packageTag=next" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish package to NPM registry
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -83,16 +79,12 @@ jobs:
           tar -czvf harperfast-harper-${{ steps.version-components.outputs.version }}.tgz package
       - name: Set package tag
         id: package-tag
-        # Once we have our first full, non-beta release, turn this back on:
-        #        run: |
-        #          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
-        #            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
-        #          else
-        #            echo "packageTag=next" >> "$GITHUB_OUTPUT"
-        #          fi
-        # and get rid of this hard coded latest tagging:
         run: |
-          echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
+            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "packageTag=next" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish package to NPM registry
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

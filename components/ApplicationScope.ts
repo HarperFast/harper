@@ -30,7 +30,7 @@ export class ApplicationScope {
 		this.resources = resources;
 		this.server = server;
 
-		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm';
+		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm-current-context';
 		this.dependencyLoader = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYLOADER);
 		if (env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDDIRECTORY) !== 'app') this.allowedPath = ''; // this is used to match paths by startsWith, so empty string matches everything
 	}

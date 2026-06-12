@@ -52,6 +52,7 @@ export interface ToolDescriptor {
 	name: string;
 	description: string;
 	inputSchema: object;
+	outputSchema?: object;
 	annotations?: ToolAnnotations;
 }
 
@@ -200,6 +201,7 @@ function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescrip
 			name: def.name,
 			description: def.description,
 			inputSchema: def.inputSchema,
+			...(def.outputSchema ? { outputSchema: def.outputSchema } : {}),
 			...(def.annotations ? { annotations: def.annotations } : {}),
 		});
 	}

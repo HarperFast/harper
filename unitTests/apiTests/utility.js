@@ -8,7 +8,9 @@ module.exports = {
 };
 function getVariables() {
 	if (config.username) config.authorization = 'Basic ' + btoa(config.username + ':' + config.password);
-	config.url = `${config.protocol}://${config.host}:${config.port}`;
+	const host = process.env.HARPER_TEST_HOST || config.host;
+	const port = process.env.HARPER_TEST_OPS_PORT || config.port;
+	config.url = `${config.protocol}://${host}:${port}`;
 	return config;
 }
 

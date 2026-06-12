@@ -271,10 +271,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			if (key[0] === 'files' || key[0] === 'urlPath') {
 				// TODO: validate options
 
-				// If not entry handler exists then likely the config did not have `files` initially
-				// Now, it does, so create a default entry handler.
+				// If no entry handler exists yet, the plugin's handleApplication has not called
+				// handleEntry() yet — or it hasn't been called at all for this scope. Either way,
+				// when handleEntry() is eventually called it will read the current config via
+				// getFilesOption() and create the handler with the correct, up-to-date values.
+				// Eagerly creating an entry handler here would start chokidar's initial scan
+				// before the plugin's callback is attached, causing the initial `add` events to
+				// be missed (RE-8).
 				if (!scope.#entryHandler) {
-					scope.#entryHandler = scope.#createEntryHandler(config as FileAndURLPathConfig);
 					return;
 				}
 
