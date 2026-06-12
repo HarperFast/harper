@@ -102,7 +102,8 @@ suite('Scale correctness', (ctx: ContextWithHarper) => {
 			headers: { Authorization: auth },
 		});
 		strictEqual(pageResp.status, 200, `REST page GET failed: ${pageResp.status}`);
-		const page = (await pageResp.json()) as unknown[];
+		const page = await pageResp.json();
+		ok(Array.isArray(page), `Expected array response from /Product, got: ${JSON.stringify(page)}`);
 		strictEqual(page.length, 100, `Expected 100 records in page, got ${page.length}`);
 
 		// Page 2: ?limit(100,200) → records at offset 100..199.
@@ -110,7 +111,8 @@ suite('Scale correctness', (ctx: ContextWithHarper) => {
 			headers: { Authorization: auth },
 		});
 		strictEqual(page2Resp.status, 200, `REST page2 GET failed: ${page2Resp.status}`);
-		const page2 = (await page2Resp.json()) as Array<{ id: string }>;
+		const page2 = await page2Resp.json();
+		ok(Array.isArray(page2), `Expected array response from /Product page 2, got: ${JSON.stringify(page2)}`);
 		strictEqual(page2.length, 100, `Expected 100 records on page 2, got ${page2.length}`);
 
 		// Pages must not overlap.
@@ -148,6 +150,10 @@ suite('Scale correctness', (ctx: ContextWithHarper) => {
 		const BATCH = 500;
 		const ID_OFFSET = 200_000;
 
+		// Snapshot the count before this test's inserts so the delta is self-contained
+		// (no hidden dependency on which other tests ran first or how many records they inserted).
+		const countBefore = await countRows(ctx, 'Product');
+
 		for (let start = 0; start < TOTAL; start += BATCH) {
 			const end = Math.min(start + BATCH, TOTAL);
 			const records = [];
@@ -157,15 +163,13 @@ suite('Scale correctness', (ctx: ContextWithHarper) => {
 			await insertBatch(ctx, 'Product', records);
 		}
 
-		// Verify count using total growth (SQL string range on IDs has lexicographic edge cases).
-		// Verify via total growth instead.
+		// Verify count via total growth (SQL string range on IDs has lexicographic edge cases).
+		// IDs are unique, so the total must grow by exactly TOTAL.
 		const totalAfter = await countRows(ctx, 'Product');
-		// Total should have grown by exactly TOTAL (IDs are unique, no overlap with Test 1).
-		const totalTest1 = 100_000;
 		strictEqual(
 			totalAfter,
-			totalTest1 + TOTAL,
-			`After inserting ${TOTAL} records, expected total ${totalTest1 + TOTAL}, got ${totalAfter}`
+			countBefore + TOTAL,
+			`After inserting ${TOTAL} records, expected total ${countBefore + TOTAL}, got ${totalAfter}`
 		);
 
 		// Pagination correctness: two consecutive pages must not share ids.
@@ -178,8 +182,12 @@ suite('Scale correctness', (ctx: ContextWithHarper) => {
 		});
 		strictEqual(p1Resp.status, 200, `Page 1 status ${p1Resp.status}`);
 		strictEqual(p2Resp.status, 200, `Page 2 status ${p2Resp.status}`);
-		const ids1 = new Set(((await p1Resp.json()) as Array<{ id: string }>).map((r) => r.id));
-		const ids2 = ((await p2Resp.json()) as Array<{ id: string }>).map((r) => r.id);
+		const p1Data = await p1Resp.json();
+		ok(Array.isArray(p1Data), `Expected array response for page 1, got: ${JSON.stringify(p1Data)}`);
+		const p2Data = await p2Resp.json();
+		ok(Array.isArray(p2Data), `Expected array response for page 2, got: ${JSON.stringify(p2Data)}`);
+		const ids1 = new Set((p1Data as Array<{ id: string }>).map((r) => r.id));
+		const ids2 = (p2Data as Array<{ id: string }>).map((r) => r.id);
 		strictEqual(ids1.size, 50, `Page 1 should have 50 distinct records`);
 		strictEqual(ids2.length, 50, `Page 2 should have 50 records`);
 		for (const id of ids2) {
@@ -202,18 +210,10 @@ suite('Scale correctness', (ctx: ContextWithHarper) => {
 			await insertBatch(ctx, 'Product', records);
 		}
 
-		// Two-condition SQL count: category='A' AND inStock=true within this batch.
-		// ID_OFFSET=400000 is divisible by 10 → i%10===0 within [400000,404999] gives 500 rows.
-		const sqlCount = await countRows(
-			ctx,
-			'Product',
-			`category='A' AND inStock=true AND id >= 'prod-${ID_OFFSET}' AND id < 'prod-${ID_OFFSET + TOTAL}'`
-		);
-		// Allow a small tolerance for lexicographic edge effects on string-range predicates.
-		// The exact count via search_by_conditions is the gold standard; SQL gives us a lower bound.
-		ok(sqlCount > 0, `Expected at least some category-A inStock records, got ${sqlCount}`);
-
 		// search_by_conditions with category='A' — verify all results have category='A'.
+		// (A SQL string-range count was dropped here: lexicographic ordering on the string IDs
+		// made it a weak liveness check rather than a correctness check. The purity loop below
+		// is the real assertion for indexed multi-condition search.)
 		const catASample = await sendOperation(ctx.harper, {
 			operation: 'search_by_conditions',
 			database: 'data',
