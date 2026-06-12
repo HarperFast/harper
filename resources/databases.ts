@@ -1171,8 +1171,15 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
+				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
+				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
+				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
+				// but other workers' next disk-load re-reads the stale value.
+				const schemaDefinedMismatch =
+					schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
+					schemaDefinedMismatch ||
 					(audit !== undefined && audit !== Table.audit) ||
 					(sealed !== undefined && sealed !== Table.sealed) ||
 					(replicate !== undefined && replicate !== Table.replicate) ||
@@ -1190,6 +1197,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
 					hasChanges = true; // send out notification of the change
 					exclusiveLock();
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
