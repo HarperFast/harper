@@ -10,6 +10,28 @@ import { classifyAuditEntryForReplay, isUndecodableValidatedWrite } from './repl
 import { purgeAgedLogs } from './auditStore.ts';
 
 let warnedReplayHappening = false;
+
+// True when `updated` would DROP shared structures relative to `existing` — for either the classic
+// array form or the {named, typed} Map form, and for a form change between the two. Shared
+// structures only ever grow (ids are stable and append-only), so a shorter replayed buffer is a
+// stale/older entry. Used to refuse a downgrade of the durable structures dictionary during replay:
+// since the composite key is the one RecordEncoder.getStructures reads, overwriting it with fewer
+// structures would drop ids the decoder still needs and make existing records decode to null. This
+// mirrors saveStructures' compatibility reject (RecordEncoder.ts). See harper-pro#362.
+export function structuresWouldShrink(existing: any, updated: any): boolean {
+	if (Array.isArray(existing)) {
+		return !Array.isArray(updated) || updated.length < existing.length;
+	}
+	if (existing && typeof existing.get === 'function') {
+		if (!updated || typeof updated.get !== 'function') return true;
+		return (
+			(updated.get('named')?.length ?? 0) < (existing.get('named')?.length ?? 0) ||
+			(updated.get('typed')?.length ?? 0) < (existing.get('typed')?.length ?? 0)
+		);
+	}
+	return false;
+}
+
 export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void> {
 	if (!isMainThread) return; // ideally we don't do it like this, but for now this is predictable
 	return new Promise((resolve) => {
@@ -147,50 +169,48 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					case 'structures': {
 						const structuresAsBinary = auditRecord.getBinaryValue(primaryStore);
 						const updatedStructures = structuresAsBinary ? primaryStore.decoder.decode(structuresAsBinary) : undefined;
-						// Persist replayed structures where the decoder actually reads them. The RocksDB decode
+						// Persist replayed structures where the decoder actually reads them: the RocksDB decode
 						// path (RecordEncoder.getStructures) reads `rootStore` at the COMPOSITE key
-						// [Symbol.for('structures'), name]; this previously wrote `primaryStore` at the PLAIN key
-						// Symbol.for('structures'), which getStructures never consults. A structure delivered only
-						// via replication therefore stayed invisible to the decoder — records referencing it threw
-						// "Record id is not defined" and decoded as null — until a full-copy resync rewrote the row
-						// through saveStructures (composite key). See harper-pro#362 (and the #352 auth-path wedge).
-						// Mirror saveStructures exactly: same store, same composite key, same transaction shape.
+						// [Symbol.for('structures'), name], and saveStructures writes there. This previously wrote
+						// `primaryStore` at the PLAIN key Symbol.for('structures'), which getStructures never
+						// consults — so a structure delivered only via replication stayed invisible to the decoder
+						// (records referencing it decoded to null) until a full-copy resync rewrote the row through
+						// saveStructures. See harper-pro#362 (and the #352 auth-path wedge). Because this is now the
+						// authoritative key the decoder reads, it must carry saveStructures' guards: never poison the
+						// dictionary with an undecodable value, and never downgrade it to fewer structures.
 						const encoder = primaryStore.decoder;
 						const sharedStructuresKey = [Symbol.for('structures'), encoder.name];
 						encoder.rootStore.transactionSync(
 							(txn) => {
+								// A torn/corrupt/empty structures log value decodes to null/undefined; writing it to
+								// the key the decoder reads would poison the whole table's structure dictionary.
+								if (!updatedStructures) {
+									logger.warn(
+										`Skipping a structures replay entry that did not decode to a valid structures buffer (table ${encoder.name}).`
+									);
+									return;
+								}
 								const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
 								const existingStructures = existingStructuresBuffer
 									? encoder.decode(existingStructuresBuffer)
 									: undefined;
-								if (existingStructures) {
-									if (existingStructures instanceof Array) {
-										if (updatedStructures.length < existingStructures.length) {
-											logger.warn(
-												`Found ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using ${updatedStructures.length} structures.`
-											);
-										}
-									} else {
-										if (existingStructures.get('named').length > updatedStructures.get('named').length) {
-											logger.warn(
-												`Found named ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using named ${updatedStructures.length} structures.`
-											);
-										}
-										if (existingStructures.get('typed').length > updatedStructures.get('typed').length) {
-											logger.warn(
-												`Found named ${existingStructures.length} structures in audit store, but ${updatedStructures.length} in replay log. Using named ${updatedStructures.length} structures.`
-											);
-										}
-									}
+								// Refuse to overwrite a longer/newer durable buffer with an older/shorter replayed
+								// one — dropping ids the decoder still needs would make existing records decode to
+								// null. saveStructures rejects incompatible writes the same way (RecordEncoder.ts).
+								if (existingStructures && structuresWouldShrink(existingStructures, updatedStructures)) {
+									logger.warn(
+										`Replay log structures for table ${encoder.name} are fewer than the durable buffer; keeping the durable structures.`
+									);
+									return;
 								}
 								txn.putSync(sharedStructuresKey, asBinary(structuresAsBinary));
 							},
 							{ retryOnBusy: true }
 						);
-						// Load in-memory so the remainder of this replay can decode records that reference these
-						// structures. We deliberately do NOT route through saveStructures, which would set
-						// structureUpdate and re-log the structure as a fresh audit entry during replay.
-						primaryStore.decoder.structure = updatedStructures;
+						// No in-memory assignment is needed: the remainder of the replay decodes through
+						// getStructures/loadStructures, which re-reads this composite key (now correct) whenever a
+						// record references a not-yet-loaded structure id. We deliberately do NOT route through
+						// saveStructures, which would set structureUpdate and re-log the structure during replay.
 					}
 				}
 			} catch (err) {

@@ -135,3 +135,38 @@ describe('replay structures land where the decoder reads them (harper-pro#362)',
 		);
 	});
 });
+
+// The replay apply now writes the authoritative composite key the decoder reads, so it must carry
+// saveStructures' downgrade guard: a stale/shorter replayed structures buffer must NOT overwrite a
+// longer durable one (that would drop ids and make existing records decode to null).
+// structuresWouldShrink is the predicate that refuses such a write.
+describe('structuresWouldShrink — refuse a downgrade of the durable structures dictionary (harper-pro#362)', function () {
+	const { structuresWouldShrink } = require('#src/resources/replayLogs');
+
+	it('classic array form: a shorter replayed buffer would shrink (refuse); equal/longer does not', function () {
+		assert.strictEqual(structuresWouldShrink([['a'], ['b'], ['c']], [['a'], ['b']]), true);
+		assert.strictEqual(structuresWouldShrink([['a'], ['b']], [['a'], ['b']]), false);
+		assert.strictEqual(structuresWouldShrink([['a'], ['b']], [['a'], ['b'], ['c']]), false);
+	});
+
+	it('named/typed Map form: fewer named OR fewer typed would shrink', function () {
+		const map = (named, typed) =>
+			new Map([
+				['named', new Array(named)],
+				['typed', new Array(typed)],
+			]);
+		assert.strictEqual(structuresWouldShrink(map(3, 2), map(2, 2)), true); // fewer named
+		assert.strictEqual(structuresWouldShrink(map(3, 2), map(3, 1)), true); // fewer typed
+		assert.strictEqual(structuresWouldShrink(map(3, 2), map(3, 2)), false); // equal
+		assert.strictEqual(structuresWouldShrink(map(3, 2), map(4, 3)), false); // grown
+	});
+
+	it('a form change is treated as a shrink (conservative: keep the durable buffer)', function () {
+		const emptyMap = new Map([
+			['named', []],
+			['typed', []],
+		]);
+		assert.strictEqual(structuresWouldShrink([['a']], emptyMap), true);
+		assert.strictEqual(structuresWouldShrink(emptyMap, [['a']]), true);
+	});
+});
