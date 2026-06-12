@@ -1,7 +1,7 @@
 {
 	"name": "harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
-	"version": "5.1.0-beta.2",
+	"version": "5.1.0-beta.3",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -124,7 +124,7 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.6",
-		"@harperfast/integration-testing": "^0.3.1",
+		"@harperfast/integration-testing": "^0.5.1",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/busboy": "^1.5.4",
 		"@types/fs-extra": "^11.0.4",
@@ -167,7 +167,7 @@
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^9.1.3",
 		"@harperfast/extended-iterable": "^1.0.1",
-		"@harperfast/rocksdb-js": "^2.0.0",
+		"@harperfast/rocksdb-js": "^2.1.0",
 		"@turf/area": "6.5.0",
 		"@turf/boolean-contains": "6.5.0",
 		"@turf/boolean-disjoint": "6.5.0",

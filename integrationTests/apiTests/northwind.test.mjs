@@ -12217,15 +12217,17 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					records: [{ name: 'Harper', shoes: 'Nike', runner_id: '1', age: 55 }],
 				})
 				.expect(200);
-			await setTimeout(200);
 		});
 
 		test('Jobs - Validate 1 entry in runners table', async () => {
-			await client
-				.req()
-				.send({ operation: 'sql', sql: 'select * from test_job.runner' })
-				.expect((r) => assert.equal(r.body.length, 1, r.text))
-				.expect(200);
+			// Poll instead of a fixed sleep: the insert above commits asynchronously
+			// on contended Bun runners, so the SQL read can race ahead of visibility
+			// (#1222).
+			const r = await waitFor(
+				() => client.req().send({ operation: 'sql', sql: 'select * from test_job.runner' }).expect(200),
+				{ until: (res) => res.body.length === 1, timeoutSeconds: isBunRuntime ? 60 : 15 }
+			);
+			assert.equal(r.body.length, 1, r.text);
 		});
 
 		test('Jobs - Test Remove Files Before with test_user', async () => {
