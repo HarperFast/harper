@@ -10,6 +10,7 @@ const {
 	shouldAbortStalledReplay,
 	REPLAY_NO_PROGRESS_SKIP_LIMIT,
 	REPLAY_NO_PROGRESS_TIME_LIMIT_MS,
+	REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR,
 } = require('#src/resources/replayLogsGuards');
 
 // Regression tests for the unclean-shutdown replay guards. Without these, an audit log
@@ -209,14 +210,16 @@ describe('endIteratorOnCorruptFrame', () => {
 	});
 });
 
-// Regression tests for HarperFast/harper#1266: a boot replay over a skip-dominated backlog
-// (undecodable peer-log entries) must give up once it is making no forward progress, instead of
-// grinding the main thread for minutes. A healthy replay (which keeps producing writes that reset
-// the no-progress counters) must never trip the bound.
+// Regression tests for HarperFast/harper#1266: a boot replay over a backlog of unwritable entries
+// (undecodable peer-log entries, or entries for a dropped table) must give up once it is making no
+// forward progress, instead of grinding the main thread for minutes. A healthy replay (which keeps
+// producing writes that reset the no-progress counters) must never trip the bound, and neither must
+// a single skip followed by an unrelated latency spike.
 describe('shouldAbortStalledReplay', () => {
 	it('exposes conservative default bounds', () => {
 		assert.strictEqual(REPLAY_NO_PROGRESS_SKIP_LIMIT, 100_000);
 		assert.strictEqual(REPLAY_NO_PROGRESS_TIME_LIMIT_MS, 60_000);
+		assert.strictEqual(REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR, 1_000);
 	});
 
 	it('does not abort while the no-progress run is below both bounds', () => {
@@ -226,21 +229,40 @@ describe('shouldAbortStalledReplay', () => {
 		assert.strictEqual(shouldAbortStalledReplay(50_000, REPLAY_NO_PROGRESS_TIME_LIMIT_MS - 1), false);
 	});
 
-	it('aborts once the skip count reaches the limit', () => {
+	it('aborts once the no-progress count reaches the limit', () => {
 		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_SKIP_LIMIT, 0), true);
 		assert.strictEqual(shouldAbortStalledReplay(REPLAY_NO_PROGRESS_SKIP_LIMIT + 1, 0), true);
 	});
 
-	it('aborts once the elapsed no-progress time reaches the limit, even with few skips', () => {
-		// Belt-and-suspenders: slow per-entry decodes can burn minutes below the count bound.
-		assert.strictEqual(shouldAbortStalledReplay(1, REPLAY_NO_PROGRESS_TIME_LIMIT_MS), true);
-		assert.strictEqual(shouldAbortStalledReplay(10, REPLAY_NO_PROGRESS_TIME_LIMIT_MS + 1), true);
+	it('does NOT trip the time bound on a tiny no-progress run (a single skip + a latency spike)', () => {
+		// harper#1266 review (Gemini): a lone skip followed by a GC/disk-throttle pause longer than
+		// the time limit must not abort an otherwise-healthy replay — the time bound requires a real
+		// run of no-progress entries first.
+		assert.strictEqual(shouldAbortStalledReplay(1, REPLAY_NO_PROGRESS_TIME_LIMIT_MS), false);
+		assert.strictEqual(
+			shouldAbortStalledReplay(REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR - 1, 10 * REPLAY_NO_PROGRESS_TIME_LIMIT_MS),
+			false
+		);
+	});
+
+	it('aborts once a substantial slow no-progress run crosses the time bound below the count limit', () => {
+		// Belt-and-suspenders: slow per-entry decodes can burn minutes well before the count bound.
+		assert.strictEqual(
+			shouldAbortStalledReplay(REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR, REPLAY_NO_PROGRESS_TIME_LIMIT_MS),
+			true
+		);
+		assert.strictEqual(
+			shouldAbortStalledReplay(REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR, REPLAY_NO_PROGRESS_TIME_LIMIT_MS - 1),
+			false
+		);
 	});
 
 	it('honors caller-supplied bounds (used to keep unit tests fast/deterministic)', () => {
-		assert.strictEqual(shouldAbortStalledReplay(3, 0, 5, 1000), false);
-		assert.strictEqual(shouldAbortStalledReplay(5, 0, 5, 1000), true);
-		assert.strictEqual(shouldAbortStalledReplay(0, 1000, 5, 1000), true);
-		assert.strictEqual(shouldAbortStalledReplay(0, 999, 5, 1000), false);
+		// signature: (noProgressRun, msSinceProgress, skipLimit, timeLimitMs, timeSkipFloor)
+		assert.strictEqual(shouldAbortStalledReplay(3, 0, 5, 1000, 2), false);
+		assert.strictEqual(shouldAbortStalledReplay(5, 0, 5, 1000, 2), true);
+		assert.strictEqual(shouldAbortStalledReplay(2, 1000, 5, 1000, 2), true);
+		assert.strictEqual(shouldAbortStalledReplay(1, 1000, 5, 1000, 2), false);
+		assert.strictEqual(shouldAbortStalledReplay(2, 999, 5, 1000, 2), false);
 	});
 });
