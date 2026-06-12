@@ -41,7 +41,13 @@ const ABORT_MSG = 'Aborting install';
 const PROCESS_HOME = os.homedir();
 const DEFAULT_HDB_ROOT = path.join(PROCESS_HOME, hdbTerms.HDB_ROOT_DIR_NAME);
 const DEFAULT_ADMIN_USERNAME = 'admin';
-const DEFAULT_NODE_HOSTNAME = 'localhost';
+// Intentionally null (not 'localhost'). Persisting a concrete node.hostname here cements a
+// wrong identity: getThisNodeName() prefers node.hostname over replication.hostname, so a
+// planted 'localhost' makes the node fail to find its own hdb_nodes self-row and silently
+// disable user-DB replication (harper-pro#351 — exposed by in-place v4->v5 upgrades, where
+// the install/migration boot would otherwise default this to 'localhost'). Leaving it unset
+// preserves the working fallback chain (replication.hostname -> cert CN -> listening port).
+const DEFAULT_NODE_HOSTNAME = null;
 const DEFAULT_CONFIG_MODE = 'dev';
 
 const DEV_MODE_CONFIG = {
@@ -270,10 +276,11 @@ async function installPrompts(promptOverride) {
 			name: hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME,
 			prefix: PROMPT_PREFIX,
 			default: DEFAULT_NODE_HOSTNAME,
-			validate: (value) => {
-				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
-				return true;
-			},
+			// node.hostname is OPTIONAL — an unset value is valid and preferred when the operator
+			// hasn't got a stable name to pin (it falls back to replication.hostname / cert CN /
+			// listening port). Accept empty/unset rather than forcing a value, which is what used
+			// to cement 'localhost' (harper-pro#351).
+			validate: () => true,
 			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.NODE_HOSTNAME),
 		},
 		{

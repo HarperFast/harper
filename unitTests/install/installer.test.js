@@ -553,4 +553,22 @@ describe('applyInstallModeDefaults', () => {
 		assert.equal(args.authentication_authorizeLocal, undefined);
 		assert.equal(args.http_cors, undefined);
 	});
+
+	// harper-pro#351: a dev install must NOT cement a concrete node.hostname (it used to default
+	// to 'localhost'). Persisting 'localhost' makes getThisNodeName() prefer it over
+	// replication.hostname, the node fails to find its own hdb_nodes self-row, and user-DB
+	// replication silently disables. The dev default must leave node.hostname unset (null) so the
+	// fallback chain (replication.hostname -> cert CN -> listening port) keeps the real identity.
+	it('does not cement a concrete node.hostname for a dev install (harper-pro#351)', () => {
+		const args = applyInstallModeDefaults({}, 'dev');
+		assert.notEqual(args.node_hostname, 'localhost');
+		// null is acceptable (matches defaultConfig.yaml node.hostname: null); a truthy concrete
+		// value is not.
+		assert.ok(args.node_hostname == null, `node_hostname should be unset/null, got ${args.node_hostname}`);
+	});
+
+	it('preserves an explicitly provided node.hostname for a dev install', () => {
+		const args = applyInstallModeDefaults({ node_hostname: 'real-node.example.com' }, 'dev');
+		assert.equal(args.node_hostname, 'real-node.example.com');
+	});
 });
