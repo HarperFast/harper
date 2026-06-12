@@ -59,10 +59,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		// is reset to 0 the moment a write succeeds, so the stall bound only fires on a genuinely
 		// write-free run.
 		let noProgressRun = 0;
-		let lastProgressTime = Date.now();
+		let lastProgressTime = performance.now();
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true }) as any) {
-			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, Date.now() - lastProgressTime)) {
+			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
 				logger.fatal(
 					`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table. Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
 				);
@@ -210,8 +210,12 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				// trackers. Doing this AFTER the switch (not before) means a slow or throwing
 				// write is neither counted as progress nor charged to the stall bound (harper#1266).
 				noProgressRun = 0;
-				lastProgressTime = Date.now();
+				lastProgressTime = performance.now();
 			} catch (err) {
+				// A write that threw made no forward progress either — count it toward the stall
+				// bound so a continuous stream of throwing writes can't grind the boot thread
+				// indefinitely (and the per-entry error log below can't spam unboundedly). harper#1266
+				noProgressRun++;
 				logger.error(`Error writing from replay of log`, err, {
 					version,
 				});
