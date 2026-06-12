@@ -60,6 +60,44 @@ export function isUndecodableValidatedWrite(type: string | undefined, record: un
 	return record == null && (type === 'put' || type === 'patch');
 }
 
+// A node that crashed unclean replays its unflushed audit backlog on boot. When that backlog is
+// dominated by undecodable entries (e.g. the #1163 structure-dictionary divergence, whose values
+// decode to nothing and are skipped), every iteration produces a skip with no write. A large
+// enough backlog then grinds the main thread for minutes with zero forward progress, blocking
+// startup entirely (harper#1266). These bounds let replay give up on a run that is making no
+// progress so boot can proceed; the operator then sheds/relocates the offending peer log (or
+// re-clones). They are deliberately conservative: a healthy replay produces writes, which reset
+// the progress tracking, so neither bound can trip on it.
+
+// Max consecutive entries skipped since the last successful write before the replay is treated as
+// stalled. ~100k contiguous undecodable entries is unambiguously degenerate and caps the wasted
+// grind well below the multi-minute hangs observed in prod.
+export const REPLAY_NO_PROGRESS_SKIP_LIMIT = 100_000;
+
+// Max wall-clock time (ms) spent skipping since the last successful write before the replay is
+// treated as stalled. Belt-and-suspenders for the count bound: if individual entries are slow
+// enough that fewer than the skip limit still burns minutes, this still bounds the hang.
+export const REPLAY_NO_PROGRESS_TIME_LIMIT_MS = 60_000;
+
+/**
+ * Whether boot replay should abort because it is making no forward progress — a backlog of
+ * undecodable/corrupt entries that produces skips but no writes (harper#1266). Returns `true` once
+ * the contiguous run of skips since the last successful write crosses either the count or the time
+ * bound. Both inputs are measured since the last write, so a productive replay (which keeps
+ * resetting them) never trips this; only a genuinely stalled, write-free grind does.
+ *
+ * @param skipsSinceLastWrite  entries skipped since the last successful write
+ * @param msSinceLastWrite     wall-clock ms elapsed since the last successful write
+ */
+export function shouldAbortStalledReplay(
+	skipsSinceLastWrite: number,
+	msSinceLastWrite: number,
+	skipLimit = REPLAY_NO_PROGRESS_SKIP_LIMIT,
+	timeLimitMs = REPLAY_NO_PROGRESS_TIME_LIMIT_MS
+): boolean {
+	return skipsSinceLastWrite >= skipLimit || msSinceLastWrite >= timeLimitMs;
+}
+
 /**
  * Wraps a transaction-log query iterator so a corrupt/torn frame ends that log's iteration
  * cleanly instead of escaping as an uncaughtException. rocksdb-js throws a bounded RangeError

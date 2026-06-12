@@ -6,7 +6,11 @@ import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';
 import { RequestTarget } from './RequestTarget.ts';
-import { classifyAuditEntryForReplay, isUndecodableValidatedWrite } from './replayLogsGuards.ts';
+import {
+	classifyAuditEntryForReplay,
+	isUndecodableValidatedWrite,
+	shouldAbortStalledReplay,
+} from './replayLogsGuards.ts';
 import { purgeAgedLogs } from './auditStore.ts';
 
 let warnedReplayHappening = false;
@@ -49,8 +53,20 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let lastTimestamp = 0;
 		let writes = 0;
 		let skipped = 0;
+		// Track forward progress so a skip-dominated backlog can't grind the boot thread forever
+		// (harper#1266). `skipped` only counts undecodable/corrupt entries, so the delta since the
+		// last write is the length of the current no-progress run; a successful write resets both.
+		let skippedAtLastProgress = 0;
+		let lastProgressTime = Date.now();
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true }) as any) {
+			const skipsSinceProgress = skipped - skippedAtLastProgress;
+			if (skipsSinceProgress > 0 && shouldAbortStalledReplay(skipsSinceProgress, Date.now() - lastProgressTime)) {
+				logger.fatal(
+					`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${skipsSinceProgress} consecutive audit entries skipped with no successful write (${writes} replayed, ${skipped} skipped so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163). Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
+				);
+				break;
+			}
 			const {
 				type,
 				tableId,
@@ -78,15 +94,6 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					user: { username },
 				} as any;
 				const { primaryStore } = Table as any;
-				const target = new RequestTarget();
-				target.id = null;
-				const tableInstance: any = Table.getResource(target, context, {});
-				// TODO: If this throws an error due to being unable to access structures, we need to iterate through
-				// other transaction logs to get the latest structure. Ultimately we may have to skip records
-				if (!warnedReplayHappening) {
-					warnedReplayHappening = true;
-					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
-				}
 				let record: any;
 				try {
 					record = auditRecord.getValue(primaryStore);
@@ -106,6 +113,17 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					skipped++;
 					continue;
 				}
+				// Entry is replayable: instantiate the resource only now, so the skip paths above
+				// never pay a Resource instantiation per skipped entry (harper#1266).
+				const target = new RequestTarget();
+				target.id = null;
+				const tableInstance: any = Table.getResource(target, context, {});
+				// TODO: If this throws an error due to being unable to access structures, we need to iterate through
+				// other transaction logs to get the latest structure. Ultimately we may have to skip records
+				if (!warnedReplayHappening) {
+					warnedReplayHappening = true;
+					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
+				}
 				if (lastTimestamp !== version) {
 					lastTimestamp = version;
 					try {
@@ -123,6 +141,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				context.transaction = transaction;
 				const options = { context, residencyId, nodeId, originatingOperation };
 				writes++;
+				// Forward progress: reset the no-progress trackers so the stall bound only ever
+				// fires on an uninterrupted run of skips (harper#1266).
+				skippedAtLastProgress = skipped;
+				lastProgressTime = Date.now();
 				switch (type) {
 					case 'put':
 						tableInstance._writeUpdate(recordId, record, true, options);
