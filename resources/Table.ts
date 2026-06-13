@@ -61,7 +61,13 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
+import {
+	Blob,
+	deleteBlobsInObject,
+	findBlobsInObject,
+	getFilePathForBlob,
+	startPreCommitBlobsForRecord,
+} from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -73,6 +79,24 @@ import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSc
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
+
+/**
+ * True if any file-backed blob referenced by a decoded record value points at a file that is no
+ * longer on disk. Used to detect a record whose receive-side blob save failed (the row committed
+ * referencing a fileId whose write never landed) so a re-streamed duplicate can repair it rather
+ * than being dropped. Blob-less records pay almost nothing: findBlobsInObject does a shallow walk
+ * and invokes its callback zero times, so the fs.existsSync stat only ever runs for records that
+ * actually carry file-backed blobs.
+ */
+function existingRecordHasMissingBlobFile(value: any): boolean {
+	let missing = false;
+	findBlobsInObject(value, (blob) => {
+		if (missing) return;
+		const path = getFilePathForBlob(blob as any);
+		if (path && !fs.existsSync(path)) missing = true;
+	});
+	return missing;
+}
 
 export type Attribute = {
 	name: string;
@@ -1942,6 +1966,45 @@ export function makeTable(options) {
 												options?.nodeId
 											);
 											if (precedesExisting === 0) {
+												// Identity tie: normally a duplicate to drop. But if the existing row references a
+												// blob whose file is missing — a prior receive-side blob save failed and the
+												// replication resume-cursor clamp re-streamed this record (which carries the now
+												// re-saved blob) — re-store the row onto the re-streamed value at the SAME version.
+												// This is a local-only repair (empty audit value, 'relocate' type → not replicated as a
+												// data change; a peer that receives it no-ops on the same-version guard), so there is no
+												// version bump and no cluster divergence. Without it the re-stream is dropped here and the
+												// row keeps its dangling blob reference — permanent loss on an authoritative table.
+												// Note: we do not gate on the HAS_BLOBS metadata flag here — its reliability on the
+												// existingEntry handed to this commit callback is not guaranteed, and
+												// existingRecordHasMissingBlobFile already returns immediately for blob-less records
+												// (findBlobsInObject invokes its callback zero times, so no fs.existsSync runs).
+												if (
+													recordUpdate &&
+													existingEntry?.value &&
+													existingRecordHasMissingBlobFile(existingEntry.value)
+												) {
+													logger.warn?.('Repairing a record with a missing blob file via re-streamed replication', id);
+													updateRecord(
+														id,
+														recordUpdate, // the re-streamed record, referencing the freshly re-saved blob
+														existingEntry,
+														existingEntry.version, // version number should not change — local repair, not a data change
+														0,
+														audit,
+														{
+															user: (context as any)?.user,
+															residencyId: existingEntry.residencyId,
+															nodeId: existingEntry.nodeId,
+															expiresAt: existingEntry.expiresAt,
+															transaction,
+														},
+														'relocate',
+														false,
+														null // empty audit value: there is no data change, only a storage repair
+													);
+													write.skipped = true; // the repair re-store is the write; skip the outer duplicate write
+													return;
+												}
 												logger.debug?.(
 													'The transaction time is equal to the existing version, treating as duplicate',
 													id
