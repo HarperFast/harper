@@ -20,7 +20,7 @@ import { awaitJobCompleted } from './utils/operations.mjs';
 // Resolve the CSV fixture path relative to this file so Harper can read it.
 const SUPPLIERS_CSV = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data/Suppliers.csv');
 
-suite('Terminology aliases (database / primary_key)', { concurrency: false }, (ctx) => {
+suite('Terminology aliases (database / primary_key)', (ctx) => {
 	let client;
 
 	before(async () => {
