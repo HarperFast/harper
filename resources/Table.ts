@@ -3591,6 +3591,12 @@ export function makeTable(options) {
 				// entries and last thousand entries
 				const firstRecordCount = recordCount;
 				recordCount = 0;
+				// Bound the reverse scan explicitly. The getRange `limit` option is honored by lmdb-js but
+				// ignored by rocksdb-js; without this break the scan reads the whole table, so `recordRate`
+				// blows up to ~entryCount/(2*limit) and the estimate scales with entryCount^2 -- the source
+				// of the wildly inflated `record_count` (e.g. 20,000,000 for ~105k rows) on large RocksDB
+				// tables. The early-exit above guarantees limit < entryCount/2, so the two samples stay disjoint.
+				let reverseScanned = 0;
 				for (const { value } of primaryStore.getRange({
 					start: '\uffff',
 					reverse: true,
@@ -3599,7 +3605,9 @@ export function makeTable(options) {
 					snapshot: false,
 				})) {
 					if (value != null) recordCount++;
+					reverseScanned++;
 					await rest();
+					if (reverseScanned >= limit) break;
 				}
 				const sampleSize = limit * 2;
 				const recordRate = (recordCount + firstRecordCount) / sampleSize;
