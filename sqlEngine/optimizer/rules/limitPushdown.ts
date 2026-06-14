@@ -24,7 +24,7 @@ function rewrite(plan: LogicalPlan): LogicalPlan {
 				return { ...child, pushedLimit: { limit: plan.limit, offset: plan.offset } };
 			}
 			if (child.kind === 'Project') {
-				const sub = (rewrite({ ...plan, input: child.input }) as LogicalPlan);
+				const sub = rewrite({ ...plan, input: child.input }) as LogicalPlan;
 				return { ...child, input: sub };
 			}
 			return { ...plan, input: child };

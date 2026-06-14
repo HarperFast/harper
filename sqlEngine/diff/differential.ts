@@ -26,10 +26,7 @@ export interface DifferentialResult {
 }
 
 interface SqlTranslator {
-	evaluateSQL: (
-		jsonMessage: Record<string, unknown>,
-		callback: (err: unknown, data?: unknown) => void
-	) => void;
+	evaluateSQL: (jsonMessage: Record<string, unknown>, callback: (err: unknown, data?: unknown) => void) => void;
 }
 
 function loadLegacy(): SqlTranslator {
