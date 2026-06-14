@@ -264,6 +264,15 @@ Each phase leaves the system shippable and behind the flag.
 
 **Phase 4 — Mutations.** `PhysicalInsert`/`Update`/`Delete` inside `transaction()`. INSERT supports literals and `INSERT … SELECT`. Response shapes verified against `core/unitTests/dataLayer/insert.test.js`, `update.test.js`, `delete.test.js`, `sql-update.test.js`.
 
+> **Status (investigated, not yet implemented).** Plan:
+> - normalizer: handle `insert`/`update`/`delete` AlaSQL ASTs (Insert `{into:{databaseid,tableid}, columns:[{columnid}], values:[[{value}]]}`; Update `{table, columns:[{column:{columnid}, expression}], where}`; Delete `{table, where}`).
+> - binder: resolve the target table (single-table; reuse `bindTableRef`).
+> - logical/build: `Insert`/`Update`/`Delete` nodes; UPDATE/DELETE reuse the SELECT pipeline as the `selector` to find target rows.
+> - executor: `runInsert`/`runUpdate`/`runDelete` wrap the writes in `transaction(context, …)`.
+> - index.ts: dispatch by variant; return the **legacy response shapes** — INSERT `{message:"inserted N of M records", inserted_hashes, skipped_hashes}`, UPDATE `{message:"updated N of M records", update_hashes, skipped_hashes}`, DELETE `{message:"N record(s) successfully deleted", deleted_hashes, skipped_hashes}` (action strings `inserted`/`updated`; `txn_time`/`new_attributes` are internal and stripped). Permissions stay on the AST at the router boundary (unchanged).
+>
+> **OPEN QUESTION blocking implementation — the transactional-write invocation.** The legacy SQL path writes through the old `harperBridge`, NOT the Resource API, so there is no in-repo SQL precedent. `put`/`create`/`patch`/`delete` are *instance* methods on `Table` using `this.getContext()`; Phase 1's scan calls `resource.search(target)` statically (Table.ts:1091 implies a static-search form exists). Need to confirm the blessed pattern for writing through a `databases`-resolved table inside `transaction(context, …)`: static-vs-instance, how the txn/context propagates to the write, PK auto-gen on `create`, upsert (`put`) vs insert (`create`) + duplicate-skip semantics, and what `create`/`delete` return so `inserted_hashes`/`deleted_hashes` can be collected. **Verify empirically against a real LMDB build (integration test) before trusting the path** — guessing risks non-atomic or silently-dropped writes.
+
 **Phase 5 — Cutover.** Flip default to `'auto'`. Burn in for one release, watching logs for fallback warnings. Then flip to `'new'`. Then delete `core/dataLayer/SQLSearch.js`, `core/sqlTranslator/SelectValidator.js`, `sql_statement_bucket.js`, `alasqlFunctionImporter.js`, the SQLSearch-specific helpers in `core/dataLayer/search.js`. Keep `alasql.parse` only.
 
 **Phase 6 (optional, post-cutover).** Subquery decorrelation, UNION/UNION ALL, EXPLAIN/EXPLAIN ANALYZE, cost-based join reordering with histograms, spillable hash join/agg.
