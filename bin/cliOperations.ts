@@ -14,6 +14,7 @@ import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
+import dotenv from 'dotenv';
 try {
 	envMgr.initSync();
 } catch {
@@ -115,7 +116,7 @@ function resolveTarget(req, allCredentials) {
  * @returns {Promise<void>}
  */
 async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
+	dotenv.config();
 
 	const allCredentials = loadCredentials();
 	req.target = normalizeTarget(resolveTarget(req, allCredentials));

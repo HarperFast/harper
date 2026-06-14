@@ -126,7 +126,7 @@ async function harper() {
 			return (await import('./logout.ts')).logout(target);
 		}
 		case SERVICE_ACTIONS_ENUM.MCP: {
-			const { runMcpCli } = require('./mcp');
+			const { runMcpCli } = await import('./mcp/index.ts');
 			const code = await runMcpCli(process.argv.slice(3));
 			process.exit(code);
 		}
