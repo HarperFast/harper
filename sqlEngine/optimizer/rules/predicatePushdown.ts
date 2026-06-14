@@ -38,6 +38,10 @@ function rewrite(plan: LogicalPlan): LogicalPlan {
 			// Recurse into input so WHERE filters below get pushed to the scan.
 			// HAVING (a Filter above us) must NOT be pushed through the Aggregate.
 			return { ...plan, input: rewrite(plan.input) };
+		case 'Join':
+			// Per-table WHERE conjuncts were attached as Filters directly above each
+			// base scan by logical/build; push them in on both sides.
+			return { ...plan, left: rewrite(plan.left), right: rewrite(plan.right) };
 		default:
 			return plan;
 	}

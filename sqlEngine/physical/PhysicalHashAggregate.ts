@@ -40,13 +40,20 @@ export function physicalHashAggregate(
 	groupKeys: ExprNode[],
 	aggs: AggOpSpec[],
 	maxHashRows: number,
+	qualified = false
 ): PhysicalOp {
-	// Compile up-front so errors are surfaced at plan time, not per-row.
-	const groupKeyEvals = groupKeys.map((k) => {
+	// In join (qualified) queries the group-key column lives under its
+	// `<alias>.<name>` key, and the aggregate output is keyed the same way so the
+	// projection above resolves it consistently.
+	const groupKeyNames = groupKeys.map((k) => {
 		if (k.kind !== 'column') throw new EngineUnsupportedError('GROUP BY supports only column refs', k);
-		return (row: Row): unknown => row[k.name];
+		return qualified && k.table ? `${k.table}.${k.name}` : k.name;
 	});
-	const groupKeyNames = groupKeys.map((k) => (k as { kind: 'column'; name: string }).name);
+	const groupKeyEvals = groupKeyNames.map(
+		(key) =>
+			(row: Row): unknown =>
+				row[key]
+	);
 
 	const compiledAggs: CompiledAgg[] = aggs.map((a) => {
 		const desc = functionRegistry.lookup(a.name);
@@ -54,7 +61,7 @@ export function physicalHashAggregate(
 			throw new EngineUnsupportedError(`unknown aggregate function: ${a.name}`);
 		}
 		const isStarArg = a.arg.kind === 'star';
-		const argEval = isStarArg ? null : compileExpr(a.arg as ExprNode).eval;
+		const argEval = isStarArg ? null : compileExpr(a.arg as ExprNode, qualified).eval;
 		return {
 			outputName: a.outputName,
 			factory: (desc.impl as AggFn).factory,
@@ -77,7 +84,7 @@ async function* runAggregate(
 	groupKeyEvals: Array<(row: Row) => unknown>,
 	groupKeyNames: string[],
 	compiledAggs: CompiledAgg[],
-	maxHashRows: number,
+	maxHashRows: number
 ): AsyncIterable<Row> {
 	type Entry = { keys: unknown[]; accs: Accumulator[] };
 	const groups = new Map<string, Entry>();

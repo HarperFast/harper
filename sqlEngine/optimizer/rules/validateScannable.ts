@@ -36,10 +36,11 @@ function walk(plan: LogicalPlan, allowFullScan: boolean): void {
 
 function validateScan(scan: LogicalScan, allowFullScan: boolean): void {
 	if (allowFullScan) return;
+	// Inner side of an index-nested-loop join: served by a per-outer-row indexed
+	// equality probe, not a standalone scan.
+	if (scan.joinProbe) return;
 	const { conditions } = whereToConditions(scan.pushedFilter);
-	const hasIndexedCondition = conditions.some((c) =>
-		conditionUsesIndex(c, scan.boundTable?.attributes)
-	);
+	const hasIndexedCondition = conditions.some((c) => conditionUsesIndex(c, scan.boundTable?.attributes));
 	if (hasIndexedCondition) return;
 	if (scan.pushedSort && scan.pushedSort.length > 0) return; // sort can drive a scan in some adapters
 	throw new EngineUnsupportedError(

@@ -17,17 +17,28 @@ export interface CompiledExpr {
 	type: SqlType;
 }
 
-export function compileExpr(expr: ExprNode): CompiledExpr {
+/**
+ * Compiles an expression to a per-row closure.
+ *
+ * When `qualified` is true (join queries), column references are looked up by
+ * their canonical `<alias>.<name>` key — the binder has set `column.table` to
+ * the owning alias and the scan output is keyed the same way (see
+ * physical/PhysicalQualify). Single-table queries pass `qualified = false` and
+ * columns resolve by bare name.
+ */
+export function compileExpr(expr: ExprNode, qualified = false): CompiledExpr {
 	switch (expr.kind) {
 		case 'literal':
 			return { eval: () => expr.value, type: expr.sqlType };
-		case 'column':
-			return { eval: (row) => row[expr.name], type: 'unknown' };
+		case 'column': {
+			const key = qualified && expr.table ? `${expr.table}.${expr.name}` : expr.name;
+			return { eval: (row) => row[key], type: 'unknown' };
+		}
 		case 'star':
 			throw new EngineUnsupportedError('star expression cannot be compiled directly');
 		case 'binop': {
-			const l = compileExpr(expr.left);
-			const r = compileExpr(expr.right);
+			const l = compileExpr(expr.left, qualified);
+			const r = compileExpr(expr.right, qualified);
 			const op = expr.op;
 			return {
 				eval: (row) => {
@@ -40,7 +51,7 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 		}
 		case 'logical': {
 			if (expr.op === 'not') {
-				const inner = compileExpr(expr.args[0]);
+				const inner = compileExpr(expr.args[0], qualified);
 				return {
 					eval: (row) => {
 						const v = inner.eval(row);
@@ -50,7 +61,7 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 					type: 'boolean',
 				};
 			}
-			const args = expr.args.map(compileExpr);
+			const args = expr.args.map((a) => compileExpr(a, qualified));
 			if (expr.op === 'and') {
 				return {
 					eval: (row) => {
@@ -82,8 +93,8 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 			if (!Array.isArray(expr.list)) {
 				throw new EngineUnsupportedError('subquery IN list is not supported in phase 1');
 			}
-			const target = compileExpr(expr.expr);
-			const list = expr.list.map((e) => compileExpr(e));
+			const target = compileExpr(expr.expr, qualified);
+			const list = expr.list.map((e) => compileExpr(e, qualified));
 			const negated = expr.negated;
 			return {
 				eval: (row) => {
@@ -102,9 +113,9 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 			};
 		}
 		case 'between': {
-			const e = compileExpr(expr.expr);
-			const lo = compileExpr(expr.low);
-			const hi = compileExpr(expr.high);
+			const e = compileExpr(expr.expr, qualified);
+			const lo = compileExpr(expr.low, qualified);
+			const hi = compileExpr(expr.high, qualified);
 			const negated = expr.negated;
 			return {
 				eval: (row) => {
@@ -119,8 +130,8 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 			};
 		}
 		case 'like': {
-			const e = compileExpr(expr.expr);
-			const p = compileExpr(expr.pattern);
+			const e = compileExpr(expr.expr, qualified);
+			const p = compileExpr(expr.pattern, qualified);
 			const negated = expr.negated;
 			return {
 				eval: (row) => {
@@ -136,7 +147,7 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 			};
 		}
 		case 'isNull': {
-			const e = compileExpr(expr.expr);
+			const e = compileExpr(expr.expr, qualified);
 			const negated = expr.negated;
 			return {
 				eval: (row) => {
@@ -155,7 +166,7 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 			if (desc.kind !== 'scalar') {
 				throw new EngineUnsupportedError(`${expr.name} is an aggregate; not allowed here`);
 			}
-			const args = expr.args.map(compileExpr);
+			const args = expr.args.map((a) => compileExpr(a, qualified));
 			const fn = desc.impl as (args: unknown[]) => unknown;
 			return {
 				eval: (row) => fn(args.map((a) => a.eval(row))),
@@ -164,10 +175,10 @@ export function compileExpr(expr: ExprNode): CompiledExpr {
 		}
 		case 'case': {
 			const branches = expr.cases.map((c) => ({
-				when: compileExpr(c.when),
-				then: compileExpr(c.then),
+				when: compileExpr(c.when, qualified),
+				then: compileExpr(c.then, qualified),
 			}));
-			const otherwise = expr.else ? compileExpr(expr.else) : undefined;
+			const otherwise = expr.else ? compileExpr(expr.else, qualified) : undefined;
 			return {
 				eval: (row) => {
 					for (const b of branches) {

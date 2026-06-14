@@ -18,15 +18,25 @@ import { sortFromIndex } from './rules/sortFromIndex.ts';
 import { projectionPushdown } from './rules/projectionPushdown.ts';
 import { validateScannable } from './rules/validateScannable.ts';
 import { normalizePredicate } from './rules/predicateNormalize.ts';
+import { planJoins } from './rules/planJoins.ts';
 
 function normalizePredicates(plan: LogicalPlan): LogicalPlan | null {
 	switch (plan.kind) {
 		case 'Filter':
-			return { ...plan, predicate: normalizePredicate(plan.predicate), input: normalizePredicates(plan.input) ?? plan.input };
+			return {
+				...plan,
+				predicate: normalizePredicate(plan.predicate),
+				input: normalizePredicates(plan.input) ?? plan.input,
+			};
 		case 'Scan':
-			return plan.pushedFilter
-				? { ...plan, pushedFilter: normalizePredicate(plan.pushedFilter) }
-				: plan;
+			return plan.pushedFilter ? { ...plan, pushedFilter: normalizePredicate(plan.pushedFilter) } : plan;
+		case 'Join':
+			return {
+				...plan,
+				on: plan.on ? normalizePredicate(plan.on) : plan.on,
+				left: normalizePredicates(plan.left) ?? plan.left,
+				right: normalizePredicates(plan.right) ?? plan.right,
+			};
 		default:
 			if ('input' in plan) {
 				return { ...plan, input: normalizePredicates(plan.input) ?? plan.input };
@@ -36,7 +46,7 @@ function normalizePredicates(plan: LogicalPlan): LogicalPlan | null {
 }
 
 export function optimize(plan: LogicalPlan): LogicalPlan {
-	const rules = [normalizePredicates, predicatePushdown, sortFromIndex, limitPushdown, projectionPushdown];
+	const rules = [normalizePredicates, predicatePushdown, sortFromIndex, limitPushdown, projectionPushdown, planJoins];
 	const optimized = applyRules(plan, rules);
 	validateScannable(optimized);
 	return optimized;

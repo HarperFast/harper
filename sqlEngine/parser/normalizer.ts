@@ -55,13 +55,21 @@ function normalizeSelect(stmt: AlaSqlNode): SelectNode {
 	if (!Array.isArray(stmt.from) || stmt.from.length === 0) {
 		throw new EngineUnsupportedError('SELECT requires a FROM clause', stmt);
 	}
-	if (stmt.from.length !== 1) {
-		throw new EngineUnsupportedError('multi-table FROM is not supported in phase 1', stmt.from);
-	}
-	const from = normalizeTableRef((stmt.from as AlaSqlNode[])[0]);
+	const fromList = stmt.from as AlaSqlNode[];
+	const from = normalizeTableRef(fromList[0]);
+
+	// JOINs arrive in two AlaSQL shapes:
+	//   - explicit `stmt.joins`: [{ joinmode, table, as, on, using }]
+	//   - comma-separated FROM (`FROM a, b`): the extra `stmt.from` entries,
+	//     which are implicit CROSS joins (any join predicate lands in WHERE).
 	const joins: JoinNode[] = [];
-	if (Array.isArray(stmt.joins) && stmt.joins.length > 0) {
-		throw new EngineUnsupportedError('JOIN is not supported in phase 1', stmt.joins);
+	for (let i = 1; i < fromList.length; i++) {
+		joins.push({ type: 'cross', table: normalizeTableRef(fromList[i]) });
+	}
+	if (Array.isArray(stmt.joins)) {
+		for (const j of stmt.joins as AlaSqlNode[]) {
+			joins.push(normalizeJoin(j));
+		}
 	}
 
 	const columns = stmt.columns;
@@ -111,6 +119,39 @@ function normalizeTableRef(node: AlaSqlNode): TableRefNode {
 	return { database, table, alias };
 }
 
+/**
+ * AlaSQL join shape: { joinmode, table: { databaseid, tableid, as }, as?, on?, using? }.
+ * `joinmode` is one of 'INNER' | 'LEFT' | 'RIGHT' | 'OUTER' | 'CROSS' (sometimes
+ * suffixed with ' OUTER'). RIGHT/FULL OUTER are rejected per the v1 plan.
+ */
+function normalizeJoin(node: AlaSqlNode): JoinNode {
+	const rawMode = String(node.joinmode ?? 'INNER').toUpperCase();
+	let type: JoinNode['type'];
+	if (rawMode.startsWith('LEFT')) type = 'left';
+	else if (rawMode.startsWith('CROSS')) type = 'cross';
+	else if (rawMode.startsWith('INNER') || rawMode === 'JOIN' || rawMode === '') type = 'inner';
+	else if (rawMode.startsWith('RIGHT')) {
+		throw new EngineUnsupportedError('RIGHT JOIN is not supported (v1)', node);
+	} else if (rawMode.startsWith('FULL') || rawMode.startsWith('OUTER')) {
+		throw new EngineUnsupportedError('FULL OUTER JOIN is not supported (v1)', node);
+	} else {
+		throw new EngineUnsupportedError(`unsupported join mode: ${rawMode}`, node);
+	}
+
+	const tableNode = node.table as AlaSqlNode | undefined;
+	if (!tableNode) throw new EngineUnsupportedError('JOIN requires a table', node);
+	const table = normalizeTableRef({ ...tableNode, as: tableNode.as ?? node.as });
+
+	const on = node.on != null ? normalizeExpr(extractWhere(node.on as AlaSqlNode)) : undefined;
+	const using = Array.isArray(node.using)
+		? (node.using as AlaSqlNode[]).map((u) => String((u as AlaSqlNode).columnid ?? u))
+		: undefined;
+	if (type !== 'cross' && !on && !using) {
+		throw new EngineUnsupportedError('JOIN requires an ON or USING clause', node);
+	}
+	return { type, table, on, using };
+}
+
 function normalizeProjection(col: AlaSqlNode): ProjectionNode {
 	const alias = col.as as string | undefined;
 	if (typeof col.columnid === 'string' && col.tableid == null && col.aggregatorid == null && col.funcid == null) {
@@ -126,27 +167,6 @@ function normalizeProjection(col: AlaSqlNode): ProjectionNode {
 		return { expr: { kind: 'column', table: col.tableid, name: col.columnid }, alias };
 	}
 	return { expr: normalizeExpr(col), alias };
-}
-
-function hasAggregate(projections: ProjectionNode[]): boolean {
-	for (const p of projections) {
-		if (containsAggCall(p.expr)) return true;
-	}
-	return false;
-}
-
-function containsAggCall(expr: ExprNode): boolean {
-	if (expr.kind === 'aggCall') return true;
-	if (expr.kind === 'binop') return containsAggCall(expr.left) || containsAggCall(expr.right);
-	if (expr.kind === 'logical') return expr.args.some(containsAggCall);
-	if (expr.kind === 'funcCall') return expr.args.some(containsAggCall);
-	if (expr.kind === 'case') {
-		for (const c of expr.cases) {
-			if (containsAggCall(c.when) || containsAggCall(c.then)) return true;
-		}
-		if (expr.else && containsAggCall(expr.else)) return true;
-	}
-	return false;
 }
 
 function normalizeSort(node: AlaSqlNode): SortNode {

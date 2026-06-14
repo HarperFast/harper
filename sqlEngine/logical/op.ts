@@ -26,11 +26,23 @@ export interface LogicalScan {
 	kind: 'Scan';
 	table: TableRefNode;
 	boundTable?: BoundTable;
+	/**
+	 * Set in join queries: the canonical alias this scan's rows are qualified by
+	 * (`<alias>.<attr>`). Undefined for single-table queries (bare-keyed rows).
+	 */
+	alias?: string;
 	pushedFilter?: ExprNode;
 	pushedSort?: SortNode[];
 	pushedLimit?: { limit?: number; offset?: number };
 	projection?: string[];
 	residualFilter?: ExprNode;
+	/**
+	 * Set when this scan is the inner side of an index-nested-loop join: it is
+	 * re-probed per outer row via an equality on `keyAttribute` (which must be
+	 * indexed), so validateScannable treats it as index-served rather than a
+	 * standalone full scan.
+	 */
+	joinProbe?: { keyAttribute: string };
 }
 
 export interface LogicalFilter {

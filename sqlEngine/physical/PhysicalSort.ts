@@ -14,8 +14,8 @@ import { compileExpr } from '../expressions/compile.ts';
 import { EngineRuntimeError } from '../errors.ts';
 import { getSqlEngineConfig } from '../config.ts';
 
-export function physicalSort(child: PhysicalOp, keys: SortNode[]): PhysicalOp {
-	const compiled = keys.map((k) => ({ get: compileExpr(k.expr).eval, descending: k.descending }));
+export function physicalSort(child: PhysicalOp, keys: SortNode[], qualified = false): PhysicalOp {
+	const compiled = keys.map((k) => ({ get: compileExpr(k.expr, qualified).eval, descending: k.descending }));
 	return {
 		schema: child.schema,
 		async *execute(ctx: SqlEngineContext): AsyncIterable<Row> {

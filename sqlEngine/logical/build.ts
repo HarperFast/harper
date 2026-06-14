@@ -17,8 +17,8 @@
  */
 
 import type { LogicalPlan, LogicalScan } from './op.ts';
-import type { ExprNode, ProjectionNode, SelectNode, SortNode, StatementNode } from '../parser/ast.ts';
-import type { BoundSelect } from '../binder/bind.ts';
+import type { ExprNode, JoinNode, ProjectionNode, SelectNode, SortNode, StatementNode } from '../parser/ast.ts';
+import type { BoundSelect, BoundTable } from '../binder/bind.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 
 export function buildLogicalPlan(stmt: StatementNode): LogicalPlan {
@@ -52,7 +52,12 @@ class AggCollector {
 				const key = this.sig(expr);
 				let spec = this.specs.find((s) => this.sig(s) === key);
 				if (!spec) {
-					spec = { name: expr.name, arg: expr.arg, outputName: `__agg_${this.specs.length}__`, distinct: expr.distinct };
+					spec = {
+						name: expr.name,
+						arg: expr.arg,
+						outputName: `__agg_${this.specs.length}__`,
+						distinct: expr.distinct,
+					};
 					this.specs.push(spec);
 				}
 				return { kind: 'column', name: spec.outputName };
@@ -110,17 +115,7 @@ function containsAggCall(expr: ExprNode): boolean {
 // ---------------------------------------------------------------------------
 
 function buildSelect(stmt: SelectNode & Partial<BoundSelect>): LogicalPlan {
-	const scan: LogicalScan = {
-		kind: 'Scan',
-		table: stmt.from,
-		boundTable: stmt.boundTable,
-	};
-
-	let plan: LogicalPlan = scan;
-
-	if (stmt.where) {
-		plan = { kind: 'Filter', input: plan, predicate: stmt.where };
-	}
+	let plan: LogicalPlan = stmt.joins.length > 0 ? buildJoinSource(stmt) : buildSingleTableSource(stmt);
 
 	const hasGroupBy = stmt.groupBy != null && stmt.groupBy.length > 0;
 	const hasAgg = stmt.projections.some((p) => containsAggCall(p.expr));
@@ -143,6 +138,168 @@ function buildSelect(stmt: SelectNode & Partial<BoundSelect>): LogicalPlan {
 	return plan;
 }
 
+// ---------------------------------------------------------------------------
+// Source construction (Scan / Join tree + WHERE)
+// ---------------------------------------------------------------------------
+
+function buildSingleTableSource(stmt: SelectNode & Partial<BoundSelect>): LogicalPlan {
+	const scan: LogicalScan = {
+		kind: 'Scan',
+		table: stmt.from,
+		boundTable: stmt.boundTable,
+	};
+	if (stmt.where) {
+		return { kind: 'Filter', input: scan, predicate: stmt.where };
+	}
+	return scan;
+}
+
+/**
+ * Builds a left-deep join tree from FROM + joins. WHERE conjuncts that
+ * reference a single table are attached as a Filter directly above that table's
+ * Scan (so predicate pushdown lowers them into the index scan); conjuncts that
+ * span tables (or are constant) become a residual Filter above the whole tree.
+ */
+function buildJoinSource(stmt: SelectNode & Partial<BoundSelect>): LogicalPlan {
+	const scope = stmt.scope as BoundTable[];
+
+	// alias → single-table WHERE conjuncts; cross-table/constant conjuncts → residual.
+	const perAlias = new Map<string, ExprNode[]>();
+	const residual: ExprNode[] = [];
+	if (stmt.where) {
+		for (const conjunct of flattenAnd(stmt.where)) {
+			const aliases = referencedAliases(conjunct);
+			if (aliases.size === 1) {
+				const alias = [...aliases][0];
+				const list = perAlias.get(alias);
+				if (list) list.push(conjunct);
+				else perAlias.set(alias, [conjunct]);
+			} else {
+				residual.push(conjunct);
+			}
+		}
+	}
+
+	const makeScan = (bound: BoundTable): LogicalPlan => {
+		const scan: LogicalScan = {
+			kind: 'Scan',
+			table: { database: bound.database, table: bound.table, alias: bound.alias },
+			boundTable: bound,
+			alias: bound.effectiveAlias,
+		};
+		const conjuncts = perAlias.get(bound.effectiveAlias);
+		if (conjuncts && conjuncts.length > 0) {
+			return { kind: 'Filter', input: scan, predicate: andAll(conjuncts) };
+		}
+		return scan;
+	};
+
+	// Left-deep: ((from JOIN j0) JOIN j1) ...
+	let plan: LogicalPlan = makeScan(scope[0]);
+	for (let i = 0; i < stmt.joins.length; i++) {
+		const join: JoinNode = stmt.joins[i];
+		const right = makeScan(scope[i + 1]);
+		const on = join.on ?? usingToOn(join, scope, i + 1);
+		plan = {
+			kind: 'Join',
+			left: plan,
+			right,
+			on,
+			type: join.type === 'right' || join.type === 'full' ? 'inner' : join.type,
+		};
+	}
+
+	if (residual.length > 0) {
+		plan = { kind: 'Filter', input: plan, predicate: andAll(residual) };
+	}
+	return plan;
+}
+
+/** Expands a USING (c1, c2, …) clause into an equi-ON between the joined table and its left-side owner. */
+function usingToOn(join: JoinNode, scope: BoundTable[], rightIdx: number): ExprNode | undefined {
+	if (!join.using || join.using.length === 0) return undefined;
+	const rightAlias = scope[rightIdx].effectiveAlias;
+	const eqs: ExprNode[] = join.using.map((col) => {
+		// Left owner: nearest preceding table that declares the column.
+		let leftAlias = scope[0].effectiveAlias;
+		for (let i = rightIdx - 1; i >= 0; i--) {
+			if (scope[i].attributes.some((a) => a.name === col)) {
+				leftAlias = scope[i].effectiveAlias;
+				break;
+			}
+		}
+		return {
+			kind: 'binop',
+			op: '=',
+			left: { kind: 'column', table: leftAlias, name: col },
+			right: { kind: 'column', table: rightAlias, name: col },
+		};
+	});
+	return andAll(eqs);
+}
+
+function flattenAnd(expr: ExprNode): ExprNode[] {
+	if (expr.kind === 'logical' && expr.op === 'and') {
+		return expr.args.flatMap(flattenAnd);
+	}
+	return [expr];
+}
+
+function andAll(exprs: ExprNode[]): ExprNode {
+	if (exprs.length === 1) return exprs[0];
+	return { kind: 'logical', op: 'and', args: exprs };
+}
+
+/** Collects the distinct table aliases (column.table) referenced by an expression. */
+function referencedAliases(expr: ExprNode, out: Set<string> = new Set()): Set<string> {
+	switch (expr.kind) {
+		case 'column':
+			if (expr.table) out.add(expr.table);
+			return out;
+		case 'binop':
+			referencedAliases(expr.left, out);
+			referencedAliases(expr.right, out);
+			return out;
+		case 'logical':
+			expr.args.forEach((a) => referencedAliases(a, out));
+			return out;
+		case 'in':
+			referencedAliases(expr.expr, out);
+			if (Array.isArray(expr.list)) expr.list.forEach((e) => referencedAliases(e, out));
+			return out;
+		case 'between':
+			referencedAliases(expr.expr, out);
+			referencedAliases(expr.low, out);
+			referencedAliases(expr.high, out);
+			return out;
+		case 'like':
+			referencedAliases(expr.expr, out);
+			referencedAliases(expr.pattern, out);
+			return out;
+		case 'isNull':
+			referencedAliases(expr.expr, out);
+			return out;
+		case 'funcCall':
+			expr.args.forEach((a) => referencedAliases(a, out));
+			return out;
+		case 'aggCall':
+			if (expr.arg.kind !== 'star') referencedAliases(expr.arg, out);
+			return out;
+		case 'case':
+			for (const c of expr.cases) {
+				referencedAliases(c.when, out);
+				referencedAliases(c.then, out);
+			}
+			if (expr.else) referencedAliases(expr.else, out);
+			return out;
+		case 'cast':
+			referencedAliases(expr.expr, out);
+			return out;
+		default:
+			return out;
+	}
+}
+
 function buildAggregateSelect(stmt: SelectNode & Partial<BoundSelect>, afterWhere: LogicalPlan): LogicalPlan {
 	const groupKeys = stmt.groupBy ?? [];
 
@@ -151,7 +308,7 @@ function buildAggregateSelect(stmt: SelectNode & Partial<BoundSelect>, afterWher
 		if (k.kind !== 'column') {
 			throw new EngineUnsupportedError(
 				'GROUP BY supports only column references in phase 2 (complex expressions not yet supported)',
-				k,
+				k
 			);
 		}
 	}
