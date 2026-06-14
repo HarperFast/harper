@@ -374,13 +374,14 @@ export function initLogSettings(forceInit = false) {
 			externalLogger = mainLogger.forComponent('external');
 			externalLogger.tag = null; // don't tag by default
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
-				// Bun will crash with the segfault handler, ironically
-				try {
-					const SegfaultHandler = require('segfault-handler');
-					SegfaultHandler.registerHandler(join(logRoot, 'crash.log'));
-				} catch {
-					// optional dependency, ok if we can't run it
-				}
+				// Bun will crash with the segfault handler, ironically.
+				// Dynamic import works in both CJS and ESM (type-strip); require() is not
+				// available as a global in ESM so we can't use it here.
+				import('segfault-handler').then((mod) => {
+					(mod.default ?? mod).registerHandler(join(logRoot, 'crash.log'));
+				}).catch(() => {
+					// optional dependency, ok if unavailable
+				});
 			}
 		}
 	} catch (err) {
@@ -964,4 +965,6 @@ export default {
 	externalLogger,
 	AuthAuditLog,
 	errorToString,
+	start: updateLogSettings,
+	startOnMainThread: updateLogSettings,
 };
