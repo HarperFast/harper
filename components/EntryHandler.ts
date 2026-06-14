@@ -10,6 +10,11 @@ import { type FilesOption } from './deriveGlobOptions.ts';
 import { deriveURLPath } from './deriveURLPath.ts';
 import _micromatch from 'micromatch';
 const { isMatch } = _micromatch;
+import {
+	DIRECTORY_POLLING_FALLBACK_OPTIONS,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} from '../utility/watcherFallback.ts';
 export interface BaseEntry {
 	stats?: Stats;
 	urlPath: string;
@@ -85,6 +90,9 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	// chokidar instance — otherwise a rapid pause→resume can overlap teardown
 	// and setup, which under inotify pressure can produce spurious EMFILE.
 	#pausedClose?: Promise<void>;
+	#usingPolling: boolean = false;
+	#closed: boolean = false;
+	#openCount: number = 0;
 	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: Logger) {
@@ -169,6 +177,25 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	#handleError(error: unknown): void {
+		if (isWatcherExhaustionError(error)) {
+			// Swallow every exhaustion error — chokidar can emit several before the
+			// failed native watcher closes, and we don't want a flurry of ENOSPC to
+			// surface to consumers in the middle of recovery.
+			if (!this.#usingPolling) {
+				warnWatcherFallback(this.#component.directory);
+				this.#usingPolling = true;
+				// Reopen with polling. #watch() itself guards against reopen-after-close.
+				// The .catch is required because #watch() internally awaits the failed
+				// watcher's close(), which can reject under the same FD/inotify pressure
+				// that triggered this path; without it Node would treat that as an
+				// unhandled rejection (matches the .catch pattern used in
+				// OptionsWatcher / RootConfigWatcher).
+				this.#watch().catch(() => {
+					// Teardown errors on an already-failed watcher are not actionable.
+				});
+			}
+			return;
+		}
 		this.emit('error', error);
 	}
 
@@ -201,6 +228,10 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		await this.#watcher?.close();
 		this.#watcher = undefined;
 
+		// If close() landed while a previous close()/recreate was awaiting, don't
+		// install a fresh watcher — it would outlive the EntryHandler.
+		if (this.#closed) return this.ready;
+
 		// pause() may have landed in the gap before our async close resolved.
 		// If so, do not install a replacement watcher — resume() will.
 		if (this.#paused) return this.ready;
@@ -212,30 +243,40 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 
 		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
 
+		this.#openCount++;
 		this.#watcher = chokidar
 			.watch(this.#component.commonPatternBase, {
 				cwd: this.#component.directory,
 				persistent: false,
 				followSymlinks: false,
+				...(this.#usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
 					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
 					const normalizedDirectory = this.#component.directory.replace(/\\/g, '/');
 
-					// Check for nested node_modules relative to the component directory
-					// This allows plugins loaded from node_modules to watch their own files
-					// while still ignoring their nested node_modules dependencies
-					const relativePath = normalizedPath.startsWith(normalizedDirectory + '/')
+					// Determine the path relative to the component directory. Leading '/' is preserved
+					// (or empty when the path *is* the component directory) so the regex anchors below
+					// can use `(?:^|/)` to match the first segment without false positives on names
+					// that merely contain the same substring (e.g. `mynode_modules`, `notgit`).
+					const relativePath = normalizedPath.startsWith(normalizedDirectory)
 						? normalizedPath.slice(normalizedDirectory.length)
-						: normalizedPath.startsWith(normalizedDirectory)
-							? normalizedPath.slice(normalizedDirectory.length)
-							: normalizedPath;
-					const hasNestedNodeModules = relativePath.includes('/node_modules');
+						: normalizedPath;
+
+					// Skip node_modules at any depth. This allows plugins loaded from node_modules
+					// to still watch their own component files while ignoring their dependencies.
+					if (/(?:^|\/)node_modules(?:\/|$)/.test(relativePath)) return true;
+
+					// Skip transient package manager and VCS artifacts. Without these, an in-place
+					// `npm install` during a component deploy writes log files and atomic-rename
+					// temp directories that fire change events and drive an auto-reload restart
+					// storm — see harper#488.
+					if (/(?:^|\/)\.git(?:\/|$)/.test(relativePath)) return true;
+					if (/(?:^|\/)\.tmp-/.test(relativePath)) return true;
+					if (/(?:^|\/)(?:npm-debug|yarn-error|yarn-debug|pnpm-debug)\.log(?:\/|$)/.test(relativePath)) return true;
 
 					return (
-						hasNestedNodeModules ||
-						(normalizedPath !== normalizedDirectory &&
-							normalizedBases.every((base) => !normalizedPath.startsWith(base)))
+						normalizedPath !== normalizedDirectory && normalizedBases.every((base) => !normalizedPath.startsWith(base))
 					);
 				},
 			})
@@ -246,14 +287,39 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		return this.ready;
 	}
 
-	close(): this {
-		this.#watcher?.close();
+	// Test-only: simulate the underlying chokidar watcher emitting an error.
+	// Exposed so the polling-fallback path can be exercised without triggering a
+	// real ENOSPC/EMFILE on the host.
+	_simulateWatcherErrorForTests(error: unknown): void {
+		this.#handleError(error);
+	}
+
+	// Test-only: whether the watcher has fallen back to polling.
+	get _usingPollingForTests(): boolean {
+		return this.#usingPolling;
+	}
+
+	// Test-only: number of times the underlying watcher has been (re)opened.
+	// Used to assert that a close()-during-fallback race didn't install a
+	// replacement watcher.
+	get _openCountForTests(): number {
+		return this.#openCount;
+	}
+
+	close(): Promise<this> {
+		this.#closed = true;
+		const pendingReads = [...this.#pendingFileReads];
+		const watcherClose = this.#watcher ? Promise.resolve(this.#watcher.close()).catch(() => {}) : Promise.resolve();
 		this.#watcher = undefined;
+		// If paused, there may be an in-flight close from pause() that hasn't settled yet.
+		// Include it so close() doesn't resolve while inotify handles are still releasing.
+		const pausedClose = this.#pausedClose ?? Promise.resolve();
+		this.#pausedClose = undefined;
 
 		this.emit('close');
 		this.removeAllListeners();
 
-		return this;
+		return Promise.allSettled([watcherClose, pausedClose, ...pendingReads]).then(() => this);
 	}
 
 	/**

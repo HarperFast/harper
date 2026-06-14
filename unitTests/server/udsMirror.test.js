@@ -10,11 +10,13 @@ const fs = require('fs');
 
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
+const EventEmitter = require('events');
 const {
 	writeUdsMetadata,
 	registerUdsCleanupPaths,
 	cleanupUdsFiles,
 	cleanupSocketsDirectory,
+	enableProxyProtocol,
 } = require('#src/server/http');
 
 const TEST_SOCKETS_DIR = path.join(testUtils.ENV_DIR_PATH, 'sockets');
@@ -169,6 +171,62 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			writeUdsMetadata('/nonexistent-dir/missing/0-9926.yaml', 9926, makeSecureServer());
 			assert.ok(errorStub.calledOnce, 'should log the write error');
 			assert.ok(errorStub.firstCall.args[0].includes('Error writing UDS metadata'));
+		});
+	});
+
+	// ─── enableProxyProtocol ──────────────────────────────────────────────────
+
+	describe('enableProxyProtocol', () => {
+		// Install the wrapper, then deliver one or more chunks as the fronting proxy would.
+		async function feed(socket, ...chunks) {
+			const server = new EventEmitter();
+			enableProxyProtocol(server);
+			const received = [];
+			socket.on('data', (c) => received.push(c)); // stand-in for the protocol parser
+			server.emit('connection', socket);
+			await new Promise((resolve) => process.nextTick(resolve));
+			for (const chunk of chunks) socket.emit('data', chunk);
+			return received;
+		}
+
+		it('strips the PROXY v1 header and forwards the remaining bytes', async () => {
+			const socket = new EventEmitter();
+			const received = await feed(socket, Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '1.2.3.4');
+			assert.strictEqual(socket.remotePort, 1111);
+		});
+
+		it('forwards a non-PROXY first chunk unchanged (e.g. an MQTT CONNECT)', async () => {
+			const socket = new EventEmitter();
+			const received = await feed(socket, Buffer.from('MQTTCONNECT'));
+			assert.strictEqual(Buffer.concat(received).toString(), 'MQTTCONNECT');
+		});
+
+		it('buffers a PROXY header split across data events (no partial leak to the parser)', async () => {
+			const socket = new EventEmitter();
+			const received = await feed(
+				socket,
+				Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111'), // no CRLF yet
+				Buffer.from(' 2222\r\nHELLO')
+			);
+			// Nothing forwarded until the header completes; then only the payload.
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '1.2.3.4');
+		});
+
+		it('buffers when the first chunk is shorter than the "PROXY " prefix', async () => {
+			const socket = new EventEmitter();
+			const received = await feed(socket, Buffer.from('PRO'), Buffer.from('XY TCP4 9.9.9.9 5.6.7.8 42 2222\r\nHI'));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HI');
+			assert.strictEqual(socket.remoteAddress, '9.9.9.9');
+		});
+
+		it('forwards unchanged once the spec max length is exceeded without a CRLF', async () => {
+			const socket = new EventEmitter();
+			const long = 'PROXY ' + 'x'.repeat(200); // > 108 bytes, no CRLF
+			const received = await feed(socket, Buffer.from(long));
+			assert.strictEqual(Buffer.concat(received).toString(), long);
 		});
 	});
 

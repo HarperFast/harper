@@ -7,7 +7,7 @@ const fs = require('fs-extra');
 const hdb_utils = require('#src/utility/common_utils');
 const { readFileSync } = require('fs');
 const hdb_logger = require('#src/utility/logging/harper_logger');
-const log_rotator = require('#src/utility/logging/logRotator').default;
+const { logRotator: log_rotator } = require('#src/utility/logging/logRotator');
 const assert = require('assert');
 const LOG_DIR_NAME_TEST = 'testLogger';
 const LOG_NAME_TEST = 'hdb.log';
@@ -94,15 +94,10 @@ describe('Test logRotator module', () => {
 		);
 	});
 
-	it('Test error logged if rotation path is undefined', async () => {
-		let error;
-		try {
-			await runRotator({ maxSize: '1K', path: null });
-		} catch (e) {
-			error = e;
-		}
-		expect(error.message).to.equal(
-			"'logging.rotation.path' is undefined, to enable logging rotation set this value in harperdb-config.yaml"
-		);
+	it('Defaults rotation path to <log dir>/rotated when path is not set', async () => {
+		const rotated_log_path = await runRotator({ maxSize: '1K', path: null });
+		const expectedDir = path.join(LOG_DIR_TEST, 'rotated');
+		expect(rotated_log_path.startsWith(expectedDir)).to.be.true;
+		expect(fs.pathExistsSync(rotated_log_path)).to.be.true;
 	});
 });

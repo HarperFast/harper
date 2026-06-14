@@ -13,7 +13,6 @@ import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as directivesManager from '../upgrade/directivesManager.ts';
 import * as installation from '../utility/installation.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
-import * as upgradePrompt from '../upgrade/upgradePrompt.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 import { packageJson } from '../utility/packageUtils.js';
 import { promisify } from 'util';
@@ -66,24 +65,18 @@ async function upgrade(upgradeObj) {
 		process.exit(1);
 	}
 
-	let startUpgrade;
-
-	let exitCode = 0;
-	try {
-		startUpgrade = await upgradePrompt.forceUpdatePrompt(hdbUpgradeInfo);
-	} catch (err) {
-		hdbLogger.error('There was an error when prompting user about upgrade.');
-		hdbLogger.error(err);
-		startUpgrade = false;
-		exitCode = 1;
-	}
-
-	if (!startUpgrade) {
-		console.log('Cancelled upgrade, closing Harper');
-		process.exit(exitCode);
-	}
-
-	hdbLogger.info(`Starting upgrade to version ${currentHdbVersion}`);
+	// Upgrade directives run automatically; they do NOT require interactive confirmation.
+	// `upgrade()` only runs when an upgrade directive applies (getVersionUpdateInfo returns an
+	// object only when hasUpgradesRequired is true), and it runs on the normal `harper run`
+	// startup path (bin/run.ts). Blocking on a confirmation prompt there would hang on stdin —
+	// or, with no TTY, default to "no" and refuse to start — breaking unattended/scripted
+	// starts (systemd, containers, CI). We surface the upgrade as a non-blocking notice instead.
+	// (Downgrades still confirm via forceDowngradePrompt in hdbInfoController — running older
+	// software on upgraded data is the genuinely risky, lossy direction.)
+	printToLogAndConsole(
+		`Harper is completing an update to version ${currentHdbVersion}. You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/`,
+		hdbTerms.LOG_LEVELS.INFO
+	);
 
 	await runUpgrade(hdbUpgradeInfo);
 

@@ -17,6 +17,8 @@ Usage: harperdb [command]
 
 With no command, harper will simply run Harper (in the foreground)
 
+Documentation: https://docs.harperdb.io/
+
 By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
 
 Commands:
@@ -26,6 +28,7 @@ install                         - Install harperdb
 <api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
 login [target] [username]       - Login to a remote or local Harper instance
 logout [target]                 - Logout from Harper and clear saved JWT
+mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
 register                        - Register harperdb
 renew-certs                     - Generate a new set of self-signed certificates
 restart                         - Restart the harperdb background process
@@ -122,6 +125,12 @@ async function harper() {
 			const target = process.argv[3];
 			return (await import('./logout.ts')).logout(target);
 		}
+		case SERVICE_ACTIONS_ENUM.MCP: {
+			const { runMcpCli } = require('./mcp');
+			const code = await runMcpCli(process.argv.slice(3));
+			process.exit(code);
+		}
+		// eslint-disable-next-line no-fallthrough
 		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
 			return (await import('../security/keys.ts'))
 				.renewSelfSigned()

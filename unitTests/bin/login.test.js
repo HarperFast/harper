@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { login } = require('#src/bin/login');
 const { normalizeTarget } = require('#src/bin/cliCredentials');
+const inquirer = require('inquirer');
 
 describe('Login', () => {
 	describe('url normalization', () => {
@@ -41,23 +42,19 @@ describe('Login', () => {
 	});
 
 	describe('function arguments', () => {
-		const readline = require('node:readline/promises');
-		let originalCreateInterface;
-		let questionCalls;
+		let originalPrompt;
+		let promptCalls;
 
 		beforeEach(() => {
-			questionCalls = [];
+			promptCalls = [];
 			process.env.CLI_TARGET_PASSWORD = 'mockpassword';
-			originalCreateInterface = readline.createInterface;
-			readline.createInterface = () => {
-				return {
-					question: async (query) => {
-						questionCalls.push(query);
-						if (query.includes('Username')) return 'mockuser';
-						return 'mock-response';
-					},
-					close: () => {},
-				};
+			originalPrompt = inquirer.prompt;
+			inquirer.prompt = async (questions) => {
+				const q = Array.isArray(questions) ? questions[0] : questions;
+				promptCalls.push(q);
+				if (q.name === 'username') return { username: 'mockuser' };
+				if (q.name === 'target') return { target: 'mock-target' };
+				return { [q.name]: 'mock-response' };
 			};
 
 			this.originalExit = process.exit;
@@ -68,7 +65,7 @@ describe('Login', () => {
 
 		afterEach(() => {
 			delete process.env.CLI_TARGET_PASSWORD;
-			readline.createInterface = originalCreateInterface;
+			inquirer.prompt = originalPrompt;
 			process.exit = this.originalExit;
 		});
 
@@ -78,7 +75,7 @@ describe('Login', () => {
 			} catch {
 				// Ignore errors after target check
 			}
-			const targetPrompted = questionCalls.some((q) => q.includes('Target'));
+			const targetPrompted = promptCalls.some((q) => q.name === 'target');
 			assert.strictEqual(targetPrompted, false, 'Should not have prompted for target');
 		});
 	});
@@ -88,11 +85,6 @@ describe('Login', () => {
 		let originalCwd;
 		let originalExit;
 		let originalStdoutWrite;
-		let originalStdinSetRawMode;
-		let originalStdinResume;
-		let originalStdinPause;
-		let originalStdinOn;
-		let originalStdinRemoveListener;
 
 		// Mock cliOperations
 		const cliOperationsModule = require('#src/bin/cliOperations');
@@ -115,17 +107,6 @@ describe('Login', () => {
 			originalStdoutWrite = process.stdout.write;
 			process.stdout.write = () => {};
 
-			originalStdinSetRawMode = process.stdin.setRawMode;
-			process.stdin.setRawMode = () => {};
-			originalStdinResume = process.stdin.resume;
-			process.stdin.resume = () => {};
-			originalStdinPause = process.stdin.pause;
-			process.stdin.pause = () => {};
-			originalStdinOn = process.stdin.on;
-			process.stdin.on = () => {};
-			originalStdinRemoveListener = process.stdin.removeListener;
-			process.stdin.removeListener = () => {};
-
 			originalCliOperations = cliOperationsModule.cliOperations;
 			cliOperationsModule.cliOperations = async (req) => {
 				if (req.operation === 'create_authentication_tokens') {
@@ -143,11 +124,6 @@ describe('Login', () => {
 			process.cwd = originalCwd;
 			process.exit = originalExit;
 			process.stdout.write = originalStdoutWrite;
-			process.stdin.setRawMode = originalStdinSetRawMode;
-			process.stdin.resume = originalStdinResume;
-			process.stdin.pause = originalStdinPause;
-			process.stdin.on = originalStdinOn;
-			process.stdin.removeListener = originalStdinRemoveListener;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
 		});
@@ -170,22 +146,9 @@ describe('Login', () => {
 			const envPath = path.join(testDir, '.env');
 			fs.writeFileSync(envPath, 'EXISTING_VAR=value'); // No trailing newline
 
-			// Set password in env to avoid readline/stdin issues
+			// Both targetArg and usernameArg are provided, password from env — inquirer is never called.
 			process.env.HARPER_CLI_PASSWORD = 'password';
-
-			// We need to mock readline.createInterface because login uses it
-			const readline = require('node:readline/promises');
-			const originalCreateInterface = readline.createInterface;
-			readline.createInterface = () => ({
-				question: async () => 'mockuser',
-				close: () => {},
-			});
-
-			try {
-				await login('example.com', 'mockuser');
-			} finally {
-				readline.createInterface = originalCreateInterface;
-			}
+			await login('example.com', 'mockuser');
 
 			const envContent = fs.readFileSync(envPath, 'utf8');
 			// The fix added `\nHARPER_CLI_TARGET=${resolvedTarget}\n`
@@ -198,19 +161,7 @@ describe('Login', () => {
 			fs.writeFileSync(envPath, 'EXISTING_VAR=value\n'); // Has trailing newline
 
 			process.env.HARPER_CLI_PASSWORD = 'password';
-
-			const readline = require('node:readline/promises');
-			const originalCreateInterface = readline.createInterface;
-			readline.createInterface = () => ({
-				question: async () => 'mockuser',
-				close: () => {},
-			});
-
-			try {
-				await login('example.com', 'mockuser');
-			} finally {
-				readline.createInterface = originalCreateInterface;
-			}
+			await login('example.com', 'mockuser');
 
 			const envContent = fs.readFileSync(envPath, 'utf8');
 			// It will result in `EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n`

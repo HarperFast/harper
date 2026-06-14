@@ -18,6 +18,7 @@ import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
+import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -45,6 +46,11 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static transactions: Transaction[] & { timestamp: number };
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
+	static description?: string;
+	static properties?: { [name: string]: JsonSchemaFragment };
+	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
+	static mcp?: { annotations?: { [verb: string]: { [key: string]: unknown } } };
+	static hidden?: boolean;
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
 		const context = source?.getContext ? (source.getContext() ?? null) : undefined;
@@ -524,6 +530,7 @@ function transactional(
 				if (
 					typeof idOrQuery === 'object' &&
 					idOrQuery &&
+					!(idOrQuery instanceof URLSearchParams) &&
 					(!Array.isArray(idOrQuery) || typeof idOrQuery[0] === 'object')
 				) {
 					// (data, context) form

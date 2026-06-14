@@ -1,5 +1,6 @@
 {
 	"include": [
+		"agent/**/*",
 		"bin/**/*",
 		"components/**/*",
 		"config/**/*",

@@ -6,6 +6,7 @@ export const METRIC = {
 	RESOURCE_USAGE: 'resource-usage',
 	UTILIZATION: 'utilization',
 	NODE_STORAGE: 'node-storage',
+	ROCKSDB_STATS: 'rocksdb-stats',
 } as const;
 
 export type BuiltInMetricName = (typeof METRIC)[keyof typeof METRIC];

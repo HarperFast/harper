@@ -305,4 +305,33 @@ describe('Test keys module', () => {
 		const hasSubjectKeyIdentifier = extensions.some((ext) => ext.name === 'subjectKeyIdentifier');
 		expect(hasSubjectKeyIdentifier).to.be.true;
 	});
+
+	it('createTLSSelector resolves when cert.uses is stored as a non-array', async () => {
+		// Regression: cert.uses stored as a non-array (e.g. a scalar without .includes)
+		// caused a TypeError inside createTLSSelector's per-cert quality-scoring block.
+		// The fix normalizes cert.uses to an array before calling .includes/.length.
+		const { databases } = require('#src/resources/databases');
+
+		const testCertName = 'test-non-array-uses-' + Date.now();
+		await databases.system.hdb_certificate.put({
+			name: testCertName,
+			certificate: test_cert,
+			uses: 'https', // string, not array — legacy/manual entry format
+			is_authority: false,
+			private_key_name: actual_cert.private_key_name,
+			is_self_signed: true,
+		});
+
+		let thrownError;
+		try {
+			const selector = keys.createTLSSelector('https');
+			await selector.initialize(null);
+		} catch (err) {
+			thrownError = err;
+		} finally {
+			await databases.system.hdb_certificate.delete(testCertName);
+		}
+
+		expect(thrownError, 'createTLSSelector must not throw for cert with non-array uses').to.be.undefined;
+	});
 });

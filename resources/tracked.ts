@@ -24,7 +24,16 @@ function getChanges(target) {
 export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
 	const prototype = Target.prototype;
 	const descriptors = {};
-	const attributes = typeDef.attributes || typeDef.properties || [];
+	// Read the Array form. `typeDef.properties` is now a Record<string, JsonSchemaFragment>
+	// after the schema-metadata alignment; iterating it with for...of would throw.
+	// For typeDefs that only carry the Record (e.g. a programmatic Resource that declared
+	// `static properties` without populating `attributes`), synthesize a minimal Array by
+	// projecting the Record keys so the tracked accessors still bind something.
+	const attributes =
+		typeDef.attributes ||
+		(typeDef.properties
+			? Object.entries(typeDef.properties).map(([name, frag]) => ({ name, ...(frag as object) }))
+			: []);
 	for (const attribute of attributes) {
 		const name = attribute.name;
 		let set;

@@ -22,6 +22,7 @@
 		"harper": "./dist/bin/harper.js"
 	},
 	"files": [
+		"agent",
 		"bin",
 		"CODE_OF_CONDUCT.md",
 		"components",
@@ -58,14 +59,14 @@
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
-		"test:integration:api-tests": "node --test integrationTests/apiTests/tests/testSuite.mjs",
 		"test:integration": "harper-integration-test-run",
 		"test:integration:all": "npm run test:integration -- \"integrationTests/**/*.test.ts\" \"integrationTests/**/*.test.mjs\"",
+		"test:integration:mcp": "npm run test:integration -- \"integrationTests/mcp/**/*.test.ts\"",
 		"test:integration:bun": "HARPER_RUNTIME=bun harper-integration-test-run",
 		"test:unit": "mocha",
 		"test:unit:main": "mocha \"unitTests/**/*test.*js\" --exclude \"unitTests/apiTests/**/*\" --exclude \"unitTests/dataLayer/harperBridge/**/*\" --exclude \"unitTests/resources/**/*\"",
 		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
-		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests",
+		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
 		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\"",
 		"test:unit:bin": "mocha \"unitTests/bin/**/*.js\"",
@@ -102,8 +103,7 @@
 		}
 	},
 	"engines": {
-		"node": ">=20",
-		"minimum-node": "20.0.0"
+		"node": "^22.18.0 || >=24.0.0"
 	},
 	"devEngines": {
 		"runtime": {
@@ -124,7 +124,8 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.6",
-		"@harperfast/integration-testing": "^0.3.1",
+		"@harperfast/integration-testing": "^0.5.1",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/busboy": "^1.5.4",
 		"@types/fs-extra": "^11.0.4",
 		"@types/gunzip-maybe": "^1.4.3",
@@ -166,7 +167,7 @@
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^9.1.3",
 		"@harperfast/extended-iterable": "^1.0.1",
-		"@harperfast/rocksdb-js": "^1.3.0",
+		"@harperfast/rocksdb-js": "^2.1.0",
 		"@turf/area": "6.5.0",
 		"@turf/boolean-contains": "6.5.0",
 		"@turf/boolean-disjoint": "6.5.0",
@@ -202,14 +203,14 @@
 		"json-bigint-fixes": "1.1.0",
 		"jsonata": "1.8.7",
 		"jsonwebtoken": "9.0.3",
-		"lmdb": "3.5.4",
+		"lmdb": "3.5.5",
 		"lodash": "^4.17.23",
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",
 		"minimist": "1.2.8",
 		"moment": "2.30.1",
 		"mqtt-packet": "~9.0.1",
-		"msgpackr": "^2.0.1",
+		"msgpackr": "^2.0.4",
 		"needle": "3.5.0",
 		"node-forge": "^1.3.1",
 		"node-stream-zip": "1.15.0",
@@ -230,7 +231,7 @@
 		"ses": "^1.15.0",
 		"stream-chain": "2.2.5",
 		"stream-json": "1.9.1",
-		"structon": "^1.0.4",
+		"structon": "^1.0.7",
 		"systeminformation": "^5.31.4",
 		"tar-fs": "^3.1.2",
 		"ulidx": "0.5.0",

@@ -13,6 +13,7 @@ const harperLoggerModule = require('#src/utility/logging/harper_logger');
 const { createLogger } = harperLoggerModule;
 const { getHttpOptions, handleApplication, logRequest } = require('#src/server/http');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
+const { waitFor } = require('../../waitFor.js');
 
 const HARPER_LOGGER_MODULE = '#js/utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -763,7 +764,9 @@ describe('Test harper_logger module', () => {
 				);
 
 				// Wait for the log to be written
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(
+					() => fs.existsSync(httpLogPath) && fs.readFileSync(httpLogPath, 'utf8').includes('GET /test HTTPS/1.1')
+				);
 
 				const httpLog = fs.readFileSync(httpLogPath, 'utf8');
 				expect(httpLog).to.include('GET /test HTTPS/1.1');
@@ -787,7 +790,9 @@ describe('Test harper_logger module', () => {
 				);
 
 				// Wait for the log to be written
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(
+					() => fs.existsSync(httpLogPath) && fs.readFileSync(httpLogPath, 'utf8').includes('POST /post-test HTTP/1.1')
+				);
 
 				const httpLog = fs.readFileSync(httpLogPath, 'utf8');
 				expect(httpLog).to.include('POST /post-test HTTP/1.1');
@@ -828,7 +833,11 @@ describe('Test harper_logger module', () => {
 			harperLoggerModule.externalLogger.warn('Test of the global logger');
 
 			// Wait for the log to be written
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await waitFor(
+				() =>
+					fs.existsSync(this.externalLogPath) &&
+					fs.readFileSync(this.externalLogPath, 'utf8').includes('Test of the global logger')
+			);
 
 			const log = fs.readFileSync(this.externalLogPath, 'utf8');
 			expect(log).to.include('Test of the global logger');
@@ -838,7 +847,13 @@ describe('Test harper_logger module', () => {
 			appScope.logger.warn('Test of an application logger going to the external log');
 
 			// Wait for the log to be written
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await waitFor(
+				() =>
+					fs.existsSync(this.externalLogPath) &&
+					fs
+						.readFileSync(this.externalLogPath, 'utf8')
+						.includes('Test of an application logger going to the external log')
+			);
 
 			const log = fs.readFileSync(this.externalLogPath, 'utf8');
 			expect(log).to.include('Test of an application logger going to the external log');

@@ -266,6 +266,21 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
 	DEFAULT_AUDIT_CLEANUP_DELAY = defaultDelay;
 }
 
+/**
+ * One-shot purge of transaction-log files already older than the audit retention window,
+ * intended to run during startup/recovery before transaction-log replay. The steady-state
+ * cleanup loop (scheduleAuditCleanup) only starts once a worker reaches steady state, so a node
+ * that crash-loops during recovery never purges and its aged backlog only grows, enlarging the
+ * next replay/full-copy. Safe to run before replay: the native purge only deletes log files
+ * entirely before the last-flushed-to-RocksDB position, so unflushed entries that replay still
+ * needs are never removed. Returns the names of the purged files. See harper#1115.
+ */
+export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
+	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
+	if (isReadOnlyMode()) return [];
+	return rootStore.purgeLogs({ before: Date.now() - auditRetention });
+}
+
 const HAS_RECORD = 16;
 const HAS_PARTIAL_RECORD = 32; // will be used for CRDTs
 const PUT = 1;
@@ -285,6 +300,16 @@ export const HAS_ORIGINATING_OPERATION = 2048;
 export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
 export const HAS_BLOBS = 0x2000;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x4000;
+/**
+ * Marks a record (and its audit entry) as local-only: it is persisted on this node but must
+ * never be forwarded to replication peers. The bit lives in the record metadata bitmap (and is
+ * mirrored into the audit entry's extendedType) so the replication send path can skip it by a
+ * bitmask test on the already-decoded metadataFlags/extendedType integer — without decoding the
+ * record value (a critical send-path throughput optimization). Bit 15 (0x8000) was confirmed
+ * unused across the record metadata bitmap and the audit extendedType space; it sits below the
+ * lower-byte action region (which extendedType forbids) and within the always-32-bit metadata form.
+ */
+export const LOCAL_ONLY = 0x8000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -547,7 +572,10 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (!value) {
 						value = decodeFromDatabase(
-							() => store.decoder.decode(buffer.subarray(decoder.position, end)),
+							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
+							// its own time), so skip the prefix heuristic — otherwise a classic record whose
+							// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
+							() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
 							store.rootStore
 						);
 					}

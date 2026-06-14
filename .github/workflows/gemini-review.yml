@@ -1,0 +1,108 @@
+name: Gemini PR Review
+
+# Thin caller of the Gemini reusable in HarperFast/ai-review-prompts.
+# Runs in parallel with claude-review.yml so the two reviewers can be
+# compared on the same PRs.
+#
+# Layer inputs and `repo-specific-checks:` MIRROR claude-review.yml in
+# this repo. Output comparability between the two providers depends on
+# them seeing the same review scope — keep them in sync when bumping
+# the pin or editing the checks block.
+#
+# Opt-in by default: Gemini runs only when a HarperFast org member
+# applies the `gemini-review` label, UNLESS the GEMINI_ALWAYS_ON repo
+# variable is set to 'true' (then it auto-reviews trusted-author PRs,
+# like claude-review). See ai-review-prompts USAGE.md "Reviewers & the
+# always-on toggle".
+#
+# Pre-requisites:
+#   - HARPERFAST_AI_CLIENT_ID       (org-level App Client ID)
+#   - HARPERFAST_AI_APP_PRIVATE_KEY (org-level App private key)
+#   - GEMINI_API_KEY                (per-repo; optional — a missing key
+#                                   cleanly skips the review with a
+#                                   workflow notice, so this is safe to
+#                                   merge before the key is set)
+#   - AI_REVIEW_LOG_TOKEN           (optional — threads each run into a
+#                                   per-(PR, provider) issue in
+#                                   HarperFast/ai-review-log with the
+#                                   `provider:gemini` label)
+
+on:
+  pull_request:
+    # `labeled` admits the `gemini-review` opt-in gesture. `vars.*`
+    # can't be read in `on:` (only in a job `if:`), so the trigger
+    # lists the union and the `review` job gates on GEMINI_ALWAYS_ON.
+    types: [opened, synchronize, reopened, labeled]
+
+concurrency:
+  # Different group key from claude-review so the two providers can run
+  # in parallel on the same PR. cancel-in-progress is per-group, so a
+  # synchronize push cancels the in-flight Gemini run without touching
+  # the Claude run (and vice versa).
+  group: gemini-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Always-on toggle — see ai-review-prompts USAGE.md "Reviewers & the
+    # always-on toggle". GEMINI_ALWAYS_ON=true (repo/org variable) → auto-
+    # review trusted-author PRs; unset → opt-in via the gemini-review
+    # label. The reusable's authorize job still owns WHO is admitted
+    # (CODEOWNERS trust set; the labeler, not the author, on `labeled`).
+    # Note: the `gemini-review` label name is matched there too —
+    # `_gemini-review.yml`'s authorize `if:`, not in this caller.
+    if: ${{ vars.GEMINI_ALWAYS_ON == 'true' || github.event.action == 'labeled' }}
+    uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@3f2300a39910a0983eb74967dedeebd8c3c98adc # main 2026-06-08 (post #57 — week-of-06-01 calibration: severity-discipline non-blocker bullets, async-commit-ordering check, non-critical-work-on-critical-path guard)
+    # Caller-side permissions at the calling-job level (NOT workflow-
+    # level — that placement caps the reusable's per-job grants below
+    # what they need and breaks the workflow at startup; see
+    # ai-review-prompts#39/#40). Union of what the reusable's authorize
+    # (`contents: read`) and review (`contents: read` + `pull-requests:
+    # write` + `id-token: write`) jobs declare.
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    with:
+      # Same SHA as the `uses:` ref above. The reusable uses this to
+      # check out HarperFast/ai-review-prompts (layer files + bash
+      # scripts) at the same ref as the workflow logic itself. The
+      # duplication is unavoidable: reusable workflows can't introspect
+      # their own ref (`github.workflow_ref` resolves to the CALLER's
+      # ref in workflow_call context), and `uses: …@<ref>` is literal.
+      ai-review-prompts-ref: 3f2300a39910a0983eb74967dedeebd8c3c98adc
+      review-layers: |
+        universal
+        harper/common
+        harper/v5
+      repo-specific-checks: |
+        ## Repo-specific checks (Harper core)
+
+        This repo IS Harper core itself — "defer to Harper docs"
+        guidance from the layers applies to PLUGIN / APP docs,
+        not to docs within this repo (this is where the Harper docs'
+        behavior is defined).
+
+        On top of the layered scope, these are things specific to this
+        repo that the shared layers don't cover:
+
+        - **Linter is oxlint, not eslint.** `npm run lint` runs oxlint.
+          Advice in layers that references ESLint doesn't apply here.
+        - **Build tolerance (`tsc || true`)** is NOT used here —
+          Harper core's build should pass cleanly. Flag type errors
+          as real findings.
+        - **`dependencies.md`** documents all npm packages. New
+          runtime dependencies require an entry there; flag PRs that
+          add a dep without updating the file.
+        - **TypeStrip compatibility** — Harper core uses
+          `erasableSyntaxOnly`. Flag TypeScript constructs that would
+          break typestrip (non-type-only imports of types, parameter
+          property initialization, etc.).
+        - **RocksDB is primary storage** (LMDB still supported via
+          `HARPER_STORAGE_ENGINE=lmdb`). Tests should exercise the
+          primary path; flag PRs that test only the fallback.
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      AI_REVIEW_LOG_TOKEN: ${{ secrets.AI_REVIEW_LOG_TOKEN }}
+      HARPERFAST_AI_CLIENT_ID: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+      HARPERFAST_AI_APP_PRIVATE_KEY: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}

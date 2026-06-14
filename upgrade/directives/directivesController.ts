@@ -9,14 +9,14 @@
 import * as hdbUtils from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import hdbLog from '../../utility/logging/harper_logger.ts';
-import directive520 from './5-2-0.ts';
+import directive510 from './5-1-0.ts';
 const { DATA_VERSION, UPGRADE_VERSION } = hdbTerms.UPGRADE_JSON_FIELD_NAMES_ENUM as any;
 
 let versions: any = new Map();
 
 // All directive modules export an array of { version, sync_functions, async_functions }.
 // New directives must be imported above and registered here.
-for (const directive of directive520) {
+for (const directive of directive510) {
 	versions.set(directive.version, directive);
 }
 

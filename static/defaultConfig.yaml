@@ -25,7 +25,7 @@ analytics:
   replicate: false
 applications:
   lockdown: freeze-after-load
-  moduleLoader: vm
+  moduleLoader: vm-current-context
   dependencyLoader: auto
   allowedSpawnCommands:
     - npm

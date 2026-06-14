@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setTimeout: delay } = require('timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 require('#src/server/serverHelpers/serverUtilities');
@@ -127,6 +128,10 @@ describe('Subscription replay', () => {
 			})();
 			const events = await collect(subscription, 100);
 			await concurrentWrites;
+			// All writes have committed; wait for any pending subscription events to flush
+			// before closing. Without this, the last write's event can be queued but not
+			// yet delivered when return() closes the stream.
+			await delay(200);
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
@@ -180,6 +185,7 @@ describe('Subscription replay', () => {
 			})();
 			const events = await collect(subscription, 150);
 			await concurrentWrites;
+			await delay(200);
 			subscription.return?.();
 
 			// concurrent writes should arrive
@@ -236,6 +242,7 @@ describe('Subscription replay', () => {
 			})();
 			const events = await collect(subscription, 150);
 			await concurrentWrites;
+			await delay(200);
 			subscription.return?.();
 
 			// every updated key MUST be delivered with its final value at least once, even if
@@ -320,7 +327,14 @@ describe('Subscription replay', () => {
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
-			await delay(300);
+			// Wait for every in-flight write to be delivered rather than guessing a fixed
+			// duration — the fixed wait raced loaded runners and was the source of the
+			// intermittent "missing id" failures.
+			await waitFor(() => {
+				const seen = new Set(events.map((e) => e.id));
+				for (let i = 0; i < 200; i++) if (!seen.has(20000 + i)) return false;
+				return true;
+			});
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
@@ -487,7 +501,12 @@ describe('Subscription replay', () => {
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
-			await delay(300);
+			// Wait for the actual delivery condition instead of a fixed sleep.
+			await waitFor(() => {
+				const seen = new Set(events.map((e) => e.id));
+				for (let i = 0; i < 200; i++) if (!seen.has(13000 + i)) return false;
+				return true;
+			});
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
@@ -543,7 +562,7 @@ describe('Subscription replay', () => {
 			// the production timing: subscribe is established, then a live write arrives
 			await delay(50);
 			await T.put(50000, { name: 'single' });
-			await delay(300);
+			await waitFor(() => events.length >= 1);
 			subscription.return?.();
 
 			assert.equal(events.length, 1, `expected 1 event for the post-subscribe write, got ${events.length}`);
@@ -708,7 +727,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 5; i++) {
 				await T.put(100 + i, { name: 'live' + i });
 			}
-			await delay(150);
+			await waitFor(() => events.length >= 5);
 			subscription.return?.();
 
 			assert.equal(events.length, 5, `expected 5 live events, got ${events.length}`);
@@ -770,7 +789,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 3; i++) {
 				await Ours.put(30000 + i, { name: 'real' + i });
 			}
-			await delay(200);
+			await waitFor(() => events.length >= 3);
 			subscription.return?.();
 
 			// the cursor iterated 50 audit records, all skipped (different table); history is empty.
@@ -966,8 +985,9 @@ describe('Subscription replay', () => {
 				resolved = true;
 			});
 			await T.put(40000, { name: 'wake_me' });
-			// give the committed listener + microtask a tick to resolve
-			await delay(50);
+			// Wait for the committed listener to resolve the waiter rather than sleeping a fixed
+			// amount and hoping it landed.
+			await waitFor(() => resolved);
 			assert.equal(
 				resolved,
 				true,

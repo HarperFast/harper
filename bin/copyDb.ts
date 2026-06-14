@@ -377,25 +377,38 @@ export async function migrateOnStart() {
 	}
 }
 
-async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
+export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
 	console.log(`Migrating database ${sourceDatabase} to RocksDB at ${targetPath}`);
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
 	const targetRootStore = openRocksDb(targetPath, { disableWAL: false });
+	// sharedStructuresKey wires the rocksdb-js getStructures/saveStructures closures
+	// so that the plain msgpackr.Encoder used here persists structures within the
+	// __dbis__ CF at Symbol.for('structures'). The runtime attributesDbi RecordEncoder
+	// takes the non-isRocksDB path (handleLocalTimeForGets is never called on it) and
+	// reads from the same CF key via superGetStructures. Without this, own structure
+	// IDs starting at 0x40 are minted in-memory and silently lost on restart →
+	// runtime decoder interprets 0x40 as fixint 64 → "Data read, but end of buffer
+	// not reached 64" (harper#1260).
 	const targetDbisDb = openRocksDb(targetPath, {
 		disableWAL: false,
 		name: INTERNAL_DBIS_NAME,
+		sharedStructuresKey: Symbol.for('structures'),
 	});
 
 	const STRUCTURES_KEY = Symbol.for('structures');
-	const copyStructures = (sourceDbi, storeName: string) => {
+	const copyStructures = (sourceDbi, storeName: string, extraTarget?: RocksDatabase) => {
 		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
 		if (buffer) {
-			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(buffer));
+			const binaryBuffer = asBinary(buffer);
+			targetRootStore.putSync([STRUCTURES_KEY, storeName], binaryBuffer);
+			// Also write to the extra target CF when provided (e.g. __dbis__ CF,
+			// which the runtime RecordEncoder reads via its superGetStructures path).
+			extraTarget?.putSync(STRUCTURES_KEY, binaryBuffer);
 		}
 	};
 
-	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME);
+	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME, targetDbisDb);
 
 	let written;
 	let outstandingWrites = 0;
@@ -414,6 +427,11 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
 			dbiInit.compression = attribute.compression;
 			const sourceDbi = sourceRootStore.openDB(key, dbiInit);
+			// The primary dbi uses a RecordEncoder, whose decode resolves file-backed blob references
+			// against `rootStore`. Without it, decoding any record that holds a blob throws "No store
+			// specified, cannot load blob from storage", the error is swallowed (record decodes to null),
+			// and the record is silently dropped from the migration (HarperFast/harper#857).
+			if (isPrimary && sourceDbi.encoder) sourceDbi.encoder.rootStore = sourceRootStore;
 
 			let targetDbi;
 			if (!isPrimary) {
@@ -426,9 +444,23 @@ async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath
 				existingEncoder.isRocksDB = true;
 				existingEncoder.rootStore = targetRootStore;
 				const tempEncoder = new RecordEncoder({ name: key }) as any;
+				// msgpackr's pack closure captures `packr = this` at construction, so during
+				// re-encoding the structure callbacks resolve to tempEncoder's getStructures/
+				// saveStructures (invoked with this === tempEncoder), not existingEncoder's.
+				// tempEncoder must therefore carry the RocksDB wiring too, or getStructures hits
+				// the non-RocksDB branch where the captured super is undefined and throws.
+				tempEncoder.name = key;
+				tempEncoder.isRocksDB = true;
+				tempEncoder.rootStore = targetRootStore;
 				existingEncoder.encode = tempEncoder.encode;
-				existingEncoder.saveStructures = tempEncoder.saveStructures;
 				existingEncoder.getStructures = tempEncoder.getStructures;
+				// The shared structures dictionary is copied verbatim from the source by
+				// copyStructures() below, so re-encoding never needs to persist new structures.
+				// A no-op saveStructures avoids opening a targetRootStore.transactionSync() in the
+				// middle of each record's encode, which otherwise discards the targetDbi record writes.
+				const noopSaveStructures = () => true;
+				existingEncoder.saveStructures = noopSaveStructures;
+				tempEncoder.saveStructures = noopSaveStructures;
 			}
 
 			copyStructures(sourceDbi, key);

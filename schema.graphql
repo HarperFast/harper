@@ -113,6 +113,13 @@ directive @table(
 	table definition.
 	"""
 	replicate: Boolean
+	"""
+	Encode this table's records as typed random-access structures, optimizing for fast field
+	access and smaller records. Best for tables with stable, homogeneous field types; leave off
+	for wide or variably-typed schemas. Pins this table's encoding, overriding the global
+	storage.randomAccessFields config (which otherwise applies to each table dynamically on open).
+	"""
+	randomAccessFields: Boolean
 ) on OBJECT
 
 """

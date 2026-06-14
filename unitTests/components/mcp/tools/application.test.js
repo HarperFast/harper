@@ -3,6 +3,7 @@ const {
 	registerApplicationTools,
 	_setResourcesForTest,
 	_setRequestTargetForTest,
+	_resetCustomToolWarningsForTest,
 } = require('#src/components/mcp/tools/application');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 
@@ -234,6 +235,34 @@ describe('mcp/tools/application — registration', () => {
 		assert.equal(getTool('search_Product').annotations?.readOnlyHint, true);
 		assert.equal(getTool('delete_Product').annotations?.destructiveHint, true);
 	});
+
+	it('omits outputSchema on delete_ and search_ (handler wire format has no structuredContent)', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		// MCP spec: outputSchema validates structuredContent. wrapResult only sets
+		// structuredContent when the handler returns an object; Table.delete returns
+		// Promise<boolean>, search_* envelope shape is deferred to a sibling issue.
+		const del = getTool('delete_Product');
+		const search = getTool('search_Product');
+		assert.equal(del.outputSchema, undefined, 'delete_ must not advertise outputSchema');
+		assert.equal(search.outputSchema, undefined, 'search_ must not advertise outputSchema');
+		// get_/update_/create_ DO advertise outputSchema (handlers return object records).
+		assert.ok(getTool('get_Product').outputSchema, 'get_ does advertise outputSchema');
+		assert.ok(getTool('update_Product').outputSchema, 'update_ does advertise outputSchema');
+		assert.ok(getTool('create_Product').outputSchema, 'create_ does advertise outputSchema');
+	});
+
+	it('honors static outputSchemas.delete override when an author supplies a structured envelope', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+		Product.outputSchemas = {
+			delete: { type: 'object', properties: { deleted: { type: 'boolean' } }, required: ['deleted'] },
+		};
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const del = getTool('delete_Product');
+		assert.deepEqual(del.outputSchema, Product.outputSchemas.delete);
+	});
 });
 
 describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
@@ -357,6 +386,119 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		);
 		assert.ok(names.includes('get_Product'), 'verb tool still emitted');
 		assert.ok(names.includes('bulk_discount'), 'custom tool also emitted');
+	});
+
+	describe('warn-once on missing description / inputSchema', () => {
+		let warnCalls;
+		let originalWarn;
+		const harperLogger =
+			require('#src/utility/logging/harper_logger').default || require('#src/utility/logging/harper_logger');
+
+		beforeEach(() => {
+			_resetCustomToolWarningsForTest();
+			warnCalls = [];
+			originalWarn = harperLogger.warn;
+			harperLogger.warn = (msg) => {
+				warnCalls.push(msg);
+			};
+		});
+		afterEach(() => {
+			harperLogger.warn = originalWarn;
+		});
+
+		it('warns once when description is missing, then falls back to a generic description', () => {
+			class WithoutDesc {
+				async run() {
+					return {};
+				}
+			}
+			WithoutDesc.mcpTools = [{ name: 'silent_tool', method: 'run', inputSchema: { type: 'object' } }];
+			_setResourcesForTest(makeRegistry([['Sloppy', { Resource: WithoutDesc }]]));
+			registerApplicationTools();
+			const tool = getTool('silent_tool');
+			assert.match(tool.description, /Custom MCP tool exposed/, 'falls back to generic description');
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			assert.equal(descWarns.length, 1, 'warned exactly once on first registration');
+		});
+
+		it('warns once when inputSchema is missing, then falls back to permissive', () => {
+			class WithoutInput {
+				async run() {
+					return {};
+				}
+			}
+			WithoutInput.mcpTools = [{ name: 'shapeless_tool', method: 'run', description: 'x' }];
+			_setResourcesForTest(makeRegistry([['Sloppy', { Resource: WithoutInput }]]));
+			registerApplicationTools();
+			const tool = getTool('shapeless_tool');
+			assert.equal(tool.inputSchema.additionalProperties, true, 'falls back to permissive schema');
+			const inputWarns = warnCalls.filter((m) => m.includes('without an inputSchema'));
+			assert.equal(inputWarns.length, 1, 'warned exactly once on first registration');
+		});
+
+		it('does not re-warn on subsequent registerApplicationTools() calls for the same key', () => {
+			class WithoutBoth {
+				async run() {
+					return {};
+				}
+			}
+			WithoutBoth.mcpTools = [{ name: 'naked_tool', method: 'run' }];
+			_setResourcesForTest(makeRegistry([['Sloppy', { Resource: WithoutBoth }]]));
+			registerApplicationTools();
+			registerApplicationTools();
+			registerApplicationTools();
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			const inputWarns = warnCalls.filter((m) => m.includes('without an inputSchema'));
+			assert.equal(descWarns.length, 1, 'description warn fires once across re-registrations');
+			assert.equal(inputWarns.length, 1, 'inputSchema warn fires once across re-registrations');
+		});
+
+		it('warns separately per (path, tool-name) key', () => {
+			class A {
+				async r() {
+					return {};
+				}
+			}
+			A.mcpTools = [{ name: 'same_name', method: 'r' }];
+			class B {
+				async r() {
+					return {};
+				}
+			}
+			B.mcpTools = [{ name: 'same_name', method: 'r' }];
+			_setResourcesForTest(
+				makeRegistry([
+					['A', { Resource: A }],
+					['B', { Resource: B }],
+				])
+			);
+			registerApplicationTools();
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			// Note: addTool overwrites by name so only one tool survives, but both registrations warned distinctly.
+			assert.equal(descWarns.length, 2, 'each path warned independently');
+		});
+
+		it('does NOT warn when description and inputSchema are both present', () => {
+			class WellBehaved {
+				async run() {
+					return {};
+				}
+			}
+			WellBehaved.mcpTools = [
+				{
+					name: 'good_tool',
+					method: 'run',
+					description: 'Does the thing well.',
+					inputSchema: { type: 'object', properties: { x: { type: 'string' } } },
+				},
+			];
+			_setResourcesForTest(makeRegistry([['Tidy', { Resource: WellBehaved }]]));
+			registerApplicationTools();
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			const inputWarns = warnCalls.filter((m) => m.includes('without an inputSchema'));
+			assert.equal(descWarns.length, 0);
+			assert.equal(inputWarns.length, 0);
+		});
 	});
 });
 

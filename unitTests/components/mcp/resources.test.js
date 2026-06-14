@@ -508,6 +508,52 @@ describe('mcp/resources', () => {
 		});
 	});
 
+	describe('enumerate — description prefix + @hidden suppression', () => {
+		it('prepends ResourceClass.description to https://* resource entries', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog — what shows up in the storefront listing.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const product = resources.find((r) => r.uri === 'https://localhost/Product');
+			assert.ok(product, 'Product https resource present');
+			assert.match(product.description, /Product catalog/, 'prefixed with class description');
+			assert.match(product.description, /Application resource at \/Product/, 'still has the default suffix');
+		});
+
+		it('prepends ResourceClass.description to harper://schema/* entries', () => {
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog row — one per SKU.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const schema = resources.find((r) => r.uri === 'harper://schema/data/product');
+			assert.ok(schema, 'schema entry present');
+			assert.match(schema.description, /Product catalog row/);
+		});
+
+		it('omits @hidden Resources from both https://* and harper://schema/* enumerations', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const HiddenThing = makeTableResource({ databaseName: 'data', tableName: 'hidden_thing' });
+			HiddenThing.hidden = true;
+			HiddenThing.description = 'Should not surface.';
+			_setResourcesForTest(makeFakeResources([['HiddenThing', HiddenThing]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const uris = resources.map((r) => r.uri);
+			assert.ok(!uris.includes('https://localhost/HiddenThing'), 'https entry suppressed');
+			assert.ok(!uris.includes('harper://schema/data/hidden_thing'), 'schema entry suppressed');
+		});
+
+		it('uses the default-only description when ResourceClass has no static description', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Plain = makeTableResource({ databaseName: 'data', tableName: 'plain' });
+			_setResourcesForTest(makeFakeResources([['Plain', Plain]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const plain = resources.find((r) => r.uri === 'https://localhost/Plain');
+			assert.ok(plain);
+			assert.match(plain.description, /^Application resource at \/Plain/, 'no prefix when no class description');
+		});
+	});
+
 	describe('readResource — error cases', () => {
 		it('rejects an invalid URI', async () => {
 			const res = await readResource({ uri: 'not a uri', user: SUPER, profile: 'application' });

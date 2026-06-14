@@ -13,6 +13,16 @@ Records stored in tables are plain objects given a `RecordObject` prototype, whi
 - To give a plain JS object the RecordObject prototype without copying it (preserving mutability), use `Object.setPrototypeOf(obj, primaryStore.encoder.structPrototype)` then `entryMap.set(obj, entry)`.
 - Do **not** copy the object (e.g. via `Object.assign` into a new instance) if any code still holds a reference to the original and expects to mutate it — see below.
 
+## Struct mode is gated to primary DBIs (downgrade compatibility)
+
+`RecordEncoder` extends a structon encoder, whose random-access "struct" encoding uses header bytes in `0x20–0x3f`. That range overlaps msgpack positive-fixints, so a reader without struct support (msgpackr v1, i.e. harperdb v4) decodes a struct header as an integer. harperdb v4 only enabled struct mode (its `randomAccessStructure` option) on **primary** DBIs, so non-primary DBIs — notably the `__dbis__` metadata store (table/attribute defs) — were plain records mode. If v5 writes `__dbis__` in struct mode, a v5→v4 downgrade can't decode the metadata, silently treats the instance as a fresh pre-3.0 install, and refuses to boot.
+
+To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `RecordEncoder`, when `randomAccessStructure` is false, makes the struct **write** hook bail (`this._writeStruct = () => 0`) so objects are written in records mode. Two subtleties:
+
+- We **bail** the hook (return 0) rather than clear it (`undefined`). Clearing it shifts msgpackr's positive-fixint boundary from `0x20` to `0x40`, so top-level integers `0x20–0x3f` (e.g. a `NEXT_TABLE_ID` ≥ 32 stored in `__dbis__`) would be written as bare fixints — which the still-installed struct **read** hook misreads as struct headers. Bailing keeps the boundary at `0x20`, so those integers are written as `uint8`.
+- The struct **read** hook is left intact, so records a prior v5 already wrote in struct mode still decode (read-compat); only new writes switch to records mode.
+- Companion change in `structon`: `prepareStructures` saves the shared structures in the legacy plain-array form when there are no typed structs (instead of the `{named, typed}` Map), so the `Symbol.for('structures')` buffer for a records-mode `__dbis__` is also v4-decodable.
+
 ## getFromSource() timing: promise resolves before commit runs
 
 In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution.
@@ -37,6 +47,8 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 When `migrateOnStart` opens a source LMDB primary store to read records out for the RocksDB copy, it constructs an `OpenDBIObject` and calls `sourceRootStore.openDB(key, dbiInit)`. Critically, the per-attribute `compression` setting from the corresponding `__dbis__` entry must be assigned onto `dbiInit` before that call — `dbiInit.compression = attribute.compression`. Without it, lmdb-js doesn't install its decompression layer; every read on the DBI returns raw compressed bytes. msgpackr then misreads bytes in the `0x40–0x7F` range as shared-structure refs, calls `loadStructures` → decodes the (also compressed) structures buffer → finds more bytes in that range → recurses → stack overflow.
 
 Harper's normal `databases.ts` path already does this (search for `dbiInit.compression = primaryKeyAttribute.compression`); the migration path in `bin/copyDb.ts` has to match.
+
+The same source-dbi open has a second non-obvious requirement: assign `sourceDbi.encoder.rootStore = sourceRootStore` for the primary store. The primary dbi decodes through a `RecordEncoder`, and decoding a record that holds a file-backed blob reference resolves that reference against `rootStore` (it locates the blob file). With `rootStore` unset, the `Blob` msgpackr extension throws `No store specified, cannot load blob from storage`; `RecordEncoder.decode` swallows the error and yields `null`, and `copyDbToRocks` then skips the `null` value — so every record with a file-backed blob is silently dropped from the migration. The runtime path gets `rootStore` from `handleLocalTimeForGets`; the migration path opens the source dbi raw and must set it explicitly (issue #857).
 
 ## Schema migration and `runIndexing` internals (`databases.ts`)
 
@@ -88,8 +100,34 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 
 1. **`json/systemSchema.json`** — the table entry. Fresh installs auto-create it via `utility/mount_hdb.ts:createTables()`, which iterates `Object.keys(systemSchema)` on first boot.
 2. **`utility/hdbTerms.ts`** — add the table name to `SYSTEM_TABLE_NAMES`.
-3. **`upgrade/directives/<version>.ts`** — provisions the table on existing installs that already have a system schema. Registered in `upgrade/directives/directivesController.ts` (which is otherwise empty — its `versions` Map gets populated by these imports). The directive shape is `{ version, sync_functions, async_functions }`; copy `5-2-0.ts` for the canonical pattern (uses `bridge.createTable` to match what `mount_hdb` does on a fresh install).
+3. **`upgrade/directives/<version>.ts`** — provisions the table on existing installs that already have a system schema. Registered in `upgrade/directives/directivesController.ts` (which is otherwise empty — its `versions` Map gets populated by these imports). The directive shape is `{ version, sync_functions, async_functions }`; copy `5-1-0.ts` for the canonical pattern (uses `bridge.createTable` to match what `mount_hdb` does on a fresh install).
+
+   **Version the directive to the first release that ships the dependent code, not a later one.** Directives only run when `current_version < directive_version <= upgrade_version` (`directivesController.getVersionsForUpgrade`). The `hdb_deployment` directive was originally mis-tagged `5.2.0` while the deployment-recorder code shipped in `5.1.0`, so on every `5.0.x -> 5.1.x` upgrade the directive was filtered out (`5.2.0 > 5.1.x`) and the table never got created — breaking replicated `deploy_component` on peer nodes for the entire existing customer base. Caveat: `utility/common_utils.ts:compareVersions` strips trailing `.0` and therefore sorts a pre-release (`5.1.0-beta.1`) _above_ its GA (`5.1.0`), so an install already on a `5.1.0-beta.x` data version will not pick up a `5.1.0` directive when upgrading to GA; those pre-release installs need the table created by other means.
 
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
+
+## Table drops, the `dropping` tombstone, and ghost tables
+
+A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
+in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
+persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
+destructive work, then drops the column families (awaited - a failed drop must surface as the
+operation's error, never a swallowed rejection), then removes the catalog rows. If the process
+dies or a drop fails partway, the tombstone survives; both the boot-time schema load in
+`databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
+interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
+silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
+(with their data, if the column families were never actually removed).
+
+Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
+lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
+subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a
+same-named table within one process requires @harperfast/rocksdb-js >= the column-family
+eviction fix (1.4.3 / rocksdb-js#<main PR>): older bindings keep the dropped column family's
+by-name registry entry alive whenever other worker threads hold handles, so the recreate
+silently reuses a dangling handle and every write fails with "Invalid column family specified
+in write batch", poisoning the whole database env until restart. The regression suite for all
+of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
+bindings).

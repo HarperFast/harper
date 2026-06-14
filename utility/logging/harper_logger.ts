@@ -641,13 +641,13 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			import('./logRotator.ts')
 				.then((mod) => {
 					try {
-						const logRotator: any = mod.default ?? mod;
+						const { logRotator } = mod as any;
 						logger.rotator = logRotator({
 							logger,
 							...rotation,
 						});
 					} catch (error) {
-						logger('Error initializing log rotator', error);
+						logger(`Error initializing log rotator (log rotation disabled): ${error.message}`);
 					}
 				})
 				.catch((error) => {

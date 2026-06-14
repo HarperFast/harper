@@ -40,6 +40,7 @@ export function transaction<T>(
 	context.transaction = transaction;
 	if (context.timestamp) transaction.timestamp = context.timestamp;
 	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
+	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
 
 	// create a resource cache so that multiple requests to the same resource return the same resource

@@ -1,8 +1,19 @@
 /**
- * HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variable support
+ * HARPER_CONFIG, HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variable support
  *
  * This module provides utilities for applying configuration from environment variables
  * to Harper's configuration system with source tracking and drift detection.
+ *
+ * The three variables form a precedence ladder (later wins):
+ *   HARPER_DEFAULT_CONFIG  <  config file / user edits  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
+ *
+ * - HARPER_CONFIG (recommended): merge — sets exactly the keys it names, reasserting
+ *   them on every boot (a manual edit to a named key is overwritten on restart), and
+ *   yields only to HARPER_SET_CONFIG. Individual HARPER_* env vars still win over it
+ *   for the keys they name (arg filtering remains SET-only).
+ * - HARPER_DEFAULT_CONFIG: defaults — yields to the config file, individual env vars,
+ *   and user edits.
+ * - HARPER_SET_CONFIG: force — overrides everything and locks against drift.
  *
  * Features:
  * - Install-time and runtime configuration from env vars
@@ -28,7 +39,7 @@ function getLogger(): Logger {
 
 // Type definitions
 type ConfigObject = Record<string, any>;
-type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'default';
+type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'default';
 
 /**
  * Configuration state tracking structure
@@ -66,6 +77,7 @@ interface ConfigState {
 	snapshots: {
 		// Snapshots of what each env var currently specifies (for detecting changes)
 		HARPER_DEFAULT_CONFIG?: { hash: string; config: ConfigObject };
+		HARPER_CONFIG?: { hash: string; config: ConfigObject };
 		HARPER_SET_CONFIG?: { hash: string; config: ConfigObject };
 	};
 }
@@ -100,6 +112,121 @@ function isPlainObject(value: any): value is Record<string, any> {
 		!Array.isArray(value) &&
 		Object.prototype.toString.call(value) === '[object Object]'
 	);
+}
+
+/**
+ * Array-composition directive: `{ $union: [...] }`.
+ *
+ * A "directive" is a plain object that encodes a non-default merge operation for a
+ * leaf value instead of the usual overwrite. It is recognized by the presence of a
+ * supported directive key (see SUPPORTED_DIRECTIVES), so `flattenObject` treats it as
+ * a leaf rather than recursing into `tls.uses.$union`. Other `$`-prefixed keys (e.g. a
+ * JSON Schema's `$schema`/`$ref` inside component config) are NOT directives and pass
+ * through as ordinary config values.
+ *
+ * `$union` guarantees the listed items are present in the target array — the
+ * order-preserving union of (existing ∪ listed). It is idempotent under repeated
+ * application and never removes entries it didn't name, which is what lets a platform
+ * layer reapply its required entries on every restart without dropping an app's
+ * additions (even on the HARPER_SET_CONFIG force/drift path). We deliberately do not
+ * add `$append` (not idempotent) or `$replace` (a bare array already replaces); the
+ * vocabulary stays open so further directives can be added non-breaking.
+ *
+ * Note on HARPER_DEFAULT_CONFIG: a `$union` there composes at install (or against a
+ * value DEFAULT previously set), but at runtime DEFAULT yields to an existing
+ * un-sourced array and the union no-ops — matching DEFAULT's "only update values we
+ * previously set" contract. Use HARPER_SET_CONFIG to compose at runtime.
+ */
+const DIRECTIVE_UNION = '$union';
+const SUPPORTED_DIRECTIVES = [DIRECTIVE_UNION];
+
+/**
+ * True if value is a plain object carrying a supported directive key. Detection is
+ * deliberately narrowed to the known sentinels (not any `$`-prefixed key) so ordinary
+ * config that happens to contain `$`-keys — e.g. a component config embedding a JSON
+ * Schema with `$schema`/`$ref` — keeps flattening and applying as plain values.
+ */
+function isDirectiveObject(value: any): boolean {
+	return isPlainObject(value) && SUPPORTED_DIRECTIVES.some((directive) => directive in value);
+}
+
+/**
+ * Validate a directive object and return its operands. Throws on a malformed directive
+ * so misconfiguration surfaces loudly rather than silently misbehaving.
+ */
+function parseDirective(value: Record<string, any>, path: string): { items: any[] } {
+	const keys = Object.keys(value);
+	if (keys.length !== 1) {
+		throw new ConfigEnvVarError(
+			`Config directive "${DIRECTIVE_UNION}" at "${path}" must be the only key, got: ${keys.join(', ')}`
+		);
+	}
+	const items = value[DIRECTIVE_UNION];
+	if (!Array.isArray(items)) {
+		throw new ConfigEnvVarError(`Config directive "${DIRECTIVE_UNION}" at "${path}" requires an array value`);
+	}
+	return { items };
+}
+
+/**
+ * Deterministic JSON string with object keys sorted at every level, so two
+ * structurally-equal values compare equal regardless of property insertion order.
+ * Shared by snapshot hashing and by `$union`'s idempotent dedup of object entries.
+ */
+function stableStringify(value: any): string {
+	// Honor toJSON (e.g. Date) so values serialize the way JSON.stringify would.
+	if (value && typeof value.toJSON === 'function') {
+		value = value.toJSON();
+	}
+	if (value === null || typeof value !== 'object') {
+		// undefined/function/symbol stringify to undefined → normalize to 'null' (matches
+		// JSON.stringify of an array slot) and keep the declared string return type honest.
+		return JSON.stringify(value) ?? 'null';
+	}
+	if (Array.isArray(value)) {
+		return '[' + value.map((item) => stableStringify(item)).join(',') + ']';
+	}
+	// Match JSON.stringify, which omits keys whose value is undefined/function/symbol.
+	const pairs: string[] = [];
+	for (const key of Object.keys(value).sort()) {
+		const item = value[key];
+		if (item !== undefined && typeof item !== 'function' && typeof item !== 'symbol') {
+			pairs.push(JSON.stringify(key) + ':' + stableStringify(item));
+		}
+	}
+	return '{' + pairs.join(',') + '}';
+}
+
+/**
+ * Order-preserving union: existing entries kept in place, listed items appended only
+ * when not already present. Idempotent (re-applying is a no-op, no duplicates) and
+ * never removes entries the directive didn't name. Dedup uses key-order-insensitive
+ * equality so object entries (e.g. `{ port, host }` vs `{ host, port }`) don't
+ * re-append across boots.
+ */
+function unionArrays(current: any, items: any[]): any[] {
+	const result = Array.isArray(current) ? [...current] : [];
+	// Pre-stringify existing entries once, then stringify each candidate once (O(N+M)).
+	const seen = result.map((existing) => stableStringify(existing));
+	for (const item of items) {
+		const key = stableStringify(item);
+		if (!seen.includes(key)) {
+			result.push(item);
+			seen.push(key);
+		}
+	}
+	return result;
+}
+
+/**
+ * Resolve the value to write for a flattened leaf given the value currently at that
+ * path. Plain leaves overwrite (default); directive leaves compose against current.
+ */
+function resolveLeafValue(currentValue: any, leafValue: any, path: string): any {
+	if (isDirectiveObject(leafValue)) {
+		return unionArrays(currentValue, parseDirective(leafValue, path).items);
+	}
+	return leafValue;
 }
 
 /**
@@ -145,7 +272,12 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 		const keys = new Set<string>();
 		for (const key in obj) {
 			const newKey = prefix ? `${prefix}_${key}` : key;
-			if (obj[key] !== null && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+			if (
+				obj[key] !== null &&
+				typeof obj[key] === 'object' &&
+				!Array.isArray(obj[key]) &&
+				!isDirectiveObject(obj[key])
+			) {
 				flattenSetConfig(obj[key], newKey).forEach((k) => keys.add(k));
 			} else {
 				keys.add(newKey.toLowerCase());
@@ -179,11 +311,11 @@ function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
 		const value = obj[key];
 		const newKey = prefix ? `${prefix}.${key}` : key;
 
-		if (isPlainObject(value)) {
+		if (isPlainObject(value) && !isDirectiveObject(value)) {
 			// Recurse for nested objects
 			Object.assign(result, flattenObject(value, newKey));
 		} else {
-			// Store primitive or array
+			// Store primitive, array, or directive ({ $union: [...] }) as a leaf
 			result[newKey] = value;
 		}
 	}
@@ -248,21 +380,7 @@ function deleteNestedValue(obj: ConfigObject, path: string): void {
  * Hash config object for snapshot comparison
  */
 function hashConfig(config: ConfigObject): string {
-	// Deterministic JSON stringify with sorted keys at all levels
-	const sortedStringify = (obj: any): string => {
-		if (obj === null || typeof obj !== 'object') {
-			return JSON.stringify(obj);
-		}
-		if (Array.isArray(obj)) {
-			return '[' + obj.map(sortedStringify).join(',') + ']';
-		}
-		const keys = Object.keys(obj).sort();
-		const pairs = keys.map((key) => JSON.stringify(key) + ':' + sortedStringify(obj[key]));
-		return '{' + pairs.join(',') + '}';
-	};
-
-	const json = sortedStringify(config);
-	return crypto.createHash('sha256').update(json).digest('hex');
+	return crypto.createHash('sha256').update(stableStringify(config)).digest('hex');
 }
 
 /**
@@ -399,8 +517,9 @@ function applyConfigLayer(
 			}
 		}
 
-		// Set the value and track the source
-		setNestedValue(fileConfig, path, value);
+		// Set the value and track the source (directive leaves compose against current,
+		// so a $union keeps existing/app entries instead of overwriting them)
+		setNestedValue(fileConfig, path, resolveLeafValue(currentValue, value, path));
 		state.sources[path] = sourceName;
 	}
 }
@@ -424,9 +543,11 @@ function handleDeletions(
 	for (const path of deletedPaths) {
 		// Only handle if this path was set by this source
 		if (state.sources[path] === sourceName) {
-			// For both HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG, restore original value instead of deleting
+			// For all config env vars, restore original value instead of deleting
 			if (
-				(sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_SET_CONFIG') &&
+				(sourceName === 'HARPER_DEFAULT_CONFIG' ||
+					sourceName === 'HARPER_CONFIG' ||
+					sourceName === 'HARPER_SET_CONFIG') &&
 				path in state.originalValues
 			) {
 				setNestedValue(fileConfig, path, state.originalValues[path]);
@@ -498,6 +619,14 @@ function processEnvVar(
 			respectSources: [],
 			storeOriginals: true,
 		});
+	} else if (sourceName === 'HARPER_CONFIG') {
+		// HARPER_CONFIG merges: it sets exactly the keys it names and reasserts them on
+		// every boot (winning over the config file, user edits, and DEFAULT), yielding
+		// only to HARPER_SET_CONFIG. Same behavior at install and runtime.
+		applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
+			respectSources: ['HARPER_SET_CONFIG'],
+			storeOriginals: true,
+		});
 	} else if (sourceName === 'HARPER_DEFAULT_CONFIG') {
 		// DEFAULT_CONFIG behavior depends on install vs runtime
 		if (options.isInstall) {
@@ -529,8 +658,8 @@ function processEnvVar(
 					}
 				}
 
-				// Set the value and track the source
-				setNestedValue(fileConfig, path, value);
+				// Set the value and track the source (directive leaves compose against current)
+				setNestedValue(fileConfig, path, resolveLeafValue(currentValue, value, path));
 				state.sources[path] = sourceName;
 			}
 		}
@@ -565,8 +694,8 @@ function cleanupRemovedEnvVar(
 
 	const logger = getLogger();
 
-	// For both HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG, restore original values
-	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
+	// For all config env vars, restore original values
+	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
 		const pathsToCleanup = Object.keys(state.sources).filter((path) => state.sources[path] === sourceName);
 		for (const path of pathsToCleanup) {
 			if (path in state.originalValues) {
@@ -589,14 +718,15 @@ function cleanupRemovedEnvVar(
 }
 
 /**
- * Compose a merged config from HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG
- * layered with an optional base. Later layers win:
- *   HARPER_DEFAULT_CONFIG  <  base  <  HARPER_SET_CONFIG
+ * Compose a merged config from HARPER_DEFAULT_CONFIG, HARPER_CONFIG and
+ * HARPER_SET_CONFIG layered with an optional base. Later layers win:
+ *   HARPER_DEFAULT_CONFIG  <  base  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
  *
  * HARPER_DEFAULT_CONFIG provides scaffolding defaults, the base (e.g., the
- * user's existing config file) is layered on top, and HARPER_SET_CONFIG
- * force-overrides everything. This matches the precedence applied by the
- * runtime pipeline in applyRuntimeEnvConfig.
+ * user's existing config file) is layered on top, HARPER_CONFIG merges its
+ * keys over that, and HARPER_SET_CONFIG force-overrides everything. This
+ * matches the precedence applied by the runtime pipeline in
+ * applyRuntimeEnvConfig.
  *
  * Unlike applyRuntimeEnvConfig, this does NOT read or write the config state
  * file and does NOT track sources — it returns a fresh object. Use when you
@@ -608,13 +738,15 @@ export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 	const layers: (ConfigObject | null)[] = [
 		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
 		cloneDeep(base),
+		parseConfigEnvVar(process.env.HARPER_CONFIG, 'HARPER_CONFIG'),
 		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
 	];
 
 	for (const layer of layers) {
 		if (!layer) continue;
 		for (const [p, value] of Object.entries(flattenObject(layer))) {
-			setNestedValue(result, p, value);
+			// directive leaves compose against the value accumulated by prior layers
+			setNestedValue(result, p, resolveLeafValue(getNestedValue(result, p), value, p));
 		}
 	}
 
@@ -622,8 +754,18 @@ export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 }
 
 /**
- * Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG
- * Can be used for both install-time and runtime
+ * True if a config-state file exists with tracked env-var snapshots. Callers use this to
+ * decide whether applyRuntimeEnvConfig must run even when no config env vars are currently
+ * set — e.g. to restore originals and clear the snapshot after a var was applied on a prior
+ * boot and then removed. Cheap: returns false without reading when no state file exists.
+ */
+export function hasPersistedEnvConfigState(rootPath: string): boolean {
+	return Object.keys(loadConfigState(rootPath).snapshots).length > 0;
+}
+
+/**
+ * Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG (in that order —
+ * later wins). Can be used for both install-time and runtime.
  */
 export function applyRuntimeEnvConfig(
 	fileConfig: ConfigObject,
@@ -631,13 +773,14 @@ export function applyRuntimeEnvConfig(
 	options: { isInstall?: boolean } = {}
 ): ConfigObject {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
+	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
 	// Load existing state
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
-	if (!defaultEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
+	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
 		return fileConfig;
 	}
 
@@ -649,21 +792,26 @@ export function applyRuntimeEnvConfig(
 		}
 	}
 
-	// Process HARPER_DEFAULT_CONFIG
-	processEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG', options);
-
-	// Clean up if HARPER_DEFAULT_CONFIG was removed
+	// Clean up any env var that was removed BEFORE applying the remaining ones. A removed
+	// var restores its paths to their stored originals and clears ownership; doing this
+	// first means a path a higher-precedence var is releasing is already un-sourced when a
+	// lower-precedence var (e.g. HARPER_CONFIG) runs, so that var reclaims it the same boot
+	// instead of leaving it at the file value for one boot.
 	if (!defaultEnvValue) {
 		cleanupRemovedEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG');
 	}
-
-	// Process HARPER_SET_CONFIG (always overrides everything)
-	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
-
-	// Clean up if HARPER_SET_CONFIG was removed
+	if (!configEnvValue) {
+		cleanupRemovedEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG');
+	}
 	if (!setEnvValue) {
 		cleanupRemovedEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG');
 	}
+
+	// Apply present vars in precedence order (later wins):
+	//   HARPER_DEFAULT_CONFIG < config file / user edits < HARPER_CONFIG < HARPER_SET_CONFIG
+	processEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG', options);
+	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
+	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
 	// Save updated state
 	saveConfigState(rootPath, state);
