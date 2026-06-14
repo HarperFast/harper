@@ -1,0 +1,8 @@
+# Regression fixture for HarperFast/harper#1282.
+#
+# An OPEN table: only a primary key, no other declared attributes, NOT @sealed — so Harper accepts
+# arbitrary record shapes (dynamic schema). High shape cardinality on such a table is what triggered
+# the shared-structure data loss in #1282.
+type Het @table @export {
+	id: ID @primaryKey
+}
