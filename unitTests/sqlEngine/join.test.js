@@ -257,6 +257,33 @@ describe('sqlEngine phase 3: joins', () => {
 		assert.strictEqual(data.length, 3 * 3);
 	});
 
+	it('LEFT JOIN with WHERE on the nullable side filters null-filled rows (not pushed down)', async () => {
+		// carol has no orders; the WHERE on the right (nullable) table must drop her,
+		// not return her null-filled.
+		const data = await runSql(
+			'SELECT u.name, o.amount FROM dev.user u LEFT JOIN dev.orders o ON u.id = o.user_id WHERE o.amount > 80'
+		);
+		assert.deepStrictEqual(sortByJson(data), sortByJson([{ name: 'alice', amount: 100 }]));
+		// orders must not have been pre-filtered by amount on its own scan.
+		for (const t of orders._searches) {
+			assert.ok(!t.conditions.some((c) => c.attribute === 'amount'));
+		}
+	});
+
+	it('LEFT JOIN ... WHERE o.<col> IS NULL keeps only the unmatched (anti-join) rows', async () => {
+		const data = await runSql(
+			'SELECT u.name FROM dev.user u LEFT JOIN dev.orders o ON u.id = o.user_id WHERE o.id IS NULL'
+		);
+		assert.deepStrictEqual(data, [{ name: 'carol' }]);
+	});
+
+	it('rejects duplicate table aliases in a join', async () => {
+		await assert.rejects(
+			runSql('SELECT u.id FROM dev.user u JOIN dev.user u ON u.id = u.id'),
+			EngineUnsupportedError
+		);
+	});
+
 	it('rejects an ambiguous unqualified column', async () => {
 		await assert.rejects(
 			runSql('SELECT id FROM dev.user u JOIN dev.orders o ON u.id = o.user_id'),

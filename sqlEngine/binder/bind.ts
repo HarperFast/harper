@@ -83,6 +83,21 @@ export function bindSelect(stmt: SelectNode): BoundSelect {
 	const qualified = stmt.joins.length > 0;
 
 	if (qualified) {
+		// Distinct effective aliases are required: the join row model keys columns
+		// by `<alias>.<attr>`, so two tables sharing an alias would collide and
+		// overwrite each other on merge.
+		const seen = new Set<string>();
+		for (const t of scope) {
+			if (seen.has(t.effectiveAlias)) {
+				throw new EngineUnsupportedError(
+					`duplicate table alias "${t.effectiveAlias}" in join; give each joined table a distinct alias`
+				);
+			}
+			seen.add(t.effectiveAlias);
+		}
+	}
+
+	if (qualified) {
 		// Resolve every column reference to a canonical alias, in place.
 		resolveColumnsInSelect(stmt, scope);
 	}
@@ -152,8 +167,13 @@ function pickDefaultDatabase(databases: Record<string, Record<string, unknown>>,
 
 function resolveColumnsInSelect(stmt: SelectNode, scope: BoundTable[]): void {
 	for (const p of stmt.projections) resolveColumns(p.expr, scope);
-	for (const j of stmt.joins) {
-		if (j.on) resolveColumns(j.on, scope);
+	// Each join's ON sees only the tables in scope at that point: FROM plus the
+	// joins up to and including this one (scope[0..i+1]). Resolving against the
+	// full scope would let an ON reference a not-yet-joined table or be falsely
+	// flagged ambiguous against one.
+	for (let i = 0; i < stmt.joins.length; i++) {
+		const j = stmt.joins[i];
+		if (j.on) resolveColumns(j.on, scope.slice(0, i + 2));
 	}
 	if (stmt.where) resolveColumns(stmt.where, scope);
 	if (stmt.groupBy) for (const g of stmt.groupBy) resolveColumns(g, scope);

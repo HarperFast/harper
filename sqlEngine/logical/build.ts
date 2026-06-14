@@ -163,14 +163,24 @@ function buildSingleTableSource(stmt: SelectNode & Partial<BoundSelect>): Logica
 function buildJoinSource(stmt: SelectNode & Partial<BoundSelect>): LogicalPlan {
 	const scope = stmt.scope as BoundTable[];
 
-	// alias → single-table WHERE conjuncts; cross-table/constant conjuncts → residual.
+	// Aliases on the nullable (right) side of a LEFT join: a WHERE conjunct on
+	// such a table must NOT be pushed into its scan, or unmatched left rows would
+	// be null-filled and wrongly survive (and an `IS NULL` anti-join would lose
+	// its rows). Those conjuncts stay as a post-join residual filter, which gives
+	// correct semantics for both `o.x > k` and `o.x IS NULL`.
+	const nullableAliases = new Set<string>();
+	for (let k = 0; k < stmt.joins.length; k++) {
+		if (stmt.joins[k].type === 'left') nullableAliases.add(scope[k + 1].effectiveAlias);
+	}
+
+	// alias → pushable single-table WHERE conjuncts; everything else → residual.
 	const perAlias = new Map<string, ExprNode[]>();
 	const residual: ExprNode[] = [];
 	if (stmt.where) {
 		for (const conjunct of flattenAnd(stmt.where)) {
 			const aliases = referencedAliases(conjunct);
-			if (aliases.size === 1) {
-				const alias = [...aliases][0];
+			const alias = aliases.size === 1 ? [...aliases][0] : undefined;
+			if (alias && !nullableAliases.has(alias)) {
 				const list = perAlias.get(alias);
 				if (list) list.push(conjunct);
 				else perAlias.set(alias, [conjunct]);

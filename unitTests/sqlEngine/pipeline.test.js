@@ -226,13 +226,6 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		await assert.rejects(() => runSql("SELECT * FROM dev.user WHERE city = 'denver'"), EngineUnsupportedError);
 	});
 
-	it('rejects JOIN in phase 1', async () => {
-		await assert.rejects(
-			() => runSql('SELECT u.name FROM dev.user u INNER JOIN dev.user u2 ON u.id = u2.id'),
-			EngineUnsupportedError
-		);
-	});
-
 	it('rejects GROUP BY aggregate with no usable index condition (allowFullScan=false)', async () => {
 		await assert.rejects(() => runSql('SELECT city, COUNT(*) FROM dev.user GROUP BY city'), EngineUnsupportedError);
 	});
