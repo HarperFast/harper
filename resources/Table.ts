@@ -3609,7 +3609,10 @@ export function makeTable(options) {
 					await rest();
 					if (reverseScanned >= limit) break;
 				}
-				const sampleSize = limit * 2;
+				// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
+				// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
+				// those un-scanned slots would inflate the denominator and underestimate the rate.
+				const sampleSize = limit + reverseScanned;
 				const recordRate = (recordCount + firstRecordCount) / sampleSize;
 				const variance =
 					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
