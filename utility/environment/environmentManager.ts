@@ -1,27 +1,27 @@
 'use strict';
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'path';
 import * as os from 'os';
 import PropertiesReader from 'properties-reader';
 import log from '../logging/harper_logger.ts';
 import * as commonUtils from '../common_utils.ts';
 import * as hdbTerms from '../hdbTerms.ts';
-import * as configUtils from '../../config/configUtils.js';
+import * as configUtils from '../../config/configUtils.ts';
 import { mkdirSync } from 'node:fs';
 
-const INIT_ERR = 'Error initializing environment manager';
-const BOOT_PROPS_FILE_PATH = 'BOOT_PROPS_FILE_PATH';
+var INIT_ERR = 'Error initializing environment manager';
+var BOOT_PROPS_FILE_PATH = 'BOOT_PROPS_FILE_PATH';
 
-let propFileExists = false;
+var propFileExists = false;
 
-const installPropsToSave = {
+var installPropsToSave = {
 	[hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER]: true,
 	[hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY]: true,
 	[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY]: true,
 	BOOT_PROPS_FILE_PATH: true,
 };
-let installProps: any = {};
+var installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
 
 /**
@@ -30,7 +30,7 @@ export { BOOT_PROPS_FILE_PATH };
  * currently known base path here to help with this case.
  */
 export function getHdbBasePath() {
-	return installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY];
+	return installProps?.[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY];
 }
 
 /**
@@ -48,11 +48,18 @@ export function setHdbBasePath(hdbPath: string) {
  * @returns {*}
  */
 export function get(propName: string): any {
-	const value = configUtils.getConfigValue(propName);
-	if (value === undefined) {
-		return installProps[propName];
+	// Tolerate calls before this module's body has executed (ESM cycle):
+	// configUtils.ts / installProps may not be initialized yet, in which case
+	// no config has been read so the value is genuinely unknown.
+	let value;
+	try {
+		value = configUtils.getConfigValue(propName);
+	} catch (err: any) {
+		if (err?.name !== 'ReferenceError') throw err;
 	}
-
+	if (value === undefined) {
+		return installProps?.[propName];
+	}
 	return value;
 }
 
@@ -114,7 +121,13 @@ export function initSync(force: boolean = false) {
 				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
 			}
 		}
-	} catch (err) {
+	} catch (err: any) {
+		// During typestrip ESM evaluation, module-load callers of initSync may
+		// reach this before configUtils has finished its own top-level evaluation,
+		// producing a ReferenceError (TDZ) on a module-scope binding. Don't exit
+		// the process for that — the same module-load chain will retry once
+		// evaluation completes, or bin/harper.ts will re-call initSync().
+		if (err?.name === 'ReferenceError') return;
 		log.error(INIT_ERR);
 		log.error(err);
 		console.error(err);

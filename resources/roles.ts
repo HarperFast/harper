@@ -1,8 +1,8 @@
 import { getDatabases } from './databases.ts';
 import { alterRole, addRole } from '../security/role.ts';
 import { parseDocument } from 'yaml';
-import { isEqual } from 'lodash';
-
+import _lodash from 'lodash';
+const { isEqual } = _lodash;
 const USERS_NOT_DBS = ['super_user', 'structure_user'];
 
 /**

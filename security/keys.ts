@@ -2,8 +2,10 @@
 
 import * as path from 'path';
 import { watch } from 'chokidar';
-import * as fs from 'fs-extra';
-import * as forge from 'node-forge';
+import fs from 'fs-extra';
+import _forge from 'node-forge';
+// node-forge is CJS; in ESM typestrip the default export IS the library object.
+const forge: any = (_forge as any).default ?? _forge;
 import * as net from 'net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
 
@@ -17,11 +19,12 @@ import * as envManager from '../utility/environment/environmentManager.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 import * as certificatesTerms from '../utility/terms/certificates.js';
-const tls = require('node:tls');
+import tls from 'node:tls';
 import { relative, join } from 'node:path';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
+import { filterArgsAgainstRuntimeConfig } from '../config/harperConfigEnvVars.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
 const logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
@@ -31,7 +34,7 @@ import { getThisNodeName, getThisNodeUrl, urlToNodeName, clearThisNodeName } fro
 export const getPrivateKeys = () => privateKeys;
 
 import { readFileSync, statSync } from 'node:fs';
-import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
+import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.ts';
 import { isMainThread } from 'worker_threads';
 import { TLSSocket } from 'node:tls';
 
@@ -58,12 +61,15 @@ export function generateSerialNumber() {
 	return bytes.toString('hex');
 }
 
-onMessageFromWorkers(async (message) => {
-	if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
-		envManager.initSync(true);
-		// This will also call loadCertificates
-		await reviewSelfSignedCert();
-	}
+// Defer registration to setImmediate so manageThreads internal state is initialized
+setImmediate(() => {
+	onMessageFromWorkers(async (message) => {
+		if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
+			envManager.initSync(true);
+			// This will also call loadCertificates
+			await reviewSelfSignedCert();
+		}
+	});
 });
 
 let certificateTable;
@@ -652,7 +658,6 @@ export function updateConfigCert() {
 	// Filter out any cert config keys already set by HARPER_SET_CONFIG so we don't overwrite them
 	// with defaults. On first boot, HARPER_SET_CONFIG values are written to the config file during
 	// createConfigFile(), but updateConfigCert() runs afterward without re-applying HARPER_SET_CONFIG.
-	const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
 	const filteredCerts = filterArgsAgainstRuntimeConfig(newCerts);
 
 	configUtils.updateConfigValue(undefined, undefined, filteredCerts, false, true);

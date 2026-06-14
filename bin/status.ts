@@ -1,6 +1,6 @@
 'use strict';
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'path';
 import * as YAML from 'yaml';
 
@@ -9,8 +9,11 @@ import hdbLog from '../utility/logging/harper_logger.ts';
 import * as systemInformation from '../utility/environment/systemInformation.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as installation from '../utility/installation.ts';
-envMgr.initSync();
-
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const STATUSES = {
 	RUNNING: 'running',
 	STOPPED: 'stopped',

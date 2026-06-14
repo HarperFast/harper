@@ -1,6 +1,7 @@
 'use strict';
 
-import * as schemaMetadataValidator from '../validation/schemaMetadataValidator.ts';
+import * as _schemaMetadataValidator from '../validation/schemaMetadataValidator.ts';
+const schemaMetadataValidator = _schemaMetadataValidator;
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import Joi from 'joi';
@@ -9,12 +10,13 @@ import { v4 as uuidV4 } from 'uuid';
 import * as signalling from '../utility/signalling.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as util from 'util';
-const harperBridge = require('./harperBridge/harperBridge').default;
+import harperBridge from './harperBridge/harperBridge.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
-import { SchemaEventMsg } from '../server/threads/itc.js';
-import { getDatabases, dropTableMeta } from '../resources/databases.ts';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
+import { getDatabases as _getDatabases, dropTableMeta } from '../resources/databases.ts';
+const getDatabases = _getDatabases;
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
@@ -312,7 +314,7 @@ function dropAttributeFromGlobal(dropAttributeObject) {
 export async function createAttribute(createAttributeObject: any) {
 	transformReq(createAttributeObject);
 
-	const tableAttr = getDatabases()[createAttributeObject.schema][createAttributeObject.table].attributes;
+	const tableAttr = (getDatabases()[createAttributeObject.schema][createAttributeObject.table] as any).attributes;
 	for (const { name } of tableAttr) {
 		if (name === createAttributeObject.attribute) {
 			throw handleHDBError(

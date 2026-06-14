@@ -4,17 +4,20 @@ import minimist from 'minimist';
 import { isMainThread, parentPort } from 'worker_threads';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
-import * as processMan from '../utility/processManagement/processManagement.js';
+import * as processMan from '../utility/processManagement/processManagement.ts';
 import { compactOnStart } from './copyDb.ts';
-import { restartWorkers, onMessageByType, shutdownWorkersNow } from '../server/threads/manageThreads.js';
+import { restartWorkers, onMessageByType, shutdownWorkersNow } from '../server/threads/manageThreads.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
 import { unlinkSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
-envMgr.initSync();
-
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const RESTART_RESPONSE = `Restarting Harper. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
 
@@ -49,7 +52,7 @@ async function restart(req: any) {
 	if (calledFromCli) {
 		const hdbPid = processMan.getHdbPid();
 		console.error(hdbPid ? 'Restarting Harper...' : 'Starting Harper...');
-		require('./run').launch(true);
+		(await import('./run.ts')).launch(true);
 		return RESTART_RESPONSE;
 	}
 
@@ -66,7 +69,7 @@ async function restart(req: any) {
 			// and shut down.
 			hdbLogger.debug('Shutdown workers');
 			await shutdownWorkersNow();
-			const { closeServers } = require('../server/threads/threadServer.js');
+			const { closeServers } = await import('../server/threads/threadServer.ts');
 			await closeServers();
 			await processMan.cleanupChildrenProcesses(false);
 			// remove pid file so it doesn't trip up the launch
@@ -79,7 +82,7 @@ async function restart(req: any) {
 				process.exit(0);
 			}
 			// now launch the new process and exit this process
-			require('./run').launch(true);
+			(await import('./run.ts')).launch(true);
 		}, 50); // can't await this because it is going to do an exit(), but wait for 50ms so we give the HTTP thread a
 		// chance to return a response
 	} else {

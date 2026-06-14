@@ -39,16 +39,9 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		configUtils.__set__('fs', { writeFileSync: fsWriteFileSyncStub, renameSync: fsRenameSyncStub });
 		configUtils.__set__('YAML', YAMLStub);
 
-		// Mock harperConfigEnvVars module
-		configUtils.__set__('require', function (modulePath) {
-			if (modulePath.startsWith('./harperConfigEnvVars')) {
-				return {
-					applyRuntimeEnvConfig: applyRuntimeEnvConfigStub,
-					hasPersistedEnvConfigState: hasPersistedEnvConfigStateStub,
-				};
-			}
-			return require(modulePath);
-		});
+		// Stub the top-level-imported bindings
+		configUtils.__set__('applyRuntimeEnvConfig', applyRuntimeEnvConfigStub);
+		configUtils.__set__('hasPersistedEnvConfigState', hasPersistedEnvConfigStateStub);
 	});
 
 	beforeEach(function () {

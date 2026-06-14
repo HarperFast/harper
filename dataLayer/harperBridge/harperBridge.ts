@@ -2,8 +2,11 @@
 
 import { ResourceBridge } from './ResourceBridge.ts';
 import * as envMngr from '../../utility/environment/environmentManager.ts';
-envMngr.initSync();
-
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 let harperBridge; // ResourceBridge
 
 /**

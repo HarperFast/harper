@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { setDatabasesGetter } from '../utility/databasesRef.ts';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
@@ -8,19 +9,19 @@ import { unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
-} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import { makeTable } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
+import { SchemaEventMsg } from '../server/threads/itc.ts';
 import { workerData } from 'worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
-import * as manageThreads from '../server/threads/manageThreads.js';
+import * as manageThreads from '../server/threads/manageThreads.ts';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
@@ -32,7 +33,7 @@ import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
-import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 
 /**
  * Check if Harper is running in read-only mode.
@@ -41,7 +42,7 @@ import { isProcessRunning } from '../utility/processManagement/processManagement
  * - --readonly CLI flag
  * - storage.readOnly config setting
  */
-let _isReadOnlyMode: boolean | undefined;
+var _isReadOnlyMode: boolean | undefined;
 export function isReadOnlyMode(): boolean {
 	if (_isReadOnlyMode !== undefined) return _isReadOnlyMode;
 	// Check environment variable
@@ -67,15 +68,24 @@ export function isReadOnlyMode(): boolean {
 function createOpenDBIObject(dupSort = false, isPrimary = false) {
 	return new OpenDBIObject(dupSort, isPrimary);
 }
-const logger = forComponent('storage');
+var logger = forComponent('storage');
 
-const DEFAULT_DATABASE_NAME = 'data';
-const DEFINED_TABLES = Symbol('defined-tables');
-const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
-initSync();
+var DEFAULT_DATABASE_NAME = 'data';
+var DEFINED_TABLES = Symbol('defined-tables');
+var DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
+// Initialise env on module load to mirror main-branch behaviour. Tests
+// (and the api-test setup in particular) reach env.get(...) through
+// configUtils without otherwise calling initSync, so without this the
+// flat config object stays uninitialised and downstream code paths
+// (e.g. installApplications -> getConfigPath(COMPONENTSROOT)) see null.
+try {
+	initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 // I don't know if this is the best place for this, but somewhere we need to specify which tables
 // replicate by default:
-export const NON_REPLICATING_SYSTEM_TABLES = [
+export var NON_REPLICATING_SYSTEM_TABLES = [
 	'hdb_temp',
 	'hdb_certificate',
 	'hdb_raw_analytics',
@@ -146,10 +156,10 @@ export type DatabaseWatcherEventMap = {
 	dropDatabase: [databaseName: string];
 };
 
-export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>();
+export var databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>();
 
-export const tables: Tables = Object.create(null);
-export const databases: Databases = Object.create(null);
+export var tables: Tables = Object.create(null);
+export var databases: Databases = Object.create(null);
 
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
@@ -197,19 +207,19 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	return db;
 }
 
-const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
-const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
+var lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
+var rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 
 // set the following in both global and exports
 _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
-const NEXT_TABLE_ID = Symbol.for('next-table-id');
-let loadedDatabases; // indicates if we have loaded databases from the file system yet
+var NEXT_TABLE_ID = Symbol.for('next-table-id');
+var loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
-let definedDatabases: Map<string, Set<string>>;
+var definedDatabases: Map<string, Set<string>>;
 
 /**
  * This gets the set of tables from the default database ("data").
@@ -230,6 +240,9 @@ export function getTables(): Tables {
  * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
  * can span any tables in the database.
  */
+// Register getter in the shared registry so common_utils.ts can access databases
+// without importing this module directly (which would create a circular dep).
+setDatabasesGetter(() => getDatabases());
 export function getDatabases(): Databases {
 	if (loadedDatabases) {
 		return databases;
@@ -1395,8 +1408,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 	}
 }
-const MAX_OUTSTANDING_INDEXING = 1000;
-const MIN_OUTSTANDING_INDEXING = 10;
+var MAX_OUTSTANDING_INDEXING = 1000;
+var MIN_OUTSTANDING_INDEXING = 10;
 async function runIndexing(Table, attributes, indicesToRemove) {
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);

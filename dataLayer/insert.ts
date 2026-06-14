@@ -7,10 +7,13 @@
  * as the update module is meant to be used in more specific circumstances.
  */
 import insertValidator from '../validation/insertValidator.ts';
-import * as hdbUtils from '../utility/common_utils.ts';
+import * as _hdbUtils from '../utility/common_utils.ts';
+const hdbUtils = _hdbUtils;
 import * as util from 'util';
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
-const harperBridge = require('./harperBridge/harperBridge').default;
+import _harperBridge from './harperBridge/harperBridge.ts';
+// Lazy access to handle import cycle (insert.ts and harperBridge.ts both import each other transitively).
+const harperBridge: any = new Proxy({}, { get: (_, p) => (_harperBridge as any)[p] });
 import * as globalSchema from '../utility/globalSchema.ts';
 import log from '../utility/logging/harper_logger.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';

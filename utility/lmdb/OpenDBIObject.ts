@@ -2,8 +2,11 @@
 import * as envMngr from '../environment/environmentManager.ts';
 import * as terms from '../../utility/hdbTerms.ts';
 import { RecordEncoder } from '../../resources/RecordEncoder.ts';
-envMngr.initSync();
-
+try {
+	envMngr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const LMDB_CACHING = envMngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
 
 /**

@@ -1,7 +1,7 @@
 import { dirname } from 'path';
 import { Script } from 'node:vm';
 import { table } from './databases.ts';
-import { getWorkerIndex } from '../server/threads/manageThreads.js';
+import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { once } from 'node:events';

@@ -1,7 +1,7 @@
 import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '@harperfast/rocksdb-js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { getIdOfRemoteNode } from './nodeIdMapping.ts';
-import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
+import { Decoder, readAuditEntry, ENTRY_DATAVIEW, type AuditRecord, createAuditEntry } from './auditStore.ts';
 import { endIteratorOnCorruptFrame } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
@@ -349,7 +349,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// downstream consumers already skip records with no `tableId`/`type`.
 			try {
 				const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
-				(data as any).dataView = decoder;
+				// @ts-expect-error - dataView is attached to data dynamically for downstream consumers
+				data.dataView = decoder;
 				// This represents the data that shouldn't be transferred for replication
 				let structureVersion = decoder.getUint32(0);
 				let position = 4;

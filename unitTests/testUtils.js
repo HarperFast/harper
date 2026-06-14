@@ -12,6 +12,7 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 const { isMainThread } = require('node:worker_threads');
 const { getDatabases, databases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
+const lifecycle = require('#src/utility/lifecycle');
 
 let envMgrInitSyncStub;
 
@@ -83,6 +84,12 @@ function preTestPrep(testConfigObj) {
 	// Try to change to bin
 	changeProcessToBinDir();
 	env.initTestEnvironment(testConfigObj);
+
+	// Drain startup hooks so modules that defer side effects via `onStartup(...)`
+	// (server-singleton wiring, listener registration, config-derived constants)
+	// see a wired-up state. Production calls this from `bin/harper.ts`; tests
+	// that go through this helper get the same effect. Idempotent.
+	void lifecycle.runStartup();
 }
 
 /**

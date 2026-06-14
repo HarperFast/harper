@@ -1,7 +1,7 @@
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { Resource } from './Resource.ts';
 import type { Context } from './ResourceInterface.ts';
-import * as logger from '../utility/logging/harper_logger.js';
+import * as logger from '../utility/logging/harper_logger.ts';
 import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';

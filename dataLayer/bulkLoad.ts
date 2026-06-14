@@ -1,26 +1,32 @@
 import * as insert from './insert.ts';
-import * as validator from '../validation/fileLoadValidator.ts';
-import needle from 'needle';
+import * as _validator from '../validation/fileLoadValidator.ts';
+const validator = _validator;
+import _needle from 'needle';
+const needle = _needle;
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
-import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { handleHDBError as _handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
+const handleHDBError = _handleHDBError;
 import { HTTP_STATUS_CODES, HDB_ERROR_MSGS, CHECK_LOGS_WRAPPER } from '../utility/errors/commonErrors.ts';
 
 import logger from '../utility/logging/harper_logger.ts';
 import * as papaParse from 'papaparse';
-import * as fs from 'fs-extra';
+import _fs from 'fs-extra';
+const fs = _fs;
 import * as path from 'path';
-import { chain } from 'stream-chain';
-import StreamArray from 'stream-json/streamers/StreamArray';
-import Batch from 'stream-json/utils/Batch';
-import comp from 'stream-chain/utils/comp';
+import streamChain from 'stream-chain';
+const chain = (streamChain as any).chain ?? streamChain;
+import StreamArray from 'stream-json/streamers/StreamArray.js';
+import Batch from 'stream-json/utils/Batch.js';
+import comp from 'stream-chain/utils/comp.js';
 import { finished } from 'stream';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as opFuncCaller from '../utility/OperationFunctionCaller.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
 import { BulkLoadFileObject, BulkLoadDataObject } from './dataObjects/BulkLoadObjects.js';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
-import { verifyBulkLoadAttributePerms } from '../utility/operation_authorization.ts';
+import { verifyBulkLoadAttributePerms as _verifyBulkLoadAttributePerms } from '../utility/operation_authorization.ts';
+const verifyBulkLoadAttributePerms = _verifyBulkLoadAttributePerms;
 import { databases } from '../resources/databases.ts';
 import { coerceType } from '../resources/Table.ts';
 
@@ -574,7 +580,7 @@ async function callPapaParse(jsonMessage) {
 }
 
 function createTransformMap(schema, table) {
-	const attributes = databases[schema][table].attributes;
+	const attributes = (databases[schema][table] as any).attributes;
 	let mapOfTransforms = new Map(); // I don't know if this should be a Map, but this just makes a map of attributes with type coercions that we want
 	for (let attribute of attributes) {
 		if (attribute.type && !attribute.computed && !attribute.relationship)

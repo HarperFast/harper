@@ -67,7 +67,10 @@ import type { operation as OperationImport } from './server/serverHelpers/server
 import type { Resource as ResourceImport } from './resources/Resource.ts';
 import type { server as ServerImport } from './server/Server.ts';
 import type { tables as TablesImport } from './resources/databases.ts';
-type ThreadsImport = unknown[]; // TODO: figure out actual type for this
+type ThreadsImport = any[] & {
+	sendToThread?: (threadId: number, message: any) => boolean;
+	onMessageByType?: (type: string, listener: (...args: any[]) => any) => void;
+};
 import type { transaction as TransactionImport } from './resources/transaction.ts';
 
 declare global {
@@ -113,6 +116,6 @@ exports.transaction = undefined;
 // And finally assign globals to exports.
 // These values are populated at runtime by `_assignPackageExport()` in their respective modules
 // (e.g. Resource.ts, databases.ts, Server.ts, etc.)
-import { globals } from './server/threads/threadServer.js';
+import { globals } from './server/threads/threadServer.ts';
 
 Object.assign(exports, globals);

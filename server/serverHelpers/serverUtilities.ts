@@ -6,7 +6,7 @@ import * as delete_ from '../../dataLayer/delete.ts';
 import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
-import customFunctionOperations from '../../components/operations.js';
+import * as customFunctionOperations from '../../components/operations.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -23,7 +23,7 @@ import { systemInformation } from '../../utility/environment/systemInformation.t
 import * as jobRunner from '../jobs/jobRunner.ts';
 import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
 import * as auth from '../../security/auth.ts';
-import configUtils from '../../config/configUtils.js';
+import * as configUtils from '../../config/configUtils.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -58,6 +58,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 };
 
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -106,7 +107,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-server.operation = operation;
 export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
@@ -119,9 +119,9 @@ export type OperationDefinition = {
  * Register an operation function with the server.
  * @param operationDefinition
  */
-server.registerOperation = (operationDefinition: OperationDefinition) => {
+function registerOperation(operationDefinition: OperationDefinition) {
 	OPERATION_FUNCTION_MAP.set(operationDefinition.name as any, new OperationFunctionObject(operationDefinition.execute));
-};
+}
 
 export function chooseOperation(json: OperationRequestBody) {
 	let getOpResult: OperationFunctionObject;
@@ -478,3 +478,9 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 
 	return opFuncMap;
 }
+
+// Wire server singletons during the startup phase
+onStartup(() => {
+	server.operation = operation;
+	server.registerOperation = registerOperation;
+});

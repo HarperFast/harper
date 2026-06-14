@@ -6,11 +6,18 @@ import { models as harperModelsSingleton } from '../resources/models/Models.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
+import * as _vm from 'node:vm';
+import { createContext, runInContext, runInThisContext } from 'node:vm';
+// SourceTextModule and SyntheticModule require `--experimental-vm-modules`. Pull
+// them off the vm namespace at runtime so the named ESM import doesn't fail when
+// the flag isn't passed (e.g. CLI paths that never touch the JS loader).
+const { SourceTextModule, SyntheticModule } = _vm as any;
+type SourceTextModule = any;
+type SyntheticModule = any;
 import { ApplicationScope } from '../components/ApplicationScope.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
-import * as env from '../utility/environment/environmentManager';
+import * as env from '../utility/environment/environmentManager.ts';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
@@ -27,7 +34,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
@@ -826,7 +833,6 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 				return true;
 			},
 		};
-const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
@@ -982,8 +988,14 @@ function acquirePidFileLock(
 }
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
-	const basePath = env.getHdbBasePath();
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
+		// Resolved lazily because jsLoader may be evaluated before the environment
+		// is initialized (e.g. component loading paths in unit tests). Mirror
+		// defaultConfig.yaml's applications.allowedSpawnCommands as the
+		// pre-config fallback so the allow-list isn't empty in that window.
+		const basePath = env.getHdbBasePath();
+		const allowedSpawn = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? ['npm', 'node'];
+		const ALLOWED_COMMANDS = new Set(allowedSpawn);
 		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
 			throw new Error(`Command ${command} is not allowed`);
 		}

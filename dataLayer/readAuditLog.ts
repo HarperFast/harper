@@ -1,6 +1,8 @@
 'use strict';
 
-const harperBridge = require('./harperBridge/harperBridge').default;
+import _harperBridge from './harperBridge/harperBridge.ts';
+// Lazy access to handle import cycle (insert.ts and harperBridge.ts both import each other transitively).
+const harperBridge: any = new Proxy({}, { get: (_, p) => (_harperBridge as any)[p] });
 // eslint-disable-next-line no-unused-vars
 import ReadAuditLogObject from './ReadAuditLogObject.ts';
 import * as hdbUtils from '../utility/common_utils.ts';

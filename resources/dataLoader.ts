@@ -1,15 +1,31 @@
 import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
-import { Databases, databases, table, Tables, tables } from './databases.ts';
-import { getWorkerIndex } from '../server/threads/manageThreads';
+import { type Databases, databases, table, type Tables, tables } from './databases.ts';
+import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { Attribute } from './Table.ts';
-import { FileEntry } from '../components/EntryHandler.ts';
+import { type Attribute } from './Table.ts';
+import { type FileEntry } from '../components/EntryHandler.ts';
 
-const dataLoaderLogger = harperLogger.forComponent('dataLoader');
+// Resolve the logger lazily so unit tests can stub `forComponent` between
+// module load and first use (otherwise transitive importers — componentLoader
+// pulled in via http.ts / threadServer.ts / operations.ts — capture the real
+// logger before dataLoader.test.js installs its stub).
+let _dataLoaderLogger: any;
+function getDataLoaderLogger() {
+	if (!_dataLoaderLogger) _dataLoaderLogger = harperLogger.forComponent('dataLoader');
+	return _dataLoaderLogger;
+}
+const dataLoaderLogger = new Proxy(
+	{},
+	{
+		get(_t, prop) {
+			return getDataLoaderLogger()[prop];
+		},
+	}
+) as any;
 
 /** System table name for storing data loader hashes */
 const DATA_LOADER_HASH_TABLE = 'hdb_dataloader_hash';

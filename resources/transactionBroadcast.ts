@@ -1,4 +1,4 @@
-import { warn } from '../utility/logging/harper_logger.js';
+import { warn } from '../utility/logging/harper_logger.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';

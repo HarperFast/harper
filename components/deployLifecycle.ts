@@ -22,7 +22,7 @@
 
 import { EventEmitter } from 'node:events';
 import { isMainThread } from 'node:worker_threads';
-import { broadcast, broadcastWithAcknowledgement, onMessageByType } from '../server/threads/manageThreads.js';
+import { broadcast, broadcastWithAcknowledgement, onMessageByType } from '../server/threads/manageThreads.ts';
 
 const DEPLOY_LIFECYCLE_MSG = 'harper:deploy:lifecycle';
 

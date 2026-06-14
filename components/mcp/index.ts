@@ -16,7 +16,7 @@
  * convention (no `enabled` flag). See #465 for the umbrella design.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { getConfigObj as realGetConfigObj } from '../../config/configUtils.js';
+import { getConfigObj as realGetConfigObj } from '../../config/configUtils.ts';
 import { createFastifyHandler } from './adapters/fastify.ts';
 import { createHarperHttpHandler } from './adapters/harperHttp.ts';
 import { ensureSessionTable } from './session.ts';

@@ -3,18 +3,23 @@
 import { loadCredentials, saveCredentials, normalizeTarget } from './cliCredentials.ts';
 import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
-envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as YAML from 'yaml';
 import { streamPackagedDirectory, getPackagedDirectorySize } from '../components/packageComponent.ts';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
-import { initConfig, getConfigPath } from '../config/configUtils.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
+import { initConfig, getConfigPath } from '../config/configUtils.ts';
+import dotenv from 'dotenv';
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
@@ -111,7 +116,7 @@ function resolveTarget(req, allCredentials) {
  * @returns {Promise<void>}
  */
 async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
+	dotenv.config();
 
 	const allCredentials = loadCredentials();
 	req.target = normalizeTarget(resolveTarget(req, allCredentials));
