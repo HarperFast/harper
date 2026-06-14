@@ -7,6 +7,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
 import fs from 'fs-extra';
+import dotenv from 'dotenv';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
@@ -885,7 +886,7 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 }
 
 async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
+	dotenv.config();
 
 	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
 	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the

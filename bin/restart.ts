@@ -125,7 +125,7 @@ async function restart(req: any) {
 	if (calledFromCli) {
 		const hdbPid = processMan.getHdbPid();
 		console.error(hdbPid ? 'Restarting Harper...' : 'Starting Harper...');
-		require('./run').launch(true);
+		(await import('./run.ts')).launch(true);
 		return RESTART_RESPONSE;
 	}
 
@@ -170,7 +170,7 @@ async function restart(req: any) {
 					process.exit(0);
 				}
 				// now launch the new process and exit this process
-				await require('./run').launch(true);
+				await (await import('./run.ts')).launch(true);
 			} catch (error) {
 				hdbLogger.fatal('Restart teardown failed; exiting Harper', error);
 				process.exit(1);
