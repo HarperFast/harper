@@ -363,7 +363,7 @@ describe('Caching', () => {
 				if (i % 16 == 1) CachingTable.invalidate(23);
 				else {
 					// clearing the cache kind of emulates what another thread would see
-					if (i % 4 == 0) CachingTable.primaryStore.cache.clear();
+					if (i % 4 == 0) CachingTable.primaryStore.cache?.clear();
 					let raw_result = CachingTable.get(23);
 					let result = await raw_result;
 					results.push(result);

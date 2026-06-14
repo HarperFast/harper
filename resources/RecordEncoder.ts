@@ -32,7 +32,7 @@ import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import * as envMngr from '../utility/environment/environmentManager.js';
+import * as envMngr from '../utility/environment/environmentManager.ts';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 
