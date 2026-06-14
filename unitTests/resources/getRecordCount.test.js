@@ -31,14 +31,14 @@ describe('Table.getRecordCount', () => {
 	});
 
 	it('switches to the sampling estimator when the time budget is exhausted', async function () {
-		// Force the early-exit branch by giving the loop a 0ms time budget.
-		// This is the regression guard for the RocksDB entryCount bug: when
-		// `entryCount` was undefined on RocksDB stores, `halfway` became NaN
-		// and `entriesScanned < halfway` was always false, so the early-exit
-		// never fired and getRecordCount silently full-scanned every table.
-		// With a working entryCount we should drop into the sampling path
-		// after the first iteration and return an `estimatedRange`.
-		const result = await RecordCountTable.getRecordCount({ timeLimit: 0 });
+		// Force the early-exit branch. A negative time budget makes `now - start > TIME_LIMIT` true on
+		// the first iteration deterministically (a 0ms budget is racy: a tiny table can finish before
+		// the monotonic clock advances past the start, completing exactly instead of estimating).
+		// This is the regression guard for the RocksDB entryCount bug: when `entryCount` was undefined
+		// on RocksDB stores, `halfway` became NaN and `entriesScanned < halfway` was always false, so
+		// the early-exit never fired and getRecordCount silently full-scanned every table. With a working
+		// entryCount we should drop into the sampling path after the first iteration and return an `estimatedRange`.
+		const result = await RecordCountTable.getRecordCount({ timeLimit: -1 });
 		assert.ok(
 			Array.isArray(result.estimatedRange),
 			'expected getRecordCount to engage the sampling estimator (estimatedRange should be set)'
@@ -47,11 +47,11 @@ describe('Table.getRecordCount', () => {
 	});
 
 	it('keeps the sampling estimate within a sane factor of the true record count', async function () {
-		// Guards the reverse-sample bound. With `timeLimit: 0` the forward pass yields after one entry
-		// (limit=1) and the estimator runs. If the reverse loop is unbounded (rocksdb-js ignores the
+		// Guards the reverse-sample bound. With a negative time budget the forward pass yields after one
+		// entry (limit=1) and the estimator runs. If the reverse loop is unbounded (rocksdb-js ignores the
 		// getRange `limit`), it counts every live row, so `recordRate = (1 + entryCount)/2` and the
 		// estimate scales with entryCount^2 -- the `record_count=20,000,000`-for-~105K-rows bug.
-		const result = await RecordCountTable.getRecordCount({ timeLimit: 0 });
+		const result = await RecordCountTable.getRecordCount({ timeLimit: -1 });
 		assert.ok(
 			result.recordCount > 0 && result.recordCount <= 30 * 4,
 			`estimate ${result.recordCount} should track the ~30 live records, not an inflated key count`
@@ -89,17 +89,18 @@ describe('Table.getRecordCount', () => {
 			);
 		}
 
-		const result = await InflationTable.getRecordCount({ timeLimit: 0 });
+		const result = await InflationTable.getRecordCount({ timeLimit: -1 });
 		assert.ok(
 			result.recordCount <= N * 2,
 			`estimate ${result.recordCount} should track ${N} live records, not the inflated physical key count (${physicalEstimate})`
 		);
 	});
 
-	it('returns a valid record count and range for a tiny table under a 0ms budget', async function () {
-		// Edge case: a 1-row table with `timeLimit: 0`. `halfway` is 0, so the early-exit can't fire
-		// (entriesScanned is never < 0) and the loop completes to an exact count rather than estimating
-		// from a sample that would otherwise overlap its own tail. Guards against an inverted/!valid range.
+	it('returns a valid record count and range for a tiny table under an exhausted budget', async function () {
+		// Edge case: a 1-row table with a negative (always-exhausted) budget. `halfway` is 0, so the
+		// early-exit can't fire (entriesScanned is never < 0) and the loop completes to an exact count
+		// rather than estimating from a sample that would otherwise overlap its own tail. Guards against
+		// an inverted/invalid range.
 		const TinyTable = table({
 			table: 'RecordCountTinyTable',
 			database: 'test',
@@ -107,7 +108,7 @@ describe('Table.getRecordCount', () => {
 		});
 		await TinyTable.put({ id: 'solo', name: 'only-row' });
 
-		const result = await TinyTable.getRecordCount({ timeLimit: 0 });
+		const result = await TinyTable.getRecordCount({ timeLimit: -1 });
 		const [lower, upper] = result.estimatedRange ?? [result.recordCount, result.recordCount];
 		assert.ok(lower <= upper, `estimated range must be valid (got [${lower}, ${upper}])`);
 		assert.ok(
