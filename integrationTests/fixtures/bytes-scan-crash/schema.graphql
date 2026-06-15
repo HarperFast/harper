@@ -1,0 +1,11 @@
+# Regression schema for HarperFast/harper#1298.
+#
+# A Bytes column plus an open table so an `application/octet-stream` PUT to a
+# sub-attribute (PUT /Item/<id>/<attr>) can store a record whose materialized root
+# value is a bare TypedArray — the value that used to throw on Object.freeze and
+# permanently wedge every scan over the table.
+type Item @table @export {
+	id: ID @primaryKey
+	bytes: Bytes
+	note: String
+}
