@@ -176,7 +176,7 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 					operation: 'deploy_component',
 					project,
 					restart: false,
-					install_command: 'sh -c "exit 1"',
+					install_command: `sh -c "echo simulated-install-failure; exit 1"`,
 					install_timeout: 30_000,
 				},
 				{
@@ -190,6 +190,21 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 			const response = await postMultipart(url, multipart.contentType, multipart.stream, ctx.harper.admin);
 			// The HTTP response will be non-200 (error), but the row must still exist.
 			ok(response.status >= 400, `expected an error response, got ${response.status}: ${response.body}`);
+
+			// Non-SSE callers must see the failure phase, install output tail, and deployment_id
+			// in the response body, not just `error: <message>`. The captured line text has to
+			// match what the install command actually printed; an empty array would pass the
+			// pre-fix code, so assert on the line content too.
+			const body = JSON.parse(response.body);
+			strictEqual(body.phase, 'prepare');
+			ok(Array.isArray(body.install_output?.lines) && body.install_output.lines.length > 0);
+			ok(
+				body.install_output.lines.some(
+					(l: any) => l.stream === 'stdout' && l.line.includes('simulated-install-failure')
+				),
+				`install_output.lines should contain the printed stdout line; got ${JSON.stringify(body.install_output.lines)}`
+			);
+			ok(typeof body.deployment_id === 'string');
 
 			await sleep(200);
 

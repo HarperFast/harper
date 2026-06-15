@@ -11,7 +11,7 @@ const hdbTerms = require('../utility/hdbTerms.ts');
 const env = require('../utility/environment/environmentManager.ts');
 const configUtils = require('../config/configUtils.js');
 const hdbUtils = require('../utility/common_utils.ts');
-const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.ts');
+const { handleHDBError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const { packageDirectory } = require('../components/packageComponent.ts');
@@ -423,6 +423,9 @@ async function deployComponent(req) {
 	const systemReplicated = isSystemDatabaseReplicated();
 
 	let extractionPayload = req.payload;
+	// Bounded ring buffer of install stdout/stderr so a non-SSE caller sees the tail
+	// in the thrown error. SSE callers still stream every line live.
+	const installCapture = createInstallCapture();
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -449,11 +452,13 @@ async function deployComponent(req) {
 				timeout: req.install_timeout,
 				allowInstallScripts: req.install_allow_scripts,
 			},
-			// Forward each complete line of install stdout/stderr to the SSE channel (and
-			// into the recorder's event_log via the same subscriber). Peers have no emitter
-			// — their install output goes to the local logger only; cross-node install
-			// streaming would need extra plumbing and isn't wired here.
-			onInstallLine: emitter ? (manager, stream, line) => emit('install', { manager, stream, line }) : undefined,
+			// Tee each install line into both the capture buffer (for the thrown-error
+			// fallback) and the SSE channel (when a caller is streaming). Peers have no
+			// emitter, so their install output goes to the local logger and the buffer only.
+			onInstallLine: (manager, stream, line) => {
+				installCapture.push(manager, stream, line);
+				if (emitter) emit('install', { manager, stream, line });
+			},
 		});
 
 		emit('phase', { phase: 'prepare', status: 'start' });
@@ -548,14 +553,57 @@ async function deployComponent(req) {
 		}
 		return response;
 	} catch (err) {
+		// Pack phase, install output tail, and deployment_id into http_resp_msg so the
+		// Fastify error handler forwards them verbatim (it does when http_resp_msg is an
+		// object). Non-SSE callers see structured failure detail; SSE callers already
+		// got the same data live via emit('error', ...) below.
+		const capture = installCapture.snapshot();
+		const phase = recorder?.row.phase;
+		const baseMessage = err?.message ?? String(err);
+		const structured = { error: baseMessage };
+		if (phase) structured.phase = phase;
+		if (capture.lines.length > 0) structured.install_output = capture;
+		if (recorder?.deploymentId) structured.deployment_id = recorder.deploymentId;
+
+		// Wrap as a ServerError so the Fastify error handler picks a 500 by default; preserve
+		// an upstream statusCode (e.g. a ClientError from payload validation) if present.
+		const outErr = new ServerError(baseMessage, err?.statusCode);
+		outErr.http_resp_msg = structured;
+
 		emit('error', {
-			message: err?.message ?? String(err),
-			code: err?.statusCode ?? err?.code,
-			phase: recorder?.row.phase,
+			message: baseMessage,
+			code: outErr?.statusCode ?? err?.code,
+			phase,
+			install_output: capture.lines.length > 0 ? capture : undefined,
 		});
 		if (recorder) await recorder.finish('failed', err);
-		throw err;
+		throw outErr;
 	}
+}
+
+// Ring buffer of install stdout/stderr lines, capped by both line count and bytes so
+// a chatty install can't unbounded-grow the error response. snapshot() reports whether
+// the head was dropped so callers can flag truncation.
+function createInstallCapture(maxLines = 200, maxBytes = 16 * 1024) {
+	const lines = [];
+	let bytes = 0;
+	let dropped = 0;
+	return {
+		push(manager, stream, line) {
+			const entry = { manager, stream, line };
+			const size = (line?.length ?? 0) + (stream?.length ?? 0) + (manager?.length ?? 0);
+			lines.push(entry);
+			bytes += size;
+			while (lines.length > 0 && (lines.length > maxLines || bytes > maxBytes)) {
+				const evicted = lines.shift();
+				bytes -= (evicted.line?.length ?? 0) + (evicted.stream?.length ?? 0) + (evicted.manager?.length ?? 0);
+				dropped += 1;
+			}
+		},
+		snapshot() {
+			return { lines: lines.slice(), truncated: dropped > 0, dropped_lines: dropped };
+		},
+	};
 }
 
 /**
