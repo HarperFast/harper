@@ -339,7 +339,16 @@ export function makeTable(options) {
 			}
 			hasSourceGet = hasSourceGet || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
 			sourceLoad = sourceLoad || source.load;
-			const shouldRevalidateEvents = this.source?.shouldRevalidateEvents;
+			// Revalidation down-converts incoming put/patch events to invalidate so a cache re-fetches
+			// from its source on next read. It must apply ONLY to events from the canonical caching
+			// source — never to authoritative writes arriving from a replication peer, which registers
+			// as an intermediateSource (harper-pro replication/replicator.ts). This closure is created
+			// per sourcedFrom() call, but the flag was read from this.source (the canonical caching
+			// source) regardless of which source the subscription is actually for; on a cache-sourced
+			// AND replicated table that leaked the caching source's revalidate flag onto the replication
+			// subscription, turning replicated writes into invalidates and deleting file-backed blobs no
+			// peer re-supplied. See HarperFast/harper#1302. Gate it off the intermediate source.
+			const shouldRevalidateEvents = !source.intermediateSource && this.source?.shouldRevalidateEvents;
 
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
