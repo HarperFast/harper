@@ -221,7 +221,7 @@ export HARPER_SET_CONFIG='{"tls":{"uses":{"$union":["server","operations-api"]}}
 - **Idempotent** — reapplying the same `$union` on every restart is a no-op; it never grows duplicates
 - **Non-destructive** — it only adds the items it names and never removes other entries, even under `HARPER_SET_CONFIG`'s drift handling
 
-This lets a platform layer guarantee required array entries (for example `tls.uses`) on every restart without clobbering entries an application adds. `$union` works in all three variables. A bare array (no `$union`) still replaces, which remains the default.
+This lets a platform layer guarantee required array entries (for example `tls.uses`, the list of services a TLS certificate serves) on every restart without clobbering entries an application adds. `$union` works in all three variables. A bare array (no `$union`) still replaces, which remains the default.
 
 > **Note:** Only `$`-prefixed keys that Harper recognizes as directives (currently `$union`) are treated specially. Other `$`-prefixed keys — such as a JSON Schema's `$schema` or `$ref` inside component configuration — pass through as ordinary configuration values.
 
@@ -255,7 +255,7 @@ From highest to lowest:
 
 Harper maintains a state file at `{rootPath}/backup/.harper-config-state.json` to track the source of each configuration value. This enables:
 
-- **Drift detection**: Identifying when users manually edit values set by `HARPER_DEFAULT_CONFIG` (and, for `HARPER_CONFIG`, reasserting the configured value)
+- **Drift detection**: Identifying when users manually edit values set by `HARPER_DEFAULT_CONFIG`
 - **Restoration**: Restoring original values when keys are removed from `HARPER_CONFIG` or `HARPER_DEFAULT_CONFIG`
 - **Conflict resolution**: Determining which source should take precedence
 
