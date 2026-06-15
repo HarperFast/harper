@@ -42,6 +42,7 @@ For concept introductions, tutorials, and guides, see the [Learn](/learn) sectio
 | [Logging](./logging/overview.md)                             | Log configuration, the `logger` API, and log management operations |
 | [Analytics](./analytics/overview.md)                         | Resource and storage analytics, system tables                      |
 | [MQTT](./mqtt/overview.md)                                   | MQTT broker configuration and usage                                |
+| [MCP](./mcp/overview.md)                                     | Model Context Protocol server and generated tool metadata          |
 | [Static Files](./static-files/overview.md)                   | Static file serving via the `static` plugin                        |
 | [Environment Variables](./environment-variables/overview.md) | Environment variable loading via the `loadEnv` plugin              |
 | [Replication](./replication/overview.md)                     | Native replication, clustering, and sharding                       |
