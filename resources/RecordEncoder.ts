@@ -736,6 +736,22 @@ export function recordUpdater(store, tableId, auditStore) {
 						if (fileId) (retainedFileIds ??= new Set()).add(fileId);
 					});
 				}
+				if (type === 'invalidate') {
+					// An invalidate rewrites the row to an index-only partial record (Table._writeInvalidate);
+					// a blob attribute is never an index, so `record` carries no blob and the still-live
+					// record's blob would be unlinked ~deletionDelay ms later, leaving the row pointing at a
+					// missing file. Invalidation is a staleness marker, not a data mutation, so retain every
+					// blob the existing row referenced. The #641 retention (above) keyed off the new record,
+					// which the invalidate's partial never carries — hence the gap. See HarperFast/harper#1302.
+					// Note: the invalidated row no longer references the blob (and loses HAS_BLOBS), so a later
+					// delete/overwrite won't synchronously reclaim it — that falls to the orphan sweeper
+					// (cleanupOrphans, #708/#595). We trade prompt reclamation for never unlinking a live blob;
+					// refcount-driven deletion (track any live version referencing the fileId) is the robust fix.
+					findBlobsInObject(existingEntry.value, (blob) => {
+						const fileId = getFileId(blob);
+						if (fileId) (retainedFileIds ??= new Set()).add(fileId);
+					});
+				}
 				deleteBlobsInObject(existingEntry.value, retainedFileIds);
 			}
 			let result: Promise<void>;

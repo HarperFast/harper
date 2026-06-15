@@ -281,6 +281,52 @@ describe('Blob test', () => {
 		});
 		setDeletionDelay(500); // restore the default
 	});
+	it('invalidating a record does not unlink a still-referenced blob', async () => {
+		// Regression (HarperFast/harper#1302): invalidate rewrites the row to an index-only
+		// partial record, which never carries the blob attribute. The #641 retention keys off
+		// the *new* record's blobs, so on invalidate retainedFileIds was empty and the live
+		// record's blob was unlinked ~deletionDelay ms later, leaving the row pointing at a
+		// missing file. Invalidates are generated automatically and repeatedly (replication
+		// revalidation, TTL eviction, peer invalidate events), so this caused progressive,
+		// silent blob data loss on caching/replicated deployments.
+		setAuditRetention(10);
+		setDeletionDelay(0);
+		const InvalidateTest = table({
+			table: 'BlobInvalidateTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+				{ name: 'category', type: 'String', indexed: true },
+			],
+		});
+		const payload = randomBytes(20000); // > FILE_STORAGE_THRESHOLD so it goes file-backed
+		const blob = await createBlob(payload);
+		await InvalidateTest.put({ id: 300, blob, category: 'docs' });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'expected file-backed blob');
+		assert(existsSync(filePath), 'blob file should exist after initial put');
+
+		// Invalidate the record. Pre-fix: the blob file was unlinked ~deletionDelay ms later
+		// even though the record persists (now flagged INVALIDATED).
+		await InvalidateTest.invalidate(300);
+		await delay(50);
+		assert(existsSync(filePath), 'blob file must survive invalidate of a record that referenced it');
+
+		// Repeated invalidates (as replication/eviction would generate) must not shed it either.
+		for (let i = 0; i < 3; i++) {
+			await InvalidateTest.invalidate(300);
+			await delay(20);
+			assert(existsSync(filePath), `blob file must survive repeated invalidate #${i}`);
+		}
+
+		// The invalidated row is now an index-only partial that no longer references the blob,
+		// so it is no longer reachable through the record. Reclamation of the now-unreferenced
+		// file is left to the orphan sweeper (cleanupOrphans / HarperFast/harper#708, #595) rather
+		// than the write path — the targeted fix here prioritizes never unlinking a live record's
+		// blob over promptly reclaiming one that has become unreferenced.
+		setDeletionDelay(500); // restore the default
+	});
 	it('slowly create a blob and save it before it is done', async () => {
 		let testString = 'this is a test string'.repeat(256);
 		let expectedResults = '';
