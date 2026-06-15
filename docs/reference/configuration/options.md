@@ -240,9 +240,9 @@ storage:
 - `reclamation.interval` — Free-space check interval; _Default_: `1h`
 - `reclamation.evictionFactor` — Heuristic factor for early eviction under disk pressure; _Default_: `100000`. See [Storage Tuning — Reclamation](../database/storage-tuning.md#storage-reclamation)
 - `rocks.blockCacheSize` — RocksDB shared block cache size in bytes; _Default_: 25% of constrained memory. See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
-- `rocks.writeBufferManagerSize` — Process-wide cap (bytes) on RocksDB memtable memory across all databases. `0` disables; _Default_: `0`. See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
-- `rocks.writeBufferManagerCostToCache` — Charge memtable memory against the block cache so both share a single accounting pool; _Default_: `false`. Has no effect when `writeBufferManagerSize` is `0`. (Added in: v5.1.0)
-- `rocks.writeBufferManagerAllowStall` — Stall writes when memtable memory exceeds `writeBufferManagerSize` (hard cap) instead of allowing brief overshoot with more aggressive flushing (soft cap); _Default_: `false`. (Added in: v5.1.0)
+- `rocks.writeBufferManagerSize` — Process-wide cap (bytes) on RocksDB memtable memory across all databases. `0` disables; _Default_: one third of `blockCacheSize` (enabled). See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
+- `rocks.writeBufferManagerCostToCache` — Charge memtable memory against the block cache so both share a single accounting pool; _Default_: `true`. Has no effect when `writeBufferManagerSize` is `0`. (Added in: v5.1.0)
+- `rocks.writeBufferManagerAllowStall` — Stall writes when memtable memory exceeds `writeBufferManagerSize` (hard cap) instead of allowing brief overshoot with more aggressive flushing (soft cap); _Default_: `true`. (Added in: v5.1.0)
 
 ---
 

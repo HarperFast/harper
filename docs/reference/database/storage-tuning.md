@@ -140,7 +140,7 @@ In-memory record caching of decoded records. Disable to reduce heap usage when r
 
 ## RocksDB Memory
 
-RocksDB exposes two large native memory pools that Harper makes tunable: a shared **block cache** for hot SST blocks, and an optional **WriteBufferManager** that caps total memtable memory across every database in the process. These options apply only when `storage.engine` is `rocksdb`.
+RocksDB exposes two large native memory pools that Harper makes tunable: a shared **block cache** for hot SST blocks, and a **WriteBufferManager** (enabled by default) that caps total memtable memory across every database in the process. These options apply only when `storage.engine` is `rocksdb`.
 
 ### How RocksDB reads are cached
 
@@ -186,21 +186,21 @@ Raise it (or leave at the default) when reads dominate and the working set comfo
 
 Type: `number` (bytes)
 
-Default: `0` (disabled)
+Default: one third of `blockCacheSize` (enabled). Set to `0` to disable.
 
-When set, Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history that RocksDB's OptimisticTransactionDB retains for conflict checking — is capped at this size across the entire process.
+Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history that RocksDB's OptimisticTransactionDB retains for conflict checking — is capped at this size across the entire process.
 
-Without a `WriteBufferManager`, each column family (table) manages its own memtable budget. The total grows with the number of column families: each one retains roughly `max_write_buffer_size_to_maintain` worth of recently-flushed memtables for snapshot reads and conflict detection. A database with many tables can accumulate hundreds of megabytes to a few gigabytes of resident anonymous memory before any cap is reached.
+Without a `WriteBufferManager`, each column family (table) manages its own memtable budget. The total grows with the number of column families: each one retains roughly `max_write_buffer_size_to_maintain` worth of recently-flushed memtables for snapshot reads and conflict detection. A database with many tables can accumulate hundreds of megabytes to a few gigabytes of resident anonymous memory before any cap is reached. The manager is enabled by default to bound that growth at a single limit.
 
-Enabling the manager bounds that growth at a single configurable limit:
+Override the default to set an explicit budget, or disable it entirely:
 
 ```yaml
 storage:
   rocks:
-    writeBufferManagerSize: 268435456 # 256 MB total memtable budget
+    writeBufferManagerSize: 268435456 # 256 MB total memtable budget (0 disables)
 ```
 
-The manager affects new databases opened after it is configured; existing open databases retain whatever budget they were attached with.
+The configured size affects new databases opened after it is changed; existing open databases retain whatever budget they were attached with.
 
 ### `storage.rocks.writeBufferManagerCostToCache`
 
@@ -208,7 +208,7 @@ The manager affects new databases opened after it is configured; existing open d
 
 Type: `boolean`
 
-Default: `false`
+Default: `true`
 
 When `true`, memtable memory tracked by the `WriteBufferManager` is **charged against the block cache** as pinned cache entries. The block cache and write buffers then share a single accounting pool, visible through one operational metric (`rocksdb.block-cache-usage`).
 
@@ -230,14 +230,14 @@ storage:
 
 Type: `boolean`
 
-Default: `false`
+Default: `true`
 
 Controls behavior when memtable memory reaches `writeBufferManagerSize`:
 
 - `false` (soft cap) — Memtables may briefly exceed the limit. RocksDB compensates by flushing more aggressively. Writes proceed without latency spikes; total memory may temporarily overshoot during bursts.
 - `true` (hard cap) — Writes are stalled until flushes free up memory. Total memtable memory is strictly bounded; write latency can spike during bursts.
 
-Use the default (`false`) for most workloads. Enable stalling only when a strict OOM-prevention guarantee is required and the application can tolerate occasional write-latency spikes.
+The default (`true`) strictly bounds total memtable memory, applying write backpressure rather than letting memtables overshoot — which also keeps bulk ingest from outrunning the memtable flush/conflict-check window. Set to `false` for a soft cap when write-latency smoothness matters more than a strict memory bound and brief overshoot during bursts is acceptable.
 
 This option is the only `WriteBufferManager` setting that can be changed at runtime — `costToCache` is fixed at first creation.
 
