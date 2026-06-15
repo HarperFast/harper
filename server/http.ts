@@ -743,9 +743,13 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		};
 
 		// Store the config for Bun.serve() — will be started by threadServer.js listenOnPorts()
+		// The operations API is main-thread-only and must NOT use SO_REUSEPORT — it's the one
+		// exclusive port, which lets tooling (e.g. the integration-test loopback pool) detect an
+		// address that's already in use instead of silently co-binding. Mirrors the Node path,
+		// which sets server.noReusePort for isOperationsServer (see above).
 		const config: any = {
 			fetch: fetchHandler,
-			reusePort: process.platform !== 'darwin' && process.platform !== 'win32',
+			reusePort: !isOperationsServer && process.platform !== 'darwin' && process.platform !== 'win32',
 		};
 		if (secure) {
 			// TLS config for Bun
