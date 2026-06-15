@@ -19,7 +19,7 @@ Harper exposes two MCP profiles, each on its own port:
 
 | Page                                            | Description                                                              |
 | ----------------------------------------------- | ----------------------------------------------------------------------- |
-| [Tool Payload Sourcing](./tool-metadata.md)     | What fields appear on each generated tool descriptor and their sources  |
+| [Tool Metadata](./tool-metadata.md)             | What fields appear on each generated tool descriptor and their sources  |
 
 ## See also
 
