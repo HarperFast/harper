@@ -44,16 +44,21 @@ suite('Transaction context: closed txn in ALS still reads latest', { skip: skipS
 		httpURL = ctx.harper.httpURL;
 		auth = client.headers.Authorization;
 
+		let ready = false;
 		const deadline = Date.now() + 30_000;
 		while (Date.now() < deadline) {
 			try {
 				const probe = await client.reqRest('/Company/').timeout(3_000);
-				if (probe.status !== 404) break;
+				if (probe.status !== 404) {
+					ready = true;
+					break;
+				}
 			} catch {
 				/* not ready */
 			}
 			await sleep(250);
 		}
+		ok(ready, 'Harper instance did not become ready within 30 seconds');
 
 		await putJSON(`/Company/${COMPANY}`, { id: COMPANY, name: 'Acme' });
 		for (const id of SNAP_IDS) {
@@ -65,12 +70,14 @@ suite('Transaction context: closed txn in ALS still reads latest', { skip: skipS
 		await teardownHarper(ctx);
 	});
 
-	function putJSON(path: string, body: unknown): Promise<Response> {
-		return fetch(`${httpURL}${path}`, {
+	async function putJSON(path: string, body: unknown): Promise<Response> {
+		const r = await fetch(`${httpURL}${path}`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 			body: JSON.stringify(body),
 		});
+		ok(r.status < 300, `PUT ${path} expected 2xx, got ${r.status}`);
+		return r;
 	}
 
 	async function dashCount(variantPath: string): Promise<any> {
@@ -81,6 +88,7 @@ suite('Transaction context: closed txn in ALS still reads latest', { skip: skipS
 
 	test('direct indexed search returns all seeded rows', async () => {
 		const r = await fetch(`${httpURL}/ScoreSnapshot/?companyId=${COMPANY}`, { headers: { Authorization: auth } });
+		ok(r.status < 300, `GET /ScoreSnapshot/ expected 2xx, got ${r.status}`);
 		const body = await r.json();
 		const ids = (Array.isArray(body) ? body : (body?.records ?? [])).map((x: any) => x.id).sort();
 		strictEqual(ids.length, SNAP_IDS.length, 'seeded snapshots are present');
