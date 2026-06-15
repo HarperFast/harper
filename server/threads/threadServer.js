@@ -316,7 +316,9 @@ async function listenOnPortsBun() {
 			}
 			const serveOptions = {
 				port: portNumber,
-				reusePort: !isWindows && !isMac,
+				// Respect the per-server reusePort decision made in http.ts (the operations API
+				// opts out so it stays exclusive); fall back to the platform default otherwise.
+				reusePort: config.reusePort ?? (!isWindows && !isMac),
 				fetch: config.fetch,
 			};
 			if (portHostname) serveOptions.hostname = portHostname;
