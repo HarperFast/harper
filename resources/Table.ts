@@ -348,7 +348,7 @@ export function makeTable(options) {
 			// AND replicated table that leaked the caching source's revalidate flag onto the replication
 			// subscription, turning replicated writes into invalidates and deleting file-backed blobs no
 			// peer re-supplied. See HarperFast/harper#1302. Gate it off the intermediate source.
-			const shouldRevalidateEvents = !source.intermediateSource && this.source?.shouldRevalidateEvents;
+			const shouldRevalidateEvents = !options?.intermediateSource && this.source?.shouldRevalidateEvents;
 
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
