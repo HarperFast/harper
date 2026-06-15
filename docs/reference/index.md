@@ -24,6 +24,7 @@ For concept introductions, tutorials, and guides, see the [Learn](/learn) sectio
 | ---------------------------------------------- | -------------------------------------------------------------------------- |
 | [REST](./rest/overview.md)                     | Auto-REST interface, querying, content types, headers, WebSockets, and SSE |
 | [HTTP](./http/overview.md)                     | HTTP server configuration, TLS, and the `server` API                       |
+| [MCP](./mcp/overview.md)                       | Built-in Model Context Protocol server, profiles, CLI, and migration       |
 | [Security](./security/overview.md)             | Authentication mechanisms, certificates, and CORS/SSL configuration        |
 | [Users & Roles](./users-and-roles/overview.md) | RBAC, roles configuration, and user management operations                  |
 
