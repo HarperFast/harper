@@ -264,6 +264,9 @@ suite(
 			const wsScheme = httpURL.startsWith('https') ? 'wss' : 'ws';
 			MQTT_URL = process.env.MQTT_TEST_URL ?? `${httpURL.replace(/^https?/, wsScheme)}/mqtt`;
 
+			// deploy_component installs the fixture's npm dependencies (@harperdb/acl-connect,
+			// jsonwebtoken); setupHarperWithFixture only copies files and would leave them
+			// unresolved, so the acl-connect + getUser overrides never load.
 			const deployBody = await sendOperation(ctx.harper, {
 				operation: 'deploy_component',
 				project: PROJECT,
