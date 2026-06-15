@@ -4,20 +4,21 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { SKIP } from '@harperfast/extended-iterable';
 
 const logger = loggerWithTag('HNSW');
 
-// Optional int8 scalar quantization of stored vectors, enabled per-index via the
-// schema directive: `@indexed(type: "HNSW", quantization: "int8")`. The stored
-// graph node holds the vector as a compact int8 `bin` plus a per-vector `scale`,
-// roughly a 5x size reduction over the float32 array and ~10x cheaper to decode
-// (a single typed-array view instead of decoding 768 individually-tagged floats
-// into a boxed Array). The full-precision vector still lives on the record, so
-// only graph navigation is approximate; quantization recall loss is ~1%.
+// int8 scalar quantization of stored graph nodes is ON by default. Each node holds the
+// vector as a compact int8 `bin` plus a per-vector `scale`, roughly a 5x size reduction
+// over float32 and ~10x cheaper to decode (a single typed-array view instead of decoding
+// 768 individually-tagged floats into a boxed Array). The full-precision vector still lives
+// on the record, so only graph navigation is approximate:
+//   - sort (nearest-neighbor) queries: reranked on exact distances after loading records (~0% recall loss)
+//   - lt/le threshold queries: over-fetched and re-filtered on exact distances after loading records
+// Opt out per-index with `@indexed(type: "HNSW", quantization: "none")`.
 //
-// Decode auto-detects the stored format (number[] = float, bin = int8), so an
-// int8-enabled index transparently reads legacy float nodes written before the
-// option was set.
+// Decode auto-detects the stored format (number[] = float, bin = int8), so indexes written
+// before this default change (float nodes) continue to work transparently.
 
 /** Symmetric int8 scalar-quantize a float vector. scale = max|component| / 127. */
 function quantizeInt8(vector: number[]): { bytes: Buffer; scale: number } {
@@ -154,7 +155,7 @@ export class HierarchicalNavigableSmallWorld {
 
 	idIncrementer: BigInt64Array | undefined;
 	distance: (a: number[], b: number[]) => number;
-	int8 = false; // store vectors as int8-quantized bins (set via the `quantization` index option)
+	int8 = true; // store vectors as int8-quantized bins by default; opt out with `quantization: "none"`
 	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
 	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
 	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
@@ -167,7 +168,7 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
-		this.int8 = options?.quantization === 'int8';
+		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured search ef (or efConstruction, which seeds it); otherwise auto-scale.
 		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
 		this.distance =
@@ -190,6 +191,19 @@ export class HierarchicalNavigableSmallWorld {
 		}
 	}
 	index(primaryKey: Id, vector: number[], existingVector?: number[], options: any = {}) {
+		// Reject non-finite components before touching the graph. NaN in particular poisons
+		// bisectInsert (arr[mid].distance <= NaN is always false → returns 0, pinning the
+		// candidate to rank 1 of every future search). Infinity causes analogous ordering
+		// anomalies. embedHook.ts intentionally passes NaN through and expects HNSW to guard.
+		if (vector) {
+			for (let i = 0; i < vector.length; i++) {
+				if (!Number.isFinite(vector[i])) {
+					throw new ClientError(
+						`Vector for attribute "${String(primaryKey)}" contains non-finite component at index ${i}: ${vector[i]}. Ensure the embedding produces only finite values.`
+					);
+				}
+			}
+		}
 		// first get the node id for the primary key; we use internal node ids for better efficiency,
 		// but we must use a safe key that won't collide with the node ids
 		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
@@ -228,7 +242,29 @@ export class HierarchicalNavigableSmallWorld {
 			// If we are updating an existing entry, we need to update the entry point
 			// if the new entry is closer to the entry point than the old one
 			oldNode = { ...this.safeGetSync(nodeId, options) };
-		} else oldNode = {} as Node;
+		} else {
+			// If this key already has a graph node — which happens
+			// when runIndexing re-feeds an already-indexed record after a crash/restart — load it
+			// and treat the call as an update rather than a fresh insert. Without this, the absent
+			// existingVector causes oldNode = {} → a new random level, connections overwritten,
+			// and old-connection cleanup skipped, leaving dangling reverse edges and wrong levels.
+			const storedNode = nodeId && vector ? this.safeGetSync(nodeId, options) : undefined;
+			if (storedNode && storedNode.level !== undefined) {
+				// Treat as an update: carry forward the stored graph state so cleanup and level
+				// assignment below use the real existing connections instead of starting fresh.
+				oldNode = { ...storedNode };
+				// Reconstruct the existingVector from the stored node so distance computations
+				// in the cleanup pass use the right baseline (dequantize if int8).
+				if (!existingVector) {
+					existingVector =
+						storedNode.scale !== undefined
+							? dequantizeInt8(storedNode.vector as Int8Array, storedNode.scale)
+							: (storedNode.vector as number[]);
+				}
+			} else {
+				oldNode = {} as Node;
+			}
+		}
 		if (vector) {
 			// Pre-compute 1/|vector| for cosine distance so searchLayer can skip sqrt per neighbor
 			let invMag: number | undefined;
@@ -423,15 +459,22 @@ export class HierarchicalNavigableSmallWorld {
 					if (entryPointId !== undefined) break;
 				}
 				if (entryPointId === undefined) {
-					// scan through all nodes to find one with highest level
+					// Fallback scan: pass transaction so it sees the same write-set (not stale committed state),
+					// skip the node being deleted (it is typically the highest-level node and would be
+					// re-elected), and verify each candidate actually resolves before committing it.
 					let highestLevel = -1;
 					for (const { key, value } of this.indexStore.getRange({
 						start: 0,
 						end: Infinity,
+						transaction: options.transaction,
 					})) {
+						// skip the node being removed (safeKey mappings can't appear here: symbol-array
+						// and string keys sort outside the numeric 0..Infinity range)
+						if (key === nodeId) continue;
+						if (!value || value.level === undefined) continue;
 						if (value.level > highestLevel) {
 							entryPointId = key;
-							if (value.level === lastLevel) break; // if we found a node at the same level as the last entry point, we can stop
+							if (value.level === lastLevel) break; // found a node at the same level as the old entry point
 							highestLevel = value.level;
 						}
 					}
@@ -449,6 +492,9 @@ export class HierarchicalNavigableSmallWorld {
 				}
 			}
 			this.indexStore.remove(nodeId, options);
+			// Remove the safeKey→nodeId mapping so the key count used by autoScaleEf stays accurate
+			// and a re-insert of this primary key gets a fresh node rather than the deleted node's id.
+			this.indexStore.remove(safeKey, options);
 		}
 		const needsReindexing = new Map();
 		// remove connections to this node that are no longer valid
@@ -459,7 +505,14 @@ export class HierarchicalNavigableSmallWorld {
 					// get and copy the neighbor node so we can modify it
 					const neighborNode = updateNode(neighborId, this.safeGetSync(neighborId, options));
 					if (!neighborNode) continue;
-					for (let l2 = 0; l2 <= l; l2++) {
+					// On an UPDATE (vector != null), only remove the reverse edge at
+					// the exact level l where the old connection existed. Sweeping 0..l would destroy reverse
+					// edges at lower levels that were just re-added by addConnection or preserved by the
+					// splice logic above — causing asymmetry that accumulates with every re-embed.
+					// On DELETE (vector == null), the full 0..l sweep is correct: we want to remove every
+					// occurrence of nodeId from all levels of each neighbor.
+					const levelStart = vector ? l : 0;
+					for (let l2 = levelStart; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
 						neighborNode[l2] = neighborNode[l2]?.filter(({ id: nid }) => {
 							return nid !== nodeId;
@@ -491,8 +544,41 @@ export class HierarchicalNavigableSmallWorld {
 		for (const [id, updatedNode] of updatedNodes) {
 			this.indexStore.put(id, updatedNode, options);
 		}
-		for (const [key, vector] of needsReindexing) {
-			this.index(key, vector, vector, options);
+		for (const [key, orphanVector] of needsReindexing) {
+			// If the orphan IS the current entry point, re-running
+			// index() from it would find no other nodes to connect to (the entry point search returns
+			// itself), leaving it permanently isolated. Elect a surviving neighbor as entry point first
+			// so the orphan can reconnect to the live graph.
+			const currentEP = this.indexStore.getSync(ENTRY_POINT, options);
+			const orphanNodeId = this.indexStore.getSync(typeof key === 'number' ? [KEY_PREFIX, key] : key, options);
+			if (currentEP !== undefined && currentEP === orphanNodeId) {
+				// The orphan's own connection lists are empty, so look for a surviving node to elect:
+				// first among the nodes updated in this pass, then a full scan as fallback.
+				let replacementEP: number | undefined;
+				for (const [candidateId, candidateNode] of updatedNodes) {
+					if (candidateId !== orphanNodeId && candidateNode[0]?.length > 0) {
+						replacementEP = candidateId;
+						break;
+					}
+				}
+				if (replacementEP === undefined) {
+					for (const { key: candidateKey, value: candidateNode } of this.indexStore.getRange({
+						start: 0,
+						end: Infinity,
+						transaction: options.transaction,
+					})) {
+						if (candidateKey === orphanNodeId) continue;
+						if (candidateNode?.level !== undefined) {
+							replacementEP = candidateKey;
+							break;
+						}
+					}
+				}
+				if (replacementEP !== undefined) {
+					this.indexStore.put(ENTRY_POINT, replacementEP, options);
+				}
+			}
+			this.index(key, orphanVector, orphanVector, options);
 		}
 		this.checkSymmetry(nodeId, this.safeGetSync(nodeId, options), options);
 	}
@@ -669,10 +755,13 @@ export class HierarchicalNavigableSmallWorld {
 		},
 		context: any
 	) {
-		let limit = 0; // zero is ignored, only used if set below
+		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
+		let limitInclusive = false; // true for `le`, false for `lt`
 		switch (comparator) {
-			case 'lt':
 			case 'le':
+				limitInclusive = true;
+			// fallthrough
+			case 'lt':
 				limit = value;
 			// fallthrough
 			case 'sort':
@@ -680,6 +769,9 @@ export class HierarchicalNavigableSmallWorld {
 			default:
 				throw new ClientError(`Can not use "${comparator}" comparator with HNSW`);
 		}
+		// For quantized (int8) threshold queries, suppress the distance limit so the full candidate
+		// set is returned; rescoreResults() re-filters on exact full-precision distances post-load.
+		if (this.int8 && limit !== undefined) limit = undefined;
 		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
 		let distanceFunction: (a: number[], b: number[]) => number;
 		if (distance === 'cosine') distanceFunction = cosineDistance;
@@ -716,7 +808,10 @@ export class HierarchicalNavigableSmallWorld {
 				entryPointId = neighbor.id;
 			}
 		}
-		if (limit) results = results.filter((candidate) => candidate.distance < limit);
+		if (limit !== undefined)
+			results = results.filter((candidate) =>
+				limitInclusive ? candidate.distance <= limit : candidate.distance < limit
+			);
 		return results.map((candidate) => ({
 			// we return the result as an entry so we can provide distance as metadata
 			key: candidate.node.primaryKey, // return value
@@ -743,6 +838,42 @@ export class HierarchicalNavigableSmallWorld {
 						? cosineDistance
 						: this.distance;
 		return fn(searchCondition.target, vec);
+	}
+	/**
+	 * Post-load rescoring hook called by search.ts after full records have been loaded.
+	 * Handles two quantized (int8) cases:
+	 *   - 'sort': recompute exact distances and re-sort for correct nearest-neighbor ordering.
+	 *   - 'lt'/'le': recompute exact distances and re-filter by the threshold value (over-fetch
+	 *     was applied before the search to ensure enough candidates).
+	 * Returns null when rescoring doesn't apply so the caller uses the loaded iterable as-is.
+	 */
+	rescoreResults(
+		loaded: any[],
+		searchCondition: { target: number[]; distance?: string; value?: any },
+		comparator: string,
+		attributeName: string
+	): any[] | null {
+		if (!this.int8 || !searchCondition.target || typeof attributeName !== 'string') return null;
+		if (comparator === 'sort') {
+			const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
+			for (const e of rescored) {
+				const d = this.exactDistance(searchCondition, e.value[attributeName]);
+				// Non-finite exact distances (NaN from a corrupt record vector, Infinity from a
+				// missing vector) sort last — consistent with the missing-vector sentinel in exactDistance.
+				e.distance = Number.isFinite(d) ? d : Infinity;
+			}
+			// comparison-based (not subtraction) so Infinity sentinels for missing vectors
+			// sort last without producing NaN (Infinity - Infinity).
+			rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
+			return rescored;
+		}
+		if (comparator === 'lt' || comparator === 'le') {
+			const thresholdValue = searchCondition.value;
+			const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
+			for (const e of rescored) e.distance = this.exactDistance(searchCondition, e.value[attributeName]);
+			return rescored.filter((e) => (comparator === 'le' ? e.distance <= thresholdValue : e.distance < thresholdValue));
+		}
+		return null;
 	}
 	private checkSymmetry(id, node, options) {
 		if (!node) return;

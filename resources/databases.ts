@@ -31,6 +31,7 @@ import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
+import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 
 /**
@@ -158,30 +159,22 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	}
 	// Read RocksDB memory config lazily so env/CLI overrides applied after module load are
 	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
-	// configured; the WriteBufferManager is opt-in (0 disables).
-	//
-	// We enforce types rather than coerce — values from YAML config and env vars flow
-	// through configUtils.castConfigValue which produces proper numbers/booleans/null,
-	// so anything else is misconfiguration and should fall through to the default.
+	// configured; the WriteBufferManager defaults to 1/3 of the block cache size (set its size
+	// to 0 to disable). See resolveRocksMemoryConfig for the defaulting rules.
 	//
 	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
 	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
 	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
 	// In practice that's fine — these come from process-level config that doesn't change.
-	const configuredBlockCacheSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE);
-	const blockCacheSize =
-		typeof configuredBlockCacheSize === 'number' && configuredBlockCacheSize > 0
-			? configuredBlockCacheSize
-			: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()) * 0.25;
-	const writeBufferManagerSize = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE);
-	const writeBufferManagerCostToCache = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE);
-	const writeBufferManagerAllowStall = envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL);
-	RocksDatabase.config({
-		blockCacheSize,
-		...(typeof writeBufferManagerSize === 'number' && writeBufferManagerSize > 0 ? { writeBufferManagerSize } : {}),
-		...(typeof writeBufferManagerCostToCache === 'boolean' ? { writeBufferManagerCostToCache } : {}),
-		...(typeof writeBufferManagerAllowStall === 'boolean' ? { writeBufferManagerAllowStall } : {}),
-	});
+	RocksDatabase.config(
+		resolveRocksMemoryConfig({
+			configuredBlockCacheSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE),
+			configuredWriteBufferManagerSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE),
+			configuredCostToCache: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE),
+			configuredAllowStall: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL),
+			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
+		})
+	);
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
 		if (isReadOnlyMode()) {
@@ -506,6 +499,7 @@ function initStores(
 
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
+		if (value == null) continue;
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
 			// primary key
@@ -525,6 +519,27 @@ function initStores(
 		if (attribute_name == null || value.isPrimaryKey) tableDef.primary = value;
 		if (attribute_name != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
+	}
+
+	// Complete any drops that were interrupted mid-flight. dropTable persists a
+	// `dropping` tombstone on the table's primary catalog entry before removing
+	// column families; if the process died or a column family drop failed
+	// partway, the tombstone survives alongside the catalog rows. Without this
+	// reconcile, those rows would silently resurrect the table below
+	// (recreating any missing column families as empty stores).
+	for (const [tableName, tableDef] of tablesToLoad) {
+		if (!tableDef.primary?.dropping) continue;
+		try {
+			completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+			definedTables?.delete(tableName);
+		} catch (error) {
+			logger.error(
+				`Failed to complete interrupted drop of table ${databaseName}.${tableName}; will retry on next start`,
+				error
+			);
+		}
+		// whether or not cleanup succeeded, never load a table that was being dropped
+		tablesToLoad.delete(tableName);
 	}
 
 	for (const [tableName, tableDef] of tablesToLoad) {
@@ -620,11 +635,29 @@ function initStores(
 					if (existingAttribute) existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1, attribute);
 					else existingAttributes.push(attribute);
 					attributesUpdated = true;
+				} else if (!attribute.isPrimaryKey) {
+					// Non-indexed, non-primary-key attributes (e.g. plain schema fields like `name: String`)
+					// must also be kept in sync so that describe_database reflects schema changes after a
+					// hot-reload / worker restart. Without this, resetDatabases() re-reads these attributes
+					// from attributesDbi but never merges them back into table.attributes — causing stale
+					// schema metadata until a full kill+restart. (RE-7)
+					const existingIdx = existingAttributes.findIndex((ea) => ea.name === attribute.attribute);
+					if (existingIdx >= 0) {
+						existingAttributes.splice(existingIdx, 1, attribute);
+						attributesUpdated = true;
+					} else {
+						existingAttributes.push(attribute);
+						attributesUpdated = true;
+					}
 				}
 			} catch (error) {
 				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
 			}
 		}
+		// Collect removals first; splicing while iterating `existingAttributes` skips adjacent
+		// elements, which would silently leave stale fields behind when two or more were dropped
+		// in the same reload.
+		const toRemove = [];
 		for (const existingAttribute of existingAttributes) {
 			const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 			if (!attribute) {
@@ -645,10 +678,21 @@ function initStores(
 				}
 				if (existingAttribute.indexed) {
 					// we only remove attributes if they were indexed, in order to support dropAttribute that removes dynamic indexed attributes
-					existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
-					attributesUpdated = true;
+					toRemove.push(existingAttribute);
+				} else if (!existingAttribute.isPrimaryKey) {
+					// Skip runtime-only attributes (e.g. relationship attrs — table()'s persistence loop
+					// `continue`s past them at line 1138). They are present in `existingAttributes` but
+					// never in the `attributes` list rebuilt from attributesDbi; removing them would drop
+					// the resolver/search support added by updatedAttributes(). Computed attrs ARE
+					// persisted, so only `relationship` is excluded here.
+					if (existingAttribute.relationship) continue;
+					toRemove.push(existingAttribute);
 				}
 			}
+		}
+		for (const existingAttribute of toRemove) {
+			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
+			attributesUpdated = true;
 		}
 		if (table && !recreateForEngineChange) {
 			if (attributesUpdated) {
@@ -963,6 +1007,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	let primaryKey;
 	let primaryKeyAttribute;
 	let attributesDbi;
+	// Track whether the caller explicitly supplied schemaDefined; callers that omit it (cluster
+	// schema-replication in Table.ts, dataLoader.ts) are operating on already-live tables whose
+	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
+	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -984,6 +1032,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// it table already exists, get the split segments setting
 		if (splitSegments == undefined) splitSegments = Table.splitSegments;
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
+		// Re-assert from the live declaration so a stale value on disk (replicated event,
+		// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
+		// callers that omit the flag (cluster schema-replication, data loader) don't flip a
+		// dynamic table to true via the default at the top of table().
+		if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
 		// Refresh class-level schema metadata to track docstring/directive changes across reloads.
 		Table.description = description;
 		Table.properties = properties;
@@ -1035,7 +1088,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 
 		exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
-		if ((attributesDbi as any).getSync(dbiName)) {
+		const existingTableMeta = (attributesDbi as any).getSync(dbiName);
+		if (existingTableMeta && !existingTableMeta.dropping) {
 			// table was created while we were setting up
 			if (releaseExclusiveLock) releaseExclusiveLock();
 			resetDatabases();
@@ -1043,50 +1097,69 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 
 		let primaryStore;
-		if (rootStore instanceof RocksDatabase) {
-			primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
-		} else {
-			primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
-		}
-		primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
-		rootStore.databaseName = databaseName;
-		primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
-		logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
-		if (!primaryStore.tableId) primaryStore.tableId = 1;
-		attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
+		try {
+			if (existingTableMeta?.dropping) {
+				// A previous drop of this table was interrupted after its tombstone
+				// was written. Complete it now (under the exclusive lock) so the
+				// create below starts from a clean slate; treating the tombstoned
+				// entry as an existing table would recurse forever on the stale
+				// catalog row.
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+			}
+			if (rootStore instanceof RocksDatabase) {
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
+			} else {
+				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
+			}
+			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
+			rootStore.databaseName = databaseName;
+			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
+			logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
+			if (!primaryStore.tableId) primaryStore.tableId = 1;
+			attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
-		primaryKeyAttribute.tableId = primaryStore.tableId;
-		Table = setTable(
-			tables,
-			tableName,
-			makeTable({
-				primaryStore,
-				auditStore,
-				audit,
-				sealed,
-				splitSegments,
-				replicate,
-				trackDeletes,
-				expirationMS: expiration && expiration * 1000,
-				evictionMS: eviction && eviction * 1000,
-				primaryKey,
+			primaryKeyAttribute.tableId = primaryStore.tableId;
+			Table = setTable(
+				tables,
 				tableName,
-				tableId: primaryStore.tableId,
-				databasePath: databaseName,
-				databaseName,
-				indices: {},
-				attributes,
-				schemaDefined,
-				dbisDB: attributesDbi,
-				description,
-				properties,
-				hidden,
-			})
-		);
-		Table.schemaVersion = 1;
-		hasChanges = true;
+				makeTable({
+					primaryStore,
+					auditStore,
+					audit,
+					sealed,
+					splitSegments,
+					replicate,
+					trackDeletes,
+					expirationMS: expiration && expiration * 1000,
+					evictionMS: eviction && eviction * 1000,
+					primaryKey,
+					tableName,
+					tableId: primaryStore.tableId,
+					databasePath: databaseName,
+					databaseName,
+					indices: {},
+					attributes,
+					schemaDefined,
+					dbisDB: attributesDbi,
+					description,
+					properties,
+					hidden,
+				})
+			);
+			Table.schemaVersion = 1;
+			hasChanges = true;
 
-		attributesDbi.put(dbiName, primaryKeyAttribute);
+			attributesDbi.put(dbiName, primaryKeyAttribute);
+		} catch (error) {
+			// A failure while opening/creating the column family or writing the
+			// table id / catalog entry (e.g. into an env poisoned by a prior
+			// dangling column family) must NOT leak the exclusive
+			// 'update-attributes' spin lock. If it leaks, every subsequent
+			// create_table / attribute update on this database spins forever
+			// (a hard wedge that pins a worker at 100% CPU). Release before rethrow.
+			if (releaseExclusiveLock) releaseExclusiveLock();
+			throw error;
+		}
 	}
 	const indices = Table.indices;
 	if (!attributesDbi) {
@@ -1104,6 +1177,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	Table.dbisDB = attributesDbi;
 	const indicesToRemove = [];
 	for (const { key, value } of attributesDbi.getRange({ start: true })) {
+		if (value == null) continue;
 		let [attributeTableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') attribute_name = value.name; // primary key
 		if (attribute_name) {
@@ -1138,8 +1212,14 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
+				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
+				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
+				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
+				// but other workers' next disk-load re-reads the stale value.
+				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
+					schemaDefinedMismatch ||
 					(audit !== undefined && audit !== Table.audit) ||
 					(sealed !== undefined && sealed !== Table.sealed) ||
 					(replicate !== undefined && replicate !== Table.replicate) ||
@@ -1157,6 +1237,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
 					hasChanges = true; // send out notification of the change
 					exclusiveLock();
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
@@ -1221,7 +1302,19 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							break;
 						}
 						if (hasExistingData) {
-							attribute.lastIndexedKey = attributeDescriptor?.lastIndexedKey ?? undefined;
+							// When the index definition itself has structurally changed (different distance
+							// metric, M, quantization, etc.), any
+							// previous lastIndexedKey checkpoint is for a graph built under the old options —
+							// resuming from it would mix two incompatible graphs. Reset to undefined so
+							// runIndexing clears the dbi and starts from scratch.
+							// For pure crash-recovery (same options, different PID/restartNumber), preserve
+							// the checkpoint so the backfill resumes rather than restarts.
+							const indexOptionsChanged =
+								JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
+								JSON.stringify(stripSearchOnly(attribute.indexed));
+							attribute.lastIndexedKey = indexOptionsChanged
+								? undefined
+								: (attributeDescriptor?.lastIndexedKey ?? undefined);
 							attribute.indexingPID = process.pid;
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
@@ -1490,6 +1583,50 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		} catch (persistError) {
 			logger.warn('Failed to persist indexing failure state', persistError);
 		}
+	}
+}
+
+/**
+ * Completes a table drop that was interrupted after its `dropping` tombstone
+ * was written: drops any surviving table stores and removes the table's
+ * catalog rows. Called from the boot-time schema load and from the create
+ * path when a same-named table is created over a tombstoned entry. Callers
+ * are expected to hold the database's exclusive lock or be in single-threaded
+ * startup; the per-store drops tolerate races (another worker may be
+ * completing the same drop concurrently).
+ */
+function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
+	logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	if (rootStore instanceof RocksDatabase) {
+		for (const columnName of (rootStore as any).columns) {
+			if (columnName.startsWith(tableName + '/')) {
+				try {
+					const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
+					columnStore.dropSync();
+					columnStore.close();
+				} catch (error) {
+					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, error);
+				}
+			}
+		}
+	} else {
+		// LMDB reuses an existing named sub-database on open, so the stores must
+		// be dropped too; removing only the catalog rows would let a same-name
+		// recreate silently inherit the previous table's records.
+		for (const { key, value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			try {
+				const objectStorage =
+					value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+				const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
+				// lmdb drop commits with the env's next transaction
+				store.drop?.();
+			} catch (error) {
+				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
+			}
+		}
+	}
+	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		attributesDbi.remove(key);
 	}
 }
 

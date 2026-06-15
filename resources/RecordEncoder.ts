@@ -15,6 +15,7 @@ import {
 	HAS_BLOBS,
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
+	LOCAL_ONLY,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import './blob.ts';
@@ -34,6 +35,28 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+
+// Analytics counter incremented whenever a record cannot be decoded because its shared structure is
+// missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
+// monitoring; the store name is passed as the metric path.
+const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
+
+// Terminal error messages msgpackr/structon throw when a record references a shared structure that
+// is not in this node's structures buffer. Both the typed (random-access) path (structon's
+// readStruct) and the classic path (msgpackr's createSecondByteReader) reload the structures from
+// durable storage and retry before throwing, so reaching one of these means the structure is
+// genuinely absent on this node — not merely stale in memory. Matched by message prefix because
+// neither dependency throws a typed error.
+const MISSING_TYPED_STRUCTURE_PREFIX = 'Could not find typed structure ';
+const MISSING_CLASSIC_STRUCTURE_PREFIX = 'Record id is not defined for ';
+
+export function isMissingStructureError(error: any): boolean {
+	const message = error?.message;
+	return (
+		typeof message === 'string' &&
+		(message.startsWith(MISSING_TYPED_STRUCTURE_PREFIX) || message.startsWith(MISSING_CLASSIC_STRUCTURE_PREFIX))
+	);
+}
 export type Entry = {
 	key: any;
 	value: any;
@@ -384,7 +407,29 @@ export class RecordEncoder extends StructonEncoder {
 			} // else a normal entry
 			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
-			harperLogger.error('Error decoding record', error, 'data: ' + buffer.slice(0, 40).toString('hex'));
+			const hexPreview = buffer.slice(0, 40).toString('hex');
+			if (isMissingStructureError(error)) {
+				// This record references a shared structure that is genuinely absent on this node — the
+				// dependency already reloaded from durable storage and retried before throwing (typically a
+				// replica that received the record but not the structure-buffer update; see
+				// HarperFast/harper#1163). We still return null so internal reads (e.g. the metadata/__dbis__
+				// scan during initialization) remain non-fatal, but surface the otherwise-silent condition
+				// distinctly — a dedicated warning plus an analytics counter — so the dropped record is
+				// detectable and alertable rather than laundered as legitimate emptiness into query results,
+				// caches, and downstream consumers.
+				// this.name is set on the RocksDB encoder; for LMDB fall back to the root store's name so
+				// the metric/warning still attribute the dropped record to a store.
+				const storeName = this.name ?? this.rootStore?.name;
+				recordAction(true, MISSING_STRUCTURE_METRIC, storeName);
+				harperLogger.warn(
+					'Record references a shared structure missing on this node; decoded as null (see HarperFast/harper#1163)',
+					error,
+					'store: ' + storeName,
+					'data: ' + hexPreview
+				);
+				return null;
+			}
+			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
 	}
@@ -662,6 +707,13 @@ export function recordUpdater(store, tableId, auditStore) {
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
 				extendedType |= HAS_ADDITIONAL_AUDIT_REFS_AUDIT;
+			}
+			if (options?.localOnly) {
+				// Mark this write as local-only: set the bit in BOTH the persisted record metadata
+				// (so the full-copy send loop, which reads entry.metadataFlags, skips it) AND the audit
+				// entry's extendedType (so the audit-forward send path skips it by bitmask without decode).
+				metadataInNextEncoding |= LOCAL_ONLY;
+				extendedType |= LOCAL_ONLY;
 			}
 			if (previousResidencyId !== residencyId) {
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;

@@ -376,13 +376,56 @@ describe('OpenAIBackend', () => {
 			});
 		});
 
-		it('maps temperature and maxTokens to OpenAI fields', async () => {
+		it('maps temperature and maxTokens: native OpenAI endpoint sends max_completion_tokens', async () => {
+			// api.openai.com reasoning/gpt-5 models reject `max_tokens` (400);
+			// send `max_completion_tokens` for the default endpoint.
 			const fetch = mockFetch(() => chatResponse());
 			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 			await b.generate('q', { accounting: ACCOUNTING, temperature: 0.5, maxTokens: 100 });
 			const sent = JSON.parse(fetch.calls[0].init.body);
 			assert.strictEqual(sent.temperature, 0.5);
+			assert.strictEqual(sent.max_completion_tokens, 100);
+			assert.strictEqual(sent.max_tokens, undefined, 'max_tokens must not appear for native OpenAI');
+		});
+
+		it('maps maxTokens to max_tokens for a custom baseUrl (compat shims only understand max_tokens)', async () => {
+			// OpenAI-compatible shims (vLLM, Ollama-compat, older gateways) only understand
+			// `max_tokens`; keep the legacy field for any non-api.openai.com endpoint.
+			const fetch = mockFetch(() => chatResponse());
+			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm', baseUrl: 'https://my-vllm.internal/v1' }, fetch);
+			await b.generate('q', { accounting: ACCOUNTING, maxTokens: 100 });
+			const sent = JSON.parse(fetch.calls[0].init.body);
 			assert.strictEqual(sent.max_tokens, 100);
+			assert.strictEqual(
+				sent.max_completion_tokens,
+				undefined,
+				'max_completion_tokens must not appear for compat endpoint'
+			);
+		});
+
+		it('URL-parsed native-OpenAI detection: port-suffixed url still resolves as native', async () => {
+			// api.openai.com:443 should still classify as native — startsWith would
+			// miss it but URL-hostname check is correct.
+			const fetch = mockFetch(() => chatResponse());
+			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm', baseUrl: 'https://api.openai.com:443/v1' }, fetch);
+			await b.generate('q', { accounting: ACCOUNTING, maxTokens: 50 });
+			const sent = JSON.parse(fetch.calls[0].init.body);
+			assert.strictEqual(sent.max_completion_tokens, 50, 'port-suffix url must still be treated as native');
+			assert.strictEqual(sent.max_tokens, undefined);
+		});
+
+		it('URL-parsed native-OpenAI detection: subdomain-spoofed url is not native', async () => {
+			// api.openai.com.attacker.com starts with "https://api.openai.com" but its
+			// hostname is "api.openai.com.attacker.com" — URL parsing correctly rejects it.
+			const fetch = mockFetch(() => chatResponse());
+			const b = new OpenAIBackend(
+				{ apiKey: API_KEY, model: 'm', baseUrl: 'https://api.openai.com.attacker.com/v1' },
+				fetch
+			);
+			await b.generate('q', { accounting: ACCOUNTING, maxTokens: 50 });
+			const sent = JSON.parse(fetch.calls[0].init.body);
+			assert.strictEqual(sent.max_tokens, 50, 'spoofed subdomain must not be treated as native');
+			assert.strictEqual(sent.max_completion_tokens, undefined);
 		});
 
 		it("maps finish_reason='length' to finishReason='length'", async () => {
@@ -644,6 +687,49 @@ describe('OpenAIBackend', () => {
 			}, /tool-call arguments exceed/);
 		});
 
+		it('throws when total tool-call argument chars across all entries exceed 8 MiB', async () => {
+			// Use many small-ish deltas per entry so no single SSE event hits the 1 MiB SSE
+			// buffer cap. Each delta is 512 KiB; 17 deltas = ~8.5 MiB total (> 8 MiB cap).
+			// They all go to the same tool-call index so the per-entry cap (1 MiB) would
+			// trip first — instead use 9 distinct indices, each with a 1-MiB payload split
+			// across two SSE events of 512 KiB each so no single event hits the SSE cap.
+			const half = 'x'.repeat(512 * 1024); // 512 KiB per SSE event
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream({
+				start(controller) {
+					// 9 indices × 2 events × 512 KiB = 9 MiB total (exceeds 8 MiB cap).
+					// Per-entry: each index gets 1 MiB total (exactly the per-entry cap).
+					// The total-stream cap trips before the 9th index finishes.
+					for (let i = 0; i < 9; i++) {
+						// First event: open the tool call with first half of arguments
+						const open = {
+							choices: [
+								{ delta: { tool_calls: [{ index: i, id: `c${i}`, function: { name: `fn${i}`, arguments: half } }] } },
+							],
+						};
+						controller.enqueue(
+							encoder.encode(`data: ${JSON.stringify(open)}` + String.fromCharCode(10) + String.fromCharCode(10))
+						);
+						// Second event: second half pushes entry to 1 MiB (at the per-entry limit)
+						const cont = { choices: [{ delta: { tool_calls: [{ index: i, function: { arguments: half } }] } }] };
+						controller.enqueue(
+							encoder.encode(`data: ${JSON.stringify(cont)}` + String.fromCharCode(10) + String.fromCharCode(10))
+						);
+					}
+					controller.close();
+				},
+			});
+			const fetch = mockFetch(
+				() => new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+			);
+			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+			await assert.rejects(async () => {
+				for await (const _c of b.generateStream('q', { accounting: ACCOUNTING })) {
+					/* drain */
+				}
+			}, /total stream cap/);
+		});
+
 		it('drops streamed tool calls with malformed JSON arguments', async () => {
 			const fetch = mockFetch(() =>
 				sseResponse([
@@ -766,6 +852,62 @@ describe('OpenAIBackend', () => {
 			assert.ok(seenSignal instanceof AbortSignal);
 			assert.notStrictEqual(seenSignal, ctrl.signal);
 		});
+	});
+});
+
+// ---- finding 5b: tool-call accumulator cardinality cap --------------------------
+
+describe('OpenAI streaming tool-call accumulator cardinality cap', () => {
+	it('throws OpenAIBackendError when more than 128 distinct tool-call indices arrive', async () => {
+		// Build an SSE response that emits 129 distinct `index` values without
+		// a `finish_reason`, exercising the accumulator-cardinality guard.
+		const encoder = new TextEncoder();
+		const stream = new ReadableStream({
+			start(controller) {
+				for (let i = 0; i < 129; i++) {
+					const delta = {
+						choices: [
+							{
+								delta: {
+									tool_calls: [{ index: i, id: `c${i}`, function: { name: `fn${i}`, arguments: '{}' } }],
+								},
+								finish_reason: null,
+							},
+						],
+					};
+					controller.enqueue(encoder.encode(`data: ${JSON.stringify(delta)}\n\n`));
+				}
+				controller.close();
+			},
+		});
+		const fetch = mockFetch(
+			() => new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+		);
+		const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+		await assert.rejects(async () => {
+			for await (const _c of b.generateStream('q', { accounting: ACCOUNTING })) {
+				/* drain */
+			}
+		}, /tool-call accumulator exceeded 128/);
+	});
+
+	it('does not throw for a normal response with a small number of tool calls', async () => {
+		const fetch = mockFetch(() =>
+			sseResponse([
+				{
+					choices: [
+						{
+							delta: { tool_calls: [{ index: 0, id: 'c0', function: { name: 'fn', arguments: '{"x":1}' } }] },
+							finish_reason: 'tool_calls',
+						},
+					],
+				},
+			])
+		);
+		const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+		const chunks = [];
+		for await (const c of b.generateStream('q', { accounting: ACCOUNTING })) chunks.push(c);
+		assert.ok(chunks.some((c) => c.deltaToolCalls));
 	});
 });
 

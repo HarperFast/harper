@@ -29,10 +29,16 @@ export function getThisNodeName(): string {
 	if (nodeName) return nodeName; // if already determined, just return
 	nodeName = env.get(CONFIG_PARAMS.NODE_HOSTNAME); // standard config
 	if (nodeName) {
-		if (env.get('replication_hostname') && env.get('replication_hostname') !== nodeName) {
-			// if these are both set, it can be very confusing, make sure to warn
+		const replicationHostname = env.get('replication_hostname');
+		if (replicationHostname && replicationHostname !== nodeName) {
+			// If these are both set and differ, the node identity is ambiguous. node.hostname
+			// wins (it is what this node identifies as), but if it doesn't match the name this
+			// node is registered under in hdb_nodes, replication for that name silently turns
+			// off (harper-pro#351). Do NOT blindly recommend cementing the already-picked
+			// node.hostname value — that's how a wrong identity (e.g. 'localhost') gets locked
+			// in. Steer the operator to reconcile against the registered node name instead.
 			logger.warn?.(
-				`The node.hostname and replication.hostname configuration values are both set and are different. It is recommended that you set the node.hostname, using node.hostname: ${nodeName})`
+				`The node.hostname (${nodeName}) and replication.hostname (${replicationHostname}) configuration values are both set and differ. This node will identify as "${nodeName}". Ensure that name matches this node's row in system.hdb_nodes; if it does not, set node.hostname (or remove it to fall back to replication.hostname) to match the registered node name, otherwise replication for this node will be disabled.`
 			);
 		}
 		return nodeName;

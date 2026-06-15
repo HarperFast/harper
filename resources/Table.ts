@@ -190,6 +190,9 @@ export function makeTable(options) {
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
+	// Eviction without explicit expiration means expiration:0. Apply at construction so
+	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
+	if (evictionMs > 0 && expirationMs === undefined) expirationMs = 0;
 	let { attributes, properties }: { attributes: Attribute[]; properties?: Record<string, JsonSchemaFragment> } =
 		options;
 	if (!attributes) attributes = [];
@@ -336,7 +339,16 @@ export function makeTable(options) {
 			}
 			hasSourceGet = hasSourceGet || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
 			sourceLoad = sourceLoad || source.load;
-			const shouldRevalidateEvents = this.source?.shouldRevalidateEvents;
+			// Revalidation down-converts incoming put/patch events to invalidate so a cache re-fetches
+			// from its source on next read. It must apply ONLY to events from the canonical caching
+			// source — never to authoritative writes arriving from a replication peer, which registers
+			// as an intermediateSource (harper-pro replication/replicator.ts). This closure is created
+			// per sourcedFrom() call, but the flag was read from this.source (the canonical caching
+			// source) regardless of which source the subscription is actually for; on a cache-sourced
+			// AND replicated table that leaked the caching source's revalidate flag onto the replication
+			// subscription, turning replicated writes into invalidates and deleting file-backed blobs no
+			// peer re-supplied. See HarperFast/harper#1302. Gate it off the intermediate source.
+			const shouldRevalidateEvents = !options?.intermediateSource && this.source?.shouldRevalidateEvents;
 
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
@@ -433,8 +445,17 @@ export function makeTable(options) {
 									continue;
 								}
 								event.source = source;
+								// Writes applied here come from the canonical source of truth (a replication peer or an
+								// external caching source), so a transient write conflict must never drop the write —
+								// there is no re-subscribe / sequence-id-resume path to recover it. Mark the context so the
+								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
+								event.sourceApply = true;
 								if (event.type === 'end_txn') {
-									txnInProgress?.resolve();
+									// Capture the in-progress transaction in a stable local: the loop variable is reset
+									// once this transaction completes (below), but the seq-id closure and the commit await
+									// still need to reference it afterward.
+									const committingTxn = txnInProgress;
+									committingTxn?.resolve();
 									let updateRecordedSequenceId: () => void;
 									if (event.localTime && lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
@@ -461,7 +482,7 @@ export function makeTable(options) {
 														nodeStates.push(nodeState);
 													}
 													nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-													if (nodeId === txnInProgress?.nodeId) {
+													if (nodeId === committingTxn?.nodeId) {
 														nodeState.lastTxnTime = event.timestamp;
 													}
 												}
@@ -483,24 +504,51 @@ export function makeTable(options) {
 											lastSequenceId = event.localTime;
 										}
 									}
-									if (event.onCommit) {
-										// if there was an onCommit callback, call that. This function can be async
-										// and if so, we want to delay the recording of the sequence id until it finished
-										// (as it can be used to indicate more associated actions, like blob transfer, are in flight)
-										const onCommitFinished = txnInProgress
-											? txnInProgress.committed.then(event.onCommit)
-											: event.onCommit();
-										if (updateRecordedSequenceId) {
-											if (onCommitFinished?.then) onCommitFinished.then(updateRecordedSequenceId);
-											else updateRecordedSequenceId();
+									// Backpressure: wait for the transaction's commit to land before recording the sequence
+									// id or pulling the next event. This serializes the apply loop so bulk ingest can't
+									// outrun the commit/conflict-check window, and guarantees the sequence id never
+									// advances past an uncommitted write (which would diverge this node from its peers).
+									let committed;
+									try {
+										committed = committingTxn ? await committingTxn.committed : undefined;
+										if (event.onCommit) {
+											// the onCommit callback can be async and carry associated work (e.g. blob
+											// transfer); wait for it too before recording the sequence id. Pass the commit
+											// resolution through, as callbacks may use the committed txn time.
+											await event.onCommit(committed);
 										}
-									} else if (updateRecordedSequenceId) updateRecordedSequenceId();
+									} finally {
+										// Always clear the completed transaction so a later standalone write isn't appended
+										// to it (and lost), and a failed commit's rejected promise isn't re-awaited on the
+										// next beginTxn (which would brick the apply loop).
+										txnInProgress = undefined;
+									}
+									// Only reached when the commit succeeded; a failure propagates to the handler's catch
+									// and the sequence id is intentionally not advanced past the unapplied write.
+									if (updateRecordedSequenceId) updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
 									if (event.beginTxn) {
-										// if we are starting a new transaction, finish the existing one
+										// Starting a new transaction closes the existing one. When transactions are
+										// delimited by consecutive beginTxn events (end_txn only arrives after the final
+										// one), this is the backpressure point for all but the last transaction: wait for
+										// the prior commit to land before applying the next so the sequence id can't
+										// advance past an uncommitted write.
 										txnInProgress.resolve();
+										try {
+											await txnInProgress.committed;
+										} catch (error) {
+											// Transient conflicts retry without limit and never reach here, so this is a
+											// non-retryable commit failure on the prior transaction. Log and continue (rather
+											// than rethrow) so the current beginTxn still starts a fresh transaction with
+											// correct boundaries instead of having its writes applied as standalone ones.
+											logger.error?.('source-applied transaction commit failed during apply', error);
+										} finally {
+											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
+											// next beginTxn (which would brick the apply loop).
+											txnInProgress = undefined;
+										}
 									} else {
 										// write in the current transaction if one is in progress
 										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));
@@ -567,8 +615,20 @@ export function makeTable(options) {
 								}
 
 								if (event.onCommit) {
-									if (commitResolution) commitResolution.then(event.onCommit);
-									else event.onCommit();
+									if (txnInProgress) {
+										// begin_txn: commitResolution stays pending until the matching end_txn, so it
+										// can't be awaited here; onCommit is awaited at end_txn once the commit lands.
+										if (commitResolution) commitResolution.then(event.onCommit);
+										else event.onCommit();
+									} else {
+										// standalone write: backpressure on the commit before pulling the next event,
+										// and pass the commit resolution through to the callback.
+										const committed = commitResolution ? await commitResolution : undefined;
+										await event.onCommit(committed);
+									}
+								} else if (commitResolution && !txnInProgress) {
+									// standalone write with no onCommit: still backpressure on the commit.
+									await commitResolution;
 								}
 							} catch (error) {
 								logger.error?.('error in subscription handler', error);
@@ -966,6 +1026,29 @@ export function makeTable(options) {
 		}
 
 		static async dropTable() {
+			if (databaseName === databasePath) {
+				// Persist a drop tombstone on the primary catalog entry BEFORE any
+				// destructive work. If the process dies or a column family drop fails
+				// partway through, the tombstone survives with the catalog rows, and
+				// the next startup (or a same-name create) completes the drop via
+				// completeInterruptedDrop in databases.ts instead of resurrecting
+				// the table.
+				const primaryCatalogKey = TableResource.tableName + '/';
+				const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+				if (primaryMeta && !primaryMeta.dropping) {
+					primaryMeta.dropping = true;
+					// put is rebound to putSync on RocksDB stores; on LMDB it returns
+					// a promise, so await it to make the tombstone durable before the
+					// destructive work below
+					const tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+					if (tombstoneWrite?.then) await tombstoneWrite;
+				}
+			}
+			// Remove the table from the in-memory schema immediately so concurrent
+			// requests get "table does not exist" instead of racing the column
+			// family drops below. If a drop fails past this point the table stays
+			// invisible, and the tombstone guarantees the drop completes on the
+			// next startup (or on a same-name create).
 			delete databases[databaseName][tableName];
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
@@ -973,14 +1056,28 @@ export function makeTable(options) {
 				}
 			}
 			if (databaseName === databasePath) {
-				// part of a database
+				// part of a database.
+				// Drop the column families and AWAIT them. Previously the catalog
+				// metadata was removed (synchronous removeSync) before primaryStore.drop(),
+				// and the drops were fire-and-forget (their rejections swallowed). If a
+				// column family was corrupt/half-initialized the drop would fail, yet the
+				// catalog entry was already gone - an orphaned "ghost" column family that
+				// poisons same-name recreates. By awaiting the drops before touching the
+				// catalog, a failed drop surfaces as the operation's error and the
+				// tombstoned catalog rows survive for the startup reconcile.
+				const drops = [];
+				for (const attribute of attributes) {
+					const index = indices[attribute.name];
+					if (index) drops.push(index.drop());
+				}
+				drops.push(primaryStore.drop());
+				await Promise.all(drops);
+				// Column families are gone; remove the catalog metadata (including
+				// the tombstoned primary entry).
 				for (const attribute of attributes) {
 					dbisDb.remove(TableResource.tableName + '/' + attribute.name);
-					const index = indices[attribute.name];
-					index?.drop();
 				}
 				dbisDb.remove(TableResource.tableName + '/');
-				primaryStore.drop();
 				await dbisDb.committed;
 			} else {
 				// legacy table per database
@@ -1973,6 +2070,19 @@ export function makeTable(options) {
 								);
 								if (!incrementalUpdateToApply) return writeCommit(false); // if all changes are overwritten, nothing left to do
 							}
+							if (fullUpdate && !incrementalUpdateToApply && precedesExisting < 0) {
+								// Out-of-order full update whose audit walk found no succeeding updates to
+								// resequence around: the existing record is strictly newer (precedesExisting < 0),
+								// so this older full update is superseded. Falling through to the shared commit
+								// below would set recordToStore = recordUpdate and revert the newer record. Bare
+								// return (no writeCommit) matches the superseded-by-newer-put branch above so no
+								// audit record is written referencing this losing update's pre-saved blobs.
+								// Gated on precedesExisting < 0 (not <= 0) so a same-transaction put-after-delete —
+								// which arrives as a tie (precedesExisting === 0) with no committed audit yet —
+								// still falls through and applies. (harperdb/harper#1170)
+								write.skipped = true;
+								return;
+							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -2081,6 +2191,8 @@ export function makeTable(options) {
 								transaction,
 								tableToTrack: databaseName === 'system' ? null : options?.replay ? null : tableName, // don't track analytics on system tables
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
+								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
+								localOnly: options?.localOnly,
 							},
 							type,
 							false,
@@ -4184,6 +4296,9 @@ export function makeTable(options) {
 				if (!nextTxn) {
 					// no next one, then add our database
 					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
+					// drop the canonical write when a secondary store hits a transient conflict.
+					transaction.next.sourceApply = transaction.sourceApply;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;

@@ -3,13 +3,33 @@ import { Script } from 'node:vm';
 import { table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
-import type { NamedTypeNode, StringValueNode } from 'graphql';
+import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { once } from 'node:events';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
+
+// coerce directive arg values by their AST node kind so numbers arrive as numbers,
+// not as the string literals they're stored as on IntValue/FloatValue nodes.
+function coerceDirectiveValue(node: ValueNode): any {
+	switch (node.kind) {
+		case 'IntValue':
+		case 'FloatValue':
+			return Number((node as { value: string }).value);
+		case 'BooleanValue':
+		case 'StringValue':
+		case 'EnumValue':
+			return (node as { value: unknown }).value;
+		case 'NullValue':
+			return null;
+		case 'ListValue':
+			return node.values.map(coerceDirectiveValue);
+		default:
+			return (node as { value?: unknown }).value;
+	}
+}
 
 if (!server.knownGraphQLDirectives) {
 	server.knownGraphQLDirectives = [];
@@ -87,8 +107,11 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 					const directiveName = directive.name.value;
 					if (directiveName === 'table') {
 						for (const arg of directive.arguments) {
-							typeDef[arg.name.value] = (arg.value as StringValueNode).value;
+							typeDef[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
+						// @table is the canonical schema-defined declaration; pass the flag explicitly so
+						// the existing-Table re-assert in databases.ts::table() fires on every reload.
+						typeDef.schemaDefined = true;
 						if (typeDef.schema) typeDef.database = typeDef.schema;
 						if (!typeDef.table) typeDef.table = typeName;
 						if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';

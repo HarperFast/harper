@@ -1,8 +1,19 @@
 /**
- * HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variable support
+ * HARPER_CONFIG, HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG environment variable support
  *
  * This module provides utilities for applying configuration from environment variables
  * to Harper's configuration system with source tracking and drift detection.
+ *
+ * The three variables form a precedence ladder (later wins):
+ *   HARPER_DEFAULT_CONFIG  <  config file / user edits  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
+ *
+ * - HARPER_CONFIG (recommended): merge — sets exactly the keys it names, reasserting
+ *   them on every boot (a manual edit to a named key is overwritten on restart), and
+ *   yields only to HARPER_SET_CONFIG. Individual HARPER_* env vars still win over it
+ *   for the keys they name (arg filtering remains SET-only).
+ * - HARPER_DEFAULT_CONFIG: defaults — yields to the config file, individual env vars,
+ *   and user edits.
+ * - HARPER_SET_CONFIG: force — overrides everything and locks against drift.
  *
  * Features:
  * - Install-time and runtime configuration from env vars
@@ -31,7 +42,7 @@ function getLogger(): Logger {
 
 // Type definitions
 type ConfigObject = Record<string, any>;
-type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'default';
+type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_CONFIG' | 'HARPER_SET_CONFIG' | 'user' | 'default';
 
 /**
  * Configuration state tracking structure
@@ -69,6 +80,7 @@ interface ConfigState {
 	snapshots: {
 		// Snapshots of what each env var currently specifies (for detecting changes)
 		HARPER_DEFAULT_CONFIG?: { hash: string; config: ConfigObject };
+		HARPER_CONFIG?: { hash: string; config: ConfigObject };
 		HARPER_SET_CONFIG?: { hash: string; config: ConfigObject };
 	};
 }
@@ -534,9 +546,11 @@ function handleDeletions(
 	for (const path of deletedPaths) {
 		// Only handle if this path was set by this source
 		if (state.sources[path] === sourceName) {
-			// For both HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG, restore original value instead of deleting
+			// For all config env vars, restore original value instead of deleting
 			if (
-				(sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_SET_CONFIG') &&
+				(sourceName === 'HARPER_DEFAULT_CONFIG' ||
+					sourceName === 'HARPER_CONFIG' ||
+					sourceName === 'HARPER_SET_CONFIG') &&
 				path in state.originalValues
 			) {
 				setNestedValue(fileConfig, path, state.originalValues[path]);
@@ -608,6 +622,14 @@ function processEnvVar(
 			respectSources: [],
 			storeOriginals: true,
 		});
+	} else if (sourceName === 'HARPER_CONFIG') {
+		// HARPER_CONFIG merges: it sets exactly the keys it names and reasserts them on
+		// every boot (winning over the config file, user edits, and DEFAULT), yielding
+		// only to HARPER_SET_CONFIG. Same behavior at install and runtime.
+		applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
+			respectSources: ['HARPER_SET_CONFIG'],
+			storeOriginals: true,
+		});
 	} else if (sourceName === 'HARPER_DEFAULT_CONFIG') {
 		// DEFAULT_CONFIG behavior depends on install vs runtime
 		if (options.isInstall) {
@@ -675,8 +697,8 @@ function cleanupRemovedEnvVar(
 
 	const logger = getLogger();
 
-	// For both HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG, restore original values
-	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
+	// For all config env vars, restore original values
+	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
 		const pathsToCleanup = Object.keys(state.sources).filter((path) => state.sources[path] === sourceName);
 		for (const path of pathsToCleanup) {
 			if (path in state.originalValues) {
@@ -699,14 +721,15 @@ function cleanupRemovedEnvVar(
 }
 
 /**
- * Compose a merged config from HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG
- * layered with an optional base. Later layers win:
- *   HARPER_DEFAULT_CONFIG  <  base  <  HARPER_SET_CONFIG
+ * Compose a merged config from HARPER_DEFAULT_CONFIG, HARPER_CONFIG and
+ * HARPER_SET_CONFIG layered with an optional base. Later layers win:
+ *   HARPER_DEFAULT_CONFIG  <  base  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
  *
  * HARPER_DEFAULT_CONFIG provides scaffolding defaults, the base (e.g., the
- * user's existing config file) is layered on top, and HARPER_SET_CONFIG
- * force-overrides everything. This matches the precedence applied by the
- * runtime pipeline in applyRuntimeEnvConfig.
+ * user's existing config file) is layered on top, HARPER_CONFIG merges its
+ * keys over that, and HARPER_SET_CONFIG force-overrides everything. This
+ * matches the precedence applied by the runtime pipeline in
+ * applyRuntimeEnvConfig.
  *
  * Unlike applyRuntimeEnvConfig, this does NOT read or write the config state
  * file and does NOT track sources — it returns a fresh object. Use when you
@@ -718,6 +741,7 @@ export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 	const layers: (ConfigObject | null)[] = [
 		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
 		cloneDeep(base),
+		parseConfigEnvVar(process.env.HARPER_CONFIG, 'HARPER_CONFIG'),
 		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
 	];
 
@@ -733,8 +757,18 @@ export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 }
 
 /**
- * Apply HARPER_DEFAULT_CONFIG and HARPER_SET_CONFIG
- * Can be used for both install-time and runtime
+ * True if a config-state file exists with tracked env-var snapshots. Callers use this to
+ * decide whether applyRuntimeEnvConfig must run even when no config env vars are currently
+ * set — e.g. to restore originals and clear the snapshot after a var was applied on a prior
+ * boot and then removed. Cheap: returns false without reading when no state file exists.
+ */
+export function hasPersistedEnvConfigState(rootPath: string): boolean {
+	return Object.keys(loadConfigState(rootPath).snapshots).length > 0;
+}
+
+/**
+ * Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG (in that order —
+ * later wins). Can be used for both install-time and runtime.
  */
 export function applyRuntimeEnvConfig(
 	fileConfig: ConfigObject,
@@ -742,13 +776,14 @@ export function applyRuntimeEnvConfig(
 	options: { isInstall?: boolean } = {}
 ): ConfigObject {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
+	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
 	// Load existing state
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
-	if (!defaultEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
+	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
 		return fileConfig;
 	}
 
@@ -760,21 +795,26 @@ export function applyRuntimeEnvConfig(
 		}
 	}
 
-	// Process HARPER_DEFAULT_CONFIG
-	processEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG', options);
-
-	// Clean up if HARPER_DEFAULT_CONFIG was removed
+	// Clean up any env var that was removed BEFORE applying the remaining ones. A removed
+	// var restores its paths to their stored originals and clears ownership; doing this
+	// first means a path a higher-precedence var is releasing is already un-sourced when a
+	// lower-precedence var (e.g. HARPER_CONFIG) runs, so that var reclaims it the same boot
+	// instead of leaving it at the file value for one boot.
 	if (!defaultEnvValue) {
 		cleanupRemovedEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG');
 	}
-
-	// Process HARPER_SET_CONFIG (always overrides everything)
-	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
-
-	// Clean up if HARPER_SET_CONFIG was removed
+	if (!configEnvValue) {
+		cleanupRemovedEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG');
+	}
 	if (!setEnvValue) {
 		cleanupRemovedEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG');
 	}
+
+	// Apply present vars in precedence order (later wins):
+	//   HARPER_DEFAULT_CONFIG < config file / user edits < HARPER_CONFIG < HARPER_SET_CONFIG
+	processEnvVar(fileConfig, state, 'HARPER_DEFAULT_CONFIG', 'HARPER_DEFAULT_CONFIG', options);
+	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
+	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
 	// Save updated state
 	saveConfigState(rootPath, state);

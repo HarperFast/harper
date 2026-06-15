@@ -1,5 +1,6 @@
 import { dirname, basename } from 'path';
 import { existsSync } from 'fs';
+import { deriveRoutePrefix } from './fastifyRoutes/helpers/deriveRoutePrefix.ts';
 import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
@@ -47,8 +48,12 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		}
 		const resolvedServer = await fastifyServer;
 		const routeFolder = dirname(entry.absolutePath);
-		let prefix = basename(scope.appName);
-		if (prefix.startsWith('/')) prefix = prefix.slice(1);
+		// Derive the prefix from the component's own `urlPath`/`path` config rather than
+		// `entry.urlPath`: the EntryHandler resolves the entry path against the plugin name and
+		// ignores the deprecated `path` alias, so it can't express the app-name namespace.
+		// `appName` may be an absolute path (loaded via RUN_HDB_APP), hence basename().
+		const config = (scope.options.getAll() as { urlPath?: string; path?: string }) ?? {};
+		const prefix = deriveRoutePrefix(basename(scope.appName), config.urlPath ?? config.path);
 		if (!routeFolders.has(routeFolder)) {
 			routeFolders.add(routeFolder);
 			try {

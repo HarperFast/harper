@@ -46,6 +46,12 @@ const DEFAULT_MAX_TOKENS = 4096;
 // Max accumulated `bytes` from streamed Claude tool-use input_json_delta;
 // matches the cap in `components/anthropic/index.ts`.
 const MAX_TOOL_CALL_ARGS_CHARS = 1 << 20;
+// Maximum number of distinct tool-call accumulator entries. Upstream-controlled
+// `index` values could otherwise allocate unbounded map entries if
+// content_block_stop events never arrive. Matches the cap in the direct backends.
+const MAX_TOOL_CALL_ACCUMULATOR_ENTRIES = 128;
+// Total tool-call argument chars across all content blocks in one stream.
+const MAX_TOTAL_TOOL_CALL_ARGS_CHARS = 8 * 1024 * 1024; // 8 MiB
 
 const log = harperLogger.forComponent('bedrock').conditional;
 
@@ -199,7 +205,7 @@ export class BedrockBackend implements ModelBackend {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'generate', BedrockBackendError);
 		const family = familyOf(model);
-		const body = buildGenerateBody(family, input, opts);
+		const body = buildGenerateBody(family, model, input, opts);
 
 		const client = await this.#getClient();
 		const sdk = await loadSdk();
@@ -219,7 +225,7 @@ export class BedrockBackend implements ModelBackend {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'generateStream', BedrockBackendError);
 		const family = familyOf(model);
-		const body = buildGenerateBody(family, input, opts);
+		const body = buildGenerateBody(family, model, input, opts);
 
 		const client = await this.#getClient();
 		const sdk = await loadSdk();
@@ -288,13 +294,16 @@ export class BedrockBackendError extends ServerError {
 
 type Family = 'anthropic' | 'amazon' | 'meta' | 'cohere' | 'mistral' | 'unknown';
 
+const KNOWN_FAMILIES: Set<Family> = new Set(['anthropic', 'amazon', 'meta', 'cohere', 'mistral']);
+
 function familyOf(modelId: string): Family {
-	const prefix = modelId.split('.', 1)[0]?.toLowerCase() ?? '';
-	if (prefix === 'anthropic') return 'anthropic';
-	if (prefix === 'amazon') return 'amazon';
-	if (prefix === 'meta') return 'meta';
-	if (prefix === 'cohere') return 'cohere';
-	if (prefix === 'mistral') return 'mistral';
+	// Cross-region inference-profile IDs are prefixed with a geographic segment
+	// (e.g. `us.anthropic.claude-3-5-sonnet-…`, `eu.meta.llama3-…`, `global.…`).
+	// Split on '.' and walk segments: the first segment that is a known family wins.
+	const segments = modelId.toLowerCase().split('.');
+	for (const seg of segments) {
+		if (KNOWN_FAMILIES.has(seg as Family)) return seg as Family;
+	}
 	return 'unknown';
 }
 
@@ -349,10 +358,33 @@ function extractEmbedResult(
 
 // ---------- generate body / result extraction ----------
 
-function buildGenerateBody(family: Family, input: GenerateInput, opts: BackendOpts<GenerateOpts>): object {
+/**
+ * amazon.nova-* models use the Converse API messages-v1 shape, not the Titan
+ * `inputText` shape. The Converse migration is a larger follow-up; for now
+ * throw a clear error so operators get actionable feedback instead of a
+ * malformed-request 400 from Bedrock.
+ */
+function rejectNovaModel(modelId: string): void {
+	if (modelId.toLowerCase().includes('nova')) {
+		throw new BedrockBackendError(
+			`amazon.nova models are not yet supported by the bedrock backend (model: ${modelId}); ` +
+				'these models require the Converse API shape, not the legacy InvokeModel shape'
+		);
+	}
+}
+
+function buildGenerateBody(
+	family: Family,
+	modelId: string,
+	input: GenerateInput,
+	opts: BackendOpts<GenerateOpts>
+): object {
 	if (family === 'anthropic') return buildAnthropicBody(input, opts);
 	if (family === 'meta') return buildLlamaBody(input, opts);
-	if (family === 'amazon') return buildTitanGenerateBody(input, opts);
+	if (family === 'amazon') {
+		rejectNovaModel(modelId);
+		return buildTitanGenerateBody(input, opts);
+	}
 	if (family === 'mistral') return buildMistralBody(input, opts);
 	if (family === 'cohere') return buildCohereGenerateBody(input, opts);
 	throw new BedrockBackendError(`Bedrock generate not supported for model family '${family}'`);
@@ -526,6 +558,7 @@ async function* parseAnthropicStream(
 	const decoder = new TextDecoder('utf-8');
 	const toolBuf = new Map<number, { id: string; name: string; argumentsBuf: string }>();
 	let finalFinishReason: GenerateResult['finishReason'] | undefined;
+	let totalArgChars = 0;
 
 	for await (const event of body) {
 		if (!event.chunk?.bytes) continue;
@@ -563,6 +596,12 @@ async function* parseAnthropicStream(
 		}
 
 		if (type === 'content_block_start' && index !== undefined && contentBlock?.type === 'tool_use') {
+			// Cap total accumulator entries; content_block_stop may never arrive.
+			if (toolBuf.size >= MAX_TOOL_CALL_ACCUMULATOR_ENTRIES) {
+				throw new BedrockBackendError(
+					`Bedrock tool-call accumulator exceeded ${MAX_TOOL_CALL_ACCUMULATOR_ENTRIES} distinct tool-call entries`
+				);
+			}
 			toolBuf.set(index, { id: contentBlock.id ?? '', name: contentBlock.name ?? '', argumentsBuf: '' });
 		}
 		if (type === 'content_block_delta' && index !== undefined && delta) {
@@ -574,6 +613,12 @@ async function* parseAnthropicStream(
 					if (acc.argumentsBuf.length + delta.partial_json.length > MAX_TOOL_CALL_ARGS_CHARS) {
 						throw new BedrockBackendError(
 							`Bedrock tool-call arguments exceed ${MAX_TOOL_CALL_ARGS_CHARS} chars (index ${index})`
+						);
+					}
+					totalArgChars += delta.partial_json.length;
+					if (totalArgChars > MAX_TOTAL_TOOL_CALL_ARGS_CHARS) {
+						throw new BedrockBackendError(
+							`Bedrock tool-call arguments exceed total stream cap of ${MAX_TOTAL_TOOL_CALL_ARGS_CHARS} chars`
 						);
 					}
 					acc.argumentsBuf += delta.partial_json;

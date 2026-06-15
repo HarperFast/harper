@@ -21,8 +21,12 @@ function getServerOptions(isHttps) {
 		keepAliveTimeout: keep_alive_timeout,
 		return503OnClosing: false,
 		forceCloseConnections: true,
-		ignoreTrailingSlash: true,
-		maxParamLength: env.get(CONFIG_PARAMS.HTTP_MAXPARAMLENGTH) ?? 1000,
+		// Router options must be nested under `routerOptions` in Fastify v5; passing them as
+		// top-level options still works but emits the FSTDEP022 deprecation warning.
+		routerOptions: {
+			ignoreTrailingSlash: true,
+			maxParamLength: env.get(CONFIG_PARAMS.HTTP_MAXPARAMLENGTH) ?? 1000,
+		},
 		// http2: isHttps, // for now we are not enabling HTTP/2 since it seems to show slower performance
 		https: isHttps /* && {
 			allowHTTP1: true,

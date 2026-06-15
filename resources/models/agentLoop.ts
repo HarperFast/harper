@@ -363,6 +363,11 @@ async function runSingleToolCall(
 	iteration: number,
 	maxResultBytes: number
 ): Promise<DispatchedToolCall> {
+	// Guard: don't start a side-effecting handler if the caller has already
+	// aborted. The catch below already rethrows AbortError, so a pre-aborted
+	// signal that fires after entry but before the handler await is also covered.
+	ctx.signal?.throwIfAborted();
+
 	const entry: ToolTraceEntry = {
 		iteration,
 		toolCallId: call.id,
