@@ -452,6 +452,38 @@ describe('Transactions', () => {
 			assert.equal(record.count, 3, 're-delivered duplicate must not double-apply the commutative op');
 		});
 
+		// #1114: once a later in-order write drops the out-of-order ref from the record, a re-delivery can no
+		// longer be caught by the additionalAuditRefs front-check. The up-front keyed audit lookup must catch
+		// it BEFORE the resequencing walk, so the deep-walk/depth-cap path is never taken (this is the case
+		// that pegged the event loop on transitive re-deliveries in production).
+		it('deduplicates a re-delivered out-of-order write up front, without the deep walk (#1114)', async function () {
+			if (isLMDB) return; // RocksDB-only up-front keyed dedup (LMDB keeps the exact unbounded walk)
+			const { logger } = require('#src/utility/logging/logger');
+			const id = 1114002;
+			const base = Date.now();
+			await TxnTest.put(id, { name: 'seed', count: 0 }, { timestamp: base });
+			const depth = 1010; // deeper than MAX_OUT_OF_ORDER_AUDIT_DEPTH so an unguarded walk would cap
+			for (let i = 1; i <= depth; i++) await TxnTest.patch(id, { seq: i }, { timestamp: base + 10 * i });
+			// Out-of-order commutative write (older than every patch); records an additionalAuditRef.
+			await TxnTest.patch(id, { count: { __op__: 'add', value: 7 } }, { timestamp: base + 5 });
+			assert.equal((await TxnTest.get(id)).count, 7, 'out-of-order op applied once');
+			// A newer in-order write rewrites the record and drops the ref, so the front-check can no longer see it.
+			await TxnTest.patch(id, { seq: depth + 1 }, { timestamp: base + 10 * (depth + 2) });
+			// Re-deliver the same out-of-order write: must be deduped up front, never reaching the depth-cap walk.
+			const originalWarn = logger.warn;
+			let capWarned = false;
+			logger.warn = (msg) => {
+				if (typeof msg === 'string' && msg.includes('exceeded depth cap')) capWarned = true;
+			};
+			try {
+				await TxnTest.patch(id, { count: { __op__: 'add', value: 7 } }, { timestamp: base + 5 });
+			} finally {
+				logger.warn = originalWarn;
+			}
+			assert.equal((await TxnTest.get(id)).count, 7, 're-delivered duplicate must not double-apply');
+			assert.equal(capWarned, false, 're-delivery should be deduped up front, not via the deep walk');
+		});
+
 		it('Can merge replication updates', async function () {
 			const context = {};
 			await transaction(context, async () => {

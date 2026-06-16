@@ -1898,6 +1898,32 @@ export function makeTable(options) {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
 							}
+							// Up-front keyed dedup (RocksDB): a re-delivered out-of-order write whose exact
+							// (version, nodeId) is already in the audit log is a duplicate that was already applied — skip
+							// it here instead of paying the O(depth) resequencing walk below only to discard it in the
+							// depth-cap block. This is the same keyed lookup that block performs, hoisted ahead of the walk.
+							// It is what catches transitive/proxied re-deliveries: they arrive buried below the record head
+							// (so replication's head-tie fast-skip can't see them) yet are exact duplicates. Keyed by nodeId,
+							// so it is correct across multiple source nodes. RocksDB-only: LMDB audit entries are keyed by
+							// local audit time, not version, so this version-keyed lookup doesn't apply there (LMDB keeps the
+							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
+							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
+							// check above remains the read-your-writes guard.
+							if (isRocksDB) {
+								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								if (
+									priorAudit &&
+									priorAudit.version === txnTime &&
+									precedesExistingVersion(
+										txnTime,
+										{ version: txnTime, localTime: txnTime, key: id, nodeId: priorAudit.nodeId },
+										options?.nodeId
+									) === 0
+								) {
+									write.skipped = true;
+									return; // duplicate already applied; avoid the resequencing walk
+								}
+							}
 							// incremental CRDT updates are only available with audit logging on
 							let localTime = existingEntry.localTime;
 							let auditedVersion = existingEntry.version;
