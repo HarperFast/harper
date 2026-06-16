@@ -90,6 +90,7 @@ type RequestTargetCtor = new () => Record<string, unknown> & {
 	offset?: number;
 	select?: string[];
 	id?: unknown;
+	isCollection?: boolean;
 };
 
 // Test seams: avoid Harper's eager graph init in unit tests.
@@ -293,6 +294,11 @@ function makeCreateHandler(toolName: string, ResourceClass: ResourceClassLike) {
 		const a = (args ?? {}) as Record<string, unknown>;
 		try {
 			const target = makeTarget();
+			// Mark the target as a collection so `Resource.post` resolves the table
+			// (not a single record) and routes to `create()` — without this, the
+			// base `post` throws `missingMethod` ("does not have a post method")
+			// because a record-scoped resource has no insert path (#1317).
+			target.isCollection = true;
 			const data = await ResourceClass.post!(target, a, buildContext(context.user));
 			return wrapResult(data ?? { ok: true });
 		} catch (err) {

@@ -117,17 +117,19 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 			`create_/get_ WorkItem present, got: ${names.join(', ')}`
 		);
 
-		// WorkItem.post (fixture) generates its own id and stores the body as the
-		// `payload` field, returning { id, state }. Capture the id, then read back.
 		const createRes: any = await client.callTool({
 			name: 'create_WorkItem',
 			arguments: { state: 'open', payload: 'hello-1317' },
 		});
 		ok(!createRes.isError, `create should succeed: ${JSON.stringify(createRes.content)}`);
-		const created = JSON.parse((createRes.content ?? []).map((c: any) => c.text).join(''));
-		ok(created.id, `create should return the new id: ${JSON.stringify(created)}`);
+		// create returns either the new id (string) or a { id, ... } record,
+		// depending on the resource's create handler — accept both.
+		const createdRaw = (createRes.content ?? []).map((c: any) => c.text).join('');
+		const created = JSON.parse(createdRaw);
+		const newId = typeof created === 'string' ? created : created.id;
+		ok(newId, `create should return an id: ${createdRaw}`);
 
-		const getRes: any = await client.callTool({ name: 'get_WorkItem', arguments: { id: created.id } });
+		const getRes: any = await client.callTool({ name: 'get_WorkItem', arguments: { id: newId } });
 		ok(!getRes.isError, `get should succeed: ${JSON.stringify(getRes.content)}`);
 		const text = (getRes.content ?? []).map((c: any) => c.text).join('');
 		match(text, /hello-1317/);

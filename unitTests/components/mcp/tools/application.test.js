@@ -603,6 +603,29 @@ describe('mcp/tools/application — handler dispatch', () => {
 		assert.deepEqual(res.structuredContent, { id: '42', name: 'widget' });
 	});
 
+	it('create_ marks the target as a collection so Resource.post routes to create (#1317)', async () => {
+		let captured;
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			staticHandlers: {
+				post: async (target, data) => {
+					captured = { isCollection: target.isCollection, data };
+					return { id: 'new-1', ...data };
+				},
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('create_Product').handler(
+			{ name: 'widget' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(captured.isCollection, true, 'create target must be flagged as a collection');
+		assert.deepEqual(captured.data, { name: 'widget' });
+		assert.equal(res.isError, undefined);
+	});
+
 	it('search_ enforces limit cap, encodes nextCursor when more pages exist', async () => {
 		const rows = Array.from({ length: 21 }, (_, i) => ({ id: String(i) }));
 		const Product = makeTableResource({
