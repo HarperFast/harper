@@ -195,7 +195,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		await Promise.allSettled(
 			closeListeners.map((listener) => {
 				try {
-					return listener();
+					// Bind `this` to the Scope, matching how EventEmitter invokes listeners — a listener may
+					// rely on it (e.g. `this.logger`).
+					return listener.call(this);
 				} catch (error) {
 					return Promise.reject(error);
 				}

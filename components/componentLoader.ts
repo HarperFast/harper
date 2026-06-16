@@ -576,11 +576,15 @@ export async function loadComponent(
 					do {
 						pending = false;
 						resetRestartNeeded();
-						await loadComponentDirectories();
-						await restartWorkers();
+						// Per-cycle try/catch: a failed reload (e.g. a saved syntax error) must log and move on
+						// — not abort the loop and discard a pending follow-up, like the save that fixes it.
+						try {
+							await loadComponentDirectories();
+							await restartWorkers();
+						} catch (error) {
+							harperLogger.error('Error during component reload', error);
+						}
 					} while (pending); // a request landed mid-cycle → run once more, coalescing the rest
-				} catch (error) {
-					harperLogger.error('Error during component reload', error);
 				} finally {
 					restarting = false;
 				}
