@@ -92,16 +92,6 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				);
 				break;
 			}
-			// Abort if replay has exceeded the total wall-clock budget even while making progress
-			// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
-			// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
-			// peg the boot thread indefinitely without tripping it. Re-clone to recover.
-			if (shouldAbortSlowReplay(performance.now() - replayStartTime)) {
-				logger.fatal(
-					`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
-				);
-				break;
-			}
 			const {
 				type,
 				tableId,
@@ -175,6 +165,20 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 						transaction?.directCommitSync();
 					} catch (error) {
 						logger.error('Error committing replay transaction', error);
+					}
+					// Abort if replay has exceeded the total wall-clock budget even while making progress
+					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
+					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
+					// peg the boot thread indefinitely without tripping it. Checked only here, at a version
+					// boundary: the prior version's transaction was just committed in full and the new one
+					// is not yet staged, so aborting never tears a same-version (same source-transaction)
+					// write batch in half. Re-clone to recover the unreplayed remainder.
+					if (shouldAbortSlowReplay(performance.now() - replayStartTime)) {
+						logger.fatal(
+							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
+						);
+						transaction = undefined as any; // already committed above; nothing staged for the new version
+						break;
 					}
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
