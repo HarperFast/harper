@@ -158,21 +158,20 @@ export class RecordEncoder extends StructonEncoder {
 		if (!options.randomAccessStructure) this._writeStruct = () => 0;
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
+			if (!this.useVersions) {
+				// harper#1307: this store does not carry version metadata, so it never prefixes its records.
+				// Encode plainly and LEAVE any in-flight *NextEncoding globals untouched for their real owner:
+				// they belong to a versioned write (recordUpdater staged the primary's metadata and a nested
+				// __dbis__ write — e.g. via getThisNodeId — runs before the primary encode; or they leaked from
+				// a versioned write whose encode was skipped). Consuming/clearing them here would strip the
+				// primary record's prefix, and prefixing OUR record (e.g. a __dbis__ `seq` cursor) makes it
+				// undecodable on the non-versioned read path (null → replication wedge).
+				lastValueEncoding = superEncode.call(this, record, options);
+				return lastValueEncoding;
+			}
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
 			// timestamp into the audit record, invalidation status and residency information
 			if (timestampNextEncoding || metadataInNextEncoding >= 0) {
-				if (!this.useVersions) {
-					// harper#1307: this store does not carry version metadata, but the *NextEncoding globals
-					// are set — they belong to a versioned write in progress, NOT to us. We reach here when a
-					// nested write into this store (e.g. a node-id-map update via getThisNodeId) runs after
-					// recordUpdater staged the primary's metadata but before the primary encode, or when they
-					// leaked from a versioned write whose encode was skipped. Either way, encode our value
-					// plainly and LEAVE the globals untouched for their real owner: consuming/clearing them
-					// here would strip the primary record's prefix, and prefixing OUR record (e.g. a __dbis__
-					// `seq` cursor) makes it undecodable on the non-versioned read path (null → repl wedge).
-					lastValueEncoding = superEncode.call(this, record, options);
-					return lastValueEncoding;
-				}
 				let valueStart = 0;
 				const timestamp = timestampNextEncoding;
 				if (timestamp) {
