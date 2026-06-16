@@ -67,6 +67,14 @@ export function isReadOnlyMode(): boolean {
 function createOpenDBIObject(dupSort = false, isPrimary = false) {
 	return new OpenDBIObject(dupSort, isPrimary);
 }
+// The __dbis__ metadata DBI is non-versioned (OpenDBIObject useVersions=false); only versioned
+// primary stores carry the per-record metadata prefix. lmdb/rocksdb don't forward `useVersions` to
+// the encoder, so mark the live encoder explicitly — its encode hook uses this to write __dbis__
+// records plainly and never consume in-flight metadata staged for a primary write (harper#1307).
+function markInternalDbiNonVersioned(dbisDb: any): any {
+	if (dbisDb?.encoder) dbisDb.encoder.useVersions = false;
+	return dbisDb;
+}
 const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
@@ -466,7 +474,7 @@ function initStores(
 		} else {
 			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
-		rootStore.dbisDb = attributesDbi;
+		rootStore.dbisDb = markInternalDbiNonVersioned(attributesDbi);
 	}
 
 	let auditStore = rootStore.auditStore;
@@ -1086,6 +1094,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		} else {
 			attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
+		markInternalDbiNonVersioned(attributesDbi);
 
 		exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
 		const existingTableMeta = (attributesDbi as any).getSync(dbiName);
@@ -1172,7 +1181,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		} else {
 			(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
-		attributesDbi = (rootStore as any).dbisDb;
+		attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 	}
 	Table.dbisDB = attributesDbi;
 	const indicesToRemove = [];

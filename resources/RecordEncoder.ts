@@ -117,6 +117,7 @@ export class RecordEncoder extends StructonEncoder {
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
+	useVersions: boolean;
 	constructor(options) {
 		options.useBigIntExtension = true;
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
@@ -140,6 +141,11 @@ export class RecordEncoder extends StructonEncoder {
 
 		options.structPrototype = RecordObject.prototype;
 		super(options);
+		// Whether this store carries per-record version/timestamp metadata. Only versioned stores
+		// (primary table DBIs) prefix records with the metadata header; non-versioned internal DBIs
+		// (e.g. __dbis__, useVersions=false) must not — see the encode hook + harper#1307. Default to
+		// true when unspecified so an option that doesn't propagate can't silently strip prefixes.
+		this.useVersions = options.useVersions !== false;
 		// structon (the StructonEncoder base) always installs the struct write hook. For DBIs
 		// that don't opt into struct mode (non-primary, e.g. __dbis__), force it to bail (return
 		// 0) so objects are written in plain msgpackr records mode — decodable by readers without
@@ -155,6 +161,18 @@ export class RecordEncoder extends StructonEncoder {
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
 			// timestamp into the audit record, invalidation status and residency information
 			if (timestampNextEncoding || metadataInNextEncoding >= 0) {
+				if (!this.useVersions) {
+					// harper#1307: this store does not carry version metadata, but the *NextEncoding globals
+					// are set — they belong to a versioned write in progress, NOT to us. We reach here when a
+					// nested write into this store (e.g. a node-id-map update via getThisNodeId) runs after
+					// recordUpdater staged the primary's metadata but before the primary encode, or when they
+					// leaked from a versioned write whose encode was skipped. Either way, encode our value
+					// plainly and LEAVE the globals untouched for their real owner: consuming/clearing them
+					// here would strip the primary record's prefix, and prefixing OUR record (e.g. a __dbis__
+					// `seq` cursor) makes it undecodable on the non-versioned read path (null → repl wedge).
+					lastValueEncoding = superEncode.call(this, record, options);
+					return lastValueEncoding;
+				}
 				let valueStart = 0;
 				const timestamp = timestampNextEncoding;
 				if (timestamp) {
@@ -638,6 +656,21 @@ export function setNextEncoding(timestamp: number, metadata: number, expiresAt =
 	nodeIdAtNextEncoding = nodeId;
 	residencyIdAtNextEncoding = residencyId;
 }
+/**
+ * Reset the module-level "next encoding" metadata to its no-metadata defaults. These globals are
+ * set just before a versioned encode and consumed (and reset) by the encode hook. If the consuming
+ * encode is skipped — e.g. a delete, whose record is never encoded — they would otherwise leak into
+ * the next encode on ANY store, including a non-versioned DBI (__dbis__) that then prefixes its
+ * record with another store's timestamp/nodeId and becomes undecodable. See harper#1307.
+ */
+export function clearNextEncoding() {
+	timestampNextEncoding = 0;
+	metadataInNextEncoding = -1;
+	expiresAtNextEncoding = -1;
+	nodeIdAtNextEncoding = -1;
+	residencyIdAtNextEncoding = 0;
+	additionalAuditRefsNextEncoding = undefined;
+}
 export function recordUpdater(store, tableId, auditStore) {
 	return function (
 		id,
@@ -830,6 +863,15 @@ export function recordUpdater(store, tableId, auditStore) {
 		} catch (error) {
 			error.message += ' id: ' + id + ' options: ' + putOptions;
 			throw error;
+		} finally {
+			// harper#1307: clear the metadata globals staged above so they cannot leak past this call
+			// into the next store's encode (notably a raw __dbis__ `seq`/residency write, which would
+			// then be prefixed and become undecodable). Unconditional is safe: a successful put encodes
+			// SYNCHRONOUSLY — rocksdb via putSync, and lmdb's put() also encodes inline at call time — so
+			// the encode hook already consumed and reset these globals before this finally runs, making
+			// the clear a no-op there. It only does work when no encode consumed them: a delete
+			// (record === undefined, never encoded) or a write that threw before its encode.
+			clearNextEncoding();
 		}
 	};
 }
