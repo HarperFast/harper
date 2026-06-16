@@ -2028,8 +2028,11 @@ export function makeTable(options) {
 											// KEEPS commutative ops (and, for a full update, every field) — so whether the residual
 											// empties is order-independent, and a commutative op never triggers the early-out.
 											// Supersession is monotonic, so once empty stop folding (an unscanned branch may still
-											// be deferring the early-out below). RocksDB only — see the early-out below.
-											if (isRocksDB && !fullySuperseded) {
+											// be deferring the early-out below). RocksDB only — see the early-out below. Guard on
+											// newerPatch: a corrupt/undecodable audit value can be undefined, and folding it would
+											// throw in rebuildUpdateBefore's `in` check; it supersedes nothing, so skip it (the
+											// pre-existing fold below already tolerates this case by returning earlier).
+											if (isRocksDB && !fullySuperseded && newerPatch) {
 												earlyOutResidual = rebuildUpdateBefore(
 													earlyOutResidual ?? recordUpdate,
 													newerPatch,
