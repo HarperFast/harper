@@ -469,6 +469,14 @@ async function createBootPropertiesFile() {
 				shouldWriteBootProps = true;
 			}
 		}
+		// Explicit opt-out for EPHEMERAL instances launched with an explicit --ROOTPATH (e.g. integration-test
+		// harnesses): never persist a machine-global rootPath pointer. Without this, the first such run creates
+		// `~/.harperdb/hdb_boot_properties.file` pointing at its temp dir; when teardown deletes the dir, the
+		// pointer is left dangling and hijacks later `harper run`/`harper dev` invocations that omit --ROOTPATH.
+		// The running instance is unaffected — it uses its explicit ROOTPATH regardless. See isGlobalBootPointerEnabled.
+		if (shouldWriteBootProps && !hdbUtils.isGlobalBootPointerEnabled()) {
+			shouldWriteBootProps = false;
+		}
 		if (shouldWriteBootProps) {
 			try {
 				fs.mkdirpSync(homeDirPath, { mode: hdbTerms.HDB_FILE_PERMISSIONS });

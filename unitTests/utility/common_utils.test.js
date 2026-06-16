@@ -566,4 +566,31 @@ describe('Test common_utils module', () => {
 		const c = cu_rewire.ms_to_time(1672345634534);
 		expect(c).to.equal('52y 27d 20h 27m 14s');
 	});
+
+	describe('Test isGlobalBootPointerEnabled', () => {
+		const original = process.env.HARPER_GLOBAL_POINTER;
+		afterEach(() => {
+			if (original === undefined) delete process.env.HARPER_GLOBAL_POINTER;
+			else process.env.HARPER_GLOBAL_POINTER = original;
+		});
+
+		it('defaults to enabled when HARPER_GLOBAL_POINTER is unset', () => {
+			delete process.env.HARPER_GLOBAL_POINTER;
+			expect(cu.isGlobalBootPointerEnabled()).to.be.true;
+		});
+
+		for (const value of ['false', '0', 'off', 'no']) {
+			it(`is disabled when HARPER_GLOBAL_POINTER="${value}"`, () => {
+				process.env.HARPER_GLOBAL_POINTER = value;
+				expect(cu.isGlobalBootPointerEnabled()).to.be.false;
+			});
+		}
+
+		for (const value of ['true', '1', 'yes']) {
+			it(`stays enabled for non-opt-out value "${value}"`, () => {
+				process.env.HARPER_GLOBAL_POINTER = value;
+				expect(cu.isGlobalBootPointerEnabled()).to.be.true;
+			});
+		}
+	});
 });

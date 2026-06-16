@@ -735,6 +735,22 @@ export function getEnvCliRootPath() {
 }
 
 /**
+ * Whether this run may persist the machine-global boot pointer (`~/.harperdb/hdb_boot_properties.file`),
+ * which records a default rootPath for future `harper run`/`harper dev` invocations that omit `--ROOTPATH`.
+ *
+ * Enabled by default. Set `HARPER_GLOBAL_POINTER=false` (or `0`/`off`/`no`) to opt out — intended for
+ * EPHEMERAL instances launched with an explicit `--ROOTPATH` (e.g. integration-test harnesses). Without the
+ * opt-out, the first such run creates the global pointer at its temp rootPath; when that dir is later deleted
+ * the pointer is left dangling and hijacks unrelated `harper run`/`harper dev` invocations on the machine.
+ * Read directly from the environment (not the validated config) because boot-pointer creation runs during
+ * install, before the config system is initialized — mirroring `getEnvCliRootPath` above.
+ */
+export function isGlobalBootPointerEnabled() {
+	const value = process.env.HARPER_GLOBAL_POINTER;
+	return !(value === 'false' || value === '0' || value === 'off' || value === 'no');
+}
+
+/**
  * Will check to see if there is a rootpath cli/env var pointing to a harperdb-config.yaml file
  * This is used for running HDB without a boot file
  */

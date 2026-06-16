@@ -572,3 +572,46 @@ describe('applyInstallModeDefaults', () => {
 		assert.equal(args.node_hostname, 'real-node.example.com');
 	});
 });
+
+// Regression guard for the global boot pointer opt-out (HARPER_GLOBAL_POINTER): an ephemeral instance
+// launched with an explicit --ROOTPATH (e.g. an integration-test harness) must be able to skip writing the
+// machine-global `~/.harperdb/hdb_boot_properties.file`, which otherwise outlives the instance and hijacks
+// later `harper run`/`harper dev` invocations that omit --ROOTPATH. The running instance is unaffected (it
+// uses its explicit ROOTPATH), so the in-memory settings_path is still applied.
+describe('createBootPropertiesFile — HARPER_GLOBAL_POINTER opt-out', () => {
+	const sandbox = sinon.createSandbox();
+	const originalEnv = process.env.HARPER_GLOBAL_POINTER;
+
+	beforeEach(() => {
+		// getHomeDir points the props path at a dir that doesn't exist, so the default shouldWriteBootProps is
+		// true — isolating the opt-out as the only variable. Stub the filesystem + env writes.
+		installer.__set__('hdbRoot', 'user/hdb-test/');
+		sandbox.stub(hdb_utils, 'getHomeDir').returns('homedir/test');
+		sandbox.stub(fs, 'mkdirpSync');
+		sandbox.stub(fs, 'writeFile');
+		sandbox.stub(env_manager, 'setProperty');
+		sandbox.stub(console, 'error');
+	});
+
+	afterEach(() => {
+		sandbox.restore();
+		if (originalEnv === undefined) delete process.env.HARPER_GLOBAL_POINTER;
+		else process.env.HARPER_GLOBAL_POINTER = originalEnv;
+	});
+
+	it('does NOT write the global boot pointer when HARPER_GLOBAL_POINTER=false', async () => {
+		process.env.HARPER_GLOBAL_POINTER = 'false';
+		await installer.__get__('createBootPropertiesFile')();
+		expect(fs.writeFile.called, 'boot pointer file must not be written').to.be.false;
+		expect(fs.mkdirpSync.called, '~/.harperdb must not be created').to.be.false;
+		// the running instance still gets its settings_path in memory
+		expect(env_manager.setProperty.called, 'in-memory settings are still applied').to.be.true;
+	});
+
+	it('writes the global boot pointer by default (opt-out unset)', async () => {
+		delete process.env.HARPER_GLOBAL_POINTER;
+		await installer.__get__('createBootPropertiesFile')();
+		expect(fs.writeFile.calledOnce, 'boot pointer file is written').to.be.true;
+		expect(fs.writeFile.args[0][0]).to.equal(path.join('homedir', 'test', '.harperdb', 'hdb_boot_properties.file'));
+	});
+});
