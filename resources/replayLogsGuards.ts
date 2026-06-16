@@ -109,6 +109,28 @@ export function shouldAbortStalledReplay(
 	return noProgressRun >= timeSkipFloor && msSinceProgress >= timeLimitMs;
 }
 
+// Maximum total wall-clock time (ms) that replay is allowed to run, even when individual writes
+// are succeeding. A slow-but-progressing replay (issue #1316, facet a) can peg the boot thread
+// for an unbounded time without tripping shouldAbortStalledReplay, which resets its counters on
+// every successful write. This bound fires regardless of progress once the total elapsed time is
+// hit. Ten minutes is deliberately generous — a healthy replay of a large backlog completes in
+// seconds to low minutes; anything exceeding this is a pathological replay that the operator must
+// resolve by re-cloning the node.
+export const REPLAY_WALL_CLOCK_LIMIT_MS = 10 * 60 * 1000;
+
+/**
+ * Whether boot replay should abort because it has exceeded the total wall-clock time limit, even
+ * if individual writes are succeeding (issue #1316, facet a). Unlike shouldAbortStalledReplay,
+ * this fires regardless of forward progress — it is the safety net for a slow-but-progressing
+ * replay (e.g. a deep out-of-order audit chain walk per entry) that would otherwise peg the boot
+ * thread indefinitely.
+ *
+ * @param totalElapsedMs wall-clock ms elapsed since replay began
+ */
+export function shouldAbortSlowReplay(totalElapsedMs: number, timeLimitMs = REPLAY_WALL_CLOCK_LIMIT_MS): boolean {
+	return totalElapsedMs >= timeLimitMs;
+}
+
 /**
  * Wraps a transaction-log query iterator so a corrupt/torn frame ends that log's iteration
  * cleanly instead of escaping as an uncaughtException. rocksdb-js throws a bounded RangeError

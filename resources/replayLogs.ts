@@ -10,6 +10,7 @@ import {
 	classifyAuditEntryForReplay,
 	isUndecodableValidatedWrite,
 	shouldAbortStalledReplay,
+	shouldAbortSlowReplay,
 } from './replayLogsGuards.ts';
 import { purgeAgedLogs } from './auditStore.ts';
 
@@ -81,12 +82,23 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		// is reset to 0 the moment a write succeeds, so the stall bound only fires on a genuinely
 		// write-free run.
 		let noProgressRun = 0;
-		let lastProgressTime = performance.now();
+		const replayStartTime = performance.now();
+		let lastProgressTime = replayStartTime;
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true }) as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
 				logger.fatal(
 					`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table. Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
+				);
+				break;
+			}
+			// Abort if replay has exceeded the total wall-clock budget even while making progress
+			// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
+			// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
+			// peg the boot thread indefinitely without tripping it. Re-clone to recover.
+			if (shouldAbortSlowReplay(performance.now() - replayStartTime)) {
+				logger.fatal(
+					`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
 				);
 				break;
 			}

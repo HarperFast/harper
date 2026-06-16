@@ -1858,7 +1858,11 @@ export function makeTable(options) {
 							// below, so copy-on-mutate when recordUpdate is frozen (e.g. a record decoded during
 							// log replay) instead of writing through the frozen object.
 							if (isFrozenRecordObject(recordUpdate)) recordUpdate = { ...recordUpdate };
-							this.validate(recordUpdate, !fullUpdate);
+							// Skip schema validation during crash-recovery replay (transaction.retries = 1
+							// is set by replayLogs to mark replayed writes). Records were valid when
+							// originally written; post-crash schema evolution (e.g. newly required fields)
+							// must not prevent replaying them (harper#1316, facet b).
+							if (transaction.retries === 0) this.validate(recordUpdate, !fullUpdate);
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
@@ -3438,7 +3442,8 @@ export function makeTable(options) {
 				validate: () => {
 					if (!(context as any)?.source) {
 						transaction.checkOverloaded();
-						this.validate(message);
+						// Skip schema validation during crash-recovery replay (see _writeUpdate; harper#1316).
+						if (transaction.retries === 0) this.validate(message);
 					}
 				},
 				before:
