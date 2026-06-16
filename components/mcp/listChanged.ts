@@ -200,7 +200,13 @@ async function onSchemaChange(): Promise<void> {
 	// Rebuild the application tool registry first so `tools/list` reflects the
 	// current schema graph (a table may have been added/removed after the MCP
 	// component loaded). No-op when the application profile isn't enabled.
-	refreshApplicationTools();
+	// Guarded: a throw here (e.g. an unexpected Resource shape during schema
+	// iteration) must not abort the session-notification loops below.
+	try {
+		refreshApplicationTools();
+	} catch (err) {
+		harperLogger.trace(`MCP listChanged refreshApplicationTools: ${(err as Error).message}`);
+	}
 	for (const r of snapshotSessions('application')) {
 		await refreshSessionUser(r);
 		maybeNotifyToolsChanged(r);
