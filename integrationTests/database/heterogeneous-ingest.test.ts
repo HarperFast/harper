@@ -77,14 +77,19 @@ suite('heterogeneous schema-less ingest (#1282)', (ctx: ContextWithHarper) => {
 
 		// Poll until the open table route/table is ready.
 		const deadline = Date.now() + 30_000;
+		let tableReady = false;
 		while (Date.now() < deadline) {
 			const r = await client
 				.reqRest('/Het/')
 				.timeout(5_000)
 				.catch(() => ({ status: 0 }));
-			if ((r as any).status !== 404 && (r as any).status !== 0) break;
+			if ((r as any).status !== 404 && (r as any).status !== 0) {
+				tableReady = true;
+				break;
+			}
 			await sleep(250);
 		}
+		ok(tableReady, 'Het table did not become ready within 30 s — cannot run ingest test');
 	});
 
 	after(async () => {
@@ -125,7 +130,7 @@ suite('heterogeneous schema-less ingest (#1282)', (ctx: ContextWithHarper) => {
 			const r = heterogeneousRecord(probeRng, i);
 			if (i === 1234) expected = r;
 		}
-		const byId = new Map(rows.map((row) => [row.id, row]));
+		const byId = new Map(intact.map((row) => [row.id, row]));
 		const got = byId.get('1234');
 		ok(got, 'record 1234 should be present');
 		deepStrictEqual(got, expected, 'record 1234 should round-trip exactly (values, not just shape)');
