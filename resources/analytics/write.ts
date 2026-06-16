@@ -421,17 +421,17 @@ const ROCKSDB_DB_COUNTERS = [
 	'stallMicros',
 	'memtableHit',
 	'memtableMiss',
+	// Transaction log counters, summed across all of a database's logs by getStats(). The summed
+	// roll-up rides on the db-level rocksdb-stats row; per-log detail lives on rocksdb-txnlog-stats.
+	'txnlogBytesWritten',
+	'txnlogTransactionsWritten',
 ] as const;
 // Gauges are scalar values that are not cumulative. They go up and down over time.
-const ROCKSDB_DB_GAUGES = ['blockCacheUsage', 'blockCacheCapacity', 'numRunningFlushes'] as const;
-const ROCKSDB_TABLE_GAUGES = ['numRunningCompactions', 'compactionPending'] as const;
-
-// Transaction log stats live on their own rocksdb-txnlog-stats metric, kept separate from the
-// rocksdb-stats block-cache/memtable/compaction columns. db.getStats() rolls up these txnlog.*
-// values summed across all of a database's logs; the db-level txnlog row reports that roll-up,
-// while per-log rows (below) break it down by log.
-const ROCKSDB_TXNLOG_DB_COUNTERS = ['txnlogBytesWritten', 'txnlogTransactionsWritten'] as const;
-const ROCKSDB_TXNLOG_DB_GAUGES = [
+const ROCKSDB_DB_GAUGES = [
+	'blockCacheUsage',
+	'blockCacheCapacity',
+	'numRunningFlushes',
+	// Transaction log gauges, summed across all of a database's logs by getStats().
 	'txnlogLogCount',
 	'txnlogFileCount',
 	'txnlogTotalSizeBytes',
@@ -442,9 +442,12 @@ const ROCKSDB_TXNLOG_DB_GAUGES = [
 	'txnlogUncommittedTransactions',
 	'txnlogReplayGapBytes',
 ] as const;
-// Per-transaction-log gauges, flattened from log.getStats(). Sequence numbers, positions, and
-// static config are intentionally dropped as noise (see normalizeTxnLogStats).
-const ROCKSDB_TXNLOG_LOG_GAUGES = [
+const ROCKSDB_TABLE_GAUGES = ['numRunningCompactions', 'compactionPending'] as const;
+
+// Per-transaction-log stats (rocksdb-txnlog-stats metric), flattened from log.getStats(), one
+// row per log. Sequence numbers, positions, and static config are intentionally dropped as noise
+// (see normalizeTxnLogStats).
+const ROCKSDB_TXNLOG_GAUGES = [
 	'fileCount',
 	'totalSizeBytes',
 	'currentFileSize',
@@ -459,7 +462,7 @@ const ROCKSDB_TXNLOG_LOG_GAUGES = [
 	'purgeRetainedUnflushedFiles',
 ] as const;
 // Per-transaction-log lifetime counters (diffed to per-period rates).
-const ROCKSDB_TXNLOG_LOG_COUNTERS = [
+const ROCKSDB_TXNLOG_COUNTERS = [
 	'totalsTransactionsWritten',
 	'totalsEntriesWritten',
 	'totalsBytesWritten',
@@ -597,39 +600,6 @@ export function buildRocksDBTableMetric(
 }
 
 /**
- * Gathers the database-level transaction log metric (rocksdb-txnlog-stats) from the txnlog.*
- * roll-up in db.getStats(), summed across all of a database's logs. Counters are diffed against
- * the prior sample; gauges pass through absolute. Carries a `database` dimension but no `log`,
- * distinguishing it from the per-log rows.
- * @param dbName - The name of the database.
- * @param stats - The normalized db.getStats() record (includes the txnlog* fields).
- * @param lastStats - The previous sample's normalized stats, for diffing counters.
- * @param now - The current time.
- * @param period - The period to store the metrics for.
- */
-export function buildRocksDBTxnLogDbMetric(
-	dbName: string,
-	stats: Record<string, number>,
-	lastStats: Record<string, number> | undefined,
-	now: number,
-	period: number | undefined
-): Record<string, unknown> {
-	const metric: Record<string, unknown> = {
-		metric: METRIC.ROCKSDB_TXNLOG_STATS,
-		database: dbName,
-		time: now,
-	};
-	if (period !== undefined) metric.period = period;
-	for (const field of ROCKSDB_TXNLOG_DB_COUNTERS) {
-		metric[field] = diffRocksDBCounter(stats[field] ?? 0, lastStats?.[field]);
-	}
-	for (const field of ROCKSDB_TXNLOG_DB_GAUGES) {
-		metric[field] = stats[field] ?? 0;
-	}
-	return metric;
-}
-
-/**
  * Gathers metrics for a single RocksDB transaction log (rocksdb-txnlog-stats). Counters are
  * diffed against the prior sample (like the DB-level counters); gauges pass through absolute.
  * Carries a `log` dimension alongside `database`.
@@ -655,10 +625,10 @@ export function buildRocksDBTxnLogMetric(
 		time: now,
 	};
 	if (period !== undefined) metric.period = period;
-	for (const field of ROCKSDB_TXNLOG_LOG_COUNTERS) {
+	for (const field of ROCKSDB_TXNLOG_COUNTERS) {
 		metric[field] = diffRocksDBCounter(stats[field] ?? 0, lastStats?.[field]);
 	}
-	for (const field of ROCKSDB_TXNLOG_LOG_GAUGES) {
+	for (const field of ROCKSDB_TXNLOG_GAUGES) {
 		metric[field] = stats[field] ?? 0;
 	}
 	return metric;
@@ -707,10 +677,6 @@ function storeRocksDBStatsMetrics(
 				const dbMetric = buildRocksDBDbMetric(db, firstNormalizedStats, lastDbStats, now, period);
 				storeMetric(analyticsTable, dbMetric);
 				log.trace?.(`db ${db} rocksdb stats metric: ${JSON.stringify(dbMetric)}`);
-				// The txnlog.* roll-up from the same getStats() reading goes on its own metric.
-				const txnLogDbMetric = buildRocksDBTxnLogDbMetric(db, firstNormalizedStats, lastDbStats, now, period);
-				storeMetric(analyticsTable, txnLogDbMetric);
-				log.trace?.(`db ${db} rocksdb txnlog stats metric: ${JSON.stringify(txnLogDbMetric)}`);
 			}
 			lastRocksDBDbStats.set(db, firstNormalizedStats);
 		}

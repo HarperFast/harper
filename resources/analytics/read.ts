@@ -35,6 +35,9 @@ interface GetAnalyticsRequest {
 	get_attributes?: string[];
 	coalesce_time?: boolean;
 	conditions?: Conditions;
+	// Convenience filter for the rocksdb-txnlog-stats metric: restrict results to a single
+	// transaction log by name (equivalent to a `log` equals condition).
+	log?: string;
 	// When true, fan the query out to every peer node and merge the results into one
 	// cluster-wide response. Cleared before forwarding so peers only return their own.
 	replicated?: boolean;
@@ -85,6 +88,7 @@ export async function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsRespo
 		endTime: req.end_time,
 		coalesceTime: req.coalesce_time,
 		additionalConditions: req.conditions,
+		log: req.log,
 	});
 
 	if (!peers) return localResults;
@@ -171,11 +175,15 @@ interface GetAnalyticsOpts {
 	endTime?: number;
 	coalesceTime?: boolean;
 	additionalConditions?: Conditions;
+	log?: string;
 }
 
 export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metric[]> {
-	const { getAttributes, startTime, endTime, additionalConditions } = opts ?? {};
+	const { getAttributes, startTime, endTime, additionalConditions, log: logName } = opts ?? {};
 	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
+	if (logName !== undefined) {
+		conditions.push({ attribute: 'log', comparator: 'equals', value: logName });
+	}
 	if (additionalConditions) {
 		conditions.push(...additionalConditions.map(conformCondition));
 	}
