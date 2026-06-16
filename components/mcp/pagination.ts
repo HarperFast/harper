@@ -21,8 +21,8 @@ export function encodeCursor(offset: number): string {
 
 /**
  * Decode an opaque cursor to its offset, or `null` if the cursor is malformed
- * (not valid base64url JSON) or carries an out-of-range offset (non-integer,
- * negative, or non-finite). Never throws.
+ * (not valid base64url JSON), non-canonical, or carries an out-of-range offset
+ * (non-integer, negative, or non-finite). Never throws.
  */
 export function decodeCursor(cursor: string): number | null {
 	if (cursor.length > MAX_CURSOR_LENGTH) return null;
@@ -32,6 +32,11 @@ export function decodeCursor(cursor: string): number | null {
 		if (typeof offset !== 'number' || offset < 0 || !Number.isFinite(offset) || !Number.isInteger(offset)) {
 			return null;
 		}
+		// Node's base64url decoder silently tolerates invalid/extra characters, so a
+		// tampered cursor (e.g. `${validCursor}!`) would still decode and bypass the
+		// `-32602` path. Require the input to be the exact canonical encoding of the
+		// decoded offset, rejecting any junk/non-canonical form.
+		if (encodeCursor(offset) !== cursor) return null;
 		return offset;
 	} catch {
 		return null;
