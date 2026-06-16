@@ -18,6 +18,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { listResources } from './resources.ts';
 import { type RegisteredSession, forEachSessionByProfile, getRegisteredSession } from './sessionRegistry.ts';
 import { listTools, type AuthedUser } from './toolRegistry.ts';
+import { refreshApplicationTools } from './tools/application.ts';
 import type { McpProfile } from './transport.ts';
 
 const MAX_TOOLS_PAGE = 1000;
@@ -196,6 +197,10 @@ async function onUserChange(): Promise<void> {
  * grants).
  */
 async function onSchemaChange(): Promise<void> {
+	// Rebuild the application tool registry first so `tools/list` reflects the
+	// current schema graph (a table may have been added/removed after the MCP
+	// component loaded). No-op when the application profile isn't enabled.
+	refreshApplicationTools();
 	for (const r of snapshotSessions('application')) {
 		await refreshSessionUser(r);
 		maybeNotifyToolsChanged(r);

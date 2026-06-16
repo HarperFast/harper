@@ -6,12 +6,12 @@
  * `authAndEnsureUserOnRequest` preValidation hook, so the authenticated
  * user lands on `request.hdb_user` before this handler runs.
  *
- * The MCP route installs a raw-body content-type parser (see
- * `registerMcpProfile`), so `request.body` arrives as the unparsed JSON
- * string and the transport's `parseMessage` is the single JSON-RPC parse
- * point for both profiles. This keeps the core framework-agnostic and lets a
- * malformed body surface as a JSON-RPC `-32700` frame rather than Fastify's
- * pre-handler 400 (#1317 S1).
+ * Fastify auto-parses the JSON request body into an object; the transport
+ * core's `parseMessage` accepts both strings and parsed values, so we pass it
+ * through directly. (A malformed operations-profile body is therefore rejected
+ * by Fastify with an HTTP 400 before this handler runs — spec-permitted for the
+ * Streamable HTTP transport; the application profile reads the raw body and
+ * returns a JSON-RPC `-32700` frame instead. See #1317 S1.)
  */
 import { handleMcpRequest, type McpProfile, type NormRequest } from '../transport.ts';
 
@@ -38,11 +38,9 @@ export function createFastifyHandler(profile: McpProfile) {
 		const norm: NormRequest = {
 			method: request.method,
 			headers: normalizeHeaders(request.headers),
-			// The MCP route installs a raw-body content-type parser (see
-			// `registerMcpProfile`), so `request.body` is the unparsed JSON
-			// string. The transport's `parseMessage` is the single JSON-RPC
-			// parse point — a malformed body surfaces as a -32700 frame rather
-			// than Fastify's pre-handler 400 (#1317 S1).
+			// Fastify has already parsed the JSON body into an object; the
+			// transport core's parseMessage accepts both strings and parsed
+			// values, so pass it through directly.
 			body: request.body,
 			user: request.hdb_user?.username ?? '',
 			userObject: (request.hdb_user ?? undefined) as NormRequest['userObject'],
@@ -60,14 +58,7 @@ export function createFastifyHandler(profile: McpProfile) {
 			if (!res.headers['Content-Type'] && !res.headers['content-type']) {
 				reply.header('Content-Type', 'application/json');
 			}
-			// Send a pre-serialized string (mirrors the Harper-HTTP adapter), NOT
-			// the raw object. The MCP routes live in an encapsulated child plugin
-			// (see registerMcpProfile), where Fastify's default object serializer
-			// isn't applied and Harper's content-negotiation serializer is skipped
-			// once Content-Type is set — so an object payload reaches @fastify/compress
-			// unserialized and throws FST_ERR_REP_INVALID_PAYLOAD (#1317). Serializing
-			// here keeps the transport the single source of the JSON-RPC wire bytes.
-			reply.send(JSON.stringify(res.jsonBody));
+			reply.send(res.jsonBody);
 			return;
 		}
 

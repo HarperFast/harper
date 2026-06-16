@@ -9,14 +9,8 @@ const {
 } = indexMod;
 const { _setSessionTableForTest } = require('#src/components/mcp/session');
 
-// The MCP routes are registered inside an encapsulated Fastify plugin
-// (host.register) so a raw-body content-type parser can be scoped to /mcp
-// without affecting the rest of the operations API. This fake runs the plugin
-// synchronously against a scoped instance that records the same way the real
-// Fastify instance would (#1317 S1).
 function makeFakeFastify() {
 	const calls = [];
-	const contentTypeParsers = [];
 	function record(method) {
 		return function (path, optsOrHandler, maybeHandler) {
 			if (typeof optsOrHandler === 'function') {
@@ -26,20 +20,11 @@ function makeFakeFastify() {
 			}
 		};
 	}
-	const instance = {
+	return {
+		calls,
 		post: record('post'),
 		get: record('get'),
 		delete: record('delete'),
-		addContentTypeParser(contentType, opts, parser) {
-			contentTypeParsers.push({ contentType, opts, parser });
-		},
-	};
-	return {
-		calls,
-		contentTypeParsers,
-		register(plugin) {
-			plugin(instance, {}, () => {});
-		},
 	};
 }
 
@@ -123,23 +108,6 @@ describe('components/mcp/index', () => {
 				routeOptions: sentinel,
 			});
 			for (const call of host.calls) assert.deepEqual(call.options, sentinel);
-		});
-
-		it('installs a raw-string application/json parser that passes the body through (#1317 S1)', () => {
-			const host = makeFakeFastify();
-			registerMcpProfile({ profile: 'operations', host, config: { mcp: { operations: {} } } });
-			assert.equal(host.contentTypeParsers.length, 1);
-			const [parser] = host.contentTypeParsers;
-			assert.equal(parser.contentType, 'application/json');
-			assert.equal(parser.opts.parseAs, 'string');
-			// Even a malformed body is handed through untouched — the transport's
-			// parseMessage is the single parse point and turns it into -32700.
-			let captured;
-			parser.parser({}, '{ this is not json', (err, body) => {
-				captured = { err, body };
-			});
-			assert.equal(captured.err, null);
-			assert.equal(captured.body, '{ this is not json');
 		});
 	});
 

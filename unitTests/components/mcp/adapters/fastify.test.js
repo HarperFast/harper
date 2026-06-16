@@ -55,10 +55,8 @@ describe('mcp/adapters/fastify', () => {
 		await handler(request, reply);
 		assert.equal(reply.statusCode, 200);
 		assert.match(reply.headers['Mcp-Session-Id'], /^[0-9a-f-]{36}$/);
-		// The adapter sends a pre-serialized JSON string (see #1317); parse it.
-		const initBody = JSON.parse(reply.body);
-		assert.equal(initBody.id, 1);
-		assert.equal(initBody.result.protocolVersion, '2025-06-18');
+		assert.equal(reply.body.id, 1);
+		assert.equal(reply.body.result.protocolVersion, '2025-06-18');
 	});
 
 	it('uses an empty username when hdb_user is absent', async () => {

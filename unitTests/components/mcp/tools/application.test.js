@@ -1,9 +1,11 @@
 const assert = require('node:assert/strict');
 const {
 	registerApplicationTools,
+	refreshApplicationTools,
 	_setResourcesForTest,
 	_setRequestTargetForTest,
 	_resetCustomToolWarningsForTest,
+	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 
@@ -78,6 +80,43 @@ describe('mcp/tools/application — registration', () => {
 		_resetRegistryForTest();
 		_setResourcesForTest(undefined);
 		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+	});
+
+	it('rebuilds the tool set when a table appears after initial registration (#1317)', () => {
+		// First pass: no exported tables yet (MCP loaded before the app's schema).
+		_setResourcesForTest(makeRegistry([]));
+		registerApplicationTools();
+		assert.equal(listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.length, 0);
+
+		// Table registers later, then a schema-change fires refreshApplicationTools.
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		refreshApplicationTools();
+		const names = listTools({ user: SUPER, profile: 'application', sessionId: 's2', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.ok(
+			names.some((n) => n === 'create_Product'),
+			`expected create_Product after refresh, got: ${names.join(', ')}`
+		);
+	});
+
+	it('re-registration is idempotent — no duplicate tools', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const first = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 500 }).tools.length;
+		registerApplicationTools();
+		const second = listTools({ user: SUPER, profile: 'application', sessionId: 's2', limit: 500 }).tools.length;
+		assert.equal(second, first);
+	});
+
+	it('refreshApplicationTools is a no-op before the profile is registered', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		refreshApplicationTools(); // never registered → should not populate
+		assert.equal(listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.length, 0);
 	});
 
 	it('emits get_/search_/create_/update_/delete_ tools for a fully-implemented Resource', () => {

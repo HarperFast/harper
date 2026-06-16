@@ -12,9 +12,10 @@
  * they passed while the integrated path failed; this suite closes that gap by
  * exercising the real wrapper end-to-end.
  *
- * Also asserts the operations-profile error framing the integrated Fastify
- * path didn't previously reach: malformed JSON → `-32700` (S1) and an
- * unrecognized pagination cursor → `-32602` (S2).
+ * Also asserts the malformed-JSON framing (S1) — the application profile reads
+ * the raw body and returns a JSON-RPC `-32700` frame, while the operations
+ * (Fastify) profile rejects with a spec-permitted HTTP 400 — and the
+ * unrecognized-cursor `-32602` frame (S2).
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, match } from 'node:assert/strict';
@@ -42,10 +43,10 @@ async function newAppClient(
 	return { client, transport };
 }
 
-/** Raw JSON-RPC POST to the operations endpoint (used for S1/S2 frame assertions). */
+/** Raw JSON-RPC POST to an MCP endpoint (used for S1/S2 frame assertions). */
 async function rawRpc(
 	ctx: ContextWithHarper,
-	opts: { sessionId?: string; protocolVersion?: string; body: string }
+	opts: { baseUrl?: string; sessionId?: string; protocolVersion?: string; body: string }
 ): Promise<{ status: number; sessionId: string | null; json: any }> {
 	const headers: Record<string, string> = {
 		'content-type': 'application/json',
@@ -54,7 +55,7 @@ async function rawRpc(
 	};
 	if (opts.sessionId) headers['mcp-session-id'] = opts.sessionId;
 	if (opts.protocolVersion) headers['mcp-protocol-version'] = opts.protocolVersion;
-	const res = await fetch(new URL('/mcp', ctx.harper.operationsAPIURL), {
+	const res = await fetch(new URL('/mcp', opts.baseUrl ?? ctx.harper.operationsAPIURL), {
 		method: 'POST',
 		headers,
 		body: opts.body,
@@ -136,11 +137,23 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 		await transport.close();
 	});
 
-	test('S1: malformed JSON returns a JSON-RPC -32700 frame (operations profile)', async () => {
-		const res = await rawRpc(ctx, { body: '{ this is not json' });
+	test('S1: malformed JSON returns a JSON-RPC -32700 frame (application profile)', async () => {
+		// The application profile reads the raw body itself, so the transport's
+		// parseMessage surfaces a malformed envelope as a -32700 frame.
+		const res = await rawRpc(ctx, { baseUrl: ctx.harper.httpURL, body: '{ this is not json' });
 		strictEqual(res.status, 400);
 		ok(res.json, 'response body is a JSON-RPC frame');
 		strictEqual(res.json.error.code, -32700);
+	});
+
+	test('S1: malformed JSON on the operations profile returns Fastify HTTP 400 (spec-permitted)', async () => {
+		// Operations uses Fastify's JSON body parser, which rejects malformed JSON
+		// with an HTTP 400 before the handler runs. The Streamable HTTP transport
+		// permits an HTTP error for unparseable input, so we don't force a -32700
+		// frame here (that would require route encapsulation incompatible with
+		// Harper's response serializers — #1317).
+		const res = await rawRpc(ctx, { body: '{ this is not json' });
+		strictEqual(res.status, 400);
 	});
 
 	test('S2: an unrecognized pagination cursor returns -32602 (operations profile)', async () => {

@@ -128,6 +128,23 @@ export function getTool(name: string): ToolDef | undefined {
 }
 
 /**
+ * Remove every tool registered for a profile. Used to rebuild the
+ * application-profile tool set when schemas change (a table may have been
+ * added/removed after the initial registration); see `refreshApplicationTools`.
+ * Drops the pagination caches so the next `tools/list` recomputes.
+ */
+export function clearProfileTools(profile: McpProfile): void {
+	let removed = 0;
+	for (const [name, def] of registry) {
+		if (def.profile === profile) {
+			registry.delete(name);
+			removed++;
+		}
+	}
+	if (removed > 0) sessionListCache.clear();
+}
+
+/**
  * Drop the pagination cache entry for a session. Called by
  * `session.deleteSession` so the cache doesn't outlive the session that
  * created it. Without this, every session that ever paged tools/list

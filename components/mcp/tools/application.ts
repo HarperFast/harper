@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
-import { addTool, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
+import { addTool, clearProfileTools, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
 import {
 	type AttributePermissionEntry,
@@ -703,12 +703,38 @@ function makeCustomMethodHandler(toolName: string, ResourceClass: ResourceClassL
  * for each entry that passes the exportTypes + verb-presence filters.
  * Re-invocation overwrites prior tool entries (Map.set semantics).
  */
+// True once the application profile has registered its tools at least once.
+// Gates `refreshApplicationTools` so schema-change rebuilds only happen when the
+// application profile is actually enabled.
+let applicationToolsRegistered = false;
+
+/**
+ * Rebuild the application tool registry from the CURRENT schema graph. Tools are
+ * derived from exported `@table` Resources, which may register AFTER the MCP
+ * component loads (component load order isn't guaranteed). Re-running on every
+ * schema change keeps `tools/list` in sync — without it, a table created after
+ * boot would never surface a `create_`/`get_` tool (#1317). No-op until the
+ * application profile has been registered once.
+ */
+export function refreshApplicationTools(): void {
+	if (applicationToolsRegistered) registerApplicationTools();
+}
+
+/** Test seam: reset the registered flag so suites can re-exercise registration. */
+export function _resetApplicationToolsRegisteredForTest(): void {
+	applicationToolsRegistered = false;
+}
+
 export function registerApplicationTools(): void {
 	const resources = loadResources();
 	if (!resources) {
 		harperLogger.warn('MCP application profile: Resources registry not available; no tools registered');
 		return;
 	}
+	applicationToolsRegistered = true;
+	// Idempotent rebuild: drop any application tools from a prior pass so a
+	// removed/renamed table doesn't leave a stale tool behind.
+	clearProfileTools('application');
 	const claimedSuffixes = new Set<string>();
 	let toolsRegistered = 0;
 	let resourcesConsidered = 0;
