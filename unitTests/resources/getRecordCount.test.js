@@ -116,4 +116,30 @@ describe('Table.getRecordCount', () => {
 			`estimate ${result.recordCount} should track the single live row`
 		);
 	});
+
+	it('does not take a key count when the scan completes within the time budget', async function () {
+		// The entry-count source should only be consulted when the value scan blows the time budget;
+		// a within-budget scan returns the exact count directly and must not pay for it. The source is
+		// engine-dependent -- getKeysCount() (a full key scan) on RocksDB, getStats().entryCount on LMDB
+		// (the resources suite runs under both) -- so spy on whichever the store exposes.
+		const store = RecordCountTable.primaryStore;
+		let calls = 0;
+		const origKeys = typeof store.getKeysCount === 'function' ? store.getKeysCount.bind(store) : undefined;
+		const origStats = typeof store.getStats === 'function' ? store.getStats.bind(store) : undefined;
+		if (origKeys) store.getKeysCount = (...args) => (calls++, origKeys(...args));
+		if (origStats) store.getStats = (...args) => (calls++, origStats(...args));
+		try {
+			const completed = await RecordCountTable.getRecordCount(); // default budget; 30 rows finish fast
+			assert.equal(completed.recordCount, 30);
+			assert.equal(completed.estimatedRange, undefined);
+			assert.equal(calls, 0, 'entry-count source should not be consulted when the scan finishes within budget');
+
+			calls = 0;
+			await RecordCountTable.getRecordCount({ timeLimit: -1 }); // force timeout -> escape to the exact count
+			assert.ok(calls >= 1, 'entry-count source should be consulted once the scan exceeds the budget');
+		} finally {
+			if (origKeys) store.getKeysCount = origKeys;
+			if (origStats) store.getStats = origStats;
+		}
+	});
 });

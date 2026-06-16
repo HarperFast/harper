@@ -20,6 +20,11 @@ import { awaitJobCompleted } from './utils/operations.mjs';
 // Resolve the CSV fixture path relative to this file so Harper can read it.
 const SUPPLIERS_CSV = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data/Suppliers.csv');
 
+// On Bun shard 2, embed-directive tear-down (HNSW flush) starves the job processor,
+// so csv_data_load can sit IN_PROGRESS past the default 30s. Same pattern as northwind.
+const isBunRuntime = process.env.HARPER_RUNTIME === 'bun';
+const JOB_TIMEOUT_SECONDS = isBunRuntime ? 120 : 30;
+
 suite('Terminology aliases (database / primary_key)', (ctx) => {
 	let client;
 
@@ -421,7 +426,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			})
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('delete_records_before without database starts job', async () => {
@@ -430,7 +435,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			.send({ operation: 'delete_records_before', table: 'friends', date: '2050-01-25T23:05:27.464' })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('delete_audit_logs_before with database param starts job', async () => {
@@ -444,7 +449,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			})
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('delete_audit_logs_before without database starts job', async () => {
@@ -453,7 +458,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			.send({ operation: 'delete_audit_logs_before', table: 'friends', timestamp: 1690553291764 })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('csv_file_load with database param starts job', async () => {
@@ -467,7 +472,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			})
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('csv_file_load without database for non-existent table returns error', async () => {
@@ -484,7 +489,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			.send({ operation: 'csv_file_load', table: 'friends', file_path: SUPPLIERS_CSV })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('csv_data_load without database starts job', async () => {
@@ -498,7 +503,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			.send({ operation: 'csv_data_load', table: 'friends', data })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('csv_data_load with database param starts job', async () => {
@@ -510,7 +515,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			.send({ operation: 'csv_data_load', database: 'job_guy', table: 'working', data })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	test('export_local starts job', async () => {
@@ -525,7 +530,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			})
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id);
+		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
 	// ── final teardown ──────────────────────────────────────────────────────

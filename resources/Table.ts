@@ -3602,12 +3602,16 @@ export function makeTable(options) {
 		static async getRecordCount(options?: any) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			const exactCount = options?.exactCount;
-			const entryCount = isRocksDB
-				? primaryStore.getKeysCount({ start: exactCount ? null : undefined })
-				: primaryStore.getStats().entryCount;
 			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
 			const start = performance.now();
-			const halfway = Math.floor(entryCount / 2);
+			// `entryCount` (the exact key count) is only needed once the scan blows the time budget --
+			// to decide whether to estimate and as the extrapolation base. On RocksDB it is a full
+			// key-only scan, so we defer it: tables that finish within budget (the common case) and
+			// `exact_count` requests never pay for it. `halfway`/`entryCount` stay 0 until first computed.
+			let entryCount = 0;
+			let halfway = 0;
+			let counted = false;
+			let completeForExact = false;
 			let recordCount = 0;
 			let entriesScanned = 0;
 			let limit: number;
@@ -3615,10 +3619,22 @@ export function makeTable(options) {
 				if (value != null) recordCount++;
 				entriesScanned++;
 				await rest();
-				if (!exactCount && entriesScanned < halfway && performance.now() - start > TIME_LIMIT) {
-					// it is taking too long, so we will just take this sample and a sample from the end to estimate
-					limit = entriesScanned;
-					break;
+				if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
+					if (!counted) {
+						counted = true;
+						entryCount = isRocksDB
+							? primaryStore.getKeysCount({ start: undefined })
+							: primaryStore.getStats().entryCount;
+						halfway = Math.floor(entryCount / 2);
+					}
+					if (entriesScanned < halfway) {
+						// it is taking too long, so we will just take this sample and a sample from the end to estimate
+						limit = entriesScanned;
+						break;
+					}
+					// Past the halfway point already: finishing the scan for an exact count is cheaper
+					// than estimating. Set the flag so we stop re-evaluating the budget on each remaining iteration.
+					completeForExact = true;
 				}
 			}
 			if (limit) {
