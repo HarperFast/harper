@@ -274,6 +274,34 @@ If the field value is an array, each element in the array is individually indexe
 
 Null values are indexed by default (added in v4.3.0), enabling queries like `GET /Product/?category=null`.
 
+### `@embed`
+
+<VersionBadge version="v5.1.0" />
+
+Automatically computes an embedding vector for the attribute whenever the source field is written, using a configured [embedding model](../models/overview):
+
+```graphql
+type Document @table {
+	id: Long @primaryKey
+	text: String
+	embedding: [Float] @embed(source: "text", model: "default")
+}
+```
+
+- `source` — the name of the field to embed. Must be a declared field on the same type, passed as a string literal.
+- `model` — the logical name of a configured embedding model, passed as a string literal.
+
+The attribute type must be `[Float]`. The attribute is automatically indexed with an [HNSW vector index](#vector-indexing), so it is immediately searchable by similarity; an explicit `@indexed` on the same attribute is allowed only if it is also HNSW.
+
+Write semantics:
+
+- Creating a record with the source field, or updating the source field, computes the vector before the write commits (with `inputType: 'document'`). A failure to compute the embedding fails the write.
+- An update that does not touch the source field leaves the vector unchanged.
+- Setting the source field to `null` sets the vector to `null`.
+- Replicated writes and audit-log replays do not re-embed — the vector travels with the record, and only the node that accepted the original write calls the model.
+
+Multiple `@embed` attributes on one type are computed concurrently.
+
 ### `@createdTime`
 
 Automatically assigns a creation timestamp (Unix epoch milliseconds) to the attribute when a record is created.
@@ -458,6 +486,8 @@ type Document @table {
 }
 ```
 
+Embedding vectors can also be computed automatically at write time from a text field with the [`@embed` directive](#embed), which creates the HNSW index implicitly.
+
 Query by nearest neighbors using the `sort` parameter:
 
 ```javascript
@@ -508,25 +538,61 @@ let results = Document.search({
 
 `$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries.
 
+### Per-Query Search Options
+
+The `sort` descriptor (and threshold condition) accepts options that tune an individual query:
+
+```javascript
+let results = Document.search({
+	sort: { attribute: 'textEmbeddings', target: searchVector, distance: 'dotProduct', ef: 200 },
+	limit: 5,
+});
+```
+
+- `distance` — overrides the index's distance function for this query: `"cosine"`, `"euclidean"`, or `"dotProduct"` (`dotProduct` <VersionBadge version="v5.1.0" />).
+- `ef` <VersionBadge version="v5.1.0" /> — overrides the search exploration budget for this query. Higher values improve recall at the cost of latency.
+
+<VersionBadge type="changed" version="v5.1.0" /> — When a query passes no `ef` and the index does not explicitly configure `efConstructionSearch` (or `efConstruction`), the search budget auto-scales with the size of the index, so recall holds as the table grows instead of decaying with a fixed budget.
+
 ### HNSW Parameters
 
-| Parameter              | Default           | Description                                                                                         |
-| ---------------------- | ----------------- | --------------------------------------------------------------------------------------------------- |
-| `distance`             | `"cosine"`        | Distance function: `"euclidean"` or `"cosine"` (negative cosine similarity)                         |
-| `efConstruction`       | `100`             | Max nodes explored during index construction. Higher = better recall, lower = better performance    |
-| `M`                    | `16`              | Preferred connections per graph layer. Higher = more space, better recall for high-dimensional data |
-| `optimizeRouting`      | `0.5`             | Heuristic aggressiveness for omitting redundant connections (0 = off, 1 = most aggressive)          |
-| `mL`                   | computed from `M` | Normalization factor for level generation                                                           |
-| `efSearchConstruction` | `50`              | Max nodes explored during search                                                                    |
+| Parameter              | Default           | Description                                                                                                                                              |
+| ---------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `distance`             | `"cosine"`        | Distance function: `"cosine"` (negative cosine similarity), `"euclidean"`, or `"dotProduct"` (added in v5.1.0)                                           |
+| `efConstruction`       | `100`             | Max nodes explored during index construction. Higher = better recall, lower = better performance                                                         |
+| `M`                    | `16`              | Preferred connections per graph layer. Higher = more space, better recall for high-dimensional data                                                      |
+| `optimizeRouting`      | `0.5`             | Heuristic aggressiveness for omitting redundant connections (0 = off, 1 = most aggressive)                                                               |
+| `mL`                   | computed from `M` | Normalization factor for level generation                                                                                                                |
+| `efConstructionSearch` | auto-scaled       | Max nodes explored during search. When unset, auto-scales with index size (see above); setting it (or `efConstruction`, which seeds it) fixes the budget |
+| `quantization`         | —                 | `"int8"` stores vectors quantized to int8 (added in v5.1.0, see below)                                                                                   |
 
 Example with custom parameters:
 
 ```graphql
 type Document @table {
 	id: Long @primaryKey
-	textEmbeddings: [Float] @indexed(type: "HNSW", distance: "euclidean", optimizeRouting: 0, efSearchConstruction: 100)
+	textEmbeddings: [Float] @indexed(type: "HNSW", distance: "euclidean", optimizeRouting: 0, efConstructionSearch: 100)
 }
 ```
+
+Note: this parameter was previously documented as `efSearchConstruction`; the option name Harper reads is `efConstructionSearch`.
+
+<VersionBadge type="changed" version="v5.1.0" /> — Changing `efConstructionSearch` on an existing index no longer triggers a rebuild; it only affects searches. Structural parameters (`distance`, `M`, `efConstruction`, `quantization`) still rebuild the index when changed.
+
+### Vector Quantization
+
+<VersionBadge version="v5.1.0" />
+
+`quantization: "int8"` stores the index's vectors quantized to 8-bit integers, substantially reducing index size and memory traffic:
+
+```graphql
+type Document @table {
+	id: Long @primaryKey
+	textEmbeddings: [Float] @indexed(type: "HNSW", quantization: "int8")
+}
+```
+
+Graph navigation runs on the quantized (approximate) distances. For nearest-neighbor `sort` queries, Harper re-ranks the results against the full-precision vectors stored on the records, restoring exact ordering and exact `$distance` values. Distance-threshold (`lt`/`le`) queries currently filter on the approximate distance.
 
 ## Field Types
 
