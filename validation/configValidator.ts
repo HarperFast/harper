@@ -193,6 +193,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			copyTablesToCatchUp: boolean.optional(),
 			pingInterval: number.min(1).optional().empty(null),
 			pingTimeout: number.min(1).optional().empty(null),
+			replayTimeout: number.min(1).optional().empty(null),
 		}).optional(),
 		componentsRoot: rootConstraints.optional(),
 		localStudio: Joi.object({

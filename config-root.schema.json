@@ -294,6 +294,11 @@
 					"minimum": 1,
 					"description": "Time (ms) without socket activity before a replication connection is considered dead and terminated. Default: 2x pingInterval"
 				},
+				"replayTimeout": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Max total wall-clock time (ms) that crash-recovery transaction-log replay may run before it is aborted so the node can finish booting. Default: 600000 (10 minutes)."
+				},
 				"failOver": {
 					"type": "boolean",
 					"description": "Attempt fail-over to different node when unreachable. Default: true"

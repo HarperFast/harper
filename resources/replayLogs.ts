@@ -11,8 +11,11 @@ import {
 	isUndecodableValidatedWrite,
 	shouldAbortStalledReplay,
 	shouldAbortSlowReplay,
+	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
 import { purgeAgedLogs } from './auditStore.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 let warnedReplayHappening = false;
 
@@ -84,6 +87,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let noProgressRun = 0;
 		const replayStartTime = performance.now();
 		let lastProgressTime = replayStartTime;
+		// Total wall-clock budget (ms) for replay, configurable via `replication.replayTimeout`;
+		// falls back to the 10-minute default (harper#1316).
+		const configuredReplayTimeout = Number(envGet(CONFIG_PARAMS.REPLICATION_REPLAYTIMEOUT));
+		const replayTimeoutMs = configuredReplayTimeout > 0 ? configuredReplayTimeout : REPLAY_WALL_CLOCK_LIMIT_MS;
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true }) as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
@@ -173,7 +180,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					// boundary: the prior version's transaction was just committed in full and the new one
 					// is not yet staged, so aborting never tears a same-version (same source-transaction)
 					// write batch in half. Re-clone to recover the unreplayed remainder.
-					if (shouldAbortSlowReplay(performance.now() - replayStartTime)) {
+					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
 						logger.fatal(
 							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
 						);
