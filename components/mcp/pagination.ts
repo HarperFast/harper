@@ -10,6 +10,11 @@
  * than silently restarting from offset 0 (which can mask client paging bugs).
  */
 
+// A real cursor is base64url of `{offset:N}` — a couple dozen chars. Reject
+// anything wildly longer before allocating buffers / parsing, so a malicious
+// client can't force large allocations through the cursor field.
+const MAX_CURSOR_LENGTH = 512;
+
 export function encodeCursor(offset: number): string {
 	return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url');
 }
@@ -20,6 +25,7 @@ export function encodeCursor(offset: number): string {
  * negative, or non-finite). Never throws.
  */
 export function decodeCursor(cursor: string): number | null {
+	if (cursor.length > MAX_CURSOR_LENGTH) return null;
 	try {
 		const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown };
 		const offset = decoded?.offset;

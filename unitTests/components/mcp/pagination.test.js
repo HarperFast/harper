@@ -19,6 +19,12 @@ describe('components/mcp/pagination', () => {
 		assert.equal(decodeCursor(''), null);
 	});
 
+	it('returns null for an over-long cursor before parsing (resource-exhaustion guard)', () => {
+		assert.equal(decodeCursor('A'.repeat(513)), null);
+		// A normal cursor is well under the cap and still decodes.
+		assert.equal(decodeCursor(encodeCursor(7)), 7);
+	});
+
 	it('returns null when the decoded offset is missing or out of range', () => {
 		const enc = (obj) => Buffer.from(JSON.stringify(obj), 'utf8').toString('base64url');
 		assert.equal(decodeCursor(enc({})), null); // missing offset

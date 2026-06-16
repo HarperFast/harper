@@ -80,11 +80,13 @@ function normalizeHeaders(headers: HarperHttpRequest['headers']): Record<string,
  * Harper wraps the inbound body in a `RequestBody` (server/serverHelpers/
  * Request.ts) that exposes `.on()`/`.pipe()` — the same contract every other
  * inbound-body consumer in Harper reads through (e.g. the content-type
- * deserializers at `server/serverHelpers/contentTypes.ts`). We must NOT use
- * `for await` here: `RequestBody` does not implement `Symbol.asyncIterator`,
- * and relying on it made the application profile 500 on every request (#1317).
- * `RequestBody` is now also async-iterable for defense in depth, but the event
- * API is the canonical, always-present contract.
+ * deserializers at `server/serverHelpers/contentTypes.ts`). Harper's
+ * `RequestBody` historically exposed only `.on()`/`.pipe()`, so a `for await`
+ * over it threw `TypeError: body is not async iterable` and 500'd every request
+ * (#1317). This PR also adds `Symbol.asyncIterator` to `RequestBody`, but we
+ * still read via the event API here because it's the canonical, always-present
+ * contract that every other inbound-body consumer uses — async iteration isn't
+ * guaranteed on every body wrapper.
  */
 function readBody(body: BodyStream | undefined): Promise<string> {
 	if (!body) return Promise.resolve('');
