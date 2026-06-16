@@ -55,6 +55,7 @@ See [MCP Tools and Resources](./tools-and-resources.md) for the full generation 
 - **Configuration** — see [MCP Configuration](./configuration.md) for the full set of config knobs.
 - **CLI** — see [Harper MCP CLI](./cli.md) for the `harper mcp` subcommand that bridges stdio MCP hosts (Claude Desktop, Cursor, Zed) to a running Harper instance.
 - **Migration** — if you are coming from the `HarperFast/mcp-server` external addon, see [MCP Migration](./migration.md).
+- **Tool metadata** — see [Tool Metadata](./tool-metadata.md) for what fields appear on each generated tool descriptor and where the data comes from.
 
 ## Out of scope for v1
 
