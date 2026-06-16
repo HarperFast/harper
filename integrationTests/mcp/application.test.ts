@@ -108,17 +108,26 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 	test('P1: create_/get_ round-trip persists and reads back a record', async () => {
 		const { client, transport } = await newAppClient(ctx);
 		const { tools } = await client.listTools();
-		const createTool = tools.find((t) => /^create_/.test(t.name))!;
-		const getTool = tools.find((t) => /^get_/.test(t.name))!;
-		ok(createTool && getTool, 'create_ and get_ tools present');
+		// Target the WorkItem table specifically — it's a full-CRUD @table @export.
+		// (Don't just grab the first create_* tool: the fixture also has an
+		// expiration-only AbuseCounter with no post handler.)
+		const names = tools.map((t) => t.name);
+		ok(
+			names.includes('create_WorkItem') && names.includes('get_WorkItem'),
+			`create_/get_ WorkItem present, got: ${names.join(', ')}`
+		);
 
+		// WorkItem.post (fixture) generates its own id and stores the body as the
+		// `payload` field, returning { id, state }. Capture the id, then read back.
 		const createRes: any = await client.callTool({
-			name: createTool.name,
-			arguments: { id: 'wi-1', state: 'open', payload: 'hello-1317' },
+			name: 'create_WorkItem',
+			arguments: { state: 'open', payload: 'hello-1317' },
 		});
 		ok(!createRes.isError, `create should succeed: ${JSON.stringify(createRes.content)}`);
+		const created = JSON.parse((createRes.content ?? []).map((c: any) => c.text).join(''));
+		ok(created.id, `create should return the new id: ${JSON.stringify(created)}`);
 
-		const getRes: any = await client.callTool({ name: getTool.name, arguments: { id: 'wi-1' } });
+		const getRes: any = await client.callTool({ name: 'get_WorkItem', arguments: { id: created.id } });
 		ok(!getRes.isError, `get should succeed: ${JSON.stringify(getRes.content)}`);
 		const text = (getRes.content ?? []).map((c: any) => c.text).join('');
 		match(text, /hello-1317/);
