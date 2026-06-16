@@ -10,7 +10,8 @@ const {
 	normalizeTxnLogStats,
 	buildRocksDBDbMetric,
 	buildRocksDBTableMetric,
-	buildRocksDBLogMetric,
+	buildRocksDBTxnLogDbMetric,
+	buildRocksDBTxnLogMetric,
 } = require('#src/resources/analytics/write');
 const { writeFile, mkdtemp, rm, mkdir } = require('node:fs/promises');
 const { join } = require('node:path');
@@ -254,6 +255,30 @@ describe('buildRocksDBDbMetric', () => {
 		expect(metric.numRunningFlushes).to.equal(0);
 	});
 
+	it('does not emit txnlog fields (they live on rocksdb-txnlog-stats)', () => {
+		const stats = { bytesRead: 100, txnlogBytesWritten: 1500, txnlogLogCount: 2, txnlogReplayGapBytes: 512 };
+		const metric = buildRocksDBDbMetric('mydb', stats, undefined, now, undefined);
+		expect(metric).to.not.have.property('txnlogBytesWritten');
+		expect(metric).to.not.have.property('txnlogLogCount');
+		expect(metric).to.not.have.property('txnlogReplayGapBytes');
+	});
+});
+
+describe('buildRocksDBTxnLogDbMetric', () => {
+	const now = 1_700_000_000_000;
+
+	it('builds a rocksdb-txnlog-stats database row (no table/log dimension)', () => {
+		const metric = buildRocksDBTxnLogDbMetric('mydb', {}, undefined, now, undefined);
+		expect(metric).to.include({
+			metric: 'rocksdb-txnlog-stats',
+			database: 'mydb',
+			time: now,
+		});
+		expect(metric).to.not.have.property('table');
+		expect(metric).to.not.have.property('log');
+		expect(metric).to.not.have.property('period');
+	});
+
 	it('diffs txnlog counters and passes txnlog gauges through (summed across the db logs)', () => {
 		const last = { txnlogBytesWritten: 1000, txnlogTransactionsWritten: 40 };
 		const stats = {
@@ -269,12 +294,21 @@ describe('buildRocksDBDbMetric', () => {
 			txnlogUncommittedTransactions: 1,
 			txnlogReplayGapBytes: 512,
 		};
-		const metric = buildRocksDBDbMetric('mydb', stats, last, now, 5000);
+		const metric = buildRocksDBTxnLogDbMetric('mydb', stats, last, now, 5000);
+		expect(metric.period).to.equal(5000);
 		expect(metric.txnlogBytesWritten).to.equal(500);
 		expect(metric.txnlogTransactionsWritten).to.equal(15);
 		expect(metric.txnlogLogCount).to.equal(2);
 		expect(metric.txnlogTotalSizeBytes).to.equal(4096);
 		expect(metric.txnlogReplayGapBytes).to.equal(512);
+	});
+
+	it('does not include the rocksdb-stats block-cache columns', () => {
+		const stats = { bytesRead: 100, blockCacheHit: 5, txnlogLogCount: 2 };
+		const metric = buildRocksDBTxnLogDbMetric('mydb', stats, undefined, now, undefined);
+		expect(metric).to.not.have.property('bytesRead');
+		expect(metric).to.not.have.property('blockCacheHit');
+		expect(metric.txnlogLogCount).to.equal(2);
 	});
 });
 
@@ -394,13 +428,13 @@ describe('normalizeTxnLogStats', () => {
 	});
 });
 
-describe('buildRocksDBLogMetric', () => {
+describe('buildRocksDBTxnLogMetric', () => {
 	const now = 1_700_000_000_000;
 
-	it('includes database and log dimensions (not table)', () => {
-		const metric = buildRocksDBLogMetric('mydb', 'audit', {}, undefined, now, undefined);
+	it('includes database and log dimensions (not table) on the rocksdb-txnlog-stats metric', () => {
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', {}, undefined, now, undefined);
 		expect(metric).to.include({
-			metric: 'rocksdb-stats',
+			metric: 'rocksdb-txnlog-stats',
 			database: 'mydb',
 			log: 'audit',
 			time: now,
@@ -411,7 +445,7 @@ describe('buildRocksDBLogMetric', () => {
 
 	it('reports counters absolute on the first sample', () => {
 		const stats = normalizeTxnLogStats(sampleTxnLogStats());
-		const metric = buildRocksDBLogMetric('mydb', 'audit', stats, undefined, now, undefined);
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', stats, undefined, now, undefined);
 		expect(metric.totalsTransactionsWritten).to.equal(1000);
 		expect(metric.totalsBytesWritten).to.equal(500000);
 		// Gauges always pass through absolute.
@@ -428,7 +462,7 @@ describe('buildRocksDBLogMetric', () => {
 			replayGapBytes: 1024, // gauge — absolute
 			pendingTransactions: 7,
 		};
-		const metric = buildRocksDBLogMetric('mydb', 'audit', stats, last, now, 5000);
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', stats, last, now, 5000);
 		expect(metric.period).to.equal(5000);
 		expect(metric.totalsTransactionsWritten).to.equal(250);
 		expect(metric.totalsBytesWritten).to.equal(100000);
@@ -438,7 +472,7 @@ describe('buildRocksDBLogMetric', () => {
 	});
 
 	it('defaults missing stats to 0', () => {
-		const metric = buildRocksDBLogMetric('mydb', 'audit', {}, undefined, now, undefined);
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', {}, undefined, now, undefined);
 		expect(metric.totalsTransactionsWritten).to.equal(0);
 		expect(metric.replayGapBytes).to.equal(0);
 		expect(metric.fileCount).to.equal(0);
