@@ -3611,6 +3611,7 @@ export function makeTable(options) {
 			let entryCount = 0;
 			let halfway = 0;
 			let counted = false;
+			let completeForExact = false;
 			let recordCount = 0;
 			let entriesScanned = 0;
 			let limit: number;
@@ -3618,7 +3619,7 @@ export function makeTable(options) {
 				if (value != null) recordCount++;
 				entriesScanned++;
 				await rest();
-				if (!exactCount && performance.now() - start > TIME_LIMIT) {
+				if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
 					if (!counted) {
 						counted = true;
 						entryCount = isRocksDB
@@ -3632,7 +3633,8 @@ export function makeTable(options) {
 						break;
 					}
 					// Past the halfway point already: finishing the scan for an exact count is cheaper
-					// than estimating, so fall through and keep iterating to completion.
+					// than estimating. Set the flag so we stop re-evaluating the budget on each remaining iteration.
+					completeForExact = true;
 				}
 			}
 			if (limit) {
