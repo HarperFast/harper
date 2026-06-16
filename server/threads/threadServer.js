@@ -22,6 +22,7 @@ const { startupLog } = require('../../bin/run.ts');
 const { SERVERS, setPortServerMap, portServer } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
 const globals = require('../../globals.js');
+const { whenScopesClosed } = require('../../components/scopeShutdown.ts');
 
 const debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 const isWindows = process.platform === 'win32';
@@ -171,10 +172,16 @@ function startServers() {
 					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
 						harperLogger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-						// close connections as possible, then let the event loop complete
-						closeServers().then(() => {
-							realExit(0);
-						});
+						// close connections as possible, then let the event loop complete.
+						// Wait for application scopes to finish closing before exiting — some dispose a native
+						// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
+						// worker while that runtime is still live crashes the process. The manageThreads backstop
+						// timers still bound this if a scope's disposal hangs.
+						closeServers()
+							.then(() => whenScopesClosed())
+							.then(() => {
+								realExit(0);
+							});
 						// Clean up per-thread UDS socket and metadata files
 						httpComponent.cleanupUdsFiles();
 						if (!isBun && (debugThreads || process.env.DEV_MODE)) {
