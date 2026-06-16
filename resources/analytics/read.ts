@@ -63,6 +63,18 @@ export async function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsRespo
 			true
 		);
 	}
+	// `log` only identifies a row on the per-log rocksdb-txnlog-stats metric. Reject it for any
+	// other metric rather than silently returning zero rows (no other metric has a `log` attribute).
+	if (req.log !== undefined && req.metric !== METRIC.ROCKSDB_TXNLOG_STATS) {
+		throw handleHDBError(
+			new Error('invalid get_analytics request'),
+			`The 'log' filter is only supported for the '${METRIC.ROCKSDB_TXNLOG_STATS}' metric`,
+			hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 	// `replicated` fans the query out to every peer node and merges each node's
 	// analytics into one cluster-wide result set. Fan-out is skipped when:
 	//  - the request did not ask for it;

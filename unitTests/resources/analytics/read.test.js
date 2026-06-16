@@ -524,4 +524,15 @@ describe('getOp (log filter)', () => {
 		const conditions = searchStub.firstCall.args[0].conditions;
 		expect(conditions.some((c) => c.attribute === 'log')).to.be.false;
 	});
+
+	it('rejects a `log` filter on a non-txnlog metric instead of silently returning nothing', async () => {
+		let threw = false;
+		try {
+			await getOp({ metric: 'cpu-usage', log: 'audit' });
+		} catch {
+			threw = true;
+		}
+		expect(threw).to.be.true;
+		expect(searchStub.called).to.be.false;
+	});
 });
