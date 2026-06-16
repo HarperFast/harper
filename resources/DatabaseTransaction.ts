@@ -103,6 +103,12 @@ export class DatabaseTransaction implements Transaction {
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
 	declare sourceApply?: boolean;
+	// Set when this transaction replays the local audit log during crash recovery (replayLogs.ts).
+	// Replayed records were valid when first written, so schema validation is skipped — a schema
+	// that has since added required fields must not block replaying older records (harper#1316).
+	// An explicit marker rather than overloading `retries`, which is also bumped by transient
+	// conflict retries and never reset, so it cannot reliably signal "this is a replay".
+	declare isReplay?: boolean;
 
 	getReadTxn(): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;

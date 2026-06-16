@@ -1858,11 +1858,11 @@ export function makeTable(options) {
 							// below, so copy-on-mutate when recordUpdate is frozen (e.g. a record decoded during
 							// log replay) instead of writing through the frozen object.
 							if (isFrozenRecordObject(recordUpdate)) recordUpdate = { ...recordUpdate };
-							// Skip schema validation during crash-recovery replay (transaction.retries = 1
-							// is set by replayLogs to mark replayed writes). Records were valid when
-							// originally written; post-crash schema evolution (e.g. newly required fields)
-							// must not prevent replaying them (harper#1316, facet b).
-							if (transaction.retries === 0) this.validate(recordUpdate, !fullUpdate);
+							// Skip schema validation during crash-recovery replay (transaction.isReplay is set
+							// by replayLogs). Records were valid when originally written; post-crash schema
+							// evolution (e.g. newly required fields) must not prevent replaying them
+							// (harper#1316, facet b).
+							if (!transaction.isReplay) this.validate(recordUpdate, !fullUpdate);
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
@@ -3443,7 +3443,7 @@ export function makeTable(options) {
 					if (!(context as any)?.source) {
 						transaction.checkOverloaded();
 						// Skip schema validation during crash-recovery replay (see _writeUpdate; harper#1316).
-						if (transaction.retries === 0) this.validate(message);
+						if (!transaction.isReplay) this.validate(message);
 					}
 				},
 				before:
@@ -4468,6 +4468,9 @@ export function makeTable(options) {
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;
+					// Inherit the replay marker so a multi-table replay transaction skips validation on
+					// every store, not just the first (harper#1316).
+					transaction.next.isReplay = transaction.isReplay;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
