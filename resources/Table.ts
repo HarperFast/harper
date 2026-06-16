@@ -1956,6 +1956,30 @@ export function makeTable(options) {
 							let nextRef: { localTime: number; nodeId: number };
 							let walkSteps = 0;
 							let auditWalkCapped = false;
+							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
+							// throwaway copy of this write purely to detect when every field has been overwritten by
+							// newer writes. When it empties — and there is no alternate audit branch — the write is
+							// fully superseded and the rest of the O(depth) walk can be skipped; this is equivalent to
+							// walking to the end and taking the `writeCommit(false)` escape after the fold below
+							// (#1114/#1316). It is NOT used as the applied value: the sorted fold still computes that for
+							// the non-empty (legit merge) case, so merge correctness is unchanged.
+							let earlyOutResidual: any;
+							let fullySuperseded = false;
+							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
+							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
+							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
+							const isReDeliveredDuplicate = () => {
+								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								return (
+									duplicate &&
+									duplicate.version === txnTime &&
+									precedesExistingVersion(
+										txnTime,
+										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
+										options?.nodeId
+									) === 0
+								);
+							};
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
 									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
@@ -1997,8 +2021,22 @@ export function makeTable(options) {
 											// audit record itself, so its backing transaction-log buffer and decoders can be
 											// reclaimed immediately. Only these two fields are needed for the ordered fold below;
 											// retaining the full records is what pins the heap on a deep chain (issue #1114).
-											succeedingUpdates.push({ version: auditedVersion, value: auditRecord.getValue(primaryStore) });
+											const newerPatch = auditRecord.getValue(primaryStore);
+											succeedingUpdates.push({ version: auditedVersion, value: newerPatch });
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
+											// rebuildUpdateBefore only ever DROPS plain fields the newer patch overwrites and
+											// KEEPS commutative ops (and, for a full update, every field) — so whether the residual
+											// empties is order-independent, and a commutative op never triggers the early-out.
+											// Supersession is monotonic, so once empty stop folding (an unscanned branch may still
+											// be deferring the early-out below). RocksDB only — see the early-out below.
+											if (isRocksDB && !fullySuperseded) {
+												earlyOutResidual = rebuildUpdateBefore(
+													earlyOutResidual ?? recordUpdate,
+													newerPatch,
+													fullUpdate
+												);
+												if (!earlyOutResidual) fullySuperseded = true;
+											}
 										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
 											// There is newer full record update, so this incremental update is completely superseded
 											write.skipped = true;
@@ -2023,6 +2061,24 @@ export function makeTable(options) {
 												nodeId: ref.nodeId,
 											});
 										}
+									}
+
+									// Every field of this write is overwritten by newer writes, and there is no alternate
+									// audit branch left to scan, so it is fully superseded — the same outcome as walking to
+									// the end and taking the `writeCommit(false)` escape below, reached without paying the rest
+									// of the deep walk (#1114/#1316). additionalAuditRefs is already final here (the out-of-order
+									// ref is pushed once, above), so the audit record written is identical. RocksDB only: LMDB has
+									// no up-front keyed dedup, so it must keep walking until inline duplicate detection reaches the
+									// matching entry. A re-delivered duplicate is dropped via the keyed lookup (as the depth-cap
+									// block does) rather than written as a duplicate audit-only record; a genuine first delivery
+									// writes the audit record. (A newer full put/delete on this single chain is caught above before
+									// the residual could empty, so it cannot be reached here.)
+									if (isRocksDB && fullySuperseded && auditRefsToVisit.length === 0) {
+										if (isReDeliveredDuplicate()) {
+											write.skipped = true;
+											return; // re-delivered duplicate already applied
+										}
+										return writeCommit(false);
 									}
 
 									localTime = auditRecord.previousVersion;
@@ -2069,16 +2125,7 @@ export function makeTable(options) {
 										depth: walkSteps,
 									}
 								);
-								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
-								if (
-									duplicate &&
-									duplicate.version === txnTime &&
-									precedesExistingVersion(
-										txnTime,
-										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
-										options?.nodeId
-									) === 0
-								) {
+								if (isReDeliveredDuplicate()) {
 									write.skipped = true;
 									return; // duplicate write already applied
 								}
