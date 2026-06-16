@@ -131,13 +131,13 @@ export function _setHttpUrlPrefixForTest(prefix: string | undefined): void {
 function getResources(): ResourcesType {
 	if (_resourcesOverride) return _resourcesOverride;
 	// Lazy import — see file-top comment on Harper graph initialization.
-	const { resources } = require('../../resources/Resources.ts');
+	const { resources } = require('../../resources/Resources');
 	return resources as ResourcesType;
 }
 
 function getOpenApiGenerator(): OpenApiGenerator {
 	if (_openApiOverride) return _openApiOverride;
-	const { generateJsonApi } = require('../../resources/openApi.ts');
+	const { generateJsonApi } = require('../../resources/openApi');
 	return generateJsonApi as OpenApiGenerator;
 }
 
@@ -557,7 +557,7 @@ function guessAppHttpUrlPrefix(): string | undefined {
 	if (_httpUrlPrefixOverride !== undefined) return _httpUrlPrefixOverride || undefined;
 	let hostname: string | undefined;
 	try {
-		const { server } = require('../../server/Server.ts');
+		const { server } = require('../../server/Server');
 		hostname = (server as { hostname?: string })?.hostname;
 	} catch {
 		return undefined;

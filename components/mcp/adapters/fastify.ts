@@ -60,7 +60,14 @@ export function createFastifyHandler(profile: McpProfile) {
 			if (!res.headers['Content-Type'] && !res.headers['content-type']) {
 				reply.header('Content-Type', 'application/json');
 			}
-			reply.send(res.jsonBody);
+			// Send a pre-serialized string (mirrors the Harper-HTTP adapter), NOT
+			// the raw object. The MCP routes live in an encapsulated child plugin
+			// (see registerMcpProfile), where Fastify's default object serializer
+			// isn't applied and Harper's content-negotiation serializer is skipped
+			// once Content-Type is set — so an object payload reaches @fastify/compress
+			// unserialized and throws FST_ERR_REP_INVALID_PAYLOAD (#1317). Serializing
+			// here keeps the transport the single source of the JSON-RPC wire bytes.
+			reply.send(JSON.stringify(res.jsonBody));
 			return;
 		}
 
