@@ -17,6 +17,7 @@ import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
 import { addTool, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
+import { decodeCursor, encodeCursor } from '../pagination.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -222,22 +223,6 @@ function wrapError(toolName: string, err: unknown): ToolResult {
 	};
 }
 
-function encodeCursor(offset: number): string {
-	return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url');
-}
-
-function decodeCursor(cursor: string | undefined): number {
-	if (!cursor) return 0;
-	try {
-		const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown };
-		const o = decoded?.offset;
-		if (typeof o === 'number' && o >= 0 && Number.isInteger(o)) return o;
-		return 0;
-	} catch {
-		return 0;
-	}
-}
-
 // ─── Verb-specific handler factories ───────────────────────────────────────
 
 function makeGetHandler(toolName: string, ResourceClass: ResourceClassLike) {
@@ -265,7 +250,11 @@ function makeSearchHandler(toolName: string, ResourceClass: ResourceClassLike) {
 			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
 			const requestedLimit = typeof a.limit === 'number' && a.limit > 0 ? Math.floor(a.limit) : DEFAULT_SEARCH_LIMIT;
 			const limit = Math.min(requestedLimit, searchLimitFor('application'));
-			const offset = decodeCursor(typeof a.cursor === 'string' ? a.cursor : undefined);
+			// Reuse the shared cursor serialization, but unlike the MCP list-method
+			// protocol (which rejects a bad cursor with -32602), this is a tool
+			// *argument*: an unusable cursor falls back to offset 0 (best effort)
+			// rather than failing the search call.
+			const offset = decodeCursor(typeof a.cursor === 'string' ? a.cursor : '') ?? 0;
 			// Fetch one extra to know if there's a next page without a second round-trip.
 			target.limit = limit + 1;
 			target.offset = offset;

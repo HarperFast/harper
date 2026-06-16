@@ -7,6 +7,9 @@ const {
 	_setOpenApiGeneratorForTest,
 	_setHttpUrlPrefixForTest,
 } = require('#src/components/mcp/resources');
+// listResources now takes a decoded offset; the transport decodes the opaque
+// cursor (rejecting invalid ones with -32602). Tests decode nextCursor to page.
+const { decodeCursor } = require('#src/components/mcp/pagination');
 
 function makeFakeResources(entries) {
 	// Mirrors the shape of resources/Resources.ts — a Map with .getMatch(path).
@@ -146,23 +149,17 @@ describe('mcp/resources', () => {
 		it('round-trips opaquely through nextCursor', () => {
 			const all = listResources({ user: SUPER, profile: 'application', limit: 1000 }).resources;
 			let collected = [];
-			let cursor;
+			let offset;
 			for (let i = 0; i < 10; i++) {
-				const page = listResources({ user: SUPER, profile: 'application', limit: 1, cursor });
+				const page = listResources({ user: SUPER, profile: 'application', limit: 1, offset });
 				collected = collected.concat(page.resources);
-				cursor = page.nextCursor;
-				if (!cursor) break;
+				if (!page.nextCursor) break;
+				offset = decodeCursor(page.nextCursor);
 			}
 			assert.deepEqual(
 				collected.map((r) => r.uri),
 				all.map((r) => r.uri)
 			);
-		});
-
-		it('treats a bad cursor as offset 0', () => {
-			const page = listResources({ user: SUPER, profile: 'application', limit: 1, cursor: '$$nonsense$$' });
-			const first = listResources({ user: SUPER, profile: 'application', limit: 1 });
-			assert.equal(page.resources[0].uri, first.resources[0].uri);
 		});
 	});
 

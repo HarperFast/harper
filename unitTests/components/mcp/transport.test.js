@@ -368,6 +368,18 @@ describe('mcp/transport', () => {
 				);
 				assert.equal(res.jsonBody.result.nextCursor, undefined);
 			});
+
+			it('rejects an invalid cursor with -32602 instead of silently returning page 1 (#1317 S2)', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(13, 'tools/list', { cursor: 'not-a-real-cursor' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.equal(res.jsonBody.result, undefined);
+			});
 		});
 
 		describe('tools/call', () => {
@@ -551,6 +563,18 @@ describe('mcp/transport', () => {
 				// Default page size is 200, so everything fits in one page; just verify shape.
 				assert.ok(Array.isArray(page1.jsonBody.result.resources));
 				assert.equal(page1.jsonBody.result.nextCursor, undefined);
+			});
+
+			it('rejects an invalid cursor with -32602 (#1317 S2)', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(35, 'resources/list', { cursor: 'not-a-real-cursor' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.equal(res.jsonBody.result, undefined);
 			});
 		});
 
@@ -789,6 +813,50 @@ describe('mcp/transport', () => {
 				})
 			);
 			assert.equal(res.status, 200);
+		});
+	});
+
+	describe('Accept content negotiation (#1317 S3)', () => {
+		it('allows POST when Accept is absent (treated as */*)', async () => {
+			const res = await handleMcpRequest(
+				makeReq({ body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }) })
+			);
+			assert.equal(res.status, 200);
+		});
+
+		it('allows POST when Accept includes application/json', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }),
+					headers: { accept: 'application/json, text/event-stream' },
+				})
+			);
+			assert.equal(res.status, 200);
+		});
+
+		it('allows POST when Accept is a wildcard', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }),
+					headers: { accept: 'application/*' },
+				})
+			);
+			assert.equal(res.status, 200);
+		});
+
+		it('returns 406 for POST when Accept is present and excludes application/json', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }),
+					headers: { accept: 'text/plain' },
+				})
+			);
+			assert.equal(res.status, 406);
+		});
+
+		it('returns 406 for GET when Accept excludes text/event-stream', async () => {
+			const res = await handleMcpRequest(makeReq({ method: 'GET', headers: { accept: 'application/json' } }));
+			assert.equal(res.status, 406);
 		});
 	});
 

@@ -24,6 +24,7 @@
  *     predicate. See the `tools/call` pass-through test in
  *     `transport.test.js`.
  */
+import { encodeCursor } from './pagination.ts';
 import type { McpProfile } from './transport.ts';
 
 export interface ToolAnnotations {
@@ -146,7 +147,12 @@ export interface ListToolsArgs {
 	user: AuthedUser;
 	profile: McpProfile;
 	sessionId: string;
-	cursor?: string;
+	/**
+	 * Decoded pagination offset, or `undefined` for a fresh (first-page) call.
+	 * The transport decodes the opaque cursor and rejects invalid cursors with
+	 * `-32602` before calling us (see `decodeCursor` in pagination.ts).
+	 */
+	offset?: number;
 	limit: number;
 }
 
@@ -164,13 +170,13 @@ export interface ListToolsResult {
  * pagination is stable even if the registry mutates between pages.
  */
 export function listTools(args: ListToolsArgs): ListToolsResult {
-	const { user, profile, sessionId, cursor, limit } = args;
+	const { user, profile, sessionId, offset: cursorOffset, limit } = args;
 	if (limit < 1) throw new Error('listTools: limit must be >= 1');
 
 	let cached = sessionListCache.get(sessionId);
 	let offset = 0;
-	if (cursor) {
-		offset = decodeCursor(cursor);
+	if (cursorOffset !== undefined) {
+		offset = cursorOffset;
 		if (!cached) {
 			// Cache evicted (likely registry change). Treat as a fresh call from
 			// the cursor's offset — best effort. The client may see the next
@@ -209,23 +215,6 @@ function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescrip
 	// the registry can mutate between calls and we want stable cursor offsets).
 	out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return out;
-}
-
-function encodeCursor(offset: number): string {
-	return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url');
-}
-
-function decodeCursor(cursor: string): number {
-	try {
-		const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown };
-		const offset = decoded?.offset;
-		if (typeof offset !== 'number' || offset < 0 || !Number.isFinite(offset) || !Number.isInteger(offset)) {
-			return 0;
-		}
-		return offset;
-	} catch {
-		return 0;
-	}
 }
 
 // ─── RBAC + introspection helpers ──────────────────────────────────────────

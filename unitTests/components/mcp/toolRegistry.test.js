@@ -9,6 +9,10 @@ const {
 	canRoleInvokeOperation,
 	_resetRegistryForTest,
 } = require('#src/components/mcp/toolRegistry');
+// listTools now takes a decoded offset; the transport decodes the opaque
+// cursor (and rejects invalid ones with -32602). Tests decode nextCursor here
+// to page, mirroring what the transport does on the wire.
+const { decodeCursor } = require('#src/components/mcp/pagination');
 
 function makeTool(overrides = {}) {
 	return {
@@ -130,7 +134,7 @@ describe('mcp/toolRegistry', () => {
 				profile: 'application',
 				sessionId: 's',
 				limit: 2,
-				cursor: page1.nextCursor,
+				offset: decodeCursor(page1.nextCursor),
 			});
 			assert.deepEqual(
 				page2.tools.map((t) => t.name),
@@ -141,24 +145,13 @@ describe('mcp/toolRegistry', () => {
 				profile: 'application',
 				sessionId: 's',
 				limit: 2,
-				cursor: page2.nextCursor,
+				offset: decodeCursor(page2.nextCursor),
 			});
 			assert.deepEqual(
 				page3.tools.map((t) => t.name),
 				['tool_04']
 			);
 			assert.equal(page3.nextCursor, undefined);
-		});
-
-		it('treats a bad cursor as offset=0', () => {
-			const result = listTools({
-				user: {},
-				profile: 'application',
-				sessionId: 's',
-				limit: 2,
-				cursor: '$$nonsense$$',
-			});
-			assert.equal(result.tools[0].name, 'tool_00');
 		});
 
 		it('rejects limit < 1', () => {
@@ -178,7 +171,13 @@ describe('mcp/toolRegistry', () => {
 			// list contained, which is acceptable per MCP's listChanged
 			// eventual-consistency stance.
 			addTool(makeTool({ name: 'tool_99' }));
-			const page2 = listTools({ user: {}, profile: 'application', sessionId: 's', limit: 2, cursor: page1.nextCursor });
+			const page2 = listTools({
+				user: {},
+				profile: 'application',
+				sessionId: 's',
+				limit: 2,
+				offset: decodeCursor(page1.nextCursor),
+			});
 			assert.equal(page2.tools.length, 2);
 			// Names are still drawn from the sorted list; the new tool sorts last.
 			for (const t of page2.tools) assert.match(t.name, /^tool_/);
@@ -204,7 +203,7 @@ describe('mcp/toolRegistry', () => {
 				profile: 'application',
 				sessionId: 'sx',
 				limit: 2,
-				cursor: page1.nextCursor,
+				offset: decodeCursor(page1.nextCursor),
 			});
 			assert.equal(page2.tools.length, 1);
 		});

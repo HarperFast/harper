@@ -32,6 +32,7 @@ import {
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from './lifecycle.ts';
 import { emitAuditEntry } from './audit.ts';
+import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, touchSession, type McpSessionRecord } from './session.ts';
@@ -46,10 +47,11 @@ export interface NormRequest {
 	/** Lowercased header name → value. Adapters normalize before calling. */
 	headers: Record<string, string | undefined>;
 	/**
-	 * The request body. May be a raw JSON string (Harper-HTTP adapter, which
-	 * reads from a stream) or an already-parsed value (Fastify adapter, which
-	 * receives parsed JSON via its preParsing pipeline). `parseMessage` handles
-	 * both — no JSON round-trip needed.
+	 * The raw JSON request body string. Both adapters now deliver the unparsed
+	 * body (the Fastify route installs a raw-body content-type parser; the
+	 * Harper-HTTP adapter reads the stream to a string), so `parseMessage` is
+	 * the single JSON-RPC parse point. Typed as `string | unknown` because
+	 * `parseMessage` also tolerates an already-parsed value defensively.
 	 */
 	body: string | unknown;
 	/** Authenticated username from upstream auth pipeline. Used for session binding. */
@@ -74,6 +76,7 @@ export interface NormResponse {
 const SESSION_HEADER = 'mcp-session-id';
 const PROTOCOL_HEADER = 'mcp-protocol-version';
 const ORIGIN_HEADER = 'origin';
+const ACCEPT_HEADER = 'accept';
 
 /**
  * Main entry. Adapters call this and map the returned shape to their
@@ -87,8 +90,20 @@ export async function handleMcpRequest(request: NormRequest): Promise<NormRespon
 		if (!isOriginAllowed(request)) {
 			return jsonResponse(403, { error: 'origin_not_allowed' });
 		}
-		if (request.method === 'POST') return await handlePost(request);
-		if (request.method === 'GET') return await handleGet(request);
+		if (request.method === 'POST') {
+			// POST always yields a single JSON object in v1 (no per-request SSE).
+			if (!acceptsMediaType(request.headers[ACCEPT_HEADER], 'application/json')) {
+				return notAcceptableResponse('application/json');
+			}
+			return await handlePost(request);
+		}
+		if (request.method === 'GET') {
+			// GET opens the server-push SSE channel.
+			if (!acceptsMediaType(request.headers[ACCEPT_HEADER], 'text/event-stream')) {
+				return notAcceptableResponse('text/event-stream');
+			}
+			return await handleGet(request);
+		}
 		if (request.method === 'DELETE') return await handleDelete(request);
 		return { status: 405, headers: { Allow: currentlyAllowedMethods() } };
 	} catch (err) {
@@ -98,14 +113,21 @@ export async function handleMcpRequest(request: NormRequest): Promise<NormRespon
 }
 
 /**
- * Per-profile Origin validation. Mirrors Harper's existing auth.ts pattern
- * (security/auth.ts:65) for parity with how the operations + HTTP ports
- * already handle CORS:
+ * Per-profile Origin validation (the MCP §transports Security Warning: servers
+ * MUST validate Origin to defend against DNS rebinding). We satisfy the MUST by
+ * tying Origin enforcement to Harper's existing CORS config (parity with
+ * security/auth.ts:65) — a disallowed Origin gets a 403:
  *   - CORS disabled in config ⇒ accept any Origin (don't gate on it at all).
  *   - CORS enabled with empty/unset allow-list ⇒ accept any.
  *   - CORS enabled with allow-list ⇒ match exactly OR honor a `'*'` wildcard.
  *   - Missing Origin header ⇒ accept (curl, server-to-server, no DNS-rebinding
  *     vector exists when the request isn't browser-initiated).
+ *
+ * SECURE DEFAULT (#1317 S4): any deployment exposing MCP to browsers beyond
+ * loopback should enable CORS with an explicit allow-list (`http.cors` +
+ * `http.corsAccessList` for the application profile; `operationsApi.network.*`
+ * for operations) — that is what turns on DNS-rebinding protection. The default
+ * (CORS off) is appropriate only for localhost-only / non-browser clients.
  */
 function isOriginAllowed(request: NormRequest): boolean {
 	const origin = request.headers[ORIGIN_HEADER];
@@ -121,6 +143,38 @@ function isOriginAllowed(request: NormRequest): boolean {
 			: env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
 	if (!Array.isArray(list) || list.length === 0) return true;
 	return list.includes(origin) || list.includes('*');
+}
+
+/**
+ * Content negotiation against the media type this endpoint produces.
+ *
+ * The MCP Streamable HTTP spec makes the `Accept` header a CLIENT
+ * requirement (POST clients MUST accept `application/json` + `text/event-stream`;
+ * GET clients MUST accept `text/event-stream`) and leaves server-side
+ * enforcement as a MAY. We honor explicit negotiation: a client that sends an
+ * `Accept` excluding both the produced type and a matching wildcard gets a 406.
+ * An ABSENT `Accept` is treated as "accept anything" (allowed) — many
+ * non-browser MCP clients omit it, and HTTP treats a missing `Accept` as any.
+ */
+function acceptsMediaType(acceptHeader: string | undefined, produced: string): boolean {
+	if (!acceptHeader) return true;
+	const topLevelType = produced.split('/')[0];
+	const typeWildcard = `${topLevelType}/*`;
+	return acceptHeader
+		.split(',')
+		.map((part) => part.split(';')[0].trim().toLowerCase())
+		.some((mediaType) => mediaType === produced || mediaType === '*/*' || mediaType === typeWildcard);
+}
+
+function notAcceptableResponse(produced: string): NormResponse {
+	return {
+		status: 406,
+		headers: { 'Content-Type': 'application/json' },
+		jsonBody: {
+			error: 'not_acceptable',
+			message: `MCP endpoint produces ${produced}; set the Accept header accordingly`,
+		},
+	};
 }
 
 async function handlePost(request: NormRequest): Promise<NormResponse> {
@@ -262,6 +316,24 @@ function effectiveUser(request: NormRequest): AuthedUser {
 	return request.userObject ?? { username: request.user };
 }
 
+/** Sentinel: a cursor was supplied on the request but failed to decode. */
+const INVALID_CURSOR = Symbol('invalid-cursor');
+
+/**
+ * Resolve a list request's `params.cursor` to a pagination offset:
+ *   - absent / non-string  → `undefined` (fresh first-page request)
+ *   - valid opaque cursor  → numeric offset
+ *   - present but malformed → `INVALID_CURSOR` (caller returns `-32602`)
+ *
+ * Per MCP §server/utilities/pagination cursors are opaque; an unrecognized
+ * cursor is a client error, not a silent restart from offset 0 (#1317 S2).
+ */
+function decodeRequestCursor(rawCursor: unknown): number | undefined | typeof INVALID_CURSOR {
+	if (typeof rawCursor !== 'string') return undefined;
+	const offset = decodeCursor(rawCursor);
+	return offset === null ? INVALID_CURSOR : offset;
+}
+
 function dispatchToolsList(
 	request: NormRequest,
 	session: McpSessionRecord,
@@ -269,13 +341,16 @@ function dispatchToolsList(
 	messageId: JsonRpcId
 ): NormResponse {
 	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
-	const cursor = typeof params?.cursor === 'string' ? params.cursor : undefined;
+	const offset = decodeRequestCursor(params?.cursor);
+	if (offset === INVALID_CURSOR) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
+	}
 	const limit = profileMaxTools(request.profile);
 	const { tools, nextCursor } = listTools({
 		user: effectiveUser(request),
 		profile: request.profile,
 		sessionId: session.id,
-		cursor,
+		offset,
 		limit,
 	});
 	const result: { tools: unknown[]; nextCursor?: string } = { tools };
@@ -389,11 +464,14 @@ async function dispatchToolsCall(
 
 function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
 	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
-	const cursor = typeof params?.cursor === 'string' ? params.cursor : undefined;
+	const offset = decodeRequestCursor(params?.cursor);
+	if (offset === INVALID_CURSOR) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
+	}
 	const result = listResources({
 		user: effectiveUser(request),
 		profile: request.profile,
-		cursor,
+		offset,
 		limit: DEFAULT_RESOURCE_PAGE_LIMIT,
 	});
 	const body: { resources: unknown[]; nextCursor?: string } = { resources: result.resources };

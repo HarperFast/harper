@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
+const { EventEmitter } = require('node:events');
 const { createHarperHttpHandler } = require('#src/components/mcp/adapters/harperHttp');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
 const { Headers } = require('#src/server/serverHelpers/Headers');
@@ -28,6 +29,25 @@ function makeHeaders(init = {}) {
 
 function bodyStream(text) {
 	return Readable.from([Buffer.from(text, 'utf8')]);
+}
+
+// Mirrors server/serverHelpers/Request.ts `RequestBody`: exposes ONLY the
+// stream event API (`.on`), NOT `Symbol.asyncIterator`. The real wrapper is
+// what production hands the adapter; a `for await` over it threw
+// `TypeError: body is not async iterable` and 500'd every request (#1317).
+function eventOnlyBody(text) {
+	const emitter = new EventEmitter();
+	const wrapper = {
+		on(event, listener) {
+			emitter.on(event, listener);
+			return wrapper;
+		},
+	};
+	queueMicrotask(() => {
+		emitter.emit('data', Buffer.from(text, 'utf8'));
+		emitter.emit('end');
+	});
+	return wrapper;
 }
 
 async function next() {
@@ -71,6 +91,23 @@ describe('mcp/adapters/harperHttp', () => {
 			() => 'next-handler-result'
 		);
 		assert.equal(out, 'next-handler-result');
+	});
+
+	it('reads a body exposing only the stream event API, no async iterator (#1317 regression)', async () => {
+		const handler = createHarperHttpHandler('application');
+		const result = await handler(
+			{
+				method: 'POST',
+				headers: makeHeaders({ 'content-type': 'application/json' }),
+				body: eventOnlyBody(
+					JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+				),
+				user: { username: 'alice' },
+			},
+			next
+		);
+		assert.equal(result.status, 200);
+		assert.equal(JSON.parse(result.body).id, 7);
 	});
 
 	it('reads chunked body streams (Buffer + string mix)', async () => {

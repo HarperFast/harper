@@ -33,6 +33,7 @@ import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
+import { encodeCursor } from './pagination.ts';
 import type { McpProfile } from './transport.ts';
 
 // Harper's resource graph (Resources, generateJsonApi, Server) initializes
@@ -145,7 +146,12 @@ function getOpenApiGenerator(): OpenApiGenerator {
 export interface ListResourcesArgs {
 	user: AuthedUser;
 	profile: McpProfile;
-	cursor?: string;
+	/**
+	 * Decoded pagination offset, or `undefined` for a fresh (first-page) call.
+	 * The transport decodes the opaque cursor and rejects invalid cursors with
+	 * `-32602` before calling us (see `decodeCursor` in pagination.ts).
+	 */
+	offset?: number;
 	limit?: number;
 }
 
@@ -156,7 +162,7 @@ export interface ListResourcesResult {
 
 export function listResources(args: ListResourcesArgs): ListResourcesResult {
 	const all = enumerate(args.profile);
-	const offset = args.cursor ? decodeCursor(args.cursor) : 0;
+	const offset = args.offset ?? 0;
 	const limit = args.limit && args.limit > 0 ? args.limit : DEFAULT_LIMIT;
 	const slice = all.slice(offset, offset + limit);
 	const next = offset + slice.length;
@@ -585,23 +591,4 @@ function jsonContent(uri: string, body: unknown): ReadResourceOk {
 			},
 		],
 	};
-}
-
-function encodeCursor(offset: number): string {
-	return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url');
-}
-
-function decodeCursor(cursor: string): number {
-	try {
-		const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown };
-		const offset = decoded?.offset;
-		if (typeof offset !== 'number' || offset < 0 || !Number.isFinite(offset) || !Number.isInteger(offset)) {
-			harperLogger.trace('MCP resources cursor decoded but missing/invalid offset; treating as 0');
-			return 0;
-		}
-		return offset;
-	} catch (err) {
-		harperLogger.trace(`MCP resources cursor decode failed (${(err as Error).message}); treating as 0`);
-		return 0;
-	}
 }

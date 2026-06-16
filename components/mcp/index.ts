@@ -46,10 +46,24 @@ interface FullConfig {
 	};
 }
 
-interface FastifyLikeHost {
+type FastifyContentTypeParser = (req: unknown, body: string, done: (err: Error | null, body?: unknown) => void) => void;
+
+/** Encapsulated Fastify instance handed to a plugin (the MCP route context). */
+interface FastifyLikeInstance {
 	post: (path: string, ...rest: unknown[]) => unknown;
 	get: (path: string, ...rest: unknown[]) => unknown;
 	delete: (path: string, ...rest: unknown[]) => unknown;
+	addContentTypeParser: (
+		contentType: string,
+		opts: { parseAs: 'string' | 'buffer' },
+		parser: FastifyContentTypeParser
+	) => unknown;
+}
+
+type FastifyPlugin = (instance: FastifyLikeInstance, opts: unknown, done: (err?: Error) => void) => void;
+
+interface FastifyLikeHost {
+	register: (plugin: FastifyPlugin) => unknown;
 }
 
 export interface RegisterMcpProfileArgs {
@@ -63,7 +77,16 @@ const DEFAULT_MOUNT_PATH = '/mcp';
 
 /**
  * Fastify-side registration. Used by `server/operationsServer.ts` for the
- * operations profile. Idempotent through the host's own route table.
+ * operations profile.
+ *
+ * The routes are registered inside an encapsulated Fastify plugin so we can
+ * install a raw-body content-type parser scoped to the MCP endpoint WITHOUT
+ * touching the rest of the operations API. Fastify's default JSON parser
+ * rejects a malformed body with a framework 400 *before* the handler runs; by
+ * reading the body as a raw string and letting the transport's `parseMessage`
+ * be the single JSON-RPC parse point, a malformed envelope comes back as a
+ * JSON-RPC `-32700` frame (#1317 S1) — matching the spec convention and
+ * Harper's own unit tests.
  */
 export function registerMcpProfile({ profile, host, config, routeOptions }: RegisterMcpProfileArgs): void {
 	const profileConfig = config?.mcp?.[profile];
@@ -78,19 +101,26 @@ export function registerMcpProfile({ profile, host, config, routeOptions }: Regi
 	}
 	const mountPath = profileConfig.mountPath ?? DEFAULT_MOUNT_PATH;
 	const handler = createFastifyHandler(profile);
-	// Register POST, GET, and DELETE on the same mount path. The transport
-	// core decides whether to handle (POST initialize / JSON-RPC dispatch),
-	// return 405 with an accurate `Allow` header (GET always in v1, DELETE
-	// when `mcp.session.allowClientDelete` is false), or process (DELETE
-	// when enabled). Without explicit GET/DELETE routes Fastify would
-	// short-circuit to its built-in 404 before the transport runs.
-	for (const method of ['post', 'get', 'delete'] as const) {
-		if (routeOptions) {
-			host[method](mountPath, routeOptions, handler);
-		} else {
-			host[method](mountPath, handler);
+	host.register((instance, _opts, done) => {
+		// Pass the JSON body through unparsed; the transport parses it once.
+		instance.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, parserDone) => {
+			parserDone(null, body);
+		});
+		// Register POST, GET, and DELETE on the same mount path. The transport
+		// core decides whether to handle (POST initialize / JSON-RPC dispatch),
+		// return 405 with an accurate `Allow` header (GET always in v1, DELETE
+		// when `mcp.session.allowClientDelete` is false), or process (DELETE
+		// when enabled). Without explicit GET/DELETE routes Fastify would
+		// short-circuit to its built-in 404 before the transport runs.
+		for (const method of ['post', 'get', 'delete'] as const) {
+			if (routeOptions) {
+				instance[method](mountPath, routeOptions, handler);
+			} else {
+				instance[method](mountPath, handler);
+			}
 		}
-	}
+		done();
+	});
 	harperLogger.info(`MCP ${profile} profile registered at ${mountPath}`);
 }
 
