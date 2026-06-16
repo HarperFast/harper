@@ -7,13 +7,14 @@
  *      (cache_desktop / cache_mobile) hold records with the same primary key;
  *      neither table sees the other's data.
  *
- *   2. Multi-path blobPaths — Harper starts with two blobPaths configured; binary
- *      data is stored and retrieved byte-exact. Harper distributes blob files
- *      round-robin across the paths; all records are retrievable regardless of
- *      which path a given file landed on.
+ *   2. Multi-path blobPaths config active — Harper starts with two blobPaths
+ *      configured; Bytes records are stored and retrieved byte-exact, confirming
+ *      the multi-path config does not interfere with normal table I/O. (See the
+ *      Bytes-vs-Blob note below: Bytes is inline storage and does not exercise
+ *      blobPaths file striping.)
  *
- *   3. Large blob (200KB) — a 200KB payload round-trips through the multi-path
- *      setup without truncation or corruption.
+ *   3. Large Bytes payload (200KB) — a 200KB payload round-trips with the
+ *      multi-path config active, without truncation or corruption.
  *
  * The fixture pre-defines DesktopPage and MobilePage tables in separate databases.
  * blobPaths are supplied at start time via `storage.blobPaths` in the config option.
@@ -71,10 +72,14 @@ suite('blob-advanced', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
 
 	/** Two temporary directories used as blob storage paths. */
-	const blobDir1 = mkdtempSync(join(tmpdir(), 'harper-blob-test-1-'));
-	const blobDir2 = mkdtempSync(join(tmpdir(), 'harper-blob-test-2-'));
+	let blobDir1: string;
+	let blobDir2: string;
 
 	before(async () => {
+		// Created in before() (not at suite-body scope) so the dirs are not created
+		// when the suite is skipped on Windows/Bun, where after() never runs.
+		blobDir1 = mkdtempSync(join(tmpdir(), 'harper-blob-test-1-'));
+		blobDir2 = mkdtempSync(join(tmpdir(), 'harper-blob-test-2-'));
 		await startHarper(ctx, {
 			config: {
 				storage: {
@@ -186,56 +191,61 @@ suite('blob-advanced', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	});
 
 	/**
-	 * Test 2: Multi-path blobPaths — binary data stored and retrievable
+	 * Test 2: Multi-path blobPaths config active — Bytes data stored and retrievable
 	 *
-	 * Store 4 records with ~10KB Bytes payloads. Harper distributes blob files
-	 * round-robin across the two blobPaths; we verify all 4 are retrievable
-	 * byte-exact regardless of which path they landed on.
+	 * Store 4 records with ~10KB Bytes payloads while two blobPaths are configured,
+	 * and verify all 4 are retrievable byte-exact. Bytes is inline DB storage, so
+	 * this confirms the multi-path config does not interfere with normal table I/O;
+	 * it does not exercise blobPaths file striping (that requires Blob columns).
 	 *
 	 * Content strings are built from repeating ASCII patterns so the UTF-8
 	 * Buffer.from() encoding is lossless and the byte-exact comparison is valid.
 	 */
-	test('multi-path blobPaths: all records stored and retrievable byte-exact', { timeout: 30_000 }, async () => {
-		const BLOB_SIZE = 10 * 1024; // 10KB
+	test(
+		'multi-path blobPaths config: Bytes records stored and retrievable byte-exact',
+		{ timeout: 30_000 },
+		async () => {
+			const BLOB_SIZE = 10 * 1024; // 10KB
 
-		// Build 4 distinct payloads using ASCII characters (safe for UTF-8 round-trip)
-		const payloads: Buffer[] = Array.from(
-			{ length: 4 },
-			(_, i) => Buffer.from(String.fromCharCode(65 + i).repeat(BLOB_SIZE)) // 'A', 'B', 'C', 'D' repeated
-		);
-
-		// Store all 4 records
-		for (let i = 0; i < payloads.length; i++) {
-			await request(client.restURL)
-				.put(`/DesktopPage/multi-${i}`)
-				.set(client.headers)
-				.send({
-					id: `multi-${i}`,
-					content: payloads[i].toString(), // ASCII string → stored as UTF-8 Buffer
-					contentType: 'application/octet-stream',
-				})
-				.expect(204);
-		}
-
-		// Retrieve each record via REST and verify byte-exact content
-		for (let i = 0; i < payloads.length; i++) {
-			const resp = await request(client.restURL).get(`/DesktopPage/multi-${i}`).set(client.headers).expect(200);
-
-			ok(resp.body.content, `record multi-${i} should have content`);
-			const returned = decodeHarperBytes(resp.body.content);
-
-			strictEqual(
-				returned.length,
-				payloads[i].length,
-				`record multi-${i}: returned length ${returned.length} !== expected ${payloads[i].length}`
+			// Build 4 distinct payloads using ASCII characters (safe for UTF-8 round-trip)
+			const payloads: Buffer[] = Array.from(
+				{ length: 4 },
+				(_, i) => Buffer.from(String.fromCharCode(65 + i).repeat(BLOB_SIZE)) // 'A', 'B', 'C', 'D' repeated
 			);
-			strictEqual(
-				returned.compare(payloads[i]),
-				0,
-				`record multi-${i}: content mismatch (byte-exact comparison failed)`
-			);
+
+			// Store all 4 records
+			for (let i = 0; i < payloads.length; i++) {
+				await request(client.restURL)
+					.put(`/DesktopPage/multi-${i}`)
+					.set(client.headers)
+					.send({
+						id: `multi-${i}`,
+						content: payloads[i].toString(), // ASCII string → stored as UTF-8 Buffer
+						contentType: 'application/octet-stream',
+					})
+					.expect(204);
+			}
+
+			// Retrieve each record via REST and verify byte-exact content
+			for (let i = 0; i < payloads.length; i++) {
+				const resp = await request(client.restURL).get(`/DesktopPage/multi-${i}`).set(client.headers).expect(200);
+
+				ok(resp.body.content, `record multi-${i} should have content`);
+				const returned = decodeHarperBytes(resp.body.content);
+
+				strictEqual(
+					returned.length,
+					payloads[i].length,
+					`record multi-${i}: returned length ${returned.length} !== expected ${payloads[i].length}`
+				);
+				strictEqual(
+					returned.compare(payloads[i]),
+					0,
+					`record multi-${i}: content mismatch (byte-exact comparison failed)`
+				);
+			}
 		}
-	});
+	);
 
 	/**
 	 * Test 3: Large blob (200KB) through multi-path setup
@@ -244,32 +254,36 @@ suite('blob-advanced', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	 * corruption. Content uses only printable ASCII so the UTF-8 Buffer round-trip
 	 * is lossless.
 	 */
-	test('large blob (200KB) round-trip through multi-path blobPaths', { timeout: 30_000 }, async () => {
-		const LARGE_SIZE = 200 * 1024; // 200KB
+	test(
+		'large Bytes payload (200KB) round-trip with multi-path blobPaths config active',
+		{ timeout: 30_000 },
+		async () => {
+			const LARGE_SIZE = 200 * 1024; // 200KB
 
-		// Repeating printable ASCII pattern (32–126) — safe for UTF-8 Buffer.from()
-		const chars = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('');
-		let str = '';
-		while (str.length < LARGE_SIZE) str += chars;
-		const content = str.slice(0, LARGE_SIZE);
-		const expected = Buffer.from(content);
+			// Repeating printable ASCII pattern (32–126) — safe for UTF-8 Buffer.from()
+			const chars = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('');
+			let str = '';
+			while (str.length < LARGE_SIZE) str += chars;
+			const content = str.slice(0, LARGE_SIZE);
+			const expected = Buffer.from(content);
 
-		await request(client.restURL)
-			.put('/DesktopPage/large-blob')
-			.set(client.headers)
-			.send({
-				id: 'large-blob',
-				content,
-				contentType: 'application/octet-stream',
-			})
-			.expect(204);
+			await request(client.restURL)
+				.put('/DesktopPage/large-blob')
+				.set(client.headers)
+				.send({
+					id: 'large-blob',
+					content,
+					contentType: 'application/octet-stream',
+				})
+				.expect(204);
 
-		const resp = await request(client.restURL).get('/DesktopPage/large-blob').set(client.headers).expect(200);
+			const resp = await request(client.restURL).get('/DesktopPage/large-blob').set(client.headers).expect(200);
 
-		ok(resp.body.content, 'large-blob record should have content');
-		const returned = decodeHarperBytes(resp.body.content);
+			ok(resp.body.content, 'large-blob record should have content');
+			const returned = decodeHarperBytes(resp.body.content);
 
-		strictEqual(returned.length, LARGE_SIZE, `large-blob: returned length ${returned.length} !== ${LARGE_SIZE}`);
-		strictEqual(returned.compare(expected), 0, 'large-blob: content mismatch (byte-exact comparison failed)');
-	});
+			strictEqual(returned.length, LARGE_SIZE, `large-blob: returned length ${returned.length} !== ${LARGE_SIZE}`);
+			strictEqual(returned.compare(expected), 0, 'large-blob: content mismatch (byte-exact comparison failed)');
+		}
+	);
 });
