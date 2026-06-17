@@ -50,6 +50,25 @@ function eventOnlyBody(text) {
 	return wrapper;
 }
 
+// A body that emits 'close' without ever emitting 'end' or 'error' — what
+// IncomingMessage does on a premature client disconnect. Before the 'close'
+// handler in readBody, this hung the read promise forever and leaked the
+// buffered chunks (#1320 review).
+function abortedBody(partialText) {
+	const emitter = new EventEmitter();
+	const wrapper = {
+		on(event, listener) {
+			emitter.on(event, listener);
+			return wrapper;
+		},
+	};
+	queueMicrotask(() => {
+		if (partialText) emitter.emit('data', Buffer.from(partialText, 'utf8'));
+		emitter.emit('close');
+	});
+	return wrapper;
+}
+
 async function next() {
 	return undefined;
 }
@@ -108,6 +127,24 @@ describe('mcp/adapters/harperHttp', () => {
 		);
 		assert.equal(result.status, 200);
 		assert.equal(JSON.parse(result.body).id, 7);
+	});
+
+	it('rejects (does not hang) when the request body closes before end (#1320 review)', async () => {
+		const handler = createHarperHttpHandler('application');
+		// Without the 'close' handler in readBody this await would never settle and
+		// the test would time out; assert it rejects promptly instead.
+		await assert.rejects(
+			handler(
+				{
+					method: 'POST',
+					headers: makeHeaders({ 'content-type': 'application/json' }),
+					body: abortedBody('{ "jsonrpc": "2.0"'),
+					user: { username: 'alice' },
+				},
+				next
+			),
+			/request aborted/
+		);
 	});
 
 	it('reads chunked body streams (Buffer + string mix)', async () => {

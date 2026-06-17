@@ -128,6 +128,19 @@ export function getTool(name: string): ToolDef | undefined {
 }
 
 /**
+ * Snapshot every tool currently registered for a profile. Used to capture the
+ * live tool set before an atomic rebuild so a mid-rebuild failure can restore
+ * it (rather than leaving `tools/list` empty); see `registerApplicationTools`.
+ */
+export function snapshotProfileTools(profile: McpProfile): ToolDef[] {
+	const out: ToolDef[] = [];
+	for (const def of registry.values()) {
+		if (def.profile === profile) out.push(def);
+	}
+	return out;
+}
+
+/**
  * Remove every tool registered for a profile. Used to rebuild the
  * application-profile tool set when schemas change (a table may have been
  * added/removed after the initial registration); see `refreshApplicationTools`.

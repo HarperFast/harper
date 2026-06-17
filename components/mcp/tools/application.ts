@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
-import { addTool, clearProfileTools, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
+import { addTool, clearProfileTools, snapshotProfileTools, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
 import {
 	type AttributePermissionEntry,
@@ -738,9 +738,23 @@ export function registerApplicationTools(): void {
 		return;
 	}
 	applicationToolsRegistered = true;
-	// Idempotent rebuild: drop any application tools from a prior pass so a
-	// removed/renamed table doesn't leave a stale tool behind.
+	// Atomic idempotent rebuild: drop any application tools from a prior pass so a
+	// removed/renamed table doesn't leave a stale tool behind. Snapshot the prior
+	// set first so a throw mid-loop (e.g. a malformed custom tool on a @table)
+	// restores it rather than leaving `tools/list` empty until the next schema
+	// change. Registration is synchronous, so no reader observes the gap.
+	const previousTools = snapshotProfileTools('application');
 	clearProfileTools('application');
+	try {
+		buildApplicationTools(resources);
+	} catch (err) {
+		clearProfileTools('application');
+		for (const def of previousTools) addTool(def);
+		throw err;
+	}
+}
+
+function buildApplicationTools(resources: ResourcesRegistry): void {
 	const claimedSuffixes = new Set<string>();
 	let toolsRegistered = 0;
 	let resourcesConsidered = 0;
