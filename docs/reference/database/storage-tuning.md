@@ -140,7 +140,7 @@ In-memory record caching of decoded records. Disable to reduce heap usage when r
 
 ## RocksDB Memory
 
-RocksDB exposes two large native memory pools that Harper makes tunable: a shared **block cache** for hot SST blocks, and a **WriteBufferManager** (enabled by default) that caps total memtable memory across every database in the process. These options apply only when `storage.engine` is `rocksdb`.
+RocksDB exposes two large native memory pools that Harper makes tunable: a shared **block cache** for hot SST blocks and a **WriteBufferManager** (enabled by default) that caps total memtable memory across every database in the process. These options apply only when `storage.engine` is `rocksdb`.
 
 ### How RocksDB reads are cached
 
@@ -188,7 +188,7 @@ Type: `number` (bytes)
 
 Default: one third of `blockCacheSize` (enabled). Set to `0` to disable.
 
-Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history that RocksDB's OptimisticTransactionDB retains for conflict checking — is capped at this size across the entire process.
+Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history that RocksDB's `OptimisticTransactionDB` retains for conflict checking — is capped at this size across the entire process.
 
 Without a `WriteBufferManager`, each column family (table) manages its own memtable budget. The total grows with the number of column families: each one retains roughly `max_write_buffer_size_to_maintain` worth of recently-flushed memtables for snapshot reads and conflict detection. A database with many tables can accumulate hundreds of megabytes to a few gigabytes of resident anonymous memory before any cap is reached. The manager is enabled by default to bound that growth at a single limit.
 
