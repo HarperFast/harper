@@ -115,10 +115,23 @@ export function mergeHeaders(target: any, source: Headers) {
  * `writeHead`'s array form is a FLAT `[name, value, name, value]` list, not a list of tuples — so an
  * iterable of `[name, value]` pairs (a `Headers`/`Map`) must be turned into an object. Passing
  * `Array.from(headers)` (nested `[[name, value], …]`) makes Node read a tuple as a header name and throw
- * `TypeError: The "name" argument must be of type string. Received an instance of Array`. A plain object
- * (or a falsy value, e.g. when there are no headers) is returned unchanged.
+ * `TypeError: The "name" argument must be of type string. Received an instance of Array`.
+ *
+ * Multi-valued headers (notably `Set-Cookie`, which by spec retains its multiple values when iterating
+ * a `Headers` object instead of being comma-joined) must be grouped into arrays rather than collapsed
+ * via `Object.fromEntries` last-wins. `writeHead` accepts `{name: ['value1', 'value2']}` for that, and
+ * emits the values as separate header lines on the wire. A plain object (or a falsy value, e.g. when
+ * there are no headers) is returned unchanged.
  */
 export function toWriteHeadHeaders(headers: any): any {
 	if (!headers) return headers;
-	return headers[Symbol.iterator] ? Object.fromEntries(headers) : headers;
+	if (!headers[Symbol.iterator]) return headers;
+	const result: Record<string, string | string[]> = {};
+	for (const [name, value] of headers) {
+		const existing = result[name];
+		if (existing === undefined) result[name] = value;
+		else if (Array.isArray(existing)) existing.push(value);
+		else result[name] = [existing, value];
+	}
+	return result;
 }
