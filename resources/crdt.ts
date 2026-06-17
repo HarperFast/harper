@@ -177,6 +177,9 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	// then continue to iterate back through the audit history, filling in the blanks
 	while (unknowns.size > 0 && auditTime > 0) {
 		const auditEntry = auditStore.get(auditTime, tableId, recordId);
+		// The history needed to resolve the remaining unknowns may have been pruned away; stop
+		// rather than dereferencing a missing entry (mirrors the reverse-walk guard above).
+		if (!auditEntry) break;
 		let priorRecord: any;
 		switch (auditEntry.type) {
 			case 'put':

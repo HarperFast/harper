@@ -126,6 +126,20 @@ describe('crdt getRecordAtTime', () => {
 		assert.deepStrictEqual(getRecordAtTime(current, 15, store, 1, 'G'), { id: 'G', n: 1 });
 	});
 
+	it('does not crash when older history needed to fill unknowns has been pruned', () => {
+		// patch(n:2)@10 [PRUNED] <- patch(n:3)@20 <- patch(n:4)@30 (current). Reconstructing before
+		// the pruned base leaves `n` unknown and walks into the missing @10 entry.
+		const events = [
+			// version 10 intentionally absent from the store (pruned)
+			{ version: 20, type: 'patch', value: { n: 3 }, previousVersion: 10 },
+			{ version: 30, type: 'patch', value: { n: 4 }, previousVersion: 20 },
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'K', n: 4, label: 'c' }, 30);
+		// `n` cannot be resolved (its prior value was pruned), so it keeps the live value; no throw.
+		assert.deepStrictEqual(getRecordAtTime(current, 15, store, 1, 'K'), { id: 'K', n: 4, label: 'c' });
+	});
+
 	describe('records with no delete in history (reverse-walk path unchanged)', () => {
 		// put(v:1) -> patch(v:2) -> patch(v:3, current)
 		const events = [
