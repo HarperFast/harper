@@ -50,6 +50,37 @@ const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
 const MISSING_TYPED_STRUCTURE_PREFIX = 'Could not find typed structure ';
 const MISSING_CLASSIC_STRUCTURE_PREFIX = 'Record id is not defined for ';
 
+// Normalize a shared-structures payload into {named, typed} arrays. Accepts the three wire forms
+// the encoder hands us: a plain Array (named only), a Map with 'named'/'typed' keys (structon's
+// typedStructs form), or a plain object with the same keys (Map round-tripped via mapsAsObjects).
+function toShape(s: any): { named: any[]; typed: any[] } {
+	if (!s) return { named: [], typed: [] };
+	if (s instanceof Map) return { named: s.get('named') || [], typed: s.get('typed') || [] };
+	if (Array.isArray(s)) return { named: s, typed: [] };
+	if (typeof s === 'object') return { named: s.named || [], typed: s.typed || [] };
+	return { named: [], typed: [] };
+}
+
+// Structural equality for the leaf shapes structures hold: primitive (named entries are strings,
+// typed entries are arrays of [type, size, key] triples). Recurses through arrays only.
+function shapeEqual(a: any, b: any): boolean {
+	if (a === b) return true;
+	if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		if (!shapeEqual(a[i], b[i])) return false;
+	}
+	return true;
+}
+
+// next must contain every existing entry in the same slot, in order; new slots may be appended.
+function isStrictExtension(existing: any[], next: any[]): boolean {
+	if (next.length < existing.length) return false;
+	for (let i = 0; i < existing.length; i++) {
+		if (!shapeEqual(existing[i], next[i])) return false;
+	}
+	return true;
+}
+
 export function isMissingStructureError(error: any): boolean {
 	const message = error?.message;
 	return (
@@ -290,26 +321,20 @@ export class RecordEncoder extends StructonEncoder {
 							return false;
 						}
 						// Strict-extension CAS: the length check above lets two writers with the same baseline
-						// length save different shapes at the same index, silently corrupting the loser's
-						// records (decode trips on "Data read, but end of buffer not reached"). Reject any
-						// save that would mutate an existing entry; msgpackr's pack() re-packs against the
-						// new disk state and re-mints at the next free id. See harper#1337.
-						if (existingStructures) {
-							for (let i = 0; i < existingStructures.length; i++) {
-								const existingEntry = existingStructures[i];
-								const newEntry = structures[i];
-								if (existingEntry === newEntry) continue;
-								if (
-									!Array.isArray(existingEntry) ||
-									!Array.isArray(newEntry) ||
-									existingEntry.length !== newEntry.length
-								) {
-									return false;
-								}
-								for (let j = 0; j < existingEntry.length; j++) {
-									if (existingEntry[j] !== newEntry[j]) return false;
-								}
-							}
+						// save different shapes at the same index, silently corrupting the loser's records
+						// (decode trips on "Data read, but end of buffer not reached"). Reject any save that
+						// would mutate an existing entry; msgpackr re-packs against the new disk state and
+						// re-mints at the next free id. Structures arrive as a plain Array (named-only) or a
+						// Map / plain object with 'named' and 'typed' keys (structon's typedStructs form, the
+						// latter after a mapsAsObjects round-trip); normalize both sides so an Array→Map
+						// upgrade (first typedStruct minted) isn't mistaken for mutation. See harper#1337.
+						const existingShape = toShape(existingStructures);
+						const nextShape = toShape(structures);
+						if (
+							!isStrictExtension(existingShape.named, nextShape.named) ||
+							!isStrictExtension(existingShape.typed, nextShape.typed)
+						) {
+							return false;
 						}
 						txn.putSync(sharedStructuresKey, structures);
 						return true;

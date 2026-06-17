@@ -155,6 +155,108 @@ describe('RecordEncoder sharedStructures dictionary divergence (harper#1337)', (
 		assert.strictEqual(enc.saveStructures(['notAnArray'], 1), false);
 	});
 
+	it('strict-extension CAS accepts Array→Map upgrade when named entries match', () => {
+		// structon switches the persisted format from plain Array (named-only) to a Map with
+		// 'named'/'typed' keys the moment the first typedStruct is minted. A naive index-into-existing
+		// loop would treat the Map's missing numeric properties as a deletion and falsely reject the
+		// receiver-side save, which is exactly the regression that left during-window markers stuck on
+		// the patched cluster.
+		const root = rocksRoot();
+		const enc = makeRocksEncoder(root);
+		assert.strictEqual(enc.saveStructures([['runId', 'vu']], 0), true);
+		const upgraded = new Map();
+		upgraded.set('named', [['runId', 'vu']]);
+		upgraded.set('typed', [[['Long', 4, 'a']]]);
+		assert.strictEqual(enc.saveStructures(upgraded, 1), true);
+		const persisted = root.get();
+		assert.deepStrictEqual(persisted.get('named'), [['runId', 'vu']]);
+		assert.deepStrictEqual(persisted.get('typed'), [[['Long', 4, 'a']]]);
+	});
+
+	it('strict-extension CAS rejects a Map upgrade that mutates an existing named entry', () => {
+		// Array→Map is fine when the named prefix matches; it must still reject when named[0]
+		// disagrees, because that is the silent-corruption case dressed up in the upgrade format.
+		const root = rocksRoot();
+		const enc = makeRocksEncoder(root);
+		assert.strictEqual(enc.saveStructures([['runId', 'vu']], 0), true);
+		const conflicting = new Map();
+		conflicting.set('named', [['alpha', 'beta']]);
+		conflicting.set('typed', [[['Long', 4, 'a']]]);
+		assert.strictEqual(enc.saveStructures(conflicting, 1), false);
+		assert.deepStrictEqual(root.get(), [['runId', 'vu']]);
+	});
+
+	it('strict-extension CAS accepts an append to typed structures in Map form', () => {
+		// Two saves in Map form where the second extends typed by one entry; identical [type,size,key]
+		// triples come from different array literals so a reference-equality element check would
+		// falsely reject. Recursive shape compare handles the nested form. structon attaches a function
+		// isCompatible when saving Map form (the numeric fallback assumes Array shape), so the test
+		// mirrors that real-world call shape.
+		const root = rocksRoot();
+		const enc = makeRocksEncoder(root);
+		const first = new Map();
+		first.set('named', [['runId']]);
+		first.set('typed', [[['Long', 4, 'a']]]);
+		assert.strictEqual(
+			enc.saveStructures(first, () => true),
+			true
+		);
+		const second = new Map();
+		second.set('named', [['runId']]);
+		second.set('typed', [[['Long', 4, 'a']], [['Long', 4, 'b']]]);
+		assert.strictEqual(
+			enc.saveStructures(second, () => true),
+			true
+		);
+	});
+
+	it('strict-extension CAS rejects a typed-structure replacement at an existing id', () => {
+		// Concurrent writers both mint a typed struct at the same nextId; one must lose so the loser's
+		// records get re-packed against the persisted shape.
+		const root = rocksRoot();
+		const enc = makeRocksEncoder(root);
+		const first = new Map();
+		first.set('named', []);
+		first.set('typed', [[['Long', 4, 'a']]]);
+		assert.strictEqual(
+			enc.saveStructures(first, () => true),
+			true
+		);
+		const conflicting = new Map();
+		conflicting.set('named', []);
+		conflicting.set('typed', [[['Long', 4, 'b']]]);
+		assert.strictEqual(
+			enc.saveStructures(conflicting, () => true),
+			false
+		);
+	});
+
+	it('strict-extension CAS handles plain-object form (Map round-tripped via mapsAsObjects)', () => {
+		// msgpackr decodes Maps as plain objects under mapsAsObjects:true. RecordEncoder uses Map-form
+		// natively, but defensive normalization keeps the check correct even if the persisted form
+		// comes back as {named, typed}.
+		const root = rocksRoot();
+		const enc = makeRocksEncoder(root);
+		const first = new Map();
+		first.set('named', [['runId']]);
+		first.set('typed', [[['Long', 4, 'a']]]);
+		assert.strictEqual(
+			enc.saveStructures(first, () => true),
+			true
+		);
+		// Replace the persisted Map with the plain-object form to simulate a mapsAsObjects round-trip.
+		root.store.transactionSync((txn) =>
+			txn.putSync([Symbol.for('structures'), enc.name], { named: [['runId']], typed: [[['Long', 4, 'a']]] })
+		);
+		const extended = new Map();
+		extended.set('named', [['runId']]);
+		extended.set('typed', [[['Long', 4, 'a']], [['Long', 4, 'b']]]);
+		assert.strictEqual(
+			enc.saveStructures(extended, () => true),
+			true
+		);
+	});
+
 	// End-to-end retry-flow coverage (encode → save → CAS reject → msgpackr re-pack → decode against
 	// the new disk state) lives in harper-pro's integrationTests/cluster/multiShapeReplicationConvergence.test.mjs,
 	// which exercises a real RocksDB-backed encoder with 4-thread writers and varying optional-field
