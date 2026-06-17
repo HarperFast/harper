@@ -439,7 +439,10 @@ async function deployComponent(req) {
 			// the replicated hdb_deployment row's payload_blob. Blob.stream() blocks on
 			// in-flight BLOB_CHUNK writes until the chunks land. If the row never arrives
 			// within the timeout, peer records a failure and origin sees it in peer_results.
-			const row = await awaitDeploymentRow(req._deploymentId);
+			// The wait budget defaults to 120s but is overridable per-deploy via
+			// `deployment_timeout` (ms) for clusters where the system-table channel is
+			// heavily backlogged (harper-pro#402).
+			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
 			extractionPayload = row.payload_blob.stream();
 		}
 

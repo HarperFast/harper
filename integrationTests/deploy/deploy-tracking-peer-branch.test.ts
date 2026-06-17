@@ -173,6 +173,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 	);
 
 	// Note: the bogus-_deploymentId-id timeout case isn't covered here because the
-	// awaitDeploymentRow 30s default would balloon test time. The timeout path is exercised
-	// by the unit tests for awaitDeploymentRow directly.
+	// awaitDeploymentRow 120s default would balloon test time. The timeout path (and the
+	// per-deploy deployment_timeout override) is exercised by the unit tests for
+	// awaitDeploymentRow directly.
 });

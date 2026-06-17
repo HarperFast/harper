@@ -260,5 +260,24 @@ describe('Test operationsValidation module', () => {
 			expect(result).to.be.ok;
 			expect(result.message).to.include('project');
 		});
+
+		it('accepts a numeric deployment_timeout', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				deployment_timeout: 180000,
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects a non-numeric deployment_timeout', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				deployment_timeout: 'soon',
+			});
+			expect(result).to.be.ok;
+			expect(result.message).to.include('deployment_timeout');
+		});
 	});
 });

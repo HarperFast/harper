@@ -242,15 +242,61 @@ describe('awaitDeploymentRow', () => {
 		assert.ok(result.payload_blob);
 	});
 
-	it('rejects with a timeout error when the row never arrives within timeoutMs', async () => {
+	it('rejects with a "did not replicate" timeout when the row never arrives within timeoutMs', async () => {
 		await assert.rejects(
 			() => awaitDeploymentRow('never-arrives', { timeoutMs: 100, pollIntervalMs: 25 }),
-			/Timed out after 100ms waiting for hdb_deployment row 'never-arrives'/
+			/Timed out after 100ms .*hdb_deployment row 'never-arrives' did not replicate/
+		);
+	});
+
+	it('rejects with a "payload_blob has not arrived" timeout when the row replicated but its blob has not', async () => {
+		// Distinguish the two failure modes: the row is present (replication reached its
+		// creation) but payload_blob stays null past the deadline — points at the payload
+		// write, not a dead channel.
+		const id = 'row-without-blob';
+		installed.mock.rows.set(id, { deployment_id: id, payload_blob: null });
+		await assert.rejects(
+			() => awaitDeploymentRow(id, { timeoutMs: 100, pollIntervalMs: 25 }),
+			/Timed out after 100ms .*row 'row-without-blob' replicated but its payload_blob has not arrived/
 		);
 	});
 
 	it('throws if the deployment table is missing entirely (not yet provisioned)', async () => {
 		delete databases.system[DEPLOYMENT_TABLE];
 		await assert.rejects(() => awaitDeploymentRow('d3'), /Deployment tracking is not initialized on this node/);
+	});
+
+	it('coerces a numeric-string timeoutMs so the deadline is real (not string concatenation)', async () => {
+		// `deployment_timeout` can reach awaitDeploymentRow as a string (validateBySchema
+		// discards Joi's coerced value). Date.now() + "120" would concatenate into a
+		// far-future deadline that never times out; the coercion must keep it numeric so this
+		// rejects in ~120ms rather than hanging.
+		const before = Date.now();
+		await assert.rejects(
+			() => awaitDeploymentRow('string-timeout', { timeoutMs: '120', pollIntervalMs: 25 }),
+			/Timed out after 120ms/
+		);
+		assert.ok(Date.now() - before < 5000, 'a string timeoutMs must not balloon the deadline');
+	});
+
+	it('falls back to a real deadline when timeoutMs is non-numeric (no NaN infinite loop)', async () => {
+		// Number('soon') is NaN; a NaN deadline would make `remaining <= 0` always false and
+		// loop forever. The guard must fall back to the default, so polling for an
+		// already-present row still resolves immediately.
+		const row = { deployment_id: 'nan-timeout', payload_blob: { fake: true } };
+		installed.mock.rows.set('nan-timeout', row);
+		const result = await awaitDeploymentRow('nan-timeout', { timeoutMs: 'soon' });
+		assert.strictEqual(result, row);
+	});
+
+	it('polls at least once when timeoutMs is 0 — returns an already-present row', async () => {
+		const row = { deployment_id: 'zero-present', payload_blob: { fake: true } };
+		installed.mock.rows.set('zero-present', row);
+		const result = await awaitDeploymentRow('zero-present', { timeoutMs: 0 });
+		assert.strictEqual(result, row, 'a 0 timeout must still perform a single lookup');
+	});
+
+	it('polls once then times out when timeoutMs is 0 and the row is absent', async () => {
+		await assert.rejects(() => awaitDeploymentRow('zero-absent', { timeoutMs: 0 }), /Timed out after 0ms/);
 	});
 });
