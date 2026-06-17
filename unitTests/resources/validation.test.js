@@ -157,4 +157,8 @@ describe('Types Validation', () => {
 				})
 		);
 	});
+	after(async function () {
+		await ValidationTest?.dropTable();
+	});
+
 });
