@@ -47,11 +47,13 @@ export interface NormRequest {
 	/** Lowercased header name → value. Adapters normalize before calling. */
 	headers: Record<string, string | undefined>;
 	/**
-	 * The raw JSON request body string. Both adapters now deliver the unparsed
-	 * body (the Fastify route installs a raw-body content-type parser; the
-	 * Harper-HTTP adapter reads the stream to a string), so `parseMessage` is
-	 * the single JSON-RPC parse point. Typed as `string | unknown` because
-	 * `parseMessage` also tolerates an already-parsed value defensively.
+	 * The request body for JSON-RPC parsing. The two adapters deliver different
+	 * shapes: the Harper-HTTP adapter passes the raw unparsed string (it reads the
+	 * stream itself), while the Fastify adapter passes Fastify's already-parsed JS
+	 * object (the S1 raw-body content-type parser was reverted because it stopped
+	 * the MCP route from inheriting Harper's response serializers). Typed
+	 * `string | unknown` because `parseMessage` handles both — it parses a string
+	 * and passes a non-string (already-parsed) value through.
 	 */
 	body: string | unknown;
 	/** Authenticated username from upstream auth pipeline. Used for session binding. */

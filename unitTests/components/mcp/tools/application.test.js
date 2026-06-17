@@ -102,6 +102,34 @@ describe('mcp/tools/application — registration', () => {
 		);
 	});
 
+	it('restores the prior tool set when a rebuild throws mid-loop (#1320 review)', () => {
+		// First pass registers a healthy table.
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const before = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.length;
+		assert.ok(before > 0, 'baseline tools registered');
+
+		// Second pass includes a resource that throws during registration.
+		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
+		Object.defineProperty(Bad, 'description', {
+			get() {
+				throw new Error('boom registering bad table');
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad }]]));
+		assert.throws(() => refreshApplicationTools(), /boom registering bad table/);
+
+		// The registry must not be left empty: the prior Product tools are restored.
+		const after = listTools({ user: SUPER, profile: 'application', sessionId: 's2', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.ok(
+			after.some((n) => n === 'create_Product'),
+			`prior tools must survive a failed rebuild, got: ${after.join(', ')}`
+		);
+	});
+
 	it('re-registration is idempotent — no duplicate tools', () => {
 		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
 		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));

@@ -23,6 +23,7 @@ interface BodyStream {
 	on(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
 	on(event: 'end', listener: () => void): unknown;
 	on(event: 'error', listener: (err: Error) => void): unknown;
+	on(event: 'close', listener: () => void): unknown;
 }
 
 interface HarperHttpRequest {
@@ -92,9 +93,23 @@ function readBody(body: BodyStream | undefined): Promise<string> {
 	if (!body) return Promise.resolve('');
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
+		let settled = false;
 		body.on('data', (chunk) => chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk));
-		body.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-		body.on('error', reject);
+		body.on('end', () => {
+			settled = true;
+			resolve(Buffer.concat(chunks).toString('utf8'));
+		});
+		body.on('error', (err) => {
+			settled = true;
+			reject(err);
+		});
+		// On a premature client disconnect `IncomingMessage` emits 'close' without
+		// 'end' or 'error', so without this the promise would hang forever and the
+		// buffered chunks leak. On normal completion 'close' fires after 'end',
+		// where `settled` is already true, so this is a no-op.
+		body.on('close', () => {
+			if (!settled) reject(Object.assign(new Error('request aborted'), { code: 'ECONNRESET' }));
+		});
 	});
 }
 

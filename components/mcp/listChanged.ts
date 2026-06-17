@@ -205,7 +205,10 @@ async function onSchemaChange(): Promise<void> {
 	try {
 		refreshApplicationTools();
 	} catch (err) {
-		harperLogger.trace(`MCP listChanged refreshApplicationTools: ${(err as Error).message}`);
+		// warn, not trace: a tool-rebuild failure leaves `tools/list` stale, which
+		// is invisible at default log levels if only traced. The notification loops
+		// below still run.
+		harperLogger.warn(`MCP listChanged refreshApplicationTools failed: ${(err as Error).message}`);
 	}
 	for (const r of snapshotSessions('application')) {
 		await refreshSessionUser(r);
