@@ -330,8 +330,13 @@ function makeUpdateHandler(toolName: string, ResourceClass: ResourceClassLike, v
 		try {
 			const target = makeTarget();
 			target.id = id;
-			const fn = verb === 'put' ? ResourceClass.put : ResourceClass.patch;
-			const data = await fn!(target, rest, buildContext(context.user));
+			// Call the verb method *on* ResourceClass so `this` stays bound to the
+			// class — detaching it (`const fn = ResourceClass.put`) makes the static
+			// Resource dispatcher read `this.directURLMapping` off undefined and throw.
+			const ctx = buildContext(context.user);
+			const data = await (verb === 'put'
+				? ResourceClass.put!(target, rest, ctx)
+				: ResourceClass.patch!(target, rest, ctx));
 			// Table.put/patch resolve to undefined; surface a `{ ok: true }`
 			// acknowledgement so the result has structuredContent matching
 			// derive{Update,Patch}OutputSchema. A custom Resource that returns a

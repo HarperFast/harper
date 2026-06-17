@@ -805,6 +805,28 @@ describe('mcp/tools/application — handler dispatch', () => {
 		assert.deepEqual(res.structuredContent, { ok: true });
 	});
 
+	it('update_ invokes the verb method bound to the Resource (this preserved) (#1324)', async () => {
+		// Regression: makeUpdateHandler must call ResourceClass.put *on* the class.
+		// A detached call (`const fn = ResourceClass.put; fn(...)`) loses `this`, and
+		// the real static Resource dispatcher then reads `this.directURLMapping` off
+		// undefined and throws. A `this`-less mock (the prior tests) can't catch this,
+		// so use a non-arrow handler that dereferences `this`.
+		let boundThis;
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', verbs: ['put'] });
+		Product.put = async function () {
+			boundThis = this.tableName; // detached call → `this` undefined → throws
+			return undefined;
+		};
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('update_Product').handler(
+			{ id: '42', name: 'widget' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(res.isError, undefined, `update must not error on a this-referencing handler: ${JSON.stringify(res)}`);
+		assert.equal(boundThis, 'product', 'put must be called with `this` bound to the Resource class');
+	});
+
 	it('handler exceptions surface as isError=true with kind=harper_error', async () => {
 		const Product = makeTableResource({
 			databaseName: 'data',
