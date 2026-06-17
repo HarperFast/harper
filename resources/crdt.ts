@@ -172,6 +172,13 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		}
 		auditTime = auditEntry.previousVersion;
 	}
+	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
+	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
+	// is otherwise missed, leaving `record` holding a newer re-inserted value. See issue #1330.)
+	if (auditTime > 0) {
+		const boundaryEntry = auditStore.get(auditTime, tableId, recordId);
+		if (boundaryEntry?.type === 'delete') return null;
+	}
 	// some patches may leave properties in an unknown state, so we need to fill in the blanks
 	// first we determine if there any unknown properties
 	// then continue to iterate back through the audit history, filling in the blanks

@@ -111,6 +111,20 @@ describe('crdt getRecordAtTime', () => {
 		assert.deepStrictEqual(getRecordAtTime(current, 35, store, 1, 'R'), { count: 7 });
 	});
 
+	it('returns null for a timestamp in the most recent deleted gap (no newer delete)', () => {
+		// put -> delete -> put(re-insert, current). A timestamp after the delete but before the
+		// re-insert is reached as the reverse-walk boundary (no newer delete triggers
+		// reconstructForward), so the boundary-delete check must return null.
+		const events = [
+			{ version: 10, type: 'put', value: { id: 'G', n: 1 }, previousVersion: 0 },
+			{ version: 20, type: 'delete', value: null, previousVersion: 10 },
+			{ version: 30, type: 'put', value: { id: 'G', n: 2 }, previousVersion: 20 },
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'G', n: 2 }, 30);
+		assert.strictEqual(getRecordAtTime(current, 25, store, 1, 'G'), null);
+	});
+
 	it('reconstructs a value that existed before a later delete/re-insert cycle', () => {
 		// put -> delete -> put -> delete -> put(current). A timestamp inside the FIRST live span
 		// must skip the newer delete and find the first put as its base.
