@@ -19,6 +19,7 @@ const {
 	saveBlob,
 	decodeFromDatabase,
 	startPreCommitBlobsForRecord,
+	isSourceBlobUnavailable,
 } = require('#src/resources/blob');
 const { existsSync, unlinkSync } = require('fs');
 const { pack } = require('msgpackr');
@@ -512,6 +513,42 @@ describe('Blob test', () => {
 		const preCommit = startPreCommitBlobsForRecord(record, store, false, true);
 		assert(preCommit && preCommit.blobs.includes(receivedBlob), 'received blob tracked on source apply');
 		unlinkSync(getFilePathForBlob(receivedBlob)); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('isSourceBlobUnavailable: only the replication source-missing marker, not local/transient faults', () => {
+		// The classification gate for pre-commit tolerance: the replication receiver flags an unrecoverable
+		// source-missing blob with `sourceBlobUnavailable` (markSourceBlobUnavailable, harper-pro#403). A
+		// local/transient save fault (disk full, a local ENOENT) is unmarked and must NOT be tolerated.
+		assert.equal(
+			isSourceBlobUnavailable(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true })),
+			true
+		);
+		assert.equal(isSourceBlobUnavailable(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })), false);
+		assert.equal(isSourceBlobUnavailable(new Error('disk full')), false);
+		assert.equal(isSourceBlobUnavailable({ sourceBlobUnavailable: false }), false);
+		assert.equal(isSourceBlobUnavailable(null), false);
+		assert.equal(isSourceBlobUnavailable(undefined), false);
+	});
+	it('startPreCommitBlobsForRecord.complete() tolerates a source-missing blob but still rejects a transient fault', async () => {
+		// harper-pro#403/#388: a replicated record whose blob is gone at the source must still commit (blob
+		// diverged, backfilled later) rather than aborting the apply and wedging the copy stream. A genuine
+		// local/transient save fault must still abort the write so it is retried (no silent data loss).
+		const store = BlobTest.primaryStore.rootStore;
+
+		// source-unavailable: destroy the receive stream with the replication marker → saving rejects → tolerated
+		const goneStream = new PassThrough();
+		const goneBlob = createBlob(goneStream);
+		decodeFromDatabase(() => saveBlob(goneBlob, true), store); // start the save (assigns fileId, begins the pipeline)
+		const toleratePc = startPreCommitBlobsForRecord({ id: 1, blob: goneBlob }, store, false, true);
+		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
+		await assert.doesNotReject(toleratePc.complete(), 'source-unavailable blob must not abort the commit');
+
+		// transient/local fault: unmarked rejection must still propagate so the write aborts and retries
+		const failStream = new PassThrough();
+		const failBlob = createBlob(failStream);
+		decodeFromDatabase(() => saveBlob(failBlob, true), store);
+		const rejectPc = startPreCommitBlobsForRecord({ id: 2, blob: failBlob }, store, false, true);
+		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
+		await assert.rejects(rejectPc.complete(), 'a local/transient save fault must still abort the commit');
 	});
 	it('#406: cleanupUnusedBlobs deletes non-retained blobs but keeps retained ones', async () => {
 		// The retained-fileId guard: a skipped/aborted write may carry a blob whose fileId the surviving

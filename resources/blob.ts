@@ -1021,6 +1021,22 @@ export interface PreCommitBlobs {
 }
 
 /**
+ * Whether a blob-save rejection denotes a blob the replication SOURCE can no longer provide — evicted or
+ * expired at the origin, with the receiver having flagged the error `sourceBlobUnavailable` (set by the
+ * replication layer's `markSourceBlobUnavailable`, harper-pro#403). Such a blob is unrecoverable —
+ * re-streaming reproduces the ENOENT — so the pre-commit path tolerates it and lets the record commit with
+ * a diverged blob reference (left for proactive backfill, harper-pro#388) instead of aborting the apply.
+ * Local/transient save faults are NOT this and must still abort the write so it is retried (no silent loss).
+ */
+export function isSourceBlobUnavailable(error: unknown): boolean {
+	return (
+		typeof error === 'object' &&
+		error !== null &&
+		(error as { sourceBlobUnavailable?: boolean }).sourceBlobUnavailable === true
+	);
+}
+
+/**
  * Do a shallow/fast search for blobs on the record and start saving them if they are supposed to be saved before a commit
  * @param record
  * @param store
@@ -1065,7 +1081,15 @@ export function startPreCommitBlobsForRecord(
 				currentStore = store;
 				return Promise.all(
 					blobsNeedingSaving.map((blob) => {
-						return saveBlob(blob as any, true).saving ?? Promise.resolve();
+						const saving = saveBlob(blob as any, true).saving ?? Promise.resolve();
+						// Tolerate a blob the replication source can no longer provide so the record still commits
+						// with a diverged reference (backfilled later, harper-pro#388) instead of aborting the apply
+						// and wedging the copy stream. Local/transient faults still reject → the write aborts and
+						// retries (no silent loss). See isSourceBlobUnavailable / harper-pro#403.
+						return saving.catch((error) => {
+							if (isSourceBlobUnavailable(error)) return;
+							throw error;
+						});
 					})
 				);
 			},
