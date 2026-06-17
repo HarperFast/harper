@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781601181878,
+  "lastUpdate": 1781686722768,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -681,6 +681,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E",
             "value": 932.39,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "2de38eac8877cd4e58c8f4b2263ae4fe2dd69fa9",
+          "message": "5.1.3",
+          "timestamp": "2026-06-16T22:22:27Z",
+          "url": "https://github.com/HarperFast/harper/commit/2de38eac8877cd4e58c8f4b2263ae4fe2dd69fa9"
+        },
+        "date": 1781686722406,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load",
+            "value": 6807.95,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C",
+            "value": 9922.31,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B",
+            "value": 10171.72,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A",
+            "value": 7672.01,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F",
+            "value": 5523.13,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D",
+            "value": 10255.92,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E",
+            "value": 1190.65,
             "unit": "ops/sec"
           }
         ]
