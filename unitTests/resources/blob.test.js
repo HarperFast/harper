@@ -536,7 +536,7 @@ describe('Blob test', () => {
 
 		// source-unavailable: destroy the receive stream with the replication marker → saving rejects → tolerated
 		const goneStream = new PassThrough();
-		const goneBlob = createBlob(goneStream);
+		const goneBlob = await createBlob(goneStream);
 		decodeFromDatabase(() => saveBlob(goneBlob, true), store); // start the save (assigns fileId, begins the pipeline)
 		const toleratePc = startPreCommitBlobsForRecord({ id: 1, blob: goneBlob }, store, false, true);
 		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
@@ -544,7 +544,7 @@ describe('Blob test', () => {
 
 		// transient/local fault: unmarked rejection must still propagate so the write aborts and retries
 		const failStream = new PassThrough();
-		const failBlob = createBlob(failStream);
+		const failBlob = await createBlob(failStream);
 		decodeFromDatabase(() => saveBlob(failBlob, true), store);
 		const rejectPc = startPreCommitBlobsForRecord({ id: 2, blob: failBlob }, store, false, true);
 		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
