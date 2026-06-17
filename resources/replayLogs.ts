@@ -10,8 +10,12 @@ import {
 	classifyAuditEntryForReplay,
 	isUndecodableValidatedWrite,
 	shouldAbortStalledReplay,
+	shouldAbortSlowReplay,
+	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
 import { purgeAgedLogs } from './auditStore.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 let warnedReplayHappening = false;
 
@@ -81,7 +85,12 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		// is reset to 0 the moment a write succeeds, so the stall bound only fires on a genuinely
 		// write-free run.
 		let noProgressRun = 0;
-		let lastProgressTime = performance.now();
+		const replayStartTime = performance.now();
+		let lastProgressTime = replayStartTime;
+		// Total wall-clock budget (ms) for replay, configurable via `replication.replayTimeout`;
+		// falls back to the 10-minute default (harper#1316).
+		const configuredReplayTimeout = Number(envGet(CONFIG_PARAMS.REPLICATION_REPLAYTIMEOUT));
+		const replayTimeoutMs = configuredReplayTimeout > 0 ? configuredReplayTimeout : REPLAY_WALL_CLOCK_LIMIT_MS;
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
 		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true }) as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
@@ -164,11 +173,28 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					} catch (error) {
 						logger.error('Error committing replay transaction', error);
 					}
+					// Abort if replay has exceeded the total wall-clock budget even while making progress
+					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
+					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
+					// peg the boot thread indefinitely without tripping it. Checked only here, at a version
+					// boundary: the prior version's transaction was just committed in full and the new one
+					// is not yet staged, so aborting never tears a same-version (same source-transaction)
+					// write batch in half. Re-clone to recover the unreplayed remainder.
+					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
+						logger.fatal(
+							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
+						);
+						transaction = undefined as any; // already committed above; nothing staged for the new version
+						break;
+					}
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
 					transaction.timestamp = version;
-					// we treat this as a retry, because it is (and we want to skip validation and writing to the transaction log)
+					// we treat this as a retry, because it is (and we want to skip writing to the transaction log)
 					transaction.retries = 1;
+					// Explicit replay marker so the write path skips schema validation (harper#1316). Keyed
+					// off this rather than `retries`, which conflict retries also bump and never reset.
+					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
 				const options = { context, residencyId, nodeId, originatingOperation };

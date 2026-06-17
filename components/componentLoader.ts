@@ -27,6 +27,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
+import { trackScopeClose } from './scopeShutdown.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -469,7 +470,9 @@ export async function loadComponent(
 						origin
 					);
 
-					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => scope.close());
+					// Track the close so the worker's shutdown path waits for it (and thus for any async
+					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
+					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 
@@ -555,13 +558,43 @@ export async function loadComponent(
 		compName = parentCompName;
 		if (isMainThread && !watchesSetup && autoReload) {
 			let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+			let restarting = false; // a reload cycle (loadComponentDirectories + restartWorkers) is in flight
+			let pending = false; // a request arrived while a cycle was running — run exactly one more afterward
+
+			// Run reload cycles strictly one at a time. Requests that arrive while a cycle is in flight are
+			// collapsed into a single follow-up cycle (not one per request), so a burst of changes — or a
+			// regenerate-on-reload loop — can't stack overlapping restarts. Overlapping restarts pile worker
+			// threads up and push them past the forced-termination grace, which crashes a worker that is
+			// mid-teardown of a native runtime (e.g. @harperfast/vite's rolldown dev server).
+			const runRestartCycle = async () => {
+				if (restarting) {
+					pending = true;
+					return;
+				}
+				restarting = true;
+				try {
+					do {
+						pending = false;
+						resetRestartNeeded();
+						// Per-cycle try/catch: a failed reload (e.g. a saved syntax error) must log and move on
+						// — not abort the loop and discard a pending follow-up, like the save that fixes it.
+						try {
+							await loadComponentDirectories();
+							await restartWorkers();
+						} catch (error) {
+							harperLogger.error('Error during component reload', error);
+						}
+					} while (pending); // a request landed mid-cycle → run once more, coalescing the rest
+				} finally {
+					restarting = false;
+				}
+			};
+
 			subscribeToRestartRequests(() => {
 				if (debounceTimer) clearTimeout(debounceTimer);
-				debounceTimer = setTimeout(async () => {
+				debounceTimer = setTimeout(() => {
 					debounceTimer = null;
-					resetRestartNeeded();
-					await loadComponentDirectories();
-					restartWorkers();
+					void runRestartCycle();
 				}, 500);
 			});
 		}

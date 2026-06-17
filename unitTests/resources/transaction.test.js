@@ -393,7 +393,11 @@ describe('Transactions', () => {
 			if (isLMDB) return; // RocksDB-only bounded path (LMDB keeps the exact unbounded walk)
 			const { logger } = require('#src/utility/logging/logger');
 			const id = 1114000;
-			const base = Date.now();
+			// Each #1114 test writes a chain ~10k ms wide of timestamps into the shared TxnTest table. A
+			// distinct, far-future per-test base keeps those ranges disjoint from each other AND from the
+			// other tests' Date.now() writes, so audit entries can't collide at the same version (which made
+			// re-delivery dedup timing-fragile across tests).
+			const base = Date.now() + 400_000_000;
 			// Oldest version: a seed put with count = 0.
 			await TxnTest.put(id, { name: 'seed', count: 0 }, { timestamp: base });
 			// A chain of in-order patches deeper than MAX_OUT_OF_ORDER_AUDIT_DEPTH (1000). None is a full
@@ -434,7 +438,7 @@ describe('Transactions', () => {
 		it('does not double-apply a re-delivered commutative op in the bounded path (#1114)', async function () {
 			if (isLMDB) return; // RocksDB-only bounded path (LMDB keeps the exact unbounded walk)
 			const id = 1114001;
-			const base = Date.now();
+			const base = Date.now() + 100_000_000; // disjoint range — see the #1114 base note above
 			await TxnTest.put(id, { name: 'seed', count: 0 }, { timestamp: base });
 			const depth = 1010;
 			for (let i = 1; i <= depth; i++) {
@@ -460,7 +464,7 @@ describe('Transactions', () => {
 			if (isLMDB) return; // RocksDB-only up-front keyed dedup (LMDB keeps the exact unbounded walk)
 			const { logger } = require('#src/utility/logging/logger');
 			const id = 1114002;
-			const base = Date.now();
+			const base = Date.now() + 200_000_000; // disjoint range — see the #1114 base note above
 			await TxnTest.put(id, { name: 'seed', count: 0 }, { timestamp: base });
 			const depth = 1010; // deeper than MAX_OUT_OF_ORDER_AUDIT_DEPTH so an unguarded walk would cap
 			for (let i = 1; i <= depth; i++) await TxnTest.patch(id, { seq: i }, { timestamp: base + 10 * i });
@@ -482,6 +486,41 @@ describe('Transactions', () => {
 			}
 			assert.equal((await TxnTest.get(id)).count, 7, 're-delivered duplicate must not double-apply');
 			assert.equal(capWarned, false, 're-delivery should be deduped up front, not via the deep walk');
+		});
+
+		// #1114/#1316: an out-of-order write whose every field is overwritten by newer in-order patches is
+		// fully superseded. The fold at the end of the walk already drops it (writeCommit(false)) — but only
+		// after walking the whole chain. The early-out folds as it walks and escapes the moment the residual
+		// empties, so a fully-superseded write past the depth cap never takes the deep walk. This is the bulk
+		// of the transitive re-delivery / crash-recovery-replay traffic that pegged the event loop.
+		it('escapes the deep walk when an out-of-order write is fully superseded by newer patches (#1114)', async function () {
+			if (isLMDB) return; // RocksDB-only: the depth-cap walk is bounded for RocksDB
+			const { logger } = require('#src/utility/logging/logger');
+			const id = 1114003;
+			const base = Date.now() + 300_000_000; // disjoint range — see the #1114 base note above
+			await TxnTest.put(id, { name: 'seed', val: 0 }, { timestamp: base });
+			// A linear chain of in-order patches deeper than MAX_OUT_OF_ORDER_AUDIT_DEPTH (1000), each
+			// overwriting the same field. In-order patches add no audit branches, so the early-out's
+			// no-branch guard holds.
+			const depth = 1010;
+			for (let i = 1; i <= depth; i++) await TxnTest.patch(id, { val: i }, { timestamp: base + 10 * i });
+			const originalWarn = logger.warn;
+			let capWarned = false;
+			logger.warn = (msg) => {
+				if (typeof msg === 'string' && msg.includes('exceeded depth cap')) capWarned = true;
+			};
+			try {
+				// Older than every patch and touching only `val`, which every newer patch overwrites → fully
+				// superseded. Without the early-out this walks the whole chain and hits the cap; with it, the
+				// residual empties on the first (newest) patch folded and the walk is abandoned.
+				await TxnTest.patch(id, { val: 'stale' }, { timestamp: base + 5 });
+			} finally {
+				logger.warn = originalWarn;
+			}
+			assert.equal(capWarned, false, 'a fully-superseded write should escape before the depth-cap walk');
+			const record = await TxnTest.get(id);
+			assert.equal(record.val, depth, 'newest last-writer-wins value survives; the stale older write is dropped');
+			assert.equal(record.name, 'seed');
 		});
 
 		it('Can merge replication updates', async function () {

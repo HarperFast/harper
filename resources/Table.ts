@@ -66,7 +66,7 @@ import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
@@ -107,10 +107,26 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+// RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
+// Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
+// coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
+const EVICTION_BATCH_SIZE = 100;
+// Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
+// letting an unbounded number of open transactions (and their snapshots) accumulate.
+const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+// Tolerate a redundant column family drop. Drops are broadcast to every worker
+// thread and each holds its own handle to the same underlying family, so a
+// concurrent worker may already have dropped it; the storage engine reports
+// that as "Column family already dropped!". The family being gone is the
+// intended outcome, so swallow that specific error and rethrow anything else.
+function ignoreAlreadyDropped(error: any): void {
+	if (error?.message?.includes('Column family already dropped')) return;
+	throw error;
+}
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
 // a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
@@ -1057,28 +1073,73 @@ export function makeTable(options) {
 			}
 			if (databaseName === databasePath) {
 				// part of a database.
-				// Drop the column families and AWAIT them. Previously the catalog
-				// metadata was removed (synchronous removeSync) before primaryStore.drop(),
-				// and the drops were fire-and-forget (their rejections swallowed). If a
-				// column family was corrupt/half-initialized the drop would fail, yet the
-				// catalog entry was already gone - an orphaned "ghost" column family that
-				// poisons same-name recreates. By awaiting the drops before touching the
-				// catalog, a failed drop surfaces as the operation's error and the
-				// tombstoned catalog rows survive for the startup reconcile.
-				const drops = [];
-				for (const attribute of attributes) {
-					const index = indices[attribute.name];
-					if (index) drops.push(index.drop());
+				// Drop the column families, then remove the catalog metadata - never
+				// the reverse: a removed-then-failed drop orphans a "ghost" column
+				// family that poisons same-name recreates, so a genuine drop failure
+				// must surface and leave the tombstoned catalog rows for the reconcile.
+				//
+				// A drop is broadcast to every worker thread, and each holds its own
+				// handle to the same underlying column family, so a concurrent worker
+				// (or completeInterruptedDrop) may already have dropped it - surfaced
+				// as "Column family already dropped!". That is the intended end state,
+				// not a failure, so tolerate it. The catalog rows are removed only if
+				// this drop's tombstone is still the live primary row: a concurrent
+				// same-name create completes the interrupted drop and writes fresh
+				// catalog rows, and clobbering those would orphan the new table.
+				const removeTombstonedCatalog = () => {
+					const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
+					if (!currentPrimary?.dropping) return false;
+					for (const attribute of attributes) {
+						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
+					}
+					dbisDb.remove(TableResource.tableName + '/');
+					return true;
+				};
+				const rootStore = primaryStore.rootStore;
+				if (rootStore instanceof RocksDatabase) {
+					// Serialize the drops + catalog removal against a concurrent
+					// same-name create (and completeInterruptedDrop) under the database's
+					// 'update-attributes' exclusive lock - the same lock the create path
+					// holds. It is a synchronous spin lock that blocks the event loop, so
+					// the locked section MUST stay synchronous: drop with dropSync (as
+					// completeInterruptedDrop does), never an awaited drop(), or a
+					// concurrent create's spin would deadlock waiting on a drop that the
+					// blocked event loop can never resolve.
+					while (!rootStore.tryLock('update-attributes')) {}
+					let removed = false;
+					try {
+						for (const attribute of attributes) {
+							const index = indices[attribute.name];
+							if (index)
+								try {
+									index.dropSync();
+								} catch (error) {
+									ignoreAlreadyDropped(error);
+								}
+						}
+						try {
+							primaryStore.dropSync();
+						} catch (error) {
+							ignoreAlreadyDropped(error);
+						}
+						removed = removeTombstonedCatalog();
+					} finally {
+						rootStore.unlock('update-attributes');
+					}
+					if (removed) await dbisDb.committed;
+				} else {
+					// LMDB: no shared column-family double-drop, and its engine lock is
+					// transactional rather than this spin lock, so keep the awaited drop
+					// plus the same tombstone-guarded catalog removal.
+					const drops = [];
+					for (const attribute of attributes) {
+						const index = indices[attribute.name];
+						if (index) drops.push(index.drop().catch(ignoreAlreadyDropped));
+					}
+					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
+					await Promise.all(drops);
+					if (removeTombstonedCatalog()) await dbisDb.committed;
 				}
-				drops.push(primaryStore.drop());
-				await Promise.all(drops);
-				// Column families are gone; remove the catalog metadata (including
-				// the tombstoned primary entry).
-				for (const attribute of attributes) {
-					dbisDb.remove(TableResource.tableName + '/' + attribute.name);
-				}
-				dbisDb.remove(TableResource.tableName + '/');
-				await dbisDb.committed;
 			} else {
 				// legacy table per database
 				await primaryStore.close();
@@ -1797,7 +1858,11 @@ export function makeTable(options) {
 							// below, so copy-on-mutate when recordUpdate is frozen (e.g. a record decoded during
 							// log replay) instead of writing through the frozen object.
 							if (isFrozenRecordObject(recordUpdate)) recordUpdate = { ...recordUpdate };
-							this.validate(recordUpdate, !fullUpdate);
+							// Skip schema validation during crash-recovery replay (transaction.isReplay is set
+							// by replayLogs). Records were valid when originally written; post-crash schema
+							// evolution (e.g. newly required fields) must not prevent replaying them
+							// (harper#1316, facet b).
+							if (!transaction.isReplay) this.validate(recordUpdate, !fullUpdate);
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
@@ -1956,6 +2021,30 @@ export function makeTable(options) {
 							let nextRef: { localTime: number; nodeId: number };
 							let walkSteps = 0;
 							let auditWalkCapped = false;
+							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
+							// throwaway copy of this write purely to detect when every field has been overwritten by
+							// newer writes. When it empties — and there is no alternate audit branch — the write is
+							// fully superseded and the rest of the O(depth) walk can be skipped; this is equivalent to
+							// walking to the end and taking the `writeCommit(false)` escape after the fold below
+							// (#1114/#1316). It is NOT used as the applied value: the sorted fold still computes that for
+							// the non-empty (legit merge) case, so merge correctness is unchanged.
+							let earlyOutResidual: any;
+							let fullySuperseded = false;
+							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
+							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
+							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
+							const isReDeliveredDuplicate = () => {
+								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								return (
+									duplicate &&
+									duplicate.version === txnTime &&
+									precedesExistingVersion(
+										txnTime,
+										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
+										options?.nodeId
+									) === 0
+								);
+							};
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
 									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
@@ -1997,8 +2086,25 @@ export function makeTable(options) {
 											// audit record itself, so its backing transaction-log buffer and decoders can be
 											// reclaimed immediately. Only these two fields are needed for the ordered fold below;
 											// retaining the full records is what pins the heap on a deep chain (issue #1114).
-											succeedingUpdates.push({ version: auditedVersion, value: auditRecord.getValue(primaryStore) });
+											const newerPatch = auditRecord.getValue(primaryStore);
+											succeedingUpdates.push({ version: auditedVersion, value: newerPatch });
 											auditRecordToStore = recordUpdate; // use the original update for the audit record
+											// rebuildUpdateBefore only ever DROPS plain fields the newer patch overwrites and
+											// KEEPS commutative ops (and, for a full update, every field) — so whether the residual
+											// empties is order-independent, and a commutative op never triggers the early-out.
+											// Supersession is monotonic, so once empty stop folding (an unscanned branch may still
+											// be deferring the early-out below). RocksDB only — see the early-out below. Guard on
+											// newerPatch: a corrupt/undecodable audit value can be undefined, and folding it would
+											// throw in rebuildUpdateBefore's `in` check; it supersedes nothing, so skip it (the
+											// pre-existing fold below already tolerates this case by returning earlier).
+											if (isRocksDB && !fullySuperseded && newerPatch) {
+												earlyOutResidual = rebuildUpdateBefore(
+													earlyOutResidual ?? recordUpdate,
+													newerPatch,
+													fullUpdate
+												);
+												if (!earlyOutResidual) fullySuperseded = true;
+											}
 										} else if (auditRecord.type === 'put' || auditRecord.type === 'delete') {
 											// There is newer full record update, so this incremental update is completely superseded
 											write.skipped = true;
@@ -2023,6 +2129,24 @@ export function makeTable(options) {
 												nodeId: ref.nodeId,
 											});
 										}
+									}
+
+									// Every field of this write is overwritten by newer writes, and there is no alternate
+									// audit branch left to scan, so it is fully superseded — the same outcome as walking to
+									// the end and taking the `writeCommit(false)` escape below, reached without paying the rest
+									// of the deep walk (#1114/#1316). additionalAuditRefs is already final here (the out-of-order
+									// ref is pushed once, above), so the audit record written is identical. RocksDB only: LMDB has
+									// no up-front keyed dedup, so it must keep walking until inline duplicate detection reaches the
+									// matching entry. A re-delivered duplicate is dropped via the keyed lookup (as the depth-cap
+									// block does) rather than written as a duplicate audit-only record; a genuine first delivery
+									// writes the audit record. (A newer full put/delete on this single chain is caught above before
+									// the residual could empty, so it cannot be reached here.)
+									if (isRocksDB && fullySuperseded && auditRefsToVisit.length === 0) {
+										if (isReDeliveredDuplicate()) {
+											write.skipped = true;
+											return; // re-delivered duplicate already applied
+										}
+										return writeCommit(false);
 									}
 
 									localTime = auditRecord.previousVersion;
@@ -2069,16 +2193,7 @@ export function makeTable(options) {
 										depth: walkSteps,
 									}
 								);
-								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
-								if (
-									duplicate &&
-									duplicate.version === txnTime &&
-									precedesExistingVersion(
-										txnTime,
-										{ version: txnTime, localTime: txnTime, key: id, nodeId: duplicate.nodeId },
-										options?.nodeId
-									) === 0
-								) {
+								if (isReDeliveredDuplicate()) {
 									write.skipped = true;
 									return; // duplicate write already applied
 								}
@@ -3327,7 +3442,8 @@ export function makeTable(options) {
 				validate: () => {
 					if (!(context as any)?.source) {
 						transaction.checkOverloaded();
-						this.validate(message);
+						// Skip schema validation during crash-recovery replay (see _writeUpdate; harper#1316).
+						if (!transaction.isReplay) this.validate(message);
 					}
 				},
 				before:
@@ -4352,6 +4468,9 @@ export function makeTable(options) {
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;
+					// Inherit the replay marker so a multi-table replay transaction skips validation on
+					// every store, not just the first (harper#1316).
+					transaction.next.isReplay = transaction.isReplay;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
@@ -4830,6 +4949,107 @@ export function makeTable(options) {
 			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
 		return true;
 	}
+	// RocksDB-only: coalesces eviction/tombstone removals into shared transactions so the cleanup
+	// scan pays one commit per batch instead of one per record. Descriptors hold only the decoded
+	// primary key and the version seen during the scan (both stable primitives — the scanned record
+	// value lives in a reused iterator buffer, so it is re-read fresh at commit time). Each record is
+	// version-guarded inside the commit transaction, and RocksDB's optimistic conflict detection
+	// catches anything modified between staging and commit: on conflict (ERR_BUSY) we re-stage once
+	// into a fresh transaction (dropping the now-changed record) and otherwise skip the batch, leaving
+	// those records for the next cleanup cycle.
+	function createEvictionBatcher() {
+		type EvictItem = { type: 'evict' | 'tombstone'; key: any; version: number };
+		let pending: EvictItem[] = [];
+		const inFlight = new Set<Promise<void>>();
+
+		// Apply a batch's removals to the given transaction, re-reading each record fresh and skipping
+		// any that changed since the scan. Returns the number of removals actually staged.
+		function stageInto(transaction: RocksTransaction, items: EvictItem[]): number {
+			const options = { transaction };
+			let staged = 0;
+			for (const item of items) {
+				const entry = primaryStore.getEntry(item.key, options);
+				if (!entry || entry.version !== item.version) continue; // gone or changed since the scan; leave for next cycle
+				if (item.type === 'tombstone') {
+					if (entry.value != null) continue; // resurrected since the scan
+				} else {
+					if (entry.value == null) continue; // already removed
+					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
+					updateIndices(item.key, entry.value, null, options);
+				}
+				removeEntry(primaryStore, entry, options);
+				staged++;
+			}
+			return staged;
+		}
+
+		async function commitItems(items: EvictItem[]) {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				// Create the transaction inside the try: if the store is closing mid-scan, the constructor
+				// can throw, and this promise is not always awaited (in-flight under the cap), so an
+				// uncaught throw here would surface as an unhandled rejection.
+				let transaction: RocksTransaction | undefined;
+				let staged: number;
+				try {
+					transaction = new RocksTransaction(primaryStore.store);
+					staged = stageInto(transaction, items);
+				} catch (error) {
+					try {
+						transaction?.abort();
+					} catch {}
+					logger.warn?.(`Eviction batch staging error for ${tableName}:`, error);
+					return;
+				}
+				if (staged === 0) {
+					try {
+						transaction.abort();
+					} catch {}
+					return;
+				}
+				try {
+					await transaction.commit();
+					return;
+				} catch (error: any) {
+					try {
+						transaction.abort();
+					} catch {}
+					if (attempt === 0 && error?.code === 'ERR_BUSY') {
+						logger.debug?.(`Eviction batch conflict for ${tableName}, retrying once`);
+						continue; // re-stage into a fresh transaction; version guards drop the conflicting record(s)
+					}
+					logger.warn?.(`Eviction batch commit error for ${tableName}:`, error);
+					return;
+				}
+			}
+		}
+
+		// Track an in-flight commit and, once the cap is reached, return a promise the caller can await
+		// for backpressure (resolves as soon as any in-flight commit finishes).
+		function track(commit: Promise<void>): Promise<void> | void {
+			const tracked = commit.finally(() => inFlight.delete(tracked));
+			inFlight.add(tracked);
+			if (inFlight.size >= MAX_INFLIGHT_EVICTION_BATCHES) return Promise.race(inFlight);
+		}
+
+		return {
+			add(type: 'evict' | 'tombstone', key: any, version: number): Promise<void> | void {
+				pending.push({ type, key, version });
+				if (pending.length >= EVICTION_BATCH_SIZE) {
+					const items = pending;
+					pending = [];
+					return track(commitItems(items));
+				}
+			},
+			async drain(): Promise<void> {
+				if (pending.length > 0) {
+					const items = pending;
+					pending = [];
+					track(commitItems(items));
+				}
+				await Promise.all(inFlight);
+			},
+		};
+	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
 		let runImmediately = false;
 		if (priority) {
@@ -4901,6 +5121,10 @@ export function makeTable(options) {
 								try {
 									let count = 0;
 									let removeDeletedRecords = !audit || isRocksDB;
+									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
+									// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
+									// coalesces async writes per event turn).
+									const batcher = isRocksDB ? createEvictionBatcher() : undefined;
 									// iterate through all entries to find expired records and deleted records
 									for (const entry of primaryStore.getRange({
 										start: false,
@@ -4911,24 +5135,35 @@ export function makeTable(options) {
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-										let resolution: Promise<void> | undefined;
+										let action: 'tombstone' | 'evict' | undefined;
 										if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
-											// make sure it is still deleted when we do the removal
-											resolution = removeEntry(primaryStore, entry, version);
+											action = 'tombstone';
 										} else if (expiresAt != undefined && shouldEvict(expiresAt, version, metadataFlags, record)) {
-											// evict!
-											resolution = TableResource.evict(key, record, version);
+											action = 'evict';
 											count++;
 										}
-										if (resolution) {
-											await outstandingCleanupOperations[cleanupIndex];
-											outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
-												logger.error?.('Cleanup error', error);
-											});
-											if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
+										if (action) {
+											// Blob-bearing records delete their blob files as a non-transactional side effect, so
+											// they stay on the per-record evict() path that preserves the existing blob/commit ordering.
+											if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {
+												await batcher.add(action, key, version);
+											} else {
+												const resolution =
+													action === 'tombstone'
+														? removeEntry(primaryStore, entry, version)
+														: TableResource.evict(key, record, version);
+												if (resolution) {
+													await outstandingCleanupOperations[cleanupIndex];
+													outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
+														logger.error?.('Cleanup error', error);
+													});
+													if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
+												}
+											}
 										}
 										await rest();
 									}
+									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
