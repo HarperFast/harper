@@ -236,6 +236,10 @@ export function makeTable(options) {
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
 	let cleanupTimer: NodeJS.Timeout;
+	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
+	let expirationScanScheduled = false;
+	// dedup flag for the once-per-table warning about a runtime per-record expiresAt with no scheduled cleanup
+	let warnedUnscheduledExpiration = false;
 	let propertyResolvers: any;
 	let hasRelationships = false;
 	let runningRecordExpiration: boolean;
@@ -957,6 +961,7 @@ export function makeTable(options) {
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			// default to one quarter of the total expiration+eviction window
 			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
+			expirationScanScheduled = true;
 			scheduleCleanup();
 		}
 
@@ -2309,7 +2314,28 @@ export function makeTable(options) {
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					writeCommit(true);
-					if (expiresAt >= 0) scheduleCleanup(); // arm for replicated writes too, not just local-context writes
+					if (expiresAt >= 0) {
+						scheduleCleanup(); // arm for replicated writes too, not just local-context writes
+						// A runtime per-record expiresAt on a table with no table-level expiration/eviction, no expiresAt
+						// attribute, and no source has no setup-time arming of the cleanup scan: the scan is only armed
+						// best-effort from this write path, on whichever worker happened to handle the write, and is not
+						// re-armed after a restart with no further writes. Warn once per table so the misconfiguration is
+						// visible and the operator can configure reliable, setup-armed eviction. See issue #1339.
+						if (
+							// dedup first so that, once warned, every later expiring write short-circuits on one check
+							!warnedUnscheduledExpiration &&
+							!expirationMs &&
+							!evictionMs &&
+							!expirationScanScheduled &&
+							!expiresAtProperty &&
+							!hasSourceGet
+						) {
+							warnedUnscheduledExpiration = true;
+							logger.warn?.(
+								`A per-record expiresAt was set on table "${tableName}" which has no table-level expiration/eviction, no expiresAt attribute, and no source; expiration will not be reliably enforced (the eviction scan is only armed best-effort on write and does not survive a restart with no writes). Configure a table-level expiration/eviction or an indexed expiresAt attribute for reliable eviction.`
+							);
+						}
+					}
 					function writeCommit(storeRecord: boolean) {
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
