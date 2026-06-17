@@ -606,7 +606,16 @@ async function deployComponent(req) {
 			deployment_id: recorder?.deploymentId,
 			failed_peers: failedPeers.length > 0 ? failedPeers : undefined,
 		});
-		if (recorder) await recorder.finish('failed', err);
+		// Record the terminal failure, but never let a finish() write error (full disk, lock,
+		// dropped system table) mask the actual deploy failure — outErr carries the phase,
+		// install output, and failed_peers the caller needs.
+		if (recorder) {
+			try {
+				await recorder.finish('failed', err);
+			} catch (finishErr) {
+				log.warn('Failed to record deployment failure row', finishErr);
+			}
+		}
 		throw outErr;
 	}
 }
