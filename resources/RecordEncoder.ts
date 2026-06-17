@@ -289,6 +289,30 @@ export class RecordEncoder extends StructonEncoder {
 						} else if (existingStructures && existingStructures.length !== isCompatible) {
 							return false;
 						}
+						// Strict-extension CAS: the length check above (msgpackr default) catches the
+						// common race but lets two writers with the same baseline length save different
+						// shapes at the same index. Once disk holds one writer's shape at id N, the
+						// other writer's records on disk reference id N expecting a different shape,
+						// and decode trips on "Data read, but end of buffer not reached". Reject the
+						// save if existing entries don't match our prefix; msgpackr will re-pack
+						// against the new disk state and re-mint at the next free id. See harper#1337.
+						if (existingStructures) {
+							for (let i = 0; i < existingStructures.length; i++) {
+								const existingEntry = existingStructures[i];
+								const newEntry = structures[i];
+								if (existingEntry === newEntry) continue;
+								if (
+									!Array.isArray(existingEntry) ||
+									!Array.isArray(newEntry) ||
+									existingEntry.length !== newEntry.length
+								) {
+									return false;
+								}
+								for (let j = 0; j < existingEntry.length; j++) {
+									if (existingEntry[j] !== newEntry[j]) return false;
+								}
+							}
+						}
 						txn.putSync(sharedStructuresKey, structures);
 						return true;
 					},
