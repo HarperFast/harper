@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('assert');
 
-const { Headers, appendHeader, mergeHeaders } = require('#src/server/serverHelpers/Headers');
+const { Headers, appendHeader, mergeHeaders, toWriteHeadHeaders } = require('#src/server/serverHelpers/Headers');
 describe('Test Headers', () => {
 	describe(`Create and modify headers`, function () {
 		it('should handle headers', async function () {
@@ -335,5 +335,71 @@ describe('Test Headers', () => {
 			assert.strictEqual(result, target, 'mergeHeaders should return the same target object');
 			assert.equal(target.get('X-New'), 'test', 'target should be modified in place');
 		});
+	});
+});
+
+describe('toWriteHeadHeaders', () => {
+	it('converts an iterable Headers into a plain object (not nested tuples)', () => {
+		const headers = new Headers();
+		headers.set('Content-Type', 'application/json');
+		headers.set('X-Custom', 'abc');
+		const out = toWriteHeadHeaders(headers);
+		assert.deepEqual(out, { 'Content-Type': 'application/json', 'X-Custom': 'abc' });
+		// The whole point: an object, NOT the nested `[[name, value], …]` that `Array.from` would yield.
+		assert.equal(Array.isArray(out), false);
+	});
+
+	it('converts a Map of [name, value] pairs into an object', () => {
+		const out = toWriteHeadHeaders(
+			new Map([
+				['X-A', '1'],
+				['X-B', '2'],
+			])
+		);
+		assert.deepEqual(out, { 'X-A': '1', 'X-B': '2' });
+	});
+
+	it('passes a plain (non-iterable) object through unchanged', () => {
+		const obj = { 'X-A': '1' };
+		assert.strictEqual(toWriteHeadHeaders(obj), obj);
+	});
+
+	it('returns falsy headers as-is (writeHead then sets no headers)', () => {
+		assert.strictEqual(toWriteHeadHeaders(undefined), undefined);
+		assert.strictEqual(toWriteHeadHeaders(null), null);
+	});
+
+	it('regression: avoids the nested-tuple shape Array.from produced', () => {
+		const headers = new Headers();
+		headers.set('X-A', '1');
+		// The previous code passed this to writeHead — a nested `[[name, value]]` list, which writeHead's
+		// flat-array form reads as a header *name*, throwing "name must be of type string".
+		const previous = Array.from(headers);
+		assert.ok(Array.isArray(previous) && Array.isArray(previous[0]), 'Array.from yields nested tuples');
+		// The fix yields a plain object instead.
+		assert.deepEqual(toWriteHeadHeaders(headers), { 'X-A': '1' });
+	});
+
+	it("its output is accepted by a live response's writeHead (round-trip)", async () => {
+		const http = require('node:http');
+		const headers = new Headers();
+		headers.set('Content-Type', 'text/plain');
+		headers.set('X-Custom', 'abc');
+		const server = http.createServer((req, res) => {
+			// Same call shape as server/http.ts; with the old Array.from form this 500s.
+			res.writeHead(200, toWriteHeadHeaders(headers));
+			res.end('ok');
+		});
+		try {
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			const { port } = server.address();
+			const res = await fetch(`http://127.0.0.1:${port}/`);
+			assert.equal(res.status, 200);
+			assert.equal(res.headers.get('content-type'), 'text/plain');
+			assert.equal(res.headers.get('x-custom'), 'abc');
+			assert.equal(await res.text(), 'ok');
+		} finally {
+			await new Promise((resolve) => server.close(resolve));
+		}
 	});
 });

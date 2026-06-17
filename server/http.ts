@@ -17,7 +17,7 @@ import { createSecureServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
 import { Request, BunRequest, isBun } from './serverHelpers/Request.ts';
-import { appendHeader, Headers } from './serverHelpers/Headers.ts';
+import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable } from 'node:stream';
@@ -439,16 +439,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 								}
 							}
 						} // else the fast path, if we don't have to defer
-						// For iterable headers (a Map/Headers of [name, value] pairs) hand writeHead an object.
-						// `Array.from` yields nested `[[name, value], ...]` tuples, but writeHead's array form
-						// expects a flat `[name, value, name, value]` list — so it reads a tuple as a header name
-						// and throws `TypeError: "name" must be of type string`. An object matches the deferred
-						// path's setHeader loop (preserves array values, last-wins on duplicate names).
-						else
-							nodeResponse.writeHead(
-								status,
-								headers && (headers[Symbol.iterator] ? Object.fromEntries(headers) : headers)
-							);
+						// toWriteHeadHeaders converts iterable headers to an object writeHead accepts (a flat
+						// array form is required otherwise, and `Array.from` would pass invalid nested tuples).
+						else nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 					}
 					if (sentBody) nodeResponse.end(body);
 				}
@@ -498,8 +491,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const headers = error.headers;
 				const status = error.statusCode || 500;
 				try {
-					// Iterable headers must become an object, not a nested array — see the success path above.
-					nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Object.fromEntries(headers) : headers));
+					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);

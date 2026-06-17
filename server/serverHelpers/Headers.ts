@@ -108,3 +108,17 @@ export function mergeHeaders(target: any, source: Headers) {
 	}
 	return target;
 }
+
+/**
+ * Normalize a response's headers into the form `ServerResponse.writeHead` accepts.
+ *
+ * `writeHead`'s array form is a FLAT `[name, value, name, value]` list, not a list of tuples — so an
+ * iterable of `[name, value]` pairs (a `Headers`/`Map`) must be turned into an object. Passing
+ * `Array.from(headers)` (nested `[[name, value], …]`) makes Node read a tuple as a header name and throw
+ * `TypeError: The "name" argument must be of type string. Received an instance of Array`. A plain object
+ * (or a falsy value, e.g. when there are no headers) is returned unchanged.
+ */
+export function toWriteHeadHeaders(headers: any): any {
+	if (!headers) return headers;
+	return headers[Symbol.iterator] ? Object.fromEntries(headers) : headers;
+}
