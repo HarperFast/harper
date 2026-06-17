@@ -439,7 +439,16 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 								}
 							}
 						} // else the fast path, if we don't have to defer
-						else nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						// For iterable headers (a Map/Headers of [name, value] pairs) hand writeHead an object.
+						// `Array.from` yields nested `[[name, value], ...]` tuples, but writeHead's array form
+						// expects a flat `[name, value, name, value]` list — so it reads a tuple as a header name
+						// and throws `TypeError: "name" must be of type string`. An object matches the deferred
+						// path's setHeader loop (preserves array values, last-wins on duplicate names).
+						else
+							nodeResponse.writeHead(
+								status,
+								headers && (headers[Symbol.iterator] ? Object.fromEntries(headers) : headers)
+							);
 					}
 					if (sentBody) nodeResponse.end(body);
 				}
@@ -489,7 +498,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const headers = error.headers;
 				const status = error.statusCode || 500;
 				try {
-					nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+					// Iterable headers must become an object, not a nested array — see the success path above.
+					nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Object.fromEntries(headers) : headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
