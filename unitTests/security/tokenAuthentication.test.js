@@ -251,6 +251,61 @@ describe('test getJWTRSAKeys function', () => {
 	});
 });
 
+describe('test clearJWTRSAKeysCache function', () => {
+	let get_jwt_keys_func;
+	let clear_cache_func;
+
+	before(() => {
+		const testPath = testUtils.getMockTestPath();
+		keysPath = path.join(testPath, 'keys');
+		passphrasePath = path.join(keysPath, '.jwtPass');
+		privateKeyPath = path.join(keysPath, '.jwtPrivate.key');
+		publicKeyPath = path.join(keysPath, '.jwtPublic.key');
+		get_jwt_keys_func = token_auth.__get__('getJWTRSAKeys');
+		clear_cache_func = token_auth.__get__('clearJWTRSAKeysCache');
+	});
+
+	beforeEach(() => {
+		fs.mkdirpSync(keysPath);
+		fs.writeFileSync(passphrasePath, PASSPHRASE_VALUE);
+		fs.writeFileSync(privateKeyPath, PRIVATE_KEY_VALUE);
+		fs.writeFileSync(publicKeyPath, PUBLIC_KEY_VALUE);
+	});
+
+	afterEach(() => {
+		fs.removeSync(keysPath);
+		token_auth.__set__('rsaKeys', undefined);
+	});
+
+	// Models the node-clone race: an early Bearer-auth request caches the install-generated keys, then
+	// the clone overwrites the key files on disk. Without invalidation, getJWTRSAKeys keeps returning the
+	// stale cached set. clearJWTRSAKeysCache must drop the cache so the next read picks up the new files.
+	it('forces the next getJWTRSAKeys to re-read replaced key files from disk', async () => {
+		const stale = { publicKey: 'stale-public', privateKey: 'stale-private', passphrase: 'stale-pass' };
+		token_auth.__set__('rsaKeys', stale);
+
+		// Sanity: while cached, the stale set is returned regardless of what is on disk.
+		assert.deepStrictEqual(await get_jwt_keys_func(), stale);
+
+		clear_cache_func();
+
+		const reloaded = await get_jwt_keys_func();
+		assert.deepStrictEqual(reloaded, {
+			publicKey: PUBLIC_KEY_VALUE,
+			privateKey: PRIVATE_KEY_VALUE,
+			passphrase: PASSPHRASE_VALUE,
+		});
+	});
+
+	it('is a no-op when the cache is already empty', async () => {
+		token_auth.__set__('rsaKeys', undefined);
+		assert.doesNotThrow(() => clear_cache_func());
+		// Still reads cleanly from disk afterward.
+		const reloaded = await get_jwt_keys_func();
+		assert.deepStrictEqual(reloaded.passphrase, PASSPHRASE_VALUE);
+	});
+});
+
 describe('test createTokens', () => {
 	let validate_user_stub;
 	let update_stub;

@@ -77,6 +77,17 @@ export async function getJWTRSAKeys(): Promise<JWTRSAKeys> {
 }
 
 /**
+ * Drops the in-memory JWT RSA key cache so the next getJWTRSAKeys() re-reads from disk. Needed when the
+ * key files are replaced underneath a running process — e.g. node cloning overwrites .jwtPublic/.jwtPrivate/
+ * .jwtPass with the leader's keys after Harper (and thus the operations API) is already up, and an early
+ * Bearer-auth request may have already cached the pre-clone install-generated keys. The operations API runs
+ * only on the main thread, so clearing this process-local cache there is sufficient.
+ */
+export function clearJWTRSAKeysCache(): void {
+	rsaKeys = undefined;
+}
+
+/**
  * Creates a new operation token and refresh token.
  * If there is no username and password, the hdb_user making the request is used in the token.
  * An optional role can be provided which will be saved in the token payload.
