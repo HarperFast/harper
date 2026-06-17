@@ -102,6 +102,55 @@ describe('encodeBlobsWithFilePath blob-save tracking (harper#1337)', () => {
 		endPendingMigrationBlobSaves();
 	});
 
+	it('a mid-loop rejection does NOT fire unhandledRejection before the migration awaits the list', async () => {
+		// Production concern: in a long migration with thousands of records and multiple `await
+		// written` checkpoints between record encodes, a blob save can reject well before the
+		// migration loop reaches its Promise.allSettled(pendingBlobSaves) gate. Without a
+		// suppression handler on the tracked chain, Node fires unhandledRejection at that point
+		// and the process aborts — short-circuiting the structured `Migration of … failed: …`
+		// throw the migration relies on for retryability.
+		const { Readable } = require('node:stream');
+		const { createBlob } = require('#src/resources/blob');
+
+		const tracked = beginPendingMigrationBlobSaves();
+
+		const broken = Readable.from(
+			(function* () {
+				throw new Error('synthetic ENOENT during migration read');
+				yield Buffer.from('unused');
+			})()
+		);
+		const blob = await createBlob(broken);
+
+		// Capture unhandledRejection events for the duration of the test.
+		const unhandled = [];
+		const listener = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', listener);
+
+		encodeBlobsWithFilePath(() => saveBlob(blob), 5, store);
+		assert.strictEqual(tracked.length, 1, 'one save promise tracked');
+
+		// Yield to the event loop long enough for the rejection to propagate and any
+		// unhandledRejection to fire. Two macrotasks plus a microtask drain is typically enough.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		process.off('unhandledRejection', listener);
+
+		assert.deepStrictEqual(
+			unhandled,
+			[],
+			`expected NO unhandledRejection during the migration loop; got: ${unhandled.map(String).join('; ')}`
+		);
+
+		// The migration's later Promise.allSettled MUST still observe the rejection so the
+		// structured `Migration failed` throw can fire.
+		const [result] = await Promise.allSettled(tracked);
+		assert.strictEqual(result.status, 'rejected', 'allSettled still detects the rejection');
+
+		endPendingMigrationBlobSaves();
+	});
+
 	it('endPendingMigrationBlobSaves stops collecting; new saveBlob calls do NOT land in the prior list', async () => {
 		const { createBlob, isSaving } = require('#src/resources/blob');
 		const tracked = beginPendingMigrationBlobSaves();
