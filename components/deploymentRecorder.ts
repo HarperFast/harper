@@ -272,6 +272,17 @@ export class DeploymentRecorder {
 	}
 
 	/**
+	 * Return the recorded peer outcomes that failed to replicate (status 'failed', as
+	 * assigned by normalizePeerResult). replicateOperation does not throw on a per-peer
+	 * failure — failures surface only as 'failed' entries in peer_results — so deployComponent
+	 * uses this to decide whether to fail the overall deploy with a non-2xx status.
+	 */
+	getFailedPeers(): Array<Record<string, unknown>> {
+		const list = this.record.peer_results;
+		return Array.isArray(list) ? list.filter((peer) => peer?.status === 'failed') : [];
+	}
+
+	/**
 	 * Stop persisting intermediate row updates; accumulate them in memory so finish() writes
 	 * the terminal state in a single put. Called before the replicate phase, where the row
 	 * otherwise receives a tight burst of puts (replicate phase + per-peer + finish) within
@@ -392,12 +403,17 @@ function normalizePeerResult(raw: unknown): Record<string, unknown> {
 		return { node: null, status: 'unknown', raw: String(raw) };
 	}
 	const r = raw as Record<string, unknown>;
-	const err = r.error;
+	// Failure detail arrives in one of two shapes: `error` (a structured object/string from a
+	// remote operation response) or `reason` (a stringified message from the replicator's
+	// per-peer `.catch` shape: { status: 'failed', reason, node }). Prefer `error`; fall back to
+	// `reason` only when the peer reported failed — otherwise the audit row records a peer
+	// "failed" with no explanation and deployComponent's failure message reads "unknown error".
+	const err = r.error ?? (r.status === 'failed' ? r.reason : undefined);
 	const hasError =
 		err != null && (typeof err === 'string' ? err.length > 0 : typeof err === 'object' || typeof err === 'number');
 	return {
 		node: r.node ?? r.name ?? r.hostname ?? null,
-		status: hasError ? 'failed' : (r.status ?? 'success'),
+		status: hasError || r.status === 'failed' ? 'failed' : (r.status ?? 'success'),
 		error: hasError
 			? {
 					message: typeof err === 'object' ? ((err as any).message ?? String(err)) : String(err),

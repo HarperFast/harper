@@ -79,6 +79,23 @@ describe('DeploymentRecorder.recordPeer', () => {
 		assert.strictEqual(recorder.row.peer_results[0].error.message, 'connection refused');
 	});
 
+	it('captures the replicator { status: "failed", reason } shape, surfacing reason as error.message', async () => {
+		// This is the shape replicateOperation's per-peer .catch produces (replicator.ts):
+		// the failure detail lives on `reason`, not `error`. Without picking it up the audit
+		// row would record a failed peer with no explanation.
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer({ node: 'node-e', status: 'failed', reason: 'Error: peer connection refused' });
+		assert.strictEqual(recorder.row.peer_results[0].status, 'failed');
+		assert.strictEqual(recorder.row.peer_results[0].error.message, 'Error: peer connection refused');
+	});
+
+	it('marks a bare { status: "failed" } as failed with a null error', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer({ node: 'node-f', status: 'failed' });
+		assert.strictEqual(recorder.row.peer_results[0].status, 'failed');
+		assert.strictEqual(recorder.row.peer_results[0].error, null);
+	});
+
 	it('falls back to "name"/"hostname" when "node" is missing', async () => {
 		const recorder = await DeploymentRecorder.create({ project: 'p' });
 		recorder.recordPeer({ name: 'node-by-name', status: 'success' });
@@ -158,6 +175,48 @@ describe('DeploymentRecorder.recordPeers (bulk wrapper)', () => {
 		recorder.recordPeers('not an array');
 		recorder.recordPeers({ node: 'object-not-array' });
 		assert.deepStrictEqual(recorder.row.peer_results, []);
+	});
+});
+
+describe('DeploymentRecorder.getFailedPeers', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	it('returns an empty array when no peers were recorded', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		assert.deepStrictEqual(recorder.getFailedPeers(), []);
+	});
+
+	it('returns an empty array when all peers succeeded', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeers([
+			{ node: 'a', status: 'success' },
+			{ node: 'b', status: 'success' },
+		]);
+		assert.deepStrictEqual(recorder.getFailedPeers(), []);
+	});
+
+	it('returns only the failed entries (status="failed")', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer({ node: 'a', status: 'success' });
+		recorder.recordPeer({ node: 'b', error: { message: 'install timed out', code: 'ETIMEDOUT' } });
+		recorder.recordPeer({ node: 'c', error: 'connection refused' });
+		const failed = recorder.getFailedPeers();
+		assert.strictEqual(failed.length, 2);
+		assert.deepStrictEqual(
+			failed.map((peer) => peer.node),
+			['b', 'c']
+		);
+		assert.strictEqual(failed[0].error.message, 'install timed out');
+	});
+
+	it('does not count an uninterpretable primitive entry (status="unknown") as failed', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.recordPeer('some opaque marker');
+		assert.deepStrictEqual(recorder.getFailedPeers(), []);
 	});
 });
 
