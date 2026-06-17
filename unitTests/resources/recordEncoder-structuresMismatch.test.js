@@ -188,4 +188,128 @@ describe('RecordEncoder sharedStructures dictionary divergence (harper#1337)', (
 		assert.strictEqual(okExt, true, 'save that extends existing structures should be accepted');
 		assert.deepStrictEqual(meta.decode(buf), structuresExtended, 'disk should now hold extended structures');
 	});
+
+	it('strict-extension CAS catches replacement at a non-zero index', () => {
+		// The check loops over every existing entry, not just index 0. Catch a
+		// regression in the loop bounds where a later writer replaces a middle
+		// entry while preserving entries 0..i-1 and i+1..N.
+		let buf;
+		const meta = new Encoder();
+		const rootStore = {
+			transactionSync(fn) {
+				return fn({
+					getBinarySync: () => buf,
+					putSync: (_key, value) => {
+						buf = meta.encode(value);
+					},
+				});
+			},
+		};
+		const enc = new RecordEncoder({
+			structures: [],
+			randomAccessStructure: false,
+			getStructures: () => (buf ? meta.decode(buf) : undefined),
+			saveStructures: () => true,
+		});
+		enc.isRocksDB = true;
+		enc.rootStore = rootStore;
+
+		const original = [['a'], ['b'], ['c']];
+		assert.strictEqual(enc.saveStructures(original, 0), true);
+
+		// Same length, same entries at index 0 and 2, DIFFERENT entry at index 1.
+		const mutated = [['a'], ['X'], ['c']];
+		assert.strictEqual(
+			enc.saveStructures(mutated, 3),
+			false,
+			'replacement at index 1 (mid-array) must be rejected even when length matches'
+		);
+		assert.deepStrictEqual(meta.decode(buf), original, 'disk should still hold the original structures');
+	});
+
+	it('strict-extension CAS accepts a strict suffix extension', () => {
+		// Belt-and-braces: an off-by-one in the comparison loop could reject
+		// legitimate extensions and break normal write throughput. Verify the
+		// happy path explicitly.
+		let buf;
+		const meta = new Encoder();
+		const rootStore = {
+			transactionSync(fn) {
+				return fn({
+					getBinarySync: () => buf,
+					putSync: (_key, value) => {
+						buf = meta.encode(value);
+					},
+				});
+			},
+		};
+		const enc = new RecordEncoder({
+			structures: [],
+			randomAccessStructure: false,
+			getStructures: () => (buf ? meta.decode(buf) : undefined),
+			saveStructures: () => true,
+		});
+		enc.isRocksDB = true;
+		enc.rootStore = rootStore;
+
+		// Establish a 3-entry baseline on disk.
+		assert.strictEqual(enc.saveStructures([['a'], ['b'], ['c']], 0), true);
+
+		// Append two entries — same prefix [a, b, c], plus [d] and [e].
+		const extended = [['a'], ['b'], ['c'], ['d'], ['e']];
+		assert.strictEqual(
+			enc.saveStructures(extended, 3),
+			true,
+			'strict extension (existing prefix preserved, new entries appended) must be accepted'
+		);
+		assert.deepStrictEqual(meta.decode(buf), extended);
+	});
+
+	it('strict-extension CAS rejects a type mismatch at an existing index', () => {
+		// If an existing entry is an array (the expected shape for a structure
+		// definition) but a new save puts a non-array at the same index, that's
+		// a corruption attempt; reject. The current implementation falls into
+		// the `!Array.isArray(...)` guard rather than throwing.
+		let buf;
+		const meta = new Encoder();
+		const rootStore = {
+			transactionSync(fn) {
+				return fn({
+					getBinarySync: () => buf,
+					putSync: (_key, value) => {
+						buf = meta.encode(value);
+					},
+				});
+			},
+		};
+		const enc = new RecordEncoder({
+			structures: [],
+			randomAccessStructure: false,
+			getStructures: () => (buf ? meta.decode(buf) : undefined),
+			saveStructures: () => true,
+		});
+		enc.isRocksDB = true;
+		enc.rootStore = rootStore;
+
+		assert.strictEqual(enc.saveStructures([['a', 'b']], 0), true);
+		// Same length, but the new entry at index 0 is a string instead of an array.
+		const mutated = ['notAnArray'];
+		assert.strictEqual(
+			enc.saveStructures(mutated, 1),
+			false,
+			'type-mismatch save (array → non-array at same index) must be rejected'
+		);
+	});
+
+	// Note on end-to-end coverage: validating that msgpackr's pack() re-pack
+	// loop fires correctly on our `false` return and produces records that
+	// decode against the new disk state needs a real RocksDB-backed encoder
+	// (the decode path uses rootStore.getBinarySync to resolve blob
+	// references, which a mock doesn't satisfy without basically rebuilding
+	// the store). That validation lives in harper-pro's
+	// `integrationTests/cluster/multiShapeReplicationConvergence.test.mjs`
+	// where two-node mesh + 4-thread writers + varying optional-field
+	// combinations exercise the full encode→save→CAS→re-pack→decode loop
+	// with the actual storage layer. The four CAS tests above are the
+	// per-condition slices of that flow.
 });
