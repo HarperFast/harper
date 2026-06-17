@@ -2,7 +2,6 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const assert = require('node:assert');
-const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
 
 require('../testUtils');
 
