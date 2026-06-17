@@ -16,6 +16,7 @@ import { table, type Table } from '../../resources/databases.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { McpLogLevel } from './logging.ts';
 import { clearSessionRateState } from './rateLimit.ts';
 import { unregisterSession } from './sessionRegistry.ts';
 import { clearSessionCache } from './toolRegistry.ts';
@@ -41,6 +42,14 @@ export interface McpSessionRecord {
 	user: string;
 	createdAt: number;
 	lastActivity: number;
+	/**
+	 * Minimum `notifications/message` severity set via `logging/setLevel`.
+	 * Persisted here (not just on the in-memory SSE record) so it survives an
+	 * SSE reconnect and is order-independent of GET-stream open; the live
+	 * RegisteredSession is seeded from it. Expires with the session's TTL, so no
+	 * separate cache to prune. Undefined = the client hasn't opted into logging.
+	 */
+	logLevel?: McpLogLevel;
 }
 
 let _sessionTable: Table | undefined;
@@ -65,6 +74,7 @@ function declareSessionTable(): Table {
 			{ name: 'user' },
 			{ name: 'createdAt' },
 			{ name: 'lastActivity' },
+			{ name: 'logLevel' },
 		],
 	});
 }
