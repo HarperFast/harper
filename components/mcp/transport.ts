@@ -346,7 +346,8 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	const record = registerSession(sessionId, request.profile, effectiveUser(request));
 	// Seed the live record with any previously-set logging level so a reconnect
 	// (or a setLevel that preceded this stream) keeps delivering notifications/message.
-	if (session.logLevel) record.logLevel = session.logLevel;
+	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
+	record.logLevel = session.logLevel;
 	seedSessionSnapshot(sessionId);
 	return {
 		status: 200,

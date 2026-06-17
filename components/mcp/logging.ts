@@ -52,7 +52,13 @@ export function getSessionLogLevel(sessionId: string): McpLogLevel | undefined {
 function admits(record: RegisteredSession, recordLevel: McpLogLevel): boolean {
 	const min = record.logLevel;
 	if (min === undefined) return false;
-	return (LEVEL_RANK.get(recordLevel) ?? 0) >= (LEVEL_RANK.get(min) ?? 0);
+	const recordRank = LEVEL_RANK.get(recordLevel);
+	const minRank = LEVEL_RANK.get(min);
+	// An unrecognized level (shouldn't reach here given the typed callers, but be
+	// defensive) is not admitted rather than defaulting to rank 0 and slipping
+	// past a `debug` minimum.
+	if (recordRank === undefined || minRank === undefined) return false;
+	return recordRank >= minRank;
 }
 
 interface LogMessageParams {

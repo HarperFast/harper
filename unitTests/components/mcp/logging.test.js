@@ -78,6 +78,16 @@ describe('mcp/logging', () => {
 		assert.equal(frames.length, 0);
 	});
 
+	it('does not admit an unrecognized level even when the session minimum is debug (rank 0)', () => {
+		// Defensive: an invalid recordLevel must not slip past a `debug` minimum by
+		// defaulting to rank 0 (Gemini review).
+		const rec = registerSession('s1', 'application', SUPER);
+		const frames = capture(rec);
+		setSessionLogLevel('s1', 'debug');
+		emitMcpLogToSession('s1', 'bogus', { msg: 'invalid level' });
+		assert.equal(frames.length, 0);
+	});
+
 	it('admits a record exactly at the session level', () => {
 		const rec = registerSession('s1', 'application', SUPER);
 		const frames = capture(rec);
