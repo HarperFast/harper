@@ -275,21 +275,21 @@ describe('mcp/tools/application — registration', () => {
 		assert.equal(getTool('delete_Product').annotations?.destructiveHint, true);
 	});
 
-	it('omits outputSchema on delete_ and search_ (handler wire format has no structuredContent)', () => {
+	it('advertises result-shaped outputSchema on all write verbs; omits it only on search_ (#1324)', () => {
 		const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
 		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
 		registerApplicationTools();
-		// MCP spec: outputSchema validates structuredContent. wrapResult only sets
-		// structuredContent when the handler returns an object; Table.delete returns
-		// Promise<boolean>, search_* envelope shape is deferred to a sibling issue.
+		// MCP spec: outputSchema describes structuredContent (an object). Every CRUD
+		// handler now returns an object envelope, so each advertises a matching
+		// schema. search_* envelope shape is deferred to a sibling issue.
+		assert.equal(getTool('search_Product').outputSchema, undefined, 'search_ must not advertise outputSchema');
+		assert.ok(getTool('get_Product').outputSchema, 'get_ advertises outputSchema');
+		assert.ok(getTool('create_Product').outputSchema, 'create_ advertises outputSchema');
+		assert.ok(getTool('update_Product').outputSchema, 'update_ advertises outputSchema');
+		// delete_ now advertises a { deleted: boolean } schema matching its handler.
 		const del = getTool('delete_Product');
-		const search = getTool('search_Product');
-		assert.equal(del.outputSchema, undefined, 'delete_ must not advertise outputSchema');
-		assert.equal(search.outputSchema, undefined, 'search_ must not advertise outputSchema');
-		// get_/update_/create_ DO advertise outputSchema (handlers return object records).
-		assert.ok(getTool('get_Product').outputSchema, 'get_ does advertise outputSchema');
-		assert.ok(getTool('update_Product').outputSchema, 'update_ does advertise outputSchema');
-		assert.ok(getTool('create_Product').outputSchema, 'create_ does advertise outputSchema');
+		assert.deepEqual(del.outputSchema?.required, ['deleted']);
+		assert.equal(del.outputSchema?.properties?.deleted?.type, 'boolean');
 	});
 
 	it('honors static outputSchemas.delete override when an author supplies a structured envelope', () => {
@@ -609,9 +609,10 @@ describe('mcp/tools/application — handler dispatch', () => {
 			databaseName: 'data',
 			tableName: 'product',
 			staticHandlers: {
+				// Collection insert resolves to the new record's primary key (a scalar).
 				post: async (target, data) => {
 					captured = { isCollection: target.isCollection, data };
-					return { id: 'new-1', ...data };
+					return 'new-1';
 				},
 			},
 		});
@@ -624,6 +625,88 @@ describe('mcp/tools/application — handler dispatch', () => {
 		assert.equal(captured.isCollection, true, 'create target must be flagged as a collection');
 		assert.deepEqual(captured.data, { name: 'widget' });
 		assert.equal(res.isError, undefined);
+		// #1324: the scalar PK is wrapped as { id } so the result carries
+		// structuredContent matching create_'s outputSchema (strict SDK clients
+		// reject a bare scalar against a declared outputSchema with -32600).
+		assert.deepEqual(res.structuredContent, { id: 'new-1' });
+	});
+
+	it('create_ passes a structured Resource.post result through unchanged (#1324)', async () => {
+		// A custom Resource may return a full record/envelope (and advertise it via
+		// static outputSchemas.create); it must NOT be re-wrapped as { id }.
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			staticHandlers: {
+				post: async (_target, data) => ({ id: 'new-1', ...data }),
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('create_Product').handler(
+			{ name: 'widget' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { id: 'new-1', name: 'widget' });
+	});
+
+	it('delete_ returns a { deleted: boolean } envelope as structuredContent (#1324)', async () => {
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			verbs: ['delete'],
+			staticHandlers: {
+				// Table.delete resolves to a boolean.
+				delete: async () => true,
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('delete_Product').handler(
+			{ id: '42' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { deleted: true });
+	});
+
+	it('delete_ reports deleted:false when no record matched (#1324)', async () => {
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			verbs: ['delete'],
+			staticHandlers: {
+				delete: async () => false,
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('delete_Product').handler(
+			{ id: 'missing' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.deepEqual(res.structuredContent, { deleted: false });
+	});
+
+	it('delete_ passes a structured Resource.delete result through unchanged (#1324)', async () => {
+		// A custom Resource may return a structured delete envelope (and advertise it
+		// via static outputSchemas.delete); Boolean()-coercion must not flatten it.
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			verbs: ['delete'],
+			staticHandlers: {
+				delete: async () => ({ deleted: false, reason: 'not_found' }),
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('delete_Product').handler(
+			{ id: 'missing' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.deepEqual(res.structuredContent, { deleted: false, reason: 'not_found' });
 	});
 
 	it('search_ enforces limit cap, encodes nextCursor when more pages exist', async () => {
@@ -673,21 +756,25 @@ describe('mcp/tools/application — handler dispatch', () => {
 			tableName: 'product',
 			verbs: ['put'],
 			staticHandlers: {
+				// Table.put resolves to undefined.
 				put: async (target, data) => {
 					captured = { id: target.id, data };
-					return { ok: true };
+					return undefined;
 				},
 			},
 		});
 		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
 		registerApplicationTools();
-		await getTool('update_Product').handler(
+		const res = await getTool('update_Product').handler(
 			{ id: '42', name: 'widget', price: 9.99 },
 			{ user: SUPER, profile: 'application', sessionId: 's' }
 		);
 		assert.equal(captured.id, '42');
 		assert.deepEqual(captured.data, { name: 'widget', price: 9.99 });
 		assert.equal('id' in captured.data, false, 'id is stripped from the data body');
+		// #1324: undefined put result surfaces as a { ok: true } ack carrying
+		// structuredContent that matches update_'s outputSchema.
+		assert.deepEqual(res.structuredContent, { ok: true });
 	});
 
 	it('handler exceptions surface as isError=true with kind=harper_error', async () => {

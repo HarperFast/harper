@@ -18,7 +18,7 @@
  * unrecognized-cursor `-32602` frame (S2).
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, match } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert/strict';
 import { resolve } from 'node:path';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -105,68 +105,41 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 		await transport.close();
 	});
 
-	// Driven over raw JSON-RPC rather than the SDK client: create_* tools declare
-	// an outputSchema but their handlers return a bare id with no structuredContent,
-	// which the strict SDK client rejects (pre-existing output-contract gap, tracked
-	// separately). The raw client doesn't enforce outputSchema, so this still proves
-	// the create+get operation works end-to-end against a real table (#1317).
-	test('P1: create_/get_ round-trip persists and reads back a record (raw JSON-RPC)', async () => {
-		const appUrl = ctx.harper.httpURL;
-		const init = await rawRpc(ctx, {
-			baseUrl: appUrl,
-			body: JSON.stringify({
-				jsonrpc: '2.0',
-				id: 1,
-				method: 'initialize',
-				params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'raw', version: '0' } },
-			}),
-		});
-		strictEqual(init.status, 200);
-		const sessionId = init.sessionId;
-		ok(sessionId, 'application initialize returned an Mcp-Session-Id');
-		const pv = init.json.result.protocolVersion;
+	// Driven over the official SDK client, which validates each tool result against
+	// the advertised outputSchema and throws McpError -32600 if structuredContent
+	// is missing or non-conformant. So a passing create/update/delete chain proves
+	// the result-envelope contract end-to-end (#1324) — create_ returns { id },
+	// update_ returns { ok }, delete_ returns { deleted } — not just that the
+	// operation persisted. (patch_ shares makeUpdateHandler + the { ok } ack schema
+	// with update_; a standard table exposes update_, not patch_, so the patch
+	// envelope is covered by the unit suite.)
+	test('create_/get_/update_/delete_ round-trip via the SDK client validates output schemas (#1324)', async () => {
+		const { client, transport } = await newAppClient(ctx);
 
-		const createRes = await rawRpc(ctx, {
-			baseUrl: appUrl,
-			sessionId: sessionId!,
-			protocolVersion: pv,
-			body: JSON.stringify({
-				jsonrpc: '2.0',
-				id: 2,
-				method: 'tools/call',
-				params: { name: 'create_WorkItem', arguments: { state: 'open', payload: 'hello-1317' } },
-			}),
+		const created = await client.callTool({
+			name: 'create_WorkItem',
+			arguments: { state: 'open', payload: 'hello-1324' },
 		});
-		strictEqual(createRes.status, 200);
-		const createResult = createRes.json?.result;
-		ok(createResult && !createResult.isError, `create should succeed: ${JSON.stringify(createRes.json)}`);
-		// create returns the new id — as a bare string (text) or inside a { id } object.
-		const createdText = (createResult.content ?? []).map((c: any) => c.text).join('');
-		let newId: unknown;
-		try {
-			const parsed = JSON.parse(createdText);
-			newId = typeof parsed === 'string' ? parsed : parsed?.id;
-		} catch {
-			newId = createdText; // bare id string
-		}
-		ok(newId, `create should return an id: ${createdText}`);
+		ok(!created.isError, `create should succeed: ${JSON.stringify(created)}`);
+		const newId = (created.structuredContent as { id?: unknown } | undefined)?.id;
+		ok(newId, `create returns { id } as structuredContent: ${JSON.stringify(created.structuredContent)}`);
 
-		const getRes = await rawRpc(ctx, {
-			baseUrl: appUrl,
-			sessionId: sessionId!,
-			protocolVersion: pv,
-			body: JSON.stringify({
-				jsonrpc: '2.0',
-				id: 3,
-				method: 'tools/call',
-				params: { name: 'get_WorkItem', arguments: { id: newId } },
-			}),
+		const got = await client.callTool({ name: 'get_WorkItem', arguments: { id: newId } });
+		ok(!got.isError, `get should succeed: ${JSON.stringify(got)}`);
+		strictEqual((got.structuredContent as { payload?: string } | undefined)?.payload, 'hello-1324');
+
+		const updated = await client.callTool({
+			name: 'update_WorkItem',
+			arguments: { id: newId, state: 'closed', result: 'done' },
 		});
-		strictEqual(getRes.status, 200);
-		const getResult = getRes.json?.result;
-		ok(getResult && !getResult.isError, `get should succeed: ${JSON.stringify(getRes.json)}`);
-		const getText = (getResult.content ?? []).map((c: any) => c.text).join('');
-		match(getText, /hello-1317/);
+		ok(!updated.isError, `update should succeed: ${JSON.stringify(updated)}`);
+		strictEqual((updated.structuredContent as { ok?: boolean } | undefined)?.ok, true);
+
+		const deleted = await client.callTool({ name: 'delete_WorkItem', arguments: { id: newId } });
+		ok(!deleted.isError, `delete should succeed: ${JSON.stringify(deleted)}`);
+		strictEqual((deleted.structuredContent as { deleted?: boolean } | undefined)?.deleted, true);
+
+		await transport.close();
 	});
 
 	test('P1: resources/list includes the schema resource and harper://openapi', async () => {

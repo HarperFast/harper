@@ -24,6 +24,7 @@ import {
 	deriveCreateSchema,
 	deriveCreateOutputSchema,
 	deriveDeleteSchema,
+	deriveDeleteOutputSchema,
 	deriveGetSchema,
 	deriveGetOutputSchema,
 	derivePatchOutputSchema,
@@ -200,6 +201,15 @@ function makeTarget(): InstanceType<RequestTargetCtor> {
 	return new Ctor();
 }
 
+// A write handler's resolved value is a "structured envelope" when it's a
+// non-null object (a record or a custom outputSchemas-shaped payload) — it
+// should pass through to structuredContent as-is rather than being wrapped in a
+// derived `{ id }`/`{ deleted }` shape, which would corrupt custom Resource
+// responses and their author-declared output schemas (#1324).
+function isStructuredEnvelope(data: unknown): data is object {
+	return typeof data === 'object' && data !== null;
+}
+
 function wrapResult(data: unknown): ToolResult {
 	const text = typeof data === 'string' ? data : JSON.stringify(data ?? null);
 	const result: ToolResult = { content: [{ type: 'text', text }] };
@@ -300,7 +310,13 @@ function makeCreateHandler(toolName: string, ResourceClass: ResourceClassLike) {
 			// because a record-scoped resource has no insert path (#1317).
 			target.isCollection = true;
 			const data = await ResourceClass.post!(target, a, buildContext(context.user));
-			return wrapResult(data ?? { ok: true });
+			// Standard table create resolves to the new record's primary key (a
+			// scalar). Wrap it as `{ id }` so the result carries `structuredContent`
+			// matching `deriveCreateOutputSchema`; strict SDK clients reject a bare
+			// scalar against a declared outputSchema with -32600. A custom Resource
+			// that returns a structured record/envelope (typically with a
+			// `static outputSchemas.create` override) is passed through unchanged (#1324).
+			return wrapResult(isStructuredEnvelope(data) ? data : { id: data });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -316,7 +332,12 @@ function makeUpdateHandler(toolName: string, ResourceClass: ResourceClassLike, v
 			target.id = id;
 			const fn = verb === 'put' ? ResourceClass.put : ResourceClass.patch;
 			const data = await fn!(target, rest, buildContext(context.user));
-			return wrapResult(data ?? { ok: true });
+			// Table.put/patch resolve to undefined; surface a `{ ok: true }`
+			// acknowledgement so the result has structuredContent matching
+			// derive{Update,Patch}OutputSchema. A custom Resource that returns a
+			// structured envelope (with a static outputSchemas override) passes
+			// through unchanged (#1324).
+			return wrapResult(isStructuredEnvelope(data) ? data : { ok: true });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -330,7 +351,11 @@ function makeDeleteHandler(toolName: string, ResourceClass: ResourceClassLike) {
 			const target = makeTarget();
 			target.id = a.id;
 			const data = await ResourceClass.delete!(target, buildContext(context.user));
-			return wrapResult(data ?? { ok: true });
+			// Table.delete resolves to a boolean; wrap it as `{ deleted }` so the
+			// result carries structuredContent matching deriveDeleteOutputSchema. A
+			// custom Resource that returns a structured envelope (typically with a
+			// `static outputSchemas.delete` override) is passed through unchanged (#1324).
+			return wrapResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -570,19 +595,15 @@ function registerVerbTools(ctx: ResourceContext): number {
 	}
 	if (verbs.delete) {
 		const name = `delete_${suffix}`;
-		// outputSchema deliberately omitted (matches the search_* precedent).
 		// `Table.delete` returns Promise<boolean>; `makeDeleteHandler` wraps it as
-		// `wrapResult(data ?? { ok: true })`, and wrapResult only sets
-		// `structuredContent` when data is an object. So a boolean handler
-		// return produces text content only — no structuredContent for an
-		// outputSchema to validate. An author who returns a structured
-		// envelope can opt in via `static outputSchemas.delete`.
-		const deleteOverride = overrideOutput('delete');
+		// `{ deleted }` so the result carries structuredContent matching the
+		// `{ deleted: boolean }` outputSchema. Authors can override the shape via
+		// `static outputSchemas.delete`.
 		addTool({
 			name,
 			description: verbDescription('delete', ctxForVerb),
 			inputSchema: deriveDeleteSchema(attributes, undefined),
-			...(deleteOverride ? { outputSchema: deleteOverride } : {}),
+			outputSchema: overrideOutput('delete') ?? deriveDeleteOutputSchema(attributes),
 			profile: 'application',
 			// delete_* idempotency depends on delete-of-deleted behavior; default
 			// omits idempotentHint until verified end-to-end.

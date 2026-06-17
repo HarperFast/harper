@@ -278,13 +278,16 @@ export function deriveDeleteSchema(
 
 /**
  * Full record shape — every visible attribute as it appears in returned records.
- * Used as the outputSchema for get/create/update/patch. Reflects what the
- * server returns, not what the client sends: server-assigned fields
- * (@createdTime, @updatedTime, @primaryKey) appear as required in output even
- * though they're optional on input.
+ * Used as the outputSchema for `get_*` only. Reflects what the server returns,
+ * not what the client sends: server-assigned fields (@createdTime,
+ * @updatedTime, @primaryKey) appear as required in output even though they're
+ * optional on input.
  *
- * `search_*` deliberately omits outputSchema — envelope shape (records vs
- * data, cursor vs nextCursor) is tracked in the sibling issue.
+ * `create_*`/`update_*`/`patch_*`/`delete_*` deliberately do NOT use this —
+ * their handlers return a result envelope (id / ack / deleted), not the full
+ * record, and the record's required server-assigned fields aren't guaranteed at
+ * write time (e.g. a freshly created record may lack @updatedTime) (#1324).
+ * `search_*` omits outputSchema — envelope shape is tracked in a sibling issue.
  */
 function deriveRecordSchema(
 	attributes: HarperAttribute[],
@@ -320,37 +323,83 @@ export function deriveGetOutputSchema(
 	return deriveRecordSchema(attributes, permissions);
 }
 
-export function deriveCreateOutputSchema(
-	attributes: HarperAttribute[],
-	permissions: AttributePermissionEntry[] | undefined
-): object {
-	return deriveRecordSchema(attributes, permissions);
-}
-
-export function deriveUpdateOutputSchema(
-	attributes: HarperAttribute[],
-	permissions: AttributePermissionEntry[] | undefined
-): object {
-	return deriveRecordSchema(attributes, permissions);
-}
-
-export function derivePatchOutputSchema(
-	attributes: HarperAttribute[],
-	permissions: AttributePermissionEntry[] | undefined
-): object {
-	return deriveRecordSchema(attributes, permissions);
+/**
+ * Acknowledgement envelope — `{ ok: boolean }`. MCP requires `structuredContent`
+ * (and therefore `outputSchema`) to describe a JSON *object*, so write verbs that
+ * have no meaningful payload advertise this minimal object rather than a scalar.
+ */
+function deriveAckSchema(okDescription: string): object {
+	return {
+		type: 'object',
+		properties: { ok: { type: 'boolean', description: okDescription } },
+		required: ['ok'],
+		additionalProperties: false,
+	};
 }
 
 /**
- * Output schema for delete responses. Table.delete returns Promise<boolean>;
- * makeDeleteHandler wraps it as wrapResult(data ?? { ok: true }) — so on
- * success the MCP response carries a text content of "true" with no
- * structuredContent. Advertise the actual contract (boolean) rather than a
- * synthesized object envelope the handler never produces.
+ * Output schema for create responses. `makeCreateHandler` resolves the new
+ * record's primary key (a scalar) and wraps it as `{ id }`, so advertise that
+ * envelope — typed by the primary-key attribute — rather than the full record
+ * (which the handler never returns and whose server-assigned fields aren't
+ * guaranteed at create time) (#1324).
+ */
+export function deriveCreateOutputSchema(
+	attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	const pk = findPrimaryKey(attributes);
+	const idSchema = pk ? attributeToProperty(pk) : { type: 'string' };
+	return {
+		type: 'object',
+		properties: {
+			id: {
+				...idSchema,
+				description: pk ? `Primary key of the created record (${pk.name}).` : 'Primary key of the created record.',
+			},
+		},
+		required: ['id'],
+		additionalProperties: false,
+	};
+}
+
+/**
+ * Output schema for update (PUT) responses. `Table.put` resolves to undefined;
+ * the handler surfaces `{ ok: true }` (#1324).
+ */
+export function deriveUpdateOutputSchema(
+	_attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveAckSchema('True when the record was written.');
+}
+
+/**
+ * Output schema for patch responses. `Table.patch` resolves to undefined; the
+ * handler surfaces `{ ok: true }` (#1324).
+ */
+export function derivePatchOutputSchema(
+	_attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveAckSchema('True when the record was patched.');
+}
+
+/**
+ * Output schema for delete responses. `Table.delete` resolves to a boolean;
+ * `makeDeleteHandler` wraps it as `{ deleted }` so the result carries
+ * structuredContent (an object, as MCP requires) (#1324).
  */
 export function deriveDeleteOutputSchema(_attributes: HarperAttribute[]): object {
 	return {
-		type: 'boolean',
-		description: 'True when the record was deleted; false when no record matched the primary key.',
+		type: 'object',
+		properties: {
+			deleted: {
+				type: 'boolean',
+				description: 'True when a record was deleted; false when no record matched the primary key.',
+			},
+		},
+		required: ['deleted'],
+		additionalProperties: false,
 	};
 }
