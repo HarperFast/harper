@@ -183,7 +183,10 @@ describe('RecordEncoder sharedStructures dictionary divergence (harper#1337)', (
 		assert.deepStrictEqual(meta.decode(buf), structuresA, 'disk should still hold writer A structures');
 
 		// A save that strictly EXTENDS the existing dictionary is accepted.
-		const structuresExtended = [['runId', 'vu', 'iter'], ['alpha', 'beta', 'gamma']];
+		const structuresExtended = [
+			['runId', 'vu', 'iter'],
+			['alpha', 'beta', 'gamma'],
+		];
 		const okExt = enc.saveStructures(structuresExtended, 1);
 		assert.strictEqual(okExt, true, 'save that extends existing structures should be accepted');
 		assert.deepStrictEqual(meta.decode(buf), structuresExtended, 'disk should now hold extended structures');
