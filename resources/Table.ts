@@ -238,8 +238,8 @@ export function makeTable(options) {
 	let cleanupTimer: NodeJS.Timeout;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
-	// dedup flag for the once-per-table warning about a runtime per-record expiresAt with no scheduled cleanup
-	let warnedUnscheduledExpiration = false;
+	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
+	let expirationWarningChecked = false;
 	let propertyResolvers: any;
 	let hasRelationships = false;
 	let runningRecordExpiration: boolean;
@@ -2321,19 +2321,14 @@ export function makeTable(options) {
 						// best-effort from this write path, on whichever worker happened to handle the write, and is not
 						// re-armed after a restart with no further writes. Warn once per table so the misconfiguration is
 						// visible and the operator can configure reliable, setup-armed eviction. See issue #1339.
-						if (
-							// dedup first so that, once warned, every later expiring write short-circuits on one check
-							!warnedUnscheduledExpiration &&
-							!expirationMs &&
-							!evictionMs &&
-							!expirationScanScheduled &&
-							!expiresAtProperty &&
-							!hasSourceGet
-						) {
-							warnedUnscheduledExpiration = true;
-							logger.warn?.(
-								`A per-record expiresAt was set on table "${tableName}" which has no table-level expiration/eviction, no expiresAt attribute, and no source; expiration will not be reliably enforced (the eviction scan is only armed best-effort on write and does not survive a restart with no writes). Configure a table-level expiration/eviction or an indexed expiresAt attribute for reliable eviction.`
-							);
+						// Evaluate at most once per table (on the first expiring write); later writes short-circuit on one check.
+						if (!expirationWarningChecked) {
+							expirationWarningChecked = true;
+							if (!expirationMs && !evictionMs && !expirationScanScheduled && !expiresAtProperty && !hasSourceGet) {
+								logger.warn?.(
+									`A per-record expiresAt was set on table "${tableName}" which has no table-level expiration/eviction, no expiresAt attribute, and no source; expiration will not be reliably enforced (the eviction scan is only armed best-effort on write and does not survive a restart with no writes). Configure a table-level expiration/eviction or an indexed expiresAt attribute for reliable eviction.`
+								);
+							}
 						}
 					}
 					function writeCommit(storeRecord: boolean) {
