@@ -304,6 +304,34 @@ describe('test clearJWTRSAKeysCache function', () => {
 		const reloaded = await get_jwt_keys_func();
 		assert.deepStrictEqual(reloaded.passphrase, PASSPHRASE_VALUE);
 	});
+
+	// A clear that lands while a getJWTRSAKeys() read is in flight must not let that read repopulate the
+	// cache with the pre-clear keys — otherwise the very clone race we are fixing could resurrect the stale
+	// set. The in-flight read still returns its own result, but the cache is left empty so the next read
+	// picks up the replaced files.
+	it('does not let a read in flight when the cache is cleared repopulate it', async () => {
+		token_auth.__set__('rsaKeys', undefined);
+		const readFileStub = sandbox.stub(fs, 'readFile');
+		try {
+			let cleared = false;
+			readFileStub.callsFake(async (...args) => {
+				// Simulate the clone overwriting the files + clearing the cache partway through this read.
+				if (!cleared) {
+					cleared = true;
+					clear_cache_func();
+				}
+				return readFileStub.wrappedMethod.apply(fs, args);
+			});
+
+			const result = await get_jwt_keys_func();
+			// The in-flight call still resolves with what it read...
+			assert.deepStrictEqual(result.passphrase, PASSPHRASE_VALUE);
+			// ...but it must not have committed to the cache, since a clear happened mid-read.
+			assert.deepStrictEqual(token_auth.__get__('rsaKeys'), undefined);
+		} finally {
+			readFileStub.restore();
+		}
+	});
 });
 
 describe('test createTokens', () => {
