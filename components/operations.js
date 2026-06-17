@@ -439,7 +439,10 @@ async function deployComponent(req) {
 			// the replicated hdb_deployment row's payload_blob. Blob.stream() blocks on
 			// in-flight BLOB_CHUNK writes until the chunks land. If the row never arrives
 			// within the timeout, peer records a failure and origin sees it in peer_results.
-			const row = await awaitDeploymentRow(req._deploymentId);
+			// The wait budget defaults to 120s but is overridable per-deploy via
+			// `deployment_timeout` (ms) for clusters where the system-table channel is
+			// heavily backlogged (harper-pro#402).
+			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
 			extractionPayload = row.payload_blob.stream();
 		}
 
@@ -546,6 +549,27 @@ async function deployComponent(req) {
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else response.message = `Successfully deployed: ${application.name}`;
 
+		// Replication failures don't reject replicateOperation — they surface as 'failed'
+		// entries in peer_results. By default, treat any failed peer as an overall deploy
+		// failure so the operation returns a non-2xx status (and the CLI a non-zero exit
+		// code). The component is already deployed — and, if requested, restarted — on this
+		// origin node; the failure signals that one or more peers did not receive it. Pass
+		// ignore_replication_errors: true for best-effort deploys to partially-available clusters.
+		if (recorder && !req.ignore_replication_errors) {
+			const failedPeers = recorder.getFailedPeers();
+			if (failedPeers.length > 0) {
+				const detail = failedPeers
+					.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`)
+					.join(', ');
+				throw new ServerError(
+					`Component '${application.name}' was deployed on the origin node but failed to replicate to ` +
+						`${failedPeers.length} of ${recorder.row.peer_results.length} peer node(s): ${detail}. ` +
+						`See deployment ${recorder.deploymentId} (get_deployment) for details, or pass ` +
+						`ignore_replication_errors: true to treat replication failures as non-fatal.`
+				);
+			}
+		}
+
 		if (recorder) {
 			response.deployment_id = recorder.deploymentId;
 			emit('phase', { phase: 'success', status: 'done' });
@@ -564,6 +588,13 @@ async function deployComponent(req) {
 		if (phase) structured.phase = phase;
 		if (capture.lines.length > 0) structured.install_output = capture;
 		if (recorder?.deploymentId) structured.deployment_id = recorder.deploymentId;
+		// Surface failed peer outcomes so callers see which nodes the deploy did not reach
+		// without a second get_deployment round-trip. Populated for replication failures (the
+		// throw above) and any other failure that occurred after peers reported. Carried on
+		// both the structured non-SSE body and the SSE 'error' event below so the two transports
+		// stay symmetric (the CLI uses SSE for deploy_component).
+		const failedPeers = recorder?.getFailedPeers() ?? [];
+		if (failedPeers.length > 0) structured.failed_peers = failedPeers;
 
 		// Wrap as a ServerError so the Fastify error handler picks a 500 by default; preserve
 		// an upstream statusCode (e.g. a ClientError from payload validation) if present.
@@ -575,8 +606,19 @@ async function deployComponent(req) {
 			code: outErr?.statusCode ?? err?.code,
 			phase,
 			install_output: capture.lines.length > 0 ? capture : undefined,
+			deployment_id: recorder?.deploymentId,
+			failed_peers: failedPeers.length > 0 ? failedPeers : undefined,
 		});
-		if (recorder) await recorder.finish('failed', err);
+		// Record the terminal failure, but never let a finish() write error (full disk, lock,
+		// dropped system table) mask the actual deploy failure — outErr carries the phase,
+		// install output, and failed_peers the caller needs.
+		if (recorder) {
+			try {
+				await recorder.finish('failed', err);
+			} catch (finishErr) {
+				log.warn('Failed to record deployment failure row', finishErr);
+			}
+		}
 		throw outErr;
 	}
 }

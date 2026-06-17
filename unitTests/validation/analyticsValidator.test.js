@@ -10,6 +10,15 @@ describe('validateGetAnalytics', function () {
 		assert.strictEqual(validateGetAnalytics({ metric: 'cpu-usage' }), undefined);
 	});
 
+	it('should accept a string log filter', function () {
+		assert.strictEqual(validateGetAnalytics({ metric: 'rocksdb-txnlog-stats', log: 'audit' }), undefined);
+	});
+
+	it('should reject a non-string log filter', function () {
+		const error = validateGetAnalytics({ metric: 'rocksdb-txnlog-stats', log: 42 });
+		assert.ok(error instanceof Error);
+	});
+
 	it('should accept a fully-specified valid request', function () {
 		assert.strictEqual(
 			validateGetAnalytics({

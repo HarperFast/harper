@@ -14,7 +14,7 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;
 const isBun = typeof globalThis.Bun !== 'undefined';
@@ -421,12 +421,59 @@ const ROCKSDB_DB_COUNTERS = [
 	'stallMicros',
 	'memtableHit',
 	'memtableMiss',
+	// Transaction log counters, summed across all of a database's logs by getStats(). The summed
+	// roll-up rides on the db-level rocksdb-stats row; per-log detail lives on rocksdb-txnlog-stats.
+	'txnlogBytesWritten',
+	'txnlogTransactionsWritten',
 ] as const;
 // Gauges are scalar values that are not cumulative. They go up and down over time.
-const ROCKSDB_DB_GAUGES = ['blockCacheUsage', 'blockCacheCapacity', 'numRunningFlushes'] as const;
+const ROCKSDB_DB_GAUGES = [
+	'blockCacheUsage',
+	'blockCacheCapacity',
+	'numRunningFlushes',
+	// Transaction log gauges, summed across all of a database's logs by getStats().
+	'txnlogLogCount',
+	'txnlogFileCount',
+	'txnlogTotalSizeBytes',
+	'txnlogMappedBytes',
+	'txnlogOverlayBytes',
+	'txnlogActiveMaps',
+	'txnlogPendingTransactions',
+	'txnlogUncommittedTransactions',
+	'txnlogReplayGapBytes',
+] as const;
 const ROCKSDB_TABLE_GAUGES = ['numRunningCompactions', 'compactionPending'] as const;
 
+// Per-transaction-log stats (rocksdb-txnlog-stats metric), flattened from log.getStats(), one
+// row per log. Sequence numbers, positions, and static config are intentionally dropped as noise
+// (see normalizeTxnLogStats).
+const ROCKSDB_TXNLOG_GAUGES = [
+	'fileCount',
+	'totalSizeBytes',
+	'currentFileSize',
+	'pendingTransactions',
+	'uncommittedTransactions',
+	'replayGapBytes',
+	'memoryMappedBytes',
+	'memoryOverlayBytes',
+	'memoryActiveMaps',
+	'purgeOldestFileAgeMs',
+	'purgePurgeableFiles',
+	'purgeRetainedUnflushedFiles',
+] as const;
+// Per-transaction-log lifetime counters (diffed to per-period rates).
+const ROCKSDB_TXNLOG_COUNTERS = [
+	'totalsTransactionsWritten',
+	'totalsEntriesWritten',
+	'totalsBytesWritten',
+	'totalsRotations',
+	'totalsWriteFailures',
+] as const;
+
 const lastRocksDBDbStats = new Map<string, Record<string, number>>();
+// Per-log counter baselines, nested db name -> log name -> last normalized stats, so a database's
+// log baselines can be pruned together when the database is dropped.
+const lastRocksDBLogStats = new Map<string, Map<string, Record<string, number>>>();
 let lastRocksDBStatsTime = 0;
 
 export function diffRocksDBCounter(curr: number, last: number | undefined): number {
@@ -448,6 +495,47 @@ export function normalizeRocksDBStats(raw: Record<string, unknown>): Record<stri
 	if (!raw) return out;
 	for (const [key, value] of Object.entries(raw)) {
 		if (typeof value === 'number') out[toRocksDBCamelCase(key)] = value;
+	}
+	return out;
+}
+
+/**
+ * Flattens a per-log TransactionLogStats snapshot to the flat numeric record used by analytics,
+ * selecting only the performance- and resource-relevant fields. Sequence numbers, log positions,
+ * the path, and static config are intentionally dropped — they carry no analytic signal as a
+ * periodic time series (replayGapBytes already captures the meaningful flushed-vs-written gap).
+ * @param raw - The raw per-log stats from log.getStats().
+ * @returns The normalized per-log stats record.
+ */
+export function normalizeTxnLogStats(raw: TransactionLogStats): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (!raw) return out;
+	const setNumber = (key: string, value: unknown) => {
+		if (typeof value === 'number') out[key] = value;
+	};
+	setNumber('fileCount', raw.fileCount);
+	setNumber('totalSizeBytes', raw.totalSizeBytes);
+	setNumber('currentFileSize', raw.currentFileSize);
+	setNumber('pendingTransactions', raw.pendingTransactions);
+	setNumber('uncommittedTransactions', raw.uncommittedTransactions);
+	setNumber('replayGapBytes', raw.replayGapBytes);
+	const { memory, purge, totals } = raw;
+	if (memory) {
+		setNumber('memoryMappedBytes', memory.mappedBytes);
+		setNumber('memoryOverlayBytes', memory.overlayBytes);
+		setNumber('memoryActiveMaps', memory.activeMaps);
+	}
+	if (purge) {
+		setNumber('purgeOldestFileAgeMs', purge.oldestFileAgeMs);
+		setNumber('purgePurgeableFiles', purge.purgeableFiles);
+		setNumber('purgeRetainedUnflushedFiles', purge.retainedUnflushedFiles);
+	}
+	if (totals) {
+		setNumber('totalsTransactionsWritten', totals.transactionsWritten);
+		setNumber('totalsEntriesWritten', totals.entriesWritten);
+		setNumber('totalsBytesWritten', totals.bytesWritten);
+		setNumber('totalsRotations', totals.rotations);
+		setNumber('totalsWriteFailures', totals.writeFailures);
 	}
 	return out;
 }
@@ -512,6 +600,41 @@ export function buildRocksDBTableMetric(
 }
 
 /**
+ * Gathers metrics for a single RocksDB transaction log (rocksdb-txnlog-stats). Counters are
+ * diffed against the prior sample (like the DB-level counters); gauges pass through absolute.
+ * Carries a `log` dimension alongside `database`.
+ * @param dbName - The name of the database the log is attached to.
+ * @param logName - The name of the transaction log.
+ * @param stats - The normalized per-log stats.
+ * @param lastStats - The previous sample's normalized stats, for diffing counters.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+export function buildRocksDBTxnLogMetric(
+	dbName: string,
+	logName: string,
+	stats: Record<string, number>,
+	lastStats: Record<string, number> | undefined,
+	now: number,
+	period: number | undefined
+): Record<string, unknown> {
+	const metric: Record<string, unknown> = {
+		metric: METRIC.ROCKSDB_TXNLOG_STATS,
+		database: dbName,
+		log: logName,
+		time: now,
+	};
+	if (period !== undefined) metric.period = period;
+	for (const field of ROCKSDB_TXNLOG_COUNTERS) {
+		metric[field] = diffRocksDBCounter(stats[field] ?? 0, lastStats?.[field]);
+	}
+	for (const field of ROCKSDB_TXNLOG_GAUGES) {
+		metric[field] = stats[field] ?? 0;
+	}
+	return metric;
+}
+
+/**
  * Stores the RocksDB stats metrics for the given databases.
  * @param analyticsTable - The analytics table to store the metrics in.
  * @param databases - The databases to store the metrics for.
@@ -528,7 +651,9 @@ function storeRocksDBStatsMetrics(
 		if (!tables) continue; // no tables or not loaded/initialized yet
 		const tableEntries = Object.entries(tables);
 		const [, firstTable] = tableEntries[0] ?? [];
-		if (!(firstTable?.primaryStore instanceof RocksDatabase)) continue;
+		// Tables in a database share one root store; check the first to skip non-RocksDB databases.
+		const rootStore = firstTable?.primaryStore;
+		if (!(rootStore instanceof RocksDatabase)) continue;
 
 		let firstNormalizedStats: Record<string, number> | undefined;
 		for (const [tableName, tbl] of tableEntries) {
@@ -555,6 +680,49 @@ function storeRocksDBStatsMetrics(
 			}
 			lastRocksDBDbStats.set(db, firstNormalizedStats);
 		}
+
+		// Per-transaction-log stats. Logs are attached at the database (root store) level, so we
+		// enumerate them once per database rather than per table.
+		let logNames: string[];
+		try {
+			logNames = rootStore.listLogs();
+		} catch (error) {
+			// The store may have been closed/dropped mid-cycle (e.g. "Database not open"); skip this
+			// database's logs rather than letting the throw abort the whole analytics cycle.
+			log.warn?.(`Error listing RocksDB logs for ${db}`, error);
+			continue;
+		}
+		let logStatsByName = lastRocksDBLogStats.get(db);
+		const seenLogs = new Set<string>();
+		for (const logName of logNames) {
+			seenLogs.add(logName);
+			try {
+				const logStats = normalizeTxnLogStats(rootStore.useLog(logName).getStats());
+				const lastLogStats = logStatsByName?.get(logName);
+				// Skip the first sample for a log — its counters are cumulative since the log was
+				// created, so a delta-from-zero would produce a misleading spike (mirrors the
+				// DB-level skip above).
+				if (lastLogStats !== undefined) {
+					const logMetric = buildRocksDBTxnLogMetric(db, logName, logStats, lastLogStats, now, period);
+					storeMetric(analyticsTable, logMetric);
+					log.trace?.(`db ${db} log ${logName} rocksdb txnlog metric: ${JSON.stringify(logMetric)}`);
+				}
+				if (!logStatsByName) {
+					logStatsByName = new Map();
+					lastRocksDBLogStats.set(db, logStatsByName);
+				}
+				logStatsByName.set(logName, logStats);
+			} catch (error) {
+				// A log may be removed mid-collection — keep iterating siblings.
+				log.warn?.(`Error getting RocksDB stats for log ${db}.${logName}`, error);
+			}
+		}
+		// Drop cached baselines for logs that no longer exist on this database.
+		if (logStatsByName) {
+			for (const cachedLog of logStatsByName.keys()) {
+				if (!seenLogs.has(cachedLog)) logStatsByName.delete(cachedLog);
+			}
+		}
 	}
 }
 
@@ -567,6 +735,9 @@ function pruneRocksDBStatsCache(databases: Databases) {
 	const activeDbs = new Set<string>(Object.keys(databases));
 	for (const key of lastRocksDBDbStats.keys()) {
 		if (!activeDbs.has(key)) lastRocksDBDbStats.delete(key);
+	}
+	for (const key of lastRocksDBLogStats.keys()) {
+		if (!activeDbs.has(key)) lastRocksDBLogStats.delete(key);
 	}
 }
 

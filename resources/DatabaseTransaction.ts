@@ -1,4 +1,4 @@
-import { cleanupUnusedBlobs } from './blob.ts';
+import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
@@ -103,6 +103,12 @@ export class DatabaseTransaction implements Transaction {
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
 	declare sourceApply?: boolean;
+	// Set when this transaction replays the local audit log during crash recovery (replayLogs.ts).
+	// Replayed records were valid when first written, so schema validation is skipped — a schema
+	// that has since added required fields must not block replaying older records (harper#1316).
+	// An explicit marker rather than overloading `retries`, which is also bumped by transient
+	// conflict retries and never reset, so it cannot reliably signal "this is a replay".
+	declare isReplay?: boolean;
 
 	getReadTxn(): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -337,7 +343,8 @@ export class DatabaseTransaction implements Transaction {
 							// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
 							// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
 							for (const write of this.writes) {
-								if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+								if (write?.skipped && write?.savedBlobs)
+									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.writes = [];
@@ -396,7 +403,8 @@ export class DatabaseTransaction implements Transaction {
 					);
 				}
 				for (const write of this.writes) {
-					if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+					if (write?.skipped && write?.savedBlobs)
+						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.writes = [];
 				if (this.#context?.resourceCache) this.#context.resourceCache = null;
@@ -426,7 +434,8 @@ export class DatabaseTransaction implements Transaction {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
 		for (const write of this.writes) {
-			if (write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+			if (write?.savedBlobs)
+				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
 		this.writes = [];

@@ -490,3 +490,49 @@ describe('getOp (replicated fan-out)', () => {
 		expect(result).to.deep.equal([{ id: 10, metric: 'm', total: 1 }]);
 	});
 });
+
+describe('getOp (log filter)', () => {
+	let searchStub;
+	let originalDatabases;
+	let originalServer;
+
+	beforeEach(() => {
+		originalDatabases = global.databases;
+		originalServer = global.server;
+		searchStub = sinon.stub().returns(mockSearchIterable([]));
+		global.databases = { system: { hdb_analytics: { search: searchStub, replicate: true } } };
+		global.server = { hostname: 'local-host', nodes: [] };
+	});
+
+	afterEach(() => {
+		sinon.restore();
+		global.databases = originalDatabases;
+		global.server = originalServer;
+	});
+
+	it('adds a `log` equals condition when log is provided', async () => {
+		await collect(await getOp({ metric: 'rocksdb-txnlog-stats', log: 'audit' }));
+
+		const conditions = searchStub.firstCall.args[0].conditions;
+		expect(conditions[0]).to.deep.equal({ attribute: 'metric', comparator: 'equals', value: 'rocksdb-txnlog-stats' });
+		expect(conditions).to.deep.include({ attribute: 'log', comparator: 'equals', value: 'audit' });
+	});
+
+	it('does not add a `log` condition when log is omitted', async () => {
+		await collect(await getOp({ metric: 'rocksdb-txnlog-stats' }));
+
+		const conditions = searchStub.firstCall.args[0].conditions;
+		expect(conditions.some((c) => c.attribute === 'log')).to.be.false;
+	});
+
+	it('rejects a `log` filter on a non-txnlog metric instead of silently returning nothing', async () => {
+		let threw = false;
+		try {
+			await getOp({ metric: 'cpu-usage', log: 'audit' });
+		} catch {
+			threw = true;
+		}
+		expect(threw).to.be.true;
+		expect(searchStub.called).to.be.false;
+	});
+});

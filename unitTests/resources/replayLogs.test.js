@@ -11,6 +11,8 @@ const {
 	REPLAY_NO_PROGRESS_COUNT_LIMIT,
 	REPLAY_NO_PROGRESS_TIME_LIMIT_MS,
 	REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR,
+	shouldAbortSlowReplay,
+	REPLAY_WALL_CLOCK_LIMIT_MS,
 } = require('#src/resources/replayLogsGuards');
 
 // Regression tests for the unclean-shutdown replay guards. Without these, an audit log
@@ -267,5 +269,38 @@ describe('shouldAbortStalledReplay', () => {
 		assert.strictEqual(shouldAbortStalledReplay(2, 1000, 5, 1000, 2), true);
 		assert.strictEqual(shouldAbortStalledReplay(1, 1000, 5, 1000, 2), false);
 		assert.strictEqual(shouldAbortStalledReplay(2, 999, 5, 1000, 2), false);
+	});
+});
+
+// Regression tests for HarperFast/harper#1316 (facet a): a slow-but-progressing replay (e.g.
+// deep out-of-order audit chain walks per entry) resets noProgressRun on every write, so
+// shouldAbortStalledReplay never fires — the boot thread can be pegged indefinitely. This guard
+// fires on total elapsed time regardless of forward progress.
+describe('shouldAbortSlowReplay', () => {
+	it('exposes a conservative default wall-clock limit', () => {
+		assert.strictEqual(REPLAY_WALL_CLOCK_LIMIT_MS, 10 * 60 * 1000);
+	});
+
+	it('does not abort while the elapsed time is below the limit', () => {
+		assert.strictEqual(shouldAbortSlowReplay(0), false);
+		assert.strictEqual(shouldAbortSlowReplay(REPLAY_WALL_CLOCK_LIMIT_MS - 1), false);
+	});
+
+	it('aborts once the elapsed time meets or exceeds the limit', () => {
+		assert.strictEqual(shouldAbortSlowReplay(REPLAY_WALL_CLOCK_LIMIT_MS), true);
+		assert.strictEqual(shouldAbortSlowReplay(REPLAY_WALL_CLOCK_LIMIT_MS + 1), true);
+	});
+
+	it('honors a caller-supplied limit (used to keep unit tests fast/deterministic)', () => {
+		assert.strictEqual(shouldAbortSlowReplay(999, 1000), false);
+		assert.strictEqual(shouldAbortSlowReplay(1000, 1000), true);
+		assert.strictEqual(shouldAbortSlowReplay(1001, 1000), true);
+	});
+
+	it('fires even when writes are succeeding (unlike shouldAbortStalledReplay)', () => {
+		// The key difference: shouldAbortStalledReplay only fires on no-progress runs.
+		// shouldAbortSlowReplay fires purely on total elapsed time — writes or not.
+		assert.strictEqual(shouldAbortSlowReplay(5000, 1000), true);
+		assert.strictEqual(shouldAbortSlowReplay(500, 1000), false);
 	});
 });

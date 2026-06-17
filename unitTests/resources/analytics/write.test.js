@@ -7,8 +7,10 @@ const {
 	toRocksDBCamelCase,
 	diffRocksDBCounter,
 	normalizeRocksDBStats,
+	normalizeTxnLogStats,
 	buildRocksDBDbMetric,
 	buildRocksDBTableMetric,
+	buildRocksDBTxnLogMetric,
 } = require('#src/resources/analytics/write');
 const { writeFile, mkdtemp, rm, mkdir } = require('node:fs/promises');
 const { join } = require('node:path');
@@ -251,6 +253,24 @@ describe('buildRocksDBDbMetric', () => {
 		expect(metric.blockCacheUsage).to.equal(0);
 		expect(metric.numRunningFlushes).to.equal(0);
 	});
+
+	it('folds the txnlog roll-up onto the db row (counters diffed, gauges absolute)', () => {
+		const last = { txnlogBytesWritten: 1000, txnlogTransactionsWritten: 40 };
+		const stats = {
+			txnlogBytesWritten: 1500, // delta 500
+			txnlogTransactionsWritten: 55, // delta 15
+			txnlogLogCount: 2,
+			txnlogTotalSizeBytes: 4096,
+			txnlogReplayGapBytes: 512,
+		};
+		const metric = buildRocksDBDbMetric('mydb', stats, last, now, 5000);
+		expect(metric.metric).to.equal('rocksdb-stats');
+		expect(metric.txnlogBytesWritten).to.equal(500);
+		expect(metric.txnlogTransactionsWritten).to.equal(15);
+		expect(metric.txnlogLogCount).to.equal(2);
+		expect(metric.txnlogTotalSizeBytes).to.equal(4096);
+		expect(metric.txnlogReplayGapBytes).to.equal(512);
+	});
 });
 
 describe('buildRocksDBTableMetric', () => {
@@ -282,5 +302,140 @@ describe('buildRocksDBTableMetric', () => {
 		const metric = buildRocksDBTableMetric('mydb', 'mytable', stats, now, 1000);
 		expect(metric).to.not.have.property('memtableHit');
 		expect(metric).to.not.have.property('memtableMiss');
+	});
+});
+
+// A representative log.getStats() snapshot covering every nested group plus the fields we drop.
+const sampleTxnLogStats = () => ({
+	name: 'audit',
+	path: '/data/mydb/txnlog/audit',
+	fileCount: 4,
+	currentSequenceNumber: 42,
+	oldestSequenceNumber: 38,
+	totalSizeBytes: 8192,
+	currentFileSize: 2048,
+	pendingTransactions: 3,
+	uncommittedTransactions: 1,
+	replayGapBytes: 512,
+	memory: { mappedBytes: 65536, overlayBytes: 4096, activeMaps: 2 },
+	nextLogPosition: { sequence: 42, offset: 2048 },
+	lastFlushedPosition: { sequence: 42, offset: 1536 },
+	lastCommittedPosition: { sequence: 42, offset: 1024 },
+	purge: { oldestFileAgeMs: 90000, purgeableFiles: 1, retainedUnflushedFiles: 0, lastPurgeMs: 1_699_999_900_000 },
+	totals: {
+		transactionsWritten: 1000,
+		entriesWritten: 1200,
+		bytesWritten: 500000,
+		rotations: 4,
+		filesPurged: 2,
+		bytesPurged: 16384,
+		purgeRuns: 5,
+		databaseFlushes: 8,
+		writeFailures: 0,
+	},
+	config: { maxFileSize: 1048576, retentionMs: 86400000, maxAgeThreshold: 0.8 },
+});
+
+describe('normalizeTxnLogStats', () => {
+	it('flattens the selected performance and resource fields', () => {
+		const out = normalizeTxnLogStats(sampleTxnLogStats());
+		expect(out).to.deep.equal({
+			fileCount: 4,
+			totalSizeBytes: 8192,
+			currentFileSize: 2048,
+			pendingTransactions: 3,
+			uncommittedTransactions: 1,
+			replayGapBytes: 512,
+			memoryMappedBytes: 65536,
+			memoryOverlayBytes: 4096,
+			memoryActiveMaps: 2,
+			purgeOldestFileAgeMs: 90000,
+			purgePurgeableFiles: 1,
+			purgeRetainedUnflushedFiles: 0,
+			totalsTransactionsWritten: 1000,
+			totalsEntriesWritten: 1200,
+			totalsBytesWritten: 500000,
+			totalsRotations: 4,
+			totalsWriteFailures: 0,
+		});
+	});
+
+	it('drops noise fields (path, sequence numbers, positions, lastPurgeMs, config, borderline counters)', () => {
+		const out = normalizeTxnLogStats(sampleTxnLogStats());
+		for (const dropped of [
+			'name',
+			'path',
+			'currentSequenceNumber',
+			'oldestSequenceNumber',
+			'nextLogPosition',
+			'lastFlushedPosition',
+			'lastCommittedPosition',
+			'purgeLastPurgeMs',
+			'maxFileSize',
+			'retentionMs',
+			'maxAgeThreshold',
+			'totalsFilesPurged',
+			'totalsBytesPurged',
+			'totalsPurgeRuns',
+			'totalsDatabaseFlushes',
+		]) {
+			expect(out).to.not.have.property(dropped);
+		}
+	});
+
+	it('tolerates missing nested groups', () => {
+		const out = normalizeTxnLogStats({ fileCount: 1, totalSizeBytes: 10 });
+		expect(out).to.deep.equal({ fileCount: 1, totalSizeBytes: 10 });
+	});
+});
+
+describe('buildRocksDBTxnLogMetric', () => {
+	const now = 1_700_000_000_000;
+
+	it('includes database and log dimensions (not table) on the rocksdb-txnlog-stats metric', () => {
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', {}, undefined, now, undefined);
+		expect(metric).to.include({
+			metric: 'rocksdb-txnlog-stats',
+			database: 'mydb',
+			log: 'audit',
+			time: now,
+		});
+		expect(metric).to.not.have.property('table');
+		expect(metric).to.not.have.property('period');
+	});
+
+	it('reports counters absolute on the first sample', () => {
+		const stats = normalizeTxnLogStats(sampleTxnLogStats());
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', stats, undefined, now, undefined);
+		expect(metric.totalsTransactionsWritten).to.equal(1000);
+		expect(metric.totalsBytesWritten).to.equal(500000);
+		// Gauges always pass through absolute.
+		expect(metric.replayGapBytes).to.equal(512);
+		expect(metric.memoryOverlayBytes).to.equal(4096);
+	});
+
+	it('diffs counters and passes gauges through on subsequent samples', () => {
+		const last = { totalsTransactionsWritten: 1000, totalsBytesWritten: 500000, totalsRotations: 4 };
+		const stats = {
+			totalsTransactionsWritten: 1250, // delta 250
+			totalsBytesWritten: 600000, // delta 100000
+			totalsRotations: 5, // delta 1
+			replayGapBytes: 1024, // gauge — absolute
+			pendingTransactions: 7,
+		};
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', stats, last, now, 5000);
+		expect(metric.period).to.equal(5000);
+		expect(metric.totalsTransactionsWritten).to.equal(250);
+		expect(metric.totalsBytesWritten).to.equal(100000);
+		expect(metric.totalsRotations).to.equal(1);
+		expect(metric.replayGapBytes).to.equal(1024);
+		expect(metric.pendingTransactions).to.equal(7);
+	});
+
+	it('defaults missing stats to 0', () => {
+		const metric = buildRocksDBTxnLogMetric('mydb', 'audit', {}, undefined, now, undefined);
+		expect(metric.totalsTransactionsWritten).to.equal(0);
+		expect(metric.replayGapBytes).to.equal(0);
+		expect(metric.fileCount).to.equal(0);
 	});
 });

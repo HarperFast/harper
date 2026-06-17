@@ -265,6 +265,10 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
 			},
 			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
+			log: {
+				type: 'string',
+				description: 'Transaction log name to filter on (rocksdb-txnlog-stats metric).',
+			},
 		},
 		required: ['metric'],
 	},
@@ -295,6 +299,10 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
 			},
 			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
+			log: {
+				type: 'string',
+				description: 'Transaction log name to filter on (rocksdb-txnlog-stats metric).',
+			},
 		},
 		required: ['metric'],
 	},

@@ -36,6 +36,7 @@ const getAnalyticsSchema = Joi.object({
 	get_attributes: Joi.array().items(Joi.string()),
 	coalesce_time: Joi.boolean(),
 	conditions: Joi.array().items(Joi.alternatives(groupConditionSchema, directConditionSchema)),
+	log: Joi.string(),
 	replicated: Joi.boolean(),
 }).strict();
 

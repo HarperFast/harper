@@ -1028,12 +1028,28 @@ export interface PreCommitBlobs {
 export function startPreCommitBlobsForRecord(
 	record: any,
 	store: any,
-	saveInRecord?: boolean
+	saveInRecord?: boolean,
+	trackPersistedBlobs?: boolean
 ): PreCommitBlobs | undefined {
 	const blobsNeedingSaving: Blob[] = [];
 	for (const key in record) {
 		const value = record[key];
-		if (value instanceof FileBackedBlob && (saveInRecord || value.saveBeforeCommit)) {
+		// Track a file-backed blob on the write when it still needs saving before commit (the local-write
+		// path: `saveInRecord`/`saveBeforeCommit`) OR — only when `trackPersistedBlobs` is set — when it is
+		// already saved on disk (`fileId` set). The latter covers replication/source applies, where
+		// `receiveBlobs` saved the blob out-of-band before this apply: tracking it lets the skip/abort cleanup
+		// unlink it if this write loses a version conflict and never references it (otherwise it leaks —
+		// harper-pro#406). `trackPersistedBlobs` is gated to the source-apply path on purpose: a received blob
+		// is owned by THIS write (a unique fileId saved for it), whereas a local write that carries an
+		// already-saved blob references another row's blob (cross-row reuse, which `pack` rejects, or a same-
+		// key unchanged-attribute update) — deleting those on abort/skip would corrupt the owning record.
+		// Already-saved blobs are not re-saved (saveBlob early-returns on an existing fileId); the
+		// retained-fileId guard in cleanupUnusedBlobs additionally protects any blob the committed record
+		// still references.
+		if (
+			value instanceof FileBackedBlob &&
+			(saveInRecord || value.saveBeforeCommit || (trackPersistedBlobs && storageInfoForBlob.get(value)?.fileId != null))
+		) {
 			currentStore = store;
 			if (saveInRecord) {
 				value.saveInRecord = true;
@@ -1064,13 +1080,21 @@ export function startPreCommitBlobsForRecord(
  * Waits for any in-flight save to settle before unlinking, so we don't race with the writer
  * and leave a half-written file. Errors are swallowed — the blob may have already been
  * cleaned up by deleteOnFailure on the save path.
+ *
+ * `retainedFileIds` is the set of fileIds the COMMITTED (winning) record still references — those are
+ * skipped. This matters now that already-saved blobs are tracked (see startPreCommitBlobsForRecord): a
+ * skipped/aborted write can carry a file-backed blob whose fileId is shared with the surviving record
+ * (e.g. a superseded full-record update of a row whose blob attribute is unchanged), and deleting it
+ * would corrupt that record (harper-pro#406).
  * @param blobs blobs that were registered via {@link startPreCommitBlobsForRecord}
+ * @param retainedFileIds fileIds the committed record still references; never deleted
  */
-export function cleanupUnusedBlobs(blobs: Blob[] | undefined): void {
+export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: Set<string>): void {
 	if (!blobs?.length) return;
 	for (const blob of blobs) {
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
+		if (retainedFileIds?.has(storageInfo.fileId)) continue; // the committed record still references this blob
 		const settle = storageInfo.saving ?? Promise.resolve();
 		settle.then(
 			() => deleteBlob(blob),
@@ -1079,6 +1103,21 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined): void {
 	}
 	// idempotent: subsequent calls (e.g. from abort after commit-handler already cleaned up) are no-ops
 	blobs.length = 0;
+}
+
+/**
+ * Collect the fileIds of every file-backed blob referenced by `record`, for use as the
+ * `retainedFileIds` guard in {@link cleanupUnusedBlobs}. Returns undefined when there are none (so the
+ * caller can skip allocating a set on the common blob-less path). See harper-pro#406.
+ */
+export function collectRetainedFileIds(record: any): Set<string> | undefined {
+	if (!record || typeof record !== 'object') return undefined;
+	let fileIds: Set<string> | undefined;
+	findBlobsInObject(record, (blob) => {
+		const fileId = storageInfoForBlob.get(blob)?.fileId;
+		if (fileId) (fileIds ??= new Set()).add(fileId);
+	});
+	return fileIds;
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });

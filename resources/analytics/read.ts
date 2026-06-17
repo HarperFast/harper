@@ -35,6 +35,9 @@ interface GetAnalyticsRequest {
 	get_attributes?: string[];
 	coalesce_time?: boolean;
 	conditions?: Conditions;
+	// Convenience filter for the rocksdb-txnlog-stats metric: restrict results to a single
+	// transaction log by name (equivalent to a `log` equals condition).
+	log?: string;
 	// When true, fan the query out to every peer node and merge the results into one
 	// cluster-wide response. Cleared before forwarding so peers only return their own.
 	replicated?: boolean;
@@ -54,6 +57,18 @@ export async function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsRespo
 		throw handleHDBError(
 			validationError,
 			validationError.message,
+			hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	// `log` only identifies a row on the per-log rocksdb-txnlog-stats metric. Reject it for any
+	// other metric rather than silently returning zero rows (no other metric has a `log` attribute).
+	if (req.log !== undefined && req.metric !== METRIC.ROCKSDB_TXNLOG_STATS) {
+		throw handleHDBError(
+			new Error('invalid get_analytics request'),
+			`The 'log' filter is only supported for the '${METRIC.ROCKSDB_TXNLOG_STATS}' metric`,
 			hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
@@ -85,6 +100,7 @@ export async function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsRespo
 		endTime: req.end_time,
 		coalesceTime: req.coalesce_time,
 		additionalConditions: req.conditions,
+		log: req.log,
 	});
 
 	if (!peers) return localResults;
@@ -171,11 +187,15 @@ interface GetAnalyticsOpts {
 	endTime?: number;
 	coalesceTime?: boolean;
 	additionalConditions?: Conditions;
+	log?: string;
 }
 
 export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metric[]> {
-	const { getAttributes, startTime, endTime, additionalConditions } = opts ?? {};
+	const { getAttributes, startTime, endTime, additionalConditions, log: logName } = opts ?? {};
 	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
+	if (logName !== undefined) {
+		conditions.push({ attribute: 'log', comparator: 'equals', value: logName });
+	}
 	if (additionalConditions) {
 		conditions.push(...additionalConditions.map(conformCondition));
 	}

@@ -184,7 +184,28 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 		await Promise.allSettled([...this.#entryHandlers.map((h) => h.close()), this.options.close()]);
 
-		this.emit('close');
+		// Invoke `close` listeners and await any promise they return. A plugin's teardown can be async —
+		// e.g. @harperfast/vite disposing its Vite/rolldown dev server — and the worker shutdown path
+		// awaits this close(), so awaiting the listeners here ensures such a native runtime is fully
+		// disposed before the worker exits. That ordering matters: tearing the worker down while a native
+		// (N-API) bundler runtime is still live crashes the whole process. `Promise.all` (not
+		// `allSettled`) so a listener that fails surfaces its error to the caller rather than being
+		// silently swallowed; listeners that return nothing (the common case) settle immediately.
+		const closeListeners = this.listeners('close') as Array<(...args: any[]) => unknown>;
+		this.removeAllListeners('close');
+		await Promise.all(
+			closeListeners.map((listener) => {
+				// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
+				// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`). The
+				// wrapper turns a synchronous throw into a rejection so `Promise.all` surfaces it too.
+				try {
+					return listener.call(this);
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			})
+		);
+
 		this.removeAllListeners();
 
 		return this;

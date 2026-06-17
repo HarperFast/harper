@@ -14,8 +14,13 @@ const {
 	isSaving,
 	cleanupOrphans,
 	cleanupUnusedBlobs,
+	collectRetainedFileIds,
+	getFileId,
+	saveBlob,
+	decodeFromDatabase,
+	startPreCommitBlobsForRecord,
 } = require('#src/resources/blob');
-const { existsSync } = require('fs');
+const { existsSync, unlinkSync } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
@@ -491,6 +496,46 @@ describe('Blob test', () => {
 		// the original record value is preserved
 		const existing = await BlobTest.get(250);
 		assert.equal(await existing.blob.text(), 'first');
+	});
+	it('#406: startPreCommitBlobsForRecord tracks an already-saved blob only when trackPersistedBlobs is set', async () => {
+		// A replication-received blob is saved out-of-band by receiveBlobs BEFORE the apply, so at pre-commit
+		// it has a fileId but no saveBeforeCommit flag. It must be tracked (so a superseded apply's cleanup
+		// can unlink it — #406), but ONLY on the source-apply path: a local write carrying an already-saved
+		// blob references another row's blob and must not be unlinked on abort/skip.
+		const receivedBlob = createBlob(Buffer.alloc(20000, 'c'));
+		await decodeFromDatabase(() => saveBlob(receivedBlob).saving, BlobTest.primaryStore.rootStore);
+		const record = { id: 1, blob: receivedBlob };
+		const store = BlobTest.primaryStore.rootStore;
+		// local write (trackPersistedBlobs falsy): an already-saved blob is NOT tracked
+		assert.equal(startPreCommitBlobsForRecord(record, store, false, false), undefined);
+		// source/replication apply (trackPersistedBlobs true): tracked for skip/abort cleanup
+		const preCommit = startPreCommitBlobsForRecord(record, store, false, true);
+		assert(preCommit && preCommit.blobs.includes(receivedBlob), 'received blob tracked on source apply');
+		unlinkSync(getFilePathForBlob(receivedBlob)); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('#406: cleanupUnusedBlobs deletes non-retained blobs but keeps retained ones', async () => {
+		// The retained-fileId guard: a skipped/aborted write may carry a blob whose fileId the surviving
+		// record still references; deleting it would corrupt that record.
+		setDeletionDelay(0);
+		const keep = createBlob(Buffer.alloc(20000, 'k'));
+		const drop = createBlob(Buffer.alloc(20000, 'p'));
+		await decodeFromDatabase(() => saveBlob(keep).saving, BlobTest.primaryStore.rootStore);
+		await decodeFromDatabase(() => saveBlob(drop).saving, BlobTest.primaryStore.rootStore);
+		const keepPath = getFilePathForBlob(keep);
+		const dropPath = getFilePathForBlob(drop);
+		cleanupUnusedBlobs([keep, drop], new Set([getFileId(keep)]));
+		await waitFor(() => !existsSync(dropPath), { message: `non-retained blob ${dropPath} should be deleted` });
+		assert(existsSync(keepPath), 'retained blob must NOT be deleted');
+		unlinkSync(keepPath); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('#406: collectRetainedFileIds returns the fileIds of saved blobs in a record', async () => {
+		const blob = createBlob(Buffer.from('x'));
+		await decodeFromDatabase(() => saveBlob(blob).saving, BlobTest.primaryStore.rootStore);
+		const ids = collectRetainedFileIds({ attr: blob, other: 5 });
+		assert(ids instanceof Set);
+		assert(ids.has(getFileId(blob)));
+		assert.equal(collectRetainedFileIds(null), undefined); // no record
+		assert.equal(collectRetainedFileIds({ no: 'blobs' }), undefined); // no blobs → no set allocated
 	});
 	it('cleanupUnusedBlobs is a no-op for unsaved blobs and clears the list', () => {
 		const unsavedBlob = createBlob(Buffer.from('not yet saved'));

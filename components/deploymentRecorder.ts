@@ -272,6 +272,17 @@ export class DeploymentRecorder {
 	}
 
 	/**
+	 * Return the recorded peer outcomes that failed to replicate (status 'failed', as
+	 * assigned by normalizePeerResult). replicateOperation does not throw on a per-peer
+	 * failure — failures surface only as 'failed' entries in peer_results — so deployComponent
+	 * uses this to decide whether to fail the overall deploy with a non-2xx status.
+	 */
+	getFailedPeers(): Array<Record<string, unknown>> {
+		const list = this.record.peer_results;
+		return Array.isArray(list) ? list.filter((peer) => peer?.status === 'failed') : [];
+	}
+
+	/**
 	 * Stop persisting intermediate row updates; accumulate them in memory so finish() writes
 	 * the terminal state in a single put. Called before the replicate phase, where the row
 	 * otherwise receives a tight burst of puts (replicate phase + per-peer + finish) within
@@ -341,21 +352,43 @@ export class DeploymentRecorder {
 	}
 }
 
+// Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,
+// heavyweight, user-initiated operation, and the `system`-table replication channel can be
+// backlogged behind unrelated writes when several deploys land in succession, so the row can
+// take well over the original 30s to arrive on a peer (harper-pro#402). 120s matches the
+// blob-stream receive default and gives a loaded cluster room to converge. Override per-deploy
+// via the `deployment_timeout` operation parameter.
+const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
+
 /**
  * Peer-side helper — wait for the hdb_deployment row to arrive via table replication,
  * then return it. The row is committed on origin before `replicateOperation` is
- * called, so peers normally find it immediately; this polling loop is for the rare
- * case where the operation arrives faster than the table-replication channel.
+ * called, so peers normally find it immediately; this polling loop covers the case
+ * where the operation arrives faster than the table-replication channel, including
+ * when that channel is backlogged behind other writes.
  *
  * The payload_blob's chunks may still be in flight after the row arrives — that's
  * fine, the Blob's `stream()` / `bytes()` API blocks on incomplete writes
  * (resources/blob.ts).
+ *
+ * On timeout the thrown error distinguishes the two failure modes: the row never
+ * replicated at all (the replication channel to this peer is stalled or broken) versus
+ * the row arrived but its payload_blob has not been populated yet (the origin's
+ * ingestPayload write is still propagating) — they point at different root causes.
  */
 export async function awaitDeploymentRow(
 	deploymentId: string,
 	options: { timeoutMs?: number; pollIntervalMs?: number; initialPollIntervalMs?: number } = {}
 ): Promise<Record<string, any>> {
-	const timeoutMs = options.timeoutMs ?? 30_000;
+	// Coerce defensively: the deploy operation's `deployment_timeout` reaches us via the
+	// operation body, and the Joi validator's coerced number is discarded by validateBySchema
+	// (it returns only the error, never writes the parsed value back), so a JSON/multipart
+	// client sending `"120000"` would otherwise arrive here as a string. `Date.now() + "<n>"`
+	// concatenates into a far-future "deadline" that silently defeats the timeout. Anything
+	// non-finite or negative falls back to the default rather than producing a NaN deadline
+	// (which would never satisfy `>= deadline` and loop forever).
+	const requested = Number(options.timeoutMs);
+	const timeoutMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
 	const maxIntervalMs = options.pollIntervalMs ?? 100;
 	// Start fast (5ms) so the common case — replication has already caught up — sees no
 	// human-noticeable latency, then back off exponentially up to maxIntervalMs for the
@@ -369,18 +402,34 @@ export async function awaitDeploymentRow(
 	}
 	const deadline = Date.now() + timeoutMs;
 	let lastError: unknown;
-	while (Date.now() < deadline) {
+	let sawRow = false;
+	// Poll at least once even when timeoutMs is 0 (the caller asked for a single check, not
+	// "skip the lookup entirely"), and re-test the deadline AFTER the lookup so we never burn
+	// an extra idle interval once it has already passed.
+	while (true) {
 		try {
 			const row = await table.get(deploymentId);
-			if (row && row.payload_blob != null) return row;
+			if (row) {
+				if (row.payload_blob != null) return row;
+				// Row replicated but its payload_blob write hasn't landed yet — replication is
+				// alive, just mid-flight. Remember this so the timeout message points at the
+				// payload write rather than a dead channel.
+				sawRow = true;
+			}
 		} catch (err) {
 			lastError = err;
 		}
-		await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) break;
+		// Cap the sleep to the remaining budget so we don't overshoot the deadline.
+		await new Promise<void>((resolve) => setTimeout(resolve, Math.min(intervalMs, remaining)));
 		intervalMs = Math.min(intervalMs * 2, maxIntervalMs);
 	}
+	const cause = sawRow
+		? `row '${deploymentId}' replicated but its payload_blob has not arrived`
+		: `hdb_deployment row '${deploymentId}' did not replicate`;
 	throw new Error(
-		`Timed out after ${timeoutMs}ms waiting for hdb_deployment row '${deploymentId}' to replicate` +
+		`Timed out after ${timeoutMs}ms waiting for the deployment payload: ${cause}` +
 			(lastError ? ` (last error: ${(lastError as Error).message ?? lastError})` : '')
 	);
 }
@@ -392,12 +441,17 @@ function normalizePeerResult(raw: unknown): Record<string, unknown> {
 		return { node: null, status: 'unknown', raw: String(raw) };
 	}
 	const r = raw as Record<string, unknown>;
-	const err = r.error;
+	// Failure detail arrives in one of two shapes: `error` (a structured object/string from a
+	// remote operation response) or `reason` (a stringified message from the replicator's
+	// per-peer `.catch` shape: { status: 'failed', reason, node }). Prefer `error`; fall back to
+	// `reason` only when the peer reported failed — otherwise the audit row records a peer
+	// "failed" with no explanation and deployComponent's failure message reads "unknown error".
+	const err = r.error ?? (r.status === 'failed' ? r.reason : undefined);
 	const hasError =
 		err != null && (typeof err === 'string' ? err.length > 0 : typeof err === 'object' || typeof err === 'number');
 	return {
 		node: r.node ?? r.name ?? r.hostname ?? null,
-		status: hasError ? 'failed' : (r.status ?? 'success'),
+		status: hasError || r.status === 'failed' ? 'failed' : (r.status ?? 'success'),
 		error: hasError
 			? {
 					message: typeof err === 'object' ? ((err as any).message ?? String(err)) : String(err),
