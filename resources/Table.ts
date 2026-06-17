@@ -2360,7 +2360,15 @@ export function makeTable(options) {
 				TableResource.userEmbedders
 			);
 			const proceed = (): any => {
-				write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);
+				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
+				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
+				write.beforeIntermediate = preCommitBlobsForRecordBefore(
+					write,
+					recordUpdate,
+					undefined,
+					undefined,
+					options?.isNotification
+				);
 				return transaction.addWrite(write as any);
 			};
 			return embedBefore ? embedBefore().then(proceed) : proceed();
@@ -5257,9 +5265,10 @@ export function makeTable(options) {
 		write: any,
 		record: any,
 		before?: () => Promise<void> | void,
-		saveInRecord?: boolean
+		saveInRecord?: boolean,
+		trackPersistedBlobs?: boolean
 	): any {
-		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord);
+		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord, trackPersistedBlobs);
 		if (preCommit) {
 			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
 			write.savedBlobs = preCommit.blobs;

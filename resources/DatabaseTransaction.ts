@@ -1,4 +1,4 @@
-import { cleanupUnusedBlobs } from './blob.ts';
+import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
@@ -343,7 +343,8 @@ export class DatabaseTransaction implements Transaction {
 							// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
 							// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
 							for (const write of this.writes) {
-								if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+								if (write?.skipped && write?.savedBlobs)
+									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.writes = [];
@@ -402,7 +403,8 @@ export class DatabaseTransaction implements Transaction {
 					);
 				}
 				for (const write of this.writes) {
-					if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+					if (write?.skipped && write?.savedBlobs)
+						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.writes = [];
 				if (this.#context?.resourceCache) this.#context.resourceCache = null;
@@ -432,7 +434,8 @@ export class DatabaseTransaction implements Transaction {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
 		for (const write of this.writes) {
-			if (write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+			if (write?.savedBlobs)
+				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
 		this.writes = [];
