@@ -519,6 +519,11 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		console.log('migrated database ' + sourceDatabase + ' to RocksDB');
 	} finally {
 		endPendingMigrationBlobSaves();
+		// If the migration threw before we awaited pendingBlobSaves above, in-flight save
+		// promises in the list have no rejection handler attached. Attach a no-op catch so a
+		// later background failure is silently observed instead of crashing the process via
+		// Node's unhandledRejection.
+		for (const saving of pendingBlobSaves) saving.catch(() => {});
 		transaction.done();
 		targetRootStore.close();
 	}

@@ -575,8 +575,18 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		writeBlobWithStream(blob as any, Readable.from(blob.stream()), storageInfo);
 	}
 	// Track the in-flight save when a migration is collecting them. storageInfo.saving is set
-	// by writeBlobWithStream; writeBlobWithBuffer for small blobs may not produce one.
-	if (pendingMigrationBlobSaves && storageInfo.saving) pendingMigrationBlobSaves.push(storageInfo.saving);
+	// by writeBlobWithStream; writeBlobWithBuffer for small blobs may not produce one. The
+	// wrapping `.then(...)` removes resolved promises from the list so a long migration does not
+	// accumulate every settled save in memory; the .then has no rejection handler, so a failed
+	// save still passes through and is observable in the migration's Promise.allSettled.
+	if (pendingMigrationBlobSaves && storageInfo.saving) {
+		const list = pendingMigrationBlobSaves;
+		const tracked: Promise<void> = storageInfo.saving.then(() => {
+			const i = list.indexOf(tracked);
+			if (i !== -1) list.splice(i, 1);
+		});
+		list.push(tracked);
+	}
 	return storageInfo;
 }
 

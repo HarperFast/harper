@@ -48,14 +48,13 @@ describe('encodeBlobsWithFilePath blob-save tracking (harper#1337)', () => {
 	});
 
 	it('collects in-flight blob save promises into the begin/end window', async () => {
-
 		const tracked = beginPendingMigrationBlobSaves();
 		assert.deepStrictEqual(tracked, [], 'window starts empty');
 
 		// Drive a tiny saveBlob through encodeBlobsWithFilePath. Use a file-backed blob whose
 		// stream is short enough that the pipeline can complete in-test.
 		const { createBlob } = require('#src/resources/blob');
-		const blob = createBlob(Buffer.from('a'.repeat(20000))); // > FILE_STORAGE_THRESHOLD (8192)
+		const blob = await createBlob(Buffer.from('a'.repeat(20000))); // > FILE_STORAGE_THRESHOLD (8192)
 
 		encodeBlobsWithFilePath(
 			() => {
@@ -86,7 +85,7 @@ describe('encodeBlobsWithFilePath blob-save tracking (harper#1337)', () => {
 				yield Buffer.from('unused');
 			})()
 		);
-		const blob = createBlob(broken);
+		const blob = await createBlob(broken);
 
 		encodeBlobsWithFilePath(
 			() => {
@@ -99,11 +98,7 @@ describe('encodeBlobsWithFilePath blob-save tracking (harper#1337)', () => {
 		assert.strictEqual(tracked.length, 1, 'one save promise tracked');
 		// Use allSettled so we observe the rejection without failing the test on the throw.
 		const [result] = await Promise.allSettled(tracked);
-		assert.strictEqual(
-			result.status,
-			'rejected',
-			`expected the broken-source save to reject; got ${result.status}`
-		);
+		assert.strictEqual(result.status, 'rejected', `expected the broken-source save to reject; got ${result.status}`);
 
 		endPendingMigrationBlobSaves();
 	});
@@ -111,14 +106,14 @@ describe('encodeBlobsWithFilePath blob-save tracking (harper#1337)', () => {
 	it('endPendingMigrationBlobSaves stops collecting; new saveBlob calls do NOT land in the prior list', async () => {
 		const { createBlob, isSaving } = require('#src/resources/blob');
 		const tracked = beginPendingMigrationBlobSaves();
-		const firstBlob = createBlob(Buffer.from('x'.repeat(20000)));
+		const firstBlob = await createBlob(Buffer.from('x'.repeat(20000)));
 		encodeBlobsWithFilePath(() => saveBlob(firstBlob), 3, store);
 		assert.strictEqual(tracked.length, 1);
 
 		endPendingMigrationBlobSaves();
 
 		// After the window closes, a subsequent encode should not append to `tracked`.
-		const secondBlob = createBlob(Buffer.from('y'.repeat(20000)));
+		const secondBlob = await createBlob(Buffer.from('y'.repeat(20000)));
 		encodeBlobsWithFilePath(() => saveBlob(secondBlob), 4, store);
 		assert.strictEqual(tracked.length, 1, 'tracked list is not appended to after end');
 
