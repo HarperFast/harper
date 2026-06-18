@@ -1,5 +1,3 @@
 graphqlSchema:
   files: '*.graphql'
-jsResource:
-  files: resources.js
 rest: true

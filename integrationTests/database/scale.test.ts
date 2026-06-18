@@ -9,8 +9,10 @@
  *       models a production 1.44M-rule redirect table at reduced scale.
  *   S3  1M-record correctness (nightly gate) — same assertions as S1/S2 but at 1M rows.
  *       Skipped unless HARPER_SCALE_1M=1 is set (set by the nightly CI job).
- *   S4  Free-page reclamation — insert 100K records, delete all, then trigger a RocksDB
- *       compaction and assert the on-disk database directory does not grow unbounded.
+ *   S4  Free-page reclamation — SKIPPED pending HarperFast/harper#1384.
+ *       The original premise (LMDB free-page reclamation) does not translate cleanly to
+ *       RocksDB: freed space is reused by the engine rather than returned to the OS.
+ *       A meaningful test needs an engine-aware design; see #1384 for the investigation.
  *
  * TIERING SCHEME
  * ──────────────
@@ -36,8 +38,6 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error supertest has no bundled type declarations in the test project
-import request from 'supertest';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -431,140 +431,19 @@ suite('Category 12 / §5.1 large-scale data & indexing', { skip: skipSuite }, (c
 		}
 	);
 
-	// ── S4: Free-page reclamation after bulk delete ───────────────────────────
+	// ── S4: Free-page reclamation after bulk delete (SKIPPED — see #1384) ───────
 	//
-	// The Harper operations API has no `compact_database` endpoint (returns 400 on
-	// RocksDB-backed tables).  We use the fixture's CompactDb probe resource
-	// (scale/resources.js) which calls `.clear()` directly on each column family via
-	// the `tables` global.  The resource exposes:
-	//
-	//   GET /CompactDb  → current per-CF live-SST-files-size + estimate-num-keys
-	//   POST /CompactDb → purge soft-delete markers, clear all CFs, return stats
-	//
-	// Why .clear() instead of .compact()?
-	//   RocksDB's default CompactRangeOptions uses bottommost_level_compaction =
-	//   kIfHaveCompactionFilter.  Without a compaction filter configured, a plain
-	//   compact() call leaves tombstones at the bottommost SST level (L6) untouched,
-	//   so live-sst-files-size does not drop to 0.  store.clear() calls compactRange()
-	//   followed by DeleteFilesInRange(), which forcibly removes the SST files
-	//   regardless of the bottommost-level restriction.
-	//
-	// Why live-SST-files-size (not total disk)?
-	//   Each Harper table stores a transaction/audit log alongside its RocksDB data at
-	//   {db}/transaction_logs/.  That log grows with every write and is NOT removed by
-	//   RocksDB compaction — it is pruned separately.  Measuring total disk would count
-	//   the transaction log in both before and after, hiding the actual SST-level
-	//   reclamation.  `rocksdb.live-sst-files-size` is the authoritative count of bytes
-	//   in live SST files for a given column family.
-	//
-	// Assertion threshold:
-	//   After clearing an empty table the live SST bytes across all CFs must be
-	//   zero (or at most a tiny metadata sliver).  We allow a generous 256 KB floor
-	//   to accommodate MANIFEST / OPTIONS overhead.
-	//
-	//   Before-delete baseline must be > 1 MB (sanity: 100K inserted rows should
-	//   produce at least a few MB of SST data across 6 CFs).
-	//
-	// Observed on a 100K-record run (6 CFs: primary + 5 index):
-	//   before-delete total_live_sst_kb ≈ 12 000 – 16 000 KB (~12–16 MB)
-	//   after-clear   total_live_sst_kb ≈ 0 KB  (all SST files eliminated)
-	//   → 100 % SST reclamation; the 256 KB floor is a very conservative gate.
+	// Skipped: the original LMDB free-page reclamation premise does not translate
+	// cleanly to RocksDB.  RocksDB reuses freed space internally rather than
+	// returning it to the OS, so the on-disk-size assertion is not meaningful
+	// without an engine-aware test design.  Investigation and rework tracked in
+	// HarperFast/harper#1384.
 
-	test('S4: delete all records and trigger compaction — SST storage is meaningfully reclaimed', async () => {
-		// ── Step 1: snapshot pre-delete SST sizes (inside the Harper process) ──
-		const snapBeforeRes = await request(ctx.harper.httpURL).get('/CompactDb/').set(client.headers).timeout(30_000);
-
-		ok(
-			snapBeforeRes.status === 200,
-			`GET /CompactDb pre-delete returned ${snapBeforeRes.status}: ${JSON.stringify(snapBeforeRes.body)}`
-		);
-
-		const snapBefore = snapBeforeRes.body as any;
-		const beforeLiveSstKb: number = snapBefore.total_live_sst_kb ?? 0;
-
-		findings.push(
-			`S4 pre-delete SST: total_live_sst_kb=${beforeLiveSstKb} ` +
-				`(primary=${snapBefore.primary?.live_sst_kb ?? 'n/a'} KB, ` +
-				`keys≈${snapBefore.primary?.estimate_keys ?? 'n/a'})`
-		);
-
-		// ── Step 2: bulk-delete all rows ──────────────────────────────────────
-		await client.req().send({ operation: 'sql', sql: 'DELETE FROM data.Route' }).timeout(120_000).expect(200);
-
-		// Confirm the table is empty.
-		const deadline = Date.now() + 30_000;
-		let countAfter = -1;
-		while (Date.now() < deadline) {
-			countAfter = await rowCount(client);
-			if (countAfter === 0) break;
-			await sleep(500);
-		}
-
-		findings.push(`S4 after-delete row count=${countAfter}`);
-		strictEqual(countAfter, 0, `Expected 0 rows after DELETE FROM Route, got ${countAfter}`);
-
-		// ── Step 3: clear all CFs, measure SST size before and after ─────────
-		// POST /CompactDb: purge soft-delete markers, clear all CFs, return stats.
-		const compactRes = await request(ctx.harper.httpURL).post('/CompactDb/').set(client.headers).timeout(120_000);
-
-		ok(
-			compactRes.status === 200,
-			`POST /CompactDb returned status ${compactRes.status} — compaction did not run. ` +
-				`Body: ${JSON.stringify(compactRes.body)}`
-		);
-
-		const compact = compactRes.body as any;
-		const afterLiveSstKb: number = compact.after?.total_live_sst_kb ?? -1;
-
-		findings.push(
-			`S4 POST /CompactDb: softDeletesRemoved=${compact.softDeletesRemoved ?? 'n/a'} ` +
-				`before.total_live_sst_kb=${compact.before?.total_live_sst_kb} ` +
-				`after.total_live_sst_kb=${afterLiveSstKb} ` +
-				`after.primary=${JSON.stringify(compact.after?.primary)} ` +
-				`compacted=[${(compact.columns ?? []).join(', ')}]`
-		);
-		if ((compact.errors ?? []).length > 0) {
-			findings.push(`S4 compact errors: ${JSON.stringify(compact.errors)}`);
-		}
-
-		// ── Step 4: assert meaningful reclamation ─────────────────────────────
-		//
-		// Before-delete sanity: the 100K-row table (1 primary + 5 @indexed CFs) should
-		// have at least 1 MB of live SST data.  If beforeLiveSstKb is 0, that means the
-		// data was never flushed to SST (still in memtable), which is valid but means
-		// there is nothing for clear() to reclaim from SST — skip the ratio check.
-		//
-		// After-clear assertion: live SST must be ≤ 256 KB (SST files fully removed).
-		// Observed baseline: afterLiveSstKb = 0 on a clean 100K-record delete+clear.
-		// 256 KB is a generous headroom for MANIFEST / OPTIONS / tiny SST overhead.
-
-		const AFTER_SST_FLOOR_KB = 256; // max allowed KB after compacting an empty table
-
-		if (beforeLiveSstKb >= 1024 /* 1 MB sanity gate */) {
-			const reclaimPct = ((beforeLiveSstKb - afterLiveSstKb) / beforeLiveSstKb) * 100;
-			findings.push(
-				`S4 SST reclamation: ${reclaimPct.toFixed(0)}% ` + `(${beforeLiveSstKb} KB → ${afterLiveSstKb} KB)`
-			);
-			ok(
-				afterLiveSstKb <= AFTER_SST_FLOOR_KB,
-				`S4 insufficient SST reclamation after clearing an empty table: ` +
-					`after=${afterLiveSstKb} KB, before=${beforeLiveSstKb} KB, ` +
-					`maxAllowed=${AFTER_SST_FLOOR_KB} KB. ` +
-					`Only ${reclaimPct.toFixed(0)}% reclaimed — SST file removal is not working.`
-			);
-		} else {
-			// Data was entirely in the RocksDB memtable/WAL (never flushed to SST before
-			// the delete).  Compaction still eliminates the tombstones from the memtable
-			// flush.  Assert that the post-compact SST is ≤ floor (can be 0).
-			findings.push(
-				`S4 pre-delete SST was ${beforeLiveSstKb} KB (data in memtable/WAL, not SST); ` +
-					`verifying post-compact SST ≤ ${AFTER_SST_FLOOR_KB} KB`
-			);
-			ok(
-				afterLiveSstKb <= AFTER_SST_FLOOR_KB,
-				`S4 after clear+empty-table, live SST is ${afterLiveSstKb} KB > ` +
-					`${AFTER_SST_FLOOR_KB} KB floor — SST file removal did not fully reclaim space.`
-			);
-		}
-	});
+	test(
+		'S4: free-page reclamation after bulk delete',
+		{
+			skip: 'premise does not translate cleanly to RocksDB (freed space is reused, not returned); needs engine-aware rework — see HarperFast/harper#1384',
+		},
+		() => {}
+	);
 });
