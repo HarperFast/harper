@@ -563,13 +563,16 @@ describe('Blob test', () => {
 		assert.equal(isSourceBlobUnavailable(null), false);
 		assert.equal(isSourceBlobUnavailable(undefined), false);
 	});
-	it('startPreCommitBlobsForRecord.complete() tolerates a source-missing blob but still rejects a transient fault', async () => {
-		// harper-pro#403/#388: a replicated record whose blob is gone at the source must still commit (blob
-		// diverged, backfilled later) rather than aborting the apply and wedging the copy stream. A genuine
-		// local/transient save fault must still abort the write so it is retried (no silent data loss).
+	it('startPreCommitBlobsForRecord.complete() does not block on already-saving blobs (trackPersistedBlobs path)', async () => {
+		// harper-pro#403/#388/#414: already-saving blobs (fileId set before startPreCommitBlobsForRecord) go to
+		// blobsToTrackOnly — they are NOT awaited in complete() to avoid a deadlock where paused-WS backpressure
+		// prevents blob stream chunks from arriving, times out the save, rejects complete(), and permanently
+		// stalls outstandingCommits. Durability for these blobs is tracked by outstandingBlobsToFinish in
+		// replicationConnection.ts. Both source-unavailable and transient faults resolve complete() here;
+		// transient faults still set hasBlobGap on the connection, triggering reconnect-and-retry.
 		const store = BlobTest.primaryStore.rootStore;
 
-		// source-unavailable: destroy the receive stream with the replication marker → saving rejects → tolerated
+		// source-unavailable: already-saving blob with sourceBlobUnavailable marker → complete() resolves
 		const goneStream = new PassThrough();
 		const goneBlob = await createBlob(goneStream);
 		decodeFromDatabase(() => saveBlob(goneBlob, true), store); // start the save (assigns fileId, begins the pipeline)
@@ -577,13 +580,13 @@ describe('Blob test', () => {
 		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
 		await assert.doesNotReject(toleratePc.complete(), 'source-unavailable blob must not abort the commit');
 
-		// transient/local fault: unmarked rejection must still propagate so the write aborts and retries
+		// transient/local fault: already-saving blob also resolves complete() — durability tracked externally
 		const failStream = new PassThrough();
 		const failBlob = await createBlob(failStream);
 		decodeFromDatabase(() => saveBlob(failBlob, true), store);
 		const rejectPc = startPreCommitBlobsForRecord({ id: 2, blob: failBlob }, store, false, true);
 		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
-		await assert.rejects(rejectPc.complete(), 'a local/transient save fault must still abort the commit');
+		await assert.doesNotReject(rejectPc.complete(), 'already-saving blob transient fault does not block the commit (hasBlobGap handles retry)');
 	});
 	it('#406: cleanupUnusedBlobs deletes non-retained blobs but keeps retained ones', async () => {
 		// The retained-fileId guard: a skipped/aborted write may carry a blob whose fileId the surviving
