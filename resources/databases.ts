@@ -1287,12 +1287,20 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
 					JSON.stringify(stripSearchOnly(attribute.indexed));
 			if (attribute.indexed) {
+				// The restart generation that owns any in-progress build of this index. Use the
+				// worker's stable startup generation (workerData.restartNumber), NOT the mutable
+				// manageThreads counter: during a worker's shutdown/drain the global counter has
+				// already advanced to the replacement generation, so stamping that would make the
+				// replacement worker see an equal generation (and a possibly-reused PID) and skip
+				// crash-recovery, leaving the index stuck. Falls back to manageThreads.restartNumber
+				// on the main thread, where workerData is undefined (and it is initialized to 1).
+				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
 					changed ||
 					attributeDescriptor?.indexingFailed ||
 					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-					attributeDescriptor?.restartNumber < workerData?.restartNumber
+					attributeDescriptor?.restartNumber < currentRestartGeneration
 				) {
 					hasChanges = true;
 					exclusiveLock();
@@ -1301,7 +1309,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						structurallyChanged ||
 						attributeDescriptor?.indexingFailed ||
 						(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-						attributeDescriptor?.restartNumber < workerData?.restartNumber
+						attributeDescriptor?.restartNumber < currentRestartGeneration
 					) {
 						hasChanges = true;
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
@@ -1325,6 +1333,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 								? undefined
 								: (attributeDescriptor?.lastIndexedKey ?? undefined);
 							attribute.indexingPID = process.pid;
+							// Persist the owning restart generation (see currentRestartGeneration above) so
+							// the trigger can re-detect an incomplete index after a worker restart even when
+							// the new process reuses the old PID. Cleared on clean completion; left in place
+							// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
+							attribute.restartNumber = currentRestartGeneration;
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
@@ -1338,6 +1351,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
 						attribute.indexingPID = attributeDescriptor.indexingPID;
 						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+						// Carry the in-progress restart generation too, so persisting this metadata-only
+						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
+						attribute.restartNumber = attributeDescriptor.restartNumber;
 						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
 					attributesDbi.put(dbiKey, attribute);
@@ -1557,6 +1573,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				delete attribute.lastIndexedKey;
 				delete attribute.indexingPID;
 				delete attribute.indexingFailed;
+				delete attribute.restartNumber;
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
