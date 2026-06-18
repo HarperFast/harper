@@ -54,5 +54,55 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
+      - name: Enable core dumps (debug v24 segfault)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb
+          sudo mkdir -p /tmp/cores
+          sudo chmod 1777 /tmp/cores
+          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p.%t
+          sudo sysctl -w kernel.core_uses_pid=1
+          ulimit -c unlimited
+          echo "core_pattern=$(cat /proc/sys/kernel/core_pattern)"
+          echo "core_limit=$(ulimit -c)"
+
       - name: Run tests
-        run: npm run test:unit:all
+        run: |
+          ulimit -c unlimited
+          npm run test:unit:all
+
+      - name: Collect crash diagnostics
+        if: always()
+        run: |
+          set +e
+          echo "=== /tmp/cores listing ==="
+          ls -la /tmp/cores/ 2>/dev/null
+          echo "=== gdb backtraces ==="
+          for core in /tmp/cores/core.*; do
+            [ -f "$core" ] || continue
+            echo "--- $core ---"
+            # Extract executable from the core file metadata
+            exe=$(file "$core" | grep -oE "from '[^']+'" | head -1 | sed "s/from '//; s/'$//" | awk '{print $1}')
+            [ -z "$exe" ] && exe=$(which node)
+            echo "exe=$exe"
+            gdb --batch \
+              --ex "set pagination off" \
+              --ex "set print elements 0" \
+              --ex "info threads" \
+              --ex "thread apply all bt full" \
+              "$exe" "$core" 2>&1 | head -500
+          done
+          echo "=== node version + native modules ==="
+          node --version
+          ls -la node_modules/@harperfast/rocksdb-js/dist/ 2>/dev/null | head -20
+          ls -la node_modules/lmdb/prebuilds/*/ 2>/dev/null | head -20
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-cores-node${{ matrix.node-version }}
+          path: |
+            /tmp/cores/
+          retention-days: 7
+          if-no-files-found: warn
