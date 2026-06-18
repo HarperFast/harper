@@ -17,6 +17,7 @@
  * without a graceful close).
  */
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
+import type { McpLogLevel } from './logging.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 import type { McpProfile } from './transport.ts';
 
@@ -35,6 +36,8 @@ export interface RegisteredSession {
 	lastTools?: ReadonlyArray<{ name: string }>;
 	/** Most recent resources/list payload sent on this session — used for diffing. */
 	lastResources?: ReadonlyArray<{ uri: string }>;
+	/** Minimum `notifications/message` severity set via `logging/setLevel`; undefined = none. */
+	logLevel?: McpLogLevel;
 	/** Wall-clock ms of last activity. Bumped by registerSession + touchSession. */
 	lastSeen: number;
 }

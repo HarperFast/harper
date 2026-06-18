@@ -138,6 +138,21 @@ describe('Test serverHandlers.js module ', () => {
 			assert.ok(test_result.msg.error === test_error.message, 'Resp message should equal custom error message object');
 		});
 
+		it('Should include code and retryable in the body for a retryable error (e.g. a still-building index)', () => {
+			const test_error = testUtils.deepClone(TEST_ERR);
+			test_error.statusCode = 503;
+			test_error.message = '"path" is not indexed yet, can not search for this attribute';
+			test_error.code = 'INDEX_REBUILDING';
+			test_error.retryable = true;
+
+			const test_result = serverHandlers_rw.serverErrorHandler(test_error, {}, new TestMockResp());
+
+			assert.ok(test_result.status_code === 503, 'Resp status code should be 503');
+			assert.ok(test_result.msg.error === test_error.message, 'Resp should include the error message');
+			assert.ok(test_result.msg.code === 'INDEX_REBUILDING', 'Resp should include the machine-readable code');
+			assert.ok(test_result.msg.retryable === true, 'Resp should mark the error retryable');
+		});
+
 		it('Should send a response with custom message object when included when an object is passed', () => {
 			const test_error = { blah: 'Custom error message!' };
 

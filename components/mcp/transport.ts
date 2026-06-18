@@ -32,10 +32,11 @@ import {
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from './lifecycle.ts';
 import { emitAuditEntry } from './audit.ts';
+import { emitMcpLogToSession, isValidMcpLogLevel, setSessionLogLevel } from './logging.ts';
 import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
-import { deleteSession, loadSession, touchSession, type McpSessionRecord } from './session.ts';
+import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource } from './resources.ts';
 import { registerSession, touchRegisteredSession } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolResult } from './toolRegistry.ts';
@@ -199,7 +200,7 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (!sessionId) {
 		return jsonRpcErrorResponse(400, messageId, ERROR_CODES.INVALID_REQUEST, 'missing Mcp-Session-Id header');
 	}
-	const session = await loadSession(sessionId);
+	let session = await loadSession(sessionId);
 	if (!session) {
 		// Terminated, expired, or never existed. Spec mandates 404 so the
 		// client knows to drop the id and re-initialize.
@@ -224,8 +225,11 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	}
 
 	// Sliding-window idle reset. Awaited (not fire-and-forget) so a concurrent
-	// DELETE that arrives mid-request can't be resurrected by a late put.
-	await touchSession(session);
+	// DELETE that arrives mid-request can't be resurrected by a late put. Adopt
+	// the touched copy (fresh `lastActivity`) so any later save in this request
+	// — `handleInitialized`, `dispatchSetLevel` — persists the current activity
+	// time instead of rolling it back to the load-time value.
+	session = await touchSession(session);
 
 	// Fire-and-forget frames (notifications + client responses) always 202.
 	if (isClientFireAndForget(message)) {
@@ -243,6 +247,12 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (method === 'resources/list') return dispatchResourcesList(request, message, messageId);
 	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, messageId);
 	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
+	if (method === 'logging/setLevel') return dispatchSetLevel(session, message, messageId);
+	// `ping` (base-protocol liveness) → empty result. Routed here, after session
+	// validation, so a stale/expired/wrong-user session surfaces the normal
+	// 404/403 rather than being masked by an unconditional success. A ping sent
+	// as a notification is handled by the fire-and-forget 202 path above.
+	if (method === 'ping') return jsonResponse(200, buildSuccess(messageId, {}));
 	return jsonResponse(
 		200,
 		buildError(messageId, ERROR_CODES.METHOD_NOT_FOUND, `Method not found: ${method ?? '<missing>'}`)
@@ -267,6 +277,46 @@ async function dispatchInitialize(
 		headers: { 'Mcp-Session-Id': outcome.session.id },
 		jsonBody: buildSuccess(messageId, outcome.result),
 	};
+}
+
+/**
+ * `logging/setLevel` — record the session's minimum severity for
+ * `notifications/message`. Returns an empty result on success. Backs the
+ * advertised `logging` capability (previously advertised but unimplemented).
+ */
+async function dispatchSetLevel(
+	session: McpSessionRecord,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params = 'params' in message ? (message.params as { level?: unknown } | undefined) : undefined;
+	const level = params?.level;
+	if (!isValidMcpLogLevel(level)) {
+		return jsonResponse(
+			200,
+			buildError(
+				messageId,
+				ERROR_CODES.INVALID_PARAMS,
+				'logging/setLevel requires params.level to be an RFC 5424 level'
+			)
+		);
+	}
+	// Persist on the durable session record (survives an SSE reconnect, expires
+	// with the session TTL) AND apply to the live SSE record if the stream is
+	// already open so it takes effect immediately.
+	//
+	// Per-worker caveat (v1): if this POST landed on a different worker than the
+	// one holding the session's GET/SSE stream, only the durable record is
+	// updated now; the SSE-owning worker picks the level up the next time it
+	// seeds from the record (reconnect). This matches the existing per-worker
+	// limitation of the whole MCP server-push channel — listChanged's
+	// tools/resources list_changed notifications only reach sessions registered
+	// on the worker where the change fires. Cross-worker push is a separate,
+	// subsystem-wide design item (tracked in the MCP design-doc issue).
+	session.logLevel = level;
+	await saveSession(session);
+	setSessionLogLevel(session.id, level);
+	return jsonResponse(200, buildSuccess(messageId, {}));
 }
 
 async function handleGet(request: NormRequest): Promise<NormResponse> {
@@ -297,6 +347,10 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 		};
 	}
 	const record = registerSession(sessionId, request.profile, effectiveUser(request));
+	// Seed the live record with any previously-set logging level so a reconnect
+	// (or a setLevel that preceded this stream) keeps delivering notifications/message.
+	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
+	record.logLevel = session.logLevel;
 	seedSessionSnapshot(sessionId);
 	return {
 		status: 200,
@@ -416,6 +470,14 @@ async function dispatchToolsCall(
 			status: 'rate_limited',
 			durationMs: 0,
 		});
+		// Surface the throttle to a client that opted into logging, so it can
+		// back off rather than only inferring from the isError tool result.
+		emitMcpLogToSession(
+			session.id,
+			'notice',
+			{ kind: 'rate_limited', tool: name, scope: denied.reason },
+			'mcp.rateLimit'
+		);
 		return jsonResponse(200, buildSuccess(messageId, toolResult));
 	}
 

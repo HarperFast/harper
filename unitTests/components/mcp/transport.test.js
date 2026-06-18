@@ -2,7 +2,8 @@ const assert = require('node:assert/strict');
 const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
-const { _setSessionTableForTest, createSession, loadSession } = require('#src/components/mcp/session');
+const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
+const { getRegisteredSession } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const {
 	_setResourcesForTest,
@@ -226,6 +227,124 @@ describe('mcp/transport', () => {
 				})
 			);
 			assert.equal(res.status, 202);
+		});
+
+		it('logging/setLevel accepts a valid level, returns {}, and persists it on the session record', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(2, 'logging/setLevel', { level: 'warning' }),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(res.status, 200);
+			assert.equal(res.jsonBody.error, undefined);
+			assert.deepEqual(res.jsonBody.result, {});
+			// Persisted durably so it survives an SSE reconnect (#1349 logging design).
+			const session = await loadSession(sessionId);
+			assert.equal(session.logLevel, 'warning');
+		});
+
+		it('does not roll back lastActivity when persisting the level (touchSession adopted)', async () => {
+			// Force a known-old lastActivity, then setLevel: the request's touchSession
+			// must advance it, and the level-persisting saveSession must NOT write the
+			// stale load-time value back (root fix — handlePost adopts the touched copy).
+			const stale = await loadSession(sessionId);
+			await saveSession({ ...stale, lastActivity: 1 });
+			await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(2, 'logging/setLevel', { level: 'info' }),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			const after = await loadSession(sessionId);
+			assert.ok(after.lastActivity > 1, `lastActivity should advance, not roll back; got ${after.lastActivity}`);
+			assert.equal(after.logLevel, 'info', 'level still persisted');
+		});
+
+		it('seeds the live SSE record from a level set before the GET stream opened', async () => {
+			// setLevel arrives with no open GET stream → persisted only. Opening the
+			// stream afterward must seed the live record from the persisted level so
+			// notifications/message are not silently suppressed (Codex review).
+			await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(2, 'logging/setLevel', { level: 'error' }),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(getRegisteredSession(sessionId), undefined, 'no live record before GET');
+			const get = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(get.status, 200);
+			assert.equal(getRegisteredSession(sessionId).logLevel, 'error', 'live record seeded from persisted level');
+		});
+
+		it('logging/setLevel rejects an invalid level with -32602', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(2, 'logging/setLevel', { level: 'verbose' }),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(res.status, 200);
+			assert.equal(res.jsonBody.error.code, -32602);
+		});
+	});
+
+	describe('POST ping', () => {
+		let sessionId;
+		beforeEach(async () => {
+			const res = await handleMcpRequest(
+				makeReq({ body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }) })
+			);
+			sessionId = res.headers['Mcp-Session-Id'];
+		});
+
+		it('answers ping with an empty result on a valid session', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(7, 'ping'),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(res.status, 200);
+			assert.equal(res.jsonBody.error, undefined);
+			assert.deepEqual(res.jsonBody.result, {});
+			assert.equal(res.jsonBody.id, 7);
+		});
+
+		it('does not mask an unknown/expired session — ping returns 404, not success', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(7, 'ping'),
+					headers: { 'mcp-session-id': 'not-a-session', 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(res.status, 404);
+		});
+
+		it('returns 202 (no response) for a ping sent as a notification', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(undefined, 'ping'),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(res.status, 202);
+			assert.equal(res.jsonBody, undefined);
+		});
+	});
+
+	describe('POST after initialize (continued)', () => {
+		let sessionId;
+		beforeEach(async () => {
+			const res = await handleMcpRequest(
+				makeReq({ body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18' }) })
+			);
+			sessionId = res.headers['Mcp-Session-Id'];
 		});
 
 		it('returns 202 on a client response frame (result envelope)', async () => {
