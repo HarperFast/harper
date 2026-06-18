@@ -59,10 +59,15 @@ async function initialize(baseUrl: string, auth: string): Promise<{ sessionId: s
 			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'sse-it', version: '0' } },
 		}),
 	});
-	strictEqual(res.status, 200, `initialize should 200: ${await res.text()}`);
+	// Read the body exactly once: an `await res.text()` inside the assertion
+	// message is evaluated eagerly (template args run before `strictEqual`), so it
+	// consumes the body even on a 200 and a later `res.json()` then throws
+	// "Body has already been read". Read the text up front and parse it.
+	const text = await res.text();
+	strictEqual(res.status, 200, `initialize should 200: ${text}`);
 	const sessionId = res.headers.get('mcp-session-id');
 	ok(sessionId, 'initialize returned an Mcp-Session-Id');
-	const json: any = await res.json();
+	const json: any = JSON.parse(text);
 	return { sessionId: sessionId!, protocolVersion: json.result.protocolVersion };
 }
 
