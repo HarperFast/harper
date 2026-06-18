@@ -107,6 +107,24 @@ describe('mcp/sse', () => {
 			assert.equal(queue.listenerCount('close'), 0, 'close listener removed on stream teardown');
 		});
 
+		it('does not re-emit close on the queue when the source closed first (no duplicate teardown)', async () => {
+			// Server-side teardown (DELETE / supersede / idle-prune) emits the queue's
+			// 'close'. That ends the stream; the stream's own 'close' handler must NOT
+			// emit 'close' on the queue again, or an on('close') listener sees teardown twice.
+			const { PassThrough } = require('node:stream');
+			const queue = new IterableEventQueue();
+			let closeCount = 0;
+			queue.on('close', () => closeCount++);
+			const stream = toSseStream(queue);
+			stream.pipe(new PassThrough());
+			const streamClosed = new Promise((resolve) => stream.once('close', resolve));
+			await new Promise((r) => setImmediate(r));
+			queue.emit('close'); // server-side teardown
+			await streamClosed; // stream-close handler has now run
+			await new Promise((r) => setImmediate(r)); // let any (erroneous) re-emit flush
+			assert.equal(closeCount, 1, 'queue close emitted exactly once (no duplicate from the stream close handler)');
+		});
+
 		it('an error on the stream is handled (does not throw an unhandled error / crash)', async () => {
 			// A Readable with no 'error' listener throws on 'error', crashing the
 			// worker. toSseStream must attach a default guard so neither the piped

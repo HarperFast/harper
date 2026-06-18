@@ -85,22 +85,26 @@ export function toSseStream(frames: SseFrameSource): Readable {
 	const onData = (frame: SseFrame): void => {
 		stream.write(serializeSseFrame(frame));
 	};
-	// Session teardown (DELETE / supersede / prune) → end the response.
+	// Server-side teardown (DELETE / supersede / prune): the queue emits `'close'`,
+	// so end the response. Mark it so the stream-`'close'` handler below does NOT
+	// re-emit `'close'` on the queue — the source already emitted it, and a second
+	// emit would show up as duplicate teardown to any `on('close')` listener.
+	let sourceClosed = false;
 	const onClose = (): void => {
+		sourceClosed = true;
 		stream.end();
 	};
 	frames.on?.('data', onData);
 	frames.once?.('close', onClose);
 
-	// Client/proxy disconnect → the server destroys this stream. Unsubscribe and
-	// signal the queue so the session registry (which listens for the queue's
-	// `'close'`) drops the entry. Idempotent if the queue closed first.
+	// Client/proxy disconnect → the server destroys this stream. Always unsubscribe
+	// the data listener. If the source has not already closed (i.e. this is a
+	// client-side teardown, not a reaction to the queue's own `'close'`), remove our
+	// `onClose` listener and signal the queue so the session registry (which listens
+	// for the queue's `'close'`) drops the entry.
 	stream.once('close', () => {
 		frames.off?.('data', onData);
-		// Drop our own `'close'` listener explicitly. If the stream tears down
-		// before the queue ever emits `'close'`, relying on `emit('close')` below
-		// to fire-and-remove `onClose` (via `once`) leaves it attached whenever the
-		// source has no working `emit` (e.g. a stub). Removing it here can't leak.
+		if (sourceClosed) return;
 		if (frames.off) frames.off('close', onClose);
 		else frames.removeListener?.('close', onClose);
 		frames.emit?.('close');
