@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
+const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -284,6 +285,40 @@ describe('Blob test', () => {
 		await waitFor(() => !existsSync(filePath), {
 			message: 'blob file should be unlinked when the new record no longer references it',
 		});
+		setDeletionDelay(500); // restore the default
+	});
+	it('blob unlink is gated on the removal committing (#1364)', async () => {
+		// removeEntry must only unlink the old blobs once the record removal commits. An
+		// expiration scan whose transaction is force-committed without the delete (or an
+		// aborted/version-conflicted removal) leaves the record in place; unlinking its blobs
+		// regardless would orphan the reference and wedge replication on ENOENT.
+		setDeletionDelay(0);
+		const realStore = BlobTest.primaryStore;
+		const blob = await createBlob(randomBytes(20000)); // > FILE_STORAGE_THRESHOLD → file-backed
+		await BlobTest.put({ id: 720, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'expected file-backed blob');
+		assert(existsSync(filePath), 'blob file should exist after put');
+
+		// Fetch a real entry (value + metadataFlags) the way the eviction scan does.
+		let entry;
+		for (const e of realStore.getRange({ start: 720, end: 721, versions: true })) {
+			if (e.key === 720) entry = e;
+		}
+		assert(entry && entry.value, 'expected a real entry carrying the blob');
+
+		// Removal that never commits (rejects): the blob must be preserved.
+		removeEntry({ remove: () => Promise.reject(new Error('aborted')) }, entry, undefined);
+		await delay(40);
+		assert(existsSync(filePath), 'blob must survive when the removal does not commit (#1364)');
+
+		// Removal that commits: the blob is unlinked.
+		removeEntry({ remove: () => Promise.resolve(true) }, entry, undefined);
+		await waitFor(() => !existsSync(filePath), {
+			message: 'blob should be unlinked once the removal commits',
+		});
+
+		await BlobTest.delete(720); // cleanup the real record (its blob file is already gone)
 		setDeletionDelay(500); // restore the default
 	});
 	it('slowly create a blob and save it before it is done', async () => {
