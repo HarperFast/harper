@@ -55,4 +55,19 @@ jobs:
         run: node --enable-source-maps ./dist/bin/harper.js install
 
       - name: Run tests
+        env:
+          HARPER_TEST_SEGFAULT_CAPTURE: /tmp/segfault-crash.log
         run: npm run test:unit:all
+
+      - name: Upload segfault log
+        if: failure() && matrix.node-version == 24
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: segfault-log-node${{ matrix.node-version }}
+          path: /tmp/segfault-crash.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Dump segfault log inline
+        if: failure() && matrix.node-version == 24
+        run: cat /tmp/segfault-crash.log 2>/dev/null || echo "(no crash log)"

@@ -20,6 +20,17 @@ const fs = require('fs-extra');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 
+if (process.env.HARPER_TEST_SEGFAULT_CAPTURE) {
+	try {
+		const SegfaultHandler = require('segfault-handler');
+		const crashLog = process.env.HARPER_TEST_SEGFAULT_CAPTURE;
+		SegfaultHandler.registerHandler(crashLog);
+		console.log(`[mocha.init] segfault-handler registered, dumping to ${crashLog}`);
+	} catch (e) {
+		console.error('[mocha.init] failed to register segfault-handler:', e.message);
+	}
+}
+
 const isApiTestRun = process.argv.some((arg) => typeof arg === 'string' && arg.includes('apiTests'));
 
 if (!isApiTestRun) {
