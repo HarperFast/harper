@@ -6,6 +6,7 @@ describe('IndexRebuildingError', () => {
 		const err = new IndexRebuildingError('"path" is not indexed yet, can not search for this attribute');
 		assert(err instanceof ServerError, 'should extend ServerError');
 		assert(err instanceof Error);
+		assert.equal(err.name, 'IndexRebuildingError');
 		assert.equal(err.statusCode, 503);
 		assert.equal(err.code, 'INDEX_REBUILDING');
 		assert.equal(err.retryable, true);

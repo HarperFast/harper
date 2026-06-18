@@ -77,6 +77,9 @@ export class IndexRebuildingError extends ServerError {
 	retryable: boolean;
 	constructor(message: string) {
 		super(message, 503);
+		// Set name explicitly: ServerError/Error leave it as 'Error', so without this the stack
+		// trace, JSON serialization, and any caller keying on error.name would not identify it.
+		this.name = 'IndexRebuildingError';
 		this.code = 'INDEX_REBUILDING';
 		this.retryable = true;
 	}
