@@ -62,7 +62,16 @@ export function startTransactionLogCooling(): void {
 		return;
 	}
 	const configured = envMgr.get(CONFIG_PARAMS.STORAGE_TRANSACTIONLOG_COOLINGINTERVAL);
-	const interval = configured == null ? DEFAULT_COOLING_INTERVAL : convertToMS(configured);
+	let interval = configured == null ? DEFAULT_COOLING_INTERVAL : convertToMS(configured);
+	if (Number.isNaN(interval)) {
+		// A non-numeric value (e.g. 'abc') yields NaN, which slips past the
+		// `<= 0` check (every NaN comparison is false) and would schedule a
+		// setTimeout(NaN) busy loop. Fall back to the default.
+		logger.warn?.(
+			`Invalid storage.transactionLog.coolingInterval "${configured}"; using default ${DEFAULT_COOLING_INTERVAL}ms`
+		);
+		interval = DEFAULT_COOLING_INTERVAL;
+	}
 	if (interval <= 0) {
 		logger.debug?.('Transaction log cooling disabled (storage.transactionLog.coolingInterval <= 0)');
 		return;

@@ -91,6 +91,17 @@ describe('transaction log cooling', () => {
 			assert.ok(cool.notCalled, 'disabled cooling should never fire');
 		});
 
+		it('falls back to the default interval for a non-numeric value (no NaN busy loop)', async () => {
+			const cool = sandbox.stub().returns({ maps: 1, bytes: 4096 });
+			setCoolingFunctionForTests(cool);
+			// 'abc' -> convertToMS -> NaN; must not slip past the guard into setTimeout(NaN).
+			sandbox.stub(env, 'get').withArgs(COOLING_INTERVAL).returns('abc');
+			startTransactionLogCooling();
+			// default interval is 30s, so no pass should fire within this short window
+			await delay(60);
+			assert.ok(cool.notCalled, 'should not busy-loop; should schedule at the 30s default');
+		});
+
 		it('schedules a recurring cooling pass at the configured interval', async () => {
 			const cool = sandbox.stub().returns({ maps: 1, bytes: 4096 });
 			setCoolingFunctionForTests(cool);
