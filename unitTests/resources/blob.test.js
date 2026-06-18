@@ -21,6 +21,8 @@ const {
 	decodeFromDatabase,
 	startPreCommitBlobsForRecord,
 	isSourceBlobUnavailable,
+	isBlobComplete,
+	findIncompleteBlobRefs,
 } = require('#src/resources/blob');
 const { existsSync, unlinkSync, openSync, writeSync, ftruncateSync, closeSync } = require('fs');
 const { pack } = require('msgpackr');
@@ -668,6 +670,46 @@ describe('Blob test', () => {
 		assert.equal(list.length, 0); // list cleared so subsequent abort/skip calls are no-ops
 		cleanupUnusedBlobs(list); // does not throw on empty list
 		cleanupUnusedBlobs(undefined); // does not throw when never tracked
+	});
+	it('isBlobComplete: true for saved blob, false for unsaved/ENOENT', async () => {
+		// native Blob (not FileBackedBlob) — always complete, no file backing
+		assert.equal(isBlobComplete(new Blob(['hello'])), true, 'native Blob → true');
+
+		// unsaved FileBackedBlob (no fileId yet) — can't be complete
+		const freshBlob = createBlob(Buffer.from('hello'));
+		assert.equal(isBlobComplete(freshBlob), false, 'unsaved blob (no fileId) → false');
+
+		// fully saved blob — file present, header matches size
+		const savedBlob = await createBlob(randomBytes(20000)); // > FILE_STORAGE_THRESHOLD → file-backed
+		await decodeFromDatabase(() => saveBlob(savedBlob).saving, BlobTest.primaryStore.rootStore);
+		assert.equal(isBlobComplete(savedBlob), true, 'saved blob → true');
+
+		// delete the file to simulate ENOENT (missing blob)
+		const blobPath = getFilePathForBlob(savedBlob);
+		unlinkSync(blobPath);
+		assert.equal(isBlobComplete(savedBlob), false, 'missing blob file (ENOENT) → false');
+	});
+	it('findIncompleteBlobRefs: yields records with missing blobs, skips complete ones', async () => {
+		// record 901: blob saved normally — must NOT appear in the sweep
+		const completeBlob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 901, blob: completeBlob });
+
+		// record 902: blob file deleted after save — must appear in the sweep
+		const gapBlob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 902, blob: gapBlob });
+		const gapPath = getFilePathForBlob(gapBlob);
+		unlinkSync(gapPath);
+
+		const foundIds = new Set();
+		for await (const ref of findIncompleteBlobRefs(getDatabases().test)) {
+			foundIds.add(ref.recordId);
+		}
+
+		assert(!foundIds.has(901), 'complete-blob record must not be yielded');
+		assert(foundIds.has(902), 'record with deleted blob file must be yielded');
+
+		// cleanup: remove the complete blob file so cleanupOrphans stays clean
+		unlinkSync(getFilePathForBlob(completeBlob));
 	});
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);
