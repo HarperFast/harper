@@ -41,6 +41,8 @@ export interface SseFrame {
 export interface SseFrameSource {
 	on?(event: 'data', listener: (frame: SseFrame) => void): unknown;
 	off?(event: 'data', listener: (frame: SseFrame) => void): unknown;
+	off?(event: 'close', listener: () => void): unknown;
+	removeListener?(event: 'close', listener: () => void): unknown;
 	once?(event: 'close', listener: () => void): unknown;
 	emit?(event: 'close'): unknown;
 }
@@ -69,6 +71,13 @@ export function serializeSseFrame(frame: SseFrame): string {
  */
 export function toSseStream(frames: SseFrameSource): Readable {
 	const stream = new PassThrough();
+	// A `Readable` with no `'error'` listener throws on `'error'`, crashing the
+	// worker. The operations adapter pipes this stream manually and Harper's own
+	// HTTP server (`server/http.ts`) pipes it for the application profile; neither
+	// pipe forwards a source error to a handler. Attach a default guard here so an
+	// error on either profile tears the stream down instead of crashing. The
+	// operations adapter additionally destroys its raw socket on this event.
+	stream.on('error', () => stream.destroy());
 	// Prime: a comment line (clients ignore `:`-prefixed lines) makes the body
 	// non-empty immediately so the HTTP server flushes headers and the GET opens.
 	stream.write(': mcp stream open\n\n');
@@ -88,6 +97,12 @@ export function toSseStream(frames: SseFrameSource): Readable {
 	// `'close'`) drops the entry. Idempotent if the queue closed first.
 	stream.once('close', () => {
 		frames.off?.('data', onData);
+		// Drop our own `'close'` listener explicitly. If the stream tears down
+		// before the queue ever emits `'close'`, relying on `emit('close')` below
+		// to fire-and-remove `onClose` (via `once`) leaves it attached whenever the
+		// source has no working `emit` (e.g. a stub). Removing it here can't leak.
+		if (frames.off) frames.off('close', onClose);
+		else frames.removeListener?.('close', onClose);
 		frames.emit?.('close');
 	});
 	return stream;

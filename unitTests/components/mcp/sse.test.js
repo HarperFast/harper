@@ -82,6 +82,35 @@ describe('mcp/sse', () => {
 			assert.equal(closed, true, 'queue close emitted so the registry can drop the dead session');
 		});
 
+		it('removes its queue listeners when the stream is destroyed before the queue closes (no listener leak)', async () => {
+			// Client disconnect while the session lives on: the stream tears down
+			// first. Both the 'data' and 'close' listeners it put on the long-lived
+			// queue must come off, or the queue accumulates dead listeners per
+			// reconnect.
+			const { PassThrough } = require('node:stream');
+			const queue = new IterableEventQueue();
+			const stream = toSseStream(queue);
+			stream.pipe(new PassThrough());
+			await new Promise((r) => setImmediate(r));
+			assert.ok(queue.listenerCount('close') >= 1, 'close listener attached while live');
+			stream.destroy();
+			await new Promise((r) => setTimeout(r, 30));
+			assert.equal(queue.listenerCount('data'), 0, 'data listener removed on stream teardown');
+			assert.equal(queue.listenerCount('close'), 0, 'close listener removed on stream teardown');
+		});
+
+		it('an error on the stream is handled (does not throw an unhandled error / crash)', async () => {
+			// A Readable with no 'error' listener throws on 'error', crashing the
+			// worker. toSseStream must attach a default guard so neither the piped
+			// operations socket nor Harper-HTTP can crash the process.
+			const stream = toSseStream(new IterableEventQueue());
+			assert.ok(stream.listenerCount('error') >= 1, 'default error guard attached');
+			// Emitting 'error' must not throw now that a listener exists.
+			assert.doesNotThrow(() => stream.emit('error', new Error('boom')));
+			await new Promise((r) => setImmediate(r));
+			assert.equal(stream.destroyed, true, 'stream torn down by the error guard');
+		});
+
 		it('streams pushed frames and ENDS when the source queue emits close (no socket leak)', async () => {
 			const queue = new IterableEventQueue();
 			const collected = collect(toSseStream(queue));

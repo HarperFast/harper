@@ -84,6 +84,10 @@ export function createFastifyHandler(profile: McpProfile) {
 			raw.writeHead(res.status, sseHeaders);
 			raw.flushHeaders?.();
 			const stream = toSseStream(res.sseIterable as unknown as SseFrameSource);
+			// An unhandled `'error'` on the piped Readable would crash the worker.
+			// `pipe()` does not forward source errors to the destination, so destroy
+			// the raw socket ourselves to tear the response down cleanly.
+			stream.on('error', () => raw.destroy());
 			stream.pipe(raw);
 			raw.on('close', () => stream.destroy());
 			return;
