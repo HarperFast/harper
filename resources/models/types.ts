@@ -11,6 +11,8 @@ export interface Models {
 	embed(input: string | string[], opts?: EmbedOpts): Promise<Float32Array[]>;
 	generate(input: GenerateInput, opts?: GenerateOpts): Promise<GenerateResult>;
 	generateStream(input: GenerateInput, opts?: GenerateOpts): AsyncIterable<GenerateChunk>;
+	/** Register a custom backend under a logical id, selectable via `opts.model`. See #1325. */
+	registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void;
 }
 
 export interface ModelBackend {
@@ -27,6 +29,23 @@ export interface ModelCapabilities {
 	stream: boolean;
 	tools: boolean;
 	adapters: boolean;
+}
+
+/**
+ * Spec for `defineBackend` — supply only the methods your backend implements;
+ * `capabilities()` is derived from which are present. `tools` and `adapters`
+ * can't be inferred from method presence, so declare them explicitly (both
+ * default `false`). See #1325.
+ */
+export interface DefineBackendSpec {
+	name: string;
+	embed?: ModelBackend['embed'];
+	generate?: ModelBackend['generate'];
+	generateStream?: ModelBackend['generateStream'];
+	/** Backend supports tool calls in `generate` / `generateStream`. Default `false`. */
+	tools?: boolean;
+	/** Backend supports per-call LoRA / adapter selection. Default `false`. */
+	adapters?: boolean;
 }
 
 export type EmbedOpts = {

@@ -1,6 +1,11 @@
 import { _assignPackageExport } from '../../globals.js';
 import { contextStorage } from '../transaction.ts';
-import { resolveEmbedding, resolveGenerative } from './backendRegistry.ts';
+import {
+	defineBackend,
+	registerBackend as registerBackendImpl,
+	resolveEmbedding,
+	resolveGenerative,
+} from './backendRegistry.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { recordAction } from '../analytics/write.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
@@ -49,6 +54,16 @@ export class Models implements ModelsContract {
 	) {
 		this.#analyticsWriter = analyticsWriter;
 		this.#emit = metricEmitter;
+	}
+
+	/**
+	 * Register a custom backend under a logical id (e.g. `'local:bge-small'`),
+	 * then select it per call with `opts.model`. The public path for components
+	 * and apps to add in-process or third-party backends; pair with
+	 * `defineBackend` to build the backend from a few methods. See #1325.
+	 */
+	registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void {
+		registerBackendImpl(kind, id, backend);
 	}
 
 	async embed(input: string | string[], opts: EmbedOpts = {}): Promise<Float32Array[]> {
@@ -302,3 +317,6 @@ export class ModelPendingNotSupportedError extends ServerError {
  */
 export const models = new Models();
 _assignPackageExport('models', models);
+// Free-function registration API (#1325), also reachable as `models.registerBackend(...)`.
+_assignPackageExport('registerBackend', registerBackendImpl);
+_assignPackageExport('defineBackend', defineBackend);

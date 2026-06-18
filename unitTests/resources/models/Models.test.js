@@ -33,6 +33,11 @@ describe('models singleton', () => {
 	it('_assignPackageExport wires global.models to the same object', () => {
 		assert.strictEqual(global.models, modelsSingleton);
 	});
+
+	it('_assignPackageExport wires the registerBackend / defineBackend free functions', () => {
+		assert.strictEqual(typeof global.registerBackend, 'function');
+		assert.strictEqual(typeof global.defineBackend, 'function');
+	});
 });
 
 // Captures (value, metric, path) tuples that Models passes to recordAction.
