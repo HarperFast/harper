@@ -838,12 +838,19 @@ async function bunDelegateToNodeServer(
 			// Event-stream responses (MCP SSE) must reach the client incrementally — return
 			// the body as a stream. Everything else keeps the prior buffered behavior:
 			// drain to a single payload so Content-Length stays set and callers see no change.
-			// Note: on a Bun client disconnect this inject-bridged stream is not torn down
-			// eagerly (no real socket 'close' propagates back to the hijacked Fastify reply),
-			// so a dropped SSE session is reclaimed by the registry's idle-prune backstop
-			// rather than immediately as on the Node/application path.
 			const contentType = String(injectResult.headers['content-type'] ?? '');
 			if (contentType.includes('text/event-stream')) {
+				// Propagate client disconnect back to the hijacked Fastify reply. When Bun
+				// cancels the response body it destroys this stream; destroying the inject
+				// response (the same object the SSE adapter listens on for 'close') runs the
+				// adapter's teardown, which unsubscribes the session's queue 'data' listener
+				// and drops the registry entry. Without this the inject bridge would never
+				// signal disconnect and the session would leak — its attached data listener
+				// keeps the registry's idle-prune backstop from ever reclaiming it.
+				const injectResponse = injectResult.raw?.res;
+				if (injectResponse && typeof injectResponse.destroy === 'function') {
+					responseStream.once('close', () => injectResponse.destroy());
+				}
 				return new Response(Readable.toWeb(responseStream) as unknown as BodyInit, {
 					status: injectResult.statusCode,
 					headers: webHeaders,
