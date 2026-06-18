@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781686724728,
+  "lastUpdate": 1781772282150,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -738,6 +738,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E",
             "value": 1190.65,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1b65d7dadfa43f4bc942249d53ecca74f82d8d0f",
+          "message": "feat(mcp): implement ping + logging/setLevel + notifications/message (#1350)\n\n* feat(mcp): implement ping + logging/setLevel + notifications/message\n\nThe MCP server advertised the `logging` capability but `logging/setLevel`\nreturned -32601, and `ping` (a base-protocol utility) was unanswered. Both are\nnow implemented, reconciling the advertised capability with real behavior.\n\n- ping: returns an empty result. Routed after session validation so a stale /\n  expired / wrong-user session surfaces the normal 404/403 rather than being\n  masked by an unconditional success; a ping notification gets the standard 202.\n- logging/setLevel: validates an RFC 5424 level and stores it. The level is\n  persisted on the durable session record (system.mcp_session) so it survives an\n  SSE reconnect, is order-independent of GET-stream open, and expires with the\n  session TTL — no separate cache to leak. The live SSE record is seeded from it\n  on (re)connect and updated in place on setLevel.\n- notifications/message: new logging.ts emitter delivers to a session over its\n  SSE channel, filtered by the session's level (no messages before setLevel).\n  Deliberately scoped to MCP-layer events — NOT the global harperLogger stream,\n  which has no subscription hook and is process-wide/cross-worker (forwarding it\n  would be a data leak + firehose). One call site wired: tools/call rate-limit\n  rejections emit a `notice`.\n\nKnown limitation (consistent with the existing listChanged channel): server\npush is per-worker in v1, so a setLevel POST handled on a different worker than\nthe session's SSE stream takes effect on that stream only at the next reconnect.\nCross-worker push is a subsystem-wide design item tracked in the MCP design-doc\nissue.\n\nUnit tests: logging level taxonomy + per-session filtering + profile fan-out;\ntransport ping (valid/invalid-session/notification) and setLevel (valid, -32602,\npersistence, reconnect seeding).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* refactor(mcp): harden log-level admission + simplify live-record seeding\n\nAddress Gemini review on the logging PR:\n- admits(): reject an unrecognized level instead of defaulting its rank to 0\n  (which could slip past a 'debug' minimum). Both ranks must resolve.\n- handleGet: assign session.logLevel directly (a fresh record's level is\n  already undefined), dropping the redundant guard.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(mcp): adopt touchSession's return so per-request saves keep fresh lastActivity\n\nhandlePost called `await touchSession(session)` but discarded the returned copy\n(which carries the new lastActivity), leaving the local `session` stale. Any\nlater save in the same request then rolled lastActivity back to the load-time\nvalue — pre-existing for `notifications/initialized` (handleInitialized) and now\nalso `logging/setLevel` (dispatchSetLevel) added in this PR.\n\nReassign `session = await touchSession(session)` so every downstream save\npersists the current activity time. Regression test forces a stale lastActivity\nand asserts setLevel advances rather than rolls it back. (TTL is unaffected\neither way — it keys off the record's put timestamp — but the field is now\naccurate.)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Kyle Bernhardy <kyle.bernhardy@gmail.com>\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T03:15:33Z",
+          "url": "https://github.com/HarperFast/harper/commit/1b65d7dadfa43f4bc942249d53ecca74f82d8d0f"
+        },
+        "date": 1781772281688,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load",
+            "value": 8593.95,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C",
+            "value": 12795.83,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B",
+            "value": 12956.16,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A",
+            "value": 9576.56,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F",
+            "value": 6922.96,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D",
+            "value": 12867.96,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E",
+            "value": 1477.43,
             "unit": "ops/sec"
           }
         ]
