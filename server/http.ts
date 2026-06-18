@@ -813,11 +813,17 @@ async function bunDelegateToNodeServer(
 			if (bunRequest?.user && !headers['authorization']) {
 				headers[INTERNAL_USER_HEADER] = JSON.stringify(bunRequest.user);
 			}
+			// `payloadAsStream` makes inject() resolve as soon as the response headers are
+			// written and exposes the body as a Readable, instead of buffering the whole
+			// payload and resolving only on response end. Without it a long-lived SSE
+			// response (the MCP server-push GET) never ends, so `await inject()` would
+			// hang forever and the client would never receive headers.
 			const injectResult = await fastify.inject({
 				method: webRequest.method,
 				url: url.pathname + url.search,
 				headers,
 				payload: body,
+				payloadAsStream: true,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -828,7 +834,25 @@ async function bunDelegateToNodeServer(
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
-			return new Response(injectResult.rawPayload?.length > 0 ? injectResult.rawPayload : null, {
+			const responseStream = injectResult.stream();
+			// Event-stream responses (MCP SSE) must reach the client incrementally — return
+			// the body as a stream. Everything else keeps the prior buffered behavior:
+			// drain to a single payload so Content-Length stays set and callers see no change.
+			// Note: on a Bun client disconnect this inject-bridged stream is not torn down
+			// eagerly (no real socket 'close' propagates back to the hijacked Fastify reply),
+			// so a dropped SSE session is reclaimed by the registry's idle-prune backstop
+			// rather than immediately as on the Node/application path.
+			const contentType = String(injectResult.headers['content-type'] ?? '');
+			if (contentType.includes('text/event-stream')) {
+				return new Response(Readable.toWeb(responseStream) as unknown as BodyInit, {
+					status: injectResult.statusCode,
+					headers: webHeaders,
+				});
+			}
+			const chunks: Buffer[] = [];
+			for await (const chunk of responseStream) chunks.push(Buffer.from(chunk));
+			const payload = Buffer.concat(chunks);
+			return new Response(payload.length > 0 ? payload : null, {
 				status: injectResult.statusCode,
 				headers: webHeaders,
 			});
