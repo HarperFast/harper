@@ -1032,6 +1032,14 @@ export function startPreCommitBlobsForRecord(
 	trackPersistedBlobs?: boolean
 ): PreCommitBlobs | undefined {
 	const blobsNeedingSaving: Blob[] = [];
+	// Already-saving blobs tracked for cleanup only — NOT awaited in complete(). Their durability is
+	// already tracked by outstandingBlobsToFinish in replicationConnection.ts. Awaiting them here would
+	// block the commit on blob I/O; if the WS is paused for commit-backlog back-pressure, any
+	// partially-received blob stream that can't get more chunks until ws.resume() would time out — the
+	// commit would then fail, preventing onCommit() from decrementing outstandingCommits, permanently
+	// locking the WS (deadlock). Track-only keeps the skip/abort cleanup from harper-pro#406 without
+	// introducing this commit-path dependency. (harper-pro#414)
+	const blobsToTrackOnly: Blob[] = [];
 	for (const key in record) {
 		const value = record[key];
 		// Track a file-backed blob on the write when it still needs saving before commit (the local-write
@@ -1046,23 +1054,28 @@ export function startPreCommitBlobsForRecord(
 		// Already-saved blobs are not re-saved (saveBlob early-returns on an existing fileId); the
 		// retained-fileId guard in cleanupUnusedBlobs additionally protects any blob the committed record
 		// still references.
-		if (
-			value instanceof FileBackedBlob &&
-			(saveInRecord || value.saveBeforeCommit || (trackPersistedBlobs && storageInfoForBlob.get(value)?.fileId != null))
-		) {
-			currentStore = store;
-			if (saveInRecord) {
-				value.saveInRecord = true;
+		if (value instanceof FileBackedBlob) {
+			if (saveInRecord || value.saveBeforeCommit) {
+				currentStore = store;
+				if (saveInRecord) {
+					value.saveInRecord = true;
+				}
+				blobsNeedingSaving.push(value);
+			} else if (trackPersistedBlobs && storageInfoForBlob.get(value)?.fileId != null) {
+				blobsToTrackOnly.push(value);
 			}
-			blobsNeedingSaving.push(value);
 		}
 	}
-	if (blobsNeedingSaving.length > 0) {
+	const allTrackedBlobs = blobsNeedingSaving.concat(blobsToTrackOnly);
+	if (allTrackedBlobs.length > 0) {
 		// we do have blobs, start saving once complete() is called
 		return {
-			blobs: blobsNeedingSaving,
+			blobs: allTrackedBlobs,
 			complete: () => {
 				currentStore = store;
+				// Only await blobs that need saving before commit (saveInRecord / saveBeforeCommit path).
+				// Already-saving blobs (blobsToTrackOnly) are skipped here — their durability is tracked
+				// separately by outstandingBlobsToFinish; blocking the commit on them causes deadlock.
 				return Promise.all(
 					blobsNeedingSaving.map((blob) => {
 						return saveBlob(blob as any, true).saving ?? Promise.resolve();
