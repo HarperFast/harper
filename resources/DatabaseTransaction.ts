@@ -279,7 +279,11 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
-							commitResolution = transaction.commit();
+							// rocksdb-js 2.2.0 widened commit()'s resolution to include the
+							// coordinated-retry sentinel (RETRY_NOW); we don't pass
+							// coordinatedRetry, so it never resolves to the sentinel here. Cast
+							// away the sentinel to keep commitResolution void.
+							commitResolution = transaction.commit() as Promise<void>;
 						} else {
 							try {
 								commitResolution = transaction.abort();
