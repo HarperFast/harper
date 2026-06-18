@@ -121,7 +121,15 @@ describe('Read Txn Expiration', () => {
 		assert.equal(result.name, 'two');
 	});
 
-	after(function () {
+	after(async function () {
 		setReadTxnExpiration(300000);
+		// On Node v24 the V8 exit-time finalizer order can call mdb_cursor_close on a cursor
+		// whose txn was force-aborted by checkReadTxnTimeouts above. Drain in-flight ops and
+		// reap orphaned cursor wrappers now, while the env is still in a stable state.
+		await new Promise((r) => setImmediate(r));
+		if (typeof global.gc === 'function') {
+			global.gc();
+			await new Promise((r) => setImmediate(r));
+		}
 	});
 });
