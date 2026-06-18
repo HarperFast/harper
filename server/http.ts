@@ -459,7 +459,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				logRequest(nodeRequest, status, requestId, executionTime);
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
-					if (body[Symbol.iterator] || body[Symbol.asyncIterator]) body = Readable.from(body);
+					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
+					// `Readable.from()` is redundant and breaks destroy propagation: on client
+					// disconnect we destroy the wrapper, which does NOT close the wrapped stream
+					// (so e.g. an SSE PassThrough never sees 'close' and its session leaks). A
+					// real stream already has `.pipe`, so it flows through the branch below.
+					else if (!(body instanceof Readable) && (body[Symbol.iterator] || body[Symbol.asyncIterator]))
+						body = Readable.from(body);
 
 					// if it is a stream, pipe it
 					if (body?.pipe) {

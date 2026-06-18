@@ -59,9 +59,12 @@ function pruneIdleSessions(): void {
 	lastPruneAt = t;
 	const cutoff = t - IDLE_PRUNE_MS;
 	for (const [id, record] of registry) {
-		// Don't prune sessions whose iterator is actively awaiting data; that
-		// signals a live consumer mid-stream. Belt-and-braces around lastSeen.
-		if (record.queue.resolveNext !== null) continue;
+		// Don't prune sessions with a live SSE consumer. The consumer is either
+		// awaiting via the async iterator (`resolveNext`) or subscribed via the
+		// queue's `'data'` event (`hasDataListeners`, how the MCP SSE stream
+		// consumes) — either way the GET stream is open, even if no `tools/call`
+		// has refreshed `lastSeen` within the idle window.
+		if (record.queue.resolveNext !== null || record.queue.hasDataListeners) continue;
 		if (record.lastSeen < cutoff) {
 			record.queue.emit('close');
 			registry.delete(id);
