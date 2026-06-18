@@ -12,13 +12,21 @@
  * unindexed baseline is printed so regression tracking can gate on relative
  * cost growth rather than absolute numbers (which vary by hardware/CI runner).
  *
+ * Warmup strategy (removes ordering bias):
+ *   1. Instance-level warmup: before any variant is measured, a throwaway
+ *      insert loop fires `--instance-warmup` requests against the baseline
+ *      table so JIT, connection-pool, and RocksDB page-cache are hot.
+ *   2. Per-variant warmup: the first `--variant-warmup` requests of every
+ *      variant are sent but excluded from the timing window, so each variant
+ *      is measured at steady state regardless of its position in the loop.
+ *
  * Usage (after npm run build from the repo root):
  *   node benchmarks/indexed-write/run.mts                   # small/quick default
  *   node benchmarks/indexed-write/run.mts --scale=nightly   # 1M records (CI nightly)
  *   node benchmarks/indexed-write/run.mts --records=20000 --concurrency=16
  *
  * Scales:
- *   quick   (default) — 5 000 records, 16 concurrency  (~10s per variant)
+ *   quick   (default) — 5 000 records, 16 concurrency  (~30s total)
  *   nightly           — 1 000 000 records, 64 concurrency
  *
  * Result format (parseable by a regression gate):
@@ -40,9 +48,12 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_BIN = join(REPO_ROOT, 'dist', 'bin', 'harper.js');
 const APP_DIR = join(import.meta.dirname, 'app');
 
-const SCALE_PRESETS: Record<string, { records: number; concurrency: number }> = {
-	quick: { records: 5_000, concurrency: 16 },
-	nightly: { records: 1_000_000, concurrency: 64 },
+const SCALE_PRESETS: Record<
+	string,
+	{ records: number; concurrency: number; instanceWarmup: number; variantWarmup: number }
+> = {
+	quick: { records: 5_000, concurrency: 16, instanceWarmup: 500, variantWarmup: 200 },
+	nightly: { records: 1_000_000, concurrency: 64, instanceWarmup: 2_000, variantWarmup: 1_000 },
 };
 
 const VARIANTS = ['baseline', 'indexed3', 'indexed5'] as const;
@@ -54,6 +65,8 @@ interface CliOptions {
 	engine: string;
 	threads: number;
 	startupTimeoutMs: number;
+	instanceWarmup: number;
+	variantWarmup: number;
 }
 
 function parseOptions(): CliOptions {
@@ -66,6 +79,8 @@ function parseOptions(): CliOptions {
 			'engine': { type: 'string', default: 'rocksdb' },
 			'threads': { type: 'string', default: '4' },
 			'startup-timeout': { type: 'string', default: '120000' },
+			'instance-warmup': { type: 'string' },
+			'variant-warmup': { type: 'string' },
 		},
 		allowPositionals: false,
 	});
@@ -79,6 +94,8 @@ function parseOptions(): CliOptions {
 		engine: values.engine as string,
 		threads: Number(values.threads),
 		startupTimeoutMs: Number(values['startup-timeout']),
+		instanceWarmup: values['instance-warmup'] !== undefined ? Number(values['instance-warmup']) : preset.instanceWarmup,
+		variantWarmup: values['variant-warmup'] !== undefined ? Number(values['variant-warmup']) : preset.variantWarmup,
 	};
 }
 
@@ -120,29 +137,11 @@ function put(agent: http.Agent, hostname: string, port: number, path: string, bo
 }
 
 // ---------------------------------------------------------------------------
-// Workload driver
+// Payload pool (shared between warmup and measured runs)
 // ---------------------------------------------------------------------------
 
-interface WriteResult {
-	ops: number;
-	errors: number;
-	elapsedMs: number;
-	throughput: number;
-}
-
-async function driveWrites(
-	agent: http.Agent,
-	hostname: string,
-	port: number,
-	table: Variant,
-	records: number,
-	concurrency: number
-): Promise<WriteResult> {
-	const pad = Math.max(10, String(records).length);
-	const formatKey = (i: number) => 'key' + String(i).padStart(pad, '0');
-	// Reuse a small pool of pre-built payloads to keep client-side overhead low.
-	const POOL_SIZE = Math.min(records, 500);
-	const payloadPool: Buffer[] = Array.from({ length: POOL_SIZE }, (_, i) =>
+function buildPayloadPool(size: number): Buffer[] {
+	return Array.from({ length: size }, (_, i) =>
 		Buffer.from(
 			JSON.stringify({
 				field0: 'val' + String(i % 1000).padStart(6, '0'),
@@ -153,6 +152,35 @@ async function driveWrites(
 			})
 		)
 	);
+}
+
+// ---------------------------------------------------------------------------
+// Workload driver
+// ---------------------------------------------------------------------------
+
+interface WriteResult {
+	ops: number;
+	errors: number;
+	elapsedMs: number;
+	throughput: number;
+}
+
+/**
+ * Send `count` PUT requests to `table`, starting at key offset `keyOffset`.
+ * If `timed` is false the elapsed time is not meaningful (used for warmup).
+ */
+async function driveWrites(
+	agent: http.Agent,
+	hostname: string,
+	port: number,
+	table: string,
+	count: number,
+	concurrency: number,
+	keyOffset: number,
+	payloadPool: Buffer[]
+): Promise<WriteResult> {
+	const pad = Math.max(10, String(keyOffset + count).length);
+	const formatKey = (i: number) => 'key' + String(i).padStart(pad, '0');
 
 	let dispatched = 0;
 	let errors = 0;
@@ -160,9 +188,9 @@ async function driveWrites(
 	const worker = async (): Promise<void> => {
 		while (true) {
 			const index = dispatched++;
-			if (index >= records) break;
-			const key = formatKey(index);
-			const body = payloadPool[index % POOL_SIZE];
+			if (index >= count) break;
+			const key = formatKey(keyOffset + index);
+			const body = payloadPool[index % payloadPool.length];
 			try {
 				await put(agent, hostname, port, `/${table}/${key}`, body);
 			} catch {
@@ -174,7 +202,7 @@ async function driveWrites(
 	const start = performance.now();
 	await Promise.all(Array.from({ length: concurrency }, worker));
 	const elapsedMs = performance.now() - start;
-	const ops = records - errors;
+	const ops = count - errors;
 	return { ops, errors, elapsedMs, throughput: (ops * 1_000) / elapsedMs };
 }
 
@@ -224,6 +252,9 @@ async function main(): Promise<void> {
 	console.log(
 		`records=${opts.records.toLocaleString()}  concurrency=${opts.concurrency}  engine=${opts.engine}  threads=${opts.threads}`
 	);
+	console.log(
+		`instance-warmup=${opts.instanceWarmup.toLocaleString()}  variant-warmup=${opts.variantWarmup.toLocaleString()}`
+	);
 	console.log('='.repeat(72));
 
 	const ctx = createHarperContext('indexed-write');
@@ -249,6 +280,10 @@ async function main(): Promise<void> {
 
 	const results: Array<{ variant: Variant; throughput: number; errors: number }> = [];
 
+	// Pre-build a shared payload pool large enough for all warmup + measured runs.
+	const POOL_SIZE = Math.min(opts.records, 500);
+	const payloadPool = buildPayloadPool(POOL_SIZE);
+
 	try {
 		// Wait for all three tables to be routable.
 		for (const variant of VARIANTS) {
@@ -258,9 +293,47 @@ async function main(): Promise<void> {
 
 		const agent = createAgent(opts.concurrency);
 		try {
+			// -----------------------------------------------------------------
+			// Phase 1: Instance-level warmup (not timed, not reported)
+			// Inserts into the baseline table to heat JIT, connection pool, and
+			// RocksDB page cache before any variant is measured.
+			// -----------------------------------------------------------------
+			if (opts.instanceWarmup > 0) {
+				process.stdout.write(
+					`[warmup] instance-level: ${opts.instanceWarmup.toLocaleString()} requests to baseline...`
+				);
+				await driveWrites(agent, hostname, port, 'baseline', opts.instanceWarmup, opts.concurrency, 0, payloadPool);
+				process.stdout.write(' done\n\n');
+			}
+
+			// -----------------------------------------------------------------
+			// Phase 2: Per-variant measured runs.
+			// Each variant begins with an untimed per-variant warmup so any
+			// remaining cold-start cost (routing cache, schema lookup, etc.) is
+			// absorbed before the clock starts.
+			// -----------------------------------------------------------------
 			for (const variant of VARIANTS) {
-				process.stdout.write(`[${variant}] inserting ${opts.records.toLocaleString()} records...`);
-				const result = await driveWrites(agent, hostname, port, variant, opts.records, opts.concurrency);
+				// Per-variant warmup: use key range [0, variantWarmup) — may
+				// overlap with instance warmup keys, which is fine (updates are
+				// cheap and exercise the same code path as inserts at this stage).
+				if (opts.variantWarmup > 0) {
+					process.stdout.write(`[${variant}] per-variant warmup: ${opts.variantWarmup.toLocaleString()} requests...`);
+					await driveWrites(agent, hostname, port, variant, opts.variantWarmup, opts.concurrency, 0, payloadPool);
+					process.stdout.write(' done\n');
+				}
+
+				// Measured run: use key range [variantWarmup, variantWarmup + records).
+				process.stdout.write(`[${variant}] measuring ${opts.records.toLocaleString()} records...`);
+				const result = await driveWrites(
+					agent,
+					hostname,
+					port,
+					variant,
+					opts.records,
+					opts.concurrency,
+					opts.variantWarmup,
+					payloadPool
+				);
 				process.stdout.write(
 					` done — ${result.throughput.toFixed(0)} ops/sec (${result.errors} errors, ${(result.elapsedMs / 1_000).toFixed(1)}s)\n`
 				);

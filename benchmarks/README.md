@@ -53,15 +53,18 @@ node benchmarks/indexed-write/run.mts --scale=nightly
 
 ### All flags
 
-| Flag            | Default (quick) | Nightly   |
-| --------------- | --------------- | --------- |
-| `--scale`       | `quick`         | `nightly` |
-| `--records`     | 5 000           | 1 000 000 |
-| `--concurrency` | 16              | 64        |
-| `--engine`      | `rocksdb`       | `rocksdb` |
-| `--threads`     | 4               | 4         |
+| Flag                | Default (quick) | Nightly   | Description                                                      |
+| ------------------- | --------------- | --------- | ---------------------------------------------------------------- |
+| `--scale`           | `quick`         | `nightly` | Preset (sets records, concurrency, and warmup defaults)          |
+| `--records`         | 5 000           | 1 000 000 | Measured inserts per variant                                     |
+| `--concurrency`     | 16              | 64        | In-flight requests                                               |
+| `--engine`          | `rocksdb`       | `rocksdb` | Storage engine                                                   |
+| `--threads`         | 4               | 4         | Harper worker threads                                            |
+| `--instance-warmup` | 500             | 2 000     | Untimed requests fired before any variant to heat JIT/pool/cache |
+| `--variant-warmup`  | 200             | 1 000     | Untimed requests at the start of each variant (discarded)        |
 
-Individual flags override the scale preset.
+Individual flags override the scale preset. Pass `--instance-warmup=0 --variant-warmup=0` to
+disable warmup (not recommended — results will be biased by cold-start ordering effects).
 
 ### Parseable output lines
 
@@ -164,12 +167,16 @@ CONCURRENT_RW_RESULT read_ops=NNN write_ops=NNN read_p50_ms=N.N read_p95_ms=N.N 
 ## Notes on interpreting results
 
 - **Indexed-write ratios** near 1.0 at small scale are expected: with 5 k records the
-  index overhead is small relative to HTTP latency. The regression signal is a large
-  ratio increase between runs on the same machine, not the absolute number.
+  index overhead is small relative to HTTP latency, so ratios of 0.95–1.05 are normal
+  noise. The regression signal is a large ratio _increase_ between runs on the same
+  machine, not the absolute number. The benchmark uses an instance-level warmup and a
+  per-variant warmup to eliminate cold-start ordering bias; without warmup, `baseline`
+  (measured first) would absorb JIT/connection-pool/cache costs and appear artificially
+  slow, inverting the expected ordering.
 - **TTL-churn `bounded=false`** at quick scale can be a false alarm if the TTL has not
   expired yet (60 s TTL in a 30 s run). The nightly 30-min run is the definitive gate.
 - **Concurrent-rw p99** at quick scale reflects the cost of multi-condition index scans
-  over 2 k records on an unwarmed instance — expect it to be higher than on a warmed
-  nightly run with 200 k records cached.
+  over 2 k records on a warmed instance — expect it to be higher than on a nightly run
+  with 200 k records cached.
 - All three benchmarks write a machine-parseable `RESULT` line to stdout; a future
   regression gate can `grep` this line and diff against a stored baseline.
