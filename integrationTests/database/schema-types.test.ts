@@ -116,31 +116,42 @@ suite('Schema-type contracts', { skip: skipSuite }, (ctx: ContextWithHarper) => 
 		});
 
 		test('insert with an undeclared field is rejected', async () => {
-			await client.req().send({
+			const write = await client.req().send({
 				operation: 'insert',
 				schema: 'data',
 				table: 'SealedItem',
 				records: [{ id: 'sealed-bad', name: 'allowed', UNDECLARED: 'must-be-rejected' }],
 			});
 
-			// @sealed must prevent the record from being stored, regardless of HTTP status.
+			// @sealed throws a ClientError (HTTP 400) for undeclared fields — the write must
+			// be rejected with an error status, not silently succeed.
+			ok(
+				write.status >= 400,
+				`@sealed must reject the insert with an error status; got ${write.status}: ${write.text}`
+			);
+
+			// Belt-and-suspenders: the record must also not be stored.
 			const read = await client.reqRest('/SealedItem/sealed-bad').timeout(10_000);
 			ok(
 				read.status === 404 || read.body?.UNDECLARED == null,
-				`@sealed must reject records with undeclared fields; found: ${JSON.stringify(read.body)}`
+				`@sealed must prevent the undeclared-field record from being stored; found: ${JSON.stringify(read.body)}`
 			);
 		});
 
 		test('REST PUT with undeclared field is rejected', async () => {
-			await request(client.restURL)
+			const write = await request(client.restURL)
 				.put('/SealedItem/sealed-rest-bad')
 				.set(client.headers)
 				.send({ id: 'sealed-rest-bad', name: 'ok', UNDECLARED: 'forbidden' });
 
+			// @sealed must reject the PUT with an error status, not strip the field silently.
+			ok(write.status >= 400, `@sealed must reject REST PUT with an error status; got ${write.status}: ${write.text}`);
+
+			// Belt-and-suspenders: the record must also not be stored.
 			const read = await client.reqRest('/SealedItem/sealed-rest-bad').timeout(10_000);
 			ok(
 				read.status === 404 || read.body?.UNDECLARED == null,
-				`@sealed must reject REST PUT with undeclared fields; found: ${JSON.stringify(read.body)}`
+				`@sealed must prevent the undeclared-field record from being stored; found: ${JSON.stringify(read.body)}`
 			);
 		});
 	});
