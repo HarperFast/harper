@@ -171,9 +171,7 @@ suite('TLS certificate hot-reload propagates to all workers (#586)', { skip: ski
 		// that NONE of them is still serving the old cert. Before #586's fix, a
 		// subset of workers kept the stale serial and this would intermittently fail.
 		const ATTEMPTS = 40;
-		const results = await Promise.allSettled(
-			Array.from({ length: ATTEMPTS }, () => servedSerial(ctx.harper.hostname))
-		);
+		const results = await Promise.allSettled(Array.from({ length: ATTEMPTS }, () => servedSerial(ctx.harper.hostname)));
 		const serials = results
 			.filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
 			.map((r) => r.value);
