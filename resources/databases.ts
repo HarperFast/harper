@@ -29,6 +29,7 @@ import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
@@ -1406,18 +1407,39 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
-async function runIndexing(Table, attributes, indicesToRemove) {
+// When a backfill pass fails with only transient RocksDB errors (e.g. the write buffer filling under
+// bulk-ingest load), re-run the pass in-process instead of parking the index until the next restart.
+// Bounded with exponential backoff; on exhaustion we fall back to the existing park-and-retry-on-restart
+// behavior, so this is strictly an improvement. See issue #1356.
+const INDEXING_MAX_PASS_RETRIES = 10;
+const INDEXING_RETRY_BASE_DELAY_MS = 50;
+const INDEXING_RETRY_MAX_DELAY_MS = 1000;
+
+// ERR_BUSY (optimistic write conflict) and ERR_TRY_AGAIN (RocksDB kTryAgain — the snapshot fell outside
+// the memtable conflict-check window, which happens under bulk ingest such as a backfill) are transient
+// and retryable. Mirrors the classification in DatabaseTransaction's commit retry. A pass failing only
+// with these can be retried in-process; any other error is treated as permanent and parks the index.
+function isTransientIndexingError(error: any): boolean {
+	return error?.code === 'ERR_BUSY' || error?.code === 'ERR_TRY_AGAIN';
+}
+async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0) {
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
-		await signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
-		);
 		let lastResolution;
-		for (const index of indicesToRemove) {
-			lastResolution = index.drop();
+		if (retryAttempt === 0) {
+			// Only signal the schema change and drop removed indices on the first attempt; in-process
+			// transient retries (see below) re-enter this function with indicesToRemove already emptied.
+			await signalling.signalSchemaChange(
+				new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+			);
+			for (const index of indicesToRemove) {
+				lastResolution = index.drop();
+			}
 		}
 		let interrupted;
 		let hadIndexingErrors = false;
+		let hadPermanentIndexingError = false;
+		let passStartKey: any;
 		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
@@ -1437,6 +1459,11 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					}
 				}
 			}
+			// Capture this pass's starting checkpoint. A transient-only retry resets each attribute's
+			// lastIndexedKey back to here and re-runs the pass, re-reading any row that errored
+			// mid-pass — the intra-pass checkpoint below can advance past a put that later rejects
+			// asynchronously, so it is not a safe resume point. Re-indexing is idempotent.
+			passStartKey = start;
 			let outstanding = 0;
 			// this means that a new attribute has been introduced that needs to be indexed
 			for (const { key, value: record } of Table.primaryStore.getRange({
@@ -1477,6 +1504,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						}
 					} catch (error) {
 						hadIndexingErrors = true;
+						if (!isTransientIndexingError(error)) hadPermanentIndexingError = true;
 						if (!attributeErrorReported[property]) {
 							// just report an indexing error once per attribute so we don't spam the logs
 							attributeErrorReported[property] = true;
@@ -1490,6 +1518,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					(error) => {
 						outstanding--;
 						hadIndexingErrors = true;
+						if (!isTransientIndexingError(error)) hadPermanentIndexingError = true;
 						logger.error(error);
 					}
 				);
@@ -1521,12 +1550,44 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			await lastResolution;
 		} catch (error) {
 			hadIndexingErrors = true;
+			if (!isTransientIndexingError(error)) hadPermanentIndexingError = true;
 			logger.error(error);
 		}
 		// Yield one more event turn so any queued when() error callbacks (which fire as
 		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
 		// before we decide whether to mark indexing as complete.
 		await new Promise((resolve) => setImmediate(resolve));
+		// If the pass failed only with transient RocksDB errors (ERR_BUSY/ERR_TRY_AGAIN under
+		// bulk-ingest load), re-run it in-process from this pass's start rather than parking the
+		// index until the next restart. Bounded with exponential backoff; on exhaustion (or any
+		// permanent error) we fall through to the park path below, so this never does worse than the
+		// prior behavior. Reset and persist the resume point so a crash mid-retry also resumes from
+		// here, then re-enter with an empty indicesToRemove (the drops already happened). See #1356.
+		if (
+			hadIndexingErrors &&
+			!hadPermanentIndexingError &&
+			attributesLength > 0 &&
+			retryAttempt < INDEXING_MAX_PASS_RETRIES
+		) {
+			const checkpointWrites: Promise<unknown>[] = [];
+			for (const attribute of attributes) {
+				attribute.lastIndexedKey = passStartKey;
+				checkpointWrites.push(Table.dbisDB.put(attribute.key, attribute));
+			}
+			// Await the descriptor writes before retrying (as the park/complete paths do) so a metadata
+			// write that rejects under the same RocksDB pressure — or while the DB is closing — is not
+			// dropped as an unhandled rejection, and we never retry without the persisted checkpoint. A
+			// failure here propagates to the outer catch, which parks the index: a safe fallback.
+			await Promise.all(checkpointWrites);
+			const backoff = Math.min(INDEXING_RETRY_BASE_DELAY_MS * 2 ** retryAttempt, INDEXING_RETRY_MAX_DELAY_MS);
+			logger.warn(
+				`Indexing of ${Table.tableName} hit transient errors; retrying pass ` +
+					`${retryAttempt + 1}/${INDEXING_MAX_PASS_RETRIES} after ${backoff}ms. ` +
+					`Affected attributes: ${attributes.map((a) => a.name).join(', ')}`
+			);
+			await delay(backoff);
+			return runIndexing(Table, attributes, [], retryAttempt + 1);
+		}
 		if (hadIndexingErrors) {
 			// Some records failed to index. Persist the failure marker in the descriptor so
 			// the next call to table() (including after a restart with a fresh PID) re-triggers

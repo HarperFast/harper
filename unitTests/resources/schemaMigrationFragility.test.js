@@ -83,7 +83,7 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 		);
 	});
 
-	it('reproduces a silent gap when a per-record index write rejects mid-flight', async () => {
+	it('parks the index (does not silently complete) when a per-record index write fails permanently', async () => {
 		// Force a fresh migration cycle by recreating with a DIFFERENT attribute
 		// name so a NEW index has to be backfilled.
 		const TABLE2 = TABLE + 'WithThrowingIndex';
@@ -100,8 +100,10 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 		}
 		await last;
 
-		// Now add @indexed to tag. During runIndexing, intercept dbi.put calls
-		// for some records to simulate transient errors (e.g. ERR_BUSY).
+		// Now add @indexed to tag. During runIndexing, intercept dbi.put calls for some records to
+		// simulate a permanent (non-retryable) per-record error — which must park the index, not
+		// silently complete. (Transient ERR_BUSY/ERR_TRY_AGAIN errors are retried instead; see the
+		// next test.)
 		resetDatabases();
 		Tbl = table({
 			table: TABLE2,
@@ -117,11 +119,9 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 			let opCount = 0;
 			tagIndex.put = function (indexedValue, primaryKey, options) {
 				opCount++;
-				// reject every 10th index put with a simulated transient error
+				// reject every 10th index put with a permanent (non-retryable) error
 				if (opCount % 10 === 0) {
-					return Promise.reject(
-						Object.assign(new Error('simulated transient index put failure'), { code: 'ERR_BUSY' })
-					);
+					return Promise.reject(new Error('simulated permanent index put failure'));
 				}
 				return origPut(indexedValue, primaryKey, options);
 			};
@@ -177,6 +177,142 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 			viaIndex += rows.length;
 		}
 		assert.equal(viaIndex, N, `After restart-triggered retry, all ${N} rows should be indexed. Got ${viaIndex}.`);
+	});
+
+	it('retries transient ERR_BUSY index write errors instead of parking the index', async () => {
+		// Same fragility setup, but the injected error is a TRANSIENT ERR_BUSY (RocksDB write
+		// contention). The backfill should retry it with bounded backoff and complete cleanly in a
+		// single pass — no park, no 503, no restart needed.
+		const TABLE3 = TABLE + 'WithTransientIndex';
+		resetDatabases();
+		let Tbl = table({
+			table: TABLE3,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		const VALUES = ['alpha', 'beta', 'gamma'];
+		for (let i = 0; i < N; i++) {
+			last = Tbl.put({ id: 't3-' + i, tag: VALUES[i % VALUES.length] });
+		}
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE3,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		const tagIndex = Tbl.indices?.tag;
+		let injected = 0;
+		const failedKeys = new Set();
+		if (tagIndex && typeof tagIndex.put === 'function') {
+			const origPut = tagIndex.put.bind(tagIndex);
+			tagIndex.put = function (indexedValue, primaryKey, options) {
+				// Fail a handful of keys exactly once with a TRANSIENT ERR_BUSY — alternating a
+				// SYNCHRONOUS throw (the RocksIndexStore putSync path) and an async rejection so both
+				// retry branches are exercised. On the in-process retry pass the key is no longer in
+				// the fail set, so the put succeeds and the backfill completes cleanly (no park, no 503).
+				const targeted = /-(?:4|14|24|34|44)$/.test(String(primaryKey));
+				if (targeted && !failedKeys.has(primaryKey)) {
+					failedKeys.add(primaryKey);
+					injected++;
+					const err = Object.assign(new Error('simulated transient index put failure'), { code: 'ERR_BUSY' });
+					if (injected % 2 === 1) throw err;
+					return Promise.reject(err);
+				}
+				return origPut(indexedValue, primaryKey, options);
+			};
+		}
+		if (Tbl.indexingOperation) await Tbl.indexingOperation;
+
+		assert.ok(injected > 0, 'expected the test to inject at least one transient ERR_BUSY');
+
+		// The retry should have completed the backfill cleanly: search must NOT throw 503 (would throw
+		// if the index were parked), and every row must be present in the new index.
+		let total = 0;
+		for (const v of VALUES) {
+			const rows = await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: v }] }));
+			total += rows.length;
+		}
+		assert.equal(total, N, `transient errors should be retried and all ${N} rows indexed; got ${total}`);
+	});
+
+	it('retried transient errors re-cover rows that the intra-pass checkpoint advanced past (no gap)', async () => {
+		// Regression guard for the failure mode that sank the per-put retry approach: the intra-pass
+		// checkpoint advances `lastIndexedKey` every 100 rows, even past a put that later fails. If a
+		// retry resumed from that checkpoint it would skip the failed early row, leaving a silent gap.
+		// The pass-level retry instead re-runs from the pass start, re-reading every row.
+		const TABLE4 = TABLE + 'CheckpointGap';
+		const M = 250; // > 100 so the checkpoint fires and advances past the early failing row
+		resetDatabases();
+		let Tbl = table({
+			table: TABLE4,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		const VALUES = ['alpha', 'beta', 'gamma'];
+		for (let i = 0; i < M; i++) {
+			// zero-padded so lexicographic key order matches numeric order and the targeted row is
+			// reliably scanned early (before the first 100-row checkpoint).
+			last = Tbl.put({ id: 't4-' + String(i).padStart(3, '0'), tag: VALUES[i % VALUES.length] });
+		}
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE4,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		const tagIndex = Tbl.indices?.tag;
+		let injected = 0;
+		const failedKeys = new Set();
+		if (tagIndex && typeof tagIndex.put === 'function') {
+			const origPut = tagIndex.put.bind(tagIndex);
+			tagIndex.put = function (indexedValue, primaryKey, options) {
+				// Fail one EARLY row once (transiently). The checkpoint at row 100/200 advances the
+				// resume point well past it, so only a from-pass-start retry can re-cover it.
+				if (String(primaryKey).endsWith('t4-005') && !failedKeys.has(primaryKey)) {
+					failedKeys.add(primaryKey);
+					injected++;
+					return Promise.reject(
+						Object.assign(new Error('simulated transient index put failure'), { code: 'ERR_BUSY' })
+					);
+				}
+				return origPut(indexedValue, primaryKey, options);
+			};
+		}
+		if (Tbl.indexingOperation) await Tbl.indexingOperation;
+
+		assert.ok(injected > 0, 'expected the test to inject a transient ERR_BUSY on the early row');
+
+		let total = 0;
+		for (const v of VALUES) {
+			const rows = await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: v }] }));
+			total += rows.length;
+		}
+		assert.equal(
+			total,
+			M,
+			`all ${M} rows must be indexed after retry — a resume-from-checkpoint retry would skip the ` +
+				`early failed row, leaving a gap. Got ${total}.`
+		);
+		// And the specific early row must be findable by its indexed value.
+		const earlyRows = await collect(
+			Tbl.search({ conditions: [{ attribute: 'tag', value: VALUES[5 % VALUES.length] }] })
+		);
+		assert.ok(
+			earlyRows.some((r) => r.id === 't4-005'),
+			'the early row that failed transiently must be present in the index after the retry'
+		);
 	});
 });
 
