@@ -481,6 +481,17 @@
 					"description": "Reclamation process configuration.",
 					"additionalProperties": true
 				},
+				"transactionLog": {
+					"type": "object",
+					"description": "Transaction log configuration.",
+					"additionalProperties": true,
+					"properties": {
+						"coolingInterval": {
+							"type": ["string", "number"],
+							"description": "How often to advise mapped transaction-log pages cold (MADV_COLD) so the kernel reclaims them first under memory pressure (e.g. '30s'). Non-destructive; helps memory reclamation during replication catch-up. Set to 0 to disable. Default: '30s'"
+						}
+					}
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		},

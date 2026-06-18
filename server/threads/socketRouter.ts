@@ -2,6 +2,7 @@ import { startWorker, setMonitorListener, setMainIsWorker, threadsHaveStarted } 
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
+import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { isMainThread } from 'worker_threads';
 import { join } from 'path';
 
@@ -23,6 +24,10 @@ if (isMainThread) {
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
+	// Drive transaction-log cooling from the main thread (the registry is a
+	// process-global singleton; see startTransactionLogCooling). Runs for all
+	// thread modes below, including the single-threaded (threadCount === 0) path.
+	startTransactionLogCooling();
 	try {
 		if (dynamicThreads) {
 			startHTTPWorker(0, 1);

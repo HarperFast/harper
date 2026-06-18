@@ -628,6 +628,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_RECLAMATION_THRESHOLD: 'storage_reclamation_threshold',
 	STORAGE_RECLAMATION_INTERVAL: 'storage_reclamation_interval',
 	STORAGE_RECLAMATION_EVICTIONFACTOR: 'storage_reclamation_evictionFactor',
+	STORAGE_TRANSACTIONLOG_COOLINGINTERVAL: 'storage_transactionLog_coolingInterval',
 	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
 	STORAGE_ROCKS_BLOCKCACHESIZE: 'storage_rocks_blockCacheSize',
