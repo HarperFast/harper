@@ -64,6 +64,21 @@ Secondary indexes are still valuable for query conditions on other fields, but e
 
 More unique values (higher cardinality) = more efficient indexed lookups. For example, an index on a boolean field has very low cardinality (only two possible values) and is less efficient than an index on a `UUID` field. High-cardinality fields benefit most from indexing.
 
+### Querying an Attribute Whose Index Is Still Building
+
+<VersionBadge version="v5.1.5" />
+
+When a secondary index is still being built — for example, just after a new `@indexed` attribute is added, or while an index rebuilds following a schema change or upgrade — a query that relies on that index cannot return correct results yet. Rather than silently returning a partial result set, Harper rejects the query with a retryable `503`:
+
+| Property  | Value                                                                 |
+| --------- | --------------------------------------------------------------------- |
+| Status    | `503`                                                                 |
+| Code      | `INDEX_REBUILDING`                                                    |
+| Retryable | `true`                                                                |
+| Message   | `"<attribute>" is not indexed yet, can not search for this attribute` |
+
+This is a transient condition — the index finishes building in the background, after which the same query succeeds. Clients should retry (with backoff) rather than treating it as an empty result or a permanent failure. On the operations API the error body includes `code` and `retryable`, so callers can branch on `error.code === 'INDEX_REBUILDING'` or `error.retryable`.
+
 ## Relationships and Joins
 
 Harper supports relationship-based queries that join data across tables. See [Schema documentation](../database/schema.md) for how to define relationships.
