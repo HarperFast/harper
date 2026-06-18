@@ -1524,17 +1524,23 @@ export async function* findIncompleteBlobRefs(
 	for (const tableName in database) {
 		logger.info?.('Scanning table for incomplete blobs', tableName, databaseName ?? '');
 		const table = database[tableName];
+		const rootStore = table.primaryStore.rootStore;
 		for (const entry of table.primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 			try {
-				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+				if (entry.metadataFlags & HAS_BLOBS) {
+					// Set currentStore before accessing entry.value — the blob unpack extension
+					// reads currentStore to populate storageInfo.store, and encodeBlobsWithFilePath
+					// resets it to undefined in its finally, so it must be re-set here.
 					let hasIncomplete = false;
-					findBlobsInObject(entry.value, (blob) => {
-						if (hasIncomplete) return;
-						if (blob instanceof FileBackedBlob) {
-							const storageInfo = storageInfoForBlob.get(blob);
-							if (storageInfo?.fileId != null && !isBlobFileComplete(storageInfo)) hasIncomplete = true;
-						}
-					});
+					decodeFromDatabase(() => {
+						findBlobsInObject(entry.value, (blob) => {
+							if (hasIncomplete) return;
+							if (blob instanceof FileBackedBlob) {
+								const storageInfo = storageInfoForBlob.get(blob);
+								if (storageInfo?.fileId != null && !isBlobFileComplete(storageInfo)) hasIncomplete = true;
+							}
+						});
+					}, rootStore);
 					if (hasIncomplete) yield { tableName, table, recordId: entry.id };
 				}
 				if (i++ % perMS === 0) await delay(1);
