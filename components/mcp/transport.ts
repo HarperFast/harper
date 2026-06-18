@@ -200,7 +200,7 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (!sessionId) {
 		return jsonRpcErrorResponse(400, messageId, ERROR_CODES.INVALID_REQUEST, 'missing Mcp-Session-Id header');
 	}
-	const session = await loadSession(sessionId);
+	let session = await loadSession(sessionId);
 	if (!session) {
 		// Terminated, expired, or never existed. Spec mandates 404 so the
 		// client knows to drop the id and re-initialize.
@@ -225,8 +225,11 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	}
 
 	// Sliding-window idle reset. Awaited (not fire-and-forget) so a concurrent
-	// DELETE that arrives mid-request can't be resurrected by a late put.
-	await touchSession(session);
+	// DELETE that arrives mid-request can't be resurrected by a late put. Adopt
+	// the touched copy (fresh `lastActivity`) so any later save in this request
+	// — `handleInitialized`, `dispatchSetLevel` — persists the current activity
+	// time instead of rolling it back to the load-time value.
+	session = await touchSession(session);
 
 	// Fire-and-forget frames (notifications + client responses) always 202.
 	if (isClientFireAndForget(message)) {

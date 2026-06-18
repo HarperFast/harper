@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
-const { _setSessionTableForTest, createSession, loadSession } = require('#src/components/mcp/session');
+const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
 const { getRegisteredSession } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const {
@@ -242,6 +242,23 @@ describe('mcp/transport', () => {
 			// Persisted durably so it survives an SSE reconnect (#1349 logging design).
 			const session = await loadSession(sessionId);
 			assert.equal(session.logLevel, 'warning');
+		});
+
+		it('does not roll back lastActivity when persisting the level (touchSession adopted)', async () => {
+			// Force a known-old lastActivity, then setLevel: the request's touchSession
+			// must advance it, and the level-persisting saveSession must NOT write the
+			// stale load-time value back (root fix — handlePost adopts the touched copy).
+			const stale = await loadSession(sessionId);
+			await saveSession({ ...stale, lastActivity: 1 });
+			await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(2, 'logging/setLevel', { level: 'info' }),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			const after = await loadSession(sessionId);
+			assert.ok(after.lastActivity > 1, `lastActivity should advance, not roll back; got ${after.lastActivity}`);
+			assert.equal(after.logLevel, 'info', 'level still persisted');
 		});
 
 		it('seeds the live SSE record from a level set before the GET stream opened', async () => {
