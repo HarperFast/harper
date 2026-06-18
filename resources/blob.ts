@@ -15,9 +15,11 @@ import { addExtension, pack, Packr } from 'msgpackr';
 import { readFile, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
 import {
 	close,
+	closeSync,
 	createWriteStream,
 	fdatasync,
 	open,
+	openSync,
 	readFileSync,
 	read,
 	readSync,
@@ -1607,5 +1609,76 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				}
 			}
 		});
+	}
+}
+
+function isBlobFileComplete(storageInfo: StorageInfo): boolean {
+	try {
+		const filePath = getFilePath(storageInfo);
+		const fileSize = statSync(filePath).size;
+		if (fileSize < HEADER_SIZE) return false;
+		const header = Buffer.alloc(HEADER_SIZE);
+		const fd = openSync(filePath, 'r');
+		try {
+			readSync(fd, header, 0, HEADER_SIZE, 0);
+		} finally {
+			closeSync(fd);
+		}
+		const headerValue = new DataView(header.buffer, header.byteOffset, 8).getBigUint64(0);
+		if (Number(headerValue >> 48n) === ERROR_TYPE) return false;
+		const size = Number(headerValue & 0xffffffffffffn);
+		return size === fileSize - HEADER_SIZE;
+	} catch (e) {
+		if ((e as any).code === 'ENOENT') return false;
+		throw e;
+	}
+}
+
+/**
+ * Returns true if the given blob's backing file is present and complete (header size matches
+ * actual file size, no error stub, not an in-flight placeholder). Used by the repair sweep to
+ * verify a blob was durably written after a peer fetch.
+ */
+export function isBlobComplete(blob: Blob): boolean {
+	if (!(blob instanceof FileBackedBlob)) return true; // inline blobs are always complete
+	const storageInfo = storageInfoForBlob.get(blob);
+	if (!storageInfo?.fileId) return false;
+	return isBlobFileComplete(storageInfo);
+}
+
+/**
+ * Async generator that yields records whose referenced blob files are missing, truncated, or in an
+ * error state. Used by the blob repair sweep to find candidates for peer-fetched recovery.
+ * Only scans the primary store (current record versions); audit-log blobs are not checked.
+ */
+export async function* findIncompleteBlobRefs(
+	database: any,
+	databaseName?: string
+): AsyncGenerator<{ tableName: string; table: any; recordId: any }> {
+	const { HAS_BLOBS } = await import('./auditStore.ts');
+	let i = 0;
+	const perMS = Math.floor((envGet(CONFIG_PARAMS.STORAGE_BLOBCLEANUPSPEED) ?? 10000) / 1000 + 1);
+	for (const tableName in database) {
+		logger.info?.('Scanning table for incomplete blobs', tableName, databaseName ?? '');
+		const table = database[tableName];
+		for (const entry of table.primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
+			try {
+				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+					let hasIncomplete = false;
+					findBlobsInObject(entry.value, (blob) => {
+						if (hasIncomplete) return;
+						if (blob instanceof FileBackedBlob) {
+							const storageInfo = storageInfoForBlob.get(blob);
+							if (storageInfo?.fileId != null && !isBlobFileComplete(storageInfo)) hasIncomplete = true;
+						}
+					});
+					if (hasIncomplete) yield { tableName, table, recordId: entry.id };
+				}
+				if (i++ % perMS === 0) await delay(1);
+				else await rest();
+			} catch (error) {
+				logger.error?.('Error scanning record for incomplete blobs', tableName, entry?.id, error);
+			}
+		}
 	}
 }
