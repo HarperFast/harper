@@ -586,7 +586,10 @@ describe('Blob test', () => {
 		decodeFromDatabase(() => saveBlob(failBlob, true), store);
 		const rejectPc = startPreCommitBlobsForRecord({ id: 2, blob: failBlob }, store, false, true);
 		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
-		await assert.doesNotReject(rejectPc.complete(), 'already-saving blob transient fault does not block the commit (hasBlobGap handles retry)');
+		await assert.doesNotReject(
+			rejectPc.complete(),
+			'already-saving blob transient fault does not block the commit (hasBlobGap handles retry)'
+		);
 	});
 	it('#406: cleanupUnusedBlobs deletes non-retained blobs but keeps retained ones', async () => {
 		// The retained-fileId guard: a skipped/aborted write may carry a blob whose fileId the surviving
