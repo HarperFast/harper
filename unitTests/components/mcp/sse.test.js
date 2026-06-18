@@ -71,14 +71,19 @@ describe('mcp/sse', () => {
 			const { PassThrough } = require('node:stream');
 			const queue = new IterableEventQueue();
 			let closed = false;
-			queue.once('close', () => {
-				closed = true;
-			});
+			// Wait on the close condition rather than a fixed sleep (avoids CI flakes
+			// when teardown propagation is delayed on a loaded runner).
+			const closeReceived = new Promise((resolve) =>
+				queue.once('close', () => {
+					closed = true;
+					resolve();
+				})
+			);
 			const stream = toSseStream(queue);
 			stream.pipe(new PassThrough()); // mirrors stream.pipe(reply.raw)
 			await new Promise((r) => setImmediate(r)); // let the prime flow
 			stream.destroy(); // server tears down on response close
-			await new Promise((r) => setTimeout(r, 30));
+			await closeReceived;
 			assert.equal(closed, true, 'queue close emitted so the registry can drop the dead session');
 		});
 
@@ -93,8 +98,11 @@ describe('mcp/sse', () => {
 			stream.pipe(new PassThrough());
 			await new Promise((r) => setImmediate(r));
 			assert.ok(queue.listenerCount('close') >= 1, 'close listener attached while live');
+			// Teardown emits the queue's 'close' after removing the stream's listeners;
+			// wait on that condition (not a fixed sleep) before asserting the counts.
+			const torndown = new Promise((resolve) => queue.once('close', resolve));
 			stream.destroy();
-			await new Promise((r) => setTimeout(r, 30));
+			await torndown;
 			assert.equal(queue.listenerCount('data'), 0, 'data listener removed on stream teardown');
 			assert.equal(queue.listenerCount('close'), 0, 'close listener removed on stream teardown');
 		});
