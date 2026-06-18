@@ -22,8 +22,6 @@ jobs:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Node v24 crashes at process exit in lmdb's mdb_cursor_close finalizer when
-    # the LMDB-mode test pass runs cleanup. v22 and v26 are unaffected.
     continue-on-error: ${{ matrix.node-version == 24 }}
     strategy:
       fail-fast: false
