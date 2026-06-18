@@ -1661,29 +1661,29 @@ export async function* findIncompleteBlobRefs(
 	for (const tableName in database) {
 		logger.info?.('Scanning table for incomplete blobs', tableName, databaseName ?? '');
 		const table = database[tableName];
-		const rootStore = table.primaryStore.rootStore;
 		for (const entry of table.primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 			try {
-				if (entry.metadataFlags & HAS_BLOBS) {
-					// Set currentStore before accessing entry.value — the blob unpack extension
-					// reads currentStore to populate storageInfo.store, and encodeBlobsWithFilePath
-					// resets it to undefined in its finally, so it must be re-set here.
+				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 					let hasIncomplete = false;
-					decodeFromDatabase(() => {
-						findBlobsInObject(entry.value, (blob) => {
-							if (hasIncomplete) return;
-							if (blob instanceof FileBackedBlob) {
-								const storageInfo = storageInfoForBlob.get(blob);
-								if (storageInfo?.fileId != null && !isBlobFileComplete(storageInfo)) hasIncomplete = true;
+					findBlobsInObject(entry.value, (blob) => {
+						if (hasIncomplete) return;
+						if (blob instanceof FileBackedBlob) {
+							const storageInfo = storageInfoForBlob.get(blob);
+							if (storageInfo?.fileId != null) {
+								try {
+									if (!isBlobFileComplete(storageInfo)) hasIncomplete = true;
+								} catch {
+									hasIncomplete = true; // unreadable path → treat as incomplete
+								}
 							}
-						});
-					}, rootStore);
-					if (hasIncomplete) yield { tableName, table, recordId: entry.id };
+						}
+					});
+					if (hasIncomplete) yield { tableName, table, recordId: entry.key };
 				}
 				if (i++ % perMS === 0) await delay(1);
 				else await rest();
 			} catch (error) {
-				logger.error?.('Error scanning record for incomplete blobs', tableName, entry?.id, error);
+				logger.error?.('Error scanning record for incomplete blobs', tableName, entry?.key, error);
 			}
 		}
 	}
