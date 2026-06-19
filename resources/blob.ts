@@ -1427,6 +1427,10 @@ addExtension({
 				// declare it as being fulfilled
 				if (promisedWrites) promisedWrites.push(blob.bytes());
 				else {
+					// Deliberately UNCODED (no ERR_BLOB_INCOMPLETE): unlike the read paths above, this sync
+					// encode path has no writer-finished guard — a size mismatch here can be a blob still being
+					// written. Coding it would let replication advance past (and unlink) a recoverable blob =
+					// silent data loss. Stay uncoded so the receiver holds the gap and retries (harper-pro#429).
 					throw new Error('Incomplete blob');
 				}
 				return Buffer.alloc(0);
