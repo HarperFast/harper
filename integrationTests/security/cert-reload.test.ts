@@ -127,6 +127,16 @@ suite('TLS certificate hot-reload propagates to all workers (#586)', { skip: ski
 					privateKey: keyPath,
 				},
 			},
+			// Force the main-thread cert file watcher (chokidar, in security/keys.ts) to poll
+			// rather than rely on native fs.watch/inotify. On the Linux CI runners' overlayfs/tmpfs,
+			// inotify silently drops change events, so the on-disk cert swap below was intermittently
+			// never detected (#586) — making this test flaky despite the worker-propagation feature
+			// itself working. CHOKIDAR_USEPOLLING is a chokidar-global override honored by every
+			// watcher in-process. This only affects how the swap is *detected* in the test; the
+			// regression assertion (every worker serves the renewed cert) is unchanged. The product
+			// itself still uses native watching by default — see the PR for the separate hardening
+			// follow-up to give the cert watcher a polling fallback like RootConfigWatcher.
+			env: { CHOKIDAR_USEPOLLING: '1' },
 		});
 	});
 
