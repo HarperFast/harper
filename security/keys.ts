@@ -40,6 +40,9 @@ const CERT_VALIDITY_DAYS = 3650;
 // watcher is the fast path; this poll catches changes on filesystems where inotify is unreliable
 // (overlayfs, many container setups, network mounts). Overridable via tls.certificateWatchInterval; 0 disables.
 const DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS = 300_000;
+// Lower bound (ms) for a configured poll interval; a misconfigured sub-second value is clamped up
+// to keep the safety-net poll from becoming a tight stat() loop. 0 still disables polling entirely.
+const MIN_CERTIFICATE_WATCH_INTERVAL_MS = 1000;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
 export const CERT_ATTRIBUTES = [
 	{ name: 'countryName', value: 'USA' },
@@ -304,7 +307,10 @@ function getCertificateWatchInterval(): number {
 	if (configured == null) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
 	const interval = Number(configured);
 	if (!Number.isFinite(interval) || interval < 0) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
-	return interval;
+	// 0 explicitly disables the poll; otherwise floor at MIN to keep a typo (e.g. 1ms) from
+	// spinning a stat() loop. This is a safety net, not a hot-poll path, so sub-second is never wanted.
+	if (interval === 0) return 0;
+	return Math.max(interval, MIN_CERTIFICATE_WATCH_INTERVAL_MS);
 }
 
 // Active poll timers, keyed by watched path (exposed for test cleanup).

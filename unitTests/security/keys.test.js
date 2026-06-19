@@ -611,6 +611,16 @@ describe('Test keys module', () => {
 			expect(getCertificateWatchInterval()).to.equal(DEFAULT);
 		});
 
+		it('clamps a too-small configured interval up to the minimum, but 0 still disables', () => {
+			const getCertificateWatchInterval = keys.__get__('getCertificateWatchInterval');
+			const MIN = keys.__get__('MIN_CERTIFICATE_WATCH_INTERVAL_MS');
+			const stub = localSandbox.stub(env_mgr, 'get');
+			stub.callsFake(() => 1); // typo'd 1ms must not become a tight poll loop
+			expect(getCertificateWatchInterval()).to.equal(MIN);
+			stub.callsFake(() => 0); // 0 is the explicit "disable polling" sentinel
+			expect(getCertificateWatchInterval()).to.equal(0);
+		});
+
 		it('registers a poll for a private-key watch (key poll must run on all threads, including workers)', () => {
 			// Private keys are loaded per-thread directly from disk (no hdb_certificate propagation), so
 			// the poll safety net must be wired for 'private key' watches regardless of thread. On the
