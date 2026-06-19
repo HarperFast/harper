@@ -243,7 +243,7 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 			// worker (#1349 §3.3). Per-worker: a cancel that lands elsewhere is a
 			// no-op here — the call's client-disconnect teardown is the backstop.
 			const cancelParams = 'params' in message ? (message.params as { requestId?: JsonRpcId } | undefined) : undefined;
-			if (cancelParams?.requestId !== undefined && cancelParams.requestId !== null) {
+			if (cancelParams?.requestId != null) {
 				cancelCall(session.id, cancelParams.requestId, 'cancelled by client');
 			}
 		}
@@ -593,6 +593,19 @@ async function dispatchToolsCall(
 		try {
 			const toolResult = await invoke(emitProgress);
 			queue.send({ event: 'message', data: buildSuccess(messageId, toolResult) });
+		} catch (err) {
+			// `invoke` normalizes handler errors to an isError result, so reaching here
+			// means something unexpected threw outside that (e.g. emitAuditEntry or
+			// queue.send). Log and push a JSON-RPC error frame so the stream carries a
+			// terminal response instead of just closing; never let it become an
+			// unhandled rejection.
+			const errMsg = (err as Error).message ?? 'tool streaming failed';
+			harperLogger.warn(`MCP tools/call ${name} stream failed: ${(err as Error).stack ?? errMsg}`);
+			try {
+				queue.send({ event: 'message', data: buildError(messageId, ERROR_CODES.INTERNAL_ERROR, errMsg) });
+			} catch {
+				/* queue already torn down — nothing more to deliver */
+			}
 		} finally {
 			unregisterCall(session.id, messageId);
 			queue.emit('close');
@@ -677,9 +690,7 @@ async function dispatchPromptsGet(
 	}
 	const args =
 		params?.arguments && typeof params.arguments === 'object' ? (params.arguments as Record<string, string>) : {};
-	const missing = (prompt.arguments ?? [])
-		.filter((a) => a.required && (args[a.name] === undefined || args[a.name] === null))
-		.map((a) => a.name);
+	const missing = (prompt.arguments ?? []).filter((a) => a.required && args[a.name] == null).map((a) => a.name);
 	if (missing.length > 0) {
 		return jsonResponse(
 			200,
