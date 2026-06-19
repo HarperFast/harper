@@ -9,10 +9,10 @@ name: Perf Benchmarks Nightly (self-hosted)
 # Triggers are schedule + manual dispatch ONLY (never pull_request): the job runs
 # on a self-hosted machine, so untrusted PR code must never execute here.
 #
-# NOTE: requires the `harper-bench` self-hosted runner to be available to this repo
-# (it is already used by HarperFast/harper-pro's ycsb-cluster-nightly). If it is
-# currently scoped to harper-pro only, make it an org-level runner (or register it
-# to HarperFast/harper) before this workflow can run.
+# NOTE: runs on the org-level `harper-bench` self-hosted runner (a single host loop
+# that also serves HarperFast/harper-pro's bench workflows, one job at a time). If
+# the job stays queued, confirm the org runner group's repository access includes
+# this repo.
 
 on:
   schedule:
