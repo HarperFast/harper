@@ -500,4 +500,108 @@ describe('Test keys module', () => {
 			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
 		});
 	});
+
+	describe('loadAndWatch periodic re-read safety net (#586)', () => {
+		const loadAndWatch = keys.__get__('loadAndWatch');
+		const watchTimers = keys.__get__('certificateWatchTimers');
+		const watchPollers = keys.__get__('certificateWatchPollers');
+		const localSandbox = sinon.createSandbox();
+		let watchPath;
+
+		beforeEach(() => {
+			// Stub chokidar's watch so these tests exercise only the poll path and never open a real
+			// FSWatcher (real watchers would leak fds and risk EMFILE across repeated runs).
+			const chokidar = require('chokidar');
+			localSandbox.stub(chokidar, 'watch').returns({ on: () => {} });
+			watchPath = path.join(test_dir, `watch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
+			fs.writeFileSync(watchPath, 'PEM-V1');
+		});
+
+		afterEach(() => {
+			localSandbox.restore();
+			const timer = watchTimers.get(watchPath);
+			if (timer) clearInterval(timer);
+			watchTimers.delete(watchPath);
+			watchPollers.delete(watchPath);
+			if (fs.existsSync(watchPath)) fs.removeSync(watchPath);
+		});
+
+		it('a cert swap missed by inotify is still picked up by the poll (mtime advanced)', () => {
+			const loaded = [];
+			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
+
+			// Initial synchronous load on registration.
+			expect(loaded).to.eql(['PEM-V1']);
+
+			// Simulate a renewal that inotify missed: new content + advanced mtime, no chokidar event.
+			fs.writeFileSync(watchPath, 'PEM-V2');
+			const future = (Date.now() + 5000) / 1000;
+			fs.utimesSync(watchPath, future, future);
+
+			// Drive a single poll (what the unref'd interval would do on its tick).
+			watchPollers.get(watchPath)();
+
+			expect(loaded).to.eql(['PEM-V1', 'PEM-V2']);
+		});
+
+		it('does not reload when the file is unchanged (mtime fingerprint dedup)', () => {
+			const loaded = [];
+			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
+			expect(loaded).to.eql(['PEM-V1']);
+
+			// Repeated polls with no on-disk change must not re-invoke the loader.
+			const poll = watchPollers.get(watchPath);
+			poll();
+			poll();
+			expect(loaded).to.eql(['PEM-V1']);
+		});
+
+		it('resolves the configured interval and registers an unref-ed poll timer', () => {
+			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
+				if (param === 'tls_certificateWatchInterval') return 1234;
+				return undefined;
+			});
+
+			expect(keys.__get__('getCertificateWatchInterval')()).to.equal(1234);
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+
+			const timer = watchTimers.get(watchPath);
+			expect(timer, 'a poll timer should be registered').to.exist;
+			// .unref() prevents the timer from holding the event loop / process open.
+			expect(typeof timer.unref).to.equal('function');
+			expect(timer.hasRef()).to.be.false;
+		});
+
+		it('falls back to the default interval when unconfigured or invalid', () => {
+			const getCertificateWatchInterval = keys.__get__('getCertificateWatchInterval');
+			const DEFAULT = keys.__get__('DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS');
+			const stub = localSandbox.stub(env_mgr, 'get');
+			stub.callsFake(() => undefined);
+			expect(getCertificateWatchInterval()).to.equal(DEFAULT);
+			stub.callsFake(() => 'not-a-number');
+			expect(getCertificateWatchInterval()).to.equal(DEFAULT);
+			stub.callsFake(() => -5);
+			expect(getCertificateWatchInterval()).to.equal(DEFAULT);
+		});
+
+		it('registers a poll for a private-key watch (key poll must run on all threads, including workers)', () => {
+			// Private keys are loaded per-thread directly from disk (no hdb_certificate propagation), so
+			// the poll safety net must be wired for 'private key' watches regardless of thread. On the
+			// main thread the poller is registered either way; this asserts the key path stays wired.
+			loadAndWatch(watchPath, () => {}, 'private key');
+			expect(watchPollers.get(watchPath), 'a poller should be registered for the private key').to.exist;
+		});
+
+		it('does not register a poll timer when the interval is configured to 0', () => {
+			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
+				if (param === 'tls_certificateWatchInterval') return 0;
+				return undefined;
+			});
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+
+			expect(watchTimers.get(watchPath), 'no timer should be registered when polling is disabled').to.be.undefined;
+		});
+	});
 });

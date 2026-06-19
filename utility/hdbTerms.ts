@@ -650,6 +650,7 @@ export const CONFIG_PARAMS = {
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
 	TLS_CIPHERS: 'tls_ciphers',
 	TLS_UNIXDOMAINSOCKETS: 'tls_unixDomainSockets',
+	TLS_CERTIFICATEWATCHINTERVAL: 'tls_certificateWatchInterval',
 	TLS: 'tls',
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',
