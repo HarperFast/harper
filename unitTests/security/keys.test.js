@@ -334,4 +334,74 @@ describe('Test keys module', () => {
 
 		expect(thrownError, 'createTLSSelector must not throw for cert with non-array uses').to.be.undefined;
 	});
+
+	describe('private-key hot-reload triggers a TLS context rebuild', () => {
+		// handlePrivateKeyReload is the single chokepoint for both the chokidar watcher and the
+		// periodic poll. On a worker, the new cert arrives via the hdb_certificate subscription, but
+		// the key only lands in the in-thread privateKeys map — without a rebuild the worker keeps a
+		// secure context pairing the new cert with the old key. These tests pin the rotation guard
+		// (the part that decides whether a reload triggers a rebuild) directly.
+		let privateKeysMap;
+		let liveTLSRebuilders;
+		let handlePrivateKeyReload;
+		let spy;
+		let keyName;
+
+		beforeEach(() => {
+			privateKeysMap = keys.__get__('privateKeys');
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			handlePrivateKeyReload = keys.__get__('handlePrivateKeyReload');
+			keyName = 'unit-key-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.pem';
+			spy = sinon.spy();
+			liveTLSRebuilders.add(spy);
+		});
+
+		afterEach(() => {
+			liveTLSRebuilders.delete(spy);
+			privateKeysMap.delete(keyName);
+		});
+
+		it('does not rebuild on the initial load (no prior key value)', () => {
+			handlePrivateKeyReload(keyName, 'KEY-A');
+			expect(privateKeysMap.get(keyName)).to.equal('KEY-A');
+			expect(spy.called, 'initial load must not trigger a rebuild').to.be.false;
+		});
+
+		it('rebuilds when the key rotates to a new value', () => {
+			privateKeysMap.set(keyName, 'KEY-A');
+			handlePrivateKeyReload(keyName, 'KEY-B');
+			expect(privateKeysMap.get(keyName)).to.equal('KEY-B');
+			expect(spy.calledOnce, 'a rotated key must trigger exactly one rebuild fan-out').to.be.true;
+		});
+
+		it('does not rebuild when the reloaded key is unchanged', () => {
+			privateKeysMap.set(keyName, 'KEY-A');
+			handlePrivateKeyReload(keyName, 'KEY-A');
+			expect(spy.called, 'an identical-content reload must not trigger a rebuild').to.be.false;
+		});
+	});
+
+	describe('createTLSSelector live-reload registration', () => {
+		// Live server selectors must register for key-rotation rebuilds; transient single-use
+		// selectors (getReplicationCert) must not, or they would accumulate in the registry.
+		it('registers a rebuilder for a live selector but not for a transient one', async () => {
+			const liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			const snapshot = [...liveTLSRebuilders];
+			try {
+				const transient = keys.createTLSSelector('https', undefined, false);
+				await transient.initialize(null);
+				expect(liveTLSRebuilders.size, 'transient selector must not register').to.equal(snapshot.length);
+
+				const live = keys.createTLSSelector('https');
+				await live.initialize(null);
+				expect(liveTLSRebuilders.size, 'live selector must register exactly one rebuilder').to.equal(
+					snapshot.length + 1
+				);
+			} finally {
+				// Drop any rebuilders added by this test so later tests aren't perturbed.
+				liveTLSRebuilders.clear();
+				snapshot.forEach((r) => liveTLSRebuilders.add(r));
+			}
+		});
+	});
 });

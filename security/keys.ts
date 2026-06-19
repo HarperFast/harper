@@ -109,7 +109,7 @@ export function getCertTable() {
 }
 
 export async function getReplicationCert() {
-	const SNICallback = createTLSSelector('replication', undefined);
+	const SNICallback = createTLSSelector('replication', undefined, false);
 	const secureTarget = {
 		secureContexts: null,
 		setSecureContext: (_ctx) => {},
@@ -134,6 +134,41 @@ export async function getReplicationCertAuth() {
 
 let configuredCertsLoaded;
 const privateKeys = new Map();
+
+// Debounce window (ms) for rebuilding TLS secure contexts. Shared by the hdb_certificate
+// subscription and the private-key hot-reload trigger so both coalesce on the same cadence.
+const TLS_REBUILD_DEBOUNCE_MS = 1500;
+
+// Debounced rebuild triggers, one per live server TLS selector (registered in createTLSSelector's
+// initialize). When a private key is hot-reloaded on this thread, every live selector re-runs
+// updateTLS so a secure context built with a stale key — or built before this key arrived — is
+// regenerated. Transient selectors (getReplicationCert) opt out so they don't accumulate here.
+const liveTLSRebuilders = new Set<() => void>();
+
+/**
+ * Trigger a debounced rebuild of every live server's TLS secure contexts on this thread.
+ *
+ * Workers load their private key directly from disk into the privateKeys map (there is no table
+ * propagation for keys), so a key rotation must rebuild the secure contexts locally. The cert side
+ * already propagates via the hdb_certificate subscription; without this, a worker that rebuilt for
+ * the new cert before reloading the matching key would serve the new cert paired with the old key
+ * until the next cert-table change.
+ */
+function rebuildLiveTLSContexts() {
+	for (const scheduleRebuild of liveTLSRebuilders) scheduleRebuild();
+}
+
+/**
+ * Handle a private-key (re)load: update the in-thread map and, on an actual rotation, trigger a
+ * local TLS context rebuild. The `previous === undefined` guard skips the initial load (contexts
+ * are built lazily afterward and read the fresh key), and the `previous !== private_key` guard
+ * skips identical-content reloads, so neither chokidar nor the periodic poll causes thrash.
+ */
+function handlePrivateKeyReload(private_key_name, private_key) {
+	const previous = privateKeys.get(private_key_name);
+	privateKeys.set(private_key_name, private_key);
+	if (previous !== undefined && previous !== private_key) rebuildLiveTLSContexts();
+}
 
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdbCertificate table.
@@ -163,9 +198,7 @@ export function loadCertificates() {
 				if (private_key_name) {
 					loadAndWatch(
 						privateKeyPath,
-						(private_key) => {
-							privateKeys.set(private_key_name, private_key);
-						},
+						(private_key) => handlePrivateKeyReload(private_key_name, private_key),
 						'private key'
 					);
 				}
@@ -707,9 +740,11 @@ let caCerts = new Map();
  * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
  * @param type
  * @param mtlsOptions
+ * @param liveReload when true (default) the selector registers for private-key hot-reload rebuilds.
+ *   Pass false for transient, single-use selectors (e.g. getReplicationCert) so they don't accumulate.
  * @return {(function(*, *): (*|undefined))|*}
  */
-export function createTLSSelector(type, mtlsOptions?): any {
+export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;
@@ -839,10 +874,19 @@ export function createTLSSelector(type, mtlsOptions?): any {
 					reject(error);
 				}
 			}
+			let rebuildTimer;
+			const scheduleRebuild = () => {
+				if (rebuildTimer) return; // coalesce bursts of triggers into a single rebuild
+				rebuildTimer = setTimeout(() => {
+					rebuildTimer = undefined;
+					updateTLS();
+				}, TLS_REBUILD_DEBOUNCE_MS).unref();
+			};
 			databases?.system.hdb_certificate.subscribe({
-				listener: () => setTimeout(() => updateTLS(), 1500).unref(),
+				listener: scheduleRebuild,
 				omitCurrent: true,
 			} as any);
+			if (liveReload) liveTLSRebuilders.add(scheduleRebuild);
 			updateTLS();
 		}));
 	};
