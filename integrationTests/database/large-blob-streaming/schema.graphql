@@ -1,0 +1,11 @@
+# QA-144 — Large-blob storage limits + streaming upload/download correctness.
+#
+# Big: a durable blob table (no expiration). Holds genuinely LARGE blobs
+# (256MB+). @sealed with a declared Blob field plus checksum + size so the
+# server-side resource can verify integrity against the actual stored content.
+type Big @table @sealed @export {
+	key: ID! @primaryKey
+	payload: Blob!
+	sha256: String
+	size: Float
+}
