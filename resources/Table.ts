@@ -4152,10 +4152,12 @@ export function makeTable(options) {
 					if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
-							localTime: nextVersion,
+							localTime: auditRecord.version,
 							version: auditRecord.version,
 							type: auditRecord.type,
-							value: auditRecord.getValue(primaryStore, true, nextVersion),
+							// reconstruct each entry's record image as of its own version, not the audit
+							// window boundary (nextVersion), matching getHistory (issue #1330)
+							value: auditRecord.getValue(primaryStore, true, auditRecord.version),
 							user: auditRecord.user,
 							operation: auditRecord.originatingOperation,
 						});

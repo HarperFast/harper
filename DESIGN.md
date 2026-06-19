@@ -133,3 +133,30 @@ silently reuses a dangling handle and every write fails with "Invalid column fam
 in write batch", poisoning the whole database env until restart. The regression suite for all
 of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
 bindings).
+
+## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
+
+A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
+by completely separate routes, and the two must reconverge or HTTPS breaks on that worker.
+Certificates propagate through data: only the main thread watches the cert file (`isMainThread`
+guard in `loadCertificates`) and writes the new PEM into the `system.hdb_certificate` table; every
+worker is subscribed to that table and rebuilds its secure contexts (`updateTLS` inside
+`createTLSSelector`) on the notification. Private keys never touch the table — each worker watches
+its own key file (the private-key `loadAndWatch` has no `isMainThread` guard) and loads the PEM
+straight into its in-thread `privateKeys` map. `getPrivateKeyByName` reads that map first, so an
+already-built secure context has the key bytes baked in (`setCert`/`setKey` at build time); a later
+map update does not touch contexts already built.
+
+The hazard when a rotation changes **both**: the cert can win the race to a worker (table write +
+subscription) and trigger `updateTLS` before that worker has reloaded the matching key, producing a
+context that pairs the new cert with the old key — every handshake on it then fails, and nothing
+rebuilds it until the _next_ cert-table change. The fix: a private-key reload (`handlePrivateKeyReload`,
+the single sink for both the chokidar watcher and PR #1394's periodic poll) triggers a debounced
+rebuild of every live selector via the module-level `liveTLSRebuilders` set, so the worker reconverges
+on its own. Subtleties to preserve: the rotation guard (`previous !== undefined && previous !== key`)
+must skip both the initial load and identical-content reloads or watchers thrash; transient one-shot
+selectors (`getReplicationCert`) pass `liveReload=false` so they don't accumulate in the never-pruned
+set; and the cert subscription shares the same debounced `scheduleRebuild` (same 1500ms cadence), so
+its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
+`integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
+(it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.

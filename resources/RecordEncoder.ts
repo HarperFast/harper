@@ -683,6 +683,9 @@ export function recordUpdater(store, tableId, auditStore) {
 		resolveRecord?: boolean, // indicates that we are resolving (from source) record that was previously invalidated
 		auditRecord?: any
 	) {
+		// harper#1309: reset so a record===undefined call (delete/no-op) cannot carry stale bytes
+		// into the audit encodedRecord or write-size analytics of this call.
+		lastValueEncoding = undefined;
 		const isRocksDB = store instanceof RocksDatabase;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
