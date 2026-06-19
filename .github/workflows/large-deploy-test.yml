@@ -1,0 +1,64 @@
+name: Large Deploy Payload Test (self-hosted)
+
+# Streams a multi-GB component through deploy_component on a self-hosted runner to prove the
+# payload path stays memory-bounded (regression guard for the 5.1.0 200 MB ingestPayload cap
+# / 2 GB Buffer ceiling). Far too heavy for the normal sharded matrix — the default 2200 MB
+# of incompressible data also exceeds Node's ~2 GB single-Buffer limit, so a buffered
+# implementation fails outright. See integrationTests/deploy/deploy-large-payload.test.ts.
+#
+# schedule + manual dispatch ONLY (never pull_request): the job runs on a self-hosted host,
+# so untrusted PR code must never execute here. Reuses the `harper-bench` host (one job at a
+# time across harper / harper-pro via the repo-scoped JIT supervisor); if it stays queued the
+# supervisor is down or can't reach this repo.
+
+on:
+  schedule:
+    - cron: '30 9 * * 1' # weekly, Monday — offset from the nightly perf/ycsb jobs
+  workflow_dispatch:
+    inputs:
+      size-mb:
+        description: 'Payload size in MB (incompressible). Default clears the old 200 MB cap and the ~2 GB Buffer ceiling.'
+        required: true
+        type: string
+        default: '2200'
+
+jobs:
+  large-deploy-test:
+    name: Large streamed deploy (Node.js v24)
+    runs-on: [self-hosted, linux, harper-bench]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install # plain install (builds native deps) — matches the other self-hosted jobs
+
+      - name: Build
+        run: npm run build || true # repo currently has type errors; ignore per integration-tests.yml
+
+      - name: Verify build output
+        run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
+
+      - name: Run large streamed deploy test
+        env:
+          HARPER_TEST_LARGE_DEPLOY_MB: ${{ github.event.inputs.size-mb || '2200' }}
+          HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-large-deploy-logs
+          HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+        run: npm run test:integration -- "integrationTests/deploy/deploy-large-payload.test.ts"
+
+      - name: Upload Harper server logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harper-large-deploy-logs
+          path: /tmp/harper-large-deploy-logs/
+          retention-days: 3
+          if-no-files-found: ignore
