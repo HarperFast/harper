@@ -13,7 +13,9 @@
  * Streamable HTTP transport; the application profile reads the raw body and
  * returns a JSON-RPC `-32700` frame instead. See #1317 S1.)
  */
+import type { ServerResponse } from 'node:http';
 import { handleMcpRequest, type McpProfile, type NormRequest } from '../transport.ts';
+import { toSseStream, type SseFrameSource } from '../sse.ts';
 
 interface FastifyLikeRequest {
 	method: string;
@@ -31,6 +33,12 @@ interface FastifyLikeReply {
 	code: (status: number) => FastifyLikeReply;
 	header: (name: string, value: string) => FastifyLikeReply;
 	send: (body?: unknown) => unknown;
+	/** Headers accumulated so far (e.g. CORS headers set by `@fastify/cors`). */
+	getHeaders: () => Record<string, number | string | string[] | undefined>;
+	/** Take ownership of the response; Fastify will not send it. Used for SSE. */
+	hijack: () => void;
+	/** The underlying Node response, written to directly for SSE streaming. */
+	raw: ServerResponse;
 }
 
 export function createFastifyHandler(profile: McpProfile) {
@@ -49,6 +57,44 @@ export function createFastifyHandler(profile: McpProfile) {
 
 		const res = await handleMcpRequest(norm);
 
+		if (res.sseIterable !== undefined) {
+			// Server-push GET stream (#619). `reply.send(stream)` does not reliably
+			// stream SSE on the operations Fastify — it pulls one chunk then stalls,
+			// so frames pushed onto the queue are never flushed. Take over the raw
+			// socket instead: write + flush headers immediately, then pipe the framed
+			// SSE Readable directly. `hijack()` stops Fastify from touching the
+			// response. (The Harper-HTTP adapter pipes a stream fine, so this divergence
+			// is Fastify-specific.)
+			//
+			// Tradeoff: hijack bypasses Fastify's onSend/onResponse hooks for this
+			// request, so per-request completion logging/metrics don't fire until the
+			// long-lived stream closes. Acceptable for an SSE channel (auth + the MCP
+			// handler already ran above); this is the standard Fastify SSE pattern.
+			const raw = reply.raw;
+			// Start from the headers Fastify hooks already accumulated (e.g.
+			// `@fastify/cors` adds Access-Control-Allow-Origin / Vary on the reply
+			// before this handler runs). Hijacking bypasses Fastify's send path, so
+			// these must be copied onto the raw response or a CORS-allowed browser
+			// client gets its SSE GET blocked.
+			const sseHeaders: Record<string, number | string | string[] | undefined> = { ...reply.getHeaders() };
+			for (const [name, value] of Object.entries(res.headers)) sseHeaders[name] = value;
+			sseHeaders['Content-Type'] = res.headers['Content-Type'] ?? res.headers['content-type'] ?? 'text/event-stream';
+			sseHeaders['Cache-Control'] = res.headers['Cache-Control'] ?? res.headers['cache-control'] ?? 'no-store';
+			reply.hijack();
+			raw.writeHead(res.status, sseHeaders);
+			raw.flushHeaders?.();
+			const stream = toSseStream(res.sseIterable as unknown as SseFrameSource);
+			// An unhandled `'error'` on either side of the pipe would crash the worker.
+			// `pipe()` does not forward errors in either direction, so guard both: a
+			// source error destroys the raw socket, and a socket error (e.g. the client
+			// resetting the connection mid-write) destroys the stream.
+			stream.on('error', () => raw.destroy());
+			raw.on('error', () => stream.destroy());
+			stream.pipe(raw);
+			raw.on('close', () => stream.destroy());
+			return;
+		}
+
 		reply.code(res.status);
 		for (const [name, value] of Object.entries(res.headers)) {
 			reply.header(name, value);
@@ -59,18 +105,6 @@ export function createFastifyHandler(profile: McpProfile) {
 				reply.header('Content-Type', 'application/json');
 			}
 			reply.send(res.jsonBody);
-			return;
-		}
-
-		if (res.sseIterable !== undefined) {
-			// Reserved for #619 (server-push GET stream). Fastify will iterate
-			// the async iterable and write SSE frames via the contentTypes
-			// serializer at `server/serverHelpers/contentTypes.ts:128-162`.
-			if (!res.headers['Content-Type'] && !res.headers['content-type']) {
-				reply.header('Content-Type', 'text/event-stream');
-			}
-			reply.header('Cache-Control', 'no-store');
-			reply.send(res.sseIterable);
 			return;
 		}
 

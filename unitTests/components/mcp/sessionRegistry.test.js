@@ -133,6 +133,18 @@ describe('mcp/sessionRegistry', () => {
 			pending.catch(() => {});
 		});
 
+		it('does not prune a session consumed via the queue "data" event (MCP SSE stream)', () => {
+			const rec = registerSession('live-data-1', 'application', SUPER);
+			// The MCP SSE stream subscribes via `on('data')` (not the async
+			// iterator), which sets hasDataListeners but leaves resolveNext null.
+			rec.queue.on('data', () => {});
+			assert.equal(rec.queue.resolveNext, null, 'data-event consumer does not set resolveNext');
+			assert.equal(rec.queue.hasDataListeners, true, 'data-event consumer sets hasDataListeners');
+			clock += 61 * 60 * 1000;
+			registerSession('live-data-2', 'application', SUPER);
+			assert.ok(getRegisteredSession('live-data-1'), 'live event-driven SSE session survives the prune');
+		});
+
 		it('touchRegisteredSession bumps lastSeen so a busy session escapes the prune window', () => {
 			registerSession('busy-1', 'application', SUPER);
 			// Half-way through the idle window, simulate tools/call activity.
