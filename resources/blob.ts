@@ -34,7 +34,7 @@ import {
 	type FSWatcher,
 } from 'node:fs';
 import type { StatsFs } from 'node:fs';
-import { createDeflate, createInflate, deflate } from 'node:zlib';
+import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
@@ -293,11 +293,17 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				rawBytes = Buffer.alloc(0);
 				fileMissing = true;
 			}
-			function checkCompletion(rawBytes: Buffer): Buffer | Promise<Buffer> {
-				if (size > rawBytes.length) {
-					// the file is not finished being written, wait for the write lock to complete
-					const store = storageInfo.store;
-					const lockKey = storageInfo.fileId + ':blob';
+			// The file may still be mid-write. Wait for the writer's `:blob` lock to release, then re-read.
+			// `incomplete` is the caller's "definitely not done yet" signal: for an uncompressed blob the
+			// on-disk body length must reach the (uncompressed) header size. For a compressed blob the body
+			// is shorter than the uncompressed size AND the header size is finalized up front when the size
+			// is known, so neither is a reliable completeness signal — the writer's lock is. The caller
+			// passes `mustVerifyViaLock` for compressed blobs so we probe the lock even when the bytes look
+			// plausible, and only treat the file as complete once the writer is confirmed done.
+			function waitForCompletion(incomplete: boolean, mustVerifyViaLock = false): Promise<Buffer> | undefined {
+				const store = storageInfo.store;
+				const lockKey = storageInfo.fileId + ':blob';
+				if (incomplete) {
 					if (writeFinished) {
 						// the writer released its lock but the content is still short: the file is cleanly gone
 						// (404) or confidently incomplete/corrupt (500) — not merely mid-write (#1423/#1424).
@@ -336,24 +342,77 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 							resolve(readContents());
 						}
 					});
+				} else if (mustVerifyViaLock && !writeFinished) {
+					// Bytes look complete but we can't prove it for a compressed body; probe whether the writer
+					// still holds the lock. If we acquire it, the write has finished, but the bytes we read may
+					// predate the final flush, so re-read once to get the complete body. Otherwise fall through
+					// to wait for the lock to release.
+					const acquiredImmediately = store.tryLock(lockKey);
+					if (acquiredImmediately) {
+						writeFinished = true;
+						store.unlock(lockKey);
+						return readContents(); // writer done — re-read to ensure we have the final bytes
+					}
+				} else {
+					return undefined; // confirmed complete (uncompressed exact-size match)
 				}
+				return new Promise((resolve, reject) => {
+					let settled = false;
+					const timer = setTimeout(() => {
+						if (settled) return;
+						settled = true;
+						reject(
+							new BlobReadError(
+								`Blob ${storageInfo.fileId} is unavailable; the in-progress write did not complete in time`,
+								BLOB_UNAVAILABLE_STATUS
+							)
+						);
+					}, getBlobReadTimeout());
+					timer.unref();
+					const callback = () => {
+						if (settled) return;
+						settled = true;
+						clearTimeout(timer);
+						writeFinished = true;
+						resolve(readContents());
+					};
+					const lockAcquired = store.tryLock(lockKey, callback);
+					if (lockAcquired) {
+						settled = true;
+						clearTimeout(timer);
+						writeFinished = true;
+						store.unlock(lockKey);
+						resolve(readContents());
+					}
+				});
+			}
+			function sliceContent(bytes: Buffer): Buffer {
 				if (end != undefined || start != undefined) {
-					rawBytes = rawBytes.subarray(start ?? 0, end ?? rawBytes.length);
+					bytes = bytes.subarray(start ?? 0, end ?? bytes.length);
 				}
-				return rawBytes;
+				return bytes;
 			}
 			// Only sniff the storage-type byte and take the decompress branch when a full header is present.
 			// A file shorter than the header (truncated/corrupted, #1424) would otherwise be mis-read as a
 			// deflate body and yield garbage; instead it falls through to checkCompletion as incomplete.
 			if (rawBytes.length >= HEADER_SIZE && rawBytes[1] === DEFLATE_TYPE) {
+				// An in-flight compressed file still carrying the UNKNOWN_SIZE placeholder is definitely
+				// incomplete; otherwise the size is finalized but the compressed body may still be streaming,
+				// so verify via the write lock before inflating (inflating a partial deflate stream errors).
+				const pending = waitForCompletion(size === UNKNOWN_SIZE, true);
+				if (pending) return pending;
 				return new Promise<Buffer>((resolve, reject) => {
-					deflate(rawBytes.subarray(HEADER_SIZE), (error, result) => {
+					// start/end index into the UNCOMPRESSED content, so inflate first, then slice
+					inflate(rawBytes.subarray(HEADER_SIZE), (error, result) => {
 						if (error) reject(error);
-						else resolve(checkCompletion(result));
+						else resolve(sliceContent(result));
 					});
 				});
 			}
-			return checkCompletion(rawBytes.subarray(HEADER_SIZE));
+			const body = rawBytes.subarray(HEADER_SIZE);
+			const pending = waitForCompletion(size > body.length);
+			if (pending) return pending;
+			return sliceContent(body);
 		};
 		return readContents();
 	}
@@ -496,7 +555,6 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 						// re-enter the state machine — otherwise a recursive read() would hit a null fd and
 						// throw synchronously, or onError() would reject an already-cancelled stream (#1457).
 						if (settled || cancelled) return resolve();
-						// TODO: Implement support for decompression
 						totalContentRead += bytesRead;
 						if (error) return onError(error);
 						if (position === 0) {
@@ -531,6 +589,36 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 							if (Number(headerValue >> 48n) === PENDING_TYPE) {
 								// half-replicated blob whose source stream aborted; the bytes are still expected — retry (harper-pro#481)
 								return onError(new BlobReadError('Blob pending replication for ' + filePath, BLOB_UNAVAILABLE_STATUS));
+							}
+							if (buffer[1] === DEFLATE_TYPE) {
+								// We can't seek/slice a deflate stream by uncompressed offset, so hand off to the
+								// buffered inflate path (bytes() inflates then slices) and emit it as one chunk.
+								// Safe by construction: the read loop never streams the raw compressed body.
+								return blob.bytes().then(
+									(bytes: Buffer) => {
+										// bytes() resolves asynchronously; the consumer may have cancelled meanwhile.
+										// Settle exactly once and route the close through closeFd() so we never touch a
+										// reassigned/nulled descriptor (#1457).
+										if (settled || cancelled) return resolve();
+										settled = true;
+										closeFd();
+										if (bytes.length > 0) {
+											try {
+												controller.enqueue(bytes);
+											} catch (error) {
+												logger.debug?.('Error enqueuing chunk', error);
+												return resolve();
+											}
+										}
+										try {
+											controller.close();
+										} catch {
+											// controller may already be closed
+										}
+										resolve();
+									},
+									(error: Error) => onError(error)
+								);
 							}
 							size = Number(headerValue & 0xffffffffffffn);
 							if (size < UNKNOWN_SIZE) {
