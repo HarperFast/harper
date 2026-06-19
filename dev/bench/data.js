@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781859661760,
+  "lastUpdate": 1781859663650,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -1930,6 +1930,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99",
             "value": 121.18,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "d6a8ca8beec08459f8802c19979aab66062520ec",
+          "message": "Release v5.1.5",
+          "timestamp": "2026-06-18T18:56:04Z",
+          "url": "https://github.com/HarperFast/harper/commit/d6a8ca8beec08459f8802c19979aab66062520ec"
+        },
+        "date": 1781859663394,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99",
+            "value": 14.06,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99",
+            "value": 13.09,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99",
+            "value": 17.88,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99",
+            "value": 16.09,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99",
+            "value": 20.55,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99",
+            "value": 15.29,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99",
+            "value": 30.65,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99",
+            "value": 13.22,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99",
+            "value": 16.28,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99",
+            "value": 45.78,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99",
+            "value": 149.45,
             "unit": "ms"
           }
         ]
