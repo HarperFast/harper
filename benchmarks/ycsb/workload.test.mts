@@ -127,6 +127,24 @@ test('KeyState allocates inserts sequentially and gates reads on acknowledgement
 	ok(sawNew, 'acknowledged key should become readable');
 });
 
+test('KeyState.keyCount tracks the acknowledged frontier so reps can carry the keyspace forward', () => {
+	const keys = new KeyState({
+		distribution: 'uniform',
+		initialKeyCount: 100,
+		keyWidth: 8,
+		shape: { fieldCount: 1, fieldLength: 4 },
+		maxScanLength: 10,
+	});
+	strictEqual(keys.keyCount, 100, 'starts at initialKeyCount');
+	const a = keys.nextInsert();
+	const b = keys.nextInsert();
+	strictEqual(keys.keyCount, 100, 'allocation alone does not advance the readable frontier');
+	keys.acknowledgeInsert(b.index);
+	strictEqual(keys.keyCount, 100, 'a gap at 100 holds the frontier despite 101 being acked');
+	keys.acknowledgeInsert(a.index);
+	strictEqual(keys.keyCount, 102, 'contiguous acks advance the frontier — next rep seeds from here');
+});
+
 test('LatencyRecorder computes ordered percentiles', () => {
 	const recorder = new LatencyRecorder();
 	for (let i = 1; i <= 1000; i++) recorder.record('read', i);

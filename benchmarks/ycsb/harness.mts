@@ -134,7 +134,7 @@ function keyWidth(config: BenchmarkConfig): number {
  * lower-middle (the more conservative throughput), avoiding any averaging of two
  * runs' incompatible latency blocks.
  */
-function medianByThroughput(reps: PhaseResult[]): PhaseResult {
+export function medianByThroughput(reps: PhaseResult[]): PhaseResult {
 	const sorted = [...reps].sort((a, b) => a.throughput - b.throughput);
 	return sorted[Math.floor((sorted.length - 1) / 2)];
 }
@@ -253,11 +253,17 @@ export async function runBenchmark(
 				`\n[workload ${name}] ${spec.description} — ${distribution}, ${config.opsPerWorkload.toLocaleString()} ops × ${config.reps} rep(s)`
 			);
 			const reps: PhaseResult[] = [];
+			// Carry the readable key count forward across reps so an insert-bearing workload
+			// (E, D) keeps allocating fresh keys each rep, mirroring one continuous run, rather
+			// than re-inserting the same keys as PUT overwrites. Read/scan-only workloads never
+			// advance this, so it stays at config.records for them.
+			let keyCount = config.records;
 			for (let rep = 0; rep < config.reps; rep++) {
-				// Fresh KeyState per rep so each rep is an independent, reproducible draw.
+				// Fresh KeyState per rep (independent, reproducible draw) seeded with the
+				// keyspace as grown by prior reps.
 				const keys = new KeyState({
 					distribution,
-					initialKeyCount: config.records,
+					initialKeyCount: keyCount,
 					keyWidth: width,
 					shape,
 					maxScanLength: config.maxScanLength,
@@ -273,6 +279,7 @@ export async function runBenchmark(
 				});
 				log(`[workload ${repLabel}] ${result.throughput.toFixed(0)} ops/sec, ${result.errors} errors`);
 				reps.push(result);
+				keyCount = keys.keyCount;
 			}
 			const median = medianByThroughput(reps);
 			if (config.reps > 1) {
