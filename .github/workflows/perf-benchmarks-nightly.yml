@@ -1,0 +1,88 @@
+name: Perf Benchmarks Nightly (self-hosted)
+
+# Runs the three storage/throughput benchmarks (ST-1 TTL-churn, ST-2 indexed-write,
+# ST-5 concurrent read+write) at `--scale=nightly` on a FIXED self-hosted runner
+# (label `harper-bench`) so the numbers are comparable night to night — shared
+# GitHub runners are too small/variable to be a meaningful perf baseline, and the
+# TTL-churn run alone is ~30 min.
+#
+# Triggers are schedule + manual dispatch ONLY (never pull_request): the job runs
+# on a self-hosted machine, so untrusted PR code must never execute here.
+#
+# NOTE: runs on the `harper-bench` self-hosted host, which serves both harper and
+# harper-pro via a repo-scoped just-in-time supervisor (one job at a time across
+# repos, so perf numbers stay comparable). If the job stays queued, the supervisor
+# on the bench host is down or can't reach this repo — org/enterprise-level runners
+# are intentionally not used (they aren't routed jobs for these repos).
+
+on:
+  schedule:
+    - cron: '0 11 * * *' # nightly, offset from ycsb-nightly (07:00) and the cluster job
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Benchmark scale'
+        required: true
+        type: choice
+        default: 'nightly'
+        options:
+          - 'quick'
+          - 'nightly'
+
+jobs:
+  perf-benchmarks:
+    name: Storage perf benchmarks (Node.js v24)
+    runs-on: [self-hosted, linux, harper-bench]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install # plain install (builds native deps) — matches the self-hosted cluster-nightly job
+
+      - name: Build
+        run: npm run build || true # repo currently has type errors; ignore per integration-tests.yml
+
+      - name: Verify build output
+        run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
+
+      - name: Run benchmarks
+        # Inputs via env, not ${{ }} shell interpolation, to avoid script injection.
+        env:
+          SCALE: ${{ github.event.inputs.scale || 'nightly' }}
+        run: |
+          mkdir -p benchmarks/_results
+          set -o pipefail
+          for bench in indexed-write ttl-churn concurrent-rw; do
+            echo "::group::$bench ($SCALE)"
+            node "benchmarks/$bench/run.mts" --scale="$SCALE" 2>&1 | tee "benchmarks/_results/$bench.log"
+            echo "::endgroup::"
+          done
+
+      - name: Summarize RESULT lines
+        if: always()
+        run: |
+          {
+            echo "## Perf benchmark results (scale=${SCALE:-nightly})"
+            echo '```'
+            grep -hE '_RESULT ' benchmarks/_results/*.log || echo 'no RESULT lines captured'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          SCALE: ${{ github.event.inputs.scale || 'nightly' }}
+
+      - name: Upload raw benchmark logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-benchmark-logs
+          path: benchmarks/_results/
+          retention-days: 30

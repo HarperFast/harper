@@ -1,0 +1,11 @@
+# Highly-indexed table for concurrent read+write benchmark (ST-5).
+# Five secondary indexes to stress the index-maintenance path under concurrent load.
+type hotindex @table @export {
+	id: ID @primaryKey
+	category: String @indexed
+	region: String @indexed
+	status: String @indexed
+	priority: String @indexed
+	tag: String @indexed
+	payload: String
+}
