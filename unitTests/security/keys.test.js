@@ -544,6 +544,32 @@ describe('Test keys module', () => {
 			expect(loaded).to.eql(['PEM-V1', 'PEM-V2']);
 		});
 
+		it("chokidar's 'change' event reloads even when it emits no stats (alwaysStat off)", () => {
+			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
+			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
+			let changeHandler;
+			localSandbox.restore();
+			const chokidar = require('chokidar');
+			localSandbox.stub(chokidar, 'watch').returns({
+				on: (event, handler) => {
+					if (event === 'change') changeHandler = handler;
+				},
+			});
+
+			const loaded = [];
+			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
+			expect(loaded).to.eql(['PEM-V1']);
+
+			fs.writeFileSync(watchPath, 'PEM-V2');
+			const future = (Date.now() + 5000) / 1000;
+			fs.utimesSync(watchPath, future, future);
+
+			// Fire the watcher's change event the way chokidar does when alwaysStat is off: no stats.
+			changeHandler(watchPath, undefined);
+
+			expect(loaded).to.eql(['PEM-V1', 'PEM-V2']);
+		});
+
 		it('does not reload when the file is unchanged (mtime fingerprint dedup)', () => {
 			const loaded = [];
 			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');

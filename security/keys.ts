@@ -330,7 +330,10 @@ function loadAndWatch(path, loadCert, type) {
 	let lastModified;
 	const loadFile = (path, stats) => {
 		try {
-			let modified = stats.mtimeMs;
+			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
+			// stat the file here when it's missing — otherwise the inotify fast path would throw and
+			// silently never reload, leaving only the periodic poll to catch the change.
+			let modified = (stats ?? statSync(path)).mtimeMs;
 			if (modified && modified !== lastModified) {
 				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
