@@ -121,29 +121,28 @@ function parseOptions(): CliOptions {
 
 /** Recursively sum the byte sizes of all regular files under a directory. */
 async function dirBytes(dir: string): Promise<number> {
-	let total = 0;
 	let entries: string[];
 	try {
 		entries = await readdir(dir);
 	} catch {
 		return 0;
 	}
-	await Promise.all(
+	const sizes = await Promise.all(
 		entries.map(async (name) => {
 			const full = join(dir, name);
 			try {
 				const s = await stat(full);
 				if (s.isDirectory()) {
-					total += await dirBytes(full);
-				} else {
-					total += s.size;
+					return await dirBytes(full);
 				}
+				return s.size;
 			} catch {
 				// ignore races with TTL cleanup deleting files
+				return 0;
 			}
 		})
 	);
-	return total;
+	return sizes.reduce((sum, size) => sum + size, 0);
 }
 
 // ---------------------------------------------------------------------------

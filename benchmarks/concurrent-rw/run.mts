@@ -342,13 +342,14 @@ async function main(): Promise<void> {
 		};
 
 		// Progress reporter (every 5s).
+		// Live p99 is intentionally omitted: sorting the growing latency array on the event loop
+		// every 5 s would block the readers/writers and inflate the very metric being measured.
+		// Final percentiles are computed once after all workers finish (see Report section below).
 		const reportInterval = setInterval(() => {
 			const elapsed = ((Date.now() - benchStart) / 1_000).toFixed(1);
 			const remaining = (opts.durationSeconds - parseFloat(elapsed)).toFixed(0);
-			const sorted = readLatenciesMs.slice().sort((a, b) => a - b);
-			const p99 = sorted.length > 0 ? percentile(sorted, 0.99).toFixed(1) : '—';
 			process.stdout.write(
-				`  elapsed=${elapsed}s remaining=${remaining}s reads=${readLatenciesMs.length.toLocaleString()} p99=${p99}ms writes=${writeOps.toLocaleString()}\n`
+				`  elapsed=${elapsed}s remaining=${remaining}s reads=${readLatenciesMs.length.toLocaleString()} writes=${writeOps.toLocaleString()}\n`
 			);
 		}, 5_000);
 
