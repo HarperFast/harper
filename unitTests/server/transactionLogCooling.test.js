@@ -15,6 +15,8 @@ const {
 	setCoolingFunctionForTests,
 } = require('#src/server/transactionLogCooling');
 
+const { waitFor } = require('../waitFor.js');
+
 const COOLING_INTERVAL = CONFIG_PARAMS.STORAGE_TRANSACTIONLOG_COOLINGINTERVAL;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -108,7 +110,7 @@ describe('transaction log cooling', () => {
 			// '0.02' -> 20ms (convertToMS treats the base unit as seconds)
 			sandbox.stub(env, 'get').withArgs(COOLING_INTERVAL).returns('0.02');
 			startTransactionLogCooling();
-			await delay(70);
+			await waitFor(() => cool.callCount >= 2, 500);
 			assert.ok(cool.callCount >= 2, `expected repeated cooling passes, got ${cool.callCount}`);
 		});
 	});
