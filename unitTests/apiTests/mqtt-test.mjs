@@ -88,13 +88,11 @@ describe('test MQTT connections and commands', function () {
 
 	it('subscribe to retained/persisted record', async function () {
 		let path = 'VariedProps/' + available_records[1];
-		await new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				clientV4.off('message', onMessage);
-				reject(new Error('Timeout waiting for retained message'));
-			}, 1000);
-			const onMessage = (topic, payload) => {
-				clearTimeout(timeout);
+		// Register the message listener before subscribing so a retained message delivered
+		// during the subscribe round-trip can't be missed.
+		let onMessage;
+		const messageReceived = new Promise((resolve, reject) => {
+			onMessage = (topic, payload) => {
 				try {
 					assert.equal(topic, path);
 					const data = decode(payload);
@@ -105,8 +103,26 @@ describe('test MQTT connections and commands', function () {
 				}
 			};
 			clientV4.once('message', onMessage);
-			clientV4.subscribeAsync(path).catch(reject);
 		});
+		// Await the suback so a subscribe failure surfaces immediately rather than hanging
+		// until the retained-message timeout.
+		await clientV4.subscribeAsync(path);
+		// Retained delivery is async (transaction -> persisted-record read -> serialization ->
+		// setImmediate yield -> socket write -> client message event) and can run after the suback.
+		// On loaded CI runners this routinely exceeds 1 s, so wait up to a budget under the 10 s
+		// suite timeout before failing.
+		let timer;
+		try {
+			await Promise.race([
+				messageReceived,
+				new Promise((_, reject) => {
+					timer = setTimeout(() => reject(new Error('Timeout waiting for retained message')), 8000);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+			clientV4.off('message', onMessage);
+		}
 	});
 	it('subscribe to retained/persisted record but with retain handling disabling retain messages', async function () {
 		let path = 'VariedProps/' + available_records[1];

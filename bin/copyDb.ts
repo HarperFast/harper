@@ -14,7 +14,11 @@ import { updateConfigValue } from '../config/configUtils.js';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
-import { encodeBlobsWithFilePath } from '../resources/blob.ts';
+import {
+	beginPendingMigrationBlobSaves,
+	encodeBlobsWithFilePath,
+	endPendingMigrationBlobSaves,
+} from '../resources/blob.ts';
 import { RecordEncoder, setNextEncoding, lastMetadata, METADATA } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
@@ -411,6 +415,13 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 
 	let written;
 	let outstandingWrites = 0;
+	// Open a blob-save tracking window for this database's migration. saveBlob inside
+	// encodeBlobsWithFilePath pushes every in-flight save promise into `pendingBlobSaves` so we
+	// can await them before declaring the database migrated. Without this, fire-and-forget blob
+	// writes could be left mid-pipeline at migration end, producing records in the target DB
+	// referencing fileIds whose files were never durably written — exactly the missing-blob-file
+	// state that triggers the base-copy resync wedge in harper#1337.
+	const pendingBlobSaves = beginPendingMigrationBlobSaves();
 	const transaction = sourceDbisDb.useReadTransaction();
 	try {
 		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
@@ -474,6 +485,29 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 
 		await written;
 
+		// Await every blob save that was kicked off during this database's migration. The promises
+		// were pushed into pendingBlobSaves by saveBlob (see resources/blob.ts). We must do this
+		// BEFORE writing the remote-ids mapping (which signals "this DB is migrated and ready")
+		// and BEFORE closing targetRootStore — otherwise any blob whose pipeline hasn't yet
+		// flushed will be silently dropped when the store handle goes away.
+		if (pendingBlobSaves.length > 0) {
+			console.log(`awaiting ${pendingBlobSaves.length} in-flight blob save(s) for ${sourceDatabase}`);
+			const results = await Promise.allSettled(pendingBlobSaves);
+			const failed = results.filter((r) => r.status === 'rejected');
+			if (failed.length > 0) {
+				// Fail loudly so migrateOnStart leaves the migration incomplete (LMDB source still
+				// in place, migrateOnStart flag retained) and the next start retries. Silently
+				// dropping records here is what produced the production missing-blob-files state.
+				throw new Error(
+					`Migration of ${sourceDatabase} failed: ${failed.length} blob save(s) failed: ` +
+						failed
+							.slice(0, 5)
+							.map((r) => (r as PromiseRejectedResult).reason?.message ?? String((r as PromiseRejectedResult).reason))
+							.join('; ')
+				);
+			}
+		}
+
 		// Preserve the node ID mapping from the LMDB audit store so replication can resume
 		// incrementally instead of triggering a full table copy after migration.
 		const REMOTE_NODE_IDS_KEY = Symbol.for('remote-ids');
@@ -484,6 +518,12 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 
 		console.log('migrated database ' + sourceDatabase + ' to RocksDB');
 	} finally {
+		endPendingMigrationBlobSaves();
+		// If the migration threw before we awaited pendingBlobSaves above, in-flight save
+		// promises in the list have no rejection handler attached. Attach a no-op catch so a
+		// later background failure is silently observed instead of crashing the process via
+		// Node's unhandledRejection.
+		for (const saving of pendingBlobSaves) saving.catch(() => {});
 		transaction.done();
 		targetRootStore.close();
 	}

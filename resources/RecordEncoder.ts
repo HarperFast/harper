@@ -879,11 +879,29 @@ export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: nu
 }
 export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;
+	const removal = store.remove(entry.key, options);
 	if (entry.value && entry.metadataFlags & HAS_BLOBS) {
-		// if it used to have blobs, we need to delete the old blobs
-		deleteBlobsInObject(entry.value);
+		// Delete the old blobs only once the removal commits. Scheduling the unlink up front
+		// (as before) orphaned the blob when the removal didn't actually land — an expiration
+		// scan whose transaction is force-committed without this delete, or an aborted/version-
+		// conflicted removal — leaving a record that references a now-missing blob and wedges
+		// replication on ENOENT. The removal promise resolves when the write commits (false on
+		// a conditional-version miss; rejects on abort), so gate the unlink on it. See #1364.
+		const deleteOldBlobs = () => deleteBlobsInObject(entry.value);
+		if (removal && typeof removal.then === 'function') {
+			// Swallow rejections (aborted removal) — leave the blob in place in that case.
+			removal.then(
+				(committed: any) => {
+					if (committed !== false) deleteOldBlobs();
+				},
+				() => {}
+			);
+		} else {
+			// Synchronous (already-durable) removal: delete immediately.
+			deleteOldBlobs();
+		}
 	}
-	return store.remove(entry.key, options);
+	return removal;
 }
 export interface RecordObject {
 	getUpdatedTime(): number;
