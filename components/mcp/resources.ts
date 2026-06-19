@@ -353,15 +353,21 @@ export async function subscribeToResource(
 	if (_subscribeImplOverride) {
 		stream = await _subscribeImplOverride(path, user);
 	} else {
-		const entry = getResources().getMatch(path, 'mcp');
-		const ResourceClass = entry?.Resource as
-			| { subscribe?: (request: unknown, context: unknown) => unknown }
+		const resourcesRegistry = getResources();
+		const entry = resourcesRegistry.getMatch(path, 'mcp') as
+			| { Resource: { subscribe?: (request: unknown, context: unknown) => unknown }; relativeURL?: string }
 			| undefined;
+		const ResourceClass = entry?.Resource;
 		if (!entry || typeof ResourceClass?.subscribe !== 'function') return null;
+		// `getMatch` matched the Resource and put the remaining path (the record key,
+		// if any) on `entry.relativeURL`. The table subscribe targets `request.id`;
+		// set it so a record URI watches that record (empty → the whole table/root).
+		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
 		// Lazy-require the server-layer machinery (see file-top note on eager init).
 		const { transaction } = require('../../resources/transaction');
 		const { RequestTarget } = require('../../resources/RequestTarget');
 		const request = new RequestTarget(path);
+		if (recordId) (request as { id?: string }).id = recordId;
 		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
 		// the MCP notification just says "this resource changed; re-read it".
 		Object.assign(request, { omitCurrent: true, checkPermission: user?.role?.permission ?? {} });
