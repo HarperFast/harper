@@ -13,9 +13,10 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
-import { createBlob, isSaving } from '../resources/blob.ts';
+import { createBlob, isSaving, deleteBlob } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
 import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 
@@ -239,9 +240,12 @@ export class DeploymentRecorder {
 		let byteCount = 0;
 		const tap = new Transform({
 			transform(chunk, _encoding, callback) {
-				hash.update(chunk as Buffer);
-				byteCount += (chunk as Buffer).length;
-				callback(null, chunk);
+				// Normalize to a Buffer: a string chunk would otherwise hash as utf8 and count
+				// characters, not bytes — corrupting both payload_hash and payload_size.
+				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any);
+				hash.update(buf);
+				byteCount += buf.length;
+				callback(null, buf);
 			},
 		});
 		// `tapDone` resolves once every source byte has passed through the tap (so the hash
@@ -261,7 +265,29 @@ export class DeploymentRecorder {
 		// correctness independent of the put()/store write timing and of isSaving() being defined.
 		const putDone = this.put();
 		const saving = isSaving(blob) ?? Promise.resolve();
-		await Promise.all([putDone, tapDone, saving]);
+		try {
+			await Promise.all([putDone, tapDone, saving]);
+		} catch (error) {
+			// Aborted/failed upload (e.g. the client disconnects mid-stream). The first put()
+			// already persisted the row's reference to a now-partial blob; since cleanupOrphans
+			// only reclaims UNreferenced blobs, leaving it would leak the file permanently. Drop
+			// the reference and delete the partial file. Cleanup is best-effort — never let it
+			// mask the original failure.
+			this.record.payload_blob = null;
+			this.record.payload_hash = null;
+			this.record.payload_size = null;
+			try {
+				// Let the first put and the blob write fully settle before re-putting: this
+				// ensures the null-reference write lands after the original reference write
+				// (so it wins) and the blob's file lock is released before we unlink it.
+				await Promise.allSettled([putDone, saving]);
+				await this.put();
+				deleteBlob(blob);
+			} catch (cleanupError) {
+				logger.warn?.('Failed to clean up partial deploy payload blob', cleanupError);
+			}
+			throw error;
+		}
 		// Bytes are fully hashed (tapDone) and the file is flushed with its size header
 		// back-patched (saving), so the digest and blob.size below are final.
 		this.record.payload_hash = hash.digest('hex');
