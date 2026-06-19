@@ -1268,6 +1268,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				for (const key of searchOnlyOptions) delete copy[key];
 				return copy;
 			};
+			// Canonical key for the structural (reindex-triggering) comparison only: strip search-only
+			// options, then sort keys and coerce numeric-looking string scalars so a representation-only
+			// difference (key order, string-vs-number) does not force a needless rebuild. harper#1357
+			const canonicalIndexKey = (indexed: any) => JSON.stringify(canonicalizeIndexOptions(stripSearchOnly(indexed)));
 			const commonChanged =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
@@ -1281,11 +1285,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			// any metadata difference (drives persistence)
 			const changed =
 				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
-			// structure-affecting difference (drives reindex) — ignores search-only option changes
-			const structurallyChanged =
-				commonChanged ||
-				JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
-					JSON.stringify(stripSearchOnly(attribute.indexed));
+			// structure-affecting difference (drives reindex) — ignores search-only option changes and
+			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
+			const indexOptionsStructurallyChanged =
+				canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
+			const structurallyChanged = commonChanged || indexOptionsStructurallyChanged;
 			if (attribute.indexed) {
 				// The restart generation that owns any in-progress build of this index. Use the
 				// worker's stable startup generation (workerData.restartNumber), NOT the mutable
@@ -1324,11 +1328,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							// previous lastIndexedKey checkpoint is for a graph built under the old options —
 							// resuming from it would mix two incompatible graphs. Reset to undefined so
 							// runIndexing clears the dbi and starts from scratch.
-							// For pure crash-recovery (same options, different PID/restartNumber), preserve
-							// the checkpoint so the backfill resumes rather than restarts.
+							// For pure crash-recovery (same options, different PID/restartNumber) — including a
+							// representation-only option difference — preserve the checkpoint so the backfill
+							// resumes rather than restarts. Canonicalized to match structurallyChanged above.
 							const indexOptionsChanged =
-								JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
-								JSON.stringify(stripSearchOnly(attribute.indexed));
+								canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
 							attribute.lastIndexedKey = indexOptionsChanged
 								? undefined
 								: (attributeDescriptor?.lastIndexedKey ?? undefined);
@@ -1341,6 +1345,19 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
+							// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
+							const reindexReasons: string[] = [];
+							if (commonChanged)
+								reindexReasons.push(attributeDescriptor ? 'attribute-definition-changed' : 'new-index');
+							if (attributeDescriptor && indexOptionsStructurallyChanged)
+								reindexReasons.push('structural-options-changed');
+							if (attributeDescriptor?.indexingFailed) reindexReasons.push('indexing-failed-retry');
+							if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
+								reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
+							if (attributeDescriptor?.restartNumber < currentRestartGeneration) reindexReasons.push('restart-number');
+							logger.info(
+								`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
+							);
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
 							attributesToIndex.push(attribute);
 						}
@@ -1419,6 +1436,37 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			});
 		}
 	}
+}
+/**
+ * Canonical form used ONLY for the structural (reindex-triggering) comparison of index options.
+ * `@indexed(...)` records options in source-argument order and as strings, while the operations API
+ * and config objects can supply them reordered or as numbers; without canonicalizing, such a
+ * representation-only difference flips the structural comparison and forces a needless full rebuild
+ * (clearing + rebuilding the index, 503-ing the attribute throughout) for a semantically identical
+ * index. Sorts object keys and coerces numeric-looking (non-zero) string scalars to numbers.
+ * Conservative by design: boolean-vs-object, absent-vs-present, and string-"0"-vs-number-0
+ * differences are all preserved, so a genuine change (`true` vs `{ type: 'HNSW' }`, an added/removed
+ * option, a changed value) still triggers a rebuild. Persistence keys off the raw form, so the stored
+ * descriptor self-heals toward this shape over time. harper#1357
+ */
+export function canonicalizeIndexOptions(value: any): any {
+	if (Array.isArray(value)) return value.map(canonicalizeIndexOptions);
+	if (value && typeof value === 'object') {
+		const canonical: Record<string, any> = {};
+		for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeIndexOptions(value[key]);
+		return canonical;
+	}
+	// Coerce numeric-looking strings ("16" -> 16) so string-vs-number representations of the same
+	// option compare equal — EXCEPT zero: the string "0" is truthy while the number 0 is falsy, and
+	// index code may branch on truthiness (e.g. HNSW `if (this.optimizeRouting)` doubles maxConnections),
+	// so "0" and 0 build structurally different indexes and must still trigger a rebuild. Zero is the
+	// only finite number whose string and numeric forms diverge in truthiness, so excluding it fully
+	// closes that gap. Leave non-numeric strings, booleans, null, etc. intact.
+	if (typeof value === 'string' && value.trim() !== '') {
+		const numeric = Number(value);
+		if (numeric !== 0 && Number.isFinite(numeric)) return numeric;
+	}
+	return value;
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
