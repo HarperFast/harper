@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
+const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -19,6 +20,7 @@ const {
 	saveBlob,
 	decodeFromDatabase,
 	startPreCommitBlobsForRecord,
+	isSourceBlobUnavailable,
 } = require('#src/resources/blob');
 const { existsSync, unlinkSync } = require('fs');
 const { pack } = require('msgpackr');
@@ -286,6 +288,40 @@ describe('Blob test', () => {
 		});
 		setDeletionDelay(500); // restore the default
 	});
+	it('blob unlink is gated on the removal committing (#1364)', async () => {
+		// removeEntry must only unlink the old blobs once the record removal commits. An
+		// expiration scan whose transaction is force-committed without the delete (or an
+		// aborted/version-conflicted removal) leaves the record in place; unlinking its blobs
+		// regardless would orphan the reference and wedge replication on ENOENT.
+		setDeletionDelay(0);
+		const realStore = BlobTest.primaryStore;
+		const blob = await createBlob(randomBytes(20000)); // > FILE_STORAGE_THRESHOLD → file-backed
+		await BlobTest.put({ id: 720, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'expected file-backed blob');
+		assert(existsSync(filePath), 'blob file should exist after put');
+
+		// Fetch a real entry (value + metadataFlags) the way the eviction scan does.
+		let entry;
+		for (const e of realStore.getRange({ start: 720, end: 721, versions: true })) {
+			if (e.key === 720) entry = e;
+		}
+		assert(entry && entry.value, 'expected a real entry carrying the blob');
+
+		// Removal that never commits (rejects): the blob must be preserved.
+		removeEntry({ remove: () => Promise.reject(new Error('aborted')) }, entry, undefined);
+		await delay(40);
+		assert(existsSync(filePath), 'blob must survive when the removal does not commit (#1364)');
+
+		// Removal that commits: the blob is unlinked.
+		removeEntry({ remove: () => Promise.resolve(true) }, entry, undefined);
+		await waitFor(() => !existsSync(filePath), {
+			message: 'blob should be unlinked once the removal commits',
+		});
+
+		await BlobTest.delete(720); // cleanup the real record (its blob file is already gone)
+		setDeletionDelay(500); // restore the default
+	});
 	it('slowly create a blob and save it before it is done', async () => {
 		let testString = 'this is a test string'.repeat(256);
 		let expectedResults = '';
@@ -512,6 +548,84 @@ describe('Blob test', () => {
 		const preCommit = startPreCommitBlobsForRecord(record, store, false, true);
 		assert(preCommit && preCommit.blobs.includes(receivedBlob), 'received blob tracked on source apply');
 		unlinkSync(getFilePathForBlob(receivedBlob)); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('isSourceBlobUnavailable: only the replication source-missing marker, not local/transient faults', () => {
+		// The classification gate for pre-commit tolerance: the replication receiver flags an unrecoverable
+		// source-missing blob with `sourceBlobUnavailable` (markSourceBlobUnavailable, harper-pro#403). A
+		// local/transient save fault (disk full, a local ENOENT) is unmarked and must NOT be tolerated.
+		assert.equal(
+			isSourceBlobUnavailable(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true })),
+			true
+		);
+		assert.equal(isSourceBlobUnavailable(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })), false);
+		assert.equal(isSourceBlobUnavailable(new Error('disk full')), false);
+		assert.equal(isSourceBlobUnavailable({ sourceBlobUnavailable: false }), false);
+		assert.equal(isSourceBlobUnavailable(null), false);
+		assert.equal(isSourceBlobUnavailable(undefined), false);
+	});
+	it('complete() fault contract: needs-saving aborts on a transient fault, track-only never aborts (#1353/#1376)', async () => {
+		// CONTRACT HISTORY — do not "restore" the old all-blobs-abort assertion:
+		//   #1353 introduced complete() awaiting EVERY pre-commit blob, so any save fault (even on an
+		//     already-saving, replication-received blob) aborted the commit.
+		//   #1376 then split pre-commit blobs into two sets and changed the contract:
+		//     - blobsNeedingSaving (saveInRecord / saveBeforeCommit): complete() awaits these. A
+		//       transient/local fault MUST still reject → the write aborts and retries (no silent loss).
+		//       A replication source-missing blob (sourceBlobUnavailable marker) is tolerated so the
+		//       record still commits with a diverged reference, backfilled later (harper-pro#403/#388).
+		//     - blobsToTrackOnly (already-saving, replication-received): complete() deliberately does
+		//       NOT await these — awaiting a paused/back-pressured copy stream's blob would deadlock the
+		//       WS (commit fails → onCommit never fires → outstandingCommits never decrements →
+		//       WS paused forever, harper-pro#414). Their durability is NOT enforced by commit-abort
+		//       anymore; it moved to the replication resume cursor: a fault sets hasBlobGap=true and
+		//       pins lastDurableSequenceId so the blob is re-streamed on reconnect
+		//       (harper-pro replication/replicationConnection.ts).
+		// So a transient fault aborts ONLY on the needs-saving path; on the track-only path complete()
+		// must NOT reject. The pre-#1376 assertion drove the fault through the track-only path, which is
+		// why it became stale: complete() no longer awaits that set.
+		const store = BlobTest.primaryStore.rootStore;
+
+		// --- needs-saving path (saveBeforeCommit) ---
+
+		// transient/local fault → complete() awaits the save and the unmarked rejection MUST propagate so
+		// the write aborts and retries.
+		const failStream = new PassThrough();
+		const failBlob = await createBlob(failStream, { saveBeforeCommit: true });
+		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, true);
+		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
+		await assert.rejects(
+			rejectPc.complete(),
+			'a local/transient save fault on a needs-saving blob must still abort the commit'
+		);
+
+		// source-unavailable → the replication marker is tolerated even on the awaited needs-saving path,
+		// so the record still commits with a diverged reference.
+		const goneStream = new PassThrough();
+		const goneBlob = await createBlob(goneStream, { saveBeforeCommit: true });
+		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, true);
+		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
+		await assert.doesNotReject(toleratePc.complete(), 'a source-unavailable blob must not abort the commit');
+
+		// --- track-only path (already-saving replication-received blob) ---
+
+		// A replication-received blob is saved out-of-band before the apply (fileId already set, no
+		// saveBeforeCommit), so startPreCommitBlobsForRecord(trackPersistedBlobs=true) puts it in
+		// blobsToTrackOnly. complete() must NOT await it: a transient fault here does NOT abort the commit
+		// (durability is the resume cursor's job via hasBlobGap — see comment above). Without this, a
+		// paused copy stream would deadlock the WS (harper-pro#414).
+		const trackOnlyStream = new PassThrough();
+		const trackOnlyBlob = await createBlob(trackOnlyStream);
+		decodeFromDatabase(() => saveBlob(trackOnlyBlob, true), store); // out-of-band save: assigns fileId, begins the pipeline
+		isSaving(trackOnlyBlob)?.catch(() => {}); // complete() won't await this save, so absorb its rejection ourselves
+		const trackOnlyPc = startPreCommitBlobsForRecord({ id: 3, blob: trackOnlyBlob }, store, false, true);
+		assert(
+			trackOnlyPc && trackOnlyPc.blobs.includes(trackOnlyBlob),
+			'an already-saved replication blob is tracked for cleanup'
+		);
+		trackOnlyStream.destroy(new Error('disk full')); // unmarked transient fault on the track-only blob
+		await assert.doesNotReject(
+			trackOnlyPc.complete(),
+			'a transient fault on a track-only blob must NOT abort the commit (durability handled by the resume cursor)'
+		);
 	});
 	it('#406: cleanupUnusedBlobs deletes non-retained blobs but keeps retained ones', async () => {
 		// The retained-fileId guard: a skipped/aborted write may carry a blob whose fileId the surviving

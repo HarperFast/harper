@@ -57,6 +57,21 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 		}
 		return super.on(eventName, listener);
 	}
+	// `hasDataListeners` gates whether `send()` emits 'data' or buffers; keep it in
+	// step with reality when a 'data' listener is removed (e.g. an MCP SSE stream
+	// torn down on disconnect). Without this it stayed stuck on `true` for the life
+	// of the queue once any 'data' listener had ever attached.
+	removeListener(eventName: 'data' | string, listener: (...args: any[]) => void) {
+		const result = super.removeListener(eventName, listener);
+		if (eventName === 'data') this.hasDataListeners = this.listenerCount('data') > 0;
+		return result;
+	}
+	// `EventEmitter.off` is a direct alias of the *base* `removeListener`, so it
+	// would bypass the override above (and SSE teardown unsubscribes via `off`).
+	// Route it through our `removeListener` so the flag is recomputed either way.
+	off(eventName: 'data' | string, listener: (...args: any[]) => void) {
+		return this.removeListener(eventName, listener);
+	}
 }
 
 class EventQueueIterator<Event extends object = any> implements AsyncIterator<Event> {

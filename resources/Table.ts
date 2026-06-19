@@ -1672,25 +1672,50 @@ export function makeTable(options) {
 				// evictions never go in the audit log, so we can not record a deletion entry for the eviction
 				// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
 				// removed the entry entirely, but first cleanup indices
+				let lmdbCompletion: MaybePromise<unknown>;
 				if (primaryStore.ifVersion) {
-					// lmdb
-					primaryStore.ifVersion?.(id, existingVersion, () => {
+					// lmdb: the index cleanup and the record removal are both version-guarded optimistic writes.
+					// Capture both promises so a real write failure on either resolves through evict()'s catch
+					// below rather than escaping as an unhandled rejection from the fire-and-forget callers.
+					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
 						updateIndices(id, existingRecord, null);
 					});
-					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+					const removal = removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					updateIndices(id, existingRecord, null, options);
 					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
 				committed = true;
+				// Eviction is best-effort cleanup, run fire-and-forget from the record-expiration sweep and the
+				// read path as well as the concurrency-limited cleanup scan. A concurrent write to the same record
+				// makes the commit conflict — that is expected, not a failure: lazy-expiry-on-read keeps queries
+				// correct and the active writer resets the record's expiry/version. So evict() must (a) always
+				// return a thenable (the cleanup scan awaits it for backpressure) and (b) never reject, so a
+				// conflict can't escape as an unhandledRejection from the fire-and-forget callers.
 				if (primaryStore.ifVersion) {
-					// LMDB: committing the wrapper calls doneReadTxn(), removing it from trackedTxns
-					return (lmdbTransaction as any).commit();
+					// LMDB: committing the wrapper calls doneReadTxn(), removing it from trackedTxns. It has no
+					// tracked writes (the writes went straight to the store via optimistic ifVersion), so it returns
+					// a plain resolution object rather than a promise — return the store's write promises instead, so
+					// the caller gets a real thenable that resolves once the removal is durable.
+					(lmdbTransaction as any).commit();
+					return Promise.resolve(lmdbCompletion).catch((error) => {
+						logger.warn?.('Error evicting record', id, error);
+					});
 				}
-				// RocksDB: eviction writes went directly into the raw transaction via options;
-				// commit it directly, as DatabaseTransaction.commit() would abort it (no tracked writes).
-				// Wrap in Promise.resolve so callers can rely on a thenable return regardless of engine.
-				return (transaction as any).commit();
+				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly,
+				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
+				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
+				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
+				return (transaction as any).commit().catch((error) => {
+					// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
+					// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
+					try {
+						(transaction as any).abort();
+					} catch {}
+					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+					else logger.warn?.('Error evicting record', id, error);
+				});
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
