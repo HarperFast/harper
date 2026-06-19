@@ -710,6 +710,17 @@ describe('mcp/transport', () => {
 				assert.ok(Array.isArray(templates));
 				assert.ok(templates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
 			});
+
+			it('rejects a malformed pagination cursor with -32602', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(32, 'resources/templates/list', { cursor: 'not-a-real-cursor!' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.error.code, -32602);
+			});
 		});
 
 		describe('resources/read', () => {

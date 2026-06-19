@@ -165,13 +165,33 @@ describe('mcp/resources', () => {
 
 	describe('listResourceTemplates', () => {
 		it('declares the harper://schema template on the application profile', () => {
-			const templates = listResourceTemplates('application');
-			assert.ok(templates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
+			const { resourceTemplates } = listResourceTemplates('application');
+			assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
 		});
 
 		it('returns no application-only templates on the operations profile', () => {
-			const templates = listResourceTemplates('operations');
-			assert.equal(templates.length, 0);
+			const { resourceTemplates, nextCursor } = listResourceTemplates('operations');
+			assert.equal(resourceTemplates.length, 0);
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('does not emit a nextCursor when all templates fit on the first page', () => {
+			const { nextCursor } = listResourceTemplates('application');
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('paginates with an opaque cursor when limit is smaller than the template count', () => {
+			const all = listResourceTemplates('application').resourceTemplates;
+			// Only assert paging behavior when the profile actually has >1 template.
+			if (all.length < 2) return;
+			const page1 = listResourceTemplates('application', 0, 1);
+			assert.equal(page1.resourceTemplates.length, 1);
+			assert.ok(page1.nextCursor, 'first page hands back a nextCursor');
+			const offset = require('#src/components/mcp/pagination').decodeCursor(page1.nextCursor);
+			const page2 = listResourceTemplates('application', offset, 1);
+			assert.equal(page2.resourceTemplates.length, all.length - 1);
+			assert.equal(page2.nextCursor, undefined, 'last page has no nextCursor');
+			assert.notDeepEqual(page1.resourceTemplates[0], page2.resourceTemplates[0]);
 		});
 	});
 

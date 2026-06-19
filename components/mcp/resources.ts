@@ -172,10 +172,22 @@ export function listResources(args: ListResourcesArgs): ListResourcesResult {
 	};
 }
 
-export function listResourceTemplates(profile: McpProfile): ResourceTemplate[] {
-	const templates: ResourceTemplate[] = [];
+export interface ListResourceTemplatesResult {
+	resourceTemplates: ResourceTemplate[];
+	nextCursor?: string;
+}
+
+/**
+ * List resource templates for a profile, paginated by opaque cursor offset like
+ * `listResources`/`listTools`. The 2025-06-18 spec says `resources/templates/list`
+ * supports pagination; the set is tiny today, but paginating keeps the shape
+ * spec-conformant and consistent with the other list methods. `offset` is the
+ * decoded cursor (the transport rejects malformed cursors with `-32602` first).
+ */
+export function listResourceTemplates(profile: McpProfile, offset?: number, limit?: number): ListResourceTemplatesResult {
+	const all: ResourceTemplate[] = [];
 	if (profile === 'application') {
-		templates.push({
+		all.push({
 			uriTemplate: 'harper://schema/{database}/{table}',
 			name: 'Table schema',
 			description: 'Attribute definitions for a Harper table, RBAC-filtered by attribute_permissions',
@@ -183,7 +195,7 @@ export function listResourceTemplates(profile: McpProfile): ResourceTemplate[] {
 		});
 		const serverHttpURL = guessAppHttpUrlPrefix();
 		if (serverHttpURL) {
-			templates.push({
+			all.push({
 				uriTemplate: `${serverHttpURL}/{resourcePath}`,
 				name: 'Application resource',
 				description:
@@ -192,7 +204,14 @@ export function listResourceTemplates(profile: McpProfile): ResourceTemplate[] {
 			});
 		}
 	}
-	return templates;
+	const start = offset ?? 0;
+	const max = limit && limit > 0 ? limit : DEFAULT_LIMIT;
+	const slice = all.slice(start, start + max);
+	const next = start + slice.length;
+	return {
+		resourceTemplates: slice,
+		nextCursor: next < all.length ? encodeCursor(next) : undefined,
+	};
 }
 
 export interface ReadResourceArgs {

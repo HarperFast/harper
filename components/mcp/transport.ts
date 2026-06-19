@@ -245,7 +245,7 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (method === 'tools/list') return dispatchToolsList(request, session, message, messageId);
 	if (method === 'tools/call') return dispatchToolsCall(request, session, message, messageId);
 	if (method === 'resources/list') return dispatchResourcesList(request, message, messageId);
-	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, messageId);
+	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, message, messageId);
 	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
 	if (method === 'logging/setLevel') return dispatchSetLevel(session, message, messageId);
 	// `ping` (base-protocol liveness) → empty result. Routed here, after session
@@ -543,9 +543,20 @@ function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, me
 	return jsonResponse(200, buildSuccess(messageId, body));
 }
 
-function dispatchResourceTemplatesList(request: NormRequest, messageId: JsonRpcId): NormResponse {
-	const templates = listResourceTemplates(request.profile);
-	return jsonResponse(200, buildSuccess(messageId, { resourceTemplates: templates }));
+function dispatchResourceTemplatesList(
+	request: NormRequest,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): NormResponse {
+	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
+	const offset = decodeRequestCursor(params?.cursor);
+	if (offset === INVALID_CURSOR) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
+	}
+	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset);
+	const result: { resourceTemplates: unknown[]; nextCursor?: string } = { resourceTemplates };
+	if (nextCursor) result.nextCursor = nextCursor;
+	return jsonResponse(200, buildSuccess(messageId, result));
 }
 
 async function dispatchResourcesRead(
