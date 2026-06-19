@@ -4090,8 +4090,9 @@ export function makeTable(options) {
 			this.userEmbedders[attribute_name] = embedder;
 			this.userSetEmbedders.add(attribute_name);
 		}
-		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false) {
+		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
 			let completion: Promise<void>;
+			let entriesDeleted = 0;
 			for (const auditRecord of auditStore.getRange({
 				start: 0,
 				end: endTime,
@@ -4099,6 +4100,7 @@ export function makeTable(options) {
 				await rest(); // yield to other async operations
 				if (auditRecord.tableId !== tableId) continue;
 				completion = removeAuditEntry(auditStore, auditRecord);
+				entriesDeleted++;
 			}
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
@@ -4112,6 +4114,7 @@ export function makeTable(options) {
 				}
 			}
 			await completion;
+			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
 			for (const auditRecord of auditStore.getRange({
