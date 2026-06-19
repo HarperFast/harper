@@ -151,6 +151,26 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 }
 
 /**
+ * Push `notifications/prompts/list_changed` to every session on a profile.
+ * Prompts carry no per-user RBAC (they're generic templates, §3.5), so unlike
+ * tools/resources this is a flat per-profile fan-out rather than a per-session
+ * user-diff. Called by the application registration when the prompt set actually
+ * changes (added/removed) — not on every rebuild.
+ */
+export function notifyPromptsListChanged(profile: McpProfile): void {
+	forEachSessionByProfile(profile, (record) => {
+		try {
+			record.queue.send({
+				event: 'message',
+				data: { jsonrpc: '2.0', method: 'notifications/prompts/list_changed' },
+			});
+		} catch (err) {
+			harperLogger.trace(`MCP listChanged prompts/* for session ${record.sessionId}: ${(err as Error).message}`);
+		}
+	});
+}
+
+/**
  * Snapshot the current registry as a flat list so re-resolves can happen
  * sequentially without re-walking the live map (which a concurrent
  * registerSession could mutate mid-iteration).

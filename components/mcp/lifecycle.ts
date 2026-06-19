@@ -23,6 +23,7 @@ export const SERVER_INFO = {
 export const SERVER_CAPABILITIES = {
 	tools: { listChanged: true },
 	resources: { listChanged: true },
+	prompts: { listChanged: true },
 	logging: {},
 } as const;
 

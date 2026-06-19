@@ -17,6 +17,14 @@ import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
 import { addTool, clearProfileTools, snapshotProfileTools, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
+import {
+	addPrompt,
+	clearProfilePrompts,
+	snapshotProfilePrompts,
+	type PromptDef,
+	type PromptGetResult,
+} from '../promptRegistry.ts';
+import { notifyPromptsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
 import {
 	type AttributePermissionEntry,
@@ -73,6 +81,19 @@ interface ResourceClassLike {
 		description?: string;
 		inputSchema?: object;
 		annotations?: ToolAnnotationsLike;
+	}>;
+	/**
+	 * Component-author opt-in: publish MCP prompts (#1349 §3.5). Each entry is a
+	 * named, optionally-argumented prompt whose `render(args)` returns the
+	 * messages delivered by `prompts/get`. Prompt content is author-declared —
+	 * Harper has no template primitive to derive it from.
+	 */
+	mcpPrompts?: ReadonlyArray<{
+		name: string;
+		title?: string;
+		description?: string;
+		arguments?: ReadonlyArray<{ name: string; description?: string; required?: boolean }>;
+		render: (args: Record<string, string>) => PromptGetResult | Promise<PromptGetResult>;
 	}>;
 }
 
@@ -710,6 +731,37 @@ function registerCustomMcpTools(ResourceClass: ResourceClassLike, path: string):
 	return count;
 }
 
+/**
+ * #1349 §3.5 — Component-author opt-in. Walk `ResourceClass.mcpPrompts` and
+ * register each as an MCP prompt. Prompt content is author-declared via the
+ * entry's `render(args)`; the registry adapts it to the `(args, context)`
+ * signature. Invalid entries (missing name or render) are skipped with a warn.
+ */
+function registerCustomMcpPrompts(ResourceClass: ResourceClassLike, path: string): number {
+	const prompts = ResourceClass.mcpPrompts;
+	if (!Array.isArray(prompts) || prompts.length === 0) return 0;
+	let count = 0;
+	for (const def of prompts) {
+		if (!def?.name || typeof def.render !== 'function') {
+			harperLogger.warn(
+				`MCP application profile: skipping invalid mcpPrompts entry on '${path}' (needs name + render): ${JSON.stringify(def)}`
+			);
+			continue;
+		}
+		const prompt: PromptDef = {
+			name: def.name,
+			profile: 'application',
+			...(def.title ? { title: def.title } : {}),
+			...(def.description ? { description: def.description } : {}),
+			...(def.arguments ? { arguments: def.arguments.map((a) => ({ ...a })) } : {}),
+			render: (args) => def.render(args),
+		};
+		addPrompt(prompt);
+		count++;
+	}
+	return count;
+}
+
 function makeCustomMethodHandler(toolName: string, ResourceClass: ResourceClassLike, methodName: string) {
 	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		try {
@@ -770,13 +822,30 @@ export function registerApplicationTools(): void {
 	// restores it rather than leaving `tools/list` empty until the next schema
 	// change. Registration is synchronous, so no reader observes the gap.
 	const previousTools = snapshotProfileTools('application');
+	const previousPrompts = snapshotProfilePrompts('application');
+	const previousPromptNames = previousPrompts
+		.map((p) => p.name)
+		.sort()
+		.join(' ');
 	clearProfileTools('application');
+	clearProfilePrompts('application');
 	try {
 		buildApplicationTools(resources);
 	} catch (err) {
 		clearProfileTools('application');
+		clearProfilePrompts('application');
 		for (const def of previousTools) addTool(def);
+		for (const def of previousPrompts) addPrompt(def);
 		throw err;
+	}
+	// Tell connected sessions if the prompt set actually changed (added/removed),
+	// fulfilling the advertised prompts.listChanged capability without no-op spam.
+	const currentPromptNames = snapshotProfilePrompts('application')
+		.map((p) => p.name)
+		.sort()
+		.join(' ');
+	if (currentPromptNames !== previousPromptNames) {
+		notifyPromptsListChanged('application');
 	}
 }
 
@@ -797,7 +866,8 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const verbs = detectVerbs(ResourceClass);
 		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
-		if (!hasVerbs && !hasCustomTools) continue;
+		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
+		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts) continue;
 		const databaseName = ResourceClass?.databaseName;
 		const tableName = ResourceClass?.tableName;
 		const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
@@ -815,6 +885,7 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 			});
 		}
 		toolsRegistered += registerCustomMcpTools(ResourceClass, path);
+		registerCustomMcpPrompts(ResourceClass, path);
 	}
 	harperLogger.info(
 		`MCP application profile: considered ${resourcesConsidered} resource(s), registered ${toolsRegistered} tool(s)`

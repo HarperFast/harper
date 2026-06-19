@@ -5,6 +5,7 @@ const { handleMcpRequest } = transport_mod;
 const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
 const { getRegisteredSession } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const { addPrompt, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
 const {
 	_setResourcesForTest,
 	_setOpenApiGeneratorForTest,
@@ -76,6 +77,7 @@ describe('mcp/transport', () => {
 		transport_mod.__set__('env', envStub);
 		_setSessionTableForTest(makeFakeTable());
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setResourcesForTest(makeFakeResources([]));
 		_setOpenApiGeneratorForTest(() => ({ openapi: '3.0.3', info: { title: 'fake' }, paths: {} }));
 		_setHttpUrlPrefixForTest('');
@@ -84,6 +86,7 @@ describe('mcp/transport', () => {
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setResourcesForTest(undefined);
 		_setOpenApiGeneratorForTest(undefined);
 		_setHttpUrlPrefixForTest(undefined);
@@ -772,6 +775,70 @@ describe('mcp/transport', () => {
 				const final = frames.find((d) => d.id === 42);
 				assert.ok(final, 'final response delivered after cancellation');
 				assert.equal(final.result.content[0].text, 'cancelled');
+			});
+		});
+
+		describe('prompts/list + prompts/get', () => {
+			beforeEach(() => {
+				addPrompt({
+					name: 'greet',
+					profile: 'application',
+					title: 'Greeting',
+					description: 'greets a person',
+					arguments: [{ name: 'who', required: true }],
+					render: (args) => ({
+						description: 'a greeting',
+						messages: [{ role: 'user', content: { type: 'text', text: `Hello, ${args.who}!` } }],
+					}),
+				});
+			});
+
+			it('prompts/list returns the registered prompt descriptors', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(50, 'prompts/list'),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				const names = res.jsonBody.result.prompts.map((p) => p.name);
+				assert.ok(names.includes('greet'));
+				const greet = res.jsonBody.result.prompts.find((p) => p.name === 'greet');
+				assert.equal(greet.title, 'Greeting');
+				assert.equal(greet.render, undefined, 'render is not serialized to the client');
+			});
+
+			it('prompts/get renders messages with the supplied arguments', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(51, 'prompts/get', { name: 'greet', arguments: { who: 'Ada' } }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.result.description, 'a greeting');
+				assert.equal(res.jsonBody.result.messages[0].content.text, 'Hello, Ada!');
+			});
+
+			it('prompts/get returns -32602 for an unknown prompt', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(52, 'prompts/get', { name: 'nope' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('prompts/get returns -32602 when a required argument is missing', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(53, 'prompts/get', { name: 'greet', arguments: {} }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.match(res.jsonBody.error.message, /who/);
 			});
 		});
 

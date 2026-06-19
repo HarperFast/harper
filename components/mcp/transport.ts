@@ -38,6 +38,7 @@ import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource } from './resources.ts';
+import { getPrompt, listPrompts } from './promptRegistry.ts';
 import { registerSession, touchRegisteredSession, type SseEvent } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
@@ -257,6 +258,8 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (method === 'resources/list') return dispatchResourcesList(request, message, messageId);
 	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, message, messageId);
 	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
+	if (method === 'prompts/list') return dispatchPromptsList(request, message, messageId);
+	if (method === 'prompts/get') return await dispatchPromptsGet(request, session, message, messageId);
 	if (method === 'logging/setLevel') return dispatchSetLevel(session, message, messageId);
 	// `ping` (base-protocol liveness) → empty result. Routed here, after session
 	// validation, so a stale/expired/wrong-user session surfaces the normal
@@ -640,6 +643,66 @@ function dispatchResourceTemplatesList(
 	const result: { resourceTemplates: unknown[]; nextCursor?: string } = { resourceTemplates };
 	if (nextCursor) result.nextCursor = nextCursor;
 	return jsonResponse(200, buildSuccess(messageId, result));
+}
+
+function dispatchPromptsList(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
+	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
+	const offset = decodeRequestCursor(params?.cursor);
+	if (offset === INVALID_CURSOR) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
+	}
+	const { prompts, nextCursor } = listPrompts(request.profile, offset);
+	const result: { prompts: unknown[]; nextCursor?: string } = { prompts };
+	if (nextCursor) result.nextCursor = nextCursor;
+	return jsonResponse(200, buildSuccess(messageId, result));
+}
+
+async function dispatchPromptsGet(
+	request: NormRequest,
+	session: McpSessionRecord,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params =
+		'params' in message ? (message.params as { name?: unknown; arguments?: unknown } | undefined) : undefined;
+	const name = typeof params?.name === 'string' ? params.name : undefined;
+	if (!name) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'prompts/get requires params.name'));
+	}
+	const prompt = getPrompt(name);
+	if (!prompt || prompt.profile !== request.profile) {
+		// Per MCP §server/prompts an unknown prompt name is an invalid-params error.
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `Unknown prompt: ${name}`));
+	}
+	const args =
+		params?.arguments && typeof params.arguments === 'object' ? (params.arguments as Record<string, string>) : {};
+	const missing = (prompt.arguments ?? [])
+		.filter((a) => a.required && (args[a.name] === undefined || args[a.name] === null))
+		.map((a) => a.name);
+	if (missing.length > 0) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, `missing required argument(s): ${missing.join(', ')}`)
+		);
+	}
+	try {
+		const rendered = await prompt.render(args, {
+			user: effectiveUser(request),
+			profile: request.profile,
+			sessionId: session.id,
+		});
+		return jsonResponse(
+			200,
+			buildSuccess(messageId, {
+				...(rendered.description ? { description: rendered.description } : {}),
+				messages: rendered.messages ?? [],
+			})
+		);
+	} catch (err) {
+		const errMsg = (err as Error).message ?? 'prompt render failed';
+		harperLogger.warn(`MCP prompts/get ${name} threw: ${(err as Error).stack ?? errMsg}`);
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `prompt render failed: ${errMsg}`));
+	}
 }
 
 async function dispatchResourcesRead(
