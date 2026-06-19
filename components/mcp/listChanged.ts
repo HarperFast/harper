@@ -16,7 +16,12 @@
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { listResources } from './resources.ts';
-import { type RegisteredSession, forEachSessionByProfile, getRegisteredSession } from './sessionRegistry.ts';
+import {
+	type RegisteredSession,
+	forEachSessionByProfile,
+	getRegisteredSession,
+	pushSessionFrame,
+} from './sessionRegistry.ts';
 import { listTools, type AuthedUser } from './toolRegistry.ts';
 import { refreshApplicationTools } from './tools/application.ts';
 import type { McpProfile } from './transport.ts';
@@ -127,7 +132,7 @@ function maybeNotifyToolsChanged(record: RegisteredSession): void {
 		const current = toolsListNames(record.profile, record);
 		if (sameSet(record.lastTools, current)) return;
 		record.lastTools = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/tools/list_changed' },
 		});
@@ -141,7 +146,7 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 		const current = resourcesListUris(record.profile, record);
 		if (sameSet(record.lastResources, current)) return;
 		record.lastResources = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/resources/list_changed' },
 		});
@@ -160,7 +165,7 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 export function notifyPromptsListChanged(profile: McpProfile): void {
 	forEachSessionByProfile(profile, (record) => {
 		try {
-			record.queue.send({
+			pushSessionFrame(record, {
 				event: 'message',
 				data: { jsonrpc: '2.0', method: 'notifications/prompts/list_changed' },
 			});

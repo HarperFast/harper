@@ -3,7 +3,7 @@ const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
-const { getRegisteredSession } = require('#src/components/mcp/sessionRegistry');
+const { getRegisteredSession, pushSessionFrame } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const { addPrompt, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
 const { _setItcForTest, _resetServerRequestsForTest } = require('#src/components/mcp/serverRequests');
@@ -907,6 +907,35 @@ describe('mcp/transport', () => {
 				);
 				assert.equal(res.jsonBody.error.code, -32602);
 				assert.match(res.jsonBody.error.message, /who/);
+			});
+		});
+
+		describe('GET reconnect replay (§3.8 resumability)', () => {
+			it('replays buffered frames after Last-Event-ID on reconnect', async () => {
+				const getHeaders = {
+					'mcp-session-id': sessionId,
+					'mcp-protocol-version': '2025-06-18',
+					'accept': 'text/event-stream',
+				};
+				// Open the stream (registers the session), then push two frames.
+				const get1 = await handleMcpRequest(makeReq({ method: 'GET', headers: getHeaders }));
+				assert.equal(get1.status, 200);
+				const rec = getRegisteredSession(sessionId);
+				pushSessionFrame(rec, { event: 'message', data: { method: 'one' } }); // id 1
+				pushSessionFrame(rec, { event: 'message', data: { method: 'two' } }); // id 2
+
+				// Reconnect echoing Last-Event-ID: 1 → only the id-2 frame should replay.
+				const get2 = await handleMcpRequest(
+					makeReq({ method: 'GET', headers: { ...getHeaders, 'last-event-id': '1' } })
+				);
+				assert.equal(get2.status, 200);
+				const frames = [];
+				get2.sseIterable.on('data', (f) => frames.push(f));
+				await new Promise((r) => setImmediate(r));
+				const replayed = frames.find((f) => f.data?.method === 'two');
+				assert.ok(replayed, 'frame after Last-Event-ID replayed');
+				assert.equal(replayed.id, '2');
+				assert.ok(!frames.some((f) => f.data?.method === 'one'), 'frame at/before Last-Event-ID not replayed');
 			});
 		});
 

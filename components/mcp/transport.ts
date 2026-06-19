@@ -51,7 +51,7 @@ import {
 	dropSessionServerRequests,
 	isClientResponse,
 } from './serverRequests.ts';
-import { registerSession, touchRegisteredSession, type SseEvent } from './sessionRegistry.ts';
+import { registerSession, touchRegisteredSession, replaySince, type SseEvent } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
@@ -95,6 +95,7 @@ const SESSION_HEADER = 'mcp-session-id';
 const PROTOCOL_HEADER = 'mcp-protocol-version';
 const ORIGIN_HEADER = 'origin';
 const ACCEPT_HEADER = 'accept';
+const LAST_EVENT_ID_HEADER = 'last-event-id';
 
 /**
  * Main entry. Adapters call this and map the returned shape to their
@@ -406,6 +407,14 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 			session.subscriptions = restored;
 			await saveSession(session);
 		}
+	}
+	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
+	// the client missed (those with a higher id) before live frames flow. Re-sent
+	// raw so their original event ids are preserved. Best-effort + per-worker: the
+	// buffer is empty if this GET landed on a worker without the prior stream.
+	const lastEventId = request.headers[LAST_EVENT_ID_HEADER];
+	if (lastEventId) {
+		for (const frame of replaySince(record, lastEventId)) record.queue.send(frame);
 	}
 	return {
 		status: 200,

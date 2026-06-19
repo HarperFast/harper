@@ -14,7 +14,7 @@
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { subscribeToResource, type ResourceSubscription } from './resources.ts';
-import { getRegisteredSession } from './sessionRegistry.ts';
+import { getRegisteredSession, pushSessionFrame } from './sessionRegistry.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 
 /** sessionId → (uri → live subscription). */
@@ -30,10 +30,12 @@ export async function addResourceSubscription(sessionId: string, uri: string, us
 		// Re-resolve the record each push: the SSE stream may have reconnected
 		// (new queue) since the subscription started.
 		const record = getRegisteredSession(sessionId);
-		record?.queue.send({
-			event: 'message',
-			data: { jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri } },
-		});
+		if (record) {
+			pushSessionFrame(record, {
+				event: 'message',
+				data: { jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri } },
+			});
+		}
 	});
 	if (!subscription) return false;
 	let bySession = live.get(sessionId);
