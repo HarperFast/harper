@@ -10,6 +10,7 @@ const {
 	_setResourcesForTest,
 	_setOpenApiGeneratorForTest,
 	_setHttpUrlPrefixForTest,
+	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
 
 function makeFakeResources(entries) {
@@ -887,6 +888,77 @@ describe('mcp/transport', () => {
 				);
 				assert.equal(res.jsonBody.error.code, -32602);
 				assert.match(res.jsonBody.error.message, /who/);
+			});
+		});
+
+		describe('resources/subscribe + resources/unsubscribe', () => {
+			beforeEach(() => {
+				// Inject a fake change stream so dispatch doesn't need the real audit log.
+				// `null` for the sentinel path makes the resource non-subscribable.
+				_setSubscribeImplForTest(async (path) =>
+					/nope/.test(path)
+						? null
+						: {
+								end() {},
+								[Symbol.asyncIterator]() {
+									return { next: () => new Promise(() => {}), return: () => Promise.resolve({ done: true }) };
+								},
+							}
+				);
+			});
+			afterEach(() => _setSubscribeImplForTest(undefined));
+
+			it('subscribes to a row-backed URI and returns an empty result', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(70, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.deepEqual(res.jsonBody.result, {});
+				const saved = await loadSession(sessionId);
+				assert.ok(saved.subscriptions.includes('https://app.test:9926/Product/1'), 'persisted on the session record');
+			});
+
+			it('returns -32602 for a non-subscribable URI', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(71, 'resources/subscribe', { uri: 'harper://about' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('returns -32602 when params.uri is missing', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(72, 'resources/subscribe', {}),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('unsubscribe removes the URI from the durable record', async () => {
+				const uri = 'https://app.test:9926/Product/2';
+				await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(73, 'resources/subscribe', { uri }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(74, 'resources/unsubscribe', { uri }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.deepEqual(res.jsonBody.result, {});
+				const saved = await loadSession(sessionId);
+				assert.ok(!(saved.subscriptions ?? []).includes(uri), 'URI dropped from the record');
 			});
 		});
 

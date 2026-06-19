@@ -50,6 +50,13 @@ export interface McpSessionRecord {
 	 * separate cache to prune. Undefined = the client hasn't opted into logging.
 	 */
 	logLevel?: McpLogLevel;
+	/**
+	 * Resource URIs the client has subscribed to via `resources/subscribe`
+	 * (#1349 §3.6). Persisted so they can be restored on an SSE reconnect (the
+	 * live per-worker subscription objects can't be). Row-backed URIs only;
+	 * undefined/empty = no subscriptions.
+	 */
+	subscriptions?: string[];
 }
 
 let _sessionTable: Table | undefined;
@@ -75,6 +82,7 @@ function declareSessionTable(): Table {
 			{ name: 'createdAt' },
 			{ name: 'lastActivity' },
 			{ name: 'logLevel' },
+			{ name: 'subscriptions' },
 		],
 	});
 }

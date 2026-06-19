@@ -39,6 +39,12 @@ import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
+import {
+	addResourceSubscription,
+	removeResourceSubscription,
+	dropSessionSubscriptions,
+	restoreResourceSubscriptions,
+} from './subscriptions.ts';
 import { registerSession, touchRegisteredSession, type SseEvent } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
@@ -258,6 +264,9 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (method === 'resources/list') return dispatchResourcesList(request, message, messageId);
 	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, message, messageId);
 	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
+	if (method === 'resources/subscribe') return await dispatchResourcesSubscribe(request, session, message, messageId);
+	if (method === 'resources/unsubscribe')
+		return await dispatchResourcesUnsubscribe(request, session, message, messageId);
 	if (method === 'prompts/list') return dispatchPromptsList(request, message, messageId);
 	if (method === 'prompts/get') return await dispatchPromptsGet(request, session, message, messageId);
 	if (method === 'completion/complete') return dispatchCompletion(request, message, messageId);
@@ -366,6 +375,18 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
 	record.logLevel = session.logLevel;
 	seedSessionSnapshot(sessionId);
+	// Tear down any live resource subscriptions when this SSE stream closes
+	// (disconnect / DELETE / supersede / idle-prune all end via the queue's 'close').
+	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
+	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
+	// a URI that's no longer subscribable is dropped from the persisted list.
+	if (session.subscriptions?.length) {
+		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
+		if (restored.length !== session.subscriptions.length) {
+			session.subscriptions = restored;
+			await saveSession(session);
+		}
+	}
 	return {
 		status: 200,
 		headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' },
@@ -766,6 +787,56 @@ function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messa
 		completion = { values: [], total: 0, hasMore: false };
 	}
 	return jsonResponse(200, buildSuccess(messageId, { completion }));
+}
+
+async function dispatchResourcesSubscribe(
+	request: NormRequest,
+	session: McpSessionRecord,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params = 'params' in message ? (message.params as { uri?: unknown } | undefined) : undefined;
+	const uri = typeof params?.uri === 'string' ? params.uri : undefined;
+	if (!uri) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/subscribe requires params.uri')
+		);
+	}
+	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+	if (!ok) {
+		// Only row-backed application resources are subscribable; synthetic harper://*
+		// URIs (and unknown URIs) have no change source.
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
+	}
+	// Persist the URI on the durable record so it survives an SSE reconnect.
+	if (!session.subscriptions?.includes(uri)) {
+		session.subscriptions = [...(session.subscriptions ?? []), uri];
+		await saveSession(session);
+	}
+	return jsonResponse(200, buildSuccess(messageId, {}));
+}
+
+async function dispatchResourcesUnsubscribe(
+	request: NormRequest,
+	session: McpSessionRecord,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params = 'params' in message ? (message.params as { uri?: unknown } | undefined) : undefined;
+	const uri = typeof params?.uri === 'string' ? params.uri : undefined;
+	if (!uri) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/unsubscribe requires params.uri')
+		);
+	}
+	removeResourceSubscription(session.id, uri);
+	if (session.subscriptions?.includes(uri)) {
+		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
+		await saveSession(session);
+	}
+	return jsonResponse(200, buildSuccess(messageId, {}));
 }
 
 async function dispatchResourcesRead(

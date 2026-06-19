@@ -22,7 +22,7 @@ export const SERVER_INFO = {
 /** Server capabilities advertised on `initialize` for v1. */
 export const SERVER_CAPABILITIES = {
 	tools: { listChanged: true },
-	resources: { listChanged: true },
+	resources: { listChanged: true, subscribe: true },
 	prompts: { listChanged: true },
 	completions: {},
 	logging: {},

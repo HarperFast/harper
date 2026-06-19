@@ -128,6 +128,22 @@ export function _setHttpUrlPrefixForTest(prefix: string | undefined): void {
 	_httpUrlPrefixOverride = prefix;
 }
 
+/**
+ * A live audit-log subscription started by `resource.subscribe`, viewed as an
+ * async-iterable with an `.end()` to stop it (the shape MQTT's durable session
+ * consumes). Test seam below injects a fake so unit tests don't need the real
+ * audit log.
+ */
+type ResourceChangeStream = AsyncIterable<{ acknowledge?: () => void }> & { end?: () => void };
+let _subscribeImplOverride: ((path: string, user: AuthedUser) => Promise<ResourceChangeStream | null>) | undefined;
+
+/** Test seam: replace the real `resource.subscribe` resolution with a fake stream. */
+export function _setSubscribeImplForTest(
+	fn: ((path: string, user: AuthedUser) => Promise<ResourceChangeStream | null>) | undefined
+): void {
+	_subscribeImplOverride = fn;
+}
+
 function getResources(): ResourcesType {
 	if (_resourcesOverride) return _resourcesOverride;
 	// Lazy import — see file-top comment on Harper graph initialization.
@@ -300,6 +316,87 @@ function enumerateMcpResourcePaths(): string[] {
 		out.push(path);
 	}
 	return out;
+}
+
+export interface ResourceSubscription {
+	/** Stop the subscription and release the underlying audit-log iterator. */
+	stop: () => void;
+}
+
+/**
+ * Subscribe to changes on a row-backed resource URI (#1349 §3.6), invoking
+ * `onUpdate` once per committed change. Returns a handle to stop it, or `null`
+ * if the URI is not subscribable — only application HTTP(S) resource URLs backed
+ * by a Resource with `subscribe` qualify; synthetic `harper://*` URIs have no
+ * row-change source and are list_changed-only.
+ *
+ * Mirrors the MQTT durable-subscription consumer (`server/DurableSubscriptionsSession.ts`):
+ * `resource.subscribe` (a transactional static) returns an async-iterable with an
+ * `.end()`; we iterate it on the worker holding the SSE stream, so the audit-log
+ * `'committed'` broadcast delivers changes locally (cross-worker via the shared log).
+ */
+export async function subscribeToResource(
+	uri: string,
+	user: AuthedUser,
+	onUpdate: () => void
+): Promise<ResourceSubscription | null> {
+	let parsed: URL;
+	try {
+		parsed = new URL(uri);
+	} catch {
+		return null;
+	}
+	if (parsed.protocol !== HTTPS_SCHEME && parsed.protocol !== HTTP_SCHEME) return null;
+	const path = parsed.pathname.replace(/^\/+/, '');
+
+	let stream: ResourceChangeStream | null;
+	if (_subscribeImplOverride) {
+		stream = await _subscribeImplOverride(path, user);
+	} else {
+		const entry = getResources().getMatch(path, 'mcp');
+		const ResourceClass = entry?.Resource as
+			| { subscribe?: (request: unknown, context: unknown) => unknown }
+			| undefined;
+		if (!entry || typeof ResourceClass?.subscribe !== 'function') return null;
+		// Lazy-require the server-layer machinery (see file-top note on eager init).
+		const { transaction } = require('../../resources/transaction');
+		const { RequestTarget } = require('../../resources/RequestTarget');
+		const request = new RequestTarget(path);
+		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
+		// the MCP notification just says "this resource changed; re-read it".
+		Object.assign(request, { omitCurrent: true, checkPermission: user?.role?.permission ?? {} });
+		const context = { user, authorize: true, request };
+		const result = await transaction(context, async () => ResourceClass.subscribe!(request, context));
+		stream =
+			result && typeof (result as ResourceChangeStream)[Symbol.asyncIterator] === 'function'
+				? (result as ResourceChangeStream)
+				: null;
+	}
+	if (!stream) return null;
+
+	let stopped = false;
+	void (async () => {
+		try {
+			for await (const update of stream) {
+				if (stopped) break;
+				update?.acknowledge?.();
+				onUpdate();
+			}
+		} catch (err) {
+			harperLogger.trace(`MCP subscription ${uri} ended: ${(err as Error).message}`);
+		}
+	})();
+
+	return {
+		stop: () => {
+			stopped = true;
+			try {
+				stream.end?.();
+			} catch (err) {
+				harperLogger.trace(`MCP subscription ${uri} stop: ${(err as Error).message}`);
+			}
+		},
+	};
 }
 
 export interface ReadResourceArgs {
