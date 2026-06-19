@@ -98,6 +98,9 @@ export function getCertTable() {
 						attribute: 'is_self_signed',
 					},
 					{
+						attribute: 'file_timestamp',
+					},
+					{
 						attribute: '__updatedtime__',
 					},
 				],
@@ -263,7 +266,7 @@ export function loadCertificates() {
 									private_key_name,
 									is_authority: ca,
 									hostnames,
-									fileTimestamp,
+									file_timestamp: fileTimestamp,
 									details: {
 										issuer: x509Cert.issuer.replace(/\n/g, ' '),
 										subject: x509Cert.subject?.replace(/\n/g, ' '),

@@ -407,4 +407,81 @@ describe('Test keys module', () => {
 			}
 		});
 	});
+
+	describe('certificate file_timestamp staleness guard', () => {
+		let certTable;
+		let certCn;
+		let originalMtime;
+		let originalRecord;
+
+		// Re-run a single load cycle against the existing (seeded) certificate table.
+		async function reloadCertificates() {
+			keys.__set__('configuredCertsLoaded', false);
+			keys.__set__('certificateTable', undefined);
+			await keys.loadCertificates();
+		}
+
+		before(async () => {
+			const { databases } = require('#src/resources/databases');
+			certTable = databases.system.hdb_certificate;
+			certCn = actual_cert.name;
+			// These tests mutate the cert file mtime and the stored record; snapshot both so we
+			// can restore them and avoid polluting state for any later-added tests.
+			originalMtime = fs.statSync(test_cert_path).mtime;
+			originalRecord = { ...(await certTable.get(certCn)) };
+		});
+
+		after(async () => {
+			fs.utimesSync(test_cert_path, originalMtime, originalMtime);
+			await certTable.put(originalRecord);
+		});
+
+		it('persists file_timestamp matching the certificate file mtime on load', async () => {
+			const record = await certTable.get(certCn);
+			const mtimeMs = fs.statSync(test_cert_path).mtimeMs;
+			expect(record.file_timestamp, 'file_timestamp should be persisted on the record').to.equal(mtimeMs);
+		});
+
+		it('reloads the certificate when the file is newer than the stored record', async () => {
+			const past = Date.now() - 24 * 60 * 60 * 1000;
+			await certTable.put({
+				...(await certTable.get(certCn)),
+				name: certCn,
+				certificate: 'SENTINEL-OLD',
+				is_self_signed: false,
+				file_timestamp: past,
+			});
+			const now = new Date();
+			fs.utimesSync(test_cert_path, now, now);
+
+			await reloadCertificates();
+
+			const record = await certTable.get(certCn);
+			expect(record.certificate, 'a newer file should overwrite the stored cert').to.not.equal('SENTINEL-OLD');
+			expect(record.file_timestamp, 'file_timestamp should advance to the file mtime').to.equal(
+				fs.statSync(test_cert_path).mtimeMs
+			);
+		});
+
+		it('skips reload when the certificate file is older than the stored record', async () => {
+			// The stored record claims a file_timestamp far in the future, while the file mtime is
+			// set newer than "now" but still older than that record. This distinguishes reading
+			// file_timestamp (correct -> skip) from falling back to __updatedtime__ (~now -> reload).
+			const future = Date.now() + 24 * 60 * 60 * 1000;
+			await certTable.put({
+				...(await certTable.get(certCn)),
+				name: certCn,
+				certificate: 'SENTINEL-FUTURE',
+				is_self_signed: false,
+				file_timestamp: future,
+			});
+			const fileTime = new Date(Date.now() + 60 * 60 * 1000);
+			fs.utimesSync(test_cert_path, fileTime, fileTime);
+
+			await reloadCertificates();
+
+			const record = await certTable.get(certCn);
+			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
+		});
+	});
 });
