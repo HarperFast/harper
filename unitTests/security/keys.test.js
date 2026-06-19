@@ -431,6 +431,22 @@ describe('Test keys module', () => {
 			originalRecord = { ...(await certTable.get(certCn)) };
 		});
 
+		beforeEach(() => {
+			// loadCertificates() returns only the last processed cert's put promise. Drop the
+			// certificateAuthority from the config so the non-CA cert is the awaited write,
+			// guaranteeing reloadCertificates() resolves after certCn is committed.
+			sandbox.restore();
+			sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+				if (key === 'tls')
+					return {
+						certificate: test_cert_path,
+						privateKey: test_private_key_path,
+					};
+				if (key === 'rootPath') return root_path;
+				return undefined;
+			});
+		});
+
 		after(async () => {
 			fs.utimesSync(test_cert_path, originalMtime, originalMtime);
 			await certTable.put(originalRecord);
