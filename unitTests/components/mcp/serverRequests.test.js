@@ -56,6 +56,24 @@ describe('mcp/serverRequests', () => {
 		assert.equal(_pendingServerRequestCount(), 0, 'pending cleared on response');
 	});
 
+	it('generates worker-unique request ids (UUID, not a per-worker counter)', async () => {
+		const ids = [];
+		for (let i = 0; i < 3; i++) {
+			sendServerRequest({
+				sessionId: 's1',
+				method: 'roots/list',
+				params: {},
+				clientCapabilities: CAPS,
+				deliver: (f) => ids.push(f.id),
+				timeoutMs: 50,
+			}).catch(() => {});
+		}
+		// UUID form, not `srv-1`/`srv-2` — two workers starting a counter at 1 would
+		// collide on (sessionId, id) and misroute responses.
+		assert.equal(new Set(ids).size, 3, 'all ids distinct');
+		for (const id of ids) assert.match(id, /^srv-[0-9a-f]{8}-[0-9a-f]{4}-/, 'UUID-form id');
+	});
+
 	it('rejects an error response', async () => {
 		let frame;
 		const p = sendServerRequest({

@@ -51,7 +51,13 @@ import {
 	dropSessionServerRequests,
 	isClientResponse,
 } from './serverRequests.ts';
-import { registerSession, touchRegisteredSession, replaySince, type SseEvent } from './sessionRegistry.ts';
+import {
+	registerSession,
+	touchRegisteredSession,
+	getRegisteredSession,
+	replaySince,
+	type SseEvent,
+} from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
@@ -392,13 +398,12 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
 	record.logLevel = session.logLevel;
 	seedSessionSnapshot(sessionId);
-	// Tear down any live resource subscriptions + pending server→client requests
-	// when this SSE stream closes (disconnect / DELETE / supersede / idle-prune all
-	// end via the queue's 'close').
-	record.queue.once('close', () => {
-		dropSessionSubscriptions(sessionId);
-		dropSessionServerRequests(sessionId);
-	});
+	// Tear down live resource subscriptions when this GET SSE stream closes
+	// (disconnect / DELETE / supersede / idle-prune all end via the queue's 'close').
+	// NOTE: pending server→client requests are NOT dropped here — they ride a
+	// per-call POST stream, so a GET reconnect/supersede must not reject an
+	// in-flight `serverRequest`. Those are cleared on session DELETE + by timeout.
+	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
 	if (session.subscriptions?.length) {
@@ -849,6 +854,16 @@ async function dispatchResourcesSubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/subscribe requires params.uri')
 		);
 	}
+	// Require a live GET SSE stream: that's where notifications/resources/updated is
+	// delivered, and its 'close' is the only teardown hook for the subscription. A
+	// subscription opened without a stream would leak its audit-log iterator and
+	// drop every update silently.
+	if (!getRegisteredSession(session.id)) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
+		);
+	}
 	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
 	if (!ok) {
 		// Only row-backed application resources are subscribable; synthetic harper://*
@@ -928,6 +943,12 @@ async function handleDelete(request: NormRequest): Promise<NormResponse> {
 	if (session.user !== request.user) {
 		return { status: 403, headers: {} };
 	}
+	// Explicit teardown: stop live subscriptions and reject any pending server→client
+	// requests for this session (the GET 'close' covers subscriptions on disconnect,
+	// but a DELETE may arrive with no open GET stream, and server-requests aren't
+	// GET-tied at all).
+	dropSessionSubscriptions(sessionId);
+	dropSessionServerRequests(sessionId);
 	await deleteSession(sessionId);
 	return { status: 204, headers: {} };
 }

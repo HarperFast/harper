@@ -3,10 +3,19 @@ const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
 const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
-const { getRegisteredSession, pushSessionFrame } = require('#src/components/mcp/sessionRegistry');
+const {
+	getRegisteredSession,
+	pushSessionFrame,
+	registerSession,
+	_resetSessionRegistryForTest,
+} = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const { addPrompt, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
-const { _setItcForTest, _resetServerRequestsForTest } = require('#src/components/mcp/serverRequests');
+const {
+	_setItcForTest,
+	_resetServerRequestsForTest,
+	_pendingServerRequestCount,
+} = require('#src/components/mcp/serverRequests');
 const {
 	_setResourcesForTest,
 	_setOpenApiGeneratorForTest,
@@ -1008,10 +1017,68 @@ describe('mcp/transport', () => {
 				assert.ok(final, 'final tool result delivered after the client responded');
 				assert.equal(final.result.content[0].text, 'got Ada');
 			});
+
+			it('a GET stream close does not reject a pending tool server→client request', async () => {
+				const initRes = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: { elicitation: {} } }),
+					})
+				);
+				const sid = initRes.headers['Mcp-Session-Id'];
+
+				addTool({
+					name: 'slow-asker',
+					description: 'asks the client and never gets answered here',
+					inputSchema: { type: 'object' },
+					profile: 'application',
+					visibleTo: () => true,
+					handler: async (args, ctx) => {
+						await ctx.serverRequest('elicitation/create', { message: 'name?' });
+						return { content: [{ type: 'text', text: 'done' }] };
+					},
+				});
+
+				// Open a GET SSE stream for this session, then issue a streaming tools/call
+				// whose handler awaits a server→client request (rides the POST stream).
+				const get = await handleMcpRequest(
+					makeReq({
+						method: 'GET',
+						headers: { 'mcp-session-id': sid, 'mcp-protocol-version': '2025-06-18', 'accept': 'text/event-stream' },
+					})
+				);
+				assert.equal(get.status, 200);
+				const call = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(80, 'tools/call', { name: 'slow-asker', arguments: {}, _meta: { progressToken: 't' } }),
+						headers: {
+							'mcp-session-id': sid,
+							'mcp-protocol-version': '2025-06-18',
+							'accept': 'application/json, text/event-stream',
+						},
+					})
+				);
+				assert.ok(call.sseIterable, 'streaming opened');
+				let delivered = false;
+				call.sseIterable.on('data', (f) => {
+					if (f.data?.method === 'elicitation/create') delivered = true;
+				});
+				for (let i = 0; i < 100 && !delivered; i++) await new Promise((r) => setImmediate(r));
+				assert.equal(_pendingServerRequestCount(), 1, 'server→client request is pending');
+
+				// Simulate a GET reconnect/drop: close the GET stream. The server request
+				// rides the POST stream, so it must survive — not get rejected as isError.
+				get.sseIterable.emit('close');
+				await new Promise((r) => setImmediate(r));
+				assert.equal(_pendingServerRequestCount(), 1, 'pending server request survives GET close');
+
+				call.sseIterable.emit('close'); // clean up the dangling POST stream
+			});
 		});
 
 		describe('resources/subscribe + resources/unsubscribe', () => {
 			beforeEach(() => {
+				// A live GET stream is required to subscribe — register one for the session.
+				registerSession(sessionId, 'application', { username: 'alice', role: { permission: { super_user: true } } });
 				// Inject a fake change stream so dispatch doesn't need the real audit log.
 				// `null` for the sentinel path makes the resource non-subscribable.
 				_setSubscribeImplForTest(async (path) =>
@@ -1025,7 +1092,22 @@ describe('mcp/transport', () => {
 							}
 				);
 			});
-			afterEach(() => _setSubscribeImplForTest(undefined));
+			afterEach(() => {
+				_setSubscribeImplForTest(undefined);
+				_resetSessionRegistryForTest();
+			});
+
+			it('rejects subscribe when no GET SSE stream is open for the session', async () => {
+				_resetSessionRegistryForTest(); // no live stream for this session
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(75, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.match(res.jsonBody.error.message, /GET SSE stream/);
+			});
 
 			it('subscribes to a row-backed URI and returns an empty result', async () => {
 				const res = await handleMcpRequest(

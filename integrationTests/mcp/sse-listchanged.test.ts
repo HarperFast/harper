@@ -298,4 +298,24 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 			sse.close();
 		}
 	});
+
+	test('N4: subscribing to a collection URI notifies on any record change in the table', async () => {
+		// The collection URI is what resources/list advertises (no record id). It must
+		// watch the whole table, not a phantom record named after the resource.
+		const uri = new URL('/WorkItem', ctx.harper.httpURL).href;
+		const session = await initialize(ctx.harper.httpURL, adminAuth(ctx));
+		const sse = await openSse(ctx.harper.httpURL, adminAuth(ctx), session, 2500);
+		try {
+			strictEqual(sse.status, 200, 'application GET SSE establishes');
+			const sub = await mcpCall(ctx.harper.httpURL, adminAuth(ctx), session, 'resources/subscribe', { uri }, 10);
+			strictEqual(sub.error, undefined, `collection resources/subscribe should succeed: ${JSON.stringify(sub.error)}`);
+			// A brand-new record in the table must trigger the collection subscription.
+			await putWorkItem(ctx, `coll_${Date.now().toString(36)}`, { state: 'pending', payload: 'z' });
+			const evt = await sse.next((m) => m?.method === 'notifications/resources/updated', 5000);
+			ok(evt, 'notifications/resources/updated delivered after a record changed in the subscribed collection');
+			strictEqual(evt.params.uri, uri, 'notification carries the subscribed collection URI');
+		} finally {
+			sse.close();
+		}
+	});
 });
