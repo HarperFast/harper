@@ -16,6 +16,7 @@ import { readFile, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node
 import {
 	close,
 	closeSync,
+	createReadStream,
 	createWriteStream,
 	fdatasync,
 	open,
@@ -33,7 +34,7 @@ import {
 	type FSWatcher,
 } from 'node:fs';
 import type { StatsFs } from 'node:fs';
-import { createDeflate, deflate } from 'node:zlib';
+import { createDeflate, createInflate, deflate } from 'node:zlib';
 import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
@@ -1612,37 +1613,69 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 	}
 }
 
-function isBlobFileComplete(storageInfo: StorageInfo): boolean {
+async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
+	let filePath: string;
+	let fileSize: number;
 	try {
-		const filePath = getFilePath(storageInfo);
-		const fileSize = statSync(filePath).size;
-		if (fileSize < HEADER_SIZE) return false;
-		const header = Buffer.alloc(HEADER_SIZE);
-		const fd = openSync(filePath, 'r');
-		try {
-			readSync(fd, header, 0, HEADER_SIZE, 0);
-		} finally {
-			closeSync(fd);
-		}
-		const headerValue = new DataView(header.buffer, header.byteOffset, 8).getBigUint64(0);
-		if (Number(headerValue >> 48n) === ERROR_TYPE) return false;
-		const size = Number(headerValue & 0xffffffffffffn);
-		return size === fileSize - HEADER_SIZE;
+		filePath = getFilePath(storageInfo);
+		fileSize = statSync(filePath).size;
 	} catch (e) {
 		if ((e as any).code === 'ENOENT') return false;
 		throw e;
 	}
+	if (fileSize < HEADER_SIZE) return false;
+	const header = Buffer.alloc(HEADER_SIZE);
+	const fd = openSync(filePath, 'r');
+	try {
+		readSync(fd, header, 0, HEADER_SIZE, 0);
+	} finally {
+		closeSync(fd);
+	}
+	const headerValue = new DataView(header.buffer, header.byteOffset, 8).getBigUint64(0);
+	if (Number(headerValue >> 48n) === ERROR_TYPE) return false;
+	// The header size field holds the *uncompressed* content length for both compressed and
+	// uncompressed blobs (writeBlobWithStream stores deflate.bytesWritten, which is the input/
+	// uncompressed byte count). For an uncompressed blob that equals the on-disk body length;
+	// for a compressed blob it does not, so the body length can't be compared to it directly.
+	const size = Number(headerValue & 0xffffffffffffn);
+	if (size === UNKNOWN_SIZE) return false; // in-flight placeholder, header not yet finalized
+	if (header[1] === DEFLATE_TYPE) {
+		// A compressed blob's header size is the uncompressed length, so it can't be compared to the
+		// compressed on-disk body. Verify by streaming the body through inflate and counting the
+		// decompressed bytes: a fully-written deflate stream inflates to exactly `size` bytes; a
+		// truncated one errors (Z_BUF_ERROR) or yields fewer. Streaming (rather than inflateSync on
+		// the whole buffer) keeps memory bounded during the repair sweep, which may touch many large
+		// blobs.
+		return new Promise<boolean>((resolve) => {
+			let inflatedLength = 0;
+			const source = createReadStream(filePath, { start: HEADER_SIZE });
+			const inflate = createInflate();
+			const fail = () => {
+				source.destroy();
+				resolve(false);
+			};
+			source.on('error', fail);
+			inflate.on('error', fail);
+			inflate.on('data', (chunk: Buffer) => {
+				inflatedLength += chunk.length;
+			});
+			inflate.on('end', () => resolve(inflatedLength === size));
+			source.pipe(inflate);
+		});
+	}
+	return size === fileSize - HEADER_SIZE;
 }
 
 /**
- * Returns true if the given blob's backing file is present and complete (header size matches
- * actual file size, no error stub, not an in-flight placeholder). Used by the repair sweep to
- * verify a blob was durably written after a peer fetch.
+ * Resolves true if the given blob's backing file is present and complete: no error stub, not an
+ * in-flight placeholder, and the content matches the header (uncompressed blobs by body length,
+ * compressed blobs by a streamed inflate). Used by the repair sweep to verify a blob was durably
+ * written after a peer fetch.
  */
-export function isBlobComplete(blob: Blob): boolean {
-	if (!(blob instanceof FileBackedBlob)) return true; // inline blobs are always complete
+export function isBlobComplete(blob: Blob): Promise<boolean> {
+	if (!(blob instanceof FileBackedBlob)) return Promise.resolve(true); // inline blobs are always complete
 	const storageInfo = storageInfoForBlob.get(blob);
-	if (!storageInfo?.fileId) return false;
+	if (!storageInfo?.fileId) return Promise.resolve(false);
 	return isBlobFileComplete(storageInfo);
 }
 
@@ -1664,20 +1697,25 @@ export async function* findIncompleteBlobRefs(
 		for (const entry of table.primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 			try {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					let hasIncomplete = false;
+					const storageInfos: StorageInfo[] = [];
 					findBlobsInObject(entry.value, (blob) => {
-						if (hasIncomplete) return;
 						if (blob instanceof FileBackedBlob) {
 							const storageInfo = storageInfoForBlob.get(blob);
-							if (storageInfo?.fileId != null) {
-								try {
-									if (!isBlobFileComplete(storageInfo)) hasIncomplete = true;
-								} catch {
-									hasIncomplete = true; // unreadable path → treat as incomplete
-								}
-							}
+							if (storageInfo?.fileId != null) storageInfos.push(storageInfo);
 						}
 					});
+					let hasIncomplete = false;
+					for (const storageInfo of storageInfos) {
+						try {
+							if (!(await isBlobFileComplete(storageInfo))) {
+								hasIncomplete = true;
+								break;
+							}
+						} catch {
+							hasIncomplete = true; // unreadable path → treat as incomplete
+							break;
+						}
+					}
 					if (hasIncomplete) yield { tableName, table, recordId: entry.key };
 				}
 				if (i++ % perMS === 0) await delay(1);
