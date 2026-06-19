@@ -24,7 +24,17 @@ const {
 	isBlobComplete,
 	findIncompleteBlobRefs,
 } = require('#src/resources/blob');
-const { existsSync, unlinkSync, openSync, writeSync, ftruncateSync, closeSync } = require('fs');
+const {
+	existsSync,
+	unlinkSync,
+	openSync,
+	writeSync,
+	ftruncateSync,
+	closeSync,
+	statSync,
+	truncateSync,
+	writeFileSync,
+} = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
@@ -684,6 +694,27 @@ describe('Blob test', () => {
 		await decodeFromDatabase(() => saveBlob(savedBlob).saving, BlobTest.primaryStore.rootStore);
 		assert.equal(isBlobComplete(savedBlob), true, 'saved blob → true');
 
+		// truncated file — header records the original size but the file body is short, so the
+		// size check (header size === fileSize - HEADER_SIZE) fails
+		const truncatedBlob = await createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(truncatedBlob).saving, BlobTest.primaryStore.rootStore);
+		const truncatedPath = getFilePathForBlob(truncatedBlob);
+		const truncatedFullSize = statSync(truncatedPath).size;
+		truncateSync(truncatedPath, truncatedFullSize - 100); // drop 100 body bytes, header still claims the full size
+		assert.equal(isBlobComplete(truncatedBlob), false, 'truncated blob (size mismatch) → false');
+		unlinkSync(truncatedPath);
+
+		// error-stub file — an 8-byte header whose top 16 bits are the ERROR_TYPE marker (0xff),
+		// written when a save failed; isBlobFileComplete treats it as incomplete
+		const errorBlob = await createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(errorBlob).saving, BlobTest.primaryStore.rootStore);
+		const errorPath = getFilePathForBlob(errorBlob);
+		const errorHeader = Buffer.alloc(8);
+		errorHeader.writeBigUInt64BE(0xffn << 48n); // ERROR_TYPE in the high 16 bits
+		writeFileSync(errorPath, errorHeader);
+		assert.equal(isBlobComplete(errorBlob), false, 'error-stub blob (ERROR_TYPE header) → false');
+		unlinkSync(errorPath);
+
 		// delete the file to simulate ENOENT (missing blob)
 		const blobPath = getFilePathForBlob(savedBlob);
 		unlinkSync(blobPath);
@@ -700,6 +731,10 @@ describe('Blob test', () => {
 		const gapPath = getFilePathForBlob(gapBlob);
 		unlinkSync(gapPath);
 
+		// record 903: no blob at all — the HAS_BLOBS metadata flag is never set, so the per-record
+		// gate (entry.metadataFlags & HAS_BLOBS) skips it and it is never yielded
+		await BlobTest.put({ id: 903 });
+
 		const foundIds = new Set();
 		for await (const ref of findIncompleteBlobRefs(getDatabases().test)) {
 			foundIds.add(ref.recordId);
@@ -707,6 +742,7 @@ describe('Blob test', () => {
 
 		assert(!foundIds.has(901), 'complete-blob record must not be yielded');
 		assert(foundIds.has(902), 'record with deleted blob file must be yielded');
+		assert(!foundIds.has(903), 'record without the HAS_BLOBS flag must not be yielded');
 
 		// cleanup: remove the complete blob file so cleanupOrphans stays clean
 		unlinkSync(getFilePathForBlob(completeBlob));
