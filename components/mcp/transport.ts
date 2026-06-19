@@ -37,8 +37,8 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
-import { listResources, listResourceTemplates, readResource } from './resources.ts';
-import { getPrompt, listPrompts } from './promptRegistry.ts';
+import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
+import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
 import { registerSession, touchRegisteredSession, type SseEvent } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
@@ -260,6 +260,7 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
 	if (method === 'prompts/list') return dispatchPromptsList(request, message, messageId);
 	if (method === 'prompts/get') return await dispatchPromptsGet(request, session, message, messageId);
+	if (method === 'completion/complete') return dispatchCompletion(request, message, messageId);
 	if (method === 'logging/setLevel') return dispatchSetLevel(session, message, messageId);
 	// `ping` (base-protocol liveness) → empty result. Routed here, after session
 	// validation, so a stale/expired/wrong-user session surfaces the normal
@@ -703,6 +704,43 @@ async function dispatchPromptsGet(
 		harperLogger.warn(`MCP prompts/get ${name} threw: ${(err as Error).stack ?? errMsg}`);
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `prompt render failed: ${errMsg}`));
 	}
+}
+
+function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
+	const params =
+		'params' in message
+			? (message.params as
+					| {
+							ref?: { type?: unknown; uri?: unknown; name?: unknown };
+							argument?: { name?: unknown; value?: unknown };
+							context?: { arguments?: Record<string, string> };
+					  }
+					| undefined)
+			: undefined;
+	const refType = typeof params?.ref?.type === 'string' ? params.ref.type : undefined;
+	const argName = typeof params?.argument?.name === 'string' ? params.argument.name : undefined;
+	if (!refType || !argName) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'completion/complete requires ref.type and argument.name')
+		);
+	}
+	const value = typeof params?.argument?.value === 'string' ? params.argument.value : '';
+	let completion: { values: string[]; total: number; hasMore: boolean };
+	if (refType === 'ref/resource') {
+		completion = completeResourceArgument({
+			argument: { name: argName, value },
+			context: params?.context,
+			user: effectiveUser(request),
+		});
+	} else if (refType === 'ref/prompt') {
+		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;
+		completion = completePromptArgument(request.profile, promptName, argName, value);
+	} else {
+		// Unknown ref type → an empty completion (spec: completion is best-effort).
+		completion = { values: [], total: 0, hasMore: false };
+	}
+	return jsonResponse(200, buildSuccess(messageId, { completion }));
 }
 
 async function dispatchResourcesRead(

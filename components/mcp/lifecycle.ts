@@ -24,6 +24,7 @@ export const SERVER_CAPABILITIES = {
 	tools: { listChanged: true },
 	resources: { listChanged: true },
 	prompts: { listChanged: true },
+	completions: {},
 	logging: {},
 } as const;
 

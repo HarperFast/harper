@@ -842,6 +842,52 @@ describe('mcp/transport', () => {
 			});
 		});
 
+		describe('completion/complete', () => {
+			it('completes a prompt argument (ref/prompt) from author-declared values', async () => {
+				addPrompt({
+					name: 'pick',
+					profile: 'application',
+					arguments: [{ name: 'color', values: ['red', 'green', 'blue'] }],
+					render: () => ({ messages: [] }),
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(60, 'completion/complete', {
+							ref: { type: 'ref/prompt', name: 'pick' },
+							argument: { name: 'color', value: 'r' },
+						}),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.deepEqual(res.jsonBody.result.completion.values, ['red']);
+				assert.equal(res.jsonBody.result.completion.hasMore, false);
+			});
+
+			it('returns -32602 when ref.type or argument.name is missing', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(61, 'completion/complete', { ref: { type: 'ref/prompt' } }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('returns an empty completion for an unknown ref type', async () => {
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(62, 'completion/complete', {
+							ref: { type: 'ref/mystery' },
+							argument: { name: 'x', value: '' },
+						}),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.deepEqual(res.jsonBody.result.completion, { values: [], total: 0, hasMore: false });
+			});
+		});
+
 		describe('resources/list', () => {
 			it('returns synthetic harper:// URIs as a baseline', async () => {
 				const res = await handleMcpRequest(

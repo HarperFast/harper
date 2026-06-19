@@ -92,7 +92,12 @@ interface ResourceClassLike {
 		name: string;
 		title?: string;
 		description?: string;
-		arguments?: ReadonlyArray<{ name: string; description?: string; required?: boolean }>;
+		arguments?: ReadonlyArray<{
+			name: string;
+			description?: string;
+			required?: boolean;
+			values?: ReadonlyArray<string>;
+		}>;
 		render: (args: Record<string, string>) => PromptGetResult | Promise<PromptGetResult>;
 	}>;
 }

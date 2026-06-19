@@ -17,6 +17,12 @@ export interface PromptArgument {
 	name: string;
 	description?: string;
 	required?: boolean;
+	/**
+	 * Author-declared candidate values for `completion/complete` on this argument
+	 * (#1349 §3.2). Prompts have no schema to derive candidates from, so completion
+	 * is opt-in: omit for no completions.
+	 */
+	values?: ReadonlyArray<string>;
 }
 
 export interface PromptContent {
@@ -129,6 +135,29 @@ export function listPrompts(profile: McpProfile, offset?: number, limit?: number
 		prompts: slice,
 		nextCursor: next < all.length ? encodeCursor(next) : undefined,
 	};
+}
+
+/**
+ * Complete a prompt argument (`ref/prompt`) from the argument's author-declared
+ * `values` (#1349 §3.2), prefix-matched (case-insensitive) and capped at 100.
+ * Empty when the prompt/argument is unknown or declares no candidate values.
+ */
+export function completePromptArgument(
+	profile: McpProfile,
+	promptName: string | undefined,
+	argName: string,
+	value: string
+): { values: string[]; total: number; hasMore: boolean } {
+	const empty = { values: [], total: 0, hasMore: false };
+	if (!promptName) return empty;
+	const prompt = registry.get(promptName);
+	if (!prompt || prompt.profile !== profile) return empty;
+	const arg = prompt.arguments?.find((a) => a.name === argName);
+	if (!arg?.values || arg.values.length === 0) return empty;
+	const partial = (value ?? '').toLowerCase();
+	const filtered = arg.values.filter((v) => v.toLowerCase().startsWith(partial)).sort();
+	const capped = filtered.slice(0, 100);
+	return { values: capped, total: filtered.length, hasMore: filtered.length > capped.length };
 }
 
 /** Count of prompts registered for a profile — used to suppress no-op list_changed. */

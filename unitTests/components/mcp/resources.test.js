@@ -3,6 +3,7 @@ const {
 	listResources,
 	listResourceTemplates,
 	readResource,
+	completeResourceArgument,
 	_setResourcesForTest,
 	_setOpenApiGeneratorForTest,
 	_setHttpUrlPrefixForTest,
@@ -192,6 +193,60 @@ describe('mcp/resources', () => {
 			assert.equal(page2.resourceTemplates.length, all.length - 1);
 			assert.equal(page2.nextCursor, undefined, 'last page has no nextCursor');
 			assert.notDeepEqual(page1.resourceTemplates[0], page2.resourceTemplates[0]);
+		});
+	});
+
+	describe('completeResourceArgument (ref/resource)', () => {
+		it('completes {database} from RBAC-visible tables', () => {
+			assert.deepEqual(completeResourceArgument({ argument: { name: 'database', value: '' }, user: SUPER }).values, [
+				'data',
+			]);
+			// alice can read data.product → sees the data database
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: ALICE_READ_ONLY }).values,
+				['data']
+			);
+			// nobody has no table perms → no databases
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: NOBODY }).values,
+				[]
+			);
+		});
+
+		it('completes {table} within a database, RBAC-filtered, prefix-matched', () => {
+			const superAll = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+			});
+			assert.deepEqual(superAll.values, ['customer', 'product']);
+			// alice only sees product
+			const alice = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: ALICE_READ_ONLY,
+			});
+			assert.deepEqual(alice.values, ['product']);
+			// prefix filter
+			const prefixed = completeResourceArgument({
+				argument: { name: 'table', value: 'pro' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+			});
+			assert.deepEqual(prefixed.values, ['product']);
+		});
+
+		it('completes {resourcePath} from mcp-exposed resource paths', () => {
+			const { values } = completeResourceArgument({ argument: { name: 'resourcePath', value: '' }, user: SUPER });
+			assert.ok(values.includes('Product') && values.includes('Customer'));
+		});
+
+		it('returns an empty completion for an unknown variable', () => {
+			assert.deepEqual(completeResourceArgument({ argument: { name: 'mystery', value: '' }, user: SUPER }), {
+				values: [],
+				total: 0,
+				hasMore: false,
+			});
 		});
 	});
 

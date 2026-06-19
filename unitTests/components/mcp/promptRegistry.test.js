@@ -7,6 +7,7 @@ const {
 	clearProfilePrompts,
 	snapshotProfilePrompts,
 	countProfilePrompts,
+	completePromptArgument,
 	_resetPromptRegistryForTest,
 } = require('#src/components/mcp/promptRegistry');
 const { decodeCursor } = require('#src/components/mcp/pagination');
@@ -94,5 +95,26 @@ describe('mcp/promptRegistry', () => {
 		assert.equal(snap.length, 1);
 		assert.equal(snap[0].name, 'a');
 		assert.equal(typeof snap[0].render, 'function');
+	});
+
+	describe('completePromptArgument', () => {
+		it('filters an argument’s author-declared values by prefix', () => {
+			addPrompt(
+				def('pick', 'application', {
+					arguments: [{ name: 'color', values: ['red', 'green', 'blue', 'grey'] }],
+				})
+			);
+			const all = completePromptArgument('application', 'pick', 'color', '');
+			assert.deepEqual(all.values, ['blue', 'green', 'grey', 'red']);
+			const gr = completePromptArgument('application', 'pick', 'color', 'gr');
+			assert.deepEqual(gr.values, ['green', 'grey']);
+		});
+
+		it('returns empty for unknown prompt, wrong profile, or an argument with no values', () => {
+			addPrompt(def('plain', 'application', { arguments: [{ name: 'x' }] }));
+			assert.deepEqual(completePromptArgument('application', 'nope', 'color', '').values, []);
+			assert.deepEqual(completePromptArgument('operations', 'plain', 'x', '').values, []);
+			assert.deepEqual(completePromptArgument('application', 'plain', 'x', '').values, []);
+		});
 	});
 });

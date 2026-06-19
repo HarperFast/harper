@@ -184,7 +184,11 @@ export interface ListResourceTemplatesResult {
  * spec-conformant and consistent with the other list methods. `offset` is the
  * decoded cursor (the transport rejects malformed cursors with `-32602` first).
  */
-export function listResourceTemplates(profile: McpProfile, offset?: number, limit?: number): ListResourceTemplatesResult {
+export function listResourceTemplates(
+	profile: McpProfile,
+	offset?: number,
+	limit?: number
+): ListResourceTemplatesResult {
 	const all: ResourceTemplate[] = [];
 	if (profile === 'application') {
 		all.push({
@@ -212,6 +216,80 @@ export function listResourceTemplates(profile: McpProfile, offset?: number, limi
 		resourceTemplates: slice,
 		nextCursor: next < all.length ? encodeCursor(next) : undefined,
 	};
+}
+
+/** Result shape for `completion/complete` (#1349 §3.2). */
+export interface CompletionResult {
+	values: string[];
+	total: number;
+	hasMore: boolean;
+}
+
+const COMPLETION_CAP = 100;
+
+export interface CompleteResourceArgs {
+	/** The template variable being completed (e.g. `database`, `table`, `resourcePath`). */
+	argument: { name: string; value: string };
+	/** Previously-resolved sibling variables (e.g. `database` when completing `table`). */
+	context?: { arguments?: Record<string, string> };
+	user: AuthedUser;
+}
+
+/**
+ * Complete a resource-template variable (`ref/resource`) from schema introspection,
+ * RBAC-filtered. Candidates are derived from the same Resource registry the rest of
+ * the MCP resource surface uses; prefix-matched (case-insensitive) against the
+ * partial value and capped at 100 per the MCP completion spec.
+ */
+export function completeResourceArgument(args: CompleteResourceArgs): CompletionResult {
+	const { argument, context, user } = args;
+	const partial = (argument.value ?? '').toLowerCase();
+	let candidates: string[] = [];
+	if (argument.name === 'database') {
+		const dbs = new Set<string>();
+		for (const { db, table } of enumerateTableBackedResources()) {
+			if (canSeeTable(user, db, table)) dbs.add(db);
+		}
+		candidates = [...dbs];
+	} else if (argument.name === 'table') {
+		const db = context?.arguments?.database;
+		const tables = new Set<string>();
+		for (const e of enumerateTableBackedResources()) {
+			if (db && e.db !== db) continue;
+			if (canSeeTable(user, e.db, e.table)) tables.add(e.table);
+		}
+		candidates = [...tables];
+	} else if (argument.name === 'resourcePath') {
+		candidates = enumerateMcpResourcePaths();
+	}
+	const filtered = candidates.filter((c) => c.toLowerCase().startsWith(partial)).sort();
+	return capCompletion(filtered);
+}
+
+/** Cap a candidate list to the MCP completion limit, reporting total + hasMore. */
+export function capCompletion(values: string[]): CompletionResult {
+	const total = values.length;
+	const capped = values.slice(0, COMPLETION_CAP);
+	return { values: capped, total, hasMore: total > capped.length };
+}
+
+/** A table is offerable if the user may read or describe it. */
+function canSeeTable(user: AuthedUser, db: string, table: string): boolean {
+	const perm = userTablePermissions(user, db, table);
+	return !!perm && (perm.read === true || perm.describe === true);
+}
+
+/** MCP-exposed application resource paths (the `{resourcePath}` candidates). */
+function enumerateMcpResourcePaths(): string[] {
+	const out: string[] = [];
+	for (const [path, entry] of getResources()) {
+		if (!isMcpExposed(entry)) continue;
+		const ResourceClass = entry.Resource as { prototype?: unknown; hidden?: boolean } | undefined;
+		if (ResourceClass?.hidden === true) continue;
+		if (!hasRestVerbs(ResourceClass?.prototype)) continue;
+		out.push(path);
+	}
+	return out;
 }
 
 export interface ReadResourceArgs {
