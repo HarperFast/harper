@@ -62,6 +62,17 @@ describe('mcp/promptRegistry', () => {
 		});
 	});
 
+	it('omits the internal `values` field from argument descriptors in prompts/list', () => {
+		addPrompt(
+			def('withvalues', 'application', {
+				arguments: [{ name: 'color', description: 'pick one', required: true, values: ['red', 'green'] }],
+			})
+		);
+		const { prompts } = listPrompts('application');
+		assert.deepEqual(prompts[0].arguments, [{ name: 'color', description: 'pick one', required: true }]);
+		assert.equal(prompts[0].arguments[0].values, undefined, 'values must not leak to clients');
+	});
+
 	it('paginates with an opaque cursor', () => {
 		for (const n of ['a', 'b', 'c']) addPrompt(def(n));
 		const page1 = listPrompts('application', 0, 2);

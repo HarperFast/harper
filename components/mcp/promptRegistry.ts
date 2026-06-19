@@ -123,7 +123,17 @@ export function listPrompts(profile: McpProfile, offset?: number, limit?: number
 			name: def.name,
 			...(def.title ? { title: def.title } : {}),
 			...(def.description ? { description: def.description } : {}),
-			...(def.arguments ? { arguments: def.arguments } : {}),
+			// Project to the spec PromptArgument shape — `values` is an internal field
+			// (completion candidates) and must not leak into the prompts/list response.
+			...(def.arguments
+				? {
+						arguments: def.arguments.map((a) => ({
+							name: a.name,
+							...(a.description ? { description: a.description } : {}),
+							...(a.required ? { required: a.required } : {}),
+						})),
+					}
+				: {}),
 		});
 	}
 	all.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

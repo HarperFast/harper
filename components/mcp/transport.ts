@@ -723,7 +723,9 @@ async function dispatchPromptsGet(
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `Unknown prompt: ${name}`));
 	}
 	const args =
-		params?.arguments && typeof params.arguments === 'object' ? (params.arguments as Record<string, string>) : {};
+		params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
+			? (params.arguments as Record<string, string>)
+			: {};
 	const missing = (prompt.arguments ?? []).filter((a) => a.required && args[a.name] == null).map((a) => a.name);
 	if (missing.length > 0) {
 		return jsonResponse(

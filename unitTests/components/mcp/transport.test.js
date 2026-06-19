@@ -879,6 +879,24 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.error.code, -32602);
 			});
 
+			it('prompts/get treats an array arguments payload as empty (no array reaches render)', async () => {
+				addPrompt({
+					name: 'echo_args',
+					profile: 'application',
+					render: (args) => ({
+						messages: [{ role: 'user', content: { type: 'text', text: Array.isArray(args) ? 'ARRAY' : 'OBJECT' } }],
+					}),
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(55, 'prompts/get', { name: 'echo_args', arguments: ['x', 'y'] }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.result.messages[0].content.text, 'OBJECT', 'array arguments must not pass through');
+			});
+
 			it('prompts/get returns -32602 when a required argument is missing', async () => {
 				const res = await handleMcpRequest(
 					makeReq({
