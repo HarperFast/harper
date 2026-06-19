@@ -89,10 +89,32 @@ export interface AuthedUser {
 	};
 }
 
+export interface ToolProgressUpdate {
+	/** Monotonic progress value — a count, or a fraction of `total`. */
+	progress: number;
+	/** Optional known total, for a percentage. */
+	total?: number;
+	/** Optional human-readable status line. */
+	message?: string;
+}
+
 export interface ToolCallContext {
 	user: AuthedUser;
 	profile: McpProfile;
 	sessionId: string;
+	/**
+	 * Aborted when the client sends `notifications/cancelled` for this call
+	 * (#1349 §3.3). Long-running handlers should check `signal.aborted` (or pass
+	 * `signal` to abortable work) and stop promptly. Absent in contexts that
+	 * don't wire cancellation (e.g. some tests).
+	 */
+	signal?: AbortSignal;
+	/**
+	 * Emit a `notifications/progress` update for this call. A no-op unless the
+	 * client supplied a `_meta.progressToken` and accepts `text/event-stream`
+	 * (i.e. the response streams) — safe to call unconditionally.
+	 */
+	progress?: (update: ToolProgressUpdate) => void;
 }
 
 /**

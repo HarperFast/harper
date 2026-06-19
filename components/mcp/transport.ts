@@ -38,8 +38,10 @@ import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource } from './resources.ts';
-import { registerSession, touchRegisteredSession } from './sessionRegistry.ts';
-import { getTool, listTools, type AuthedUser, type ToolResult } from './toolRegistry.ts';
+import { registerSession, touchRegisteredSession, type SseEvent } from './sessionRegistry.ts';
+import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
+import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
+import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
 
 export type McpProfile = 'operations' | 'application';
 
@@ -235,6 +237,14 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (isClientFireAndForget(message)) {
 		if (method === 'notifications/initialized') {
 			await handleInitialized(session);
+		} else if (method === 'notifications/cancelled') {
+			// Abort the in-flight tools/call this references, if it ran on this
+			// worker (#1349 §3.3). Per-worker: a cancel that lands elsewhere is a
+			// no-op here — the call's client-disconnect teardown is the backstop.
+			const cancelParams = 'params' in message ? (message.params as { requestId?: JsonRpcId } | undefined) : undefined;
+			if (cancelParams?.requestId !== undefined && cancelParams.requestId !== null) {
+				cancelCall(session.id, cancelParams.requestId, 'cancelled by client');
+			}
 		}
 		return { status: 202, headers: {} };
 	}
@@ -481,49 +491,122 @@ async function dispatchToolsCall(
 		return jsonResponse(200, buildSuccess(messageId, toolResult));
 	}
 
-	let toolResult: ToolResult;
-	let status: 'ok' | 'isError' = 'ok';
-	let errorMessage: string | undefined;
-	try {
-		toolResult = await tool.handler(args, {
-			user,
+	// Per-call cancellation (#1349 §3.3): an inbound `notifications/cancelled`
+	// referencing this request id aborts `signal`. Registered for the call's
+	// lifetime, removed in `finally`.
+	const controller = new AbortController();
+	registerCall(session.id, messageId, controller);
+
+	// Invoke the handler, normalize errors to an isError tool result, release the
+	// rate-limit slot, and emit the audit entry. `progress` is wired only on the
+	// streaming path; absent here it's a no-op.
+	const invoke = async (progress?: ToolCallContext['progress']): Promise<ToolResult> => {
+		let toolResult: ToolResult;
+		let status: 'ok' | 'isError' = 'ok';
+		let errorMessage: string | undefined;
+		try {
+			toolResult = await tool.handler(args, {
+				user,
+				profile: request.profile,
+				sessionId: session.id,
+				signal: controller.signal,
+				progress,
+			});
+			if (toolResult?.isError) status = 'isError';
+		} catch (err) {
+			// Per MCP §server/tools → Error Handling: tool-execution errors come
+			// back as a successful JSON-RPC result with isError:true so the LLM
+			// can see and adapt. Stack traces stay in the server log; only the
+			// message goes to the wire (Harper-style hygiene).
+			const errMsg = (err as Error).message ?? 'tool execution failed';
+			harperLogger.warn(`MCP tools/call ${name} threw: ${(err as Error).stack ?? errMsg}`);
+			errorMessage = errMsg;
+			status = 'isError';
+			toolResult = {
+				isError: true,
+				content: [
+					{
+						type: 'text',
+						text: JSON.stringify({ kind: 'harper_error', message: errMsg }),
+					},
+				],
+			};
+		} finally {
+			decision.release();
+		}
+		emitAuditEntry({
+			timestamp: new Date(callStartedAt).toISOString(),
 			profile: request.profile,
 			sessionId: session.id,
+			tool: name,
+			user: user.username ?? request.user,
+			args: args as object,
+			status,
+			durationMs: Date.now() - callStartedAt,
+			...(errorMessage ? { errorMessage } : {}),
 		});
-		if (toolResult?.isError) status = 'isError';
-	} catch (err) {
-		// Per MCP §server/tools → Error Handling: tool-execution errors come
-		// back as a successful JSON-RPC result with isError:true so the LLM
-		// can see and adapt. Stack traces stay in the server log; only the
-		// message goes to the wire (Harper-style hygiene).
-		const errMsg = (err as Error).message ?? 'tool execution failed';
-		harperLogger.warn(`MCP tools/call ${name} threw: ${(err as Error).stack ?? errMsg}`);
-		errorMessage = errMsg;
-		status = 'isError';
-		toolResult = {
-			isError: true,
-			content: [
-				{
-					type: 'text',
-					text: JSON.stringify({ kind: 'harper_error', message: errMsg }),
-				},
-			],
-		};
-	} finally {
-		decision.release();
+		return toolResult;
+	};
+
+	// Stream the response (#1349 §3.4) only when the client both supplied a
+	// `_meta.progressToken` and accepts `text/event-stream`. Otherwise keep the
+	// single-JSON response (back-compat for clients/tools that don't stream).
+	const progressToken = extractProgressToken(message);
+	const wantsStream =
+		progressToken !== undefined && acceptsMediaType(request.headers[ACCEPT_HEADER], 'text/event-stream');
+
+	if (!wantsStream) {
+		try {
+			const toolResult = await invoke();
+			return jsonResponse(200, buildSuccess(messageId, toolResult));
+		} finally {
+			unregisterCall(session.id, messageId);
+		}
 	}
-	emitAuditEntry({
-		timestamp: new Date(callStartedAt).toISOString(),
-		profile: request.profile,
-		sessionId: session.id,
-		tool: name,
-		user: user.username ?? request.user,
-		args: args as object,
-		status,
-		durationMs: Date.now() - callStartedAt,
-		...(errorMessage ? { errorMessage } : {}),
-	});
-	return jsonResponse(200, buildSuccess(messageId, toolResult));
+
+	// Streaming: hand back an SSE stream immediately and run the handler detached,
+	// pushing `notifications/progress` frames as it emits, then the final JSON-RPC
+	// response, then closing the stream. The adapters frame `sseIterable` to the
+	// wire (the same path the GET channel uses).
+	const queue = new IterableEventQueue<SseEvent>();
+	const emitProgress: ToolCallContext['progress'] = (update) => {
+		if (controller.signal.aborted) return;
+		queue.send({
+			event: 'message',
+			data: {
+				jsonrpc: '2.0',
+				method: 'notifications/progress',
+				params: {
+					progressToken,
+					progress: update.progress,
+					...(update.total !== undefined ? { total: update.total } : {}),
+					...(update.message !== undefined ? { message: update.message } : {}),
+				},
+			},
+		});
+	};
+	void (async () => {
+		try {
+			const toolResult = await invoke(emitProgress);
+			queue.send({ event: 'message', data: buildSuccess(messageId, toolResult) });
+		} finally {
+			unregisterCall(session.id, messageId);
+			queue.emit('close');
+		}
+	})();
+	return {
+		status: 200,
+		headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' },
+		sseIterable: queue,
+	};
+}
+
+/** Read a JSON-RPC request's `params._meta.progressToken` (string|number) if present. */
+function extractProgressToken(message: JsonRpcMessage): string | number | undefined {
+	const params =
+		'params' in message ? (message.params as { _meta?: { progressToken?: unknown } } | undefined) : undefined;
+	const token = params?._meta?.progressToken;
+	return typeof token === 'string' || typeof token === 'number' ? token : undefined;
 }
 
 function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {

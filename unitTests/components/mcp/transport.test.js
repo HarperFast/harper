@@ -648,6 +648,133 @@ describe('mcp/transport', () => {
 			});
 		});
 
+		describe('tools/call streaming (progress + cancellation)', () => {
+			// Consume the per-call SSE queue the way the production adapters do —
+			// via the event API (on('data')/once('close')), which drains buffered
+			// frames synchronously on subscribe. (The queue's async iterator does NOT
+			// terminate on 'close', so `for await` would hang.)
+			function collectFrames(queue) {
+				return new Promise((resolve) => {
+					const frames = [];
+					queue.on('data', (f) => frames.push(f.data));
+					queue.once('close', () => resolve(frames));
+				});
+			}
+
+			it('streams notifications/progress then the final result when progressToken + SSE accept are present', async () => {
+				let releaseHandler;
+				const gate = new Promise((r) => (releaseHandler = r));
+				addTool({
+					name: 'streamer',
+					description: 'emits progress then a result',
+					inputSchema: { type: 'object' },
+					profile: 'application',
+					visibleTo: () => true,
+					handler: async (args, ctx) => {
+						ctx.progress?.({ progress: 1, total: 2, message: 'step 1' });
+						ctx.progress?.({ progress: 2, total: 2 });
+						await gate; // let the test attach its collector before the final frame + close
+						return { content: [{ type: 'text', text: 'done' }] };
+					},
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(40, 'tools/call', { name: 'streamer', arguments: {}, _meta: { progressToken: 'tok-1' } }),
+						headers: {
+							'mcp-session-id': sessionId,
+							'mcp-protocol-version': '2025-06-18',
+							'accept': 'application/json, text/event-stream',
+						},
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody, undefined, 'streaming response carries no jsonBody');
+				assert.ok(res.sseIterable, 'streaming response carries an sseIterable');
+				assert.match(res.headers['Content-Type'], /text\/event-stream/);
+				const collected = collectFrames(res.sseIterable);
+				releaseHandler();
+				const frames = await collected;
+				const progress = frames.filter((d) => d.method === 'notifications/progress');
+				assert.equal(progress.length, 2);
+				assert.equal(progress[0].params.progressToken, 'tok-1');
+				assert.equal(progress[0].params.progress, 1);
+				assert.equal(progress[0].params.total, 2);
+				assert.equal(progress[0].params.message, 'step 1');
+				const final = frames.find((d) => d.id === 40);
+				assert.ok(final, 'final JSON-RPC response delivered on the stream');
+				assert.equal(final.result.content[0].text, 'done');
+			});
+
+			it('returns a single JSON response (no stream) when no progressToken is supplied', async () => {
+				addTool({
+					name: 'streamer2',
+					description: 'would stream',
+					inputSchema: { type: 'object' },
+					profile: 'application',
+					visibleTo: () => true,
+					handler: async (args, ctx) => {
+						ctx.progress?.({ progress: 1 });
+						return { content: [{ type: 'text', text: 'done' }] };
+					},
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(41, 'tools/call', { name: 'streamer2', arguments: {} }),
+						headers: {
+							'mcp-session-id': sessionId,
+							'mcp-protocol-version': '2025-06-18',
+							'accept': 'application/json, text/event-stream',
+						},
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.sseIterable, undefined, 'no stream without a progressToken');
+				assert.equal(res.jsonBody.result.content[0].text, 'done');
+			});
+
+			it('aborts an in-flight streaming call when notifications/cancelled references its id', async () => {
+				let abortedSeen = false;
+				addTool({
+					name: 'waiter',
+					description: 'waits until cancelled',
+					inputSchema: { type: 'object' },
+					profile: 'application',
+					visibleTo: () => true,
+					handler: (args, ctx) =>
+						new Promise((resolve) => {
+							ctx.signal?.addEventListener('abort', () => {
+								abortedSeen = true;
+								resolve({ content: [{ type: 'text', text: 'cancelled' }] });
+							});
+						}),
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(42, 'tools/call', { name: 'waiter', arguments: {}, _meta: { progressToken: 'tok-2' } }),
+						headers: {
+							'mcp-session-id': sessionId,
+							'mcp-protocol-version': '2025-06-18',
+							'accept': 'application/json, text/event-stream',
+						},
+					})
+				);
+				assert.ok(res.sseIterable, 'streaming response opened');
+				const collected = collectFrames(res.sseIterable);
+				const cancelRes = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(undefined, 'notifications/cancelled', { requestId: 42 }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(cancelRes.status, 202);
+				const frames = await collected;
+				assert.equal(abortedSeen, true, 'handler observed the abort');
+				const final = frames.find((d) => d.id === 42);
+				assert.ok(final, 'final response delivered after cancellation');
+				assert.equal(final.result.content[0].text, 'cancelled');
+			});
+		});
+
 		describe('resources/list', () => {
 			it('returns synthetic harper:// URIs as a baseline', async () => {
 				const res = await handleMcpRequest(
