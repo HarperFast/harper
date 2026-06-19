@@ -115,6 +115,13 @@ export interface ToolCallContext {
 	 * (i.e. the response streams) — safe to call unconditionally.
 	 */
 	progress?: (update: ToolProgressUpdate) => void;
+	/**
+	 * Issue a server→client request (#1349 §3.7) — e.g. `sampling/createMessage`,
+	 * `elicitation/create`, `roots/list` — and await the client's response. Only
+	 * present on a streaming call (the request rides the SSE stream); rejects if
+	 * the client didn't declare the matching capability.
+	 */
+	serverRequest?: (method: string, params: unknown) => Promise<unknown>;
 }
 
 /**

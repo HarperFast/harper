@@ -82,7 +82,11 @@ export async function handleInitialize(
 	const negotiated = SUPPORTED_PROTOCOL_VERSIONS.includes(requested as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])
 		? requested
 		: PROTOCOL_VERSION_PREFERRED;
-	const session = await createSession({ user, protocolVersion: negotiated });
+	const clientCapabilities =
+		params?.capabilities && typeof params.capabilities === 'object' && !Array.isArray(params.capabilities)
+			? (params.capabilities as Record<string, unknown>)
+			: undefined;
+	const session = await createSession({ user, protocolVersion: negotiated, clientCapabilities });
 	return {
 		ok: true,
 		session,

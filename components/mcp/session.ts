@@ -57,6 +57,12 @@ export interface McpSessionRecord {
 	 * undefined/empty = no subscriptions.
 	 */
 	subscriptions?: string[];
+	/**
+	 * Client capabilities from `initialize` `params.capabilities` (#1349 §3.7).
+	 * Stored so server→client requests (sampling/elicitation/roots) are only sent
+	 * to clients that declared support. Undefined = client declared none.
+	 */
+	clientCapabilities?: Record<string, unknown>;
 }
 
 let _sessionTable: Table | undefined;
@@ -83,6 +89,7 @@ function declareSessionTable(): Table {
 			{ name: 'lastActivity' },
 			{ name: 'logLevel' },
 			{ name: 'subscriptions' },
+			{ name: 'clientCapabilities' },
 		],
 	});
 }
@@ -112,9 +119,11 @@ function getTable(): Table {
 export async function createSession({
 	user,
 	protocolVersion,
+	clientCapabilities,
 }: {
 	user: string;
 	protocolVersion: string;
+	clientCapabilities?: Record<string, unknown>;
 }): Promise<McpSessionRecord> {
 	const now = Date.now();
 	const record: McpSessionRecord = {
@@ -124,6 +133,7 @@ export async function createSession({
 		user,
 		createdAt: now,
 		lastActivity: now,
+		...(clientCapabilities ? { clientCapabilities } : {}),
 	};
 	await (getTable() as any).put(record);
 	return record;

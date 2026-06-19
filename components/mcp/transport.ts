@@ -45,6 +45,12 @@ import {
 	dropSessionSubscriptions,
 	restoreResourceSubscriptions,
 } from './subscriptions.ts';
+import {
+	sendServerRequest,
+	routeClientResponse,
+	dropSessionServerRequests,
+	isClientResponse,
+} from './serverRequests.ts';
 import { registerSession, touchRegisteredSession, type SseEvent } from './sessionRegistry.ts';
 import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
 import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
@@ -240,6 +246,16 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	// time instead of rolling it back to the load-time value.
 	session = await touchSession(session);
 
+	// A client's response to a server→client request (#3.7): route it to the
+	// worker awaiting it (resolve locally or fan out over ITC), then 202.
+	if (isClientResponse(message)) {
+		routeClientResponse(
+			session.id,
+			message as { id: JsonRpcId & (string | number); result?: unknown; error?: unknown }
+		);
+		return { status: 202, headers: {} };
+	}
+
 	// Fire-and-forget frames (notifications + client responses) always 202.
 	if (isClientFireAndForget(message)) {
 		if (method === 'notifications/initialized') {
@@ -375,9 +391,13 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
 	record.logLevel = session.logLevel;
 	seedSessionSnapshot(sessionId);
-	// Tear down any live resource subscriptions when this SSE stream closes
-	// (disconnect / DELETE / supersede / idle-prune all end via the queue's 'close').
-	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
+	// Tear down any live resource subscriptions + pending server→client requests
+	// when this SSE stream closes (disconnect / DELETE / supersede / idle-prune all
+	// end via the queue's 'close').
+	record.queue.once('close', () => {
+		dropSessionSubscriptions(sessionId);
+		dropSessionServerRequests(sessionId);
+	});
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
 	if (session.subscriptions?.length) {
@@ -525,7 +545,10 @@ async function dispatchToolsCall(
 	// Invoke the handler, normalize errors to an isError tool result, release the
 	// rate-limit slot, and emit the audit entry. `progress` is wired only on the
 	// streaming path; absent here it's a no-op.
-	const invoke = async (progress?: ToolCallContext['progress']): Promise<ToolResult> => {
+	const invoke = async (
+		progress?: ToolCallContext['progress'],
+		serverRequest?: ToolCallContext['serverRequest']
+	): Promise<ToolResult> => {
 		let toolResult: ToolResult;
 		let status: 'ok' | 'isError' = 'ok';
 		let errorMessage: string | undefined;
@@ -536,6 +559,7 @@ async function dispatchToolsCall(
 				sessionId: session.id,
 				signal: controller.signal,
 				progress,
+				serverRequest,
 			});
 			if (toolResult?.isError) status = 'isError';
 		} catch (err) {
@@ -616,6 +640,17 @@ async function dispatchToolsCall(
 			},
 		});
 	};
+	// Server→client requests (#3.7): the handler can call back into the client
+	// during a streaming call. The request frame rides this SSE stream; the
+	// client's response arrives as a later POST and is correlated cross-worker.
+	const serverRequest: ToolCallContext['serverRequest'] = (method, params) =>
+		sendServerRequest({
+			sessionId: session.id,
+			method,
+			params,
+			clientCapabilities: session.clientCapabilities,
+			deliver: (frame) => queue.send({ event: 'message', data: frame }),
+		});
 	// Defer the detached run to the next macrotask so the adapter has wired up its
 	// toSseStream consumer (via the synchronous, microtask-only return path) before
 	// we produce. A synchronous handler could otherwise emit the final frame and
@@ -624,7 +659,7 @@ async function dispatchToolsCall(
 	setImmediate(() => {
 		void (async () => {
 			try {
-				const toolResult = await invoke(emitProgress);
+				const toolResult = await invoke(emitProgress, serverRequest);
 				queue.send({ event: 'message', data: buildSuccess(messageId, toolResult) });
 			} catch (err) {
 				// `invoke` normalizes handler errors to an isError result, so reaching here

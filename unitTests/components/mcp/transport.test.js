@@ -6,6 +6,7 @@ const { _setSessionTableForTest, createSession, loadSession, saveSession } = req
 const { getRegisteredSession } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const { addPrompt, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
+const { _setItcForTest, _resetServerRequestsForTest } = require('#src/components/mcp/serverRequests');
 const {
 	_setResourcesForTest,
 	_setOpenApiGeneratorForTest,
@@ -906,6 +907,77 @@ describe('mcp/transport', () => {
 				);
 				assert.equal(res.jsonBody.error.code, -32602);
 				assert.match(res.jsonBody.error.message, /who/);
+			});
+		});
+
+		describe('tools/call server→client requests (§3.7)', () => {
+			beforeEach(() => _setItcForTest({ send: () => {}, onMessage: () => {} }));
+			afterEach(() => {
+				_resetServerRequestsForTest();
+				_setItcForTest(undefined);
+			});
+
+			it('stores client capabilities on initialize and round-trips a server→client request', async () => {
+				// Initialize WITH the elicitation capability so the session records it.
+				const initRes = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(1, 'initialize', {
+							protocolVersion: '2025-06-18',
+							capabilities: { elicitation: {} },
+						}),
+					})
+				);
+				const sid = initRes.headers['Mcp-Session-Id'];
+				const saved = await loadSession(sid);
+				assert.deepEqual(saved.clientCapabilities, { elicitation: {} }, 'capabilities persisted');
+
+				addTool({
+					name: 'asker',
+					description: 'asks the client',
+					inputSchema: { type: 'object' },
+					profile: 'application',
+					visibleTo: () => true,
+					handler: async (args, ctx) => {
+						const answer = await ctx.serverRequest('elicitation/create', { message: 'name?' });
+						return { content: [{ type: 'text', text: `got ${answer.name}` }] };
+					},
+				});
+
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(70, 'tools/call', { name: 'asker', arguments: {}, _meta: { progressToken: 't' } }),
+						headers: {
+							'mcp-session-id': sid,
+							'mcp-protocol-version': '2025-06-18',
+							'accept': 'application/json, text/event-stream',
+						},
+					})
+				);
+				assert.ok(res.sseIterable, 'streaming opened');
+
+				const frames = [];
+				let reqId;
+				res.sseIterable.on('data', (f) => {
+					frames.push(f.data);
+					if (f.data.method === 'elicitation/create') reqId = f.data.id;
+				});
+				// Handler is deferred (setImmediate) — wait for the server→client request frame.
+				for (let i = 0; i < 100 && reqId === undefined; i++) await new Promise((r) => setImmediate(r));
+				assert.ok(reqId, 'server→client request frame delivered on the stream');
+
+				// Client answers via a fresh POST → resolves the pending request.
+				const respRes = await handleMcpRequest(
+					makeReq({
+						body: JSON.stringify({ jsonrpc: '2.0', id: reqId, result: { name: 'Ada' } }),
+						headers: { 'mcp-session-id': sid, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(respRes.status, 202, 'client response acked with 202');
+
+				await new Promise((resolve) => res.sseIterable.once('close', resolve));
+				const final = frames.find((d) => d.id === 70);
+				assert.ok(final, 'final tool result delivered after the client responded');
+				assert.equal(final.result.content[0].text, 'got Ada');
 			});
 		});
 
