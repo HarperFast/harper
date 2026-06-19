@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import { strictEqual } from 'node:assert/strict';
-import { medianByThroughput } from './harness.mts';
+import { medianByThroughput, parseOptions } from './harness.mts';
 import type { PhaseResult } from './workload.mts';
 
 function rep(throughput: number): PhaseResult {
@@ -43,4 +43,15 @@ test('medianByThroughput picks the conservative lower-middle for an even count',
 
 test('medianByThroughput is a no-op for a single rep', () => {
 	strictEqual(medianByThroughput([rep(42)]).throughput, 42);
+});
+
+test('parseOptions clamps --reps to a positive integer', () => {
+	strictEqual(parseOptions(['--scale=quick']).config.reps, 1, 'defaults to 1');
+	strictEqual(parseOptions(['--scale=quick', '--reps=3']).config.reps, 3);
+	// Non-numeric, zero, negative, and fractional inputs must never yield NaN/0 — that would
+	// make the rep loop never run and medianByThroughput crash on an empty set.
+	strictEqual(parseOptions(['--scale=quick', '--reps=foo']).config.reps, 1, 'NaN -> 1');
+	strictEqual(parseOptions(['--scale=quick', '--reps=0']).config.reps, 1, '0 -> 1');
+	strictEqual(parseOptions(['--scale=quick', '--reps=-2']).config.reps, 1, 'negative -> 1');
+	strictEqual(parseOptions(['--scale=quick', '--reps=2.9']).config.reps, 2, 'fractional floors');
 });

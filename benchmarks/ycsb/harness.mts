@@ -103,7 +103,7 @@ export function parseOptions(argv: string[]): ParsedOptions {
 		maxScanLength: Number(values['scan-max']),
 		warmupOps: values.warmup ? Number(values.warmup) : Math.min(opsPerWorkload, 20_000),
 		workloads,
-		reps: Math.max(1, Number(values.reps)),
+		reps: Math.max(1, Math.floor(Number(values.reps)) || 1),
 		distribution: values.distribution as DistributionName | undefined,
 		table: 'usertable',
 	};
@@ -122,7 +122,10 @@ export function parseOptions(argv: string[]): ParsedOptions {
 }
 
 function keyWidth(config: BenchmarkConfig): number {
-	return Math.max(10, String(config.records + config.opsPerWorkload).length);
+	// Size for the largest key index any rep can reach. With --reps the keyspace carries
+	// forward, so budget for every rep being all-inserts (the pessimistic bound) — keeps key
+	// formatting consistent even if a future workload inserts far more than today's ≤5%.
+	return Math.max(10, String(config.records + config.reps * config.opsPerWorkload).length);
 }
 
 /**
