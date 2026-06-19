@@ -159,15 +159,17 @@ function rebuildLiveTLSContexts() {
 }
 
 /**
- * Handle a private-key (re)load: update the in-thread map and, on an actual rotation, trigger a
- * local TLS context rebuild. The `previous === undefined` guard skips the initial load (contexts
- * are built lazily afterward and read the fresh key), and the `previous !== private_key` guard
- * skips identical-content reloads, so neither chokidar nor the periodic poll causes thrash.
+ * Handle a private-key (re)load: update the in-thread map and, on any content change, trigger a
+ * local TLS context rebuild. The `previous !== private_key` guard skips identical-content reloads
+ * (so neither chokidar nor the periodic poll thrashes) while still rebuilding when a key first
+ * appears or is restored after boot — the recovery case we must not strand. During normal startup
+ * this runs before any TLS selector is registered, so the rebuild is a harmless no-op on an empty
+ * rebuilder set.
  */
 function handlePrivateKeyReload(private_key_name, private_key) {
 	const previous = privateKeys.get(private_key_name);
 	privateKeys.set(private_key_name, private_key);
-	if (previous !== undefined && previous !== private_key) rebuildLiveTLSContexts();
+	if (previous !== private_key) rebuildLiveTLSContexts();
 }
 
 /**

@@ -361,10 +361,13 @@ describe('Test keys module', () => {
 			privateKeysMap.delete(keyName);
 		});
 
-		it('does not rebuild on the initial load (no prior key value)', () => {
+		it('rebuilds on the initial load of a key (recovery: key appears/restored after boot)', () => {
+			// At normal startup liveTLSRebuilders is empty so this is a no-op; once selectors are
+			// registered (modeled here by the spy), a key that first appears must rebuild or the
+			// worker would stay stranded on a context built without it.
 			handlePrivateKeyReload(keyName, 'KEY-A');
 			expect(privateKeysMap.get(keyName)).to.equal('KEY-A');
-			expect(spy.called, 'initial load must not trigger a rebuild').to.be.false;
+			expect(spy.calledOnce, 'first appearance of a key must trigger a rebuild when rebuilders exist').to.be.true;
 		});
 
 		it('rebuilds when the key rotates to a new value', () => {
