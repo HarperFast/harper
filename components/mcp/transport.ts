@@ -573,6 +573,12 @@ async function dispatchToolsCall(
 	// response, then closing the stream. The adapters frame `sseIterable` to the
 	// wire (the same path the GET channel uses).
 	const queue = new IterableEventQueue<SseEvent>();
+	// Abort the handler if the client disconnects (#3.3): toSseStream emits 'close'
+	// on this queue when the response stream tears down, so a long-running handler
+	// stops (and releases its rate-limit slot) instead of streaming progress into a
+	// dead socket. On normal completion the IIFE's finally also emits 'close' — a
+	// harmless late abort after the handler already returned.
+	queue.once('close', () => controller.abort(new Error('MCP SSE client disconnected')));
 	const emitProgress: ToolCallContext['progress'] = (update) => {
 		if (controller.signal.aborted) return;
 		queue.send({
@@ -589,28 +595,35 @@ async function dispatchToolsCall(
 			},
 		});
 	};
-	void (async () => {
-		try {
-			const toolResult = await invoke(emitProgress);
-			queue.send({ event: 'message', data: buildSuccess(messageId, toolResult) });
-		} catch (err) {
-			// `invoke` normalizes handler errors to an isError result, so reaching here
-			// means something unexpected threw outside that (e.g. emitAuditEntry or
-			// queue.send). Log and push a JSON-RPC error frame so the stream carries a
-			// terminal response instead of just closing; never let it become an
-			// unhandled rejection.
-			const errMsg = (err as Error).message ?? 'tool streaming failed';
-			harperLogger.warn(`MCP tools/call ${name} stream failed: ${(err as Error).stack ?? errMsg}`);
+	// Defer the detached run to the next macrotask so the adapter has wired up its
+	// toSseStream consumer (via the synchronous, microtask-only return path) before
+	// we produce. A synchronous handler could otherwise emit the final frame and
+	// 'close' before any listener exists; the queue buffers 'data' but not 'close',
+	// so the stream would drain the frames and then never end.
+	setImmediate(() => {
+		void (async () => {
 			try {
-				queue.send({ event: 'message', data: buildError(messageId, ERROR_CODES.INTERNAL_ERROR, errMsg) });
-			} catch {
-				/* queue already torn down — nothing more to deliver */
+				const toolResult = await invoke(emitProgress);
+				queue.send({ event: 'message', data: buildSuccess(messageId, toolResult) });
+			} catch (err) {
+				// `invoke` normalizes handler errors to an isError result, so reaching here
+				// means something unexpected threw outside that (e.g. emitAuditEntry or
+				// queue.send). Log and push a JSON-RPC error frame so the stream carries a
+				// terminal response instead of just closing; never let it become an
+				// unhandled rejection.
+				const errMsg = (err as Error).message ?? 'tool streaming failed';
+				harperLogger.warn(`MCP tools/call ${name} stream failed: ${(err as Error).stack ?? errMsg}`);
+				try {
+					queue.send({ event: 'message', data: buildError(messageId, ERROR_CODES.INTERNAL_ERROR, errMsg) });
+				} catch {
+					/* queue already torn down — nothing more to deliver */
+				}
+			} finally {
+				unregisterCall(session.id, messageId);
+				queue.emit('close');
 			}
-		} finally {
-			unregisterCall(session.id, messageId);
-			queue.emit('close');
-		}
-	})();
+		})();
+	});
 	return {
 		status: 200,
 		headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' },
@@ -743,6 +756,7 @@ function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messa
 			argument: { name: argName, value },
 			context: params?.context,
 			user: effectiveUser(request),
+			profile: request.profile,
 		});
 	} else if (refType === 'ref/prompt') {
 		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;

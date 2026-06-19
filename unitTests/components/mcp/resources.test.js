@@ -197,18 +197,27 @@ describe('mcp/resources', () => {
 	});
 
 	describe('completeResourceArgument (ref/resource)', () => {
+		afterEach(() => _setHttpUrlPrefixForTest(undefined));
+
 		it('completes {database} from RBAC-visible tables', () => {
-			assert.deepEqual(completeResourceArgument({ argument: { name: 'database', value: '' }, user: SUPER }).values, [
-				'data',
-			]);
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: SUPER, profile: 'application' })
+					.values,
+				['data']
+			);
 			// alice can read data.product → sees the data database
 			assert.deepEqual(
-				completeResourceArgument({ argument: { name: 'database', value: '' }, user: ALICE_READ_ONLY }).values,
+				completeResourceArgument({
+					argument: { name: 'database', value: '' },
+					user: ALICE_READ_ONLY,
+					profile: 'application',
+				}).values,
 				['data']
 			);
 			// nobody has no table perms → no databases
 			assert.deepEqual(
-				completeResourceArgument({ argument: { name: 'database', value: '' }, user: NOBODY }).values,
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: NOBODY, profile: 'application' })
+					.values,
 				[]
 			);
 		});
@@ -218,35 +227,63 @@ describe('mcp/resources', () => {
 				argument: { name: 'table', value: '' },
 				context: { arguments: { database: 'data' } },
 				user: SUPER,
+				profile: 'application',
 			});
 			assert.deepEqual(superAll.values, ['customer', 'product']);
-			// alice only sees product
 			const alice = completeResourceArgument({
 				argument: { name: 'table', value: '' },
 				context: { arguments: { database: 'data' } },
 				user: ALICE_READ_ONLY,
+				profile: 'application',
 			});
 			assert.deepEqual(alice.values, ['product']);
-			// prefix filter
 			const prefixed = completeResourceArgument({
 				argument: { name: 'table', value: 'pro' },
 				context: { arguments: { database: 'data' } },
 				user: SUPER,
+				profile: 'application',
 			});
 			assert.deepEqual(prefixed.values, ['product']);
 		});
 
-		it('completes {resourcePath} from mcp-exposed resource paths', () => {
-			const { values } = completeResourceArgument({ argument: { name: 'resourcePath', value: '' }, user: SUPER });
+		it('completes {resourcePath} from mcp-exposed resource paths when an app URL is advertised', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
+			});
 			assert.ok(values.includes('Product') && values.includes('Customer'));
 		});
 
-		it('returns an empty completion for an unknown variable', () => {
-			assert.deepEqual(completeResourceArgument({ argument: { name: 'mystery', value: '' }, user: SUPER }), {
-				values: [],
-				total: 0,
-				hasMore: false,
+		it('returns empty {resourcePath} when no app HTTP URL template is advertised', () => {
+			_setHttpUrlPrefixForTest(''); // '' → guessAppHttpUrlPrefix() returns undefined (no template)
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
 			});
+			assert.deepEqual(values, [], 'no {resourcePath} template advertised → no completions');
+		});
+
+		it('returns empty on the operations profile (no resource templates there)', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			for (const name of ['database', 'table', 'resourcePath']) {
+				const { values } = completeResourceArgument({
+					argument: { name, value: '' },
+					context: { arguments: { database: 'data' } },
+					user: SUPER,
+					profile: 'operations',
+				});
+				assert.deepEqual(values, [], `operations profile must not complete ${name}`);
+			}
+		});
+
+		it('returns an empty completion for an unknown variable', () => {
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'mystery', value: '' }, user: SUPER, profile: 'application' }),
+				{ values: [], total: 0, hasMore: false }
+			);
 		});
 	});
 

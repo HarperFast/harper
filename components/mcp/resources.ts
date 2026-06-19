@@ -233,6 +233,8 @@ export interface CompleteResourceArgs {
 	/** Previously-resolved sibling variables (e.g. `database` when completing `table`). */
 	context?: { arguments?: Record<string, string> };
 	user: AuthedUser;
+	/** Caller's profile — resource templates exist only on `application`. */
+	profile: McpProfile;
 }
 
 /**
@@ -240,9 +242,15 @@ export interface CompleteResourceArgs {
  * RBAC-filtered. Candidates are derived from the same Resource registry the rest of
  * the MCP resource surface uses; prefix-matched (case-insensitive) against the
  * partial value and capped at 100 per the MCP completion spec.
+ *
+ * Gated to the templates `resources/templates/list` actually advertises: resource
+ * templates exist only on the `application` profile, and `{resourcePath}` only when
+ * an application HTTP URL is inferable. Otherwise return nothing rather than leak
+ * route/schema names a profile can't read.
  */
 export function completeResourceArgument(args: CompleteResourceArgs): CompletionResult {
-	const { argument, context, user } = args;
+	const { argument, context, user, profile } = args;
+	if (profile !== 'application') return capCompletion([]);
 	const partial = (argument.value ?? '').toLowerCase();
 	let candidates: string[] = [];
 	if (argument.name === 'database') {
@@ -260,7 +268,9 @@ export function completeResourceArgument(args: CompleteResourceArgs): Completion
 		}
 		candidates = [...tables];
 	} else if (argument.name === 'resourcePath') {
-		candidates = enumerateMcpResourcePaths();
+		// Only advertised when an app HTTP URL prefix exists (the `{resourcePath}`
+		// template). No prefix → no such template → no completions.
+		if (guessAppHttpUrlPrefix()) candidates = enumerateMcpResourcePaths();
 	}
 	const filtered = candidates.filter((c) => c.toLowerCase().startsWith(partial)).sort();
 	return capCompletion(filtered);

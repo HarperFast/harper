@@ -664,9 +664,12 @@ describe('mcp/transport', () => {
 				});
 			}
 
-			it('streams notifications/progress then the final result when progressToken + SSE accept are present', async () => {
-				let releaseHandler;
-				const gate = new Promise((r) => (releaseHandler = r));
+			it('streams progress then the final result even for a synchronous handler (no close-before-subscribe race)', async () => {
+				// No gate: the handler emits its frames and returns immediately. The
+				// consumer is attached only AFTER handleMcpRequest returns (mirroring the
+				// adapter). The handler must be deferred (setImmediate) so it can't emit
+				// the final frame + 'close' before we subscribe — the queue buffers 'data'
+				// but not 'close', so without the deferral the stream would never end.
 				addTool({
 					name: 'streamer',
 					description: 'emits progress then a result',
@@ -676,7 +679,6 @@ describe('mcp/transport', () => {
 					handler: async (args, ctx) => {
 						ctx.progress?.({ progress: 1, total: 2, message: 'step 1' });
 						ctx.progress?.({ progress: 2, total: 2 });
-						await gate; // let the test attach its collector before the final frame + close
 						return { content: [{ type: 'text', text: 'done' }] };
 					},
 				});
@@ -694,9 +696,8 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody, undefined, 'streaming response carries no jsonBody');
 				assert.ok(res.sseIterable, 'streaming response carries an sseIterable');
 				assert.match(res.headers['Content-Type'], /text\/event-stream/);
-				const collected = collectFrames(res.sseIterable);
-				releaseHandler();
-				const frames = await collected;
+				// Attach only now — the deferral guarantees the handler hasn't produced yet.
+				const frames = await collectFrames(res.sseIterable);
 				const progress = frames.filter((d) => d.method === 'notifications/progress');
 				assert.equal(progress.length, 2);
 				assert.equal(progress[0].params.progressToken, 'tok-1');
@@ -706,6 +707,47 @@ describe('mcp/transport', () => {
 				const final = frames.find((d) => d.id === 40);
 				assert.ok(final, 'final JSON-RPC response delivered on the stream');
 				assert.equal(final.result.content[0].text, 'done');
+			});
+
+			it('aborts the in-flight handler when the SSE stream closes (client disconnect)', async () => {
+				let aborted = false;
+				addTool({
+					name: 'waiter_disconnect',
+					description: 'resolves when its signal aborts',
+					inputSchema: { type: 'object' },
+					profile: 'application',
+					visibleTo: () => true,
+					handler: (args, ctx) =>
+						new Promise((resolve) => {
+							const finish = () => {
+								aborted = true;
+								resolve({ content: [{ type: 'text', text: 'aborted' }] });
+							};
+							if (ctx.signal?.aborted) return finish();
+							ctx.signal?.addEventListener('abort', finish);
+						}),
+				});
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(44, 'tools/call', {
+							name: 'waiter_disconnect',
+							arguments: {},
+							_meta: { progressToken: 'tok-d' },
+						}),
+						headers: {
+							'mcp-session-id': sessionId,
+							'mcp-protocol-version': '2025-06-18',
+							'accept': 'application/json, text/event-stream',
+						},
+					})
+				);
+				assert.ok(res.sseIterable, 'streaming opened');
+				// Simulate the adapter tearing the stream down on client disconnect.
+				res.sseIterable.emit('close');
+				// Let the deferred handler run with the now-aborted signal and settle.
+				await new Promise((r) => setImmediate(r));
+				await new Promise((r) => setImmediate(r));
+				assert.equal(aborted, true, 'handler signal aborted when the stream closed');
 			});
 
 			it('returns a single JSON response (no stream) when no progressToken is supplied', async () => {
@@ -745,10 +787,16 @@ describe('mcp/transport', () => {
 					visibleTo: () => true,
 					handler: (args, ctx) =>
 						new Promise((resolve) => {
-							ctx.signal?.addEventListener('abort', () => {
+							// Check `aborted` before subscribing: the handler is deferred, so a
+							// cancellation can land before it runs — a listener added after the
+							// signal already fired would never resolve. (This is the discipline
+							// the ToolCallContext.signal doc calls for.)
+							const finish = () => {
 								abortedSeen = true;
 								resolve({ content: [{ type: 'text', text: 'cancelled' }] });
-							});
+							};
+							if (ctx.signal?.aborted) return finish();
+							ctx.signal?.addEventListener('abort', finish);
 						}),
 				});
 				const res = await handleMcpRequest(
