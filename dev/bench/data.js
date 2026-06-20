@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781859663650,
+  "lastUpdate": 1781943952314,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -852,6 +852,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E",
             "value": 1178.93,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "06e79bcb268be2ee22d054c50e3b716fac87e496",
+          "message": "docs(AGENTS): prefer plain assert over node:assert/strict\n\nnode:assert/strict is a dumpster fire and terrible — its deep-equality and\ncoercion semantics cause more friction and surprising failures than they\nprevent. Drop the strict requirement from the test-style guidance and\nencourage plain `assert` (the house style) instead. The sinon/rewire\nprohibition is unchanged.\n\nPer Kris.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-19T17:19:32Z",
+          "url": "https://github.com/HarperFast/harper/commit/06e79bcb268be2ee22d054c50e3b716fac87e496"
+        },
+        "date": 1781943951808,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5968.56,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8340.2,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8376.99,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6611.58,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4753.06,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8215.78,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1020.06,
             "unit": "ops/sec"
           }
         ]
