@@ -793,7 +793,10 @@ describe('Blob test', () => {
 		assert(store.tryLock(lockKey), 'should be able to take the blob write lock for the test');
 		try {
 			unlinkSync(filePath); // file gone while a "writer" still holds the lock
-			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, 150);
+			// Set as a string, the way an env-var config override arrives: getBlobReadTimeout must coerce it
+			// to a number, or `Date.now() + '150'` would concatenate into a far-future deadline (the timeout
+			// would never fire). Pre-coercion this assertion would hang instead of rejecting promptly.
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
 			const started = Date.now();
 			await assert.rejects(streamToBuffer(blob.stream()), (error) => {
 				assert.equal(error.statusCode, 503);

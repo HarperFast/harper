@@ -87,7 +87,12 @@ const DEFAULT_BLOB_READ_TIMEOUT = 20000;
  * storage_blobReadTimeout; defaults to 20s.
  */
 function getBlobReadTimeout(): number {
-	return envGet(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT) ?? DEFAULT_BLOB_READ_TIMEOUT;
+	// Coerce to a number: env-var config overrides arrive as strings, and `Date.now() + "20000"` would
+	// concatenate into a far-future deadline that disables the timeout entirely. Fall back to the default
+	// for nullish/invalid/non-positive values.
+	const configured = envGet(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT);
+	const timeout = configured == null ? DEFAULT_BLOB_READ_TIMEOUT : Number(configured);
+	return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_BLOB_READ_TIMEOUT;
 }
 // HTTP statuses attached to blob read errors so a failed read surfaces a clean response rather than a
 // hung connection: 404 when the file is cleanly gone, 503 while a write is still in progress (the
