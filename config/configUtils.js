@@ -466,6 +466,40 @@ function validateConfig(configDoc, skipFsValidation = false) {
 		);
 	}
 
+	// The operations API and the REST/http servers are distinct servers that cannot share a port. The operations API
+	// runs on the main thread without SO_REUSEPORT while the http servers run on the workers with it, so a shared port is
+	// silently claimed by whichever binds first (the operations server), leaving the http server — and its WebSocket
+	// upgrade handler — unable to bind. That presents as secure-port WebSocket upgrades hanging. Fail loudly here rather
+	// than letting the collision go undetected. (mqtt websocket intentionally shares http.port and replication defaults
+	// to the operations port, so only the http/operationsApi pairing is checked.) See issue #1412.
+	const configuredPorts = [
+		['http.port', configJson.http?.port],
+		['http.securePort', configJson.http?.securePort],
+		['operationsApi.network.port', configJson.operationsApi?.network?.port],
+		['operationsApi.network.securePort', configJson.operationsApi?.network?.securePort],
+	];
+	const portLabels = new Map();
+	for (const [label, value] of configuredPorts) {
+		// Normalize to a number so a string env-var port (e.g. "9926") still matches a numeric YAML port, and skip
+		// unset/ephemeral values: 0 (and NaN from a non-numeric value) requests an OS-assigned port, so distinct
+		// sections configured that way won't actually collide at bind time.
+		const port = Number(value);
+		if (!port) continue;
+		const collidingLabel = portLabels.get(port);
+		// Skip http-internal and operationsApi-internal collisions; those are reported with dedicated messages above.
+		if (collidingLabel && collidingLabel.split('.')[0] !== label.split('.')[0]) {
+			throw handleHDBError(
+				new Error(),
+				HDB_ERROR_MSGS.CONFIG_VALIDATION(`${collidingLabel} and ${label} cannot be the same value (${port})`),
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+		portLabels.set(port, label);
+	}
+
 	const validation = configValidator(configJson, skipFsValidation);
 	if (validation.error) {
 		throw handleHDBError(
