@@ -22,10 +22,20 @@ const {
 	startPreCommitBlobsForRecord,
 	isSourceBlobUnavailable,
 } = require('#src/resources/blob');
-const { existsSync, unlinkSync } = require('fs');
+const { existsSync, unlinkSync, openSync, writeSync, ftruncateSync, closeSync } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+const HEADER_SIZE = 8;
+// Build the 8-byte blob file header: 2-byte storage type followed by a 6-byte content size.
+function makeBlobHeader(size, type = 0) {
+	const header = Buffer.alloc(HEADER_SIZE);
+	new DataView(header.buffer).setBigInt64(0, BigInt(size) | (BigInt(type) << 48n));
+	return header;
+}
 
 describe('Blob test', () => {
 	let BlobTest;
@@ -662,6 +672,138 @@ describe('Blob test', () => {
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);
 		assert.equal(orphansDeleted, 0);
+	});
+
+	// Helper: produce a blob backed ONLY by its on-disk file (no in-memory contentBuffer), the way a
+	// node reads a blob it didn't write itself — a fresh full-copy replica or a read after the record
+	// fell out of the in-memory cache. We save a blob to disk, encode it to its storage reference, then
+	// decode a fresh instance from that reference. The descriptor `size` rides along and is the
+	// authoritative value the read/send paths cross-validate against.
+	async function makeDiskBackedBlob(payloadSize = 20000) {
+		// Build the blob from a stream, so it is backed only by its on-disk file (no in-memory
+		// contentBuffer) — the way a node reads a blob it didn't write itself (full-copy replica, or a
+		// read after the record fell out of cache). saveBlob writes the file and records the size in both
+		// the header and the descriptor; the read/send paths cross-validate the two.
+		const store = BlobTest.primaryStore.rootStore;
+		const blob = await createBlob(Readable.from(randomBytes(payloadSize)), { size: payloadSize });
+		await decodeFromDatabase(() => saveBlob(blob).saving, store);
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath && existsSync(filePath), 'expected a file-backed blob');
+		assert.equal(blob.size, payloadSize);
+		return { blob, filePath, store };
+	}
+	// Rewrite the on-disk file to a self-consistent-but-smaller state: header says `newSize`, body is
+	// `newSize` bytes. The record descriptor still says the full size, so only a descriptor cross-check
+	// (not the header's internal consistency) catches it.
+	function truncateBlobConsistently(filePath, newSize) {
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, makeBlobHeader(newSize), 0, HEADER_SIZE, 0);
+			ftruncateSync(fd, HEADER_SIZE + newSize);
+		} finally {
+			closeSync(fd);
+		}
+	}
+
+	it('#1424: bytes() rejects a blob truncated to a self-consistent smaller size (T4)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		truncateBlobConsistently(filePath, 256);
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 500);
+			assert.match(error.message, /size mismatch/);
+			return true;
+		});
+	});
+	it('#1424: stream() rejects a blob truncated to a self-consistent smaller size (T4)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		truncateBlobConsistently(filePath, 256);
+		await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+			assert.equal(error.statusCode, 500);
+			return true;
+		});
+	});
+	it('#1424: replication-send does not emit a truncated blob as complete (T4)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		truncateBlobConsistently(filePath, 256);
+		// encodeBlobsAsBuffers returns a promise when a blob has to be re-read; the truncated read rejects
+		// rather than packing the short file as a complete blob (which would propagate via full copy).
+		await assert.rejects(Promise.resolve(encodeBlobsAsBuffers(() => pack({ blob }))), (error) => {
+			assert.equal(error.statusCode, 500);
+			return true;
+		});
+	});
+	it('#1424: replication-send preserves an error-state blob stub (does not reject)', async () => {
+		// An error-state stub (header type 0xff, header size = error-message length) is intentionally
+		// replicated as-is so the receiver keeps the error marker. The descriptor cross-check must skip it,
+		// even though the descriptor size (20000) differs from the stub's header size.
+		const { blob, filePath } = await makeDiskBackedBlob();
+		const message = Buffer.from('disk full while writing blob');
+		const fd = openSync(filePath, 'r+');
+		try {
+			const stub = Buffer.concat([makeBlobHeader(message.length, 0xff), message]);
+			writeSync(fd, stub, 0, stub.length, 0);
+			ftruncateSync(fd, stub.length);
+		} finally {
+			closeSync(fd);
+		}
+		const encoded = encodeBlobsAsBuffers(() => pack({ blob }));
+		const result = Buffer.isBuffer(encoded) ? encoded : await encoded;
+		assert(Buffer.isBuffer(result) && result.length > message.length, 'error stub should be packed, not rejected');
+	});
+	it('#1424: replication-send packs a slice against the full file (not mis-flagged as truncated)', async () => {
+		// A slice carries a reduced descriptor size that legitimately differs from the full on-disk header
+		// size; the descriptor cross-check must skip slices so a valid slice still replicates.
+		const { blob } = await makeDiskBackedBlob();
+		const sliced = blob.slice(0, 200);
+		const encoded = encodeBlobsAsBuffers(() => pack({ blob: sliced }));
+		const result = Buffer.isBuffer(encoded) ? encoded : await encoded;
+		assert(Buffer.isBuffer(result), 'a slice should pack without being rejected as incomplete');
+	});
+	it('#1424: bytes() rejects a file corrupted below the header rather than returning garbage (T3)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		// overwrite with fewer than HEADER_SIZE bytes, with byte[1] = DEFLATE_TYPE — the case that
+		// previously decompressed an empty body into ~8 garbage bytes returned as valid content.
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, Buffer.from([0, 1, 0]), 0, 3, 0);
+			ftruncateSync(fd, 3);
+		} finally {
+			closeSync(fd);
+		}
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 500);
+			return true;
+		});
+	});
+	it('#1423: reading a cleanly-missing blob file returns a prompt 404', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		unlinkSync(filePath);
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 404);
+			return true;
+		});
+		await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+			assert.equal(error.statusCode, 404);
+			return true;
+		});
+	});
+	it('#1423: a missing file with an in-progress writer times out as 503 instead of hanging', async () => {
+		const { blob, filePath, store } = await makeDiskBackedBlob();
+		const lockKey = getFileId(blob) + ':blob';
+		assert(store.tryLock(lockKey), 'should be able to take the blob write lock for the test');
+		try {
+			unlinkSync(filePath); // file gone while a "writer" still holds the lock
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, 150);
+			const started = Date.now();
+			await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+				assert.equal(error.statusCode, 503);
+				return true;
+			});
+			assert(Date.now() - started < 5000, 'read should fail promptly, not hang');
+		} finally {
+			store.unlock(lockKey);
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+		}
 	});
 	afterEach(function () {
 		setAuditRetention(60000);

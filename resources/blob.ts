@@ -78,7 +78,31 @@ let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 // the header is 8 bytes
-const FILE_READ_TIMEOUT = 60000;
+const DEFAULT_BLOB_READ_TIMEOUT = 20000;
+/**
+ * How long a blob read will wait for an in-progress write to finish before giving up. This bounds
+ * the read paths — the stream() open-retry loop and the incomplete-content waits — so a blob whose
+ * backing file is being written, truncated, or deleted returns a prompt, actionable error instead
+ * of holding the HTTP connection open until a long internal timeout fires (#1423). Configurable via
+ * storage_blobReadTimeout; defaults to 20s.
+ */
+function getBlobReadTimeout(): number {
+	return envGet(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT) ?? DEFAULT_BLOB_READ_TIMEOUT;
+}
+// HTTP statuses attached to blob read errors so a failed read surfaces a clean response rather than a
+// hung connection: 404 when the file is cleanly gone, 503 while a write is still in progress (the
+// client can retry), 500 when the content is confidently corrupt/incomplete.
+const BLOB_GONE_STATUS = 404;
+const BLOB_UNAVAILABLE_STATUS = 503;
+const BLOB_CORRUPT_STATUS = 500;
+class BlobReadError extends Error {
+	statusCode: number;
+	constructor(message: string, statusCode: number) {
+		super(message);
+		this.name = 'BlobReadError';
+		this.statusCode = statusCode;
+	}
+}
 // We want FileBackedBlob instances to be an instanceof Blob, but we don't want to actually extend the class and call Blob's constructor, which is quite expensive because it has to set it up as a transferrable.
 function InstanceOfBlobWithNoConstructor() {}
 InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
@@ -155,21 +179,37 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			return Promise.resolve(contentBuffer);
 		}
 		const filePath = getFilePath(storageInfo);
+		// The size recorded in the record descriptor is the authoritative (uncompressed) content length;
+		// the on-disk header records the same value. We cross-validate them on full reads so a truncated
+		// file with a self-consistent-but-wrong header (#1424) is not served as valid. A slice carries a
+		// reduced descriptor size, so only a full read can be compared against the header.
+		const descriptorSize = this.size;
+		const isFullRead = start === undefined && end === undefined;
 		let writeFinished: boolean;
+		let fileMissing = false;
 		const readContents = async () => {
 			let rawBytes: Buffer;
 			let size = HEADER_SIZE;
+			fileMissing = false; // reflects this attempt; a retry after the writer finishes may find the file
 			try {
 				rawBytes = await readFile(filePath);
 				if (rawBytes.length >= HEADER_SIZE) {
 					const headerValue = new DataView(rawBytes.buffer, rawBytes.byteOffset, 8).getBigUint64(0);
 					if (Number(headerValue >> 48n) === ERROR_TYPE) {
-						throw new Error('Error in blob: ' + rawBytes.subarray(HEADER_SIZE));
+						throw new BlobReadError('Error in blob: ' + rawBytes.subarray(HEADER_SIZE), BLOB_CORRUPT_STATUS);
 					}
 
 					size = Number(headerValue & 0xffffffffffffn);
 					if (size < end) size = end;
 					if (size < UNKNOWN_SIZE) {
+						if (isFullRead && descriptorSize != null && descriptorSize < UNKNOWN_SIZE && size !== descriptorSize) {
+							// the header claims a different (uncompressed) size than the record descriptor: the file
+							// has been truncated/corrupted even though its header is internally consistent (#1424).
+							throw new BlobReadError(
+								`Blob size mismatch for ${filePath}: record descriptor expects ${descriptorSize} bytes, on-disk header reports ${size}`,
+								BLOB_CORRUPT_STATUS
+							);
+						}
 						this.size = size;
 						if (this.#onSize) {
 							for (const callback of this.#onSize) callback(size);
@@ -179,6 +219,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			} catch (error) {
 				if (error.code !== 'ENOENT') throw error;
 				rawBytes = Buffer.alloc(0);
+				fileMissing = true;
 			}
 			function checkCompletion(rawBytes: Buffer): Buffer | Promise<Buffer> {
 				if (size > rawBytes.length) {
@@ -186,18 +227,41 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					const store = storageInfo.store;
 					const lockKey = storageInfo.fileId + ':blob';
 					if (writeFinished) {
-						throw new Error(`Incomplete blob for ${filePath}`);
+						// the writer released its lock but the content is still short: the file is cleanly gone
+						// (404) or confidently incomplete/corrupt (500) — not merely mid-write (#1423/#1424).
+						throw fileMissing
+							? new BlobReadError(`Blob file not found for ${filePath}`, BLOB_GONE_STATUS)
+							: new BlobReadError(`Incomplete blob for ${filePath}`, BLOB_CORRUPT_STATUS);
 					}
-					return new Promise((resolve) => {
+					return new Promise((resolve, reject) => {
+						let settled = false;
+						// Bound the wait for the writer so a stuck or abandoned write (e.g. the file was deleted
+						// mid-write) returns a prompt 503 instead of hanging the connection (#1423).
+						const timer = setTimeout(() => {
+							if (settled) return;
+							settled = true;
+							reject(
+								new BlobReadError(
+									`Blob ${storageInfo.fileId} is unavailable; the in-progress write did not complete in time`,
+									BLOB_UNAVAILABLE_STATUS
+								)
+							);
+						}, getBlobReadTimeout());
+						timer.unref();
 						const callback = () => {
+							if (settled) return;
+							settled = true;
+							clearTimeout(timer);
 							writeFinished = true;
-							return resolve(readContents());
+							resolve(readContents());
 						};
 						const lockAcquired = store.tryLock(lockKey, callback);
 						if (lockAcquired) {
+							settled = true;
+							clearTimeout(timer);
 							writeFinished = true;
 							store.unlock(lockKey);
-							return resolve(readContents());
+							resolve(readContents());
 						}
 					});
 				}
@@ -206,7 +270,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				}
 				return rawBytes;
 			}
-			if (rawBytes[1] === DEFLATE_TYPE) {
+			// Only sniff the storage-type byte and take the decompress branch when a full header is present.
+			// A file shorter than the header (truncated/corrupted, #1424) would otherwise be mis-read as a
+			// deflate body and yield garbage; instead it falls through to checkCompletion as incomplete.
+			if (rawBytes.length >= HEADER_SIZE && rawBytes[1] === DEFLATE_TYPE) {
 				return new Promise<Buffer>((resolve, reject) => {
 					deflate(rawBytes.subarray(HEADER_SIZE), (error, result) => {
 						if (error) reject(error);
@@ -251,24 +318,47 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		let isBeingWritten: boolean;
 		let previouslyFinishedWriting = false;
 		const blob = this;
+		// Authoritative (uncompressed) content length from the record descriptor, captured before the
+		// header read below overwrites blob.size, so a full read can detect a truncated file whose header
+		// was rewritten to a self-consistent smaller size (#1424). A slice carries a reduced size, so only
+		// full reads can be compared against the header.
+		const descriptorSize = this.size;
+		const isFullRead = start === undefined && end === undefined;
 
 		return new ReadableStream({
 			start() {
-				let retries = 1000;
+				// Bound the wait for the file to appear so a write that was abandoned (e.g. the file was
+				// deleted mid-write while the writer kept the lock) returns a prompt error rather than
+				// holding the connection for the full retry budget (#1423). The deadline (and its config
+				// lookup) is computed lazily on the first miss, so a healthy read never pays for it.
+				let deadline = 0;
 				const openFile = (resolve: (value: any) => void, reject: (error: Error) => void) => {
 					open(filePath, 'r', (error, openedFd) => {
 						if (error) {
 							if (error.code === 'ENOENT' && isBeingWritten !== false) {
-								logger.debug?.('File does not exist yet, waiting for it to be created', filePath, retries);
-								// the file doesn't exist, so we need to wait for it to be created
-								if (retries-- > 0)
+								if (deadline === 0) deadline = Date.now() + getBlobReadTimeout();
+								if (Date.now() < deadline) {
+									logger.debug?.('File does not exist yet, waiting for it to be created', filePath);
+									// the file doesn't exist, so we need to wait for it to be created
 									return setTimeout(() => {
 										checkIfIsBeingWritten();
 										openFile(resolve, reject);
 									}, 20).unref();
+								}
 							}
-							reject(error);
-							blob.#onError?.forEach((callback) => callback(error));
+							// ENOENT: the file is gone. A writer still holding the lock means we timed out waiting
+							// for an in-progress write (503, retryable); otherwise it is cleanly absent (404).
+							const readError =
+								error.code === 'ENOENT'
+									? isBeingWritten
+										? new BlobReadError(
+												`Blob ${storageInfo.fileId} is unavailable; its file did not appear in time`,
+												BLOB_UNAVAILABLE_STATUS
+											)
+										: new BlobReadError(`Blob file not found for ${filePath}`, BLOB_GONE_STATUS)
+									: error;
+							reject(readError);
+							blob.#onError?.forEach((callback) => callback(readError));
 						} else {
 							fd = openedFd;
 							resolve(openedFd);
@@ -298,27 +388,49 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 							// for the first read, we need to read the header and skip it for the data
 							// but first check to see if we read anything
 							if (bytesRead < HEADER_SIZE) {
-								// didn't read any bytes, have to try again
+								// the file is too small to even hold the 8-byte header: either still being created,
+								// or truncated/corrupted below the header (#1424). Retry while a write may be in
+								// flight, otherwise fail promptly rather than mis-reading it as content.
 								if (retries-- > 0 && isBeingWritten !== false) {
 									checkIfIsBeingWritten();
 									logger.debug?.('File was empty, waiting for data to be written', filePath, retries);
 									setTimeout(() => readMore(resolve, reject), 20).unref();
 								} else {
 									logger.debug?.('File was empty, throwing error', filePath, retries);
-									onError(new Error(`Blob ${storageInfo.fileId} was empty`));
+									onError(
+										new BlobReadError(
+											`Blob ${storageInfo.fileId} was empty`,
+											isBeingWritten ? BLOB_UNAVAILABLE_STATUS : BLOB_CORRUPT_STATUS
+										)
+									);
 								}
 								// else throw new Error();
 								return;
 							}
 							const headerValue = new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0);
 							if (Number(headerValue >> 48n) === ERROR_TYPE) {
-								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead)));
+								return onError(
+									new BlobReadError('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead), BLOB_CORRUPT_STATUS)
+								);
 							}
 							size = Number(headerValue & 0xffffffffffffn);
-							if (size < UNKNOWN_SIZE && blob.size !== size) {
-								(blob as any).size = size;
-								if (blob.#onSize) {
-									for (const callback of blob.#onSize) callback(size);
+							if (size < UNKNOWN_SIZE) {
+								if (isFullRead && descriptorSize != null && descriptorSize < UNKNOWN_SIZE && size !== descriptorSize) {
+									// the header claims a different (uncompressed) size than the record descriptor: the
+									// file has been truncated/corrupted even though its header is internally consistent
+									// (#1424). Fail rather than streaming the short content as if it were complete.
+									return onError(
+										new BlobReadError(
+											`Blob size mismatch for ${filePath}: record descriptor expects ${descriptorSize} bytes, on-disk header reports ${size}`,
+											BLOB_CORRUPT_STATUS
+										)
+									);
+								}
+								if (blob.size !== size) {
+									(blob as any).size = size;
+									if (blob.#onSize) {
+										for (const callback of blob.#onSize) callback(size);
+									}
 								}
 							}
 							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
@@ -366,30 +478,33 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											}
 											readMore(resolve, reject);
 										} else if (!resumeIfWriterFinished()) {
-											// set a timer for the watcher too
+											// set a timer for the watcher too. A write that stalls past the bound returns a
+											// prompt 503 (retryable) instead of holding the connection for the full 60s (#1423).
 											timer = setTimeout(() => {
 												if (!resumeIfWriterFinished()) {
 													if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
 														// finally try to read one more time to see if it was a watcher failure
 														onError(
-															new Error(
-																`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															new BlobReadError(
+																`File read timed out reading from ${filePath} due to the watcher failing to notify of updates, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`,
+																BLOB_UNAVAILABLE_STATUS
 															)
 														);
 													} else {
 														onError(
-															new Error(
-																`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`
+															new BlobReadError(
+																`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`,
+																BLOB_UNAVAILABLE_STATUS
 															)
 														);
 													}
 												}
-											}, FILE_READ_TIMEOUT).unref();
+											}, getBlobReadTimeout()).unref();
 										}
 									} else {
 										if (previouslyFinishedWriting) {
 											// we verified that the blob was finished writing before the last read, we can confidently say it is incomplete
-											onError(new Error('Blob is incomplete'));
+											onError(new BlobReadError('Blob is incomplete', BLOB_CORRUPT_STATUS));
 										} else {
 											previouslyFinishedWriting = true;
 											readMore(resolve, reject); // try again (possibly for the last time) now that we know the status of the file writing
@@ -1278,8 +1393,18 @@ addExtension({
 			try {
 				const buffer = readFileSync(getFilePath(storageInfo));
 				if (buffer.length >= HEADER_SIZE) {
-					const size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
-					if (size === buffer.length - HEADER_SIZE) {
+					const headerValue = new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0);
+					const type = Number(headerValue >> 48n);
+					const size = Number(headerValue & 0xffffffffffffn);
+					// The on-disk body must match the header size AND the header must match the record
+					// descriptor's recorded size — otherwise a file truncated to a self-consistent smaller
+					// header would be replicated to a fresh node as complete (#1424). Two exceptions skip the
+					// descriptor cross-check: an error stub (its header size is the message length, not the
+					// content size — error state is replicated as-is) and a slice (options.size is the reduced
+					// slice size, which legitimately differs from the full on-disk header size).
+					const isSlice = storageInfo.start !== undefined || storageInfo.end !== undefined;
+					const sizeMatchesDescriptor = type === ERROR_TYPE || isSlice || options.size == null || options.size === size;
+					if (size === buffer.length - HEADER_SIZE && sizeMatchesDescriptor) {
 						// the file is there and complete, we can return the encoding
 						return Buffer.concat([pack([options]), buffer]);
 					}
