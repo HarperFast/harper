@@ -124,7 +124,7 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.6",
-		"@harperfast/integration-testing": "^0.5.2",
+		"@harperfast/integration-testing": "^0.6.2",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/busboy": "^1.5.4",
 		"@types/fs-extra": "^11.0.4",
