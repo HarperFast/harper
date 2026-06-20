@@ -864,6 +864,7 @@ export const ITC_EVENT_TYPES = {
 /** Supported thread types */
 export const THREAD_TYPES = {
 	HTTP: 'http',
+	JOB: 'job',
 } as const;
 
 /** A version string for pre 4.0.0 comparison */

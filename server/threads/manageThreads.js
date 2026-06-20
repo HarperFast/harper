@@ -199,17 +199,19 @@ function startWorker(path, options = {}) {
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
+	const isJobWorker = options.name === hdbTerms.THREAD_TYPES.JOB;
 	for (let { port1, existingPort } of channelsToConnect) {
 		existingPort.postMessage(
 			{
 				type: ADDED_PORT,
 				port: port1,
 				threadId: worker.threadId,
+				isJobWorker,
 			},
 			[port1]
 		);
 	}
-	addPort(worker, true);
+	addPort(worker, true, isJobWorker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -412,6 +414,11 @@ function broadcastWithAcknowledgement(message) {
 	return new Promise((resolve) => {
 		let waitingCount = 0;
 		for (let port of connectedPorts) {
+			// Job workers run a single isolated task and exit; they don't participate in
+			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
+			// the job worker's ACK while the job worker's event loop is busy waiting for the
+			// same broadcast to complete (re-entrant schema change triggered by the job op).
+			if (port.isJobWorker) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
@@ -573,7 +580,8 @@ function removePort(port, deadThreadId) {
 	}
 }
 
-function addPort(port, keepRef) {
+function addPort(port, keepRef, isJobWorker) {
+	if (isJobWorker) port.isJobWorker = true;
 	connectedPorts.push(port);
 	// Capture threadId now — Bun resets port.threadId to -1 by the time 'exit' fires.
 	const portThreadId = port.threadId;
@@ -581,7 +589,7 @@ function addPort(port, keepRef) {
 		.on('message', (message) => {
 			if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
-				addPort(message.port);
+				addPort(message.port, false, message.isJobWorker);
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
