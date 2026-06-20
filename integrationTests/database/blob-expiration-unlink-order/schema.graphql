@@ -1,0 +1,26 @@
+# QA-174 — Blob unlink / record-delete ordering under expiration-scan force-commit.
+#
+# BlobExpire — short TTL + a REQUIRED Blob attribute. The background expiration
+#   scan (runs on the last worker) evicts these records. Each eviction calls
+#   removeEntry(), which deleteBlobsInObject() (schedules a setTimeout unlink of
+#   the blob FILE, decoupled from the txn) and then store.remove() (queues the
+#   record delete INTO the per-eviction DatabaseTransaction). With a tiny
+#   storage.maxTransactionOpenTime, the long-txn monitor force-commits these
+#   evictions mid-pass. Probe: can the blob unlink and the record delete diverge?
+#
+# BlobKeep — no TTL control: its blobs must survive the sweep byte-exact and must
+#   never be unlinked by the expiry pass (cross-table-bleed / wrong-file-unlink guard).
+
+type BlobExpire @table(expiration: 6) @sealed @export {
+    id: ID! @primaryKey
+    data: Blob!
+    sha256: String
+    size: Int
+}
+
+type BlobKeep @table @sealed @export {
+    id: ID! @primaryKey
+    data: Blob!
+    sha256: String
+    size: Int
+}

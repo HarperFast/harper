@@ -1,0 +1,16 @@
+# QA-176 — long-transaction monitor (force/abort) vs secondary-index consistency.
+#
+# Anchors the #1407/#1411 regression: a single write transaction held open past the
+# long-transaction monitor's over-time threshold gets force-handled (force-COMMIT pre-#1411,
+# abort+poison post-#1411). The fear: the primary base store and the secondary @indexed
+# index diverge — a phantom index entry (index hit -> base row absent) or a missing index
+# entry (base row present -> not in the index search).
+#
+# `bucket` is the secondary @indexed attribute we cross-check. `seq` lets us tell which
+# rows were written before vs after the forced over-time event.
+type Doc @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}
