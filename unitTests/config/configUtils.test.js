@@ -617,6 +617,39 @@ describe('Test configUtils module', () => {
 			expect(error, `Error was: ${error}`).to.not.exist;
 		});
 
+		it('Test non-numeric port values do not trigger a collision error', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub().returns(fake_validation);
+			config_utils_rw.__set__('configValidator', config_validator_stub);
+
+			// Malformed values (e.g. boolean true, which Number() would coerce to 1) must not be treated as ports here;
+			// the schema validator reports them.
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: true },
+					operationsApi: { network: { port: true } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+		});
+
 		it('Test no collision error is thrown when http and operationsApi ports are distinct', () => {
 			const fake_validation = {
 				value: {

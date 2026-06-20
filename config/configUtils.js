@@ -480,11 +480,12 @@ function validateConfig(configDoc, skipFsValidation = false) {
 	];
 	const portLabels = new Map();
 	for (const [label, value] of configuredPorts) {
-		// Normalize to a number so a string env-var port (e.g. "9926") still matches a numeric YAML port, and skip
-		// unset/ephemeral values: 0 (and NaN from a non-numeric value) requests an OS-assigned port, so distinct
-		// sections configured that way won't actually collide at bind time.
+		// Skip non-numeric values (unset, or a malformed boolean/array/object) — those are caught by the schema
+		// validator below. Numeric strings pass (isNumber('9926') === true) so a string env-var port still matches a
+		// numeric YAML port. Skip 0: it requests an OS-assigned port, so distinct sections set that way won't collide.
+		if (!isNumber(value)) continue;
 		const port = Number(value);
-		if (!port) continue;
+		if (port === 0) continue;
 		const collidingLabel = portLabels.get(port);
 		// Skip http-internal and operationsApi-internal collisions; those are reported with dedicated messages above.
 		if (collidingLabel && collidingLabel.split('.')[0] !== label.split('.')[0]) {
