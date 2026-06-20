@@ -775,15 +775,20 @@ describe('Blob test', () => {
 			return true;
 		});
 	});
-	it('#1423: reading a cleanly-missing blob file returns a prompt 404', async () => {
+	it('#1423: reading a cleanly-missing blob file returns a prompt 404 (with an ENOENT code for old consumers)', async () => {
 		const { blob, filePath } = await makeDiskBackedBlob();
 		unlinkSync(filePath);
+		// The 404 also carries `code: 'ENOENT'` so a consumer that only understands `error.code` — e.g. an
+		// older replication receiver predating the statusCode taxonomy — still classifies a missing source
+		// blob as a permanent absence and advances its resume cursor (harper-pro#403/#405) instead of wedging.
 		await assert.rejects(blob.bytes(), (error) => {
 			assert.equal(error.statusCode, 404);
+			assert.equal(error.code, 'ENOENT');
 			return true;
 		});
 		await assert.rejects(streamToBuffer(blob.stream()), (error) => {
 			assert.equal(error.statusCode, 404);
+			assert.equal(error.code, 'ENOENT');
 			return true;
 		});
 	});

@@ -102,10 +102,17 @@ const BLOB_UNAVAILABLE_STATUS = 503;
 const BLOB_CORRUPT_STATUS = 500;
 class BlobReadError extends Error {
 	statusCode: number;
+	code?: string;
 	constructor(message: string, statusCode: number) {
 		super(message);
 		this.name = 'BlobReadError';
 		this.statusCode = statusCode;
+		// A cleanly-gone blob (404) is an ENOENT at heart. Carry the fs-style `.code` so a consumer that
+		// only understands `error.code` — notably an OLDER replication receiver whose
+		// `isPermanentSourceBlobErrorCode` predates the statusCode taxonomy — still classifies a missing
+		// source blob as a PERMANENT absence and advances its resume cursor past it, rather than wedging
+		// (harper-pro#403/#405). Newer receivers key on `statusCode`; this keeps mixed-version clusters safe.
+		if (statusCode === BLOB_GONE_STATUS) this.code = 'ENOENT';
 	}
 }
 // We want FileBackedBlob instances to be an instanceof Blob, but we don't want to actually extend the class and call Blob's constructor, which is quite expensive because it has to set it up as a transferrable.
