@@ -98,9 +98,7 @@ suite(`QA-175 typedStructs cap & growth driver [engine=${ENGINE}]`, { skip: skip
 
 	/** Drive `encoder.encode()` for ENCODE_COUNT records in-worker; read typedStructs. */
 	async function encodeProbe(table: string, mode: 'width' | 'keys'): Promise<EncodeResult> {
-		const r = await client
-			.reqRest(`/EncodeProbe/?table=${table}&count=${ENCODE_COUNT}&mode=${mode}`)
-			.timeout(60_000);
+		const r = await client.reqRest(`/EncodeProbe/?table=${table}&count=${ENCODE_COUNT}&mode=${mode}`).timeout(60_000);
 		return r.body as EncodeResult;
 	}
 
@@ -130,7 +128,10 @@ suite(`QA-175 typedStructs cap & growth driver [engine=${ENGINE}]`, { skip: skip
 		);
 
 		// Sanity: we actually exercised the typed-struct path.
-		ok(onTypedPath, `both probes must be on the randomAccess typed path; got width=${width.randomAccessStructure} keys=${keys.randomAccessStructure}`);
+		ok(
+			onTypedPath,
+			`both probes must be on the randomAccess typed path; got width=${width.randomAccessStructure} keys=${keys.randomAccessStructure}`
+		);
 		ok(typeof width.typedStructsAfter === 'number', 'width probe must return a typedStructs count');
 		ok(typeof keys.typedStructsAfter === 'number', 'keys probe must return a typedStructs count');
 

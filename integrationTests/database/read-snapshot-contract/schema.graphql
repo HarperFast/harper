@@ -9,13 +9,13 @@
 #   concurrent TransferAccount calls. A single-request AccountPairSnap reads both
 #   keys in one request transaction; A+B != constant = within-request snapshot tear.
 type Ledger @table @export {
-  id: ID @primaryKey
-  bucket: String @indexed
-  seq: Int
-  val: Int
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	val: Int
 }
 
 type Account @table @export {
-  id: ID @primaryKey
-  balance: Int
+	id: ID @primaryKey
+	balance: Int
 }

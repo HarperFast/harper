@@ -8,9 +8,9 @@
 #
 # OPEN table (no @sealed) so we can stash arbitrary fields alongside.
 type NumRow @table @export {
-  id: ID @primaryKey
-  n: Int @indexed
-  big: Float @indexed
-  fval: Float @indexed
-  label: String
+	id: ID @primaryKey
+	n: Int @indexed
+	big: Float @indexed
+	fval: Float @indexed
+	label: String
 }

@@ -95,7 +95,9 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 	// -------------------------------------------------------------------------
 	// Helpers
 	// -------------------------------------------------------------------------
-	async function rawGet(path: string): Promise<{ status: number; ct: string; text: string; headers: Record<string, string> }> {
+	async function rawGet(
+		path: string
+	): Promise<{ status: number; ct: string; text: string; headers: Record<string, string> }> {
 		const r = await fetch(`${httpURL}${path}`, {
 			headers: { Authorization: auth },
 			signal: AbortSignal.timeout(10_000),
@@ -109,7 +111,7 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 	async function rawPost(path: string, body: unknown): Promise<{ status: number; ct: string; text: string }> {
 		const r = await fetch(`${httpURL}${path}`, {
 			method: 'POST',
-			headers: { Authorization: auth, 'Content-Type': 'application/json' },
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
 			body: JSON.stringify(body),
 			signal: AbortSignal.timeout(10_000),
 		});
@@ -120,7 +122,7 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 	async function rawPut(path: string, body: unknown): Promise<{ status: number; ct: string; text: string }> {
 		const r = await fetch(`${httpURL}${path}`, {
 			method: 'PUT',
-			headers: { Authorization: auth, 'Content-Type': 'application/json' },
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
 			body: JSON.stringify(body),
 			signal: AbortSignal.timeout(10_000),
 		});
@@ -134,7 +136,11 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 	}
 
 	function tryParse(text: string): any {
-		try { return JSON.parse(text); } catch { return null; }
+		try {
+			return JSON.parse(text);
+		} catch {
+			return null;
+		}
 	}
 
 	function leaks(text: string, needle: string): boolean {
@@ -146,14 +152,14 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 	// -------------------------------------------------------------------------
 	test('return shapes: plain-object, array, string, number, booleans, null, undefined, promise', async () => {
 		const cases: Array<{ case: string; wantStatus: number; desc: string }> = [
-			{ case: 'plain-object',   wantStatus: 200, desc: 'object' },
-			{ case: 'array',          wantStatus: 200, desc: 'array' },
-			{ case: 'string',         wantStatus: 200, desc: 'string' },
-			{ case: 'number',         wantStatus: 200, desc: 'number 42' },
-			{ case: 'bool-true',      wantStatus: 200, desc: 'true' },
-			{ case: 'bool-false',     wantStatus: 200, desc: 'false' },
-			{ case: 'null',           wantStatus: 404, desc: 'null -> 404 (undefined body)' },
-			{ case: 'undefined',      wantStatus: 404, desc: 'undefined -> 404' },
+			{ case: 'plain-object', wantStatus: 200, desc: 'object' },
+			{ case: 'array', wantStatus: 200, desc: 'array' },
+			{ case: 'string', wantStatus: 200, desc: 'string' },
+			{ case: 'number', wantStatus: 200, desc: 'number 42' },
+			{ case: 'bool-true', wantStatus: 200, desc: 'true' },
+			{ case: 'bool-false', wantStatus: 200, desc: 'false' },
+			{ case: 'null', wantStatus: 404, desc: 'null -> 404 (undefined body)' },
+			{ case: 'undefined', wantStatus: 404, desc: 'undefined -> 404' },
 			{ case: 'promise-object', wantStatus: 200, desc: 'Promise<object>' },
 		];
 
@@ -182,7 +188,7 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			}
 		}
 
-		ok(anomalies.filter(a => a.includes('DEFECT')).length === 0, `Unexpected 500s: ${anomalies.join('; ')}`);
+		ok(anomalies.filter((a) => a.includes('DEFECT')).length === 0, `Unexpected 500s: ${anomalies.join('; ')}`);
 	});
 
 	// -------------------------------------------------------------------------
@@ -196,18 +202,24 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			msgToken?: string;
 			isDefectIf500?: boolean;
 		}> = [
-			{ case: 'plain-error',      wantStatus: 500, desc: 'throw new Error()' },
-			{ case: 'statuscode-400',   wantStatus: 400, desc: 'Error{.statusCode=400}', msgToken: 'QA195 error.statusCode=400 message', isDefectIf500: true },
-			{ case: 'statuscode-404',   wantStatus: 404, desc: 'Error{.statusCode=404}', isDefectIf500: true },
+			{ case: 'plain-error', wantStatus: 500, desc: 'throw new Error()' },
+			{
+				case: 'statuscode-400',
+				wantStatus: 400,
+				desc: 'Error{.statusCode=400}',
+				msgToken: 'QA195 error.statusCode=400 message',
+				isDefectIf500: true,
+			},
+			{ case: 'statuscode-404', wantStatus: 404, desc: 'Error{.statusCode=404}', isDefectIf500: true },
 			{ case: 'client-error-def', wantStatus: 400, desc: 'new ClientError()', isDefectIf500: true },
 			{ case: 'client-error-422', wantStatus: 422, desc: 'new ClientError(msg, 422)', isDefectIf500: true },
-			{ case: 'bare-string',      wantStatus: 500, desc: 'throw "string"' },
-			{ case: 'bare-number',      wantStatus: 500, desc: 'throw 404 (bare number)' },
-			{ case: 'obj-statusCode',   wantStatus: 404, desc: 'throw {statusCode:404}', isDefectIf500: true },
-			{ case: 'obj-status',       wantStatus: 500, desc: 'throw {status:400} (wrong field)' },
-			{ case: 'throw-response',   wantStatus: 422, desc: 'throw new Response(_, {status:422})' },
-			{ case: 'reject-promise',   wantStatus: 500, desc: 'Promise.reject(Error)' },
-			{ case: 'null-throw',       wantStatus: 500, desc: 'throw null' },
+			{ case: 'bare-string', wantStatus: 500, desc: 'throw "string"' },
+			{ case: 'bare-number', wantStatus: 500, desc: 'throw 404 (bare number)' },
+			{ case: 'obj-statusCode', wantStatus: 404, desc: 'throw {statusCode:404}', isDefectIf500: true },
+			{ case: 'obj-status', wantStatus: 500, desc: 'throw {status:400} (wrong field)' },
+			{ case: 'throw-response', wantStatus: 422, desc: 'throw new Response(_, {status:422})' },
+			{ case: 'reject-promise', wantStatus: 500, desc: 'Promise.reject(Error)' },
+			{ case: 'null-throw', wantStatus: 500, desc: 'throw null' },
 		];
 
 		for (const c of cases) {
@@ -215,8 +227,6 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			const parsed = tryParse(r.text);
 			const problemType = parsed?.type ?? '';
 			const problemTitle = parsed?.title ?? '';
-			const problemStatus = parsed?.status ?? '';
-			const problemCode = parsed?.code ?? '';
 
 			// Check message leak
 			const msgLeaks = c.msgToken ? leaks(r.text, c.msgToken) : false;
@@ -251,7 +261,9 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			// throw-Response specific check
 			if (c.case === 'throw-response') {
 				if (r.status === 500) {
-					defectList.push(`[THROW F-039] throw-Response->500: Harper does not short-circuit on thrown Response objects`);
+					defectList.push(
+						`[THROW F-039] throw-Response->500: Harper does not short-circuit on thrown Response objects`
+					);
 				} else if (r.status === 422) {
 					throwMatrix.push(`  ^ GOOD: throw Response short-circuits correctly`);
 				}
@@ -282,11 +294,11 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 	// -------------------------------------------------------------------------
 	test('POST throw shapes: plain-error, statusCode-400, ClientError, obj-statusCode, obj-status', async () => {
 		const postCases = [
-			{ case: 'plain-error',    wantStatus: 500, desc: 'POST throw Error' },
+			{ case: 'plain-error', wantStatus: 500, desc: 'POST throw Error' },
 			{ case: 'statuscode-400', wantStatus: 400, desc: 'POST Error{.statusCode=400}', isDefectIf500: true },
 			{ case: 'client-error-def', wantStatus: 400, desc: 'POST ClientError', isDefectIf500: true },
 			{ case: 'obj-statusCode', wantStatus: 409, desc: 'POST throw {statusCode:409}', isDefectIf500: true },
-			{ case: 'obj-status',     wantStatus: 500, desc: 'POST throw {status:400}' },
+			{ case: 'obj-status', wantStatus: 500, desc: 'POST throw {status:400}' },
 		];
 
 		for (const c of postCases) {
@@ -304,11 +316,11 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 		}
 
 		const putCases = [
-			{ case: 'plain-error',    wantStatus: 500, desc: 'PUT throw Error' },
+			{ case: 'plain-error', wantStatus: 500, desc: 'PUT throw Error' },
 			{ case: 'statuscode-400', wantStatus: 400, desc: 'PUT Error{.statusCode=400}', isDefectIf500: true },
 			{ case: 'client-error-def', wantStatus: 400, desc: 'PUT ClientError', isDefectIf500: true },
 			{ case: 'obj-statusCode', wantStatus: 422, desc: 'PUT throw {statusCode:422}', isDefectIf500: true },
-			{ case: 'obj-status',     wantStatus: 500, desc: 'PUT throw {status:400}' },
+			{ case: 'obj-status', wantStatus: 500, desc: 'PUT throw {status:400}' },
 		];
 
 		for (const c of putCases) {
@@ -355,12 +367,13 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 		// 4c. Status via {status, data} object (no headers field)
 		for (const code of [202, 404]) {
 			const r = await rawGet(`/StatusViaObjStatus/?code=${code}`);
-			const parsed = tryParse(r.text);
 			statusMatrix.push(`obj-{status,data} code=${code} -> ${r.status} [want ${code}]  body=${pfx(r.text, 40)}`);
 			if (r.status !== code) {
 				statusMatrix.push(`  ^ NOTE: {status,data} (no headers field) code=${code} not honored -> ${r.status}`);
 				// This is a discovery finding, not necessarily a defect — document it
-				defectList.push(`[STATUS NOTE] obj-{status,data} without headers: code=${code} not honored (got ${r.status}). REST.ts requires headers field for status branch.`);
+				defectList.push(
+					`[STATUS NOTE] obj-{status,data} without headers: code=${code} not honored (got ${r.status}). REST.ts requires headers field for status branch.`
+				);
 			}
 		}
 
@@ -380,13 +393,17 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 		const hasStatus = typeof p500?.status === 'number';
 		const hasInstance = typeof p500?.instance === 'string';
 
-		throwMatrix.push(`\nPROBLEM DETAIL (500): type=${hasType} title=${hasTitle} status=${hasStatus} instance=${hasInstance}`);
+		throwMatrix.push(
+			`\nPROBLEM DETAIL (500): type=${hasType} title=${hasTitle} status=${hasStatus} instance=${hasInstance}`
+		);
 		throwMatrix.push(`  shape: ${pfx(JSON.stringify(p500), 120)}`);
 
 		// 400 case should also have RFC 9457 shape
 		const r400 = await rawGet('/ThrowMatrix/?case=statuscode-400');
 		const p400 = tryParse(r400.text);
-		throwMatrix.push(`PROBLEM DETAIL (400): type=${typeof p400?.type === 'string'} title=${typeof p400?.title === 'string'} status=${p400?.status}`);
+		throwMatrix.push(
+			`PROBLEM DETAIL (400): type=${typeof p400?.type === 'string'} title=${typeof p400?.title === 'string'} status=${p400?.status}`
+		);
 		throwMatrix.push(`  shape: ${pfx(JSON.stringify(p400), 120)}`);
 
 		// Check title field leaks internal error message

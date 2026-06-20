@@ -93,7 +93,7 @@ suite(`QA-176 long-txn monitor vs secondary index [${ENGINE}]`, { skip: skipSuit
 	function postJSON(path: string, body: unknown): Promise<Response> {
 		return fetch(`${httpURL}${path}`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', Authorization: client.headers.Authorization },
+			headers: { 'Content-Type': 'application/json', 'Authorization': client.headers.Authorization },
 			body: JSON.stringify(body),
 		});
 	}

@@ -8,15 +8,15 @@
 #   OrderItem.order = @relationship(from: orderId) forward (child -> parent)
 
 type Order @table @export {
-  id: ID @primaryKey
-  total: Float
-  items: [OrderItem] @relationship(to: orderId)
+	id: ID @primaryKey
+	total: Float
+	items: [OrderItem] @relationship(to: orderId)
 }
 
 type OrderItem @table @export {
-  id: ID @primaryKey
-  orderId: ID @indexed
-  name: String
-  price: Float
-  order: Order @relationship(from: orderId)
+	id: ID @primaryKey
+	orderId: ID @indexed
+	name: String
+	price: Float
+	order: Order @relationship(from: orderId)
 }

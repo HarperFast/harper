@@ -59,7 +59,12 @@ export class BulkDelete extends Resource {
 		let deleted = 0;
 		for (let i = 0; i < n; i++) {
 			const id = `${bucket}-${pad(i)}`;
-			try { await tables.Widget.delete(id); deleted++; } catch (_) { /* already gone */ }
+			try {
+				await tables.Widget.delete(id);
+				deleted++;
+			} catch {
+				/* already gone */
+			}
 		}
 		return { ok: true, deleted };
 	}

@@ -33,7 +33,7 @@ function readStructStats(name) {
 		// transitions are tracked as a property on the typedStructs array (structon).
 		hasTransitions: !!(ts && ts.transitions),
 		// is the typed/random-access path actually engaged on this store?
-		randomAccessStructure: store ? store.randomAccessStructure ?? null : null,
+		randomAccessStructure: store ? (store.randomAccessStructure ?? null) : null,
 		// the configured cap (RecordEncoder pins 256). Confirms the fix is wired.
 		maxOwnStructures: enc ? (enc.maxOwnStructures ?? null) : null,
 		pid: process.pid,
@@ -122,7 +122,7 @@ export class EncodeProbe extends Resource {
 			name,
 			mode,
 			storeCtor: store && store.constructor && store.constructor.name,
-			randomAccessStructure: store ? store.randomAccessStructure ?? null : null,
+			randomAccessStructure: store ? (store.randomAccessStructure ?? null) : null,
 			maxOwnStructures: enc.maxOwnStructures ?? null,
 			typedStructsBefore: before,
 			typedStructsAfter: after,

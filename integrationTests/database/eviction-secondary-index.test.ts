@@ -99,7 +99,7 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	function postJSON(path: string, body: unknown): Promise<Response> {
 		return fetch(`${httpURL}${path}`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', Authorization: client.headers.Authorization },
+			headers: { 'Content-Type': 'application/json', 'Authorization': client.headers.Authorization },
 			body: JSON.stringify(body),
 		});
 	}
@@ -210,7 +210,11 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		// Sanity: rows are present immediately, index resolves them.
 		const eBase = await dumpBase('/DumpE/');
 		const pBase = await dumpBase('/DumpP/');
-		strictEqual(eBase.length, EXPIRING_BUCKETS.length * ROWS_PER_EXPIRING_BUCKET, 'all expiring rows present pre-expiry');
+		strictEqual(
+			eBase.length,
+			EXPIRING_BUCKETS.length * ROWS_PER_EXPIRING_BUCKET,
+			'all expiring rows present pre-expiry'
+		);
 		strictEqual(pBase.length, ROWS_PERMANENT, 'all permanent rows present');
 		const e1Index = await searchByBucket('Expiring', 'E1');
 		strictEqual(e1Index.size, ROWS_PER_EXPIRING_BUCKET, 'E1 fully indexed pre-expiry');
@@ -251,62 +255,66 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	});
 
 	// ---- Q2: after settle — all expiring rows gone from BOTH base and index; control intact --
-	test('Q2 post-settle: expiring fully evicted (base+index), permanent fully retained', { timeout: 90_000 }, async () => {
-		// Poll until the expiring base table drains to 0 (the eviction sweep has finished).
-		const deadline = Date.now() + 60_000;
-		let eBaseLen = -1;
-		while (Date.now() < deadline) {
-			const eBase = await dumpBase('/DumpE/');
-			eBaseLen = eBase.length;
-			if (eBaseLen === 0) break;
-			await sleep(1_000);
-		}
+	test(
+		'Q2 post-settle: expiring fully evicted (base+index), permanent fully retained',
+		{ timeout: 90_000 },
+		async () => {
+			// Poll until the expiring base table drains to 0 (the eviction sweep has finished).
+			const deadline = Date.now() + 60_000;
+			let eBaseLen = -1;
+			while (Date.now() < deadline) {
+				const eBase = await dumpBase('/DumpE/');
+				eBaseLen = eBase.length;
+				if (eBaseLen === 0) break;
+				await sleep(1_000);
+			}
 
-		// Base oracle: nothing left in the expiring table.
-		strictEqual(eBaseLen, 0, `expiring base table should drain to 0 after eviction, got ${eBaseLen}`);
+			// Base oracle: nothing left in the expiring table.
+			strictEqual(eBaseLen, 0, `expiring base table should drain to 0 after eviction, got ${eBaseLen}`);
 
-		// Index oracle: no surviving index entries pointing at evicted rows (phantom check).
-		let totalPhantom = 0;
-		let totalIndex = 0;
-		for (const bucket of EXPIRING_BUCKETS) {
-			const r = await checkConsistency('Expiring', '/DumpE/', bucket);
-			totalIndex += r.indexCount;
-			totalPhantom += r.phantom.length;
+			// Index oracle: no surviving index entries pointing at evicted rows (phantom check).
+			let totalPhantom = 0;
+			let totalIndex = 0;
+			for (const bucket of EXPIRING_BUCKETS) {
+				const r = await checkConsistency('Expiring', '/DumpE/', bucket);
+				totalIndex += r.indexCount;
+				totalPhantom += r.phantom.length;
+				console.log(
+					`[QA-179 Q2 ${ENGINE}] Expiring/${bucket} base=${r.baseCount} index=${r.indexCount} phantom=${r.phantom.length}`
+				);
+			}
+
+			// Control oracle: the non-expiring table is untouched AND fully indexed (missing check).
+			const rP = await checkConsistency('Permanent', '/DumpP/', PERMANENT_BUCKET);
+
+			const fired = sawOverTime();
+			const otCount = countOverTime();
+			// NOTE (F-041): on LMDB the over-time force-commit path is not reachable in a short sweep
+			// (hardcoded 30s threshold); this tests plain-eviction index consistency. The transient
+			// eviction phantom window for LMDB under force-commit remains an open known behavior (F-041).
 			console.log(
-				`[QA-179 Q2 ${ENGINE}] Expiring/${bucket} base=${r.baseCount} index=${r.indexCount} phantom=${r.phantom.length}`
+				`\n[QA-179 Q2 ${ENGINE}] overTimeFired=${fired} overTimeCount=${otCount}\n` +
+					`  expiring: residualBase=${eBaseLen} residualIndex=${totalIndex} phantom=${totalPhantom}\n` +
+					`  permanent: base=${rP.baseCount} index=${rP.indexCount} phantom=${rP.phantom.length} missing=${rP.missing.length}\n` +
+					`  >>> ${
+						!fired
+							? `INCONCLUSIVE (over-time never fired on ${ENGINE}) — reporting plain-eviction consistency`
+							: totalIndex === 0 && totalPhantom === 0 && rP.missing.length === 0 && rP.phantom.length === 0
+								? 'CONSISTENT under forced over-time eviction (green regression anchor)'
+								: `DEFECT: residualIndex=${totalIndex} expiringPhantom=${totalPhantom} ` +
+									`permMissing=${rP.missing.length} permPhantom=${rP.phantom.length}`
+					}`
 			);
+
+			// Headline assertions — phantom: no index entry survives a fully-evicted expiring row.
+			strictEqual(totalIndex, 0, `residual index entries for fully-evicted expiring table: ${totalIndex}`);
+			strictEqual(totalPhantom, 0, `phantom index entries in expiring table: ${totalPhantom}`);
+			// Control table must be perfectly consistent — proves the oracle and that the sweep is scoped.
+			strictEqual(rP.baseCount, ROWS_PERMANENT, `permanent base rows should all survive: ${rP.baseCount}`);
+			strictEqual(rP.missing.length, 0, `permanent missing index entries (base->no index): ${rP.missing.length}`);
+			strictEqual(rP.phantom.length, 0, `permanent phantom index entries (index->no base): ${rP.phantom.length}`);
+			// Soft signal: did the force-commit actually fire on this engine?
+			ok(true, `over-time fired=${fired} count=${otCount}`);
 		}
-
-		// Control oracle: the non-expiring table is untouched AND fully indexed (missing check).
-		const rP = await checkConsistency('Permanent', '/DumpP/', PERMANENT_BUCKET);
-
-		const fired = sawOverTime();
-		const otCount = countOverTime();
-		// NOTE (F-041): on LMDB the over-time force-commit path is not reachable in a short sweep
-		// (hardcoded 30s threshold); this tests plain-eviction index consistency. The transient
-		// eviction phantom window for LMDB under force-commit remains an open known behavior (F-041).
-		console.log(
-			`\n[QA-179 Q2 ${ENGINE}] overTimeFired=${fired} overTimeCount=${otCount}\n` +
-				`  expiring: residualBase=${eBaseLen} residualIndex=${totalIndex} phantom=${totalPhantom}\n` +
-				`  permanent: base=${rP.baseCount} index=${rP.indexCount} phantom=${rP.phantom.length} missing=${rP.missing.length}\n` +
-				`  >>> ${
-					!fired
-						? `INCONCLUSIVE (over-time never fired on ${ENGINE}) — reporting plain-eviction consistency`
-						: totalIndex === 0 && totalPhantom === 0 && rP.missing.length === 0 && rP.phantom.length === 0
-							? 'CONSISTENT under forced over-time eviction (green regression anchor)'
-							: `DEFECT: residualIndex=${totalIndex} expiringPhantom=${totalPhantom} ` +
-								`permMissing=${rP.missing.length} permPhantom=${rP.phantom.length}`
-				}`
-		);
-
-		// Headline assertions — phantom: no index entry survives a fully-evicted expiring row.
-		strictEqual(totalIndex, 0, `residual index entries for fully-evicted expiring table: ${totalIndex}`);
-		strictEqual(totalPhantom, 0, `phantom index entries in expiring table: ${totalPhantom}`);
-		// Control table must be perfectly consistent — proves the oracle and that the sweep is scoped.
-		strictEqual(rP.baseCount, ROWS_PERMANENT, `permanent base rows should all survive: ${rP.baseCount}`);
-		strictEqual(rP.missing.length, 0, `permanent missing index entries (base->no index): ${rP.missing.length}`);
-		strictEqual(rP.phantom.length, 0, `permanent phantom index entries (index->no base): ${rP.phantom.length}`);
-		// Soft signal: did the force-commit actually fire on this engine?
-		ok(true, `over-time fired=${fired} count=${otCount}`);
-	});
+	);
 });

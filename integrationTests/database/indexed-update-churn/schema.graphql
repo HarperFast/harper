@@ -5,7 +5,7 @@
 # The reconcile oracle checks that search([{attribute:'status', value:X}]) is
 # consistent with the actual current status of each row in a single snapshot.
 type StatusRecord @table @export {
-  id: ID @primaryKey
-  status: String @indexed
-  label: String
+	id: ID @primaryKey
+	status: String @indexed
+	label: String
 }

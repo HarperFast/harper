@@ -2,6 +2,6 @@
 # Backing table for resource anchor; all behavior lives in resources.js.
 
 type Kv @table @export {
-  id: ID @primaryKey
-  v: String
+	id: ID @primaryKey
+	v: String
 }

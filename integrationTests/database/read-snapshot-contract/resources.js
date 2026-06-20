@@ -169,7 +169,11 @@ export class LedgerMutate extends Resource {
 			await tables.Ledger.put({ id: `${bucket}-mut-${pad(i)}`, bucket, seq: 10000 + i, val: mutValue });
 		}
 		for (let i = 0; i < count; i++) {
-			try { await tables.Ledger.delete(`${bucket}-mut-${pad(i)}`); } catch (_) { /* already gone */ }
+			try {
+				await tables.Ledger.delete(`${bucket}-mut-${pad(i)}`);
+			} catch {
+				/* already gone */
+			}
 		}
 		return { ok: true, bucket, count, mutValue };
 	}

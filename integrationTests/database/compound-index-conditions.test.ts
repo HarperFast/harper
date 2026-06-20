@@ -60,13 +60,13 @@ function computeExpected(rowCount: number) {
 	for (let i = 0; i < rowCount; i++) {
 		rows.push({ i, status: STATUS[i % 3], region: REGION[i % 4], score: i * 2 });
 	}
-	const andIds  = rows.filter((r) => r.status === 'active' && r.region === 'west').map((r) => `item-${r.i}`);
-	const orIds   = rows.filter((r) => r.status === 'active' || r.region === 'west').map((r) => `item-${r.i}`);
-	const mixIds  = rows.filter((r) => r.status === 'active' && r.score >= 50).map((r) => `item-${r.i}`);
-	const empIds  = rows.filter((r) => r.status === 'ghost' && r.region === 'moon').map((r) => `item-${r.i}`);
+	const andIds = rows.filter((r) => r.status === 'active' && r.region === 'west').map((r) => `item-${r.i}`);
+	const orIds = rows.filter((r) => r.status === 'active' || r.region === 'west').map((r) => `item-${r.i}`);
+	const mixIds = rows.filter((r) => r.status === 'active' && r.score >= 50).map((r) => `item-${r.i}`);
+	const empIds = rows.filter((r) => r.status === 'ghost' && r.region === 'moon').map((r) => `item-${r.i}`);
 	return {
-		AND:   new Set(andIds),
-		OR:    new Set(orIds),
+		AND: new Set(andIds),
+		OR: new Set(orIds),
 		MIXED: new Set(mixIds),
 		EMPTY: new Set(empIds),
 	};
@@ -96,202 +96,236 @@ interface OracleResult {
 	};
 }
 
-suite(`QA-187 compound-index [${ENGINE}]`, {
-	skip: process.platform === 'win32',
-}, (ctx: ContextWithHarper) => {
-	let httpURL: string;
-	let authHeader: string;
+suite(
+	`QA-187 compound-index [${ENGINE}]`,
+	{
+		skip: process.platform === 'win32',
+	},
+	(ctx: ContextWithHarper) => {
+		let httpURL: string;
+		let authHeader: string;
 
-	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: {
-				threads: { count: 1 },
-				logging: { console: true, level: 'error' },
-			},
-			env: {},
+		before(async () => {
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+				config: {
+					threads: { count: 1 },
+					logging: { console: true, level: 'error' },
+				},
+				env: {},
+			});
+			const client = createApiClient(ctx.harper);
+			httpURL = ctx.harper.httpURL;
+			authHeader = client.headers.Authorization;
+
+			// Wait for the CompoundOracle endpoint to become available
+			await restartHttpWorkers(client, '/CompoundOracle/', 120_000);
 		});
-		const client = createApiClient(ctx.harper);
-		httpURL = ctx.harper.httpURL;
-		authHeader = client.headers.Authorization;
 
-		// Wait for the CompoundOracle endpoint to become available
-		await restartHttpWorkers(client, '/CompoundOracle/', 120_000);
-	});
-
-	after(async () => {
-		await teardownHarper(ctx);
-	});
-
-	function postJSON(path: string, body: unknown): Promise<Response> {
-		return fetch(`${httpURL}${path}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-			body: JSON.stringify(body),
+		after(async () => {
+			await teardownHarper(ctx);
 		});
-	}
 
-	async function runOracle(): Promise<OracleResult> {
-		const r = await fetch(`${httpURL}/CompoundOracle/?rowCount=${ROW_COUNT}`, {
-			headers: { Authorization: authHeader },
-		});
-		if (r.status !== 200) {
-			const body = await r.text().catch(() => '');
-			throw new Error(`CompoundOracle returned ${r.status}: ${body}`);
+		function postJSON(path: string, body: unknown): Promise<Response> {
+			return fetch(`${httpURL}${path}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+				body: JSON.stringify(body),
+			});
 		}
-		return r.json() as Promise<OracleResult>;
-	}
 
-	function logOracleResult(label: string, result: OracleResult) {
-		const s = result.cases;
-		console.log(
-			`\n[QA-187 ${label} ${ENGINE}] SINGLE-SNAPSHOT ORACLE — ${result.allRowCount} rows total\n` +
-			`  AND  : query=${s.AND.queryCount}  base=${s.AND.baseCount}  extra=${s.AND.extra_count}  missing=${s.AND.missing_count}  → ${s.AND.ok ? 'OK' : 'DEFECT'}\n` +
-			`  OR   : query=${s.OR.queryCount}  base=${s.OR.baseCount}  extra=${s.OR.extra_count}  missing=${s.OR.missing_count}  raw_union_dups=${s.OR.raw_union_dup_count ?? 0}  → ${s.OR.ok ? 'OK' : 'DEFECT'}\n` +
-			`  MIXED: query=${s.MIXED.queryCount}  base=${s.MIXED.baseCount}  extra=${s.MIXED.extra_count}  missing=${s.MIXED.missing_count}  → ${s.MIXED.ok ? 'OK' : 'DEFECT'}\n` +
-			`  EMPTY: query=${s.EMPTY.queryCount}  base=${s.EMPTY.baseCount}  extra=${s.EMPTY.extra_count}  missing=${s.EMPTY.missing_count}  → ${s.EMPTY.ok ? 'OK' : 'DEFECT'}`,
-		);
-		for (const [name, c] of Object.entries(s) as [string, CaseResult][]) {
-			if (c.extra_count > 0)   console.log(`  [${name}] EXTRA (false positives): ${JSON.stringify(c.extra.slice(0, 10))}`);
-			if (c.missing_count > 0) console.log(`  [${name}] MISSING (false negatives): ${JSON.stringify(c.missing.slice(0, 10))}`);
-		}
-	}
-
-	// ---- Q0: Seed rows and verify pre-churn parity --------------------------------
-	test('Q0 seed rows and verify pre-churn compound-index parity', async () => {
-		const r = await postJSON('/Seed/', { rowCount: ROW_COUNT });
-		strictEqual(r.status, 200, `Seed should succeed (got ${r.status})`);
-		console.log(`[QA-187 Q0 ${ENGINE}] seeded ${ROW_COUNT} rows`);
-
-		const result = await runOracle();
-		logOracleResult('Q0 (pre-churn)', result);
-
-		strictEqual(result.allRowCount, ROW_COUNT, `allRowCount should equal ${ROW_COUNT}`);
-		strictEqual(result.cases.AND.extra_count, 0, 'Q0 AND: no extra rows');
-		strictEqual(result.cases.AND.missing_count, 0, 'Q0 AND: no missing rows');
-		strictEqual(result.cases.OR.extra_count, 0, 'Q0 OR: no extra rows');
-		strictEqual(result.cases.OR.missing_count, 0, 'Q0 OR: no missing rows');
-		strictEqual(result.cases.MIXED.extra_count, 0, 'Q0 MIXED: no extra rows');
-		strictEqual(result.cases.MIXED.missing_count, 0, 'Q0 MIXED: no missing rows');
-		strictEqual(result.cases.EMPTY.queryCount, 0, 'Q0 EMPTY: must return [] (no ghost/moon rows)');
-		strictEqual(result.cases.EMPTY.extra_count, 0, 'Q0 EMPTY: no extra rows');
-		strictEqual(result.cases.EMPTY.missing_count, 0, 'Q0 EMPTY: no missing rows');
-	});
-
-	// ---- Q1: Verify expected counts after seed (deterministic cross-check) --------
-	test('Q1 verify expected counts match ground-truth predicates', async () => {
-		const expected = computeExpected(ROW_COUNT);
-		const result = await runOracle();
-
-		// AND: i%12=0 → items 0,12,24,36,48 = 5 rows
-		console.log(`[QA-187 Q1 ${ENGINE}] expected AND=${expected.AND.size} OR=${expected.OR.size} MIXED=${expected.MIXED.size} EMPTY=${expected.EMPTY.size}`);
-
-		strictEqual(result.cases.AND.baseCount, expected.AND.size, `AND baseCount should be ${expected.AND.size}`);
-		strictEqual(result.cases.AND.queryCount, expected.AND.size, `AND queryCount should be ${expected.AND.size}`);
-		strictEqual(result.cases.OR.baseCount, expected.OR.size, `OR baseCount should be ${expected.OR.size}`);
-		strictEqual(result.cases.OR.queryCount, expected.OR.size, `OR queryCount should be ${expected.OR.size}`);
-		strictEqual(result.cases.MIXED.baseCount, expected.MIXED.size, `MIXED baseCount should be ${expected.MIXED.size}`);
-		strictEqual(result.cases.MIXED.queryCount, expected.MIXED.size, `MIXED queryCount should be ${expected.MIXED.size}`);
-		strictEqual(result.cases.EMPTY.baseCount, 0, 'EMPTY baseCount should be 0 (no ghost/moon rows)');
-		strictEqual(result.cases.EMPTY.queryCount, 0, 'EMPTY queryCount should be 0');
-	});
-
-	// ---- Q2: Sequential churn + reconcile ----------------------------------------
-	test('Q2 sequential churn + compound-index reconcile', { timeout: 120_000 }, async () => {
-		const r = await postJSON('/Churn/', { rowCount: ROW_COUNT, iterations: 15 });
-		strictEqual(r.status, 200, `Churn should succeed (got ${r.status})`);
-		console.log(`[QA-187 Q2 ${ENGINE}] sequential churn (15 iters x ${ROW_COUNT} rows) complete`);
-
-		const result = await runOracle();
-		logOracleResult('Q2 (post-sequential-churn)', result);
-
-		strictEqual(result.cases.AND.extra_count, 0, 'Q2 AND: no extra rows after churn');
-		strictEqual(result.cases.AND.missing_count, 0, 'Q2 AND: no missing rows after churn');
-		strictEqual(result.cases.OR.extra_count, 0, 'Q2 OR: no extra rows after churn');
-		strictEqual(result.cases.OR.missing_count, 0, 'Q2 OR: no missing rows after churn');
-		strictEqual(result.cases.MIXED.extra_count, 0, 'Q2 MIXED: no extra rows after churn');
-		strictEqual(result.cases.MIXED.missing_count, 0, 'Q2 MIXED: no missing rows after churn');
-		strictEqual(result.cases.EMPTY.queryCount, 0, 'Q2 EMPTY: must still return [] after churn');
-	});
-
-	// ---- Q3: Concurrent churn (4 parallel workers via HTTP PUT) -------------------
-	test('Q3 concurrent churn (4 workers × 25 random updates) + compound-index reconcile', { timeout: 120_000 }, async () => {
-		const STATUS = ['active', 'inactive', 'pending'];
-		const REGION = ['west', 'east', 'north', 'south'];
-
-		const workers = Array.from({ length: 4 }, async (_, wi) => {
-			for (let iter = 0; iter < 25; iter++) {
-				const i = Math.floor(Math.random() * ROW_COUNT);
-				const status = STATUS[Math.floor(Math.random() * STATUS.length)];
-				const region = REGION[Math.floor(Math.random() * REGION.length)];
-				const score = Math.floor(Math.random() * 120);
-				const rr = await fetch(`${httpURL}/Item/${encodeURIComponent(`item-${i}`)}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-					body: JSON.stringify({ id: `item-${i}`, status, region, score }),
-				});
-				if (rr.status !== 200 && rr.status !== 201 && rr.status !== 204) {
-					throw new Error(`concurrent PUT item-${i} returned ${rr.status}`);
-				}
+		async function runOracle(): Promise<OracleResult> {
+			const r = await fetch(`${httpURL}/CompoundOracle/?rowCount=${ROW_COUNT}`, {
+				headers: { Authorization: authHeader },
+			});
+			if (r.status !== 200) {
+				const body = await r.text().catch(() => '');
+				throw new Error(`CompoundOracle returned ${r.status}: ${body}`);
 			}
+			return r.json() as Promise<OracleResult>;
+		}
+
+		function logOracleResult(label: string, result: OracleResult) {
+			const s = result.cases;
+			console.log(
+				`\n[QA-187 ${label} ${ENGINE}] SINGLE-SNAPSHOT ORACLE — ${result.allRowCount} rows total\n` +
+					`  AND  : query=${s.AND.queryCount}  base=${s.AND.baseCount}  extra=${s.AND.extra_count}  missing=${s.AND.missing_count}  → ${s.AND.ok ? 'OK' : 'DEFECT'}\n` +
+					`  OR   : query=${s.OR.queryCount}  base=${s.OR.baseCount}  extra=${s.OR.extra_count}  missing=${s.OR.missing_count}  raw_union_dups=${s.OR.raw_union_dup_count ?? 0}  → ${s.OR.ok ? 'OK' : 'DEFECT'}\n` +
+					`  MIXED: query=${s.MIXED.queryCount}  base=${s.MIXED.baseCount}  extra=${s.MIXED.extra_count}  missing=${s.MIXED.missing_count}  → ${s.MIXED.ok ? 'OK' : 'DEFECT'}\n` +
+					`  EMPTY: query=${s.EMPTY.queryCount}  base=${s.EMPTY.baseCount}  extra=${s.EMPTY.extra_count}  missing=${s.EMPTY.missing_count}  → ${s.EMPTY.ok ? 'OK' : 'DEFECT'}`
+			);
+			for (const [name, c] of Object.entries(s) as [string, CaseResult][]) {
+				if (c.extra_count > 0)
+					console.log(`  [${name}] EXTRA (false positives): ${JSON.stringify(c.extra.slice(0, 10))}`);
+				if (c.missing_count > 0)
+					console.log(`  [${name}] MISSING (false negatives): ${JSON.stringify(c.missing.slice(0, 10))}`);
+			}
+		}
+
+		// ---- Q0: Seed rows and verify pre-churn parity --------------------------------
+		test('Q0 seed rows and verify pre-churn compound-index parity', async () => {
+			const r = await postJSON('/Seed/', { rowCount: ROW_COUNT });
+			strictEqual(r.status, 200, `Seed should succeed (got ${r.status})`);
+			console.log(`[QA-187 Q0 ${ENGINE}] seeded ${ROW_COUNT} rows`);
+
+			const result = await runOracle();
+			logOracleResult('Q0 (pre-churn)', result);
+
+			strictEqual(result.allRowCount, ROW_COUNT, `allRowCount should equal ${ROW_COUNT}`);
+			strictEqual(result.cases.AND.extra_count, 0, 'Q0 AND: no extra rows');
+			strictEqual(result.cases.AND.missing_count, 0, 'Q0 AND: no missing rows');
+			strictEqual(result.cases.OR.extra_count, 0, 'Q0 OR: no extra rows');
+			strictEqual(result.cases.OR.missing_count, 0, 'Q0 OR: no missing rows');
+			strictEqual(result.cases.MIXED.extra_count, 0, 'Q0 MIXED: no extra rows');
+			strictEqual(result.cases.MIXED.missing_count, 0, 'Q0 MIXED: no missing rows');
+			strictEqual(result.cases.EMPTY.queryCount, 0, 'Q0 EMPTY: must return [] (no ghost/moon rows)');
+			strictEqual(result.cases.EMPTY.extra_count, 0, 'Q0 EMPTY: no extra rows');
+			strictEqual(result.cases.EMPTY.missing_count, 0, 'Q0 EMPTY: no missing rows');
 		});
-		await Promise.all(workers);
-		console.log(`[QA-187 Q3 ${ENGINE}] concurrent churn (4 workers × 25 iters) complete`);
 
-		const result = await runOracle();
-		logOracleResult('Q3 (post-concurrent-churn)', result);
+		// ---- Q1: Verify expected counts after seed (deterministic cross-check) --------
+		test('Q1 verify expected counts match ground-truth predicates', async () => {
+			const expected = computeExpected(ROW_COUNT);
+			const result = await runOracle();
 
-		strictEqual(result.cases.AND.extra_count, 0, 'Q3 AND: no extra rows after concurrent churn');
-		strictEqual(result.cases.AND.missing_count, 0, 'Q3 AND: no missing rows after concurrent churn');
-		strictEqual(result.cases.OR.extra_count, 0, 'Q3 OR: no extra rows after concurrent churn');
-		strictEqual(result.cases.OR.missing_count, 0, 'Q3 OR: no missing rows after concurrent churn');
-		// MIXED: after random score updates we can't assert counts, just that query == base within snapshot
-		strictEqual(result.cases.MIXED.extra_count, 0, 'Q3 MIXED: no extra rows after concurrent churn');
-		strictEqual(result.cases.MIXED.missing_count, 0, 'Q3 MIXED: no missing rows after concurrent churn');
-		strictEqual(result.cases.EMPTY.queryCount, 0, 'Q3 EMPTY: must still return [] (no ghost/moon rows inserted)');
-	});
+			// AND: i%12=0 → items 0,12,24,36,48 = 5 rows
+			console.log(
+				`[QA-187 Q1 ${ENGINE}] expected AND=${expected.AND.size} OR=${expected.OR.size} MIXED=${expected.MIXED.size} EMPTY=${expected.EMPTY.size}`
+			);
 
-	// ---- Q4: Deterministic FinalPass + decisive oracle ----------------------------
-	test('Q4 deterministic FinalPass + decisive single-snapshot oracle', { timeout: 120_000 }, async () => {
-		const fp = await postJSON('/FinalPass/', { rowCount: ROW_COUNT });
-		strictEqual(fp.status, 200, `FinalPass should succeed (got ${fp.status})`);
-		console.log(`[QA-187 Q4 ${ENGINE}] deterministic final pass complete`);
+			strictEqual(result.cases.AND.baseCount, expected.AND.size, `AND baseCount should be ${expected.AND.size}`);
+			strictEqual(result.cases.AND.queryCount, expected.AND.size, `AND queryCount should be ${expected.AND.size}`);
+			strictEqual(result.cases.OR.baseCount, expected.OR.size, `OR baseCount should be ${expected.OR.size}`);
+			strictEqual(result.cases.OR.queryCount, expected.OR.size, `OR queryCount should be ${expected.OR.size}`);
+			strictEqual(
+				result.cases.MIXED.baseCount,
+				expected.MIXED.size,
+				`MIXED baseCount should be ${expected.MIXED.size}`
+			);
+			strictEqual(
+				result.cases.MIXED.queryCount,
+				expected.MIXED.size,
+				`MIXED queryCount should be ${expected.MIXED.size}`
+			);
+			strictEqual(result.cases.EMPTY.baseCount, 0, 'EMPTY baseCount should be 0 (no ghost/moon rows)');
+			strictEqual(result.cases.EMPTY.queryCount, 0, 'EMPTY queryCount should be 0');
+		});
 
-		const result = await runOracle();
-		const expected = computeExpected(ROW_COUNT);
-		logOracleResult('Q4 DECISIVE (post-FinalPass)', result);
+		// ---- Q2: Sequential churn + reconcile ----------------------------------------
+		test('Q2 sequential churn + compound-index reconcile', { timeout: 120_000 }, async () => {
+			const r = await postJSON('/Churn/', { rowCount: ROW_COUNT, iterations: 15 });
+			strictEqual(r.status, 200, `Churn should succeed (got ${r.status})`);
+			console.log(`[QA-187 Q2 ${ENGINE}] sequential churn (15 iters x ${ROW_COUNT} rows) complete`);
 
-		console.log(
-			`\n[QA-187 Q4 ${ENGINE}] DECISIVE VERDICT:\n` +
-			`  AND  : expected=${expected.AND.size}  query=${result.cases.AND.queryCount}  extra=${result.cases.AND.extra_count}  missing=${result.cases.AND.missing_count}  → ${result.cases.AND.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
-			`  OR   : expected=${expected.OR.size}  query=${result.cases.OR.queryCount}  extra=${result.cases.OR.extra_count}  missing=${result.cases.OR.missing_count}  → ${result.cases.OR.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
-			`  MIXED: expected=${expected.MIXED.size}  query=${result.cases.MIXED.queryCount}  extra=${result.cases.MIXED.extra_count}  missing=${result.cases.MIXED.missing_count}  → ${result.cases.MIXED.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
-			`  EMPTY: expected=0  query=${result.cases.EMPTY.queryCount}  extra=${result.cases.EMPTY.extra_count}  missing=${result.cases.EMPTY.missing_count}  → ${result.cases.EMPTY.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
-			`  Engine: ${ENGINE}  SHA: 7aaa5a152`,
+			const result = await runOracle();
+			logOracleResult('Q2 (post-sequential-churn)', result);
+
+			strictEqual(result.cases.AND.extra_count, 0, 'Q2 AND: no extra rows after churn');
+			strictEqual(result.cases.AND.missing_count, 0, 'Q2 AND: no missing rows after churn');
+			strictEqual(result.cases.OR.extra_count, 0, 'Q2 OR: no extra rows after churn');
+			strictEqual(result.cases.OR.missing_count, 0, 'Q2 OR: no missing rows after churn');
+			strictEqual(result.cases.MIXED.extra_count, 0, 'Q2 MIXED: no extra rows after churn');
+			strictEqual(result.cases.MIXED.missing_count, 0, 'Q2 MIXED: no missing rows after churn');
+			strictEqual(result.cases.EMPTY.queryCount, 0, 'Q2 EMPTY: must still return [] after churn');
+		});
+
+		// ---- Q3: Concurrent churn (4 parallel workers via HTTP PUT) -------------------
+		test(
+			'Q3 concurrent churn (4 workers × 25 random updates) + compound-index reconcile',
+			{ timeout: 120_000 },
+			async () => {
+				const STATUS = ['active', 'inactive', 'pending'];
+				const REGION = ['west', 'east', 'north', 'south'];
+
+				const workers = Array.from({ length: 4 }, async () => {
+					for (let iter = 0; iter < 25; iter++) {
+						const i = Math.floor(Math.random() * ROW_COUNT);
+						const status = STATUS[Math.floor(Math.random() * STATUS.length)];
+						const region = REGION[Math.floor(Math.random() * REGION.length)];
+						const score = Math.floor(Math.random() * 120);
+						const rr = await fetch(`${httpURL}/Item/${encodeURIComponent(`item-${i}`)}`, {
+							method: 'PUT',
+							headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+							body: JSON.stringify({ id: `item-${i}`, status, region, score }),
+						});
+						if (rr.status !== 200 && rr.status !== 201 && rr.status !== 204) {
+							throw new Error(`concurrent PUT item-${i} returned ${rr.status}`);
+						}
+					}
+				});
+				await Promise.all(workers);
+				console.log(`[QA-187 Q3 ${ENGINE}] concurrent churn (4 workers × 25 iters) complete`);
+
+				const result = await runOracle();
+				logOracleResult('Q3 (post-concurrent-churn)', result);
+
+				strictEqual(result.cases.AND.extra_count, 0, 'Q3 AND: no extra rows after concurrent churn');
+				strictEqual(result.cases.AND.missing_count, 0, 'Q3 AND: no missing rows after concurrent churn');
+				strictEqual(result.cases.OR.extra_count, 0, 'Q3 OR: no extra rows after concurrent churn');
+				strictEqual(result.cases.OR.missing_count, 0, 'Q3 OR: no missing rows after concurrent churn');
+				// MIXED: after random score updates we can't assert counts, just that query == base within snapshot
+				strictEqual(result.cases.MIXED.extra_count, 0, 'Q3 MIXED: no extra rows after concurrent churn');
+				strictEqual(result.cases.MIXED.missing_count, 0, 'Q3 MIXED: no missing rows after concurrent churn');
+				strictEqual(result.cases.EMPTY.queryCount, 0, 'Q3 EMPTY: must still return [] (no ghost/moon rows inserted)');
+			}
 		);
 
-		// AND
-		strictEqual(result.cases.AND.queryCount, expected.AND.size, `AND queryCount must be ${expected.AND.size} — DEFECT if not`);
-		strictEqual(result.cases.AND.extra_count, 0, 'AND extra must be 0 — DEFECT if not');
-		strictEqual(result.cases.AND.missing_count, 0, 'AND missing must be 0 — DEFECT if not');
+		// ---- Q4: Deterministic FinalPass + decisive oracle ----------------------------
+		test('Q4 deterministic FinalPass + decisive single-snapshot oracle', { timeout: 120_000 }, async () => {
+			const fp = await postJSON('/FinalPass/', { rowCount: ROW_COUNT });
+			strictEqual(fp.status, 200, `FinalPass should succeed (got ${fp.status})`);
+			console.log(`[QA-187 Q4 ${ENGINE}] deterministic final pass complete`);
 
-		// OR
-		strictEqual(result.cases.OR.queryCount, expected.OR.size, `OR queryCount must be ${expected.OR.size} — DEFECT if not`);
-		strictEqual(result.cases.OR.extra_count, 0, 'OR extra must be 0 — DEFECT if not');
-		strictEqual(result.cases.OR.missing_count, 0, 'OR missing must be 0 — DEFECT if not');
-		// OR raw-union duplicates: rows that are BOTH active AND west appear in both index scans.
-		// The oracle deduplicates before diffing, but we note the count.
-		const orRawDups = result.cases.OR.raw_union_dup_count ?? 0;
-		ok(orRawDups >= 0, 'OR raw_union_dup_count should be non-negative (informational)');
-		console.log(`  [OR] raw_union_dup_count (rows in both buckets, expected) = ${orRawDups} (expected = ${expected.AND.size})`);
+			const result = await runOracle();
+			const expected = computeExpected(ROW_COUNT);
+			logOracleResult('Q4 DECISIVE (post-FinalPass)', result);
 
-		// MIXED
-		strictEqual(result.cases.MIXED.queryCount, expected.MIXED.size, `MIXED queryCount must be ${expected.MIXED.size} — DEFECT if not`);
-		strictEqual(result.cases.MIXED.extra_count, 0, 'MIXED extra must be 0 — DEFECT if not');
-		strictEqual(result.cases.MIXED.missing_count, 0, 'MIXED missing must be 0 — DEFECT if not');
+			console.log(
+				`\n[QA-187 Q4 ${ENGINE}] DECISIVE VERDICT:\n` +
+					`  AND  : expected=${expected.AND.size}  query=${result.cases.AND.queryCount}  extra=${result.cases.AND.extra_count}  missing=${result.cases.AND.missing_count}  → ${result.cases.AND.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
+					`  OR   : expected=${expected.OR.size}  query=${result.cases.OR.queryCount}  extra=${result.cases.OR.extra_count}  missing=${result.cases.OR.missing_count}  → ${result.cases.OR.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
+					`  MIXED: expected=${expected.MIXED.size}  query=${result.cases.MIXED.queryCount}  extra=${result.cases.MIXED.extra_count}  missing=${result.cases.MIXED.missing_count}  → ${result.cases.MIXED.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
+					`  EMPTY: expected=0  query=${result.cases.EMPTY.queryCount}  extra=${result.cases.EMPTY.extra_count}  missing=${result.cases.EMPTY.missing_count}  → ${result.cases.EMPTY.ok ? 'EXPECTED (correct)' : 'DEFECT'}\n` +
+					`  Engine: ${ENGINE}  SHA: 7aaa5a152`
+			);
 
-		// EMPTY
-		strictEqual(result.cases.EMPTY.queryCount, 0, 'EMPTY must return exactly 0 rows — DEFECT if not');
-		strictEqual(result.cases.EMPTY.extra_count, 0, 'EMPTY must have 0 extra rows — DEFECT if not');
-		strictEqual(result.cases.EMPTY.missing_count, 0, 'EMPTY must have 0 missing rows (ground truth is also 0)');
-	});
-});
+			// AND
+			strictEqual(
+				result.cases.AND.queryCount,
+				expected.AND.size,
+				`AND queryCount must be ${expected.AND.size} — DEFECT if not`
+			);
+			strictEqual(result.cases.AND.extra_count, 0, 'AND extra must be 0 — DEFECT if not');
+			strictEqual(result.cases.AND.missing_count, 0, 'AND missing must be 0 — DEFECT if not');
+
+			// OR
+			strictEqual(
+				result.cases.OR.queryCount,
+				expected.OR.size,
+				`OR queryCount must be ${expected.OR.size} — DEFECT if not`
+			);
+			strictEqual(result.cases.OR.extra_count, 0, 'OR extra must be 0 — DEFECT if not');
+			strictEqual(result.cases.OR.missing_count, 0, 'OR missing must be 0 — DEFECT if not');
+			// OR raw-union duplicates: rows that are BOTH active AND west appear in both index scans.
+			// The oracle deduplicates before diffing, but we note the count.
+			const orRawDups = result.cases.OR.raw_union_dup_count ?? 0;
+			ok(orRawDups >= 0, 'OR raw_union_dup_count should be non-negative (informational)');
+			console.log(
+				`  [OR] raw_union_dup_count (rows in both buckets, expected) = ${orRawDups} (expected = ${expected.AND.size})`
+			);
+
+			// MIXED
+			strictEqual(
+				result.cases.MIXED.queryCount,
+				expected.MIXED.size,
+				`MIXED queryCount must be ${expected.MIXED.size} — DEFECT if not`
+			);
+			strictEqual(result.cases.MIXED.extra_count, 0, 'MIXED extra must be 0 — DEFECT if not');
+			strictEqual(result.cases.MIXED.missing_count, 0, 'MIXED missing must be 0 — DEFECT if not');
+
+			// EMPTY
+			strictEqual(result.cases.EMPTY.queryCount, 0, 'EMPTY must return exactly 0 rows — DEFECT if not');
+			strictEqual(result.cases.EMPTY.extra_count, 0, 'EMPTY must have 0 extra rows — DEFECT if not');
+			strictEqual(result.cases.EMPTY.missing_count, 0, 'EMPTY must have 0 missing rows (ground truth is also 0)');
+		});
+	}
+);

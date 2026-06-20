@@ -14,54 +14,54 @@
 //   }
 
 export class ConsistencyOracle extends Resource {
-  static loadAsInstance = false;
+	static loadAsInstance = false;
 
-  async get(query) {
-    // Support both /ConsistencyOracle/<id> (path id) and ?orderId=<id> (query param).
-    let orderId = null;
-    if (query && query.get) {
-      orderId = query.get('orderId');
-    } else if (query && query.orderId) {
-      orderId = query.orderId;
-    }
-    // Fallback: use the path-based id if available.
-    if (!orderId && query && query.id != null) {
-      orderId = String(query.id);
-    }
+	async get(query) {
+		// Support both /ConsistencyOracle/<id> (path id) and ?orderId=<id> (query param).
+		let orderId = null;
+		if (query && query.get) {
+			orderId = query.get('orderId');
+		} else if (query && query.orderId) {
+			orderId = query.orderId;
+		}
+		// Fallback: use the path-based id if available.
+		if (!orderId && query && query.id != null) {
+			orderId = String(query.id);
+		}
 
-    if (!orderId) {
-      this.getContext().response.status = 400;
-      return { error: 'orderId param required (path or query)' };
-    }
+		if (!orderId) {
+			this.getContext().response.status = 400;
+			return { error: 'orderId param required (path or query)' };
+		}
 
-    // Read Order base record.
-    const order = await tables.Order.get(orderId);
+		// Read Order base record.
+		const order = await tables.Order.get(orderId);
 
-    // Read all OrderItems with this orderId via the FK index.
-    // search({ orderId }) uses the @indexed orderId attribute.
-    const indexItems = [];
-    for await (const item of tables.OrderItem.search({ orderId })) {
-      indexItems.push(String(item.id));
-    }
+		// Read all OrderItems with this orderId via the FK index.
+		// search({ orderId }) uses the @indexed orderId attribute.
+		const indexItems = [];
+		for await (const item of tables.OrderItem.search({ orderId })) {
+			indexItems.push(String(item.id));
+		}
 
-    const indexIds = indexItems.sort();
+		const indexIds = indexItems.sort();
 
-    // For each index entry, verify the base record actually exists.
-    const itemExistChecks = await Promise.all(
-      indexIds.map(async (id) => {
-        const rec = await tables.OrderItem.get(id);
-        return { id, exists: rec != null };
-      })
-    );
+		// For each index entry, verify the base record actually exists.
+		const itemExistChecks = await Promise.all(
+			indexIds.map(async (id) => {
+				const rec = await tables.OrderItem.get(id);
+				return { id, exists: rec != null };
+			})
+		);
 
-    const phantomIndexEntries = itemExistChecks.filter(c => !c.exists).map(c => c.id);
+		const phantomIndexEntries = itemExistChecks.filter((c) => !c.exists).map((c) => c.id);
 
-    return {
-      orderExists: order != null,
-      indexCount: indexIds.length,
-      indexIds,
-      itemsExist: itemExistChecks,
-      phantomIndexEntries,
-    };
-  }
+		return {
+			orderExists: order != null,
+			indexCount: indexIds.length,
+			indexIds,
+			itemsExist: itemExistChecks,
+			phantomIndexEntries,
+		};
+	}
 }

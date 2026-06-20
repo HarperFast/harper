@@ -109,13 +109,13 @@ export class CompoundOracle extends Resource {
 		}
 
 		// Ground-truth predicate functions (applied to base scan)
-		const predAnd   = (r) => r.status === 'active' && r.region === 'west';
-		const predOr    = (r) => r.status === 'active' || r.region === 'west';
+		const predAnd = (r) => r.status === 'active' && r.region === 'west';
+		const predOr = (r) => r.status === 'active' || r.region === 'west';
 		const predMixed = (r) => r.status === 'active' && r.score >= 50;
 		const predEmpty = (r) => r.status === 'ghost' && r.region === 'moon';
 
-		const baseAnd   = new Set(allRows.filter(predAnd).map((r) => r.id));
-		const baseOr    = new Set(allRows.filter(predOr).map((r) => r.id));
+		const baseAnd = new Set(allRows.filter(predAnd).map((r) => r.id));
+		const baseOr = new Set(allRows.filter(predOr).map((r) => r.id));
 		const baseMixed = new Set(allRows.filter(predMixed).map((r) => r.id));
 		const baseEmpty = new Set(allRows.filter(predEmpty).map((r) => r.id));
 
@@ -146,7 +146,9 @@ export class CompoundOracle extends Resource {
 		// Duplicates in OR = IDs that appear more than once in qOrRaw (expected: items in BOTH buckets)
 		const orRawCount = {};
 		for (const id of qOrRaw) orRawCount[id] = (orRawCount[id] || 0) + 1;
-		const orDuplicates = Object.entries(orRawCount).filter(([, c]) => c > 1).map(([id]) => id);
+		const orDuplicates = Object.entries(orRawCount)
+			.filter(([, c]) => c > 1)
+			.map(([id]) => id);
 
 		// MIXED: status='active' (indexed) AND score >= 50 (non-indexed — Harper must filter)
 		// search([{attribute:'status', value:'active'}]) returns all active rows,
@@ -174,8 +176,8 @@ export class CompoundOracle extends Resource {
 			return { extra, missing, extra_count: extra.length, missing_count: missing.length };
 		}
 
-		const andDiff   = diff(qAnd, baseAnd);
-		const orDiff    = diff(qOr, baseOr);
+		const andDiff = diff(qAnd, baseAnd);
+		const orDiff = diff(qOr, baseOr);
 		const mixedDiff = diff(qMixed, baseMixed);
 		const emptyDiff = diff(qEmpty, baseEmpty);
 

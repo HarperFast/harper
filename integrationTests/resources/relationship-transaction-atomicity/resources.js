@@ -22,52 +22,52 @@
 // POST /CreateOrderWithItem/  { orderId, itemId, name, price, fail=false }
 // ---------------------------------------------------------------------------
 export class CreateOrderWithItem extends Resource {
-  static loadAsInstance = false;
+	static loadAsInstance = false;
 
-  async post(query, body) {
-    const b = body || query || {};
-    const orderId = b.orderId;
-    const itemId = b.itemId;
-    const name = b.name || 'item';
-    const price = Number(b.price) || 1.0;
-    const shouldFail = b.fail === true || b.fail === 'true';
+	async post(query, body) {
+		const b = body || query || {};
+		const orderId = b.orderId;
+		const itemId = b.itemId;
+		const name = b.name || 'item';
+		const price = Number(b.price) || 1.0;
+		const shouldFail = b.fail === true || b.fail === 'true';
 
-    // Write parent row.
-    await tables.Order.put({ id: orderId, total: price });
+		// Write parent row.
+		await tables.Order.put({ id: orderId, total: price });
 
-    if (shouldFail) {
-      // Throw AFTER parent write, BEFORE child write.
-      // Atomic => Order must roll back. Relationship index must be empty for orderId.
-      throw new Error(`QA-162 forced throw after Order(${orderId}), before OrderItem`);
-    }
+		if (shouldFail) {
+			// Throw AFTER parent write, BEFORE child write.
+			// Atomic => Order must roll back. Relationship index must be empty for orderId.
+			throw new Error(`QA-162 forced throw after Order(${orderId}), before OrderItem`);
+		}
 
-    // Write child row — establishes the @relationship FK edge (orderId).
-    await tables.OrderItem.put({ id: itemId, orderId, name, price });
+		// Write child row — establishes the @relationship FK edge (orderId).
+		await tables.OrderItem.put({ id: itemId, orderId, name, price });
 
-    return { ok: true, orderId, itemId };
-  }
+		return { ok: true, orderId, itemId };
+	}
 }
 
 // ---------------------------------------------------------------------------
 // POST /CreateOrderWithItems/  { orderId, items: [{id,name,price},...] }
 // ---------------------------------------------------------------------------
 export class CreateOrderWithItems extends Resource {
-  static loadAsInstance = false;
+	static loadAsInstance = false;
 
-  async post(query, body) {
-    const b = body || query || {};
-    const orderId = b.orderId;
-    const items = Array.isArray(b.items) ? b.items : [];
+	async post(query, body) {
+		const b = body || query || {};
+		const orderId = b.orderId;
+		const items = Array.isArray(b.items) ? b.items : [];
 
-    const total = items.reduce((s, it) => s + Number(it.price || 0), 0);
-    await tables.Order.put({ id: orderId, total });
+		const total = items.reduce((s, it) => s + Number(it.price || 0), 0);
+		await tables.Order.put({ id: orderId, total });
 
-    for (const it of items) {
-      await tables.OrderItem.put({ id: it.id, orderId, name: it.name || 'item', price: Number(it.price) || 1.0 });
-    }
+		for (const it of items) {
+			await tables.OrderItem.put({ id: it.id, orderId, name: it.name || 'item', price: Number(it.price) || 1.0 });
+		}
 
-    return { ok: true, orderId, itemCount: items.length };
-  }
+		return { ok: true, orderId, itemCount: items.length };
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -75,16 +75,16 @@ export class CreateOrderWithItems extends Resource {
 // Used by the concurrent fan-out probe: each call adds ONE child to an existing parent.
 // ---------------------------------------------------------------------------
 export class AddOrderItem extends Resource {
-  static loadAsInstance = false;
+	static loadAsInstance = false;
 
-  async post(query, body) {
-    const b = body || query || {};
-    const orderId = b.orderId;
-    const itemId = b.itemId;
-    const name = b.name || 'item';
-    const price = Number(b.price) || 1.0;
+	async post(query, body) {
+		const b = body || query || {};
+		const orderId = b.orderId;
+		const itemId = b.itemId;
+		const name = b.name || 'item';
+		const price = Number(b.price) || 1.0;
 
-    await tables.OrderItem.put({ id: itemId, orderId, name, price });
-    return { ok: true, orderId, itemId };
-  }
+		await tables.OrderItem.put({ id: itemId, orderId, name, price });
+		return { ok: true, orderId, itemId };
+	}
 }

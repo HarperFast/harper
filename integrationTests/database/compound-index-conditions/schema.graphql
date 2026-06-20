@@ -3,8 +3,8 @@
 # Item: both `status` and `region` are @indexed.
 # A `score` field is intentionally NOT indexed — used for the mixed indexed+non-indexed case.
 type Item @table @export {
-  id: ID @primaryKey
-  status: String @indexed
-  region: String @indexed
-  score: Int
+	id: ID @primaryKey
+	status: String @indexed
+	region: String @indexed
+	score: Int
 }

@@ -9,13 +9,13 @@
 # LongRow  — Long @indexed  (for cap-enforcement test)
 # BigRow   — BigInt @indexed (for true 64-bit range tests)
 type LongRow @table @export {
-  id: ID @primaryKey
-  lval: Long @indexed
-  label: String
+	id: ID @primaryKey
+	lval: Long @indexed
+	label: String
 }
 
 type BigRow @table @export {
-  id: ID @primaryKey
-  bval: BigInt @indexed
-  label: String
+	id: ID @primaryKey
+	bval: BigInt @indexed
+	label: String
 }

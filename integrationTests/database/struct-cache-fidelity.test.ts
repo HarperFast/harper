@@ -115,7 +115,13 @@ interface EncodeResult {
 /** Distinct field-NAME sets across all shapes — confirms the load is genuinely heterogeneous. */
 function countDistinctShapes(n: number): number {
 	const set = new Set<string>();
-	for (let id = 0; id < n; id++) set.add(shapeFields(id).slice().sort((a, b) => a - b).join(','));
+	for (let id = 0; id < n; id++)
+		set.add(
+			shapeFields(id)
+				.slice()
+				.sort((a, b) => a - b)
+				.join(',')
+		);
 	return set.size;
 }
 

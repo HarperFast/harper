@@ -87,21 +87,26 @@ const ENGINE = process.env.HARPER_STORAGE_ENGINE ?? 'rocksdb';
 
 // ── 64-bit boundary constants (bigint literals — NOT BigInt(number)) ─────────
 // IMPORTANT: BigInt(9007199254740993) collapses! Use literal 9007199254740993n.
-const TWO53      = 9007199254740992n;       // 2^53 exactly — representable as float
-const TWO53_M2   = TWO53 - 2n;             // 9007199254740990 — representable float
-const TWO53_M1   = TWO53 - 1n;             // 9007199254740991 — representable float
-const TWO53_P1   = TWO53 + 1n;             // 9007199254740993 — NOT representable as float
-const TWO53_P2   = TWO53 + 2n;             // 9007199254740994 — representable float (even)
-const TWO53_P3   = TWO53 + 3n;             // 9007199254740995 — NOT representable as float
-const LARGE      = 4611686018427387904n;    // 2^62
-const NEAR_MAX   = 9223372036854775806n;    // 2^63 - 2
+const TWO53 = 9007199254740992n; // 2^53 exactly — representable as float
+const TWO53_M2 = TWO53 - 2n; // 9007199254740990 — representable float
+const TWO53_M1 = TWO53 - 1n; // 9007199254740991 — representable float
+const TWO53_P1 = TWO53 + 1n; // 9007199254740993 — NOT representable as float
+const TWO53_P2 = TWO53 + 2n; // 9007199254740994 — representable float (even)
+const TWO53_P3 = TWO53 + 3n; // 9007199254740995 — NOT representable as float
+const LARGE = 4611686018427387904n; // 2^62
+const NEAR_MAX = 9223372036854775806n; // 2^63 - 2
 
 type Client = ReturnType<typeof createApiClient>;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /** REST PUT with CBOR body — carries true bigint values through cbor-x encoding. */
-async function cborPut(restURL: string, authHeaders: Record<string, string>, table: string, record: Record<string, unknown>) {
+async function cborPut(
+	restURL: string,
+	authHeaders: Record<string, string>,
+	table: string,
+	record: Record<string, unknown>
+) {
 	const body = cborEncode(record);
 	return request(restURL)
 		.put(`/${table}/${record.id}`)
@@ -114,7 +119,7 @@ async function cborPut(restURL: string, authHeaders: Record<string, string>, tab
 async function cborGet(restURL: string, authHeaders: Record<string, string>, table: string, id: string) {
 	const r = await request(restURL)
 		.get(`/${table}/${id}`)
-		.set({ ...authHeaders, 'Accept': 'application/cbor' })
+		.set({ ...authHeaders, Accept: 'application/cbor' })
 		.buffer(true)
 		.parse((res, callback) => {
 			const chunks: Buffer[] = [];
@@ -136,14 +141,17 @@ async function searchBigInt(
 	table: string,
 	conditions: Array<{ search_attribute: string; search_type: string; search_value: string }>
 ): Promise<Array<{ id: string; bval: unknown; label: string }>> {
-	const r = await client.req().send({
-		operation: 'search_by_conditions',
-		schema: 'data',
-		table,
-		operator: 'and',
-		conditions,
-		get_attributes: ['id', 'bval', 'label'],
-	}).timeout(30_000);
+	const r = await client
+		.req()
+		.send({
+			operation: 'search_by_conditions',
+			schema: 'data',
+			table,
+			operator: 'and',
+			conditions,
+			get_attributes: ['id', 'bval', 'label'],
+		})
+		.timeout(30_000);
 	if (r.status !== 200 || !Array.isArray(r.body))
 		throw new Error(`search_by_conditions failed status=${r.status} body=${JSON.stringify(r.body)?.slice(0, 400)}`);
 	return r.body;
@@ -178,7 +186,8 @@ async function scanAllBigRows(
 			res.on('end', () => callback(null, Buffer.concat(chunks)));
 		})
 		.timeout(30_000);
-	if (r.status !== 200) throw new Error(`scan failed status=${r.status} body=${JSON.stringify(r.body ?? r.text)?.slice(0, 300)}`);
+	if (r.status !== 200)
+		throw new Error(`scan failed status=${r.status} body=${JSON.stringify(r.body ?? r.text)?.slice(0, 300)}`);
 	const decoded = cborDecode(r.body as any);
 	return Array.isArray(decoded) ? decoded : [decoded];
 }
@@ -188,7 +197,7 @@ function diffIds(indexRows: Array<{ id: string }>, oracle: Array<{ id: string }>
 	const idxIds = new Set(indexRows.map((r) => r.id));
 	const oracleIds = new Set(oracle.map((r) => r.id));
 	return {
-		extra:   [...idxIds].filter((id) => !oracleIds.has(id)),
+		extra: [...idxIds].filter((id) => !oracleIds.has(id)),
 		missing: [...oracleIds].filter((id) => !idxIds.has(id)),
 	};
 }
@@ -199,8 +208,10 @@ function assertMatch(label: string, indexRows: Array<{ id: string }>, oracle: Ar
 	const okFlag = extra.length === 0 && missing.length === 0;
 	console.log(
 		`  [${label}] idx=${indexRows.length} oracle=${oracle.length}` +
-		` extra=${extra.length} missing=${missing.length}` +
-		(okFlag ? ' OK' : ` FAIL extra=${JSON.stringify(extra.slice(0, 5))} missing=${JSON.stringify(missing.slice(0, 5))}`)
+			` extra=${extra.length} missing=${missing.length}` +
+			(okFlag
+				? ' OK'
+				: ` FAIL extra=${JSON.stringify(extra.slice(0, 5))} missing=${JSON.stringify(missing.slice(0, 5))}`)
 	);
 	deepStrictEqual(
 		new Set(indexRows.map((r) => r.id)),
@@ -222,14 +233,14 @@ suite(
 
 		// BigRow seed records — bval values are JS bigint, sent via CBOR PUT
 		const BIG_ROWS = [
-			{ id: 'b-m2',    bval: TWO53_M2,  label: '2^53-2' },
-			{ id: 'b-m1',    bval: TWO53_M1,  label: '2^53-1' },
-			{ id: 'b-0',     bval: TWO53,     label: '2^53'   },
-			{ id: 'b-p1',    bval: TWO53_P1,  label: '2^53+1' }, // NOT a valid JS float
-			{ id: 'b-p2',    bval: TWO53_P2,  label: '2^53+2' },
-			{ id: 'b-p3',    bval: TWO53_P3,  label: '2^53+3' }, // NOT a valid JS float
-			{ id: 'b-large', bval: LARGE,     label: '2^62'   },
-			{ id: 'b-max',   bval: NEAR_MAX,  label: '2^63-2' },
+			{ id: 'b-m2', bval: TWO53_M2, label: '2^53-2' },
+			{ id: 'b-m1', bval: TWO53_M1, label: '2^53-1' },
+			{ id: 'b-0', bval: TWO53, label: '2^53' },
+			{ id: 'b-p1', bval: TWO53_P1, label: '2^53+1' }, // NOT a valid JS float
+			{ id: 'b-p2', bval: TWO53_P2, label: '2^53+2' },
+			{ id: 'b-p3', bval: TWO53_P3, label: '2^53+3' }, // NOT a valid JS float
+			{ id: 'b-large', bval: LARGE, label: '2^62' },
+			{ id: 'b-max', bval: NEAR_MAX, label: '2^63-2' },
 		];
 
 		before(async () => {
@@ -248,7 +259,9 @@ suite(
 				try {
 					const probe = await request(restURL).get('/BigRow/').set(authHeaders).timeout(3_000);
 					if (probe.status !== 503 && probe.status !== 502) break;
-				} catch { /* not ready */ }
+				} catch {
+					/* not ready */
+				}
 				await sleep(250);
 			}
 
@@ -256,23 +269,35 @@ suite(
 			for (const row of BIG_ROWS) {
 				const r = await cborPut(restURL, authHeaders, 'BigRow', row);
 				if (r.status < 200 || r.status >= 300) {
-					throw new Error(`BigRow PUT ${row.id} failed: status=${r.status} body=${JSON.stringify(r.text ?? r.body)?.slice(0, 300)}`);
+					throw new Error(
+						`BigRow PUT ${row.id} failed: status=${r.status} body=${JSON.stringify(r.text ?? r.body)?.slice(0, 300)}`
+					);
 				}
 			}
 
 			// ── Insert LongRow records — Long type accepts only numbers up to 2^53 ─
 			// l-two53: safe boundary — 2^53 is the maximum accepted value
-			await client.req().send({
-				operation: 'insert', schema: 'data', table: 'LongRow',
-				records: [{ id: 'l-two53', lval: Number(TWO53), label: '2^53 safe' }],
-			}).expect(200);
+			await client
+				.req()
+				.send({
+					operation: 'insert',
+					schema: 'data',
+					table: 'LongRow',
+					records: [{ id: 'l-two53', lval: Number(TWO53), label: '2^53 safe' }],
+				})
+				.expect(200);
 
 			// l-two53p1-num: JS number 9007199254740993 collapses to 9007199254740992 in JS
 			// BEFORE it's JSON-serialized. The operations API receives 9007199254740992.
-			await client.req().send({
-				operation: 'insert', schema: 'data', table: 'LongRow',
-				records: [{ id: 'l-two53p1-num', lval: 9007199254740993, label: '2^53+1 as JS number (pre-collapsed)' }],
-			}).expect(200);
+			await client
+				.req()
+				.send({
+					operation: 'insert',
+					schema: 'data',
+					table: 'LongRow',
+					records: [{ id: 'l-two53p1-num', lval: 9007199254740993, label: '2^53+1 as JS number (pre-collapsed)' }],
+				})
+				.expect(200);
 		});
 
 		after(async () => {
@@ -286,26 +311,44 @@ suite(
 			// The key point: in JavaScript, 9007199254740993 === 9007199254740992 at the number level.
 			// By the time JSON.stringify sends it, it's already 9007199254740992.
 			const jsNum = 9007199254740993; // this literal is ALREADY 9007199254740992 in JS
-			strictEqual(jsNum, 9007199254740992, '[LA1] JS literal 9007199254740993 must === 9007199254740992 (double precision collapse)');
+			strictEqual(
+				jsNum,
+				9007199254740992,
+				'[LA1] JS literal 9007199254740993 must === 9007199254740992 (double precision collapse)'
+			);
 			// Verify stored value via REST
 			const r = await request(restURL).get('/LongRow/l-two53p1-num').set(authHeaders).timeout(10_000);
 			ok(r.status === 200, `GET l-two53p1-num: expected 200, got ${r.status}`);
 			const stored = r.body?.lval;
 			console.log(`  l-two53p1-num stored lval = ${stored}`);
-			strictEqual(stored, 9007199254740992, `[LA1] Stored Long(2^53+1 as JS number) = ${stored}; must be 2^53 (collapsed)`);
-			console.log(`  [LA1] CONFIRMED: JS number 2^53+1 collapses to 2^53 — Long type cannot store distinct >2^53 via JSON`);
+			strictEqual(
+				stored,
+				9007199254740992,
+				`[LA1] Stored Long(2^53+1 as JS number) = ${stored}; must be 2^53 (collapsed)`
+			);
+			console.log(
+				`  [LA1] CONFIRMED: JS number 2^53+1 collapses to 2^53 — Long type cannot store distinct >2^53 via JSON`
+			);
 		});
 
 		test('Track A [LA2]: Long — operations API rejects values strictly above 2^53', async () => {
 			// 9007199254740994 (= 2^53+2) is representable as a float64 AND as a JS number.
 			// But Long's validate() requires Math.abs(value) <= 9007199254740992 (2^53).
 			// 9007199254740994 > 9007199254740992, so it must be rejected.
-			const r = await client.req().send({
-				operation: 'insert', schema: 'data', table: 'LongRow',
-				records: [{ id: 'l-two53p2-test', lval: 9007199254740994, label: '2^53+2' }],
-			}).timeout(10_000);
+			const r = await client
+				.req()
+				.send({
+					operation: 'insert',
+					schema: 'data',
+					table: 'LongRow',
+					records: [{ id: 'l-two53p2-test', lval: 9007199254740994, label: '2^53+2' }],
+				})
+				.timeout(10_000);
 			console.log(`  LA2 insert 2^53+2 into Long: status=${r.status} body=${JSON.stringify(r.body)?.slice(0, 200)}`);
-			ok(r.status === 400 || r.status === 422, `[LA2] Expected 4xx rejection of lval=2^53+2 in Long column, got ${r.status}`);
+			ok(
+				r.status === 400 || r.status === 422,
+				`[LA2] Expected 4xx rejection of lval=2^53+2 in Long column, got ${r.status}`
+			);
 			console.log(`  [LA2] CONFIRMED: Long type rejects 2^53+2 (status=${r.status}) — cap is exactly 2^53`);
 		});
 
@@ -313,8 +356,14 @@ suite(
 			// Send a true bigint value (2^53+1) via CBOR PUT to a Long column.
 			// The Long setter calls Math.round(bigint) which throws TypeError (can't convert bigint to number).
 			// Or the validate() sees typeof value !== 'number' and rejects.
-			const r = await cborPut(restURL, authHeaders, 'LongRow', { id: 'l-cbor-bigint', lval: TWO53_P1, label: 'cbor bigint 2^53+1' });
-			console.log(`  LA3 CBOR bigint into Long: status=${r.status} body=${JSON.stringify(r.text ?? r.body)?.slice(0, 250)}`);
+			const r = await cborPut(restURL, authHeaders, 'LongRow', {
+				id: 'l-cbor-bigint',
+				lval: TWO53_P1,
+				label: 'cbor bigint 2^53+1',
+			});
+			console.log(
+				`  LA3 CBOR bigint into Long: status=${r.status} body=${JSON.stringify(r.text ?? r.body)?.slice(0, 250)}`
+			);
 			if (r.status >= 200 && r.status < 300) {
 				// Accepted — check what was actually stored (should not happen per source analysis)
 				const readback = await cborGet(restURL, authHeaders, 'LongRow', 'l-cbor-bigint');
@@ -342,7 +391,10 @@ suite(
 				ok(result.status === 200, `[B0] GET ${row.id}: expected 200, got ${result.status}`);
 				const stored = result.body?.bval;
 				console.log(`  ${row.id} expected=${row.bval.toString()} stored=${stored?.toString()} (type=${typeof stored})`);
-				ok(typeof stored === 'bigint', `[B0] ${row.id}: bval must be bigint in CBOR response, got ${typeof stored} (${stored})`);
+				ok(
+					typeof stored === 'bigint',
+					`[B0] ${row.id}: bval must be bigint in CBOR response, got ${typeof stored} (${stored})`
+				);
 				strictEqual(stored, row.bval, `[B0] ${row.id}: round-trip mismatch: expected ${row.bval}, got ${stored}`);
 			}
 			// Specifically verify the two non-float values are distinct from 2^53
@@ -355,17 +407,28 @@ suite(
 		test('Track B [B1]: bval >= "2^53+1" (string search_value) — excludes 2^53, includes P1+', async () => {
 			console.log(`\n[QA-190 BIGINT RANGE engine=${ENGINE}]`);
 			const snapshot = await scanAllBigRows(operationsURL, authHeaders);
-			console.log(`  Snapshot: ${JSON.stringify(snapshot.map((r) => ({ id: r.id, bval: r.bval?.toString() })).sort((a, b) => (BigInt(a.bval) < BigInt(b.bval) ? -1 : 1)))}`);
+			console.log(
+				`  Snapshot: ${JSON.stringify(snapshot.map((r) => ({ id: r.id, bval: r.bval?.toString() })).sort((a, b) => (BigInt(a.bval) < BigInt(b.bval) ? -1 : 1)))}`
+			);
 
 			const idxRows = await searchBigInt(client, 'BigRow', [
 				{ search_attribute: 'bval', search_type: 'greater_than_equal', search_value: TWO53_P1.toString() },
 			]);
 			const oracle = snapshot.filter((r) => typeof r.bval === 'bigint' && r.bval >= TWO53_P1);
 			assertMatch('B1 bval>=2^53+1', idxRows, oracle);
-			ok(!idxRows.some((r) => r.id === 'b-0'),  'B1: b-0 (2^53) must be excluded from bval >= 2^53+1');
-			ok(idxRows.some((r) => r.id === 'b-p1'),  'B1: b-p1 (2^53+1) must be included in bval >= 2^53+1');
-			ok(idxRows.some((r) => r.id === 'b-large'), 'B1: b-large (2^62) must be included in bval >= 2^53+1');
-			ok(idxRows.some((r) => r.id === 'b-max'), 'B1: b-max (2^63-2) must be included in bval >= 2^53+1');
+			ok(!idxRows.some((r) => r.id === 'b-0'), 'B1: b-0 (2^53) must be excluded from bval >= 2^53+1');
+			ok(
+				idxRows.some((r) => r.id === 'b-p1'),
+				'B1: b-p1 (2^53+1) must be included in bval >= 2^53+1'
+			);
+			ok(
+				idxRows.some((r) => r.id === 'b-large'),
+				'B1: b-large (2^62) must be included in bval >= 2^53+1'
+			);
+			ok(
+				idxRows.some((r) => r.id === 'b-max'),
+				'B1: b-max (2^63-2) must be included in bval >= 2^53+1'
+			);
 		});
 
 		test('Track B [B2]: bval > "2^53" (string search_value) — excludes 2^53 exactly', async () => {
@@ -375,8 +438,11 @@ suite(
 			]);
 			const oracle = snapshot.filter((r) => typeof r.bval === 'bigint' && r.bval > TWO53);
 			assertMatch('B2 bval>2^53', idxRows, oracle);
-			ok(!idxRows.some((r) => r.id === 'b-0'),  'B2: b-0 (2^53) must be excluded from bval > 2^53');
-			ok(idxRows.some((r) => r.id === 'b-p1'),  'B2: b-p1 (2^53+1) must be included in bval > 2^53');
+			ok(!idxRows.some((r) => r.id === 'b-0'), 'B2: b-0 (2^53) must be excluded from bval > 2^53');
+			ok(
+				idxRows.some((r) => r.id === 'b-p1'),
+				'B2: b-p1 (2^53+1) must be included in bval > 2^53'
+			);
 			// B1 and B2 should return the same rows (same oracle)
 			deepStrictEqual(
 				new Set(idxRows.map((r) => r.id)),
@@ -392,7 +458,10 @@ suite(
 			]);
 			const oracle = snapshot.filter((r) => typeof r.bval === 'bigint' && r.bval <= TWO53);
 			assertMatch('B3 bval<=2^53', idxRows, oracle);
-			ok(idxRows.some((r) => r.id === 'b-0'),   'B3: b-0 (2^53) must be included in bval <= 2^53');
+			ok(
+				idxRows.some((r) => r.id === 'b-0'),
+				'B3: b-0 (2^53) must be included in bval <= 2^53'
+			);
 			ok(!idxRows.some((r) => r.id === 'b-p1'), 'B3: b-p1 (2^53+1) must be excluded from bval <= 2^53');
 			ok(!idxRows.some((r) => r.id === 'b-large'), 'B3: b-large must be excluded from bval <= 2^53');
 		});
@@ -404,7 +473,10 @@ suite(
 			]);
 			const oracle = snapshot.filter((r) => typeof r.bval === 'bigint' && r.bval < TWO53_P1);
 			assertMatch('B4 bval<2^53+1', idxRows, oracle);
-			ok(idxRows.some((r) => r.id === 'b-0'),   'B4: b-0 (2^53) must be included in bval < 2^53+1');
+			ok(
+				idxRows.some((r) => r.id === 'b-0'),
+				'B4: b-0 (2^53) must be included in bval < 2^53+1'
+			);
 			ok(!idxRows.some((r) => r.id === 'b-p1'), 'B4: b-p1 (2^53+1) must be excluded from bval < 2^53+1');
 		});
 
@@ -414,15 +486,27 @@ suite(
 			const snapshot = await scanAllBigRows(operationsURL, authHeaders);
 			const idxRows = await searchBigInt(client, 'BigRow', [
 				{ search_attribute: 'bval', search_type: 'greater_than_equal', search_value: TWO53_M1.toString() },
-				{ search_attribute: 'bval', search_type: 'less_than_equal',    search_value: TWO53_P2.toString() },
+				{ search_attribute: 'bval', search_type: 'less_than_equal', search_value: TWO53_P2.toString() },
 			]);
 			const oracle = snapshot.filter((r) => typeof r.bval === 'bigint' && r.bval >= TWO53_M1 && r.bval <= TWO53_P2);
 			assertMatch('B5 bval in [2^53-1, 2^53+2]', idxRows, oracle);
 			// Both endpoints must be present
-			ok(idxRows.some((r) => r.id === 'b-m1'), 'B5: b-m1 (2^53-1) lower endpoint must be included');
-			ok(idxRows.some((r) => r.id === 'b-0'),  'B5: b-0 (2^53) must be included');
-			ok(idxRows.some((r) => r.id === 'b-p1'), 'B5: b-p1 (2^53+1) must be included (first non-float value above 2^53)');
-			ok(idxRows.some((r) => r.id === 'b-p2'), 'B5: b-p2 (2^53+2) upper endpoint must be included');
+			ok(
+				idxRows.some((r) => r.id === 'b-m1'),
+				'B5: b-m1 (2^53-1) lower endpoint must be included'
+			);
+			ok(
+				idxRows.some((r) => r.id === 'b-0'),
+				'B5: b-0 (2^53) must be included'
+			);
+			ok(
+				idxRows.some((r) => r.id === 'b-p1'),
+				'B5: b-p1 (2^53+1) must be included (first non-float value above 2^53)'
+			);
+			ok(
+				idxRows.some((r) => r.id === 'b-p2'),
+				'B5: b-p2 (2^53+2) upper endpoint must be included'
+			);
 			// Adjacent values must be excluded
 			ok(!idxRows.some((r) => r.id === 'b-m2'), 'B5: b-m2 (2^53-2) must be excluded');
 			ok(!idxRows.some((r) => r.id === 'b-p3'), 'B5: b-p3 (2^53+3) must be excluded');
@@ -437,10 +521,20 @@ suite(
 			]);
 			const oracle = snapshot.filter((r) => typeof r.bval === 'bigint' && r.bval >= LARGE);
 			assertMatch('B6 bval>=2^62', idxRows, oracle);
-			ok(idxRows.some((r) => r.id === 'b-large'), 'B6: b-large (2^62) must be included');
-			ok(idxRows.some((r) => r.id === 'b-max'),   'B6: b-max (2^63-2) must be included');
-			ok(!idxRows.some((r) => r.id === 'b-p1'),  'B6: b-p1 (2^53+1) must be excluded from bval >= 2^62');
-			strictEqual(idxRows.length, 2, `[B6] Expected exactly 2 rows (2^62, 2^63-2) in bval >= 2^62, got ${idxRows.length}`);
+			ok(
+				idxRows.some((r) => r.id === 'b-large'),
+				'B6: b-large (2^62) must be included'
+			);
+			ok(
+				idxRows.some((r) => r.id === 'b-max'),
+				'B6: b-max (2^63-2) must be included'
+			);
+			ok(!idxRows.some((r) => r.id === 'b-p1'), 'B6: b-p1 (2^53+1) must be excluded from bval >= 2^62');
+			strictEqual(
+				idxRows.length,
+				2,
+				`[B6] Expected exactly 2 rows (2^62, 2^63-2) in bval >= 2^62, got ${idxRows.length}`
+			);
 		});
 
 		test('Track B [B7]: ordering — scan sorted numerically across 2^53 precision wall', async () => {
@@ -460,7 +554,7 @@ suite(
 				);
 			}
 			// Verify the key ordering around the precision wall
-			const idx0  = sorted.findIndex((r) => r.id === 'b-0');
+			const idx0 = sorted.findIndex((r) => r.id === 'b-0');
 			const idxP1 = sorted.findIndex((r) => r.id === 'b-p1');
 			const idxP2 = sorted.findIndex((r) => r.id === 'b-p2');
 			ok(idx0 >= 0 && idxP1 >= 0 && idxP2 >= 0, '[B7] b-0, b-p1, b-p2 must all be present');

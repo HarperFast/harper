@@ -6,8 +6,8 @@
 #   /TwoReadCheck/  — two-read oracle: separate index query + PK-GET (reproduces QA-183)
 #   /SnapCheck/     — single-snapshot oracle: index search + get() in ONE request txn
 type Widget @table @export {
-  id: ID @primaryKey
-  bucket: String @indexed
-  seq: Int
-  payload: String
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
 }
