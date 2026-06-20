@@ -799,6 +799,49 @@ The following instances are also implemented on Resource instances for [backward
 - `create`
 - `subscribe`
 
+## Concurrency and Safe Concurrent Writes
+
+When multiple writers may touch the same record concurrently, only atomic deltas are safe. Harper resolves deltas at commit time, so the committed result is exact regardless of how the writers interleave:
+
+```javascript
+record.addTo('counter', 1); // increment
+record.subtractFrom('stock', 1); // decrement
+```
+
+Read-then-write patterns — "compare-and-set" — are not safe under concurrency. This includes version-guarded updates (`ifVersion`), create-only "first write wins", reading a value to decide and then writing it back, and HTTP `If-Match` / conditional writes. All of these read a value _before_ commit and are not re-validated _at_ commit, so two concurrent writers can both pass the check. Modeling state as commutative deltas avoids the problem entirely.
+
+A few limitations to design around:
+
+- `addTo` and `subtractFrom` return no value, and a read-back immediately after a write is not guaranteed to reflect your own committed result. You cannot use them to read "your position" for an exactly-once claim or a hard limit.
+- `subtractFrom` has no floor; concurrent decrements can drive a value negative.
+
+For non-commutative operations — claim-once, hard caps, inventory floors, state-machine transitions — serialize the operation through a single owning process, or use an external lock or coordinator. This matters more in a cluster: a counter replicates and converges eventually, but a decision made on one node's not-yet-converged view can be wrong during the replication window. A rate limiter built this way, for example, can transiently over-admit when requests are spread across nodes.
+
+## Returning Errors and Status Codes
+
+To control the HTTP status from a custom resource method:
+
+```javascript
+// throw an error with an explicit statusCode
+const err = new Error('Not found');
+err.statusCode = 404;
+throw err;
+
+// return a Response
+return new Response(body, { status: 201 });
+
+// set it on the context
+this.getContext().response.status = 202;
+```
+
+A few patterns look like they should work but do not:
+
+- `throw { status: 400 }` — only `statusCode` is read, not `status`, so this surfaces as a 500.
+- `throw new Response(body, { status: 422 })` — a thrown `Response` is not honored and becomes a 500. Use `return` for a `Response`.
+- `return { status: 400, data: {...} }` — the `status` is ignored unless the object also carries a `headers` field, so this returns 200.
+
+Prefer `error.statusCode` for error paths and `return new Response(...)` for success paths. Note that an unhandled throw currently surfaces its message in the response body, so avoid putting sensitive detail in thrown error messages.
+
 ## Query Object
 
 The `Query` object is accepted by `search()` and the static `get()` method.

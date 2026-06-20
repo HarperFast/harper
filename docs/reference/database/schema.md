@@ -616,6 +616,12 @@ Added `BigInt` in v4.3.0
 
 Added `Blob` in v4.5.0
 
+### Large integers: `Long` vs `BigInt`
+
+Despite the name, `Long` is bounded by the JavaScript safe-integer range — values must satisfy `|value| <= 2^53` (9,007,199,254,740,992). A `Long` attribute rejects integers beyond that range, so it is not a full 64-bit type.
+
+For true 64-bit integers — IDs, counters, or timestamps that can exceed 2^53 — use `BigInt`, and send the value as an actual bigint (for example, via CBOR or MessagePack) rather than a JSON number. A JSON number above 2^53 has already lost precision before Harper receives it, so the larger value cannot be recovered. `BigInt` attributes, including `@indexed` range queries, store and order distinct values above 2^53 correctly.
+
 Arrays of a type are expressed with `[Type]` syntax (e.g., `[Float]` for a vector).
 
 ### Blob Type

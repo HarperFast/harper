@@ -138,6 +138,18 @@ Transactions span a single database. All tables within the same database share a
 
 For deeper background on Harper's transaction model, see [Storage Algorithm](./storage-algorithm.md).
 
+## Read Consistency
+
+Each request reads from a consistent point-in-time snapshot. Within a single request:
+
+- a query response never mixes partially-written records;
+- a long or streamed scan holds the snapshot it started with, so it does not observe writes that land mid-scan;
+- multiple reads in the same request transaction see the same snapshot.
+
+Across separate requests there is no shared snapshot. A common pattern — querying for matching rows in one request, then fetching each by id in a later request — runs the two reads at two different points in time. If the data changes in between (a row is deleted or expires, say), the second read can disagree with the first; a query may return an id whose subsequent fetch returns a 404. This is expected: it is two independent snapshots, not a consistency bug.
+
+For read-your-own-write consistency across a query and a fetch, perform both reads within a single resource method or `transaction()` callback.
+
 ## `createBlob(data, options?)`
 
 <VersionBadge version="v4.5.0" />
