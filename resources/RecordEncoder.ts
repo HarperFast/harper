@@ -18,6 +18,7 @@ import {
 	LOCAL_ONLY,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import './blob.ts';
 import {
 	blobsWereEncoded,
@@ -118,6 +119,12 @@ export class RecordEncoder extends StructonEncoder {
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
+	// Self-versioning mode for stores whose writes never stage a timestamp (HNSW/custom-index
+	// object stores). When set, each encode stamps a fresh monotonic version into the 8-byte
+	// metadata prefix so the value carries a version the RocksDB Verification Table can extract —
+	// enabling race-safe cache verification of graph nodes during traversal. Unlike primary-record
+	// writes, this never reads or clears the shared timestampNextEncoding global (harper#1307).
+	autoVersion = false;
 	constructor(options) {
 		options.useBigIntExtension = true;
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
@@ -168,6 +175,31 @@ export class RecordEncoder extends StructonEncoder {
 				// undecodable on the non-versioned read path (null → replication wedge).
 				lastValueEncoding = superEncode.call(this, record, options);
 				return lastValueEncoding;
+			}
+			if (this.autoVersion && this.isRocksDB) {
+				// Self-versioned index store (RocksDB only — the Verification Table is RocksDB-specific):
+				// prefix the record-encoder metadata header so each node carries a version the VT can
+				// extract and the decode path recognises. The header is [8-byte BE float64 version]
+				// [4-byte BE metadata word], exactly the format decode() expects: the version's first
+				// byte (0x42 for current-era ms timestamps) triggers metadata detection, and the
+				// ACTION_32_BIT-tagged flags word (flags = 0 — no expiration/residency/etc.) is required
+				// so decode consumes a metadata word rather than mis-reading the struct's first byte as
+				// flags. Encode the value normally (the metadata path's reserve-start mechanism is
+				// incompatible with struct/randomAccessStructure mode) and PREPEND the header into a
+				// fresh buffer. Never touch the shared timestampNextEncoding/metadataInNextEncoding
+				// globals — those belong to the enclosing primary-record write whose commit nests this
+				// index encode (harper#1307).
+				const encoded = superEncode.call(this, record, options);
+				const dataStart = encoded.start || 0;
+				const dataEnd = encoded.end != null ? encoded.end : encoded.length;
+				const out = Buffer.allocUnsafe(12 + (dataEnd - dataStart));
+				const dataView = new DataView(out.buffer, out.byteOffset, out.byteLength);
+				dataView.setFloat64(0, getNextMonotonicTime()); // version (big-endian, rocksdb stores it directly)
+				dataView.setUint32(8, ACTION_32_BIT << 24); // metadata word: ACTION_32_BIT tag, flags = 0
+				if (encoded.copy) encoded.copy(out, 12, dataStart, dataEnd);
+				else out.set(encoded.subarray(dataStart, dataEnd), 12);
+				lastValueEncoding = out.subarray(12);
+				return out;
 			}
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
 			// timestamp into the audit record, invalidation status and residency information

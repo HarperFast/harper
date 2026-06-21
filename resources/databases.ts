@@ -954,9 +954,35 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 				indexNulls?: boolean;
 				rootStore?: RocksRootDatabase;
 		  });
+	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	if (rootStore instanceof RocksDatabase) {
 		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey } as any) as any;
 		(dbi as any).rootStore = rootStore;
+		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
+		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
+		// Verification-Table cache can't track them. For a FRESH index, initialise the encoder as a
+		// versioned RocksDB store (isRocksDB → enables the metadata-prefix encode/decode) and mark it
+		// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
+		// decode-free graph traversal.
+		//
+		// Only do this for an empty index. A pre-existing index written before this feature holds
+		// un-prefixed values — including small-int id mappings the versioned-metadata decode would
+		// misread (a value < 32 looks like a metadata-flags word) — so enabling the versioned decoder
+		// on it would corrupt reads. Such indexes stay in legacy mode (correct, just uncached) until
+		// rebuilt. The empty check uses keys-only iteration, which is format-agnostic. (Multi-worker
+		// note: at table-define time on startup all workers see the same empty/non-empty state; a
+		// runtime-created index is empty for every worker's first open.)
+		if (isCustomObjectIndex && !process.env.HNSW_NO_AUTOVERSION) {
+			let isEmpty = true;
+			for (const _key of (dbi as any).getKeys({ start: 0, end: Infinity, limit: 1 })) {
+				isEmpty = false;
+				break;
+			}
+			if (isEmpty) {
+				handleLocalTimeForGets(dbi, rootStore);
+				if ((dbi as any).encoder) (dbi as any).encoder.autoVersion = true;
+			}
+		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
 	}
