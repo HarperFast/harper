@@ -14,7 +14,6 @@ const assert = require('assert');
 const alasql = require('alasql');
 
 const router = require('#src/sqlEngine/router');
-const config = require('#src/sqlEngine/config');
 const binder = require('#src/sqlEngine/binder/bind');
 const { EngineUnsupportedError } = require('#src/sqlEngine/errors');
 

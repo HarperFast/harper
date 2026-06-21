@@ -165,9 +165,7 @@ describe('sqlEngine phase 2: aggregates', () => {
 	});
 
 	it('HAVING filters groups', async () => {
-		const rows = await runSql(
-			'SELECT category, COUNT(*) AS cnt FROM dev.orders GROUP BY category HAVING COUNT(*) > 2'
-		);
+		const rows = await runSql('SELECT category, COUNT(*) AS cnt FROM dev.orders GROUP BY category HAVING COUNT(*) > 2');
 		assert.strictEqual(rows.length, 1);
 		assert.strictEqual(rows[0].category, 'electronics');
 		assert.strictEqual(rows[0].cnt, 3);

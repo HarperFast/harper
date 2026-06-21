@@ -55,3 +55,6 @@ cache/
 # YCSB benchmark results (generated)
 benchmarks/ycsb/results/
 benchmarks/ycsb/bench-out/
+
+# northwind export_local test artifact
+test_export.json.json
