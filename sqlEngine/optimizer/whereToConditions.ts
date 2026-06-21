@@ -82,7 +82,22 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			if (!comparator) return undefined;
 			const colLit = pickColumnAndLiteral(expr.left, expr.right);
 			if (!colLit) return undefined;
-			return { attribute: colLit.column, comparator, value: colLit.value };
+			const attribute = colLit.column;
+			// `=` matches either form (OR); `!=` must NOT match either form, and (SQL
+			// three-valued logic / legacy AlaSQL) must also exclude NULLs, so it's an
+			// AND that includes an explicit not-null guard.
+			if (comparator === 'ne' && colLit.value !== null) {
+				const conditions: ConditionNode[] = equalityBranches(attribute, colLit.value, 'ne');
+				// `col != X` is UNKNOWN (not true) for a NULL col, so NULL rows are
+				// excluded — match legacy by AND-ing an `IS NOT NULL` guard.
+				conditions.push({ attribute, comparator: 'ne', value: null });
+				return { conditions, operator: 'and' };
+			}
+			if (comparator === 'equals') {
+				const branches = equalityBranches(attribute, colLit.value, 'equals');
+				if (branches.length > 1) return { conditions: branches, operator: 'or' };
+			}
+			return { attribute, comparator, value: colLit.value };
 		}
 		case 'in': {
 			if (expr.expr.kind !== 'column') return undefined;
@@ -186,4 +201,33 @@ function looseEqualVariants(value: unknown): unknown[] {
 		return [value, String(value)];
 	}
 	return [value];
+}
+
+/**
+ * The boolean a quoted boolean literal should also match under legacy coercion:
+ * `'true'`/`'false'` (case-insensitive, trimmed) → the corresponding boolean.
+ * Returns `undefined` for anything else (including actual booleans, which need no
+ * expansion). Used for single `=`/`!=` only.
+ */
+function booleanVariant(value: unknown): boolean | undefined {
+	if (typeof value !== 'string') return undefined;
+	const v = value.trim().toLowerCase();
+	if (v === 'true') return true;
+	if (v === 'false') return false;
+	return undefined;
+}
+
+/**
+ * Equality/inequality branches for `col = X` / `col != X`, expanding a quoted
+ * boolean literal to also cover the real boolean (legacy AlaSQL coercion). Each
+ * branch stays an indexed equality lookup. The string branch is kept so a genuine
+ * string column still matches; the boolean branch is added only when the literal
+ * is `'true'`/`'false'`. (Numeric strings are NOT expanded for single `=`/`!=` —
+ * legacy keeps those strict — so this is boolean-only, unlike the IN path.)
+ */
+function equalityBranches(attribute: string, value: unknown, comparator: 'equals' | 'ne'): DirectCondition[] {
+	const branches: DirectCondition[] = [{ attribute, comparator, value }];
+	const boolValue = booleanVariant(value);
+	if (boolValue !== undefined) branches.push({ attribute, comparator, value: boolValue });
+	return branches;
 }

@@ -35,11 +35,45 @@ import { EngineRuntimeError } from '../errors.ts';
 /** A Table-class shape: the static Resource methods the write path needs. */
 interface WritableTable {
 	primaryKey?: string;
+	/** false/undefined for a dynamic-schema table whose columns evolve on write. */
+	schemaDefined?: boolean;
+	attributes?: Array<{ name: string }>;
 	getNewId?: () => unknown;
 	get(id: unknown, context: unknown): unknown;
 	put(record: unknown, context: unknown): unknown;
 	patch(id: unknown, update: unknown, context: unknown): unknown;
 	delete(id: unknown, context: unknown): unknown;
+	addAttributes?(attributes: Array<{ name: string; indexed: boolean }>): Promise<unknown>;
+}
+
+/**
+ * Mirror the legacy ResourceBridge.upsertRecords schema-evolution path: on a
+ * dynamic-schema (non-`schemaDefined`) table, any referenced column that isn't
+ * yet an attribute is added via `Table.addAttributes` (indexed, matching legacy).
+ *
+ * Two reasons this must run, not just be skipped:
+ *  - Parity of side effect: legacy INSERT/UPDATE auto-creates+indexes new
+ *    columns, so the new engine must too or later queries on that column diverge.
+ *  - Parity of validation: `addAttributes` enforces the attribute-name rules and
+ *    throws `ClientError('Attribute names cannot include backticks or forward
+ *    slashes')` for an invalid name — the same 400 the legacy path produces. This
+ *    is a deterministic client error (not `EngineUnsupportedError`), so `auto`
+ *    surfaces it identically rather than falling back.
+ *
+ * Called inside the write transaction (as legacy does), before any row write, so
+ * an invalid-name rejection aborts the txn with nothing persisted.
+ */
+async function ensureAttributes(table: WritableTable, columns: readonly string[]): Promise<void> {
+	if (table.schemaDefined || !table.addAttributes) return;
+	const existing = table.attributes ?? [];
+	const seen = new Set<string>();
+	const newAttributes: Array<{ name: string; indexed: boolean }> = [];
+	for (const name of columns) {
+		if (seen.has(name)) continue;
+		seen.add(name);
+		if (!existing.find((a) => a.name === name)) newAttributes.push({ name, indexed: true });
+	}
+	if (newAttributes.length > 0) await table.addAttributes(newAttributes);
 }
 
 /** A minimal context carrying the user; `transaction()` attaches `.transaction`. */
@@ -120,6 +154,9 @@ export async function runInsert(bound: BoundInsert, ctx: SqlEngineContext): Prom
 	const context: WriteContext = { user: ctx.user };
 
 	return transaction(context, async () => {
+		// Auto-create + validate any new columns first (legacy parity, and the
+		// source of the attribute-name validation), before any row write.
+		await ensureAttributes(table, bound.columns);
 		const inserted_hashes: unknown[] = [];
 		const skipped_hashes: unknown[] = [];
 		for (const record of records) {
@@ -164,6 +201,12 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 	const context: WriteContext = { user: ctx.user };
 
 	return transaction(context, async () => {
+		// Auto-create + validate any new columns the SET clause introduces
+		// (legacy parity + attribute-name validation), before any row write.
+		await ensureAttributes(
+			table,
+			assignments.map((a) => a.column)
+		);
 		const rows = await runSelect(selector, ctx);
 		const update_hashes: unknown[] = [];
 		const skipped_hashes: unknown[] = [];

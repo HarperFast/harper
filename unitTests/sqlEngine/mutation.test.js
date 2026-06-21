@@ -176,6 +176,55 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.deepStrictEqual(widgets._store.get(2), { id: 2, name: 'beta', qty: 20 });
 	});
 
+	// A dynamic-schema table mirroring the real Table: new columns are auto-added
+	// via addAttributes, which rejects backtick/slash names (resources/Table.ts).
+	function makeDynamicTable() {
+		const t = makeWritableTable({
+			primaryKey: 'id',
+			attributes: [{ name: 'id', indexed: true }],
+			rows: [],
+		});
+		t.schemaDefined = false;
+		t.addAttributes = async (attrs) => {
+			for (const a of attrs) {
+				if (/[`/]/.test(a.name)) {
+					throw new Error('Attribute names cannot include backticks or forward slashes');
+				}
+				t.attributes.push({ name: a.name, indexed: !!a.indexed });
+			}
+		};
+		return t;
+	}
+
+	it('INSERT rejects an invalid attribute name (backtick/slash), like legacy', async () => {
+		const dyn = makeDynamicTable();
+		binder._setDatabasesLoader(() => ({ dev: { invalid_attribute: dyn } }));
+		await assert.rejects(
+			() => runSql("INSERT INTO dev.invalid_attribute (id, `some/attribute`) VALUES ('1', 'x')"),
+			/Attribute names cannot include backticks or forward slashes/
+		);
+		// Rejected before any row write (validation precedes the insert loop).
+		assert.strictEqual(dyn._store.size, 0);
+	});
+
+	it('UPDATE rejects an invalid attribute name (backtick/slash), like legacy', async () => {
+		const dyn = makeDynamicTable();
+		binder._setDatabasesLoader(() => ({ dev: { invalid_attribute: dyn } }));
+		await assert.rejects(
+			() => runSql("UPDATE dev.invalid_attribute SET `some/attribute` = 'x' WHERE id = 100"),
+			/Attribute names cannot include backticks or forward slashes/
+		);
+	});
+
+	it('INSERT auto-creates new valid attributes on a dynamic-schema table', async () => {
+		const dyn = makeDynamicTable();
+		binder._setDatabasesLoader(() => ({ dev: { invalid_attribute: dyn } }));
+		const res = await runSql("INSERT INTO dev.invalid_attribute (id, color) VALUES ('1', 'red')");
+		assert.deepStrictEqual(res.inserted_hashes, ['1']);
+		// The new column was added (indexed) via addAttributes, matching legacy.
+		assert.ok(dyn.attributes.find((a) => a.name === 'color' && a.indexed));
+	});
+
 	it('INSERT auto-generates a primary key when none is supplied', async () => {
 		const res = await runSql("INSERT INTO dev.widget (name, qty) VALUES ('auto', 7)");
 		assert.strictEqual(res.inserted_hashes.length, 1);

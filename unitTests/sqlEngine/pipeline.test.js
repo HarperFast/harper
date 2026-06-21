@@ -178,6 +178,77 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		assert.deepStrictEqual(idEquals, ['1', 1, '3', 3]);
 	});
 
+	it('= coerces a quoted boolean literal to match a boolean column (legacy coercion)', async () => {
+		// Mock matches strictly (===), so a `false` row only matches because the
+		// engine expands 'false' to include the real boolean.
+		const boolTable = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'active', indexed: true },
+			],
+			rows: [
+				{ id: 1, active: true },
+				{ id: 2, active: false },
+				{ id: 3, active: true },
+				{ id: 4, active: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: boolTable } }));
+		const data = await runSql("SELECT id FROM dev.user WHERE active = 'false'");
+		assert.deepStrictEqual(
+			data.map((r) => r.id),
+			[2]
+		);
+		// Expanded into an OR over the string and boolean forms.
+		assert.deepStrictEqual(boolTable._lastTarget.conditions[0], {
+			conditions: [
+				{ attribute: 'active', comparator: 'equals', value: 'false' },
+				{ attribute: 'active', comparator: 'equals', value: false },
+			],
+			operator: 'or',
+		});
+	});
+
+	it('!= coerces a quoted boolean AND excludes NULLs (SQL three-valued logic)', async () => {
+		const boolTable = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'active', indexed: true },
+			],
+			rows: [
+				{ id: 1, active: true },
+				{ id: 2, active: false },
+				{ id: 3, active: true },
+				{ id: 4, active: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: boolTable } }));
+		// id > 0 drives the scan; `active != 'false'` rides as a filter. The NULL
+		// row (id 4) must be excluded, like legacy — only the `true` rows remain.
+		const data = await runSql("SELECT id FROM dev.user WHERE id > 0 AND active != 'false'");
+		assert.deepStrictEqual(data.map((r) => r.id).sort(), [1, 3]);
+		// The active condition is an AND of: ne 'false', ne false, and a not-null guard.
+		const activeCond = boolTable._lastTarget.conditions.find((c) => c.conditions);
+		assert.deepStrictEqual(activeCond, {
+			conditions: [
+				{ attribute: 'active', comparator: 'ne', value: 'false' },
+				{ attribute: 'active', comparator: 'ne', value: false },
+				{ attribute: 'active', comparator: 'ne', value: null },
+			],
+			operator: 'and',
+		});
+	});
+
+	it('= with a quoted number stays strict (no numeric coercion, unlike IN)', async () => {
+		// Legacy returns nothing for `age = '30'` (numeric column, quoted literal);
+		// the new engine must too — the boolean expansion must not loosen numeric `=`.
+		const data = await runSql("SELECT name FROM dev.user WHERE age = '30'");
+		assert.deepStrictEqual(data, []);
+		assert.deepStrictEqual(mockTable._lastTarget.conditions, [{ attribute: 'age', comparator: 'equals', value: '30' }]);
+	});
+
 	it('BETWEEN maps to between comparator', async () => {
 		const data = await runSql('SELECT name FROM dev.user WHERE age BETWEEN 30 AND 40');
 		const names = data.map((r) => r.name).sort();

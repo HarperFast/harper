@@ -26,13 +26,15 @@ import { startHarper, teardownHarper, createHarperContext } from '@harperfast/in
 import { createApiClient } from './utils/client.mjs';
 
 const SEED = [
-	{ id: 1, name: 'alpha', qty: 10, tag: 'x' },
-	{ id: 2, name: 'beta', qty: 20, tag: 'y' },
-	{ id: 3, name: 'gamma', qty: 30, tag: 'x' },
-	{ id: 4, name: 'delta', qty: 40, tag: 'y' },
+	// `active` is a real boolean column to exercise quoted-boolean coercion
+	// (`active = 'false'`), a legacy AlaSQL behavior the new engine must match.
+	{ id: 1, name: 'alpha', qty: 10, tag: 'x', active: true },
+	{ id: 2, name: 'beta', qty: 20, tag: 'y', active: false },
+	{ id: 3, name: 'gamma', qty: 30, tag: 'x', active: true },
+	{ id: 4, name: 'delta', qty: 40, tag: 'y', active: false },
 	// Null-bearing row to exercise NULL semantics (a classic AlaSQL-vs-SQL
 	// divergence source). id 7 stays clear of the mutation tests' ids (5, 6).
-	{ id: 7, name: null, qty: null, tag: 'z' },
+	{ id: 7, name: null, qty: null, tag: 'z', active: null },
 ];
 const ORDERS = [
 	{ id: 100, widget_id: 1, amt: 5 },
@@ -177,6 +179,24 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('in-str-pk', "SELECT id FROM dev.widget WHERE id IN ('1', '3')");
 		await diff('in-str-nonpk', "SELECT id, qty FROM dev.widget WHERE qty IN ('20', '30')");
 		await diff('in-mixed', "SELECT id FROM dev.widget WHERE id IN (2, '4')");
+	});
+
+	test('SELECT — loose boolean coercion (quoted boolean literal vs boolean column)', async () => {
+		// Legacy coerces `'false'`/`'true'` to a boolean to match a boolean column;
+		// the new engine must too. Numeric `=` stays strict (guard below), so this is
+		// boolean-only.
+		await diff('bool-eq-false', "SELECT id FROM dev.widget WHERE active = 'false'");
+		await diff('bool-eq-true', "SELECT id FROM dev.widget WHERE active = 'true'");
+		await diff('bool-eq-literal', 'SELECT id FROM dev.widget WHERE active = false');
+		// `!=` coerces the quoted boolean AND (SQL three-valued logic) excludes the
+		// NULL-active row (id 7) — legacy does both, so the new engine must too.
+		await diff('bool-ne-false', "SELECT id FROM dev.widget WHERE id >= 1 AND active != 'false'");
+		// Non-boolean `!=` over a NULL-bearing column: the NULL row (id 7, qty NULL)
+		// must be excluded too — proves the not-null guard isn't boolean-specific.
+		await diff('ne-excludes-null', 'SELECT id FROM dev.widget WHERE id >= 1 AND qty != 20');
+		// Guard: numeric `=` with a quoted number must NOT coerce (legacy returns
+		// nothing) — proves the boolean expansion didn't loosen numeric `=`.
+		await diff('eq-num-str-strict', "SELECT id FROM dev.widget WHERE qty = '20'");
 	});
 
 	test('SELECT — NULL semantics', async () => {
