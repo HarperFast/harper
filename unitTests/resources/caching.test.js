@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { waitFor } = require('../waitFor.js');
 
 describe('Caching', () => {
 	let CachingTable,
@@ -142,9 +143,7 @@ describe('Caching', () => {
 			events = [];
 			timer = 10;
 			CachingTable.get(23);
-			while (sourceRequests === 0) {
-				await new Promise((resolve) => setTimeout(resolve, 1));
-			}
+			await waitFor(() => sourceRequests > 0);
 			await CachingTable.primaryStore.committed; // wait for the record to update to updating status
 			CachingTable.get(23);
 			let result = await CachingTable.get(23);
@@ -204,18 +203,16 @@ describe('Caching', () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		let result = CachingTable.primaryStore.getSync(23);
 		assert(result); // should exist in database even though it is expired
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		result = CachingTable.primaryStore.getSync(23);
-		assert(!result); // should be evicted and no longer exist in database
+		// should be evicted and no longer exist in database
+		await waitFor(() => !CachingTable.primaryStore.getSync(23));
 	});
 
 	it('Handles eviction-only config without expiration:', async function () {
 		// { eviction: N } alone schedules the scanner and reaps records past their per-record expiresAt
 		CachingTable.setTTLExpiration({ eviction: 0.02 });
 		await CachingTable.put(99, { id: 99, name: 'expires soon' }, { expiresAt: Date.now() + 20 });
-		await new Promise((resolve) => setTimeout(resolve, 80));
-		const result = CachingTable.primaryStore.getSync(99);
-		assert(!result); // should be evicted
+		// should be evicted
+		await waitFor(() => !CachingTable.primaryStore.getSync(99));
 	});
 
 	it('Allows stale-while-revalidate', async function () {
@@ -235,8 +232,8 @@ describe('Caching', () => {
 		assert(result); // should exist in database even though it is stale
 		assert.equal(sourceRequests, 1); // the source request should be started
 		assert.equal(sourceResponses, 0); // the source request should not be completed yet
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		assert.equal(sourceResponses, 1); // the source request should be completed
+		// the source request should be completed
+		await waitFor(() => sourceResponses === 1);
 		result = await CachingTableStaleWhileRevalidate.primaryStore.get(23);
 		assert.equal(sourceRequests, 1); // should be cached again
 		assert(result);
@@ -349,10 +346,8 @@ describe('Caching', () => {
 		assert(result.getExpiresAt());
 		result = IndexedCachingTable.primaryStore.getEntry(23);
 		await IndexedCachingTable.evict(23, result, result.version);
-		await delay(10);
 		// evict should completely eliminate the record
-		result = IndexedCachingTable.primaryStore.getSync(23); // verify that the record is evicted
-		assert.strictEqual(result, undefined);
+		await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined);
 	});
 
 	it('Bigger stampede is handled', async function () {
@@ -472,5 +467,71 @@ describe('Caching', () => {
 		assert.equal(extendedResult2.value, 'extended-103');
 		assert.equal(extendedSourceCalls, 2);
 		assert.equal(anotherSourceCalls, 1); // AnotherExtendedTable source should not be called
+	});
+
+	it('intermediate (replication) source events are applied, not revalidated/invalidated (#1302)', async function () {
+		// A table that is BOTH cache-sourced (its caching source opts into event revalidation) AND
+		// fed by an intermediate source (how replication registers itself — see harper-pro
+		// replication/replicator.ts, `{ intermediateSource: true }`).
+		//
+		// Bug: shouldRevalidateEvents was read from this.source (the canonical caching source) for
+		// EVERY sourcedFrom() subscription closure, including the intermediate one. So authoritative
+		// replicated put/patch events were down-converted to invalidate — stripping the row to an
+		// index stub and (for file-backed blobs) deleting data no peer re-supplies. The fix gates
+		// revalidation off the intermediate source, so replicated writes apply via _writeUpdate.
+		// The caching source is gated: a read-miss on a cache-sourced table triggers a source load,
+		// and we must not let a poll-before-apply write a competing 'CACHE' record while we wait for
+		// the replicated event. Gating makes any premature load stall instead of polluting state.
+		let allowCacheLoad;
+		const cacheLoadGate = new Promise((resolve) => (allowCacheLoad = resolve));
+		const CacheSource = {
+			async get(id) {
+				await cacheLoadGate;
+				return { id, name: 'from-cache-source', payload: 'CACHE' };
+			},
+			// the caching source pushes change notifications it wants treated as invalidations
+			shouldRevalidateEvents: true,
+		};
+		const ReplAndCacheTable = table({
+			table: 'ReplAndCacheTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'payload' }],
+		});
+		// Order matters: the caching source is registered before the intermediate (replication)
+		// source, so this.source is already set when the intermediate subscription closure captures
+		// the flag — the exact condition that triggered the leak.
+		ReplAndCacheTable.sourcedFrom(CacheSource);
+
+		let releaseSubscription;
+		const subscriptionDone = new Promise((resolve) => (releaseSubscription = resolve));
+		const replicatedValue = { id: 500, name: 'from-peer', payload: 'PEER' };
+		const IntermediateSource = {
+			subscribeOnThisThread() {
+				return true;
+			},
+			async *subscribe() {
+				yield { type: 'put', id: 500, value: replicatedValue, version: Date.now() };
+				await subscriptionDone; // hold the subscription open until the assertions are done
+			},
+		};
+		ReplAndCacheTable.sourcedFrom(IntermediateSource, { intermediateSource: true });
+
+		try {
+			// A record that surfaces as 'PEER' proves the replicated event was applied as an update.
+			// Pre-fix it was down-converted to an invalidate, so the read would resolve to the source's
+			// 'CACHE' value instead and this would time out. The race against a short timer ensures a
+			// gated (stalled) load on a not-yet-applied record counts as "not ready", not a hang.
+			await waitFor(
+				async () =>
+					(await Promise.race([
+						ReplAndCacheTable.get(500).then((record) => record?.payload),
+						delay(20).then(() => undefined),
+					])) === 'PEER',
+				{ timeout: 5000, message: 'replicated intermediate-source put should be applied as an update, not invalidated' }
+			);
+		} finally {
+			allowCacheLoad();
+			releaseSubscription();
+		}
 	});
 });

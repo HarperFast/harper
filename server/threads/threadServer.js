@@ -22,6 +22,7 @@ const { startupLog } = require('../../bin/run.ts');
 const { SERVERS, setPortServerMap, portServer } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
 const globals = require('../../globals.js');
+const { whenScopesClosed } = require('../../components/scopeShutdown.ts');
 
 const debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 const isWindows = process.platform === 'win32';
@@ -171,10 +172,16 @@ function startServers() {
 					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
 						harperLogger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-						// close connections as possible, then let the event loop complete
-						closeServers().then(() => {
-							realExit(0);
-						});
+						// close connections as possible, then let the event loop complete.
+						// Wait for application scopes to finish closing before exiting — some dispose a native
+						// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
+						// worker while that runtime is still live crashes the process. The manageThreads backstop
+						// timers still bound this if a scope's disposal hangs.
+						closeServers()
+							.then(() => whenScopesClosed())
+							.then(() => {
+								realExit(0);
+							});
 						// Clean up per-thread UDS socket and metadata files
 						httpComponent.cleanupUdsFiles();
 						if (!isBun && (debugThreads || process.env.DEV_MODE)) {
@@ -316,7 +323,9 @@ async function listenOnPortsBun() {
 			}
 			const serveOptions = {
 				port: portNumber,
-				reusePort: !isWindows && !isMac,
+				// Respect the per-server reusePort decision made in http.ts (the operations API
+				// opts out so it stays exclusive); fall back to the platform default otherwise.
+				reusePort: config.reusePort ?? (!isWindows && !isMac),
 				fetch: config.fetch,
 			};
 			if (portHostname) serveOptions.hostname = portHostname;
@@ -493,6 +502,10 @@ function onSocket(listener, options) {
 			});
 
 			udsServer.isPerThreadSocket = true;
+			// Strip the PROXY v1 header a fronting proxy (e.g. symphony) prepends, same as the
+			// HTTP UDS mirror. Without this the header is fed to the protocol parser (e.g. MQTT),
+			// corrupting the first packet.
+			httpComponent.enableProxyProtocol(udsServer);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 

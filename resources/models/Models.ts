@@ -2,7 +2,9 @@ import { _assignPackageExport } from '../../globals.js';
 import { contextStorage } from '../transaction.ts';
 import { resolveEmbedding, resolveGenerative } from './backendRegistry.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
+import { recordAction } from '../analytics/write.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
+import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
 import type {
 	AccountingContext,
 	BackendOpts,
@@ -18,6 +20,7 @@ import type {
 } from './types.ts';
 
 type CallMethod = ModelCallRecord['method'];
+type MetricEmitter = (value: number, metric: string, path?: string) => void;
 
 /**
  * Process-wide singleton. One shared instance serves all Scopes — `scope.models`,
@@ -37,9 +40,15 @@ type CallMethod = ModelCallRecord['method'];
  */
 export class Models implements ModelsContract {
 	#analyticsWriter: ModelCallAnalyticsWriter;
+	#emit: MetricEmitter;
 
-	constructor(analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter()) {
+	constructor(
+		analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter(),
+		// DI'd for unit tests; production wires up the module-scope `recordAction`.
+		metricEmitter: MetricEmitter = recordAction
+	) {
 		this.#analyticsWriter = analyticsWriter;
+		this.#emit = metricEmitter;
 	}
 
 	async embed(input: string | string[], opts: EmbedOpts = {}): Promise<Float32Array[]> {
@@ -63,6 +72,20 @@ export class Models implements ModelsContract {
 	}
 
 	async generate(input: GenerateInput, opts: GenerateOpts = {}): Promise<GenerateResult> {
+		if (opts.toolMode === 'auto') {
+			// The loop calls back through `this.generate(..., {toolMode: 'return'})` per
+			// iteration, so each backend round still flows through the single-shot path
+			// below and writes its own `hdb_model_calls` row. The outer auto call itself
+			// stays out of the analytics table — counting it would double-bill the round.
+			const { accounting, signal } = resolveCallContext(opts.signal);
+			// Fail loud, never silent: an auto loop that declares tools against a
+			// tools-incapable backend would run as a plain generation — the backend never
+			// receives the tool definitions (e.g. ollama drops them), so the model can't
+			// call anything and the loop returns a first-round answer, silently ignoring
+			// the caller's tools. Check up front rather than no-op.
+			if (inputHasTools(input)) requireCapability(resolveGenerative(opts.model), 'tools');
+			return runAgentLoop({ models: this, input, opts, accounting, signal });
+		}
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		let backend: ModelBackend | undefined;
@@ -73,7 +96,10 @@ export class Models implements ModelsContract {
 			const result = await backend.generate!(input, backendOpts);
 			if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 			this.#record(backend, 'generate', opts.model, accounting, opts, result, startedAt);
-			return result.output;
+			// Propagate usage onto the returned GenerateResult so callers (notably the
+			// `toolMode: 'auto'` loop's budget tracker) can read cumulative tokens without
+			// re-querying analytics. Pure pass-through — backend usage is the source of truth.
+			return result.usage ? { ...result.output, usage: result.usage } : result.output;
 		} catch (err) {
 			this.#recordFailure(backend, 'generate', opts.model, accounting, opts, startedAt, err);
 			throw err;
@@ -81,6 +107,16 @@ export class Models implements ModelsContract {
 	}
 
 	generateStream(input: GenerateInput, opts: GenerateOpts = {}): AsyncIterable<GenerateChunk> {
+		if (opts.toolMode === 'auto') {
+			// Same rationale as `generate`: per-iteration analytics happen inside the loop
+			// when it dispatches to `this.generateStream(..., {toolMode: 'return'})`.
+			const { accounting, signal } = resolveCallContext(opts.signal);
+			// Same fail-loud guard as `generate` — a tools-incapable backend would silently
+			// stream a plain generation, ignoring the declared tools. Throws synchronously
+			// (before the iterable is returned), matching the capability-check posture below.
+			if (inputHasTools(input)) requireCapability(resolveGenerative(opts.model), 'tools');
+			return runAgentLoopStream({ models: this, input, opts, accounting, signal });
+		}
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		let backend: ModelBackend | undefined;
@@ -143,6 +179,17 @@ export class Models implements ModelsContract {
 	): void {
 		const usage = result?.status === 'completed' ? result.usage : undefined;
 		this.#analyticsWriter.write(buildRecord(backend, method, model, accounting, opts, usage, startedAt, true));
+		// Also emit aggregate analytics into hdb_raw_analytics so model usage rolls up
+		// into the same per-period analytics that license enforcement and admin
+		// dashboards consume — mirrors the `db-read` pattern in Table.ts. The detailed
+		// per-call row in hdb_model_calls (above) is for forensics; this is for billing.
+		// Path is the backend name (analogous to tableName for db-read) so dashboards
+		// can break usage down by backend.
+		this.#emit(1, `model-${method}`, backend.name);
+		if (usage) {
+			const tokens = (usage.embeddingTokens ?? 0) + (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+			if (tokens > 0) this.#emit(tokens, `model-${method}-tokens`, backend.name);
+		}
 	}
 
 	#recordFailure(
@@ -207,7 +254,12 @@ function extractTenantId(user: any): string | undefined {
 	return user?.tenant ?? user?.tenantId ?? undefined;
 }
 
-function requireCapability(backend: ModelBackend, capability: 'embed' | 'generate' | 'stream'): void {
+/** True when `input` is the object form carrying a non-empty `tools` array. */
+function inputHasTools(input: GenerateInput): boolean {
+	return typeof input === 'object' && !Array.isArray(input) && Array.isArray(input.tools) && input.tools.length > 0;
+}
+
+function requireCapability(backend: ModelBackend, capability: 'embed' | 'generate' | 'stream' | 'tools'): void {
 	if (!backend.capabilities()[capability]) throw new ModelCapabilityError(backend.name, capability);
 }
 
@@ -225,7 +277,7 @@ function classifyError(err: unknown): string {
 export class ModelCapabilityError extends ServerError {
 	// Deliberately does not name the requested capability beyond what was asked for —
 	// avoids enumerating what the backend *does* support in error responses.
-	constructor(backendName: string, capability: 'embed' | 'generate' | 'stream') {
+	constructor(backendName: string, capability: 'embed' | 'generate' | 'stream' | 'tools') {
 		super(`Backend '${backendName}' does not support '${capability}'`);
 		this.name = 'ModelCapabilityError';
 	}

@@ -1,4 +1,4 @@
-import { ClientError, ServerError, Violation } from '../utility/errors/hdbError.ts';
+import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
@@ -333,7 +333,7 @@ export function searchByIndex(
 				403
 			);
 		if (index?.isIndexing)
-			throw new ServerError(`"${attribute_name}" is not indexed yet, can not search for this attribute`, 503);
+			throw new IndexRebuildingError(`"${attribute_name}" is not indexed yet, can not search for this attribute`);
 		if (value === null && index && !index.indexNulls)
 			throw new ClientError(
 				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
@@ -387,7 +387,7 @@ export function searchByIndex(
 		return results;
 	} else if (index && !skipIndex) {
 		if (index.customIndex) {
-			return index.customIndex.search(searchCondition, context).map((entry) => {
+			const loaded = index.customIndex.search(searchCondition, context).map((entry) => {
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
@@ -402,6 +402,11 @@ export function searchByIndex(
 				}
 				return entry;
 			});
+			if (index.customIndex.rescoreResults) {
+				const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
+				if (rescored != null) return rescored as any;
+			}
+			return loaded;
 		}
 		return index.getRange(rangeOptions).map(
 			filter

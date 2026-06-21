@@ -12,7 +12,7 @@ const { Resources } = require('#src/resources/Resources');
 const { EntryHandler } = require('#src/components/EntryHandler');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { writeFile } = require('node:fs/promises');
-const { waitFor } = require('./waitFor.js');
+const { waitFor } = require('../waitFor.js');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { deployLifecycle, _resetForTests: resetDeployLifecycle } = require('#src/components/deployLifecycle');
 
@@ -29,8 +29,17 @@ describe('Scope', () => {
 		resetRestartNeeded();
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		resetRestartNeeded();
+		// Yield to the event loop so any in-flight chokidar watcher teardown
+		// (from scope.close() in the test body) and any pending readFile
+		// promises inside EntryHandler can settle before we remove the
+		// temp directory. Otherwise, deleting test.js while a watcher event
+		// is in flight surfaces a benign ENOENT through the watcher's error
+		// path after the EntryHandler/OptionsWatcher have already removed
+		// their listeners, which mocha sees as a duplicate done() with an
+		// error. Observed flake on Node v24/v26 (tighter watcher timing).
+		await new Promise((resolve) => setImmediate(resolve));
 		try {
 			rmSync(this.directory, { recursive: true, force: true });
 			// eslint-disable-next-line sonarjs/no-ignored-exceptions
@@ -97,7 +106,7 @@ describe('Scope', () => {
 		const entryHandlerCloseSpy = spy();
 		entryHandlerNoArgs.on('close', entryHandlerCloseSpy);
 
-		scope.close();
+		await scope.close();
 		assert.equal(scopeCloseSpy.callCount, 1, 'close event should be emitted once');
 		assert.equal(scopeOptionsCloseSpy.callCount, 1, 'close event for options should be emitted once');
 		assert.equal(entryHandlerCloseSpy.callCount, 1, 'close event for entry handler should be emitted once');
@@ -154,7 +163,7 @@ describe('Scope', () => {
 		const entryHandlerCloseSpy = spy();
 		entryHandler.on('close', entryHandlerCloseSpy);
 
-		scope.close();
+		await scope.close();
 		assert.equal(scopeCloseSpy.callCount, 1, 'close event should be emitted once');
 		assert.equal(scopeOptionsCloseSpy.callCount, 1, 'close event for options should be emitted once');
 		assert.equal(entryHandlerCloseSpy.callCount, 1, 'close event for entry handler should be emitted once');
@@ -181,7 +190,7 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), true, 'requestRestart was called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	it('should call requestRestart if no options handler is provided', async () => {
@@ -208,7 +217,7 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), true, 'requestRestart was called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	it('should emit error for missing default entry handler', async () => {
@@ -249,7 +258,7 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), false, 'requestRestart should not be called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	it('should support custom entry handlers', async () => {
@@ -283,7 +292,7 @@ describe('Scope', () => {
 		customEntryHandlerPathOnlyArg.on('close', entryHandleCloseSpy1);
 		customEntryHandlerPathAndFunctionArgs.on('close', entryHandleCloseSpy2);
 
-		scope.close();
+		await scope.close();
 
 		assert.equal(entryHandleCloseSpy1.callCount, 1, 'close event for custom entry handler should be emitted once');
 		assert.equal(entryHandleCloseSpy2.callCount, 1, 'close event for custom entry handler should be emitted once');
@@ -323,7 +332,61 @@ describe('Scope', () => {
 		await waitFor(() => handleEntrySpy.callCount > 0);
 		assert.ok(handleEntrySpy.callCount > 0, 'Entry handler should be called');
 
-		scope.close();
+		await scope.close();
+	});
+
+	it('should not create entry handler from options change before handleEntry is called (RE-8)', async () => {
+		// Reproduce the race in RE-8: OptionsWatcher fires a `change` event for the
+		// `files` key BEFORE handleApplication (and thus handleEntry) runs. In the
+		// broken code, #optionsWatcherChangeListener would create an entry handler
+		// without any plugin callback attached. Chokidar's initial scan would then
+		// emit `add` events with no consumer. When handleEntry was later called it
+		// reused the existing handler — but the initial `add` events were already gone.
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
+
+		await scope.ready;
+
+		// Simulate the race: emit a `change` event on scope.options for the `files`
+		// key, as if OptionsWatcher's second config read (triggered by chokidar's own
+		// `ready` event) completed before handleApplication called handleEntry. In the
+		// broken code this created an entry handler immediately, starting a chokidar
+		// scan with no plugin callback attached.
+		scope.options.emit('change', ['files'], 'test.js', { files: 'test.js' });
+
+		// Yield to the event loop long enough for any spuriously-created entry handler
+		// to start its chokidar watcher and complete its initial scan. In the broken
+		// code the scan would fire `add` events here with no listener; in the fixed
+		// code no entry handler is created at all during the change event.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		// Now call handleEntry — this is what jsResource.handleApplication does.
+		// If the bug is present, the entry handler already exists (from the change
+		// listener) and its initial scan has already fired and is gone. The callback
+		// would never receive the initial `add` event and the test would time out.
+		const handleEntrySpy = spy();
+		const entryHandler = scope.handleEntry(handleEntrySpy);
+		assert.ok(entryHandler instanceof EntryHandler, 'Entry handler should be created');
+
+		// The callback must receive the initial `add` event for test.js.
+		// In the buggy code this would time out because initial scan events are lost.
+		await waitFor(() => handleEntrySpy.callCount > 0, {
+			timeout: 2000,
+			message: 'handleEntry callback must be called with initial add event (RE-8 regression)',
+		});
+
+		const firstCall = handleEntrySpy.getCall(0).args[0];
+		assert.equal(firstCall.eventType, 'add', 'initial event should be `add`');
+		assert.equal(firstCall.absolutePath, this.testFilePath, 'initial event should be for the test file');
+
+		await scope.close();
 	});
 
 	describe('deploy lifecycle integration', () => {
@@ -367,7 +430,7 @@ describe('Scope', () => {
 			scope.requestRestart();
 			assert.equal(restartNeeded(), true, 'requestRestart works again after deploy:end');
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('does not suppress requestRestart for an unrelated component', async () => {
@@ -391,7 +454,7 @@ describe('Scope', () => {
 				'requestRestart for this component must not be suppressed by an unrelated deploy'
 			);
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('pauses entry handlers on deploy:start and resumes them on deploy:end without losing plugin listeners', async () => {
@@ -436,7 +499,7 @@ describe('Scope', () => {
 			await waitFor(() => handlerSpy.callCount > callsAfterResume);
 			assert.ok(handlerSpy.callCount > callsAfterResume, 'post-deploy change fires the plugin handler');
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('re-emits deploy:start and deploy:end on the scope for plugins to observe', async () => {
@@ -464,7 +527,7 @@ describe('Scope', () => {
 			assert.equal(endSpy.callCount, 1);
 			assert.deepEqual(endSpy.getCall(0).args, [this.appName]);
 
-			scope.close();
+			await scope.close();
 		});
 
 		it('detaches deploy lifecycle listeners on scope.close()', async () => {
@@ -480,7 +543,7 @@ describe('Scope', () => {
 			await scope.ready;
 
 			const beforeClose = deployLifecycle.listenerCount('deploy:start');
-			scope.close();
+			await scope.close();
 			const afterClose = deployLifecycle.listenerCount('deploy:start');
 
 			assert.equal(

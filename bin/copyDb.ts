@@ -14,7 +14,11 @@ import { updateConfigValue } from '../config/configUtils.js';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
-import { encodeBlobsWithFilePath } from '../resources/blob.ts';
+import {
+	beginPendingMigrationBlobSaves,
+	encodeBlobsWithFilePath,
+	endPendingMigrationBlobSaves,
+} from '../resources/blob.ts';
 import { RecordEncoder, setNextEncoding, lastMetadata, METADATA } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
@@ -381,23 +385,43 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
 	const targetRootStore = openRocksDb(targetPath, { disableWAL: false });
+	// sharedStructuresKey wires the rocksdb-js getStructures/saveStructures closures
+	// so that the plain msgpackr.Encoder used here persists structures within the
+	// __dbis__ CF at Symbol.for('structures'). The runtime attributesDbi RecordEncoder
+	// takes the non-isRocksDB path (handleLocalTimeForGets is never called on it) and
+	// reads from the same CF key via superGetStructures. Without this, own structure
+	// IDs starting at 0x40 are minted in-memory and silently lost on restart →
+	// runtime decoder interprets 0x40 as fixint 64 → "Data read, but end of buffer
+	// not reached 64" (harper#1260).
 	const targetDbisDb = openRocksDb(targetPath, {
 		disableWAL: false,
 		name: INTERNAL_DBIS_NAME,
+		sharedStructuresKey: Symbol.for('structures'),
 	});
 
 	const STRUCTURES_KEY = Symbol.for('structures');
-	const copyStructures = (sourceDbi, storeName: string) => {
+	const copyStructures = (sourceDbi, storeName: string, extraTarget?: RocksDatabase) => {
 		const buffer = sourceDbi.getBinary?.(STRUCTURES_KEY);
 		if (buffer) {
-			targetRootStore.putSync([STRUCTURES_KEY, storeName], asBinary(buffer));
+			const binaryBuffer = asBinary(buffer);
+			targetRootStore.putSync([STRUCTURES_KEY, storeName], binaryBuffer);
+			// Also write to the extra target CF when provided (e.g. __dbis__ CF,
+			// which the runtime RecordEncoder reads via its superGetStructures path).
+			extraTarget?.putSync(STRUCTURES_KEY, binaryBuffer);
 		}
 	};
 
-	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME);
+	copyStructures(sourceDbisDb, INTERNAL_DBIS_NAME, targetDbisDb);
 
 	let written;
 	let outstandingWrites = 0;
+	// Open a blob-save tracking window for this database's migration. saveBlob inside
+	// encodeBlobsWithFilePath pushes every in-flight save promise into `pendingBlobSaves` so we
+	// can await them before declaring the database migrated. Without this, fire-and-forget blob
+	// writes could be left mid-pipeline at migration end, producing records in the target DB
+	// referencing fileIds whose files were never durably written — exactly the missing-blob-file
+	// state that triggers the base-copy resync wedge in harper#1337.
+	const pendingBlobSaves = beginPendingMigrationBlobSaves();
 	const transaction = sourceDbisDb.useReadTransaction();
 	try {
 		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
@@ -430,9 +454,23 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				existingEncoder.isRocksDB = true;
 				existingEncoder.rootStore = targetRootStore;
 				const tempEncoder = new RecordEncoder({ name: key }) as any;
+				// msgpackr's pack closure captures `packr = this` at construction, so during
+				// re-encoding the structure callbacks resolve to tempEncoder's getStructures/
+				// saveStructures (invoked with this === tempEncoder), not existingEncoder's.
+				// tempEncoder must therefore carry the RocksDB wiring too, or getStructures hits
+				// the non-RocksDB branch where the captured super is undefined and throws.
+				tempEncoder.name = key;
+				tempEncoder.isRocksDB = true;
+				tempEncoder.rootStore = targetRootStore;
 				existingEncoder.encode = tempEncoder.encode;
-				existingEncoder.saveStructures = tempEncoder.saveStructures;
 				existingEncoder.getStructures = tempEncoder.getStructures;
+				// The shared structures dictionary is copied verbatim from the source by
+				// copyStructures() below, so re-encoding never needs to persist new structures.
+				// A no-op saveStructures avoids opening a targetRootStore.transactionSync() in the
+				// middle of each record's encode, which otherwise discards the targetDbi record writes.
+				const noopSaveStructures = () => true;
+				existingEncoder.saveStructures = noopSaveStructures;
+				tempEncoder.saveStructures = noopSaveStructures;
 			}
 
 			copyStructures(sourceDbi, key);
@@ -447,6 +485,29 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 
 		await written;
 
+		// Await every blob save that was kicked off during this database's migration. The promises
+		// were pushed into pendingBlobSaves by saveBlob (see resources/blob.ts). We must do this
+		// BEFORE writing the remote-ids mapping (which signals "this DB is migrated and ready")
+		// and BEFORE closing targetRootStore — otherwise any blob whose pipeline hasn't yet
+		// flushed will be silently dropped when the store handle goes away.
+		if (pendingBlobSaves.length > 0) {
+			console.log(`awaiting ${pendingBlobSaves.length} in-flight blob save(s) for ${sourceDatabase}`);
+			const results = await Promise.allSettled(pendingBlobSaves);
+			const failed = results.filter((r) => r.status === 'rejected');
+			if (failed.length > 0) {
+				// Fail loudly so migrateOnStart leaves the migration incomplete (LMDB source still
+				// in place, migrateOnStart flag retained) and the next start retries. Silently
+				// dropping records here is what produced the production missing-blob-files state.
+				throw new Error(
+					`Migration of ${sourceDatabase} failed: ${failed.length} blob save(s) failed: ` +
+						failed
+							.slice(0, 5)
+							.map((r) => (r as PromiseRejectedResult).reason?.message ?? String((r as PromiseRejectedResult).reason))
+							.join('; ')
+				);
+			}
+		}
+
 		// Preserve the node ID mapping from the LMDB audit store so replication can resume
 		// incrementally instead of triggering a full table copy after migration.
 		const REMOTE_NODE_IDS_KEY = Symbol.for('remote-ids');
@@ -457,6 +518,12 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 
 		console.log('migrated database ' + sourceDatabase + ' to RocksDB');
 	} finally {
+		endPendingMigrationBlobSaves();
+		// If the migration threw before we awaited pendingBlobSaves above, in-flight save
+		// promises in the list have no rejection handler attached. Attach a no-op catch so a
+		// later background failure is silently observed instead of crashing the process via
+		// Node's unhandledRejection.
+		for (const saving of pendingBlobSaves) saving.catch(() => {});
 		transaction.done();
 		targetRootStore.close();
 	}

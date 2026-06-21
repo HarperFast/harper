@@ -1,0 +1,6 @@
+# REPRO component for the "closed transaction in ALS -> empty search" diagnosis.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true

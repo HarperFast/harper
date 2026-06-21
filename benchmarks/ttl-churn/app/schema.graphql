@@ -1,0 +1,7 @@
+# TTL churn table: records expire after a short TTL window.
+# The expiresAt field is a Harper special attribute used to schedule expiry.
+type ttlrecord @table @export {
+	id: ID @primaryKey
+	payload: String
+	expiresAt: Float
+}

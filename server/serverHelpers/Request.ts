@@ -448,6 +448,12 @@ class RequestBody {
 	pipe(destination: any, options?: any) {
 		return this.#nodeRequest.pipe(destination, options);
 	}
+	// Delegate async iteration to the underlying request, which is natively
+	// async-iterable. Without this, `for await (const chunk of request.body)`
+	// throws `TypeError: body is not async iterable` (#1317).
+	[Symbol.asyncIterator]() {
+		return this.#nodeRequest[Symbol.asyncIterator]();
+	}
 }
 
 class BunRequestBody {
@@ -478,6 +484,11 @@ class BunRequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#getReadable().pipe(destination, options);
+	}
+	// Mirror RequestBody: delegate async iteration to the underlying Readable
+	// (natively async-iterable) so `for await` consumers work on Bun too (#1317).
+	[Symbol.asyncIterator]() {
+		return this.#getReadable()[Symbol.asyncIterator]();
 	}
 }
 

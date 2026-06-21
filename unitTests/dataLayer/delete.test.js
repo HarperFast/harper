@@ -141,7 +141,8 @@ describe('Tests for delete.js', () => {
 			let bridge_delete_txns_stub = sandbox.stub(harperBridge, 'deleteTransactionLogsBefore').resolves({
 				start_timestamp: 1,
 				end_timestamp: 2,
-				transactions_deleted: 3,
+				entries_deleted: 3,
+				log_files_deleted: 1,
 			});
 
 			global.hdb_schema = {
@@ -150,12 +151,14 @@ describe('Tests for delete.js', () => {
 				},
 			};
 			let delete_obj = testUtils.deepClone(DELETE_TXN_BEFORE_OBJ);
-			await _delete.deleteAuditLogsBefore(delete_obj);
+			const result = await _delete.deleteAuditLogsBefore(delete_obj);
 
 			expect(bridge_delete_txns_stub).to.have.been.calledWith(delete_obj);
 			expect(log_info_spy).to.have.been.calledWith(
 				`Finished deleting audit logs before ${DELETE_TXN_BEFORE_OBJ.timestamp}`
 			);
+			// the bridge's `entries_deleted` is surfaced as the legacy `transactions_deleted` field
+			expect(result.transactions_deleted).to.equal(3);
 		});
 	});
 

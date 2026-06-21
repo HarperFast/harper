@@ -1,0 +1,14 @@
+# Fixture for transaction-context-reads.test.ts: a Company read followed by an indexed
+# ScoreSnapshot search, used to verify a closed transaction in the ALS context still
+# reads the latest committed state for the second table.
+
+type Company @table @export {
+	id: ID @primaryKey
+	name: String
+}
+
+type ScoreSnapshot @table @export {
+	id: ID @primaryKey
+	companyId: String @indexed
+	score: Int
+}

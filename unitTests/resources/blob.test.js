@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
+const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -14,10 +15,17 @@ const {
 	isSaving,
 	cleanupOrphans,
 	cleanupUnusedBlobs,
+	collectRetainedFileIds,
+	getFileId,
+	saveBlob,
+	decodeFromDatabase,
+	startPreCommitBlobsForRecord,
+	isSourceBlobUnavailable,
 } = require('#src/resources/blob');
-const { existsSync } = require('fs');
+const { existsSync, unlinkSync } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
+const { waitFor } = require('../waitFor.js');
 
 describe('Blob test', () => {
 	let BlobTest;
@@ -123,8 +131,7 @@ describe('Blob test', () => {
 		);
 		await assert.rejects(() => BlobTest.put({ id: 111, blob }));
 		let filePath = getFilePathForBlob(blob);
-		await delay(20); // wait for the file to be deleted
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for the file to be deleted
 	});
 	it('create a blob from a buffer and call save() but then fail validation', async () => {
 		let blob;
@@ -194,12 +201,9 @@ describe('Blob test', () => {
 		let filePath = getFilePathForBlob(blob);
 		assert(existsSync(filePath));
 		await BlobTest.delete(3);
-		await delay(50);
-		assert(!existsSync(filePath)); // should immediately be deleted
+		await waitFor(() => !existsSync(filePath)); // should be deleted
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
-		let retries = 0;
-		while (existsSync(filePath) && retries++ < 10) await delay(40); // wait for audit log removal and deletion
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for audit log removal and deletion
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
@@ -209,8 +213,7 @@ describe('Blob test', () => {
 		await delay(50); // wait for audit log removal and deletion
 		assert(existsSync(filePath)); // should still exist because it isn't deleted yet
 		await BlobTest.delete(4);
-		await delay(50); // wait for deletion
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for deletion
 
 		setAuditRetention(10); // give us time to check the blob file that is written
 		blob = await createBlob(Buffer.from(testString));
@@ -226,8 +229,98 @@ describe('Blob test', () => {
 		await delay(50); // wait for audit log removal and deletion
 		assert(existsSync(filePath)); // should still exist because it isn't replaced yet
 		await BlobTest.put({ id: 4, blob: null });
-		await delay(50); // wait for deletion
-		assert(!existsSync(filePath));
+		await waitFor(() => !existsSync(filePath)); // wait for deletion
+	});
+	it('updating an unrelated attribute does not unlink a still-referenced blob', async () => {
+		// Regression: RecordEncoder used to call deleteBlobsInObject(existingEntry.value)
+		// unconditionally on every update, scheduling unlink() on every prior blob —
+		// even ones the new record still references. With the retention check, a put
+		// that carries the same blob (same fileId) leaves the file intact.
+		//
+		// This is the pattern the deployment-tracking recorder hits: ingestPayload
+		// stores payload_blob, then several subsequent puts update phase / event_log
+		// while keeping payload_blob on the row. Without retention the blob is unlinked
+		// mid-deploy and replication fails with ENOENT.
+		setAuditRetention(10);
+		setDeletionDelay(0);
+		const RetentionTest = table({
+			table: 'BlobRetentionTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+				{ name: 'phase', type: 'String' },
+			],
+		});
+		const payload = randomBytes(20000); // > FILE_STORAGE_THRESHOLD so it goes file-backed
+		const blob = await createBlob(payload);
+		await RetentionTest.put({ id: 100, blob, phase: 'pending' });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'expected file-backed blob');
+		assert(existsSync(filePath), 'blob file should exist after initial put');
+
+		// Update an unrelated attribute, keeping the same blob instance on the record.
+		// Pre-fix: this unlinked the file ~deletionDelay ms later.
+		await RetentionTest.put({ id: 100, blob, phase: 'extracting' });
+		await delay(50);
+		assert(existsSync(filePath), 'blob file must survive update that retains it');
+
+		// Several more updates simulating the multi-flush pattern.
+		for (const phase of ['installing', 'loading', 'replicating', 'success']) {
+			await RetentionTest.put({ id: 100, blob, phase });
+			await delay(20);
+			assert(existsSync(filePath), `blob file must survive phase=${phase} update`);
+		}
+
+		// Also exercise the get → mutate → put path so retention is proven with a
+		// freshly-decoded blob (different JS instance, same fileId), not only the
+		// in-memory blob we created above.
+		const fetched = await RetentionTest.get(100);
+		assert(fetched.blob, 'fetched row should still carry the blob attribute');
+		await RetentionTest.put({ id: 100, blob: fetched.blob, phase: 'after-roundtrip' });
+		await delay(50);
+		assert(existsSync(filePath), 'blob file must survive update via a freshly-decoded blob');
+
+		// Now explicitly drop the blob — file should get cleaned up as before.
+		await RetentionTest.put({ id: 100, blob: null, phase: 'gone' });
+		await waitFor(() => !existsSync(filePath), {
+			message: 'blob file should be unlinked when the new record no longer references it',
+		});
+		setDeletionDelay(500); // restore the default
+	});
+	it('blob unlink is gated on the removal committing (#1364)', async () => {
+		// removeEntry must only unlink the old blobs once the record removal commits. An
+		// expiration scan whose transaction is force-committed without the delete (or an
+		// aborted/version-conflicted removal) leaves the record in place; unlinking its blobs
+		// regardless would orphan the reference and wedge replication on ENOENT.
+		setDeletionDelay(0);
+		const realStore = BlobTest.primaryStore;
+		const blob = await createBlob(randomBytes(20000)); // > FILE_STORAGE_THRESHOLD → file-backed
+		await BlobTest.put({ id: 720, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'expected file-backed blob');
+		assert(existsSync(filePath), 'blob file should exist after put');
+
+		// Fetch a real entry (value + metadataFlags) the way the eviction scan does.
+		let entry;
+		for (const e of realStore.getRange({ start: 720, end: 721, versions: true })) {
+			if (e.key === 720) entry = e;
+		}
+		assert(entry && entry.value, 'expected a real entry carrying the blob');
+
+		// Removal that never commits (rejects): the blob must be preserved.
+		removeEntry({ remove: () => Promise.reject(new Error('aborted')) }, entry, undefined);
+		await delay(40);
+		assert(existsSync(filePath), 'blob must survive when the removal does not commit (#1364)');
+
+		// Removal that commits: the blob is unlinked.
+		removeEntry({ remove: () => Promise.resolve(true) }, entry, undefined);
+		await waitFor(() => !existsSync(filePath), {
+			message: 'blob should be unlinked once the removal commits',
+		});
+
+		await BlobTest.delete(720); // cleanup the real record (its blob file is already gone)
+		setDeletionDelay(500); // restore the default
 	});
 	it('slowly create a blob and save it before it is done', async () => {
 		let testString = 'this is a test string'.repeat(256);
@@ -417,8 +510,9 @@ describe('Blob test', () => {
 		});
 		const goodPath = getFilePathForBlob(goodBlob);
 		assert(goodPath, 'good blob was assigned a file path during pre-commit');
-		await delay(100); // wait for cleanup setTimeout
-		assert(!existsSync(goodPath), `good blob ${goodPath} should be cleaned up by abort`);
+		await waitFor(() => !existsSync(goodPath), {
+			message: `good blob ${goodPath} should be cleaned up by abort`,
+		});
 	});
 	it('superseded incremental update cleans up pre-saved blob', async () => {
 		// Establish a record at the current monotonic time.
@@ -432,11 +526,130 @@ describe('Blob test', () => {
 		});
 		const blobPath = getFilePathForBlob(olderBlob);
 		assert(blobPath, 'older blob was assigned a file path during pre-commit');
-		await delay(100); // wait for cleanup setTimeout
-		assert(!existsSync(blobPath), `superseded blob ${blobPath} should be cleaned up`);
+		await waitFor(() => !existsSync(blobPath), {
+			message: `superseded blob ${blobPath} should be cleaned up`,
+		});
 		// the original record value is preserved
 		const existing = await BlobTest.get(250);
 		assert.equal(await existing.blob.text(), 'first');
+	});
+	it('#406: startPreCommitBlobsForRecord tracks an already-saved blob only when trackPersistedBlobs is set', async () => {
+		// A replication-received blob is saved out-of-band by receiveBlobs BEFORE the apply, so at pre-commit
+		// it has a fileId but no saveBeforeCommit flag. It must be tracked (so a superseded apply's cleanup
+		// can unlink it — #406), but ONLY on the source-apply path: a local write carrying an already-saved
+		// blob references another row's blob and must not be unlinked on abort/skip.
+		const receivedBlob = createBlob(Buffer.alloc(20000, 'c'));
+		await decodeFromDatabase(() => saveBlob(receivedBlob).saving, BlobTest.primaryStore.rootStore);
+		const record = { id: 1, blob: receivedBlob };
+		const store = BlobTest.primaryStore.rootStore;
+		// local write (trackPersistedBlobs falsy): an already-saved blob is NOT tracked
+		assert.equal(startPreCommitBlobsForRecord(record, store, false, false), undefined);
+		// source/replication apply (trackPersistedBlobs true): tracked for skip/abort cleanup
+		const preCommit = startPreCommitBlobsForRecord(record, store, false, true);
+		assert(preCommit && preCommit.blobs.includes(receivedBlob), 'received blob tracked on source apply');
+		unlinkSync(getFilePathForBlob(receivedBlob)); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('isSourceBlobUnavailable: only the replication source-missing marker, not local/transient faults', () => {
+		// The classification gate for pre-commit tolerance: the replication receiver flags an unrecoverable
+		// source-missing blob with `sourceBlobUnavailable` (markSourceBlobUnavailable, harper-pro#403). A
+		// local/transient save fault (disk full, a local ENOENT) is unmarked and must NOT be tolerated.
+		assert.equal(
+			isSourceBlobUnavailable(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true })),
+			true
+		);
+		assert.equal(isSourceBlobUnavailable(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })), false);
+		assert.equal(isSourceBlobUnavailable(new Error('disk full')), false);
+		assert.equal(isSourceBlobUnavailable({ sourceBlobUnavailable: false }), false);
+		assert.equal(isSourceBlobUnavailable(null), false);
+		assert.equal(isSourceBlobUnavailable(undefined), false);
+	});
+	it('complete() fault contract: needs-saving aborts on a transient fault, track-only never aborts (#1353/#1376)', async () => {
+		// CONTRACT HISTORY — do not "restore" the old all-blobs-abort assertion:
+		//   #1353 introduced complete() awaiting EVERY pre-commit blob, so any save fault (even on an
+		//     already-saving, replication-received blob) aborted the commit.
+		//   #1376 then split pre-commit blobs into two sets and changed the contract:
+		//     - blobsNeedingSaving (saveInRecord / saveBeforeCommit): complete() awaits these. A
+		//       transient/local fault MUST still reject → the write aborts and retries (no silent loss).
+		//       A replication source-missing blob (sourceBlobUnavailable marker) is tolerated so the
+		//       record still commits with a diverged reference, backfilled later (harper-pro#403/#388).
+		//     - blobsToTrackOnly (already-saving, replication-received): complete() deliberately does
+		//       NOT await these — awaiting a paused/back-pressured copy stream's blob would deadlock the
+		//       WS (commit fails → onCommit never fires → outstandingCommits never decrements →
+		//       WS paused forever, harper-pro#414). Their durability is NOT enforced by commit-abort
+		//       anymore; it moved to the replication resume cursor: a fault sets hasBlobGap=true and
+		//       pins lastDurableSequenceId so the blob is re-streamed on reconnect
+		//       (harper-pro replication/replicationConnection.ts).
+		// So a transient fault aborts ONLY on the needs-saving path; on the track-only path complete()
+		// must NOT reject. The pre-#1376 assertion drove the fault through the track-only path, which is
+		// why it became stale: complete() no longer awaits that set.
+		const store = BlobTest.primaryStore.rootStore;
+
+		// --- needs-saving path (saveBeforeCommit) ---
+
+		// transient/local fault → complete() awaits the save and the unmarked rejection MUST propagate so
+		// the write aborts and retries.
+		const failStream = new PassThrough();
+		const failBlob = await createBlob(failStream, { saveBeforeCommit: true });
+		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, true);
+		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
+		await assert.rejects(
+			rejectPc.complete(),
+			'a local/transient save fault on a needs-saving blob must still abort the commit'
+		);
+
+		// source-unavailable → the replication marker is tolerated even on the awaited needs-saving path,
+		// so the record still commits with a diverged reference.
+		const goneStream = new PassThrough();
+		const goneBlob = await createBlob(goneStream, { saveBeforeCommit: true });
+		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, true);
+		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
+		await assert.doesNotReject(toleratePc.complete(), 'a source-unavailable blob must not abort the commit');
+
+		// --- track-only path (already-saving replication-received blob) ---
+
+		// A replication-received blob is saved out-of-band before the apply (fileId already set, no
+		// saveBeforeCommit), so startPreCommitBlobsForRecord(trackPersistedBlobs=true) puts it in
+		// blobsToTrackOnly. complete() must NOT await it: a transient fault here does NOT abort the commit
+		// (durability is the resume cursor's job via hasBlobGap — see comment above). Without this, a
+		// paused copy stream would deadlock the WS (harper-pro#414).
+		const trackOnlyStream = new PassThrough();
+		const trackOnlyBlob = await createBlob(trackOnlyStream);
+		decodeFromDatabase(() => saveBlob(trackOnlyBlob, true), store); // out-of-band save: assigns fileId, begins the pipeline
+		isSaving(trackOnlyBlob)?.catch(() => {}); // complete() won't await this save, so absorb its rejection ourselves
+		const trackOnlyPc = startPreCommitBlobsForRecord({ id: 3, blob: trackOnlyBlob }, store, false, true);
+		assert(
+			trackOnlyPc && trackOnlyPc.blobs.includes(trackOnlyBlob),
+			'an already-saved replication blob is tracked for cleanup'
+		);
+		trackOnlyStream.destroy(new Error('disk full')); // unmarked transient fault on the track-only blob
+		await assert.doesNotReject(
+			trackOnlyPc.complete(),
+			'a transient fault on a track-only blob must NOT abort the commit (durability handled by the resume cursor)'
+		);
+	});
+	it('#406: cleanupUnusedBlobs deletes non-retained blobs but keeps retained ones', async () => {
+		// The retained-fileId guard: a skipped/aborted write may carry a blob whose fileId the surviving
+		// record still references; deleting it would corrupt that record.
+		setDeletionDelay(0);
+		const keep = createBlob(Buffer.alloc(20000, 'k'));
+		const drop = createBlob(Buffer.alloc(20000, 'p'));
+		await decodeFromDatabase(() => saveBlob(keep).saving, BlobTest.primaryStore.rootStore);
+		await decodeFromDatabase(() => saveBlob(drop).saving, BlobTest.primaryStore.rootStore);
+		const keepPath = getFilePathForBlob(keep);
+		const dropPath = getFilePathForBlob(drop);
+		cleanupUnusedBlobs([keep, drop], new Set([getFileId(keep)]));
+		await waitFor(() => !existsSync(dropPath), { message: `non-retained blob ${dropPath} should be deleted` });
+		assert(existsSync(keepPath), 'retained blob must NOT be deleted');
+		unlinkSync(keepPath); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('#406: collectRetainedFileIds returns the fileIds of saved blobs in a record', async () => {
+		const blob = createBlob(Buffer.from('x'));
+		await decodeFromDatabase(() => saveBlob(blob).saving, BlobTest.primaryStore.rootStore);
+		const ids = collectRetainedFileIds({ attr: blob, other: 5 });
+		assert(ids instanceof Set);
+		assert(ids.has(getFileId(blob)));
+		assert.equal(collectRetainedFileIds(null), undefined); // no record
+		assert.equal(collectRetainedFileIds({ no: 'blobs' }), undefined); // no blobs → no set allocated
 	});
 	it('cleanupUnusedBlobs is a no-op for unsaved blobs and clears the list', () => {
 		const unsavedBlob = createBlob(Buffer.from('not yet saved'));

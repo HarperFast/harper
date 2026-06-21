@@ -292,13 +292,13 @@ export async function installApplication(application: Application) {
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
 		// If no package.json, nothing to install
-		application.logger.debug(`Application ${application.name} has no package.json; skipping install`);
+		application.logger.info(`Application ${application.name} has no package.json; skipping install`);
 		return;
 	}
 	try {
 		// Does node_modules exist?
 		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
-		application.logger.debug(`Application ${application.name} already has node_modules; skipping install`);
+		application.logger.info(`Application ${application.name} already has node_modules; skipping install`);
 		return;
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;

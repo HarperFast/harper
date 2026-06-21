@@ -66,11 +66,20 @@ describe('mcp/lifecycle', () => {
 			assert.equal(outcome.result.protocolVersion, '2025-03-26');
 		});
 
-		it('rejects an unsupported protocol version with the supported list', async () => {
+		it('negotiates an unsupported version down to the preferred one (spec: server MUST respond with a supported version)', async () => {
 			const outcome = await handleInitialize({ protocolVersion: '2024-01-01' }, 'alice');
-			assert.equal(outcome.ok, false);
-			assert.match(outcome.reason, /2024-01-01/);
-			assert.deepEqual([...outcome.supportedVersions], [...SUPPORTED_PROTOCOL_VERSIONS]);
+			// Spec quote: "If the server does not support the requested version,
+			// the server MUST respond with a value it does support" — so we
+			// downgrade to the preferred version rather than failing the call.
+			assert.equal(outcome.ok, true);
+			assert.equal(outcome.result.protocolVersion, SUPPORTED_PROTOCOL_VERSIONS[0]);
+			assert.equal(outcome.session.protocolVersion, SUPPORTED_PROTOCOL_VERSIONS[0]);
+		});
+
+		it('also negotiates down for a newer-than-supported version (e.g. 2025-11-25 from SDK 1.29)', async () => {
+			const outcome = await handleInitialize({ protocolVersion: '2025-11-25' }, 'alice');
+			assert.equal(outcome.ok, true);
+			assert.equal(outcome.result.protocolVersion, SUPPORTED_PROTOCOL_VERSIONS[0]);
 		});
 
 		it('rejects missing protocolVersion', async () => {

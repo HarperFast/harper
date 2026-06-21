@@ -22,7 +22,10 @@ const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
-let threadTerminationTimeout = 10000; // threads, you got 10 seconds to die
+// Threads get 10s to die before they're forced. In dev (`harper dev`) we widen this: a reload's old
+// worker may be disposing a native runtime (e.g. @harperfast/vite's rolldown dev server) and forcing it
+// down mid-disposal crashes the process, so give that teardown more room before the forced backstop.
+let threadTerminationTimeout = process.env.DEV_MODE === 'true' || process.env.DEV_MODE === '1' ? 30000 : 10000;
 const RESTART_TYPE = 'restart';
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';

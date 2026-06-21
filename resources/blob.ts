@@ -40,7 +40,6 @@ import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
 import type { RootDatabase } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
-import { HAS_BLOBS } from './auditStore.ts';
 import { getHeapStatistics } from 'node:v8';
 import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
 import { _assignPackageExport } from '../globals.js';
@@ -544,6 +543,13 @@ export function createBlob(
 }
 _assignPackageExport('createBlob', createBlob);
 
+// When set (during a migration via encodeBlobsWithFilePath), saveBlob pushes the in-flight
+// writeBlob save promise here so the migration can await every blob's durable write before
+// declaring the database done. Without this, the migration's `await targetDbi.put(...)`
+// only waits for the RocksDB record commit, not the async blob file pipeline, so records
+// can be committed referencing fileIds whose blob files were never durably written.
+let pendingMigrationBlobSaves: Promise<void>[] | undefined;
+
 export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 	let storageInfo = storageInfoForBlob.get(blob);
 	if (!storageInfo) {
@@ -567,6 +573,23 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 	else {
 		// for native blobs, we have to read them from the stream
 		writeBlobWithStream(blob as any, Readable.from(blob.stream()), storageInfo);
+	}
+	// Track the in-flight save when a migration is collecting them. storageInfo.saving is set
+	// by writeBlobWithStream; writeBlobWithBuffer for small blobs may not produce one. The
+	// wrapping `.then(...)` removes resolved promises from the list so a long migration does not
+	// accumulate every settled save in memory. A side `.catch(noop)` is attached to the tracked
+	// chain so a mid-loop rejection doesn't fire Node's `unhandledRejection` before the migration
+	// reaches `Promise.allSettled(pendingBlobSaves)` — that observation is via a separate handler
+	// chain, so the original `tracked` still rejects and the migration's allSettled still detects
+	// the failure and throws the structured `Migration of … failed: …` error.
+	if (pendingMigrationBlobSaves && storageInfo.saving) {
+		const list = pendingMigrationBlobSaves;
+		const tracked: Promise<void> = storageInfo.saving.then(() => {
+			const i = list.indexOf(tracked);
+			if (i !== -1) list.splice(i, 1);
+		});
+		tracked.catch(() => {});
+		list.push(tracked);
 	}
 	return storageInfo;
 }
@@ -898,6 +921,29 @@ export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number
 		currentStore = undefined;
 	}
 }
+
+/**
+ * Open and close a window where saveBlob tracks every in-flight blob save promise. Used by the
+ * v4→v5 migration in copyDb.ts so the migration can await every blob file write before declaring
+ * a database done. Without this, fire-and-forget blob saves can be left mid-pipeline at migration
+ * end, producing records in the target DB that reference fileIds whose files were never durably
+ * written — exactly the "missing blob file" state behind the base-copy wedge in harper#1337.
+ *
+ * Usage:
+ *   const saves = beginPendingMigrationBlobSaves();
+ *   // ... run migration loop, encodeBlobsWithFilePath collects saves into `saves` ...
+ *   const results = await Promise.allSettled(saves);
+ *   endPendingMigrationBlobSaves();
+ *   const failed = results.filter(r => r.status === 'rejected');
+ *   if (failed.length > 0) throw ...;
+ */
+export function beginPendingMigrationBlobSaves(): Promise<void>[] {
+	pendingMigrationBlobSaves = [];
+	return pendingMigrationBlobSaves;
+}
+export function endPendingMigrationBlobSaves(): void {
+	pendingMigrationBlobSaves = undefined;
+}
 /**
  * Encode blobs as buffers, so they can be transferred remotely
  * @param callback
@@ -970,12 +1016,26 @@ export function decodeFromDatabase<T>(callback: () => T, rootStore: RootDatabase
 }
 
 /**
- * Delete blobs in an object, recursively searching for blobs
+ * Delete blobs in an object, recursively searching for blobs. When `retainedFileIds`
+ * is supplied, blobs whose fileId is in that set are skipped — used by the update path
+ * to avoid deleting a blob the new record still references.
+ *
+ * Background: `RecordEncoder` calls this with the *prior* row's value on every update.
+ * If a caller updates an unrelated attribute on a row that still carries a file-backed
+ * blob, the unfiltered delete unlinks the blob file ~`deletionDelay` ms later, even
+ * though the new row still references the same fileId. The retainedFileIds set
+ * prevents that data loss.
+ *
  * @param object
+ * @param retainedFileIds optional set of fileIds the caller wants to keep on disk
  */
-export function deleteBlobsInObject(object) {
-	findBlobsInObject(object, (object) => {
-		deleteBlob(object);
+export function deleteBlobsInObject(object: any, retainedFileIds?: Set<string>): void {
+	findBlobsInObject(object, (blob) => {
+		if (retainedFileIds?.size) {
+			const fileId = getFileId(blob);
+			if (fileId && retainedFileIds.has(fileId)) return;
+		}
+		deleteBlob(blob);
 	});
 }
 
@@ -1008,6 +1068,22 @@ export interface PreCommitBlobs {
 }
 
 /**
+ * Whether a blob-save rejection denotes a blob the replication SOURCE can no longer provide — evicted or
+ * expired at the origin, with the receiver having flagged the error `sourceBlobUnavailable` (set by the
+ * replication layer's `markSourceBlobUnavailable`, harper-pro#403). Such a blob is unrecoverable —
+ * re-streaming reproduces the ENOENT — so the pre-commit path tolerates it and lets the record commit with
+ * a diverged blob reference (left for proactive backfill, harper-pro#388) instead of aborting the apply.
+ * Local/transient save faults are NOT this and must still abort the write so it is retried (no silent loss).
+ */
+export function isSourceBlobUnavailable(error: unknown): boolean {
+	return (
+		typeof error === 'object' &&
+		error !== null &&
+		(error as { sourceBlobUnavailable?: boolean }).sourceBlobUnavailable === true
+	);
+}
+
+/**
  * Do a shallow/fast search for blobs on the record and start saving them if they are supposed to be saved before a commit
  * @param record
  * @param store
@@ -1015,28 +1091,65 @@ export interface PreCommitBlobs {
 export function startPreCommitBlobsForRecord(
 	record: any,
 	store: any,
-	saveInRecord?: boolean
+	saveInRecord?: boolean,
+	trackPersistedBlobs?: boolean
 ): PreCommitBlobs | undefined {
 	const blobsNeedingSaving: Blob[] = [];
+	// Already-saving blobs tracked for cleanup only — NOT awaited in complete(). Their durability is
+	// already tracked by outstandingBlobsToFinish in replicationConnection.ts. Awaiting them here would
+	// block the commit on blob I/O; if the WS is paused for commit-backlog back-pressure, any
+	// partially-received blob stream that can't get more chunks until ws.resume() would time out — the
+	// commit would then fail, preventing onCommit() from decrementing outstandingCommits, permanently
+	// locking the WS (deadlock). Track-only keeps the skip/abort cleanup from harper-pro#406 without
+	// introducing this commit-path dependency. (harper-pro#414)
+	const blobsToTrackOnly: Blob[] = [];
 	for (const key in record) {
 		const value = record[key];
-		if (value instanceof FileBackedBlob && (saveInRecord || value.saveBeforeCommit)) {
-			currentStore = store;
-			if (saveInRecord) {
-				value.saveInRecord = true;
+		// Track a file-backed blob on the write when it still needs saving before commit (the local-write
+		// path: `saveInRecord`/`saveBeforeCommit`) OR — only when `trackPersistedBlobs` is set — when it is
+		// already saved on disk (`fileId` set). The latter covers replication/source applies, where
+		// `receiveBlobs` saved the blob out-of-band before this apply: tracking it lets the skip/abort cleanup
+		// unlink it if this write loses a version conflict and never references it (otherwise it leaks —
+		// harper-pro#406). `trackPersistedBlobs` is gated to the source-apply path on purpose: a received blob
+		// is owned by THIS write (a unique fileId saved for it), whereas a local write that carries an
+		// already-saved blob references another row's blob (cross-row reuse, which `pack` rejects, or a same-
+		// key unchanged-attribute update) — deleting those on abort/skip would corrupt the owning record.
+		// Already-saved blobs are not re-saved (saveBlob early-returns on an existing fileId); the
+		// retained-fileId guard in cleanupUnusedBlobs additionally protects any blob the committed record
+		// still references.
+		if (value instanceof FileBackedBlob) {
+			if (saveInRecord || value.saveBeforeCommit) {
+				currentStore = store;
+				if (saveInRecord) {
+					value.saveInRecord = true;
+				}
+				blobsNeedingSaving.push(value);
+			} else if (trackPersistedBlobs && storageInfoForBlob.get(value)?.fileId != null) {
+				blobsToTrackOnly.push(value);
 			}
-			blobsNeedingSaving.push(value);
 		}
 	}
-	if (blobsNeedingSaving.length > 0) {
+	const allTrackedBlobs = blobsNeedingSaving.concat(blobsToTrackOnly);
+	if (allTrackedBlobs.length > 0) {
 		// we do have blobs, start saving once complete() is called
 		return {
-			blobs: blobsNeedingSaving,
+			blobs: allTrackedBlobs,
 			complete: () => {
 				currentStore = store;
+				// Only await blobs that need saving before commit (saveInRecord / saveBeforeCommit path).
+				// Already-saving blobs (blobsToTrackOnly) are skipped here — their durability is tracked
+				// separately by outstandingBlobsToFinish; blocking the commit on them causes deadlock.
 				return Promise.all(
 					blobsNeedingSaving.map((blob) => {
-						return saveBlob(blob as any, true).saving ?? Promise.resolve();
+						const saving = saveBlob(blob as any, true).saving ?? Promise.resolve();
+						// Tolerate a blob the replication source can no longer provide so the record still commits
+						// with a diverged reference (backfilled later, harper-pro#388) instead of aborting the apply
+						// and wedging the copy stream. Local/transient faults still reject → the write aborts and
+						// retries (no silent loss). See isSourceBlobUnavailable / harper-pro#403.
+						return saving.catch((error) => {
+							if (isSourceBlobUnavailable(error)) return;
+							throw error;
+						});
 					})
 				);
 			},
@@ -1051,13 +1164,21 @@ export function startPreCommitBlobsForRecord(
  * Waits for any in-flight save to settle before unlinking, so we don't race with the writer
  * and leave a half-written file. Errors are swallowed — the blob may have already been
  * cleaned up by deleteOnFailure on the save path.
+ *
+ * `retainedFileIds` is the set of fileIds the COMMITTED (winning) record still references — those are
+ * skipped. This matters now that already-saved blobs are tracked (see startPreCommitBlobsForRecord): a
+ * skipped/aborted write can carry a file-backed blob whose fileId is shared with the surviving record
+ * (e.g. a superseded full-record update of a row whose blob attribute is unchanged), and deleting it
+ * would corrupt that record (harper-pro#406).
  * @param blobs blobs that were registered via {@link startPreCommitBlobsForRecord}
+ * @param retainedFileIds fileIds the committed record still references; never deleted
  */
-export function cleanupUnusedBlobs(blobs: Blob[] | undefined): void {
+export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: Set<string>): void {
 	if (!blobs?.length) return;
 	for (const blob of blobs) {
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
+		if (retainedFileIds?.has(storageInfo.fileId)) continue; // the committed record still references this blob
 		const settle = storageInfo.saving ?? Promise.resolve();
 		settle.then(
 			() => deleteBlob(blob),
@@ -1066,6 +1187,21 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined): void {
 	}
 	// idempotent: subsequent calls (e.g. from abort after commit-handler already cleaned up) are no-ops
 	blobs.length = 0;
+}
+
+/**
+ * Collect the fileIds of every file-backed blob referenced by `record`, for use as the
+ * `retainedFileIds` guard in {@link cleanupUnusedBlobs}. Returns undefined when there are none (so the
+ * caller can skip allocating a set on the common blob-less path). See harper-pro#406.
+ */
+export function collectRetainedFileIds(record: any): Set<string> | undefined {
+	if (!record || typeof record !== 'object') return undefined;
+	let fileIds: Set<string> | undefined;
+	findBlobsInObject(record, (blob) => {
+		const fileId = storageInfoForBlob.get(blob)?.fileId;
+		if (fileId) (fileIds ??= new Set()).add(fileId);
+	});
+	return fileIds;
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
@@ -1216,6 +1352,7 @@ function polyfillBlob() {
  * @param database
  */
 export async function cleanupOrphans(database: any, databaseName?: string) {
+	const { HAS_BLOBS } = await import('./auditStore.ts');
 	let store: RootDatabase;
 	let auditStore: RootDatabase;
 	let orphansDeleted = 0;

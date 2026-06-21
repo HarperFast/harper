@@ -61,19 +61,41 @@ interface JWTTokens {
  * @returns {Promise<JWTRSAKeys>}
  */
 let rsaKeys: JWTRSAKeys | undefined = undefined;
+// Bumped by every clearJWTRSAKeysCache() call. getJWTRSAKeys() captures it before its file reads and
+// refuses to commit a result whose generation is stale, so a read that started before a clear (e.g. a
+// Bearer-auth request in flight while node cloning replaces the key files) cannot resurrect the
+// pre-clear keys into the cache after the clear ran.
+let rsaKeysGeneration = 0;
 export async function getJWTRSAKeys(): Promise<JWTRSAKeys> {
 	if (rsaKeys) return rsaKeys;
+	const generation: number = rsaKeysGeneration;
 	try {
 		const keysDir: string = path.join(env.getHdbBasePath(), LICENSE_KEY_DIR_NAME);
 		const passphrase: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PASSPHRASE_NAME), 'utf8');
 		const privateKey: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PRIVATE_KEY_NAME), 'utf8');
 		const publicKey: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PUBLIC_KEY_NAME), 'utf8');
-		rsaKeys = { publicKey, privateKey, passphrase };
-		return rsaKeys;
+		const keys: JWTRSAKeys = { publicKey, privateKey, passphrase };
+		// Only populate the cache if no clear happened while we were reading; otherwise return the freshly
+		// read keys without caching so the next call re-reads (the files may have just been replaced).
+		if (generation === rsaKeysGeneration) rsaKeys = keys;
+		return keys;
 	} catch (err) {
 		logger.error(err);
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_ENCRYPTION_KEYS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 	}
+}
+
+/**
+ * Drops the in-memory JWT RSA key cache so the next getJWTRSAKeys() re-reads from disk. Needed when the
+ * key files are replaced underneath a running process — e.g. node cloning overwrites .jwtPublic/.jwtPrivate/
+ * .jwtPass with the leader's keys after Harper (and thus the operations API) is already up, and an early
+ * Bearer-auth request may have already cached the pre-clone install-generated keys. The operations API runs
+ * only on the main thread, so clearing this process-local cache there is sufficient. Bumping the generation
+ * also invalidates any getJWTRSAKeys() read already in flight, so it can't write the pre-clear keys back.
+ */
+export function clearJWTRSAKeysCache(): void {
+	rsaKeysGeneration++;
+	rsaKeys = undefined;
 }
 
 /**

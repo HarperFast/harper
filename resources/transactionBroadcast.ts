@@ -161,7 +161,19 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	let yielded = false;
 	try {
 		while (true) {
-			const result = iterator.next();
+			let result;
+			try {
+				result = iterator.next();
+			} catch (error) {
+				// We run from setImmediate, so an iterator throw here becomes an
+				// uncaughtException that kills the worker (RocksTransactionLogStore's
+				// own safeNext should already prevent this for the corrupt-entry case,
+				// but defense in depth — a stale crash here permanently silences this
+				// subscription set on every commit). Stop draining this pass; the next
+				// commit reschedules another notify cycle.
+				warn('Audit log iterator failed during broadcast; stopping this pass', error);
+				break;
+			}
 			if (result.done) break;
 			const auditRecord = result.value;
 			const timestamp: number = auditRecord.localTime ?? auditRecord.version;

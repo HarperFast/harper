@@ -13,6 +13,16 @@ Records stored in tables are plain objects given a `RecordObject` prototype, whi
 - To give a plain JS object the RecordObject prototype without copying it (preserving mutability), use `Object.setPrototypeOf(obj, primaryStore.encoder.structPrototype)` then `entryMap.set(obj, entry)`.
 - Do **not** copy the object (e.g. via `Object.assign` into a new instance) if any code still holds a reference to the original and expects to mutate it — see below.
 
+## Struct mode is gated to primary DBIs (downgrade compatibility)
+
+`RecordEncoder` extends a structon encoder, whose random-access "struct" encoding uses header bytes in `0x20–0x3f`. That range overlaps msgpack positive-fixints, so a reader without struct support (msgpackr v1, i.e. harperdb v4) decodes a struct header as an integer. harperdb v4 only enabled struct mode (its `randomAccessStructure` option) on **primary** DBIs, so non-primary DBIs — notably the `__dbis__` metadata store (table/attribute defs) — were plain records mode. If v5 writes `__dbis__` in struct mode, a v5→v4 downgrade can't decode the metadata, silently treats the instance as a fresh pre-3.0 install, and refuses to boot.
+
+To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `RecordEncoder`, when `randomAccessStructure` is false, makes the struct **write** hook bail (`this._writeStruct = () => 0`) so objects are written in records mode. Two subtleties:
+
+- We **bail** the hook (return 0) rather than clear it (`undefined`). Clearing it shifts msgpackr's positive-fixint boundary from `0x20` to `0x40`, so top-level integers `0x20–0x3f` (e.g. a `NEXT_TABLE_ID` ≥ 32 stored in `__dbis__`) would be written as bare fixints — which the still-installed struct **read** hook misreads as struct headers. Bailing keeps the boundary at `0x20`, so those integers are written as `uint8`.
+- The struct **read** hook is left intact, so records a prior v5 already wrote in struct mode still decode (read-compat); only new writes switch to records mode.
+- Companion change in `structon`: `prepareStructures` saves the shared structures in the legacy plain-array form when there are no typed structs (instead of the `{named, typed}` Map), so the `Symbol.for('structures')` buffer for a records-mode `__dbis__` is also v4-decodable.
+
 ## getFromSource() timing: promise resolves before commit runs
 
 In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution.
@@ -31,6 +41,8 @@ The mitigations live in three places:
 - `LMDBTransaction.abort` and `DatabaseTransaction.abort` walk all writes and run the same cleanup unconditionally (regardless of `skipped`), since nothing was committed. `DatabaseTransaction.commit` adds an explicit reject handler so a `Promise.all` failure on `completions` (e.g. a blob save errored) aborts the underlying transaction instead of leaking it _and_ the blob files.
 
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
+
+**Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
@@ -90,8 +102,61 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 
 1. **`json/systemSchema.json`** — the table entry. Fresh installs auto-create it via `utility/mount_hdb.ts:createTables()`, which iterates `Object.keys(systemSchema)` on first boot.
 2. **`utility/hdbTerms.ts`** — add the table name to `SYSTEM_TABLE_NAMES`.
-3. **`upgrade/directives/<version>.ts`** — provisions the table on existing installs that already have a system schema. Registered in `upgrade/directives/directivesController.ts` (which is otherwise empty — its `versions` Map gets populated by these imports). The directive shape is `{ version, sync_functions, async_functions }`; copy `5-2-0.ts` for the canonical pattern (uses `bridge.createTable` to match what `mount_hdb` does on a fresh install).
+3. **`upgrade/directives/<version>.ts`** — provisions the table on existing installs that already have a system schema. Registered in `upgrade/directives/directivesController.ts` (which is otherwise empty — its `versions` Map gets populated by these imports). The directive shape is `{ version, sync_functions, async_functions }`; copy `5-1-0.ts` for the canonical pattern (uses `bridge.createTable` to match what `mount_hdb` does on a fresh install).
+
+   **Version the directive to the first release that ships the dependent code, not a later one.** Directives only run when `current_version < directive_version <= upgrade_version` (`directivesController.getVersionsForUpgrade`). The `hdb_deployment` directive was originally mis-tagged `5.2.0` while the deployment-recorder code shipped in `5.1.0`, so on every `5.0.x -> 5.1.x` upgrade the directive was filtered out (`5.2.0 > 5.1.x`) and the table never got created — breaking replicated `deploy_component` on peer nodes for the entire existing customer base. Caveat: `utility/common_utils.ts:compareVersions` strips trailing `.0` and therefore sorts a pre-release (`5.1.0-beta.1`) _above_ its GA (`5.1.0`), so an install already on a `5.1.0-beta.x` data version will not pick up a `5.1.0` directive when upgrading to GA; those pre-release installs need the table created by other means.
 
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
+
+## Table drops, the `dropping` tombstone, and ghost tables
+
+A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
+in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
+persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
+destructive work, then drops the column families (awaited - a failed drop must surface as the
+operation's error, never a swallowed rejection), then removes the catalog rows. If the process
+dies or a drop fails partway, the tombstone survives; both the boot-time schema load in
+`databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
+interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
+silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
+(with their data, if the column families were never actually removed).
+
+Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
+lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
+subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a
+same-named table within one process requires @harperfast/rocksdb-js >= the column-family
+eviction fix (1.4.3 / rocksdb-js#<main PR>): older bindings keep the dropped column family's
+by-name registry entry alive whenever other worker threads hold handles, so the recreate
+silently reuses a dangling handle and every write fails with "Invalid column family specified
+in write batch", poisoning the whole database env until restart. The regression suite for all
+of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
+bindings).
+
+## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
+
+A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
+by completely separate routes, and the two must reconverge or HTTPS breaks on that worker.
+Certificates propagate through data: only the main thread watches the cert file (`isMainThread`
+guard in `loadCertificates`) and writes the new PEM into the `system.hdb_certificate` table; every
+worker is subscribed to that table and rebuilds its secure contexts (`updateTLS` inside
+`createTLSSelector`) on the notification. Private keys never touch the table — each worker watches
+its own key file (the private-key `loadAndWatch` has no `isMainThread` guard) and loads the PEM
+straight into its in-thread `privateKeys` map. `getPrivateKeyByName` reads that map first, so an
+already-built secure context has the key bytes baked in (`setCert`/`setKey` at build time); a later
+map update does not touch contexts already built.
+
+The hazard when a rotation changes **both**: the cert can win the race to a worker (table write +
+subscription) and trigger `updateTLS` before that worker has reloaded the matching key, producing a
+context that pairs the new cert with the old key — every handshake on it then fails, and nothing
+rebuilds it until the _next_ cert-table change. The fix: a private-key reload (`handlePrivateKeyReload`,
+the single sink for both the chokidar watcher and PR #1394's periodic poll) triggers a debounced
+rebuild of every live selector via the module-level `liveTLSRebuilders` set, so the worker reconverges
+on its own. Subtleties to preserve: the rotation guard (`previous !== undefined && previous !== key`)
+must skip both the initial load and identical-content reloads or watchers thrash; transient one-shot
+selectors (`getReplicationCert`) pass `liveReload=false` so they don't accumulate in the never-pruned
+set; and the cert subscription shares the same debounced `scheduleRebuild` (same 1500ms cadence), so
+its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
+`integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
+(it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.

@@ -241,8 +241,18 @@ function deployComponentValidator(req) {
 		install_command: Joi.string().optional(),
 		install_timeout: Joi.number().optional(),
 		install_allow_scripts: Joi.boolean().optional(),
+		deployment_timeout: Joi.number().min(0).optional(),
 		force: Joi.boolean().optional(),
-	});
+		ignore_replication_errors: Joi.boolean().optional(),
+		urlPath: Joi.string()
+			.min(1)
+			.custom((value, helpers) => {
+				if (value.includes('..')) return helpers.error('any.invalid');
+				return value;
+			})
+			.optional()
+			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
+	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
 }

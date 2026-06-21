@@ -52,7 +52,14 @@ function serverErrorHandler(error, req, resp) {
 	harperLogger[error.logLevel || 'info'](error);
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
-			return resp.code(error.statusCode).send({ error: error.http_resp_msg || error.message });
+			const body = { error: error.http_resp_msg || error.message };
+			// surface the machine-readable signal for errors that declare retryability (e.g. a
+			// still-building index, IndexRebuildingError) so API callers can distinguish and retry
+			if (error.retryable !== undefined) {
+				body.code = error.code;
+				body.retryable = error.retryable;
+			}
+			return resp.code(error.statusCode).send(body);
 		}
 		return resp.code(error.statusCode).send(error.http_resp_msg);
 	}

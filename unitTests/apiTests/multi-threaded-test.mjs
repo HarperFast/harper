@@ -2,7 +2,7 @@
 
 import { assert } from 'chai';
 import axios from 'axios';
-import { addThreads, setupTestApp, random } from './setupTestApp.mjs';
+import { addThreads, setupTestApp, random, baseUrl } from './setupTestApp.mjs';
 import { shutdownWorkers, setTerminateTimeout } from '#js/server/threads/manageThreads';
 
 describe('Multi-threaded cache updates', () => {
@@ -35,14 +35,14 @@ describe('Multi-threaded cache updates', () => {
 				},
 			];
 			if (put_values[0].id === put_values[1].id) put_values.splice(0, 1);
-			responses.push(axios.put('http://localhost:9926/SimpleCache/', put_values));
+			responses.push(axios.put(`${baseUrl}/SimpleCache/`, put_values));
 			responses.push(
-				axios.post('http://localhost:9926/SimpleCache/' + Math.floor(random() * 10 + 20), {
+				axios.post(`${baseUrl}/SimpleCache/` + Math.floor(random() * 10 + 20), {
 					invalidate: true,
 				})
 			);
 			responses.push(
-				axios.get('http://localhost:9926/SimpleCache/' + Math.floor(random() * 10 + 20), {
+				axios.get(`${baseUrl}/SimpleCache/` + Math.floor(random() * 10 + 20), {
 					validateStatus: false,
 				})
 			);
@@ -54,7 +54,7 @@ describe('Multi-threaded cache updates', () => {
 		}
 		await Promise.all(responses);
 		for (let i = 0; i < 10; i++) {
-			const response = await axios.get('http://localhost:9926/FourProp/' + (i + 20));
+			const response = await axios.get(`${baseUrl}/FourProp/` + (i + 20));
 			assert(response.status >= 200);
 			assert(response.data);
 		}

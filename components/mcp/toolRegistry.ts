@@ -24,6 +24,7 @@
  *     predicate. See the `tools/call` pass-through test in
  *     `transport.test.js`.
  */
+import { encodeCursor } from './pagination.ts';
 import type { McpProfile } from './transport.ts';
 
 export interface ToolAnnotations {
@@ -52,6 +53,7 @@ export interface ToolDescriptor {
 	name: string;
 	description: string;
 	inputSchema: object;
+	outputSchema?: object;
 	annotations?: ToolAnnotations;
 }
 
@@ -126,6 +128,36 @@ export function getTool(name: string): ToolDef | undefined {
 }
 
 /**
+ * Snapshot every tool currently registered for a profile. Used to capture the
+ * live tool set before an atomic rebuild so a mid-rebuild failure can restore
+ * it (rather than leaving `tools/list` empty); see `registerApplicationTools`.
+ */
+export function snapshotProfileTools(profile: McpProfile): ToolDef[] {
+	const out: ToolDef[] = [];
+	for (const def of registry.values()) {
+		if (def.profile === profile) out.push(def);
+	}
+	return out;
+}
+
+/**
+ * Remove every tool registered for a profile. Used to rebuild the
+ * application-profile tool set when schemas change (a table may have been
+ * added/removed after the initial registration); see `refreshApplicationTools`.
+ * Drops the pagination caches so the next `tools/list` recomputes.
+ */
+export function clearProfileTools(profile: McpProfile): void {
+	let removed = 0;
+	for (const [name, def] of registry) {
+		if (def.profile === profile) {
+			registry.delete(name);
+			removed++;
+		}
+	}
+	if (removed > 0) sessionListCache.clear();
+}
+
+/**
  * Drop the pagination cache entry for a session. Called by
  * `session.deleteSession` so the cache doesn't outlive the session that
  * created it. Without this, every session that ever paged tools/list
@@ -145,7 +177,12 @@ export interface ListToolsArgs {
 	user: AuthedUser;
 	profile: McpProfile;
 	sessionId: string;
-	cursor?: string;
+	/**
+	 * Decoded pagination offset, or `undefined` for a fresh (first-page) call.
+	 * The transport decodes the opaque cursor and rejects invalid cursors with
+	 * `-32602` before calling us (see `decodeCursor` in pagination.ts).
+	 */
+	offset?: number;
 	limit: number;
 }
 
@@ -163,13 +200,13 @@ export interface ListToolsResult {
  * pagination is stable even if the registry mutates between pages.
  */
 export function listTools(args: ListToolsArgs): ListToolsResult {
-	const { user, profile, sessionId, cursor, limit } = args;
+	const { user, profile, sessionId, offset: cursorOffset, limit } = args;
 	if (limit < 1) throw new Error('listTools: limit must be >= 1');
 
 	let cached = sessionListCache.get(sessionId);
 	let offset = 0;
-	if (cursor) {
-		offset = decodeCursor(cursor);
+	if (cursorOffset !== undefined) {
+		offset = cursorOffset;
 		if (!cached) {
 			// Cache evicted (likely registry change). Treat as a fresh call from
 			// the cursor's offset — best effort. The client may see the next
@@ -200,6 +237,7 @@ function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescrip
 			name: def.name,
 			description: def.description,
 			inputSchema: def.inputSchema,
+			...(def.outputSchema ? { outputSchema: def.outputSchema } : {}),
 			...(def.annotations ? { annotations: def.annotations } : {}),
 		});
 	}
@@ -207,23 +245,6 @@ function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescrip
 	// the registry can mutate between calls and we want stable cursor offsets).
 	out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return out;
-}
-
-function encodeCursor(offset: number): string {
-	return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url');
-}
-
-function decodeCursor(cursor: string): number {
-	try {
-		const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown };
-		const offset = decoded?.offset;
-		if (typeof offset !== 'number' || offset < 0 || !Number.isFinite(offset) || !Number.isInteger(offset)) {
-			return 0;
-		}
-		return offset;
-	} catch {
-		return 0;
-	}
 }
 
 // ─── RBAC + introspection helpers ──────────────────────────────────────────

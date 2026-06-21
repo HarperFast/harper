@@ -10,12 +10,13 @@
 // as the rollback source when that operation lands.
 
 import { randomUUID } from 'node:crypto';
-import { createHash, Hash } from 'node:crypto';
-import type { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
+import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
-import { createBlob } from '../resources/blob.ts';
+import { createBlob, isSaving, deleteBlob } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
 import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 
@@ -37,11 +38,11 @@ export function getActiveEmitter(deploymentId: string): ProgressEmitter | undefi
 	return activeEmitters.get(deploymentId);
 }
 
-// Interim cap: ingestPayload currently buffers the entire payload in memory before
-// computing the hash and persisting. This cap prevents an OOM on accidentally-huge
-// uploads. A follow-up will swap this for a true streaming-hash + blob-source pattern
-// that lifts the limit back to whatever the replication path supports.
-const PAYLOAD_BUFFER_CAP_BYTES = 200 * 1024 * 1024;
+// Cap for the degraded fallback used only when the hdb_deployment table is missing (so the
+// payload can't stream into a row-backed blob and must be buffered in memory). The normal
+// streaming path is uncapped — this bound exists solely to keep a pending-upgrade window from
+// OOMing the node on a large deploy. 1 GiB comfortably covers real components.
+const UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES = 1024 * 1024 * 1024;
 
 type DeploymentStatus =
 	| 'pending'
@@ -66,12 +67,11 @@ interface CreateOptions {
 export class DeploymentRecorder {
 	readonly deploymentId: string;
 	private readonly record: Record<string, any>;
-	private hash: Hash | null = null;
-	private byteCount = 0;
 	private finished = false;
 	private unsubscribe: (() => void) | null = null;
 	private pendingPut: Promise<void> | null = null;
 	private dirty = false;
+	private sealed = false;
 
 	private constructor(deploymentId: string, initial: Record<string, any>) {
 		this.deploymentId = deploymentId;
@@ -151,6 +151,12 @@ export class DeploymentRecorder {
 	// the record dirty; the chained continuation issues a follow-up put once the prior one
 	// settles. This keeps event_log writes O(1) puts per burst rather than O(N) per event.
 	private scheduleFlush(): void {
+		if (this.sealed) {
+			// Sealed: accumulate state in memory but don't write. finish() does the single
+			// terminal write. See seal() for why. The emitter still emits live SSE events.
+			this.dirty = true;
+			return;
+		}
 		if (this.pendingPut) {
 			this.dirty = true;
 			return;
@@ -165,57 +171,129 @@ export class DeploymentRecorder {
 	}
 
 	/**
-	 * Drain a payload source (Buffer or Readable) into the row's payload_blob attribute,
-	 * computing sha256 and byte count alongside. After this resolves the row has been
-	 * committed once with the final hash and size, and `this.row.payload_blob.stream()`
-	 * yields a fresh Readable that callers can pass to extraction.
+	 * Drain a payload source (Buffer, base64 string, or Readable) into the row's
+	 * payload_blob attribute, computing sha256 and byte count alongside. After this
+	 * resolves the row has been committed with the final hash and size, and
+	 * `this.row.payload_blob.stream()` yields a fresh Readable callers pass to extraction.
 	 *
-	 * Buffers the payload in memory (subject to PAYLOAD_BUFFER_CAP_BYTES) so the
-	 * hash/size are known synchronously before we commit and so the blob's `saveBlob`
-	 * lifecycle doesn't race with our digest() call. A streaming variant is a planned
-	 * follow-up that uses the unused `hash`/`byteCount` instance fields below.
+	 * The Readable path (the multipart file part) is fully streaming: the tarball is teed
+	 * through a hash/size tap straight into the blob's file-backed storage, so a multi-GB
+	 * component is bounded by disk, not memory. No payload size cap is imposed — the
+	 * deployment system is explicitly designed to carry arbitrarily large components.
+	 * In-memory sources (a Buffer, or the legacy base64-in-JSON/CBOR body) are already
+	 * materialized by the time they reach us, so they take the simpler buffer path.
 	 */
 	async ingestPayload(source: Readable | Buffer | string): Promise<void> {
 		const hash = createHash('sha256');
-		let byteCount = 0;
-		let buffer: Buffer;
-		if (Buffer.isBuffer(source)) {
-			buffer = source;
-		} else if (typeof source === 'string') {
-			// Legacy CBOR/JSON path: payload arrives as a base64-encoded string.
-			buffer = Buffer.from(source, 'base64');
-		} else {
+
+		// In-memory sources: the bytes are already resident, so hashing them and creating a
+		// buffer-backed blob is both simplest and no worse for memory than what the caller
+		// already holds. No cap — a large base64-in-JSON body is the caller's choice.
+		if (Buffer.isBuffer(source) || typeof source === 'string') {
+			const buffer = Buffer.isBuffer(source) ? source : Buffer.from(source, 'base64');
+			hash.update(buffer);
+			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
+			this.record.payload_hash = hash.digest('hex');
+			this.record.payload_size = buffer.length;
+			await this.put();
+			return;
+		}
+
+		// Streaming source. If the hdb_deployment table is missing (upgrade directive hasn't
+		// run, or it was dropped) there is no row to attach the blob to, and a file-backed
+		// blob would never be persisted for extraction to re-read. Fall back to buffering in
+		// that degraded case so the deploy still works. Unlike the streaming path below, this
+		// buffer is held in memory, so it carries a cap: without it a multi-GB deploy during the
+		// upgrade window would OOM the node (or throw on Node's ~2 GB Buffer limit). We fail fast
+		// with a clear error instead. The cap applies ONLY to this degraded path — once the
+		// table exists, deploys stream to disk with no size limit.
+		const tableMissing = !(databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+		if (tableMissing) {
 			const chunks: Buffer[] = [];
 			let collected = 0;
 			for await (const chunk of source as AsyncIterable<Buffer | string>) {
 				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any);
 				collected += buf.length;
-				if (collected > PAYLOAD_BUFFER_CAP_BYTES) {
+				if (collected > UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES) {
 					(source as Readable).destroy?.();
 					throw new ClientError(
-						`Deploy payload exceeds the ${PAYLOAD_BUFFER_CAP_BYTES} byte buffer cap. ` +
-							`Use a package identifier (npm:/file:/git:) for larger components.`
+						`Deploy payload exceeds the ${UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES}-byte limit that applies while ` +
+							`deployment tracking is unavailable (the system.${terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME} ` +
+							`table is missing — likely a pending upgrade). Retry once the upgrade completes, or use a ` +
+							`package identifier (npm:/file:/git:) for larger components.`
 					);
 				}
 				chunks.push(buf);
 			}
-			buffer = Buffer.concat(chunks);
+			const buffer = Buffer.concat(chunks);
+			hash.update(buffer);
+			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
+			this.record.payload_hash = hash.digest('hex');
+			this.record.payload_size = buffer.length;
+			await this.put();
+			return;
 		}
-		if (buffer.length > PAYLOAD_BUFFER_CAP_BYTES) {
-			throw new ClientError(
-				`Deploy payload (${buffer.length} bytes) exceeds the ${PAYLOAD_BUFFER_CAP_BYTES} byte buffer cap. ` +
-					`Use a package identifier (npm:/file:/git:) for larger components.`
-			);
+
+		// Tee the source through a hash/size tap into a file-backed blob. The blob's
+		// saveBlob (driven by the put() below, via encodeBlobsWithFilePath) reads from the
+		// tap's output side; we pump the source into its input side. Memory stays O(chunk).
+		let byteCount = 0;
+		const tap = new Transform({
+			transform(chunk, _encoding, callback) {
+				// Normalize to a Buffer: a string chunk would otherwise hash as utf8 and count
+				// characters, not bytes — corrupting both payload_hash and payload_size.
+				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any);
+				hash.update(buf);
+				byteCount += buf.length;
+				callback(null, buf);
+			},
+		});
+		// `tapDone` resolves once every source byte has passed through the tap (so the hash
+		// and byteCount are final) and rejects if the source or the downstream blob write
+		// errors — a destroyed tap fails the pipeline.
+		const tapDone = new Promise<void>((resolve, reject) => {
+			pipeline(source, tap, (error) => (error ? reject(error) : resolve()));
+		});
+		const blob = createBlob(tap, { type: 'application/gzip' });
+		this.record.payload_blob = blob;
+		// Persisting the row encodes the blob, which synchronously starts the file write that
+		// drains the tap, so `isSaving(blob)` is set as soon as put() is *called*. Await the put,
+		// the source draining (tapDone), and the file flush (saving) together: handing all three
+		// to Promise.all subscribes a rejection handler to each up front, so a client that aborts
+		// a large upload mid-stream (which rejects both tapDone and the blob write) fails the
+		// deploy loudly here instead of leaking an unhandledRejection. This also makes hash/size
+		// correctness independent of the put()/store write timing and of isSaving() being defined.
+		const putDone = this.put();
+		const saving = isSaving(blob) ?? Promise.resolve();
+		try {
+			await Promise.all([putDone, tapDone, saving]);
+		} catch (error) {
+			// Aborted/failed upload (e.g. the client disconnects mid-stream). The first put()
+			// already persisted the row's reference to a now-partial blob; since cleanupOrphans
+			// only reclaims UNreferenced blobs, leaving it would leak the file permanently. Drop
+			// the reference and delete the partial file. Cleanup is best-effort — never let it
+			// mask the original failure.
+			this.record.payload_blob = null;
+			this.record.payload_hash = null;
+			this.record.payload_size = null;
+			try {
+				// Let the first put and the blob write fully settle before re-putting: this
+				// ensures the null-reference write lands after the original reference write
+				// (so it wins) and the blob's file lock is released before we unlink it.
+				await Promise.allSettled([putDone, saving]);
+				await this.put();
+				deleteBlob(blob);
+			} catch (cleanupError) {
+				logger.warn?.('Failed to clean up partial deploy payload blob', cleanupError);
+			}
+			throw error;
 		}
-		hash.update(buffer);
-		byteCount = buffer.length;
-		this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
+		// Bytes are fully hashed (tapDone) and the file is flushed with its size header
+		// back-patched (saving), so the digest and blob.size below are final.
 		this.record.payload_hash = hash.digest('hex');
-		this.record.payload_size = byteCount;
-		// Touch the unused private fields so the type system stays happy when a streaming
-		// variant lands that uses them.
-		this.hash = hash;
-		this.byteCount = byteCount;
+		this.record.payload_size = blob.size ?? byteCount;
+		// Persist the now-known hash + size. The blob is already saved, so this re-put does
+		// not re-stream — saveBlob short-circuits on the existing fileId.
 		await this.put();
 	}
 
@@ -262,6 +340,35 @@ export class DeploymentRecorder {
 		if (this.finished) return;
 		if (!Array.isArray(results)) return;
 		for (const result of results) this.recordPeer(result);
+	}
+
+	/**
+	 * Return the recorded peer outcomes that failed to replicate (status 'failed', as
+	 * assigned by normalizePeerResult). replicateOperation does not throw on a per-peer
+	 * failure — failures surface only as 'failed' entries in peer_results — so deployComponent
+	 * uses this to decide whether to fail the overall deploy with a non-2xx status.
+	 */
+	getFailedPeers(): Array<Record<string, unknown>> {
+		const list = this.record.peer_results;
+		return Array.isArray(list) ? list.filter((peer) => peer?.status === 'failed') : [];
+	}
+
+	/**
+	 * Stop persisting intermediate row updates; accumulate them in memory so finish() writes
+	 * the terminal state in a single put. Called before the replicate phase, where the row
+	 * otherwise receives a tight burst of puts (replicate phase + per-peer + finish) within
+	 * a few ms. That burst can commit out of order on a loaded peer, where an older full
+	 * update reverts the terminal `success` write — the row stays stuck at `replicating` and
+	 * never converges (harperdb/harper#1170). Collapsing to one terminal write isolates it
+	 * from any concurrent same-key write so the receiver converges.
+	 *
+	 * Tradeoff: the origin's get_deployment *polling* view skips the transient `replicating`
+	 * status and incremental peer_results during the final phase; live SSE tailing is
+	 * unaffected (the emitter still emits in real time). Once #1170 lands this seal can be
+	 * removed to restore incremental peer_results persistence.
+	 */
+	seal(): void {
+		this.sealed = true;
 	}
 
 	async finish(status: 'success' | 'failed' | 'rolled_back', error?: unknown): Promise<void> {
@@ -316,21 +423,43 @@ export class DeploymentRecorder {
 	}
 }
 
+// Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,
+// heavyweight, user-initiated operation, and the `system`-table replication channel can be
+// backlogged behind unrelated writes when several deploys land in succession, so the row can
+// take well over the original 30s to arrive on a peer (harper-pro#402). 120s matches the
+// blob-stream receive default and gives a loaded cluster room to converge. Override per-deploy
+// via the `deployment_timeout` operation parameter.
+const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
+
 /**
  * Peer-side helper — wait for the hdb_deployment row to arrive via table replication,
  * then return it. The row is committed on origin before `replicateOperation` is
- * called, so peers normally find it immediately; this polling loop is for the rare
- * case where the operation arrives faster than the table-replication channel.
+ * called, so peers normally find it immediately; this polling loop covers the case
+ * where the operation arrives faster than the table-replication channel, including
+ * when that channel is backlogged behind other writes.
  *
  * The payload_blob's chunks may still be in flight after the row arrives — that's
  * fine, the Blob's `stream()` / `bytes()` API blocks on incomplete writes
  * (resources/blob.ts).
+ *
+ * On timeout the thrown error distinguishes the two failure modes: the row never
+ * replicated at all (the replication channel to this peer is stalled or broken) versus
+ * the row arrived but its payload_blob has not been populated yet (the origin's
+ * ingestPayload write is still propagating) — they point at different root causes.
  */
 export async function awaitDeploymentRow(
 	deploymentId: string,
 	options: { timeoutMs?: number; pollIntervalMs?: number; initialPollIntervalMs?: number } = {}
 ): Promise<Record<string, any>> {
-	const timeoutMs = options.timeoutMs ?? 30_000;
+	// Coerce defensively: the deploy operation's `deployment_timeout` reaches us via the
+	// operation body, and the Joi validator's coerced number is discarded by validateBySchema
+	// (it returns only the error, never writes the parsed value back), so a JSON/multipart
+	// client sending `"120000"` would otherwise arrive here as a string. `Date.now() + "<n>"`
+	// concatenates into a far-future "deadline" that silently defeats the timeout. Anything
+	// non-finite or negative falls back to the default rather than producing a NaN deadline
+	// (which would never satisfy `>= deadline` and loop forever).
+	const requested = Number(options.timeoutMs);
+	const timeoutMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
 	const maxIntervalMs = options.pollIntervalMs ?? 100;
 	// Start fast (5ms) so the common case — replication has already caught up — sees no
 	// human-noticeable latency, then back off exponentially up to maxIntervalMs for the
@@ -344,18 +473,34 @@ export async function awaitDeploymentRow(
 	}
 	const deadline = Date.now() + timeoutMs;
 	let lastError: unknown;
-	while (Date.now() < deadline) {
+	let sawRow = false;
+	// Poll at least once even when timeoutMs is 0 (the caller asked for a single check, not
+	// "skip the lookup entirely"), and re-test the deadline AFTER the lookup so we never burn
+	// an extra idle interval once it has already passed.
+	while (true) {
 		try {
 			const row = await table.get(deploymentId);
-			if (row && row.payload_blob != null) return row;
+			if (row) {
+				if (row.payload_blob != null) return row;
+				// Row replicated but its payload_blob write hasn't landed yet — replication is
+				// alive, just mid-flight. Remember this so the timeout message points at the
+				// payload write rather than a dead channel.
+				sawRow = true;
+			}
 		} catch (err) {
 			lastError = err;
 		}
-		await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) break;
+		// Cap the sleep to the remaining budget so we don't overshoot the deadline.
+		await new Promise<void>((resolve) => setTimeout(resolve, Math.min(intervalMs, remaining)));
 		intervalMs = Math.min(intervalMs * 2, maxIntervalMs);
 	}
+	const cause = sawRow
+		? `row '${deploymentId}' replicated but its payload_blob has not arrived`
+		: `hdb_deployment row '${deploymentId}' did not replicate`;
 	throw new Error(
-		`Timed out after ${timeoutMs}ms waiting for hdb_deployment row '${deploymentId}' to replicate` +
+		`Timed out after ${timeoutMs}ms waiting for the deployment payload: ${cause}` +
 			(lastError ? ` (last error: ${(lastError as Error).message ?? lastError})` : '')
 	);
 }
@@ -367,12 +512,17 @@ function normalizePeerResult(raw: unknown): Record<string, unknown> {
 		return { node: null, status: 'unknown', raw: String(raw) };
 	}
 	const r = raw as Record<string, unknown>;
-	const err = r.error;
+	// Failure detail arrives in one of two shapes: `error` (a structured object/string from a
+	// remote operation response) or `reason` (a stringified message from the replicator's
+	// per-peer `.catch` shape: { status: 'failed', reason, node }). Prefer `error`; fall back to
+	// `reason` only when the peer reported failed — otherwise the audit row records a peer
+	// "failed" with no explanation and deployComponent's failure message reads "unknown error".
+	const err = r.error ?? (r.status === 'failed' ? r.reason : undefined);
 	const hasError =
 		err != null && (typeof err === 'string' ? err.length > 0 : typeof err === 'object' || typeof err === 'number');
 	return {
 		node: r.node ?? r.name ?? r.hostname ?? null,
-		status: hasError ? 'failed' : (r.status ?? 'success'),
+		status: hasError || r.status === 'failed' ? 'failed' : (r.status ?? 'success'),
 		error: hasError
 			? {
 					message: typeof err === 'object' ? ((err as any).message ?? String(err)) : String(err),

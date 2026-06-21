@@ -1,10 +1,13 @@
+import { readFile } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
+import { join } from 'node:path';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 envMgr.initSync();
+
 const reclamationHandlers = new Map<
 	string,
 	{ priority: number; handler: (priority: number) => Promise<void> | void }[]
@@ -12,6 +15,33 @@ const reclamationHandlers = new Map<
 
 const RECLAMATION_THRESHOLD = envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_THRESHOLD) ?? 0.4; // 40% remaining free space is the default
 const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_INTERVAL)) || 3600000; // 1 hour is the default
+
+// Written by host-manager every ~90s alongside the instance's hdb root
+const QUOTA_STATUS_FILE = 'quota-status.json';
+// Use statfs fallback if the file is older than this (host-manager outage, container start race, etc.)
+const QUOTA_STATUS_MAX_AGE_MS = 5 * 60 * 1000;
+
+export type QuotaStatusData = {
+	usedBytes: number;
+	quotaBytes?: number;
+	updatedAt: number;
+};
+
+/**
+ * Reads the quota-status.json file written by host-manager.
+ * Returns undefined if the file is absent or malformed; does not apply age filtering.
+ */
+export async function getQuotaStatus(): Promise<QuotaStatusData | undefined> {
+	const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
+	if (!rootPath) return undefined;
+	try {
+		const raw = await readFile(join(rootPath, QUOTA_STATUS_FILE), 'utf8');
+		return JSON.parse(raw) as QuotaStatusData;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Register a handler to be called when storage free space is low and reclamation is needed. The callback is called
  * with the priority of the reclamation, which is the ratio of the threshold to the available space ratio. If space is
@@ -39,7 +69,14 @@ export function onStorageReclamation(
 	}
 }
 let reclamationTimer: NodeJS.Timeout;
+
+// If a fresh quota-status.json exists (written by host-manager every ~90s), use quota-based ratio.
+// Otherwise fall back to statfs for the registered path.
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
+	const status = await getQuotaStatus();
+	if (status?.quotaBytes && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS) {
+		return Math.max(0, status.quotaBytes - status.usedBytes) / status.quotaBytes;
+	}
 	const fsStats = await statfs(path);
 	return fsStats.bavail / fsStats.blocks;
 };

@@ -158,6 +158,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 				assigned_updated_time: att.assignUpdatedTime,
 				nullable: att.nullable,
 				computed: att.computed ? true : undefined, // only include if computed
+				embed: att.embed ? { source: att.embed.source, model: att.embed.model } : undefined,
 				properties: att.properties
 					? att.properties.map((prop) => {
 							return { type: prop.type, name: prop.name };

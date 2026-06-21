@@ -1,0 +1,30 @@
+type WorkItem @table @export {
+	id: ID @primaryKey
+	state: String @indexed
+	payload: String
+	result: String
+	resultAt: Date @updatedTime
+}
+
+type RedirectRule @table @export @sealed {
+	id: ID @primaryKey
+	matchUrl: String @indexed
+	redirectUrl: String @indexed
+	statusCode: Int
+	startTime: Date
+	endTime: Date
+	createdBy: String
+}
+
+type RedirectChange @table @export {
+	id: ID @primaryKey
+	redirectId: String @indexed
+	operation: String
+	previousState: String
+	createdAt: Date @createdTime
+}
+
+type AbuseCounter @table(expiration: 10) @export {
+	id: ID @primaryKey
+	count: Int
+}

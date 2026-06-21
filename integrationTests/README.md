@@ -1,5 +1,25 @@
 # Harper Integration Tests
 
+## Directory Structure
+
+Directory structure mirrors the [Harper v5 reference docs](https://docs.harperdb.io/reference/v5):
+
+| Directory         | Coverage                                                      |
+| ----------------- | ------------------------------------------------------------- |
+| `database/`       | Schema types, TTL, blob, scale                                |
+| `resources/`      | Custom resources, REST API patterns                           |
+| `mqtt/`           | MQTT broker, JWT auth, ACL, topic patterns                    |
+| `server/`         | Caching (sourcedFrom, SWR), thread management, crash recovery |
+| `components/`     | Component deployment, lifecycle, fixtures                     |
+| `security/`       | TLS, certificates, auth                                       |
+| `operations-api/` | Operations API, CLI commands                                  |
+| `upgrade/`        | v4→v5 upgrade / migration tests                               |
+| `apiTests/`       | Legacy bucket — being migrated to the above (see #1215)       |
+
+New tests should go in the appropriate subdirectory, not `apiTests/`.
+
+---
+
 This directory contains the integration tests for Harper. They run against the built Harper distribution using the [`@harperfast/integration-testing`](https://github.com/HarperFast/integration-testing-framework) framework and the included Node.js test runner script.
 
 For full background on the testing philosophy, framework APIs, and runner configuration, see the **[`@harperfast/integration-testing` documentation](https://github.com/HarperFast/integration-testing-framework#readme)**. This document covers what is specific to running and writing tests in this repository.

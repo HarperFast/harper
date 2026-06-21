@@ -20,6 +20,15 @@ export default async (server, { hdbCore, logger }) => {
 			resp.code(302).header('Location', 'login.html');
 		}
 	};
+	// Unauthenticated route used to assert fastifyRoutes dispatch end-to-end (see #1254).
+	server.route({
+		url: '/ping',
+		method: 'GET',
+		handler: (request, reply) => {
+			reply.send('pong');
+		},
+	});
+
 	server.route({
 		url: '/',
 		method: 'GET',

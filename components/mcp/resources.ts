@@ -33,6 +33,7 @@ import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
+import { encodeCursor } from './pagination.ts';
 import type { McpProfile } from './transport.ts';
 
 // Harper's resource graph (Resources, generateJsonApi, Server) initializes
@@ -130,13 +131,13 @@ export function _setHttpUrlPrefixForTest(prefix: string | undefined): void {
 function getResources(): ResourcesType {
 	if (_resourcesOverride) return _resourcesOverride;
 	// Lazy import — see file-top comment on Harper graph initialization.
-	const { resources } = require('../../resources/Resources.ts');
+	const { resources } = require('../../resources/Resources');
 	return resources as ResourcesType;
 }
 
 function getOpenApiGenerator(): OpenApiGenerator {
 	if (_openApiOverride) return _openApiOverride;
-	const { generateJsonApi } = require('../../resources/openApi.ts');
+	const { generateJsonApi } = require('../../resources/openApi');
 	return generateJsonApi as OpenApiGenerator;
 }
 
@@ -145,7 +146,12 @@ function getOpenApiGenerator(): OpenApiGenerator {
 export interface ListResourcesArgs {
 	user: AuthedUser;
 	profile: McpProfile;
-	cursor?: string;
+	/**
+	 * Decoded pagination offset, or `undefined` for a fresh (first-page) call.
+	 * The transport decodes the opaque cursor and rejects invalid cursors with
+	 * `-32602` before calling us (see `decodeCursor` in pagination.ts).
+	 */
+	offset?: number;
 	limit?: number;
 }
 
@@ -156,7 +162,7 @@ export interface ListResourcesResult {
 
 export function listResources(args: ListResourcesArgs): ListResourcesResult {
 	const all = enumerate(args.profile);
-	const offset = args.cursor ? decodeCursor(args.cursor) : 0;
+	const offset = args.offset ?? 0;
 	const limit = args.limit && args.limit > 0 ? args.limit : DEFAULT_LIMIT;
 	const slice = all.slice(offset, offset + limit);
 	const next = offset + slice.length;
@@ -258,11 +264,12 @@ function enumerate(profile: McpProfile): ResourceDescriptor[] {
 
 		// harper://schema/{database}/{table} — one entry per table backing a Resource.
 		// No list-time RBAC filter; readTableSchema enforces describe/read perms.
-		for (const { db, table } of enumerateTableBackedResources()) {
+		for (const { db, table, description: tableDoc } of enumerateTableBackedResources()) {
+			const base = `Attribute definitions for ${db}.${table}, filtered at read time by your role's attribute_permissions.`;
 			out.push({
 				uri: `harper://schema/${db}/${table}`,
 				name: `${db}.${table} schema`,
-				description: `Attribute definitions for ${db}.${table}, filtered at read time by your role's attribute_permissions.`,
+				description: tableDoc ? `${tableDoc} ${base}` : base,
 				mimeType: 'application/json',
 			});
 		}
@@ -277,19 +284,26 @@ function enumerate(profile: McpProfile): ResourceDescriptor[] {
 	return out;
 }
 
-function enumerateTableBackedResources(): Array<{ db: string; table: string }> {
+function enumerateTableBackedResources(): Array<{ db: string; table: string; description?: string }> {
 	const seen = new Set<string>();
-	const result: Array<{ db: string; table: string }> = [];
+	const result: Array<{ db: string; table: string; description?: string }> = [];
 	for (const entry of getResources().values()) {
 		if (!isMcpExposed(entry)) continue;
-		const ResourceClass = entry.Resource;
-		const db = (ResourceClass as { databaseName?: string })?.databaseName;
-		const table = (ResourceClass as { tableName?: string })?.tableName;
+		const ResourceClass = entry.Resource as {
+			databaseName?: string;
+			tableName?: string;
+			description?: string;
+			hidden?: boolean;
+		};
+		// @hidden suppresses the Resource from descriptive surfaces (MCP + OpenAPI).
+		if (ResourceClass?.hidden === true) continue;
+		const db = ResourceClass?.databaseName;
+		const table = ResourceClass?.tableName;
 		if (!db || !table) continue;
 		const key = `${db}/${table}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		result.push({ db, table });
+		result.push({ db, table, description: ResourceClass?.description });
 	}
 	return result;
 }
@@ -300,12 +314,18 @@ function enumerateAppHttpResources(): ResourceDescriptor[] {
 	const out: ResourceDescriptor[] = [];
 	for (const [path, entry] of getResources()) {
 		if (!isMcpExposed(entry)) continue;
-		const ResourceClass = entry.Resource as { prototype?: unknown } | undefined;
+		const ResourceClass = entry.Resource as { prototype?: unknown; description?: string; hidden?: boolean } | undefined;
+		// @hidden suppresses the Resource from descriptive surfaces (MCP + OpenAPI).
+		if (ResourceClass?.hidden === true) continue;
 		if (!hasRestVerbs(ResourceClass?.prototype)) continue;
+		const tableDoc = ResourceClass?.description;
+		const description = tableDoc
+			? `${tableDoc} Application resource at /${path}. Resolves in-process via Resources.getMatch.`
+			: `Application resource at /${path}. Resolves in-process via Resources.getMatch.`;
 		out.push({
 			uri: `${prefix}/${path}`,
 			name: path,
-			description: `Application resource at /${path}. Resolves in-process via Resources.getMatch.`,
+			description,
 			mimeType: 'application/json',
 		});
 	}
@@ -537,7 +557,7 @@ function guessAppHttpUrlPrefix(): string | undefined {
 	if (_httpUrlPrefixOverride !== undefined) return _httpUrlPrefixOverride || undefined;
 	let hostname: string | undefined;
 	try {
-		const { server } = require('../../server/Server.ts');
+		const { server } = require('../../server/Server');
 		hostname = (server as { hostname?: string })?.hostname;
 	} catch {
 		return undefined;
@@ -571,23 +591,4 @@ function jsonContent(uri: string, body: unknown): ReadResourceOk {
 			},
 		],
 	};
-}
-
-function encodeCursor(offset: number): string {
-	return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url');
-}
-
-function decodeCursor(cursor: string): number {
-	try {
-		const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown };
-		const offset = decoded?.offset;
-		if (typeof offset !== 'number' || offset < 0 || !Number.isFinite(offset) || !Number.isInteger(offset)) {
-			harperLogger.trace('MCP resources cursor decoded but missing/invalid offset; treating as 0');
-			return 0;
-		}
-		return offset;
-	} catch (err) {
-		harperLogger.trace(`MCP resources cursor decode failed (${(err as Error).message}); treating as 0`);
-		return 0;
-	}
 }

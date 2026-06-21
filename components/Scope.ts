@@ -178,17 +178,33 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.emit('error', error);
 	}
 
-	close() {
+	async close(): Promise<this> {
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
 
-		for (const entryHandler of this.#entryHandlers) {
-			entryHandler.close();
-		}
+		await Promise.allSettled([...this.#entryHandlers.map((h) => h.close()), this.options.close()]);
 
-		this.options.close();
-
-		this.emit('close');
+		// Invoke `close` listeners and await any promise they return. A plugin's teardown can be async —
+		// e.g. @harperfast/vite disposing its Vite/rolldown dev server — and the worker shutdown path
+		// awaits this close(), so awaiting the listeners here ensures such a native runtime is fully
+		// disposed before the worker exits. That ordering matters: tearing the worker down while a native
+		// (N-API) bundler runtime is still live crashes the whole process. `Promise.all` (not
+		// `allSettled`) so a listener that fails surfaces its error to the caller rather than being
+		// silently swallowed; listeners that return nothing (the common case) settle immediately.
+		const closeListeners = this.listeners('close') as Array<(...args: any[]) => unknown>;
+		this.removeAllListeners('close');
+		await Promise.all(
+			closeListeners.map((listener) => {
+				// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
+				// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`). The
+				// wrapper turns a synchronous throw into a rejection so `Promise.all` surfaces it too.
+				try {
+					return listener.call(this);
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			})
+		);
 
 		this.removeAllListeners();
 
@@ -276,10 +292,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			if (key[0] === 'files' || key[0] === 'urlPath') {
 				// TODO: validate options
 
-				// If not entry handler exists then likely the config did not have `files` initially
-				// Now, it does, so create a default entry handler.
+				// If no entry handler exists yet, the plugin's handleApplication has not called
+				// handleEntry() yet — or it hasn't been called at all for this scope. Either way,
+				// when handleEntry() is eventually called it will read the current config via
+				// getFilesOption() and create the handler with the correct, up-to-date values.
+				// Eagerly creating an entry handler here would start chokidar's initial scan
+				// before the plugin's callback is attached, causing the initial `add` events to
+				// be missed (RE-8).
 				if (!scope.#entryHandler) {
-					scope.#entryHandler = scope.#createEntryHandler(config as FileAndURLPathConfig);
 					return;
 				}
 

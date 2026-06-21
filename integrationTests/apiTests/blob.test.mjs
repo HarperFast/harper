@@ -9,6 +9,8 @@
  *   (filesystem GC is tracked in issue #708 — RocksDB audit store does not
  *   invoke blob-file delete callbacks, so filesystem cleanup is not asserted)
  * - Schema drop also cleans up blob files
+ * - Multi-path blobPaths striping: blobs distributed and retrievable from 2+ configured paths
+ * - Per-device-type LMDB sharding: three tables in three separate LMDB databases, same schema
  *
  * Self-contained: installs the `blobs` component, sets auditLog +
  * auditRetention: 10s, restarts HTTP workers, and tears everything down.
@@ -21,12 +23,14 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'fs-extra';
 import { randomInt } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 import { restartHttpWorkers } from './utils/lifecycle.mjs';
+import { installAppComponent } from './utils/components.mjs';
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -118,7 +122,8 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 
 		// Probe /openapi, not a blobcache route — GET /blobcache/{id} triggers the source
 		// and creates a spurious record that breaks the single-record assertion below.
-		await restartHttpWorkers(client, '/openapi');
+		// Extended timeout for slow CI runners under shard contention.
+		await restartHttpWorkers(client, '/openapi', 120000);
 	});
 
 	after(async () => {
@@ -240,7 +245,8 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	test('restart HTTP workers and create another blob for drop_schema test', async () => {
 		// Probe /openapi, not a blobcache route — GET /blobcache/{id} triggers the source
 		// and creates a spurious record that breaks the single-record assertion below.
-		await restartHttpWorkers(client, '/openapi');
+		// Extended timeout for slow CI runners under shard contention.
+		await restartHttpWorkers(client, '/openapi', 120000);
 		await setTimeout(5000);
 		const id3 = randomInt(1000000);
 		await client.reqRest(`/blobcache/${id3}`).set('Accept', '*/*').expect(200);
@@ -258,5 +264,406 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 			const blobFiles = files.filter((f) => !f.startsWith('.'));
 			assert.equal(blobFiles.length, 0, `expected no blob files after drop_schema, found: ${blobFiles.join(', ')}`);
 		}
+	});
+});
+
+// ─── Multi-path blobPaths striping ───────────────────────────────────────────
+//
+// Verifies that configuring `storage.blobPaths` with two paths causes Harper
+// to distribute file-backed blobs across both paths (round-robin by file-id),
+// and that every stored blob remains readable regardless of which path holds it.
+
+const BLOB_STRIPE_COUNT = 8; // enough for round-robin to populate both paths
+
+suite('Blob multi-path blobPaths striping', { skip: skipSuite }, (ctx) => {
+	let client;
+	let blobPath1;
+	let blobPath2;
+	const blobIds = Array.from({ length: BLOB_STRIPE_COUNT }, () => randomInt(1000000));
+
+	before(async () => {
+		// Pre-seed ctx.harper so blobPaths can live inside the Harper data root
+		// and are cleaned up automatically by teardownHarper.
+		const dataRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-blobs-stripe-'));
+		blobPath1 = path.join(dataRootDir, 'stripe-0');
+		blobPath2 = path.join(dataRootDir, 'stripe-1');
+		ctx.harper = { dataRootDir };
+
+		await startHarper(ctx, {
+			config: {
+				logging: { auditLog: false },
+				storage: { blobPaths: [blobPath1, blobPath2] },
+			},
+			env: {},
+		});
+		client = createApiClient(ctx.harper);
+
+		await client
+			.req()
+			.send({ operation: 'add_component', project: 'blobs' })
+			.expect((r) => {
+				const res = JSON.stringify(r.body);
+				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'), r.text);
+			});
+
+		await client
+			.req()
+			.send({ operation: 'set_component_file', project: 'blobs', file: 'schema.graphql', payload: SCHEMA_GRAPHQL })
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql'), r.text))
+			.expect(200);
+
+		await client
+			.req()
+			.send({ operation: 'set_component_file', project: 'blobs', file: 'resources.js', payload: RESOURCES_JS })
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: resources.js'), r.text))
+			.expect(200);
+
+		await restartHttpWorkers(client, '/openapi', 120000);
+	});
+
+	after(async () => {
+		// teardownHarper removes ctx.harper.dataRootDir, which contains both stripe dirs.
+		await teardownHarper(ctx);
+	});
+
+	test('BlobCache schema created after component load', async () => {
+		await client
+			.req()
+			.send({ operation: 'describe_all' })
+			.expect((r) => {
+				assert.ok(JSON.stringify(r.body).includes('"blob":{"BlobCache":{"schema":"blob","name":"BlobCache"'), r.text);
+			})
+			.expect(200);
+	});
+
+	test(`create ${BLOB_STRIPE_COUNT} blobs via sourced REST resource`, async () => {
+		for (const id of blobIds) {
+			await client
+				.reqRest(`/blobcache/${id}`)
+				.set('Accept', '*/*')
+				.expect((r) => {
+					assert.ok(
+						parseInt(r.headers['content-length']) >= 80000 && parseInt(r.headers['content-length']) <= 120000,
+						`blob ${id}: content-length out of expected range\n` + r.text
+					);
+				})
+				.expect(200);
+		}
+	});
+
+	test('blobs distributed across both configured storage paths', async () => {
+		await setTimeout(5000); // Allow blob GC flush to disk
+
+		if (process.env.DOCKER_CONTAINER_ID) return;
+
+		// Harper stores blobs at {blobPath}/{databaseName}/...
+		const dbName = 'blob'; // from @table(database: "blob")
+		const dir1 = path.join(blobPath1, dbName);
+		const dir2 = path.join(blobPath2, dbName);
+
+		const files1 = (await fs.pathExists(dir1))
+			? (await fs.readdir(dir1, { recursive: true })).filter((f) => !f.startsWith('.'))
+			: [];
+		const files2 = (await fs.pathExists(dir2))
+			? (await fs.readdir(dir2, { recursive: true })).filter((f) => !f.startsWith('.'))
+			: [];
+
+		assert.ok(
+			files1.length + files2.length >= BLOB_STRIPE_COUNT,
+			`Expected at least ${BLOB_STRIPE_COUNT} blob files across both paths, found ${files1.length} + ${files2.length}`
+		);
+		assert.ok(files1.length > 0, `blobPath1 (${dir1}) received no files — round-robin striping did not use this path`);
+		assert.ok(files2.length > 0, `blobPath2 (${dir2}) received no files — round-robin striping did not use this path`);
+	});
+
+	test('all blobs retrievable regardless of which path holds their file', async () => {
+		for (const id of blobIds) {
+			await client
+				.reqRest(`/blobcache/${id}`)
+				.set('Accept', '*/*')
+				.expect((r) => {
+					assert.ok(
+						parseInt(r.headers['content-length']) >= 80000 && parseInt(r.headers['content-length']) <= 120000,
+						`blob ${id} not retrievable after striping\n` + r.text
+					);
+				})
+				.expect(200);
+		}
+	});
+});
+
+// ─── Per-device-type LMDB database sharding ──────────────────────────────────
+//
+// Validates the pattern where device-type-specific data lives in separate LMDB
+// databases (one per type) that all share the same table schema shape.
+// Each database gets its own blob storage sub-directory under the Harper root,
+// confirming true storage isolation between device types.
+
+const DEVICE_SCHEMA_GRAPHQL =
+	'type ThermostatBlob @table(database: "thermostat") @sealed @export {\n' +
+	'\tdeviceId: ID! @primaryKey\n' +
+	'\tpayload: Blob!\n' +
+	'\tfirmware: String\n' +
+	'}\n\n' +
+	'type DoorlockBlob @table(database: "doorlock") @sealed @export {\n' +
+	'\tdeviceId: ID! @primaryKey\n' +
+	'\tpayload: Blob!\n' +
+	'\tfirmware: String\n' +
+	'}\n\n' +
+	'type SensorBlob @table(database: "sensor") @sealed @export {\n' +
+	'\tdeviceId: ID! @primaryKey\n' +
+	'\tpayload: Blob!\n' +
+	'\tfirmware: String\n' +
+	'}\n\n';
+
+const DEVICE_RESOURCES_JS =
+	"import { randomBytes } from 'crypto';\n" +
+	'\n' +
+	'const { ThermostatBlob } = databases.thermostat;\n' +
+	'const { DoorlockBlob } = databases.doorlock;\n' +
+	'const { SensorBlob } = databases.sensor;\n' +
+	'\n' +
+	'const devicePayload = randomBytes(20000);\n' +
+	'\n' +
+	'export class ThermostatBlobSource extends Resource {\n' +
+	'\tasync get() {\n' +
+	'\t\treturn { payload: createBlob(devicePayload), firmware: "1.0" };\n' +
+	'\t}\n' +
+	'}\n' +
+	'export class DoorlockBlobSource extends Resource {\n' +
+	'\tasync get() {\n' +
+	'\t\treturn { payload: createBlob(devicePayload), firmware: "1.0" };\n' +
+	'\t}\n' +
+	'}\n' +
+	'export class SensorBlobSource extends Resource {\n' +
+	'\tasync get() {\n' +
+	'\t\treturn { payload: createBlob(devicePayload), firmware: "1.0" };\n' +
+	'\t}\n' +
+	'}\n' +
+	'\n' +
+	'export class thermostatblob extends ThermostatBlob {\n' +
+	'\tasync get() { return { status: 200, headers: {}, body: this.payload }; }\n' +
+	'}\n' +
+	'export class doorlockblob extends DoorlockBlob {\n' +
+	'\tasync get() { return { status: 200, headers: {}, body: this.payload }; }\n' +
+	'}\n' +
+	'export class sensorblob extends SensorBlob {\n' +
+	'\tasync get() { return { status: 200, headers: {}, body: this.payload }; }\n' +
+	'}\n' +
+	'\n' +
+	'thermostatblob.sourcedFrom(ThermostatBlobSource);\n' +
+	'doorlockblob.sourcedFrom(DoorlockBlobSource);\n' +
+	'sensorblob.sourcedFrom(SensorBlobSource);\n\n';
+
+suite('Per-device-type LMDB database sharding', { skip: skipSuite }, (ctx) => {
+	let client;
+	const thermostatId = randomInt(1000000);
+	const doorlockId = randomInt(1000000);
+	const sensorId = randomInt(1000000);
+	let rootPath;
+
+	before(async () => {
+		await startHarper(ctx, {
+			config: { logging: { auditLog: false } },
+			env: { HARPER_STORAGE_ENGINE: 'lmdb' },
+		});
+		client = createApiClient(ctx.harper);
+
+		await client
+			.req()
+			.send({ operation: 'add_component', project: 'devicesharding' })
+			.expect((r) => {
+				const res = JSON.stringify(r.body);
+				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'), r.text);
+			});
+
+		await client
+			.req()
+			.send({
+				operation: 'set_component_file',
+				project: 'devicesharding',
+				file: 'schema.graphql',
+				payload: DEVICE_SCHEMA_GRAPHQL,
+			})
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql'), r.text))
+			.expect(200);
+
+		await client
+			.req()
+			.send({
+				operation: 'set_component_file',
+				project: 'devicesharding',
+				file: 'resources.js',
+				payload: DEVICE_RESOURCES_JS,
+			})
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: resources.js'), r.text))
+			.expect(200);
+
+		await restartHttpWorkers(client, '/openapi', 120000);
+
+		const configResp = await client.req().send({ operation: 'get_configuration' }).expect(200);
+		rootPath = configResp.body.rootPath;
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('all three device-type schemas are visible in describe_all', async () => {
+		const r = await client.req().send({ operation: 'describe_all' }).expect(200);
+		const body = JSON.stringify(r.body);
+		assert.ok(body.includes('"thermostat":{"ThermostatBlob"'), `thermostat schema missing\n` + r.text);
+		assert.ok(body.includes('"doorlock":{"DoorlockBlob"'), `doorlock schema missing\n` + r.text);
+		assert.ok(body.includes('"sensor":{"SensorBlob"'), `sensor schema missing\n` + r.text);
+	});
+
+	test('create a blob for each device type via sourced REST resource', async () => {
+		for (const [endpoint, id] of [
+			['thermostatblob', thermostatId],
+			['doorlockblob', doorlockId],
+			['sensorblob', sensorId],
+		]) {
+			await client
+				.reqRest(`/${endpoint}/${id}`)
+				.set('Accept', '*/*')
+				.expect((r) => {
+					assert.ok(parseInt(r.headers['content-length']) === 20000, `${endpoint} blob size unexpected\n` + r.text);
+				})
+				.expect(200);
+		}
+	});
+
+	test('each device-type blob is retrievable from its own LMDB database', async () => {
+		for (const [endpoint, id] of [
+			['thermostatblob', thermostatId],
+			['doorlockblob', doorlockId],
+			['sensorblob', sensorId],
+		]) {
+			await client
+				.reqRest(`/${endpoint}/${id}`)
+				.set('Accept', '*/*')
+				.expect((r) => {
+					assert.ok(parseInt(r.headers['content-length']) === 20000, `${endpoint}/${id} not retrievable\n` + r.text);
+				})
+				.expect(200);
+		}
+	});
+
+	test('SQL queries target each device database independently', async () => {
+		for (const [db, table] of [
+			['thermostat', 'ThermostatBlob'],
+			['doorlock', 'DoorlockBlob'],
+			['sensor', 'SensorBlob'],
+		]) {
+			const r = await client
+				.req()
+				.send({ operation: 'sql', sql: `SELECT deviceId, firmware FROM ${db}.${table}` })
+				.expect(200);
+			assert.ok(Array.isArray(r.body) && r.body.length === 1, `${db}.${table}: expected 1 record\n` + r.text);
+			assert.equal(r.body[0].firmware, '1.0', `${db}.${table}: unexpected firmware value\n` + r.text);
+		}
+	});
+
+	test('each device type has a separate blob storage directory', async () => {
+		await setTimeout(5000); // Allow blob flush to disk
+
+		if (process.env.DOCKER_CONTAINER_ID) return;
+		assert.ok(rootPath, 'rootPath not obtained from get_configuration');
+
+		for (const dbName of ['thermostat', 'doorlock', 'sensor']) {
+			const blobDir = path.join(rootPath, 'blobs', dbName);
+			assert.ok(await fs.pathExists(blobDir), `expected blob directory for ${dbName} at ${blobDir}`);
+			const files = (await fs.readdir(blobDir, { recursive: true })).filter((f) => !f.startsWith('.'));
+			assert.ok(files.length > 0, `expected blob files in ${blobDir} for device type ${dbName}`);
+		}
+	});
+});
+
+// ── Brotli Blob Content-Encoding pass-through ─────────────────────────────────
+//
+// Validates that a sourced resource can store Brotli-compressed bytes as a Blob
+// and serve them back with Content-Encoding: br. Harper must pass through the
+// header rather than re-compressing or stripping it.
+//
+// Skipped under the same conditions as the parent suite (Windows crash on
+// restart_service http_workers; unreliable Bun timing).
+
+const BROTLI_SCHEMA_GRAPHQL =
+	'type BrotliCache @table(database: "brotlidb") @export {\n' +
+	'\tid: ID @primaryKey\n' +
+	'\tbrotliContent: Blob!\n' +
+	'\tcontentSize: Int\n' +
+	'\thttpStatus: Int\n' +
+	'}\n\n';
+
+const BROTLI_RESOURCES_JS =
+	"import { brotliCompressSync } from 'zlib';\n" +
+	'\n' +
+	'const { BrotliCache } = databases.brotlidb;\n' +
+	"const rawContent = Buffer.from('Brotli Content-Encoding pass-through test. '.repeat(500));\n" +
+	'const compressed = brotliCompressSync(rawContent);\n' +
+	'\n' +
+	'export class brotlicache extends BrotliCache {\n' +
+	'\tasync get() {\n' +
+	'\t\treturn {\n' +
+	'\t\t\tstatus: this.httpStatus || 200,\n' +
+	"\t\t\theaders: { 'Content-Encoding': 'br' },\n" +
+	'\t\t\tbody: this.brotliContent,\n' +
+	'\t\t};\n' +
+	'\t}\n' +
+	'}\n' +
+	'\n' +
+	'export class BrotliCacheSource extends Resource {\n' +
+	'\tasync get() {\n' +
+	'\t\tconst blob = await createBlob(compressed);\n' +
+	'\t\treturn {\n' +
+	'\t\t\tbrotliContent: blob,\n' +
+	'\t\t\tcontentSize: compressed.length,\n' +
+	'\t\t\thttpStatus: 200,\n' +
+	'\t\t};\n' +
+	'\t}\n' +
+	'}\n' +
+	'\n' +
+	'brotlicache.sourcedFrom(BrotliCacheSource);\n\n';
+
+suite('Brotli Blob Content-Encoding pass-through', { skip: skipSuite }, (ctx) => {
+	let client;
+	const brotliId = randomInt(1000000);
+
+	before(async () => {
+		await startHarper(ctx, { config: {}, env: {} });
+		client = createApiClient(ctx.harper);
+
+		// Probe /openapi — the same signal used by the blob suite above. Using
+		// /brotlicache/ would cause supertest to attempt automatic brotli decompression
+		// on the list response and throw "Decompression failed" during polling.
+		await installAppComponent(client, {
+			project: 'brotliblobs',
+			files: { 'schema.graphql': BROTLI_SCHEMA_GRAPHQL, 'resources.js': BROTLI_RESOURCES_JS },
+			probePath: '/openapi',
+			restartTimeoutMs: 120000,
+		});
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('GET Brotli blob triggers source and returns Content-Encoding: br', async () => {
+		const r = await client.reqRest(`/brotlicache/${brotliId}`).set('Accept', '*/*').expect(200);
+		assert.equal(
+			r.headers['content-encoding'],
+			'br',
+			`expected Content-Encoding: br in response headers, got: ${JSON.stringify(r.headers)}`
+		);
+	});
+
+	test('subsequent GET Brotli blob still returns Content-Encoding: br', async () => {
+		const r = await client.reqRest(`/brotlicache/${brotliId}`).set('Accept', '*/*').expect(200);
+		assert.equal(
+			r.headers['content-encoding'],
+			'br',
+			`expected Content-Encoding: br on cached blob, got: ${JSON.stringify(r.headers)}`
+		);
 	});
 });

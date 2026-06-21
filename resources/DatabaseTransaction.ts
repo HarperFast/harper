@@ -1,4 +1,4 @@
-import { cleanupUnusedBlobs } from './blob.ts';
+import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
@@ -23,6 +23,9 @@ export const TRANSACTION_STATE = {
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
 const MAX_RETRIES = 40;
+// Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
+// cap (see the commit rejection handler), don't grow the delay unbounded.
+const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
 let confirmReplication;
 export function replicationConfirmation(callback) {
@@ -97,6 +100,16 @@ export class DatabaseTransaction implements Transaction {
 	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	replicatedConfirmation: number;
+	// Set when this transaction is applying data from a canonical source of truth (replication peer
+	// or external caching source); its commits retry transient conflicts without the request-path
+	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
+	declare sourceApply?: boolean;
+	// Set when this transaction replays the local audit log during crash recovery (replayLogs.ts).
+	// Replayed records were valid when first written, so schema validation is skipped — a schema
+	// that has since added required fields must not block replaying older records (harper#1316).
+	// An explicit marker rather than overloading `retries`, which is also bumped by transient
+	// conflict retries and never reset, so it cannot reliably signal "this is a replay".
+	declare isReplay?: boolean;
 
 	getReadTxn(): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -269,7 +282,11 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
-							commitResolution = transaction.commit();
+							// rocksdb-js 2.2.0 widened commit()'s resolution to include the
+							// coordinated-retry sentinel (RETRY_NOW); we don't pass
+							// coordinatedRetry, so it never resolves to the sentinel here. Cast
+							// away the sentinel to keep commitResolution void.
+							commitResolution = transaction.commit() as Promise<void>;
 						} else {
 							try {
 								commitResolution = transaction.abort();
@@ -304,7 +321,16 @@ export class DatabaseTransaction implements Transaction {
 								harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
 								return this.commit({ transaction });
 							}
-							(transaction as any).onCommit?.();
+							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
+							// rejection — or a synchronous throw — via logging rather than failing the commit, since
+							// the write is already durable.
+							try {
+								const onCommitResult = (transaction as any).onCommit?.();
+								if (onCommitResult?.then)
+									onCommitResult.catch((error) => harperLogger.warn?.('onCommit handler failed after commit', error));
+							} catch (error) {
+								harperLogger.warn?.('onCommit handler failed after commit', error);
+							}
 							if (this.next) {
 								completions.push(this.next.commit(options));
 							}
@@ -329,7 +355,8 @@ export class DatabaseTransaction implements Transaction {
 							// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
 							// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
 							for (const write of this.writes) {
-								if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+								if (write?.skipped && write?.savedBlobs)
+									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.writes = [];
@@ -350,17 +377,44 @@ export class DatabaseTransaction implements Transaction {
 							// prior getReadTxn() (immediate/publish/invalidate writes) is created
 							// without coordinatedRetry and still rejects with ERR_BUSY on conflict.
 							// Keep the backoff retry as the fallback for those paths.
-							if (error.code === 'ERR_BUSY') {
+							//
+							// ERR_BUSY: optimistic-transaction write conflict. ERR_TRY_AGAIN: RocksDB kTryAgain —
+							// the transaction's snapshot sequence fell outside the memtable conflict-check window
+							// (max_write_buffer_size_to_maintain), which happens under bulk-ingest bursts such as a
+							// migration full-table copy. Both are transient and retryable. Before ERR_TRY_AGAIN was
+							// retried here, the rejection propagated out of the unawaited onCommit() handler as an
+							// unhandled rejection and the write was silently dropped — records lost mid-copy (#308).
+							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
+								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
+								// for future transactions
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
 								if (this.retries > 2) {
+									// Transactions applying data from a canonical source of truth (replication peer or
+									// external caching source) must never drop a write on a transient conflict: there is no
+									// re-subscribe / sequence-id-resume path, so a dropped write would leave this node
+									// permanently diverged (harper-pro#348). Such transactions retry without a cap; the source
+									// apply loop serializes commits (backpressure), so contention clears rather than
+									// compounding. Request-path transactions keep the MAX_RETRIES cap and surface a loud error.
+									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES) {
-										throw new ServerError(
-											`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
-										);
+										if (!neverDropOnConflict) {
+											throw new ServerError(
+												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+											);
+										}
+										// Uncapped retry can otherwise stall silently (debug logging is off in production);
+										// surface periodic visibility into a stalled source-apply commit.
+										if (this.retries % MAX_RETRIES === 0) {
+											harperLogger.warn?.(
+												`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} retries; continuing to retry`
+											);
+										}
 									}
-									// back off to space out transactions and avoid excessive conflicts
-									return delay(this.retries * this.retries).then(() => this.commit({ transaction }));
+									// start delaying, back off to try to space out transactions and avoid excessive conflicts
+									return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
+										this.commit({ transaction })
+									);
 								}
 								return this.commit({ transaction }); // try again
 							} else throw error;
@@ -368,7 +422,8 @@ export class DatabaseTransaction implements Transaction {
 					);
 				}
 				for (const write of this.writes) {
-					if (write?.skipped && write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+					if (write?.skipped && write?.savedBlobs)
+						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.writes = [];
 				if (this.#context?.resourceCache) this.#context.resourceCache = null;
@@ -398,7 +453,8 @@ export class DatabaseTransaction implements Transaction {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
 		for (const write of this.writes) {
-			if (write?.savedBlobs) cleanupUnusedBlobs(write.savedBlobs);
+			if (write?.savedBlobs)
+				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
 		this.writes = [];

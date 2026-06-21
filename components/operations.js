@@ -11,7 +11,7 @@ const hdbTerms = require('../utility/hdbTerms.ts');
 const env = require('../utility/environment/environmentManager.ts');
 const configUtils = require('../config/configUtils.js');
 const hdbUtils = require('../utility/common_utils.ts');
-const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.ts');
+const { handleHDBError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const { packageDirectory } = require('../components/packageComponent.ts');
@@ -384,6 +384,7 @@ async function deployComponent(req) {
 				allowInstallScripts: req.install_allow_scripts,
 			};
 		}
+		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
@@ -422,6 +423,9 @@ async function deployComponent(req) {
 	const systemReplicated = isSystemDatabaseReplicated();
 
 	let extractionPayload = req.payload;
+	// Bounded ring buffer of install stdout/stderr so a non-SSE caller sees the tail
+	// in the thrown error. SSE callers still stream every line live.
+	const installCapture = createInstallCapture();
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -435,7 +439,10 @@ async function deployComponent(req) {
 			// the replicated hdb_deployment row's payload_blob. Blob.stream() blocks on
 			// in-flight BLOB_CHUNK writes until the chunks land. If the row never arrives
 			// within the timeout, peer records a failure and origin sees it in peer_results.
-			const row = await awaitDeploymentRow(req._deploymentId);
+			// The wait budget defaults to 120s but is overridable per-deploy via
+			// `deployment_timeout` (ms) for clusters where the system-table channel is
+			// heavily backlogged (harper-pro#402).
+			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
 			extractionPayload = row.payload_blob.stream();
 		}
 
@@ -448,11 +455,13 @@ async function deployComponent(req) {
 				timeout: req.install_timeout,
 				allowInstallScripts: req.install_allow_scripts,
 			},
-			// Forward each complete line of install stdout/stderr to the SSE channel (and
-			// into the recorder's event_log via the same subscriber). Peers have no emitter
-			// — their install output goes to the local logger only; cross-node install
-			// streaming would need extra plumbing and isn't wired here.
-			onInstallLine: emitter ? (manager, stream, line) => emit('install', { manager, stream, line }) : undefined,
+			// Tee each install line into both the capture buffer (for the thrown-error
+			// fallback) and the SSE channel (when a caller is streaming). Peers have no
+			// emitter, so their install output goes to the local logger and the buffer only.
+			onInstallLine: (manager, stream, line) => {
+				installCapture.push(manager, stream, line);
+				if (emitter) emit('install', { manager, stream, line });
+			},
 		});
 
 		emit('phase', { phase: 'prepare', status: 'start' });
@@ -507,6 +516,11 @@ async function deployComponent(req) {
 					emit('peer', result);
 				}
 			: undefined;
+		// Seal the recorder before the replicate phase so the row's terminal write (finish())
+		// isn't part of the tight put burst that can commit out of order on a peer and revert
+		// it (harperdb/harper#1170). onPeerResult/peer_results accumulate in memory and land in
+		// finish()'s single write; live SSE 'peer' events still fire below.
+		recorder?.seal();
 		emit('phase', { phase: 'replicate', status: 'start' });
 		let response = await server.replication.replicateOperation(req, { onPeerResult });
 		emit('phase', { phase: 'replicate', status: 'done' });
@@ -535,6 +549,27 @@ async function deployComponent(req) {
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else response.message = `Successfully deployed: ${application.name}`;
 
+		// Replication failures don't reject replicateOperation — they surface as 'failed'
+		// entries in peer_results. By default, treat any failed peer as an overall deploy
+		// failure so the operation returns a non-2xx status (and the CLI a non-zero exit
+		// code). The component is already deployed — and, if requested, restarted — on this
+		// origin node; the failure signals that one or more peers did not receive it. Pass
+		// ignore_replication_errors: true for best-effort deploys to partially-available clusters.
+		if (recorder && !req.ignore_replication_errors) {
+			const failedPeers = recorder.getFailedPeers();
+			if (failedPeers.length > 0) {
+				const detail = failedPeers
+					.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`)
+					.join(', ');
+				throw new ServerError(
+					`Component '${application.name}' was deployed on the origin node but failed to replicate to ` +
+						`${failedPeers.length} of ${recorder.row.peer_results.length} peer node(s): ${detail}. ` +
+						`See deployment ${recorder.deploymentId} (get_deployment) for details, or pass ` +
+						`ignore_replication_errors: true to treat replication failures as non-fatal.`
+				);
+			}
+		}
+
 		if (recorder) {
 			response.deployment_id = recorder.deploymentId;
 			emit('phase', { phase: 'success', status: 'done' });
@@ -542,14 +577,75 @@ async function deployComponent(req) {
 		}
 		return response;
 	} catch (err) {
+		// Pack phase, install output tail, and deployment_id into http_resp_msg so the
+		// Fastify error handler forwards them verbatim (it does when http_resp_msg is an
+		// object). Non-SSE callers see structured failure detail; SSE callers already
+		// got the same data live via emit('error', ...) below.
+		const capture = installCapture.snapshot();
+		const phase = recorder?.row.phase;
+		const baseMessage = err?.message ?? String(err);
+		const structured = { error: baseMessage };
+		if (phase) structured.phase = phase;
+		if (capture.lines.length > 0) structured.install_output = capture;
+		if (recorder?.deploymentId) structured.deployment_id = recorder.deploymentId;
+		// Surface failed peer outcomes so callers see which nodes the deploy did not reach
+		// without a second get_deployment round-trip. Populated for replication failures (the
+		// throw above) and any other failure that occurred after peers reported. Carried on
+		// both the structured non-SSE body and the SSE 'error' event below so the two transports
+		// stay symmetric (the CLI uses SSE for deploy_component).
+		const failedPeers = recorder?.getFailedPeers() ?? [];
+		if (failedPeers.length > 0) structured.failed_peers = failedPeers;
+
+		// Wrap as a ServerError so the Fastify error handler picks a 500 by default; preserve
+		// an upstream statusCode (e.g. a ClientError from payload validation) if present.
+		const outErr = new ServerError(baseMessage, err?.statusCode);
+		outErr.http_resp_msg = structured;
+
 		emit('error', {
-			message: err?.message ?? String(err),
-			code: err?.statusCode ?? err?.code,
-			phase: recorder?.row.phase,
+			message: baseMessage,
+			code: outErr?.statusCode ?? err?.code,
+			phase,
+			install_output: capture.lines.length > 0 ? capture : undefined,
+			deployment_id: recorder?.deploymentId,
+			failed_peers: failedPeers.length > 0 ? failedPeers : undefined,
 		});
-		if (recorder) await recorder.finish('failed', err);
-		throw err;
+		// Record the terminal failure, but never let a finish() write error (full disk, lock,
+		// dropped system table) mask the actual deploy failure — outErr carries the phase,
+		// install output, and failed_peers the caller needs.
+		if (recorder) {
+			try {
+				await recorder.finish('failed', err);
+			} catch (finishErr) {
+				log.warn('Failed to record deployment failure row', finishErr);
+			}
+		}
+		throw outErr;
 	}
+}
+
+// Ring buffer of install stdout/stderr lines, capped by both line count and bytes so
+// a chatty install can't unbounded-grow the error response. snapshot() reports whether
+// the head was dropped so callers can flag truncation.
+function createInstallCapture(maxLines = 200, maxBytes = 16 * 1024) {
+	const lines = [];
+	let bytes = 0;
+	let dropped = 0;
+	return {
+		push(manager, stream, line) {
+			const entry = { manager, stream, line };
+			const size = (line?.length ?? 0) + (stream?.length ?? 0) + (manager?.length ?? 0);
+			lines.push(entry);
+			bytes += size;
+			while (lines.length > 0 && (lines.length > maxLines || bytes > maxBytes)) {
+				const evicted = lines.shift();
+				bytes -= (evicted.line?.length ?? 0) + (evicted.stream?.length ?? 0) + (evicted.manager?.length ?? 0);
+				dropped += 1;
+			}
+		},
+		snapshot() {
+			return { lines: lines.slice(), truncated: dropped > 0, dropped_lines: dropped };
+		},
+	};
 }
 
 /**
@@ -653,8 +749,12 @@ async function getComponents() {
 		entries: [],
 	});
 	for (let entry of results.entries) {
-		const sourcePackage = rootConfig[entry.name]?.package;
-		if (sourcePackage) entry.package = sourcePackage;
+		const componentConfig = rootConfig?.[entry.name];
+		if (!componentConfig || typeof componentConfig !== 'object') continue;
+		if (componentConfig.package) entry.package = componentConfig.package;
+		if (componentConfig.urlPath) entry.urlPath = componentConfig.urlPath;
+		if (componentConfig.host) entry.host = componentConfig.host;
+		if (componentConfig.loadComponent) entry.loadComponent = componentConfig.loadComponent;
 	}
 
 	const { internal: statusInternal } = require('./status/index.ts');

@@ -64,6 +64,14 @@ const DEFAULT_MOUNT_PATH = '/mcp';
 /**
  * Fastify-side registration. Used by `server/operationsServer.ts` for the
  * operations profile. Idempotent through the host's own route table.
+ *
+ * Routes are registered directly on the shared operations instance so they
+ * inherit Harper's response serializers (JSON via the content-negotiation
+ * `preSerialization` hook, and the SSE `text/event-stream` writer). Fastify
+ * parses the JSON body, so a malformed operations-profile body is rejected with
+ * Fastify's HTTP 400 before the handler runs — spec-permitted for the
+ * Streamable HTTP transport (#1317 S1). The application profile, which reads
+ * the raw body itself, surfaces the same case as a JSON-RPC `-32700` frame.
  */
 export function registerMcpProfile({ profile, host, config, routeOptions }: RegisterMcpProfileArgs): void {
 	const profileConfig = config?.mcp?.[profile];

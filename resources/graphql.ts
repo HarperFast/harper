@@ -3,10 +3,33 @@ import { Script } from 'node:vm';
 import { table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
-import type { NamedTypeNode, StringValueNode } from 'graphql';
+import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { once } from 'node:events';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
+
+// coerce directive arg values by their AST node kind so numbers arrive as numbers,
+// not as the string literals they're stored as on IntValue/FloatValue nodes.
+function coerceDirectiveValue(node: ValueNode): any {
+	switch (node.kind) {
+		case 'IntValue':
+		case 'FloatValue':
+			return Number((node as { value: string }).value);
+		case 'BooleanValue':
+		case 'StringValue':
+		case 'EnumValue':
+			return (node as { value: unknown }).value;
+		case 'NullValue':
+			return null;
+		case 'ListValue':
+			return node.values.map(coerceDirectiveValue);
+		default:
+			return (node as { value?: unknown }).value;
+	}
+}
 
 if (!server.knownGraphQLDirectives) {
 	server.knownGraphQLDirectives = [];
@@ -18,12 +41,14 @@ server.knownGraphQLDirectives.push(
 	'primaryKey',
 	'indexed',
 	'computed',
+	'embed',
 	'relationship',
 	'createdTime',
 	'updatedTime',
 	'expiresAt',
 	'allow',
-	'enumerable'
+	'enumerable',
+	'hidden'
 );
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
@@ -37,7 +62,13 @@ server.knownGraphQLDirectives.push(
  * @param resources
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+	let initialLoadComplete = false;
 	const entryHandler = scope.handleEntry(async (entry) => {
+		if (initialLoadComplete) {
+			scope.requestRestart();
+			return;
+		}
+
 		if (entry.eventType === 'unlink') return;
 		if (entry.entryType === 'directory') {
 			scope.logger.warn?.('graphqlSchema currently does not handle directories. Specify file patterns only.');
@@ -46,7 +77,11 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 
 		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
 	});
-	return once(entryHandler, 'initialLoadComplete');
+	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
+	initialLoadPromise.then(() => {
+		initialLoadComplete = true;
+	});
+	return initialLoadPromise;
 }
 
 async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
@@ -62,25 +97,33 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 			case Kind.OBJECT_TYPE_DEFINITION:
 				const typeName = definition.name.value;
 				// use type name as the default table
-				const properties = [];
-				const typeDef: any = { table: null, database: null, properties };
+				const attributes: any[] = [];
+				const typeProperties: Record<string, JsonSchemaFragment> = {};
+				const typeDef: any = { table: null, database: null, attributes, properties: typeProperties };
+				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
 				resources.allTypes.set(typeName, typeDef);
 				for (const directive of definition.directives) {
 					const directiveName = directive.name.value;
 					if (directiveName === 'table') {
 						for (const arg of directive.arguments) {
-							typeDef[arg.name.value] = (arg.value as StringValueNode).value;
+							typeDef[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
+						// @table is the canonical schema-defined declaration; pass the flag explicitly so
+						// the existing-Table re-assert in databases.ts::table() fires on every reload.
+						typeDef.schemaDefined = true;
 						if (typeDef.schema) typeDef.database = typeDef.schema;
 						if (!typeDef.table) typeDef.table = typeName;
 						if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';
-						typeDef.attributes = typeDef.properties;
+						// Boolean directive args arrive as actual booleans; tolerate string forms too.
+						if (typeDef.randomAccessFields !== undefined)
+							typeDef.randomAccessFields = typeDef.randomAccessFields === true || typeDef.randomAccessFields === 'true';
 						tables.push(typeDef);
 					}
 					if (directive.name.value === 'sealed') typeDef.sealed = true;
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
 					if (directive.name.value === 'replicate') typeDef.replicate = true;
+					if (directive.name.value === 'hidden') typeDef.hidden = true;
 					if (directive.name.value === 'export') {
 						typeDef.export = true;
 						for (const arg of directive.arguments) {
@@ -111,7 +154,8 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 				for (const field of definition.fields) {
 					const property = getProperty(field.type);
 					property.name = field.name.value;
-					properties.push(property);
+					if (field.description?.value) property.description = field.description.value;
+					attributes.push(property);
 					attributesObject[property.name] = undefined; // this is used as a backup scope for computed properties
 					for (const directive of field.directives) {
 						const directiveName = directive.name.value;
@@ -143,6 +187,32 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 								}
 							}
 							property.computed = property.computed || true;
+						} else if (directiveName === 'embed') {
+							// `@embed(source, model)`: on write, embed `record[source]` into this
+							// attribute and auto-index it with HNSW.
+							const embedDefinition: { source?: string; model?: string } = {};
+							for (const arg of directive.arguments || []) {
+								if (arg.value.kind !== 'StringValue')
+									throw new ClientError(
+										`@embed(${arg.name.value}: ...) on "${property.name}" expects a string literal`,
+										400
+									);
+								embedDefinition[arg.name.value] = (arg.value as StringValueNode).value;
+							}
+							if (!embedDefinition.source || !embedDefinition.model) {
+								const loc = directive.loc;
+								throw new ClientError(
+									`@embed on "${property.name}" requires both "source" and "model" arguments` +
+										(loc ? ` (line ${loc.startToken?.line ?? '?'}, column ${loc.startToken?.column ?? '?'})` : ''),
+									400
+								);
+							} else {
+								property.embed = embedDefinition;
+								// Version carries the model so a model change triggers a reindex (re-index only, not re-embed).
+								if (property.version == undefined) {
+									property.version = `embed:${embedDefinition.model}`;
+								}
+							}
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -157,6 +227,8 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 							property.expiresAt = true;
 						} else if (directiveName === 'enumerable') {
 							property.enumerable = true;
+						} else if (directiveName === 'hidden') {
+							property.hidden = true;
 						} else if (directiveName === 'allow') {
 							const authorizedRoles = (property.authorizedRoles = []);
 							for (const arg of directive.arguments) {
@@ -168,6 +240,43 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 							console.warn(`@${directiveName} is an unknown directive, at`, directive.loc);
 						}
 					}
+					// @embed targets a vector column and auto-indexes it with HNSW; resolved after all
+					// directives so an explicit @indexed (in any order) is honored. The target must be an
+					// array (e.g. [Float]) — a scalar would store the vector wrong and HNSW-index a non-vector.
+					if (property.embed) {
+						const elementType =
+							property.type === 'array' ? (property as { elements?: { type?: string } }).elements?.type : undefined;
+						if (property.type !== 'array' || elementType !== 'Float')
+							throw new ClientError(
+								`@embed on "${property.name}" requires a [Float] attribute type; got "${property.type === 'array' ? `[${elementType ?? '?'}]` : property.type}"`,
+								400
+							);
+						if (!property.indexed) property.indexed = { type: 'HNSW' };
+						else if ((property.indexed as { type?: string }).type !== 'HNSW')
+							throw new ClientError(
+								`@embed on "${property.name}" auto-indexes with HNSW; remove the conflicting @indexed or set @indexed(type: "HNSW")`,
+								400
+							);
+					}
+				}
+				// @embed source must reference a declared field; a typo would silently leave
+				// the vector column unpopulated (the source key never appears in write payloads).
+				for (const prop of attributes as any[]) {
+					// Object.hasOwn (not `in`): `attributesObject` is a plain object, so `in` would
+					// match inherited prototype keys (toString, constructor) and pass a bad source.
+					if (prop.embed && !Object.hasOwn(attributesObject, prop.embed.source))
+						throw new ClientError(
+							`@embed on "${prop.name}" references unknown source field "${prop.embed.source}"`,
+							400
+						);
+				}
+				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
+				// keyed by attribute name). Both shapes are co-populated in this single pass;
+				// downstream consumers (MCP, OpenAPI) read whichever form they prefer.
+				// `attributeToFragment` handles array types recursively so primitive arrays
+				// (e.g. `[String]`) emit `{ type: 'array', items: { type: 'string' } }`.
+				for (const prop of attributes as any[]) {
+					typeProperties[prop.name] = attributeToFragment(prop);
 				}
 				typeDef.type = typeName;
 		}
@@ -176,7 +285,11 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 	function connectPropertyType(property) {
 		const targetTypeDef = types.get(property.type);
 		if (targetTypeDef) {
-			Object.defineProperty(property, 'properties', { value: targetTypeDef.properties });
+			// `property.properties` on a complex-type attribute carries the nested Array of
+			// sub-attributes (Attribute.properties — Array<Attribute>). Keep reading from
+			// `targetTypeDef.attributes` (the internal Array form) rather than the new
+			// class-level `typeDef.properties` (the Record canonical surface).
+			Object.defineProperty(property, 'properties', { value: targetTypeDef.attributes });
 			Object.defineProperty(property, 'definition', { value: targetTypeDef });
 		} else if (property.type === 'array') connectPropertyType(property.elements);
 		else if (!PRIMITIVE_TYPES.includes(property.type)) {
@@ -187,13 +300,19 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 		}
 	}
 	for (const typeDef of types.values()) {
-		for (const property of typeDef.properties) connectPropertyType(property);
+		for (const property of typeDef.attributes) connectPropertyType(property);
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
 		typeDef.tableClass = table(typeDef);
+		if (getWorkerIndex() === 0) {
+			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
+			const pk = (typeDef.attributes as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';
+			const schemaPart = typeDef.database ? `, schema: ${typeDef.database}` : '';
+			harperLogger.info?.(`Initialized table "${typeDef.table}"${schemaPart}, primaryKey: ${pk}`);
+		}
 		if (typeDef.export) {
 			// allow empty string to be used to declare a table on the root path
 			if (typeDef.export.name === '') resources.set(dirname(urlPath), typeDef.tableClass);

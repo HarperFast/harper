@@ -20,8 +20,10 @@ import { setEmbedding, setGenerative } from '../../resources/models/backendRegis
 import {
 	assignFiniteTokenCount,
 	composeSignal,
+	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
 	parseJsonResponse,
+	readBoundedJson,
 	requireCredential,
 	requireModel,
 } from '../../resources/models/backendHelpers.ts';
@@ -60,6 +62,15 @@ const MAX_TOOL_CALL_ARGS_CHARS = 1 << 20;
 // cap defends against a misbehaving compat shim that returns megabytes of
 // "error" prose.
 const MAX_UPSTREAM_ERROR_MESSAGE_CHARS = 500;
+// Maximum number of distinct tool-call accumulator entries. OpenAI keys by
+// upstream-controlled `delta.index`; without a cardinality cap a hostile
+// upstream can allocate unbounded map entries (one per index value). Real
+// responses use single-digit counts.
+const MAX_TOOL_CALL_ACCUMULATOR_ENTRIES = 128;
+// Total tool-call argument chars across all entries in one stream. The per-entry
+// cap (1 MiB) plus the 128-entry cap still allows ~128 MiB accumulated; this cap
+// keeps any single stream well-bounded. Real responses use tens of KB.
+const MAX_TOTAL_TOOL_CALL_ARGS_CHARS = 8 * 1024 * 1024; // 8 MiB
 
 const log = harperLogger.forComponent('openai').conditional;
 
@@ -100,10 +111,19 @@ export class OpenAIBackend implements ModelBackend {
 	readonly #organization?: string;
 	readonly #requestTimeoutMs?: number;
 	readonly #fetch: typeof fetch;
+	// True only when talking to api.openai.com itself. OpenAI's reasoning models
+	// (o-series, gpt-5 family) reject `max_tokens` in favour of `max_completion_tokens`;
+	// OpenAI-compatible shims (vLLM, Ollama-compat, older gateways) only know `max_tokens`.
+	readonly #isNativeOpenAI: boolean;
 
 	constructor(config: OpenAIBackendConfig = {}, fetchImpl: typeof fetch = fetch) {
 		this.#apiKey = requireCredential(config.apiKey, 'OpenAI', 'apiKey', OpenAIBackendError);
 		this.#baseUrl = normalizeOrigin(config.baseUrl, { host: DEFAULT_BASE_URL, secure: true });
+		try {
+			this.#isNativeOpenAI = new URL(this.#baseUrl).hostname === 'api.openai.com';
+		} catch {
+			this.#isNativeOpenAI = false;
+		}
 		this.#defaultModel = config.model;
 		this.#organization = config.organization;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
@@ -147,7 +167,7 @@ export class OpenAIBackend implements ModelBackend {
 	async generate(input: GenerateInput, opts: BackendOpts<GenerateOpts>): Promise<ModelCallResult<GenerateResult>> {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'generate', OpenAIBackendError);
-		const body = buildChatRequest(model, input, opts, false);
+		const body = buildChatRequest(model, input, opts, false, this.#isNativeOpenAI);
 		const res = await this.#post('/chat/completions', body, opts.signal);
 		const data = await parseJsonResponse<OpenAIChatResponse>(res, 'OpenAI /chat/completions', OpenAIBackendError);
 		const choice = data.choices?.[0];
@@ -173,7 +193,7 @@ export class OpenAIBackend implements ModelBackend {
 	async *generateStream(input: GenerateInput, opts: BackendOpts<GenerateOpts>): AsyncIterable<GenerateChunk> {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'generateStream', OpenAIBackendError);
-		const body = buildChatRequest(model, input, opts, true);
+		const body = buildChatRequest(model, input, opts, true, this.#isNativeOpenAI);
 		const res = await this.#post('/chat/completions', body, opts.signal);
 		if (!res.body) throw new OpenAIBackendError('OpenAI /chat/completions returned no body for streaming');
 
@@ -184,6 +204,7 @@ export class OpenAIBackend implements ModelBackend {
 		// never a partial string.
 		const toolBuf = new Map<number, ToolCallAccumulator>();
 		let finalFinishReason: GenerateResult['finishReason'] | undefined;
+		let totalArgChars = 0;
 
 		for await (const event of readSse(res.body)) {
 			const choice = event.choices?.[0];
@@ -195,7 +216,7 @@ export class OpenAIBackend implements ModelBackend {
 			}
 			if (Array.isArray(delta?.tool_calls)) {
 				for (const tcDelta of delta.tool_calls) {
-					accumulateToolCallDelta(toolBuf, tcDelta);
+					totalArgChars = accumulateToolCallDelta(toolBuf, tcDelta, totalArgChars);
 				}
 			}
 			if (choice.finish_reason) {
@@ -249,7 +270,12 @@ export class OpenAIBackend implements ModelBackend {
 
 async function readErrorSuffix(res: Response): Promise<string> {
 	try {
-		const body = (await res.json()) as { error?: { message?: unknown; type?: unknown } };
+		const body = await readBoundedJson<{ error?: { message?: unknown; type?: unknown } }>(
+			res,
+			'OpenAI error response',
+			OpenAIBackendError,
+			MAX_ERROR_BODY_BYTES
+		);
 		const message = body?.error?.message;
 		if (typeof message === 'string' && message.length > 0) {
 			const truncated =
@@ -292,7 +318,8 @@ function buildChatRequest(
 	model: string,
 	input: GenerateInput,
 	opts: BackendOpts<GenerateOpts>,
-	stream: boolean
+	stream: boolean,
+	isNativeOpenAI: boolean
 ): Record<string, unknown> {
 	const messages = normalizeMessages(input);
 	const tools = extractTools(input);
@@ -309,13 +336,15 @@ function buildChatRequest(
 	}
 	if (typeof opts.temperature === 'number') body.temperature = opts.temperature;
 	if (typeof opts.maxTokens === 'number') {
-		// `max_tokens` is broadly supported across OpenAI and OpenAI-compatible
-		// endpoints. OpenAI is migrating to `max_completion_tokens` for o1/o3+
-		// models but still accepts `max_tokens` on chat completions. Compat
-		// endpoints (Azure, vLLM, Together, OpenRouter) mostly accept the older
-		// field. Switch to `max_completion_tokens` when v1 models we ship
-		// against require it.
-		body.max_tokens = opts.maxTokens;
+		// api.openai.com's reasoning/gpt-5 models reject `max_tokens` (400); use
+		// `max_completion_tokens` there. OpenAI-compatible shims (vLLM, Ollama-compat,
+		// older gateways) only understand `max_tokens`, so keep the legacy field for
+		// any custom baseUrl.
+		if (isNativeOpenAI) {
+			body.max_completion_tokens = opts.maxTokens;
+		} else {
+			body.max_tokens = opts.maxTokens;
+		}
 	}
 	const responseFormat = mapResponseFormat(opts.responseFormat);
 	if (responseFormat) body.response_format = responseFormat;
@@ -428,26 +457,44 @@ interface ToolCallAccumulator {
 	argumentsBuf: string;
 }
 
-function accumulateToolCallDelta(buf: Map<number, ToolCallAccumulator>, delta: OpenAIToolCallDelta): void {
+function accumulateToolCallDelta(
+	buf: Map<number, ToolCallAccumulator>,
+	delta: OpenAIToolCallDelta,
+	totalArgChars: number
+): number {
 	const index = typeof delta.index === 'number' ? delta.index : 0;
 	let acc = buf.get(index);
 	if (!acc) {
+		// Cap total accumulator entries: `index` is upstream-controlled and an
+		// adversarial stream can allocate unbounded map entries without this guard.
+		if (buf.size >= MAX_TOOL_CALL_ACCUMULATOR_ENTRIES) {
+			throw new OpenAIBackendError(
+				`OpenAI tool-call accumulator exceeded ${MAX_TOOL_CALL_ACCUMULATOR_ENTRIES} distinct tool-call entries`
+			);
+		}
 		acc = { argumentsBuf: '' };
 		buf.set(index, acc);
 	}
 	if (delta.id) acc.id = delta.id;
 	if (delta.function?.name) acc.name = delta.function.name;
 	if (typeof delta.function?.arguments === 'string') {
-		// Defend against an unbounded accumulator: the per-event SSE buffer cap
-		// stops a single oversize event, but tool-call arguments are *built up*
-		// across many sub-cap events. Throw before V8 hits string-length limits.
+		// Per-entry cap: the per-event SSE buffer cap stops a single oversize event,
+		// but tool-call arguments are *built up* across many sub-cap events.
 		if (acc.argumentsBuf.length + delta.function.arguments.length > MAX_TOOL_CALL_ARGS_CHARS) {
 			throw new OpenAIBackendError(
 				`OpenAI tool-call arguments exceed ${MAX_TOOL_CALL_ARGS_CHARS} chars (index ${index})`
 			);
 		}
+		// Total-stream cap: 128 entries each at 1 MiB still allows ~128 MiB accumulated.
+		totalArgChars += delta.function.arguments.length;
+		if (totalArgChars > MAX_TOTAL_TOOL_CALL_ARGS_CHARS) {
+			throw new OpenAIBackendError(
+				`OpenAI tool-call arguments exceed total stream cap of ${MAX_TOTAL_TOOL_CALL_ARGS_CHARS} chars`
+			);
+		}
 		acc.argumentsBuf += delta.function.arguments;
 	}
+	return totalArgChars;
 }
 
 function flushToolCallBuffer(buf: Map<number, ToolCallAccumulator>): Partial<ToolCall>[] {

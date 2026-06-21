@@ -7,6 +7,9 @@ const {
 	_setOpenApiGeneratorForTest,
 	_setHttpUrlPrefixForTest,
 } = require('#src/components/mcp/resources');
+// listResources now takes a decoded offset; the transport decodes the opaque
+// cursor (rejecting invalid ones with -32602). Tests decode nextCursor to page.
+const { decodeCursor } = require('#src/components/mcp/pagination');
 
 function makeFakeResources(entries) {
 	// Mirrors the shape of resources/Resources.ts — a Map with .getMatch(path).
@@ -146,23 +149,17 @@ describe('mcp/resources', () => {
 		it('round-trips opaquely through nextCursor', () => {
 			const all = listResources({ user: SUPER, profile: 'application', limit: 1000 }).resources;
 			let collected = [];
-			let cursor;
+			let offset;
 			for (let i = 0; i < 10; i++) {
-				const page = listResources({ user: SUPER, profile: 'application', limit: 1, cursor });
+				const page = listResources({ user: SUPER, profile: 'application', limit: 1, offset });
 				collected = collected.concat(page.resources);
-				cursor = page.nextCursor;
-				if (!cursor) break;
+				if (!page.nextCursor) break;
+				offset = decodeCursor(page.nextCursor);
 			}
 			assert.deepEqual(
 				collected.map((r) => r.uri),
 				all.map((r) => r.uri)
 			);
-		});
-
-		it('treats a bad cursor as offset 0', () => {
-			const page = listResources({ user: SUPER, profile: 'application', limit: 1, cursor: '$$nonsense$$' });
-			const first = listResources({ user: SUPER, profile: 'application', limit: 1 });
-			assert.equal(page.resources[0].uri, first.resources[0].uri);
 		});
 	});
 
@@ -505,6 +502,52 @@ describe('mcp/resources', () => {
 			const allUris = result.resources.map((r) => r.uri);
 			assert.ok(!allUris.some((u) => u.includes('orphan')));
 			assert.ok(allUris.some((u) => u.includes('visible')));
+		});
+	});
+
+	describe('enumerate — description prefix + @hidden suppression', () => {
+		it('prepends ResourceClass.description to https://* resource entries', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog — what shows up in the storefront listing.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const product = resources.find((r) => r.uri === 'https://localhost/Product');
+			assert.ok(product, 'Product https resource present');
+			assert.match(product.description, /Product catalog/, 'prefixed with class description');
+			assert.match(product.description, /Application resource at \/Product/, 'still has the default suffix');
+		});
+
+		it('prepends ResourceClass.description to harper://schema/* entries', () => {
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog row — one per SKU.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const schema = resources.find((r) => r.uri === 'harper://schema/data/product');
+			assert.ok(schema, 'schema entry present');
+			assert.match(schema.description, /Product catalog row/);
+		});
+
+		it('omits @hidden Resources from both https://* and harper://schema/* enumerations', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const HiddenThing = makeTableResource({ databaseName: 'data', tableName: 'hidden_thing' });
+			HiddenThing.hidden = true;
+			HiddenThing.description = 'Should not surface.';
+			_setResourcesForTest(makeFakeResources([['HiddenThing', HiddenThing]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const uris = resources.map((r) => r.uri);
+			assert.ok(!uris.includes('https://localhost/HiddenThing'), 'https entry suppressed');
+			assert.ok(!uris.includes('harper://schema/data/hidden_thing'), 'schema entry suppressed');
+		});
+
+		it('uses the default-only description when ResourceClass has no static description', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Plain = makeTableResource({ databaseName: 'data', tableName: 'plain' });
+			_setResourcesForTest(makeFakeResources([['Plain', Plain]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const plain = resources.find((r) => r.uri === 'https://localhost/Plain');
+			assert.ok(plain);
+			assert.match(plain.description, /^Application resource at \/Plain/, 'no prefix when no class description');
 		});
 	});
 

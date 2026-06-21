@@ -43,6 +43,8 @@ npx mocha unitTests/resources/mytest.js
 
 TypeScript is stripped at runtime via `--conditions=typestrip` (Node.js native type stripping) — no compilation required for development. Use `npm run test:unit:typestrip` to run tests with this mode.
 
+**Test timing:** prefer condition-waits over fixed `delay(N)` sleeps. `await delay(N); assert(sideEffectHappened)` races against loaded runners and is the root cause of a class of flakiness (#1138). Use the shared `waitFor(condition, timeout?, interval?)` helper in `unitTests/waitFor.js` to poll until the actual condition holds. Reserve fixed sleeps for genuinely modeling elapsed time (TTL/expiry windows) or asserting a non-event (that something has _not_ happened yet).
+
 ---
 
 ## Architecture
@@ -190,4 +192,4 @@ source tree — which permanently shadows git's config file. Every subsequent ag
 - `contextStorage` (AsyncLocalStorage) carries per-request context (user, transaction) across async boundaries — this is how authorization and transactions work without explicit parameter threading.
 - Tests under `unitTests/apiTests/` require the server to be stopped first (`node ./dist/bin/harper.js stop`) — `test:unit:apitests` does this automatically.
 - `@export` annotation on a schema class auto-generates a REST API for that table — this is the primary developer-facing API.
-- Test style: write new unit tests with `node:assert/strict` against real modules — **do not add new uses of `sinon` or `rewire`**. Older tests in `unitTests/security/` and `unitTests/utility/` still depend on them but they are not the target shape; match newer tests in `unitTests/config/*`, `unitTests/resources/*`, `unitTests/components/*`. If you can't write a test without stubbing, comment on the issue describing what's missing and stop — don't reach for sinon/rewire as a shortcut.
+- Test style: write new unit tests with `assert` (the bare `node:assert` module) against real modules — **do not add new uses of `sinon` or `rewire`**. Use plain `assert`, **not** `node:assert/strict` — strict mode's deep-equality and coercion rules cause more friction and surprising failures than they prevent; plain `assert` is the house style. Older tests in `unitTests/security/` and `unitTests/utility/` still depend on them but they are not the target shape; match newer tests in `unitTests/config/*`, `unitTests/resources/*`, `unitTests/components/*`. If you can't write a test without stubbing, comment on the issue describing what's missing and stop — don't reach for sinon/rewire as a shortcut.
