@@ -87,13 +87,24 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		case 'in': {
 			if (expr.expr.kind !== 'column') return undefined;
 			if (!Array.isArray(expr.list)) return undefined;
-			const values: unknown[] = [];
+			const attribute = expr.expr.name;
+			const variants: unknown[] = [];
+			const seen = new Set<unknown>();
 			for (const item of expr.list) {
 				if (item.kind !== 'literal') return undefined;
-				values.push(item.value);
+				// Legacy AlaSQL evaluates IN with loose (`==`) membership, so a quoted
+				// numeric (`id IN ('5')`) matches a numeric value (and vice versa).
+				// Single `=` is NOT loose in legacy, so this coercion is IN-only.
+				// Expanding to both forms keeps each branch an indexed equality lookup.
+				for (const variant of looseEqualVariants(item.value)) {
+					if (!seen.has(variant)) {
+						seen.add(variant);
+						variants.push(variant);
+					}
+				}
 			}
-			const conditions: ConditionNode[] = values.map((v) => ({
-				attribute: expr.expr.kind === 'column' ? expr.expr.name : '',
+			const conditions: ConditionNode[] = variants.map((v) => ({
+				attribute,
 				comparator: expr.negated ? 'ne' : 'equals',
 				value: v,
 			}));
@@ -156,4 +167,23 @@ function pickColumnAndLiteral(a: ExprNode, b: ExprNode): { column: string; value
 	if (a.kind === 'column' && b.kind === 'literal') return { column: a.name, value: b.value };
 	if (b.kind === 'column' && a.kind === 'literal') return { column: b.name, value: a.value };
 	return undefined;
+}
+
+/**
+ * Values an IN literal should match under legacy AlaSQL's loose (`==`) IN
+ * semantics: a numeric string also matches the equivalent number and vice versa
+ * (so `id IN ('5')` finds a numeric 5). Returns the original value plus any
+ * cross-type form; each becomes its own indexed equality branch. The exact
+ * round-trip guard (`String(Number(v)) === v`) avoids spurious variants for
+ * non-canonical strings like '05' or '5px'.
+ */
+function looseEqualVariants(value: unknown): unknown[] {
+	if (typeof value === 'string') {
+		if (value.trim() !== '' && String(Number(value)) === value) return [value, Number(value)];
+		return [value];
+	}
+	if (typeof value === 'number' && Number.isFinite(value)) {
+		return [value, String(value)];
+	}
+	return [value];
 }

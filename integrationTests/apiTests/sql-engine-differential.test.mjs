@@ -17,10 +17,8 @@
  * served by the new engine; deliberately non-indexable predicates exercise the
  * fallback path.
  *
- * NOT yet covered (known phase-5 cutover blockers — see sqlEngine/PLAN.md):
- * (1) literal type-coercion on hash lookups — `id IN ('123')` vs a numeric PK
- * silently diverges; (2) a non-PK `LIKE` DELETE returns 403 via the selector
- * path. Add regression cases here once both are fixed.
+ * Covers the phase-5 coercion blocker (loose `IN` membership — `id IN ('1')` vs a
+ * numeric column). Still NOT covered: the non-PK `LIKE` DELETE 403 (see PLAN.md).
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -167,6 +165,14 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('like-contains', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE '%a%'");
 		// Non-indexable predicate (qty not indexed) — exercises the fallback path.
 		await diff('between-unindexed', 'SELECT id FROM dev.widget WHERE qty BETWEEN 15 AND 35');
+	});
+
+	test('SELECT — loose IN coercion (string literals vs numeric column)', async () => {
+		// Legacy AlaSQL matches quoted numerics in IN against numeric values; the new
+		// engine must too (single `=` stays strict in both — not tested as a match).
+		await diff('in-str-pk', "SELECT id FROM dev.widget WHERE id IN ('1', '3')");
+		await diff('in-str-nonpk', "SELECT id, qty FROM dev.widget WHERE qty IN ('20', '30')");
+		await diff('in-mixed', "SELECT id FROM dev.widget WHERE id IN (2, '4')");
 	});
 
 	test('SELECT — NULL semantics', async () => {

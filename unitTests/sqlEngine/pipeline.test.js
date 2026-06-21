@@ -142,9 +142,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		const data = await runSql('SELECT * FROM dev.user WHERE id = 2');
 		assert.deepStrictEqual(data, [{ id: 2, name: 'bob', age: 25, city: 'austin' }]);
 		assert.strictEqual(mockTable._lastTarget.allowFullScan, false);
-		assert.deepStrictEqual(mockTable._lastTarget.conditions, [
-			{ attribute: 'id', comparator: 'equals', value: 2 },
-		]);
+		assert.deepStrictEqual(mockTable._lastTarget.conditions, [{ attribute: 'id', comparator: 'equals', value: 2 }]);
 	});
 
 	it('SELECT projection only fetches requested columns', async () => {
@@ -165,6 +163,19 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		const data = await runSql('SELECT name FROM dev.user WHERE id IN (1, 3)');
 		const names = data.map((r) => r.name).sort();
 		assert.deepStrictEqual(names, ['alice', 'carol']);
+	});
+
+	it('IN coerces quoted-numeric literals to match numeric values (legacy loose IN)', async () => {
+		// Mock table matches strictly (===), so the row only matches because the
+		// engine expands '1'/'3' to include their numeric forms.
+		const data = await runSql("SELECT name FROM dev.user WHERE id IN ('1', '3')");
+		const names = data.map((r) => r.name).sort();
+		assert.deepStrictEqual(names, ['alice', 'carol']);
+		// Each quoted numeric pushes both the string and number form.
+		const idEquals = mockTable._lastTarget.conditions[0].conditions
+			.filter((c) => c.attribute === 'id' && c.comparator === 'equals')
+			.map((c) => c.value);
+		assert.deepStrictEqual(idEquals, ['1', 1, '3', 3]);
 	});
 
 	it('BETWEEN maps to between comparator', async () => {
