@@ -43,11 +43,14 @@ async function* executeScan(
 	const resource = scan.boundTable?.resource as SearchableTable | undefined;
 	if (!resource) throw new Error('PhysicalIndexScan: scan has no boundTable.resource');
 
-	const target: Record<string, unknown> = {
-		conditions: opts.conditions,
-		operator: opts.operator,
-		allowFullScan: false,
-	};
+	const target: Record<string, unknown> = { allowFullScan: false };
+	// Only attach conditions/operator when there is at least one — Table.search
+	// rejects an empty `and`/`or` group ("requires at least one condition"). A
+	// scan with no conditions is driven by its pushed sort/limit alone.
+	if (opts.conditions.length > 0) {
+		target.conditions = opts.conditions;
+		target.operator = opts.operator;
+	}
 	if (scan.projection) target.select = scan.projection;
 	if (scan.pushedSort && scan.pushedSort.length > 0) {
 		const k = scan.pushedSort[0];

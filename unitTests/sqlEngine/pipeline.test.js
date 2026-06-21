@@ -246,6 +246,13 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		assert.strictEqual(mockTable._lastTarget.offset, 1);
 	});
 
+	it('rejects a no-WHERE ORDER BY (full ordered scan) without allowFullScan', async () => {
+		// A pushed sort with no index-driving condition is a full table scan; the
+		// engine must reject (→ legacy fallback), not emit an empty `and` group that
+		// Table.search throws on.
+		await assert.rejects(() => runSql('SELECT name FROM dev.user ORDER BY name'), EngineUnsupportedError);
+	});
+
 	it('rejects unindexed-only WHERE without allowFullScan', async () => {
 		await assert.rejects(() => runSql("SELECT * FROM dev.user WHERE city = 'denver'"), EngineUnsupportedError);
 	});

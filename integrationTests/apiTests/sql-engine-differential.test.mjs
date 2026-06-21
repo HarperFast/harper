@@ -188,6 +188,9 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('order desc', 'SELECT id, qty FROM dev.widget WHERE id >= 1 ORDER BY qty DESC');
 		await diff('limit offset', 'SELECT id FROM dev.widget WHERE id >= 1 ORDER BY id LIMIT 2 OFFSET 1');
 		await diff('distinct', 'SELECT DISTINCT tag FROM dev.widget WHERE id >= 1');
+		// No-WHERE ORDER BY is a full ordered scan — the new engine rejects and falls
+		// back (must match legacy, not error with an empty `and` group).
+		await diff('order-no-where', 'SELECT id FROM dev.widget ORDER BY id');
 	});
 
 	test('SELECT — aggregates', async () => {

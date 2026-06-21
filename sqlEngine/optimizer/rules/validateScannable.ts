@@ -42,7 +42,10 @@ function validateScan(scan: LogicalScan, allowFullScan: boolean): void {
 	const { conditions } = whereToConditions(scan.pushedFilter);
 	const hasIndexedCondition = conditions.some((c) => conditionUsesIndex(c, scan.boundTable?.attributes));
 	if (hasIndexedCondition) return;
-	if (scan.pushedSort && scan.pushedSort.length > 0) return; // sort can drive a scan in some adapters
+	// A pushed sort with no index-driving condition is a full ordered traversal of
+	// the table — Table.search treats the sort pseudo-condition as needFullScan and
+	// rejects it under allowFullScan:false (even with a LIMIT). So it is NOT
+	// scannable here; reject so 'auto' falls back to legacy instead of erroring.
 	throw new EngineUnsupportedError(
 		`scan on "${scan.table.database}.${scan.table.table}" has no usable index condition`,
 		scan.pushedFilter
