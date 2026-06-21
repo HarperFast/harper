@@ -296,19 +296,41 @@ async function restartWorkers(
 				// listener group while the old worker is still serving, so the pool never loses capacity
 				// and clients never see a connection-refused gap during the restart. (Startups are awaited
 				// one at a time, so at most one extra worker is booting at once regardless of maxWorkersDown.)
+				// Mark the old worker shut down up front: if it happens to exit while we are booting its
+				// replacement, startWorker's unexpected-exit handler must not auto-restart it (that would
+				// leave a duplicate once the replacement is up). Restored below if the replacement fails.
+				worker.wasShutdown = true;
 				let newWorker = worker.startCopy();
+				// Likewise suppress auto-restart on the replacement *while it boots*: if it fails to come up
+				// we leave the existing worker in place, and a background retry succeeding later would push the
+				// pool over its configured worker count. Re-enabled once it has started.
+				newWorker.wasShutdown = true;
 				let started = await new Promise((resolve) => {
+					// Generous backstop so a replacement that deadlocks during init can't wedge the whole
+					// restart forever. Far longer than any legitimate startup, so it never fires in practice.
+					let timeout = setTimeout(
+						() => {
+							harperLogger.error(
+								'Replacement worker did not start in time; leaving the existing worker in place',
+								newWorker.threadId
+							);
+							newWorker.terminate(); // canPreStartReplacement excludes Bun, so terminate() is safe here
+							cleanup();
+							resolve(false);
+						},
+						Math.max(threadTerminationTimeout * 2, 60000)
+					).unref();
 					const startListener = (message) => {
 						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
 							harperLogger.trace('Worker has started', newWorker.threadId);
+							newWorker.wasShutdown = false; // now a normal managed worker; allow future auto-restart
 							cleanup();
 							resolve(true);
 						}
 					};
 					// If the replacement dies before it ever starts listening, don't wait forever — and
 					// crucially, leave the still-healthy worker it was meant to replace in place rather than
-					// taking the pool down (e.g. a faulty deploy whose workers keep crashing). startWorker's
-					// own unexpected-exit handler keeps retrying the replacement in the background.
+					// taking the pool down (e.g. a faulty deploy whose workers keep crashing).
 					const exitListener = () => {
 						harperLogger.warn(
 							'Replacement worker exited before starting; leaving the existing worker in place',
@@ -318,6 +340,7 @@ async function restartWorkers(
 						resolve(false);
 					};
 					const cleanup = () => {
+						clearTimeout(timeout);
 						newWorker.off('message', startListener);
 						newWorker.off('exit', exitListener);
 					};
@@ -325,7 +348,12 @@ async function restartWorkers(
 					newWorker.on('message', startListener);
 					newWorker.on('exit', exitListener);
 				});
-				if (!started) continue; // replacement failed to come up; keep the existing worker serving
+				if (!started) {
+					// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
+					// protection if it is still alive (it may have exited on its own during the wait).
+					if (workers.includes(worker)) worker.wasShutdown = false;
+					continue;
+				}
 			}
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			try {
