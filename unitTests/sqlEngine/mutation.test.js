@@ -96,11 +96,17 @@ function runSql(sql) {
 	return new Promise((resolve, reject) => {
 		const parsed = alasql.parse(sql);
 		const variant = sql.trim().split(/\s+/)[0].toLowerCase();
+		const hdb_user = { username: 'test' };
+		// Faithful to sqlTranslator/index.ts processAST: SELECT is dispatched with
+		// the bare AST, while INSERT/UPDATE/DELETE are wrapped as { statement,
+		// hdb_user } (the legacy handler arg shape).
+		const ast = parsed.statements[0];
+		const statement = variant === 'select' ? ast : { statement: ast, hdb_user };
 		router.route(
 			{
 				variant,
-				jsonMessage: { hdb_user: { username: 'test' }, bypass_auth: true },
-				statement: parsed.statements[0],
+				jsonMessage: { hdb_user, bypass_auth: true },
+				statement,
 				legacy: () => reject(new Error('legacy fallback should not be invoked')),
 			},
 			(err, data) => (err ? reject(err) : resolve(data))
