@@ -203,7 +203,7 @@ describe('sqlEngine phase 4: mutations', () => {
 	it('DELETE removes matched rows and reports deleted_hashes', async () => {
 		const res = await runSql('DELETE FROM dev.widget WHERE id = 1');
 		assert.deepStrictEqual(res.deleted_hashes, [1]);
-		assert.strictEqual(res.message, '1 of 1 records successfully deleted');
+		assert.strictEqual(res.message, '1 of 1 record successfully deleted');
 		assert.strictEqual(widgets._store.has(1), false);
 		assert.strictEqual(widgets._store.size, 2);
 	});

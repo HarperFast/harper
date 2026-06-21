@@ -201,8 +201,12 @@ export async function runDelete(bound: BoundDelete, ctx: SqlEngineContext): Prom
 			deleted_hashes.push(id);
 		}
 		const total = deleted_hashes.length + skipped_hashes.length;
+		// Legacy SQL DELETE pluralizes "record" by the deleted count
+		// (sqlTranslator/deleteTranslator.ts + harperBridge.deleteRecords):
+		// "1 of 1 record …" but "0 of 0 records …".
+		const noun = deleted_hashes.length === 1 ? 'record' : 'records';
 		return {
-			message: `${deleted_hashes.length} of ${total} records successfully deleted`,
+			message: `${deleted_hashes.length} of ${total} ${noun} successfully deleted`,
 			deleted_hashes,
 			skipped_hashes,
 		};

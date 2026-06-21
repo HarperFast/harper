@@ -100,7 +100,7 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 	test('DELETE removes matched rows and returns deleted_hashes', async () => {
 		const res = await sql('DELETE FROM dev.widget WHERE id = 5').expect(200);
 		assert.deepEqual(res.body.deleted_hashes, [5]);
-		assert.match(res.body.message, /1 of 1 records successfully deleted/);
+		assert.match(res.body.message, /1 of 1 record successfully deleted/);
 
 		const read = await byHash('widget', [5]).expect(200);
 		assert.equal(read.body.length, 0);
