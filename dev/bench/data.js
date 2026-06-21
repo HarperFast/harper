@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782031593897,
+  "lastUpdate": 1782031596615,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -2198,6 +2198,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 47.93,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "d0d04ebce7436180219d5d045f490a84b68b6ab4",
+          "message": "chore(deps): bump @harperfast/integration-testing to ^0.6.2\n\nPicks up the loopback conflict-canary HTTP-port fix (integration-testing#20):\nthe canary now probes both the operations port AND the HTTP port, detecting a\nlingering Harper worker (main thread exited, HTTP workers still bound via\nSO_REUSEPORT) before recycling its loopback address — fixing the ECONNREFUSED\nshard-contamination seen under CI sharding.\n\n0.5.2 -> 0.6.2 has no breaking API changes: the only runtime deltas are\n'fix: Prevent global state smashing' (0.5.4) and the canary (0.6.2); the 0.6.0\nminor is purely the semantic-release CI automation feat, not an API change.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-20T22:26:51Z",
+          "url": "https://github.com/HarperFast/harper/commit/d0d04ebce7436180219d5d045f490a84b68b6ab4"
+        },
+        "date": 1782031595784,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.35,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.88,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.36,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 17.75,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 21.51,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.2,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 34.11,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.08,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 16.73,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 157.54,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 46.92,
             "unit": "ms"
           }
         ]
