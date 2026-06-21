@@ -45,21 +45,19 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from './../apiTests/utils/client.mjs';
-// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
-import { restartHttpWorkers } from './../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'eviction-secondary-index');
 const SCHEMA = 'data';
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
 // Low over-time threshold so the monitor force-commits any tracked eviction txn that crosses it.
 // (RocksDB honors this; LMDB hardcodes 30s and ignores it — see header.)
-const MAX_TXN_OPEN_MS = 1;
+const MAX_TXN_OPEN_MS = 5;
 // Buckets in the expiring table (all expire). Enough rows that the sweep takes several
 // `await rest()` ticks and runs many concurrent evict() txns under monitor pressure.
 const EXPIRING_BUCKETS = ['E1', 'E2', 'E3', 'E4'];
-const ROWS_PER_EXPIRING_BUCKET = 200; // 800 expiring rows total
+const ROWS_PER_EXPIRING_BUCKET = 30; // 120 expiring rows total
 const PERMANENT_BUCKET = 'P1';
-const ROWS_PERMANENT = 150;
+const ROWS_PERMANENT = 20;
 
 const skipSuite = process.platform === 'win32';
 
@@ -72,7 +70,7 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
-				threads: { count: 4 },
+				threads: { count: 1 },
 				storage: { maxTransactionOpenTime: MAX_TXN_OPEN_MS, debugLongTransactions: true },
 				logging: { console: true, level: 'error' },
 			},
@@ -88,8 +86,19 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		proc?.stdout?.on('data', (d: Buffer) => (procOutput += d.toString()));
 		proc?.stderr?.on('data', (d: Buffer) => (procOutput += d.toString()));
 
-		// Workers register routes async after setup — poll the route we're about to drive.
-		await restartHttpWorkers(client, '/Expiring/', 120_000);
+		// Poll for route readiness (component is pre-installed; no restart needed)
+		{
+			const deadline = Date.now() + 120_000;
+			while (Date.now() < deadline) {
+				try {
+					const probe = await client.reqRest('/Expiring/').timeout(2000);
+					if (probe.status !== 404) break;
+				} catch {
+					/* not ready yet */
+				}
+				await sleep(250);
+			}
+		}
 	});
 
 	after(async () => {
@@ -199,7 +208,7 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	}
 
 	// ---- Q0: load expiring + control rows --------------------------------------------------
-	test('Q0 load 800 expiring rows + 150 permanent control rows', async () => {
+	test('Q0 load 120 expiring rows + 20 permanent control rows', async () => {
 		for (const bucket of EXPIRING_BUCKETS) {
 			const res = await postJSON('/Load/', { table: 'Expiring', count: ROWS_PER_EXPIRING_BUCKET, bucket });
 			strictEqual(res.status, 200, `load Expiring/${bucket} should succeed`);

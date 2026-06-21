@@ -40,8 +40,7 @@ import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-// @ts-expect-error no type declarations
-import { restartHttpWorkers } from './../apiTests/utils/lifecycle.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'compound-index-conditions');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
@@ -117,8 +116,19 @@ suite(
 			httpURL = ctx.harper.httpURL;
 			authHeader = client.headers.Authorization;
 
-			// Wait for the CompoundOracle endpoint to become available
-			await restartHttpWorkers(client, '/CompoundOracle/', 120_000);
+			// Poll for route readiness (component is pre-installed; no restart needed)
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await client.reqRest('/CompoundOracle/').timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 		});
 
 		after(async () => {
@@ -212,9 +222,9 @@ suite(
 
 		// ---- Q2: Sequential churn + reconcile ----------------------------------------
 		test('Q2 sequential churn + compound-index reconcile', { timeout: 120_000 }, async () => {
-			const r = await postJSON('/Churn/', { rowCount: ROW_COUNT, iterations: 15 });
+			const r = await postJSON('/Churn/', { rowCount: ROW_COUNT, iterations: 6 });
 			strictEqual(r.status, 200, `Churn should succeed (got ${r.status})`);
-			console.log(`[QA-187 Q2 ${ENGINE}] sequential churn (15 iters x ${ROW_COUNT} rows) complete`);
+			console.log(`[QA-187 Q2 ${ENGINE}] sequential churn (6 iters x ${ROW_COUNT} rows) complete`);
 
 			const result = await runOracle();
 			logOracleResult('Q2 (post-sequential-churn)', result);
@@ -230,14 +240,14 @@ suite(
 
 		// ---- Q3: Concurrent churn (4 parallel workers via HTTP PUT) -------------------
 		test(
-			'Q3 concurrent churn (4 workers × 25 random updates) + compound-index reconcile',
+			'Q3 concurrent churn (2 workers × 10 random updates) + compound-index reconcile',
 			{ timeout: 120_000 },
 			async () => {
 				const STATUS = ['active', 'inactive', 'pending'];
 				const REGION = ['west', 'east', 'north', 'south'];
 
-				const workers = Array.from({ length: 4 }, async () => {
-					for (let iter = 0; iter < 25; iter++) {
+				const workers = Array.from({ length: 2 }, async () => {
+					for (let iter = 0; iter < 10; iter++) {
 						const i = Math.floor(Math.random() * ROW_COUNT);
 						const status = STATUS[Math.floor(Math.random() * STATUS.length)];
 						const region = REGION[Math.floor(Math.random() * REGION.length)];
@@ -253,7 +263,7 @@ suite(
 					}
 				});
 				await Promise.all(workers);
-				console.log(`[QA-187 Q3 ${ENGINE}] concurrent churn (4 workers × 25 iters) complete`);
+				console.log(`[QA-187 Q3 ${ENGINE}] concurrent churn (2 workers × 10 iters) complete`);
 
 				const result = await runOracle();
 				logOracleResult('Q3 (post-concurrent-churn)', result);

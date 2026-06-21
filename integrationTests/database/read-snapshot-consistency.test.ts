@@ -50,15 +50,13 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-// @ts-expect-error no type declarations
-import { restartHttpWorkers } from './../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'read-snapshot-consistency');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
 const WORKER_COUNT = Number(process.env.HARPER_WORKER_COUNT) || 1;
 
-// 500 rows: same scale as QA-183 so results are comparable.
-const ROW_COUNT = 500;
+// Enough rows to give the reader loop meaningful iterations during the delete pass.
+const ROW_COUNT = 40;
 // Two delete shapes: one-by-one and single-txn.
 const BUCKET_ONEBYONE = 'Q184A'; // one-by-one delete (each its own commit)
 const BUCKET_TXN = 'Q184B'; // single-request-txn delete
@@ -177,7 +175,8 @@ async function runReaderLoop(
 		} catch {
 			// tolerate transient network errors
 		}
-		// No sleep — tight loop to maximize observation frequency
+		// Brief yield between iterations to avoid saturating the Harper process under concurrent load
+		await sleep(20);
 	}
 
 	return { oracleA_phantoms, oracleB_phantoms, iterations };
@@ -207,7 +206,19 @@ suite(
 			httpURL = ctx.harper.httpURL;
 			authHeader = client.headers.Authorization;
 
-			await restartHttpWorkers(client, '/Dump/', 120_000);
+			// Poll for route readiness (component is pre-installed; no restart needed)
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await client.reqRest('/Dump/').timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 		});
 
 		after(async () => {

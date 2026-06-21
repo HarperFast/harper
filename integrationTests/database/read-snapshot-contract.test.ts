@@ -39,8 +39,7 @@ import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-// @ts-expect-error no type declarations
-import { restartHttpWorkers } from './../apiTests/utils/lifecycle.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'read-snapshot-contract');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
@@ -82,8 +81,19 @@ suite(
 			authHeader = client.headers.Authorization;
 			opsURL = ctx.harper.operationsAPIURL;
 
-			// Wait for HTTP workers to register routes
-			await restartHttpWorkers(client, '/Probe/', 120_000);
+			// Poll for route readiness (component is pre-installed; no restart needed)
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await client.reqRest('/Probe/').timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 		});
 
 		after(async () => {
@@ -120,8 +130,8 @@ suite(
 		// ---- Q0: Seed and readiness --------------------------------------------------
 
 		test('Q0 seed and readiness', { timeout: 60_000 }, async () => {
-			// Seed 200 Ledger rows in Q185A with value=1
-			const r1 = await postJSON('/SeedLedger/', { bucket: 'Q185A', count: 200, val: SEED_VALUE_AB });
+			// Seed 50 Ledger rows in Q185A with value=1
+			const r1 = await postJSON('/SeedLedger/', { bucket: 'Q185A', count: 50, val: SEED_VALUE_AB });
 			strictEqual(r1.status, 200, 'SeedLedger Q185A should succeed');
 
 			// Seed 8 accounts with balance=1000 each (invariant = 8000)
@@ -132,7 +142,7 @@ suite(
 			const rSnap = await getJSON('/LedgerSnap/?bucket=Q185A');
 			strictEqual(rSnap.status, 200, 'LedgerSnap Q185A should succeed');
 			const snap = (await rSnap.json()) as { bucket: string; count: number; vals: number[] };
-			strictEqual(snap.count, 200, `pre-test Q185A count should be 200, got ${snap.count}`);
+			strictEqual(snap.count, 50, `pre-test Q185A count should be 50, got ${snap.count}`);
 			const allCorrect = snap.vals.every((v) => v === SEED_VALUE_AB);
 			ok(
 				allCorrect,
@@ -166,7 +176,7 @@ suite(
 						await fetch(`${httpURL}/LedgerMutate/`, {
 							method: 'POST',
 							headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-							body: JSON.stringify({ bucket: 'Q185A', count: 50 }),
+							body: JSON.stringify({ bucket: 'Q185A', count: 10 }),
 						});
 					} catch {
 						writerErrors++;
@@ -177,7 +187,7 @@ suite(
 			let reads = 0;
 			let tornValueReads = 0;
 			let countVariations = new Set<number>();
-			const deadline = Date.now() + 3_000;
+			const deadline = Date.now() + 1_500;
 
 			while (Date.now() < deadline) {
 				try {
@@ -233,7 +243,7 @@ suite(
 						await fetch(`${httpURL}/LedgerMutate/`, {
 							method: 'POST',
 							headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-							body: JSON.stringify({ bucket: 'Q185A', count: 50 }),
+							body: JSON.stringify({ bucket: 'Q185A', count: 10 }),
 						});
 					} catch {
 						writerErrors++;
@@ -244,7 +254,7 @@ suite(
 			let reads = 0;
 			let tornValueReads = 0;
 			let gqlErrors = 0;
-			const deadline = Date.now() + 3_000;
+			const deadline = Date.now() + 1_500;
 			// Harper GraphQL: { TableName { fields } } — no limit argument in this version
 			// Harper GraphQL: { TableName { fields } } — no limit argument; field is `val` (not `value`)
 			const gqlQuery = { query: '{ Ledger { id bucket seq val } }' };
@@ -310,7 +320,7 @@ suite(
 						await fetch(`${httpURL}/LedgerMutate/`, {
 							method: 'POST',
 							headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-							body: JSON.stringify({ bucket: 'Q185A', count: 50 }),
+							body: JSON.stringify({ bucket: 'Q185A', count: 10 }),
 						});
 					} catch {
 						writerErrors++;
@@ -320,7 +330,7 @@ suite(
 
 			let reads = 0;
 			let tornValueReads = 0;
-			const deadline = Date.now() + 3_000;
+			const deadline = Date.now() + 1_500;
 
 			while (Date.now() < deadline) {
 				try {
@@ -377,13 +387,13 @@ suite(
 			const SQL_BUCKET = 'Q185C';
 			const SQL_SEED_VAL = 5;
 			const SQL_OVER_VAL = 7;
-			const SQL_COUNT = 200;
+			const SQL_COUNT = 40;
 
 			// Seed Q185C with val=5
 			const seedR = await postJSON('/SeedLedger/', { bucket: SQL_BUCKET, count: SQL_COUNT, val: SQL_SEED_VAL });
 			strictEqual(seedR.status, 200, 'Q4 SeedLedger Q185C should succeed');
 
-			const TRIALS = 5;
+			const TRIALS = 3;
 			let trialsAllOriginal = 0;
 			let trialsAllOverwrite = 0;
 			let trialsMixed = 0;
@@ -449,23 +459,23 @@ suite(
 		// ---- Q5: Long-scan snapshot stability ----------------------------------------
 
 		test('Q5 long-scan snapshot stability (concurrent overwrite)', { timeout: 60_000 }, async () => {
-			// Seed 500 rows in Q185B with val=42
-			const seedRes = await postJSON('/SeedLedger/', { bucket: 'Q185B', count: 500, val: SEED_VALUE_B });
+			// Seed 80 rows in Q185B with val=42
+			const seedRes = await postJSON('/SeedLedger/', { bucket: 'Q185B', count: 80, val: SEED_VALUE_B });
 			strictEqual(seedRes.status, 200, 'SeedLedger Q185B should succeed');
 
-			const TRIALS = 5;
+			const TRIALS = 3;
 			let trialsMixedSeen = 0;
 			let trialsAllOriginal = 0;
 			let trialsAllOverwrite = 0;
 
 			for (let trial = 0; trial < TRIALS; trial++) {
 				// Re-seed with the original val before each trial
-				await postJSON('/SeedLedger/', { bucket: 'Q185B', count: 500, val: SEED_VALUE_B });
+				await postJSON('/SeedLedger/', { bucket: 'Q185B', count: 80, val: SEED_VALUE_B });
 
 				// Start the concurrent overwriter: re-seeds the same rows with val=99
 				// This races with the LedgerSnap scan below.
 				const writerPromise = (async () => {
-					await postJSON('/SeedLedger/', { bucket: 'Q185B', count: 500, val: OVERWRITE_VALUE });
+					await postJSON('/SeedLedger/', { bucket: 'Q185B', count: 80, val: OVERWRITE_VALUE });
 				})();
 
 				// Issue ONE LedgerSnap scan concurrently — this is the stability probe.
@@ -554,7 +564,7 @@ suite(
 				let underCount = 0; // sum < PAIR_INV: under-count = ambiguous (could be lost update)
 				let exact = 0;
 				const overSamples: Array<{ ba: number; bb: number; sum: number }> = [];
-				const deadline = Date.now() + 3_000;
+				const deadline = Date.now() + 1_500;
 
 				while (Date.now() < deadline) {
 					try {

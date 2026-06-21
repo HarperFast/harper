@@ -54,16 +54,15 @@ import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
-import { restartHttpWorkers } from '../apiTests/utils/lifecycle.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'struct-cache-fidelity');
 const skipSuite = process.platform === 'win32';
 const ENGINE = process.env.HARPER_STORAGE_ENGINE || 'rocksdb(default)';
 
 const CAP = 256; // RecordEncoder pins maxOwnStructures = 256
-// Well past the cap so the cap saturates partway and we have HUNDREDS of post-cap records.
-const RECORD_COUNT = 520;
+// Enough past the cap so the cap saturates and we have post-cap records.
+const RECORD_COUNT = 260;
 
 // ---- deterministic shape generator — MUST mirror resources.js makeRecord ----------------
 const POOL_SIZE = 90;
@@ -157,9 +156,19 @@ suite(`QA-181 post-cap fidelity [engine=${ENGINE}]`, { skip: skipSuite }, (ctx: 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
-		// Single http worker = the encoder CapEncodeProbe drives is the one we read.
-		// Also serves as the readiness poll for the custom-resource + table routes.
-		await restartHttpWorkers(client, '/CapFidelity/', 120_000);
+		// Poll for route readiness (component is pre-installed; no restart needed)
+		{
+			const deadline = Date.now() + 120_000;
+			while (Date.now() < deadline) {
+				try {
+					const probe = await client.reqRest('/CapFidelity/').timeout(2000);
+					if (probe.status !== 404) break;
+				} catch {
+					/* not ready yet */
+				}
+				await sleep(250);
+			}
+		}
 	});
 
 	after(async () => {

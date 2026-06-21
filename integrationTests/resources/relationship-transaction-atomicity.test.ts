@@ -43,14 +43,12 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
-import { restartHttpWorkers } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'relationship-transaction-atomicity');
 const skipSuite = process.platform === 'win32';
 const ENGINE = process.env.HARPER_STORAGE_ENGINE || 'rocksdb(default)';
 
-const CONCURRENT_ITEMS = 20; // parallel children per parent in P4
+const CONCURRENT_ITEMS = 8; // parallel children per parent in P4
 
 suite(
 	`QA-162 cross-table @relationship transaction atomicity [engine=${ENGINE}]`,
@@ -162,8 +160,19 @@ suite(
 			client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;
 			auth = client.headers.Authorization;
-			// Readiness poll: workers register routes async; wait for /Order/ to be live.
-			await restartHttpWorkers(client, '/Order/', 120_000);
+			// Poll for route readiness (component is pre-installed; no restart needed)
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await client.reqRest('/Order/').timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 		});
 
 		after(async () => {

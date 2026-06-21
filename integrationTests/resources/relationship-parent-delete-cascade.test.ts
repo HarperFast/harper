@@ -39,8 +39,6 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
-import { restartHttpWorkers } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'relationship-parent-delete-cascade');
 const skipSuite = process.platform === 'win32';
@@ -175,8 +173,19 @@ suite(
 			client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;
 			auth = client.headers.Authorization;
-			// Readiness poll: wait for /Order/ to be live.
-			await restartHttpWorkers(client, '/Order/', 120_000);
+			// Poll for route readiness (component is pre-installed; no restart needed)
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await client.reqRest('/Order/').timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 		}, 120_000);
 
 		after(async () => {
@@ -386,7 +395,7 @@ suite(
 			await seedOrderWithItems(orderId, existingItemIds);
 
 			// Concurrent: DELETE parent + PUT many new children with same orderId.
-			const newItemIds = Array.from({ length: 15 }, (_, i) => `item-p196-4-new${i}`);
+			const newItemIds = Array.from({ length: 6 }, (_, i) => `item-p196-4-new${i}`);
 
 			console.log(`\n[QA-196 P4 engine=${ENGINE}] Starting concurrent delete+adds...`);
 

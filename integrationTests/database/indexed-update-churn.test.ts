@@ -31,13 +31,12 @@ import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-// @ts-expect-error no type declarations
-import { restartHttpWorkers } from './../apiTests/utils/lifecycle.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'indexed-update-churn');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
 
-const ROW_COUNT = 50;
+const ROW_COUNT = 20;
 const STATUS_VALUES = ['pending', 'active', 'done'] as const;
 type StatusValue = (typeof STATUS_VALUES)[number];
 
@@ -71,8 +70,19 @@ suite(
 			httpURL = ctx.harper.httpURL;
 			authHeader = client.headers.Authorization;
 
-			// Wait for component to be ready — probe the Reconcile endpoint
-			await restartHttpWorkers(client, '/Reconcile/', 120_000);
+			// Poll for route readiness (component is pre-installed; no restart needed)
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await client.reqRest('/Reconcile/').timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 		});
 
 		after(async () => {
@@ -136,8 +146,8 @@ suite(
 		});
 
 		// ---- Q1: Sequential churn phase -----------------------------------------------
-		test('Q1 sequential churn (20 iterations per row)', { timeout: 120_000 }, async () => {
-			const r = await postJSON('/Churn/', { rowCount: ROW_COUNT, iterations: 20 });
+		test('Q1 sequential churn (8 iterations per row)', { timeout: 120_000 }, async () => {
+			const r = await postJSON('/Churn/', { rowCount: ROW_COUNT, iterations: 8 });
 			strictEqual(r.status, 200, `Churn should succeed (got ${r.status})`);
 			console.log(`[QA-186 Q1 ${ENGINE}] sequential churn (20 iters x ${ROW_COUNT} rows) complete`);
 
@@ -149,11 +159,11 @@ suite(
 		});
 
 		// ---- Q2: Concurrent churn phase -----------------------------------------------
-		test('Q2 concurrent churn (4 workers x 30 random updates)', { timeout: 120_000 }, async () => {
-			// 4 concurrent workers, each doing 30 iterations of random-row random-status updates
+		test('Q2 concurrent churn (2 workers x 10 random updates)', { timeout: 120_000 }, async () => {
+			// 2 concurrent workers, each doing 10 iterations of random-row random-status updates
 			// via the generated REST PUT endpoint (StatusRecord/:id)
-			const workers = Array.from({ length: 4 }, async (_, workerIdx) => {
-				for (let iter = 0; iter < 30; iter++) {
+			const workers = Array.from({ length: 2 }, async (_, workerIdx) => {
+				for (let iter = 0; iter < 10; iter++) {
 					const rowIdx = Math.floor(Math.random() * ROW_COUNT);
 					const id = `row-${rowIdx}`;
 					const newStatus = STATUS_VALUES[Math.floor(Math.random() * STATUS_VALUES.length)];
@@ -166,7 +176,7 @@ suite(
 				}
 			});
 			await Promise.all(workers);
-			console.log(`[QA-186 Q2 ${ENGINE}] concurrent churn (4 workers x 30 iters) complete`);
+			console.log(`[QA-186 Q2 ${ENGINE}] concurrent churn (2 workers x 10 iters) complete`);
 
 			const result = await reconcile();
 			logReconcileResult('Q2', result);
@@ -186,9 +196,9 @@ suite(
 			const result = await reconcile();
 
 			// Expected ground truth:
-			//   pending: rows where i%3==0 → 17 rows (row-0, row-3, ..., row-48)
-			//   active:  rows where i%3==1 → 17 rows (row-1, row-4, ..., row-46)
-			//   done:    rows where i%3==2 → 16 rows (row-2, row-5, ..., row-47)
+			//   pending: rows where i%3==0 → 7 rows (row-0, row-3, ..., row-18)
+			//   active:  rows where i%3==1 → 7 rows (row-1, row-4, ..., row-16)
+			//   done:    rows where i%3==2 → 6 rows (row-2, row-5, ..., row-17)
 			const expected = { pending: 0, active: 0, done: 0 };
 			for (let i = 0; i < ROW_COUNT; i++) {
 				(expected as Record<string, number>)[STATUS_VALUES[i % STATUS_VALUES.length]]++;

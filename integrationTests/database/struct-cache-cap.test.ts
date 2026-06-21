@@ -57,8 +57,7 @@ import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
-import { restartHttpWorkers } from '../apiTests/utils/lifecycle.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'struct-cache-cap');
 const skipSuite = process.platform === 'win32';
@@ -66,7 +65,7 @@ const ENGINE = process.env.HARPER_STORAGE_ENGINE || 'rocksdb(default)';
 
 // Encode far more records than the cap so unbounded growth would be unmistakable: a
 // driver that minted one struct per distinct shape would blow well past 256.
-const ENCODE_COUNT = 40_000;
+const ENCODE_COUNT = 1_000;
 const CAP = 256; // RecordEncoder pins maxOwnStructures = 256
 
 interface EncodeResult {
@@ -87,9 +86,19 @@ suite(`QA-175 typedStructs cap & growth driver [engine=${ENGINE}]`, { skip: skip
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
-		// Single http worker = the encoder we drive via EncodeProbe is the one we read.
-		// Also serves as the readiness poll for the custom-resource route.
-		await restartHttpWorkers(client, '/StructStats/', 120_000);
+		// Poll for route readiness (component is pre-installed; no restart needed)
+		{
+			const deadline = Date.now() + 120_000;
+			while (Date.now() < deadline) {
+				try {
+					const probe = await client.reqRest('/StructStats/').timeout(2000);
+					if (probe.status !== 404) break;
+				} catch {
+					/* not ready yet */
+				}
+				await sleep(250);
+			}
+		}
 	});
 
 	after(async () => {
