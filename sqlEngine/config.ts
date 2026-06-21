@@ -2,23 +2,28 @@
  * Reads the SQL engine feature flag and runtime caps.
  *
  * sql.engine selects which engine handles a SQL request:
- *   'legacy' — existing AlaSQL-based path (default).
+ *   'legacy' — existing AlaSQL-based path.
  *   'new'    — new Resource-API-based path; throws EngineUnsupportedError for
  *              queries it can't plan.
  *   'auto'   — try the new path first; fall back to legacy on
- *              EngineUnsupportedError.
+ *              EngineUnsupportedError (default).
  *
  * The flag is read from the HARPER_SQL_ENGINE environment variable, then
- * harperConfig.sql?.engine, then defaults to 'legacy'. We deliberately keep
+ * harperConfig.sql?.engine, then defaults to 'auto'. We deliberately keep
  * this resolution lazy and lightweight so the router can be invoked without a
  * fully booted Harper config (e.g., in unit tests).
  *
- * Phase 5 cutover: default stays 'legacy' until full parity. A trial flip to
- * 'auto' surfaced two blockers via the existing SQL suite (see PLAN.md phase-5
- * notes): (1) literal type-coercion on hash lookups — `id IN ('123')` against a
- * numeric PK matches in legacy but not the new engine (a SILENT wrong-result, the
- * dangerous kind that 'auto' does not fall back on); (2) a `LIKE`-predicate DELETE
- * returning 403 through the new selector path. Fix those before flipping.
+ * Phase 5 cutover: the default is now 'auto' — the new engine handles every SQL
+ * request it can plan and silently falls back to legacy on anything it can't, so
+ * no query changes behavior unless the new engine produces an identical result.
+ * The gate for this flip was full parity of the new engine (run in 'auto') against
+ * the existing SQL suite: the cutover-readiness differential (42/42 identical) plus
+ * the existing behavioral suites under 'auto' — northwind (573 SQL ops) and
+ * delete.test.mjs (76) — at 0 failures. Both trial-flip blockers (IN literal
+ * coercion, LIKE-predicate DELETE 403) and the northwind gaps (attribute-name
+ * validation, quoted-boolean coercion, != / NULL three-valued logic) are fixed.
+ * The remaining cutover work is burn-in (watch `sql-engine v2 fallback:` logs) then
+ * flipping to 'new' and deleting the legacy path. See PLAN.md phase-5 notes.
  */
 
 export type SqlEngineMode = 'legacy' | 'new' | 'auto';
@@ -31,7 +36,7 @@ export interface SqlEngineConfig {
 }
 
 const DEFAULTS: SqlEngineConfig = {
-	engine: 'legacy',
+	engine: 'auto',
 	allowFullScan: false,
 	maxSortRows: 1_000_000,
 	maxHashRows: 1_000_000,

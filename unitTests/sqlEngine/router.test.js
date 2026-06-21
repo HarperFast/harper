@@ -30,9 +30,9 @@ describe('sqlEngine router', () => {
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
 	});
 
-	it('defaults to legacy mode', () => {
+	it('defaults to auto mode (phase-5 cutover)', () => {
 		const cfg = config.getSqlEngineConfig();
-		assert.strictEqual(cfg.engine, 'legacy');
+		assert.strictEqual(cfg.engine, 'auto');
 	});
 
 	it('reads HARPER_SQL_ENGINE env var', () => {
@@ -46,7 +46,7 @@ describe('sqlEngine router', () => {
 
 	it('ignores unknown env values', () => {
 		process.env.HARPER_SQL_ENGINE = 'gibberish';
-		assert.strictEqual(config.getSqlEngineConfig().engine, 'legacy');
+		assert.strictEqual(config.getSqlEngineConfig().engine, 'auto');
 	});
 
 	it('routes to legacy handler when engine=legacy', (done) => {
