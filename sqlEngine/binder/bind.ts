@@ -183,11 +183,22 @@ function resolveColumnsInSelect(stmt: SelectNode, scope: BoundTable[]): void {
 
 /** Resolves a qualifier string (alias or table name) to the canonical alias. */
 function resolveQualifier(qualifier: string, scope: BoundTable[]): BoundTable | undefined {
-	return (
-		scope.find((t) => t.effectiveAlias === qualifier) ??
-		scope.find((t) => t.table === qualifier) ??
-		scope.find((t) => t.alias === qualifier)
-	);
+	// Exact effective-alias match always wins (it is unique — duplicates are
+	// rejected at bind time).
+	const byAlias = scope.find((t) => t.effectiveAlias === qualifier);
+	if (byAlias) return byAlias;
+	// Fall back to base-table-name qualification (e.g. `dev.user.col` where the
+	// table is unaliased). In a self-join the same base name appears more than
+	// once; matching the first silently mis-binds, so reject as ambiguous.
+	const byTable = scope.filter((t) => t.table === qualifier);
+	if (byTable.length > 1) {
+		throw new EngineUnsupportedError(
+			`table qualifier "${qualifier}" is ambiguous across ${byTable
+				.map((t) => t.effectiveAlias)
+				.join(', ')}; qualify columns by alias`
+		);
+	}
+	return byTable[0];
 }
 
 function resolveColumns(expr: ExprNode, scope: BoundTable[]): void {
@@ -209,9 +220,18 @@ function resolveColumns(expr: ExprNode, scope: BoundTable[]): void {
 				throw new EngineUnsupportedError(
 					`column "${expr.name}" is ambiguous across ${owners.map((o) => o.effectiveAlias).join(', ')}; qualify it`
 				);
-			} else {
-				// Not declared on any table (undeclared attribute) — default to FROM table.
+			} else if (scope.length === 1) {
+				// Single-table query: an undeclared attribute (Harper tables are
+				// schemaless) binds to the only table.
 				expr.table = scope[0].effectiveAlias;
+			} else {
+				// Multi-table query: we cannot know which table an undeclared
+				// attribute belongs to. Defaulting to the FROM table would silently
+				// yield nulls when it actually lives on a joined table, so reject
+				// and let 'auto' mode fall back to legacy.
+				throw new EngineUnsupportedError(
+					`column "${expr.name}" is not declared on any joined table; qualify it with a table alias`
+				);
 			}
 			return;
 		}

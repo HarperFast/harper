@@ -26,10 +26,11 @@ export interface JoinAnalysis {
 	residualOn?: ExprNode;
 }
 
-/** Unwraps the right child to its base Scan (through an optional Filter). */
+/** Unwraps the right child to its base Scan (through any stacked Filters). */
 export function rightBaseScan(join: LogicalJoin): LogicalScan | null {
 	let node = join.right;
-	if (node.kind === 'Filter') node = node.input;
+	// Rules may layer more than one Filter; unwrap them all.
+	while (node.kind === 'Filter') node = node.input;
 	return node.kind === 'Scan' ? node : null;
 }
 

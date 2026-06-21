@@ -81,13 +81,15 @@ export function physicalHashJoin(left: PhysicalOp, right: PhysicalOp, opts: Hash
 
 /**
  * Serializes the join key. Returns undefined if any key component is null/
- * undefined — SQL equi-joins never match on NULL.
+ * undefined or NaN — SQL equi-joins never match on NULL, and NaN is never equal
+ * to itself (without this guard JSON.stringify coerces NaN → "null", letting two
+ * NaN keys collide and match).
  */
 function keyTuple(evals: Array<(row: Row) => unknown>, row: Row): string | undefined {
 	const vals: unknown[] = [];
 	for (const e of evals) {
 		const v = e(row);
-		if (v == null) return undefined;
+		if (v == null || (typeof v === 'number' && Number.isNaN(v))) return undefined;
 		vals.push(v);
 	}
 	return JSON.stringify(vals);

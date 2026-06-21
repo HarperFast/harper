@@ -278,10 +278,7 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('rejects duplicate table aliases in a join', async () => {
-		await assert.rejects(
-			runSql('SELECT u.id FROM dev.user u JOIN dev.user u ON u.id = u.id'),
-			EngineUnsupportedError
-		);
+		await assert.rejects(runSql('SELECT u.id FROM dev.user u JOIN dev.user u ON u.id = u.id'), EngineUnsupportedError);
 	});
 
 	it('rejects an ambiguous unqualified column', async () => {
@@ -303,6 +300,45 @@ describe('sqlEngine phase 3: joins', () => {
 			runSql('SELECT u.name FROM dev.user u RIGHT JOIN dev.orders o ON u.id = o.user_id'),
 			EngineUnsupportedError
 		);
+	});
+
+	it('rejects a base-table-name qualifier that is ambiguous in a self-join', async () => {
+		// Both sides share the base name `user`; qualifying with `user.` instead of
+		// an alias would silently bind to the first one — reject as ambiguous.
+		await assert.rejects(
+			runSql('SELECT a.id FROM dev.user a JOIN dev.user b ON a.id = b.id WHERE user.id = 1'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('rejects an undeclared unqualified column in a join (cannot pick a table)', async () => {
+		await assert.rejects(
+			runSql('SELECT undeclared_col FROM dev.user u JOIN dev.orders o ON u.id = o.user_id'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('hash join does not match NaN keys (NaN never equals itself)', async () => {
+		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		const left = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'k', indexed: false }, // non-indexed equi key -> hash join
+			],
+			rows: [{ id: 1, k: NaN }],
+		});
+		const right = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'k', indexed: false },
+			],
+			rows: [{ id: 2, k: NaN }],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { lefty: left, righty: right } }));
+		const data = await runSql('SELECT l.id FROM dev.lefty l JOIN dev.righty r ON l.k = r.k');
+		assert.deepStrictEqual(data, []);
 	});
 
 	it('indexNL join passes with allowFullScan off when the outer has an indexed filter', async () => {

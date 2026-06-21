@@ -261,17 +261,50 @@ Each phase leaves the system shippable and behind the flag.
 > Projection pushdown does not yet descend through joins (inner/outer scans fetch
 > all attributes). Hash-key matching uses JSON equality (no loose `=` coercion
 > across join keys of differing types — non-equi falls to nested-loop).
+>
+> **Phase-3 cross-model review follow-ups (Gemini leg).** Applied: self-join
+> base-name qualifier now rejects as ambiguous; undeclared unqualified column in a
+> join now rejects (→ legacy fallback) instead of silently defaulting to the FROM
+> table; `rightBaseScan` unwraps stacked Filters; hash-join keys exclude `NaN`.
+> Still deferred: (a) single-table predicates living in an INNER-JOIN `ON` clause
+> are evaluated as a post-join residual rather than pushed into the inner scan —
+> results are correct (indexNL serves the probe), but a non-indexed join key whose
+> only indexable predicate is in `ON` will be rejected under `allowFullScan:false`;
+> (b) the binder mutates AST `ExprNode.table` in place — fine today, but revisit
+> before adding plan caching.
 
 **Phase 4 — Mutations.** `PhysicalInsert`/`Update`/`Delete` inside `transaction()`. INSERT supports literals and `INSERT … SELECT`. Response shapes verified against `core/unitTests/dataLayer/insert.test.js`, `update.test.js`, `delete.test.js`, `sql-update.test.js`.
 
 > **Status (investigated, not yet implemented).** Plan:
+>
 > - normalizer: handle `insert`/`update`/`delete` AlaSQL ASTs (Insert `{into:{databaseid,tableid}, columns:[{columnid}], values:[[{value}]]}`; Update `{table, columns:[{column:{columnid}, expression}], where}`; Delete `{table, where}`).
 > - binder: resolve the target table (single-table; reuse `bindTableRef`).
 > - logical/build: `Insert`/`Update`/`Delete` nodes; UPDATE/DELETE reuse the SELECT pipeline as the `selector` to find target rows.
 > - executor: `runInsert`/`runUpdate`/`runDelete` wrap the writes in `transaction(context, …)`.
 > - index.ts: dispatch by variant; return the **legacy response shapes** — INSERT `{message:"inserted N of M records", inserted_hashes, skipped_hashes}`, UPDATE `{message:"updated N of M records", update_hashes, skipped_hashes}`, DELETE `{message:"N record(s) successfully deleted", deleted_hashes, skipped_hashes}` (action strings `inserted`/`updated`; `txn_time`/`new_attributes` are internal and stripped). Permissions stay on the AST at the router boundary (unchanged).
 >
-> **OPEN QUESTION blocking implementation — the transactional-write invocation.** The legacy SQL path writes through the old `harperBridge`, NOT the Resource API, so there is no in-repo SQL precedent. `put`/`create`/`patch`/`delete` are *instance* methods on `Table` using `this.getContext()`; Phase 1's scan calls `resource.search(target)` statically (Table.ts:1091 implies a static-search form exists). Need to confirm the blessed pattern for writing through a `databases`-resolved table inside `transaction(context, …)`: static-vs-instance, how the txn/context propagates to the write, PK auto-gen on `create`, upsert (`put`) vs insert (`create`) + duplicate-skip semantics, and what `create`/`delete` return so `inserted_hashes`/`deleted_hashes` can be collected. **Verify empirically against a real LMDB build (integration test) before trusting the path** — guessing risks non-atomic or silently-dropped writes.
+> **RESOLVED — the transactional-write invocation (source-confirmed).** The
+> `databases`-resolved entry (`databases[db][table]`, the same value the binder
+> already holds as `boundTable.resource`) is the Table **class**, which exposes
+> static `create`/`put`/`patch`/`delete` (`resources/Resource.ts:113-214`). Each
+> static method internally calls `transaction(context, …)`
+> (`resources/transaction.ts:8`), which **joins** an already-open transaction on
+> the context and otherwise opens+commits one. So the engine wraps a whole
+> multi-row mutation in a single `transaction(context, async () => { … })` and the
+> per-row static calls join it → one atomic commit (abort-on-throw).
+> Semantics (`resources/Table.ts:1691` instance `create`):
+>
+> - `create(record, context)` → returns the record; auto-generates a UUID PK via
+>   `getNewId()` when absent (and writes it onto the record). **Throws
+>   `ClientError(409)` when the PK already exists.**
+> - Legacy SQL INSERT instead **skips** duplicates and reports them in
+>   `skipped_hashes` (`dataLayer/insert.ts:236-258`, message "inserted N of M").
+>   So the executor must pre-check existence (resource `get`) and skip, NOT let
+>   `create`'s 409 abort the surrounding transaction.
+> - `put` upserts (requires an explicit PK); `delete(id)` is idempotent → boolean.
+>   Remaining empirical check folded into a real-instance behavioral/differential
+>   integration test (boots a local Harper instance, runs INSERT/UPDATE/DELETE
+>   through the new engine, compares to legacy) rather than a unit mock.
 
 **Phase 5 — Cutover.** Flip default to `'auto'`. Burn in for one release, watching logs for fallback warnings. Then flip to `'new'`. Then delete `core/dataLayer/SQLSearch.js`, `core/sqlTranslator/SelectValidator.js`, `sql_statement_bucket.js`, `alasqlFunctionImporter.js`, the SQLSearch-specific helpers in `core/dataLayer/search.js`. Keep `alasql.parse` only.
 
