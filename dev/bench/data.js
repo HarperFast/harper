@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781943954402,
+  "lastUpdate": 1782031593897,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -909,6 +909,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1020.06,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "d0d04ebce7436180219d5d045f490a84b68b6ab4",
+          "message": "chore(deps): bump @harperfast/integration-testing to ^0.6.2\n\nPicks up the loopback conflict-canary HTTP-port fix (integration-testing#20):\nthe canary now probes both the operations port AND the HTTP port, detecting a\nlingering Harper worker (main thread exited, HTTP workers still bound via\nSO_REUSEPORT) before recycling its loopback address — fixing the ECONNREFUSED\nshard-contamination seen under CI sharding.\n\n0.5.2 -> 0.6.2 has no breaking API changes: the only runtime deltas are\n'fix: Prevent global state smashing' (0.5.4) and the canary (0.6.2); the 0.6.0\nminor is purely the semantic-release CI automation feat, not an API change.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-20T22:26:51Z",
+          "url": "https://github.com/HarperFast/harper/commit/d0d04ebce7436180219d5d045f490a84b68b6ab4"
+        },
+        "date": 1782031592992,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6061.05,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8578,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8667.16,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6865.66,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4898.77,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8680.94,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1071.75,
             "unit": "ops/sec"
           }
         ]
