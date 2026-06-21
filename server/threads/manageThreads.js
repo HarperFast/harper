@@ -282,10 +282,15 @@ async function restartWorkers(
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
 		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
+		// We can only start the replacement *before* the old worker releases its port when the OS lets
+		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT)
+		// and Bun — the replacement can't bind until the old worker exits, so there we keep the original
+		// ordering: shut the old worker down first, then start the replacement (an unavoidable brief gap).
+		const canPreStartReplacement = process.platform !== 'win32' && !isBun;
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
-			if (overlapping && startReplacementThreads) {
+			if (overlapping && startReplacementThreads && canPreStartReplacement) {
 				// Overlapping restart: start the replacement and wait until it is accepting connections
 				// *before* shutting down the worker it replaces. The replacement joins the (SO_REUSEPORT)
 				// listener group while the old worker is still serving, so the pool never loses capacity
@@ -336,6 +341,10 @@ async function restartWorkers(
 			}
 			worker.wasShutdown = true;
 			worker.emit('shutdown', {});
+			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
+			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
+			// well before the replacement finishes booting and binds.
+			if (overlapping && startReplacementThreads && !canPreStartReplacement) worker.startCopy();
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				let timeout = setTimeout(() => {
