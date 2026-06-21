@@ -1,17 +1,26 @@
 /**
- * Differential test: new SQL engine vs legacy AlaSQL engine.
+ * Differential / cutover-readiness test: new SQL engine vs legacy AlaSQL engine.
  *
  * Boots TWO real Harper instances with identical schema + seed data — one with
- * HARPER_SQL_ENGINE=new, one with the default (legacy) engine — then runs the
- * same battery of SQL statements against both and compares (a) the operation
- * response and (b) the resulting table state. Every difference is collected and
- * printed as a summary at the end.
+ * HARPER_SQL_ENGINE=auto (the production cutover setting: new engine first, fall
+ * back to legacy on EngineUnsupportedError), one with HARPER_SQL_ENGINE=legacy —
+ * then runs the same broad battery of SQL against both and compares (a) the
+ * operation response and (b) the resulting table state.
  *
- * Reads use indexed WHERE clauses (ranges/equalities on the primary key) so the
- * new engine's no-full-scan policy is satisfied without allowFullScan.
+ * Running the new side in `auto` mirrors exactly what flipping the default to
+ * `auto` would do in production: a query the new engine can't plan falls back and
+ * therefore matches legacy by construction; the only way to fail is a *silent*
+ * divergence — the new engine planning a query but returning different results.
+ * That is precisely the cutover risk this test is built to catch.
  *
- * Goal: surface behavioral divergences (response shape/wording, value/type
- * coercion, ordering, null handling, coverage gaps) between the two engines.
+ * Reads use indexed WHERE clauses (PK ranges/equalities) where they must be
+ * served by the new engine; deliberately non-indexable predicates exercise the
+ * fallback path.
+ *
+ * NOT yet covered (known phase-5 cutover blockers — see sqlEngine/PLAN.md):
+ * (1) literal type-coercion on hash lookups — `id IN ('123')` vs a numeric PK
+ * silently diverges; (2) a non-PK `LIKE` DELETE returns 403 via the selector
+ * path. Add regression cases here once both are fixed.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,6 +32,9 @@ const SEED = [
 	{ id: 2, name: 'beta', qty: 20, tag: 'y' },
 	{ id: 3, name: 'gamma', qty: 30, tag: 'x' },
 	{ id: 4, name: 'delta', qty: 40, tag: 'y' },
+	// Null-bearing row to exercise NULL semantics (a classic AlaSQL-vs-SQL
+	// divergence source). id 7 stays clear of the mutation tests' ids (5, 6).
+	{ id: 7, name: null, qty: null, tag: 'z' },
 ];
 const ORDERS = [
 	{ id: 100, widget_id: 1, amt: 5 },
@@ -117,7 +129,7 @@ suite('SQL engine differential — new vs legacy', () => {
 	}
 
 	before(async () => {
-		await startHarper(ctxNew, { config: {}, env: { HARPER_SQL_ENGINE: 'new' } });
+		await startHarper(ctxNew, { config: {}, env: { HARPER_SQL_ENGINE: 'auto' } });
 		await startHarper(ctxLegacy, { config: {}, env: { HARPER_SQL_ENGINE: 'legacy' } });
 		clientNew = createApiClient(ctxNew.harper);
 		clientLegacy = createApiClient(ctxLegacy.harper);
@@ -147,9 +159,32 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('select projected *', 'SELECT * FROM dev.widget WHERE id = 1');
 	});
 
+	test('SELECT — predicate variety (OR / NOT / BETWEEN / LIKE / IN)', async () => {
+		await diff('or', 'SELECT id FROM dev.widget WHERE id = 1 OR id = 3');
+		await diff('not', "SELECT id FROM dev.widget WHERE id >= 1 AND NOT (tag = 'x')");
+		await diff('between-indexed', 'SELECT id FROM dev.widget WHERE id BETWEEN 2 AND 3');
+		await diff('like-prefix', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE 'a%'");
+		await diff('like-contains', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE '%a%'");
+		// Non-indexable predicate (qty not indexed) — exercises the fallback path.
+		await diff('between-unindexed', 'SELECT id FROM dev.widget WHERE qty BETWEEN 15 AND 35');
+	});
+
+	test('SELECT — NULL semantics', async () => {
+		await diff('is null', 'SELECT id FROM dev.widget WHERE id >= 1 AND qty IS NULL');
+		await diff('is not null', 'SELECT id FROM dev.widget WHERE id >= 1 AND qty IS NOT NULL');
+	});
+
+	test('SELECT — ORDER BY / LIMIT / OFFSET / DISTINCT', async () => {
+		await diff('order desc', 'SELECT id, qty FROM dev.widget WHERE id >= 1 ORDER BY qty DESC');
+		await diff('limit offset', 'SELECT id FROM dev.widget WHERE id >= 1 ORDER BY id LIMIT 2 OFFSET 1');
+		await diff('distinct', 'SELECT DISTINCT tag FROM dev.widget WHERE id >= 1');
+	});
+
 	test('SELECT — aggregates', async () => {
 		await diff('count', 'SELECT COUNT(*) AS n FROM dev.widget WHERE id >= 1');
 		await diff('sum+group', 'SELECT tag, SUM(qty) AS total FROM dev.widget WHERE id >= 1 GROUP BY tag');
+		await diff('min max avg', 'SELECT MIN(qty) AS mn, MAX(qty) AS mx, AVG(qty) AS av FROM dev.widget WHERE id >= 1');
+		await diff('having', 'SELECT tag, COUNT(*) AS n FROM dev.widget WHERE id >= 1 GROUP BY tag HAVING COUNT(*) > 1');
 	});
 
 	test('SELECT — join', async () => {

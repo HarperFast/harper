@@ -12,6 +12,13 @@
  * harperConfig.sql?.engine, then defaults to 'legacy'. We deliberately keep
  * this resolution lazy and lightweight so the router can be invoked without a
  * fully booted Harper config (e.g., in unit tests).
+ *
+ * Phase 5 cutover: default stays 'legacy' until full parity. A trial flip to
+ * 'auto' surfaced two blockers via the existing SQL suite (see PLAN.md phase-5
+ * notes): (1) literal type-coercion on hash lookups — `id IN ('123')` against a
+ * numeric PK matches in legacy but not the new engine (a SILENT wrong-result, the
+ * dangerous kind that 'auto' does not fall back on); (2) a `LIKE`-predicate DELETE
+ * returning 403 through the new selector path. Fix those before flipping.
  */
 
 export type SqlEngineMode = 'legacy' | 'new' | 'auto';
