@@ -26,6 +26,9 @@ import type {
 	StatementNode,
 	TableRefNode,
 	BinaryOp,
+	InsertNode,
+	UpdateNode,
+	DeleteNode,
 } from './ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { functionRegistry } from '../functions/registry.ts';
@@ -43,12 +46,78 @@ export function normalizeStatement(stmt: AlaSqlNode, variant: string): Statement
 		case 'select':
 			return normalizeSelect(stmt);
 		case 'insert':
+			return normalizeInsert(stmt);
 		case 'update':
+			return normalizeUpdate(stmt);
 		case 'delete':
-			throw new EngineUnsupportedError(`${variant} is not implemented yet (phase 1: select only)`);
+			return normalizeDelete(stmt);
 		default:
 			throw new EngineUnsupportedError(`unknown SQL variant: ${variant}`);
 	}
+}
+
+/**
+ * AlaSQL INSERT shape: { into: { databaseid, tableid }, columns: [{ columnid }],
+ * values: [[ {value}|expr, … ], …] }. `INSERT … SELECT` (no `values`) is rejected
+ * for now so 'auto' mode falls back to legacy.
+ */
+function normalizeInsert(stmt: AlaSqlNode): InsertNode {
+	const into = stmt.into as AlaSqlNode | undefined;
+	if (!into) throw new EngineUnsupportedError('INSERT requires an INTO clause', stmt);
+	const table = normalizeTableRef(into);
+
+	if (!Array.isArray(stmt.columns)) {
+		throw new EngineUnsupportedError('INSERT requires an explicit column list', stmt);
+	}
+	const columns = (stmt.columns as AlaSqlNode[]).map((c) => {
+		const id = (c as AlaSqlNode).columnid;
+		if (typeof id !== 'string') throw new EngineUnsupportedError('INSERT column must be a plain name', c);
+		return id;
+	});
+
+	if (!Array.isArray(stmt.values)) {
+		throw new EngineUnsupportedError('INSERT … SELECT is not supported yet (v1: VALUES only)', stmt);
+	}
+	const values = (stmt.values as AlaSqlNode[][]).map((row) => {
+		if (!Array.isArray(row)) throw new EngineUnsupportedError('INSERT VALUES row must be a list', stmt);
+		if (row.length !== columns.length) {
+			throw new EngineUnsupportedError('INSERT values do not match the number of columns', stmt);
+		}
+		return row.map((v) => normalizeExpr(v as AlaSqlNode));
+	});
+
+	return { kind: 'insert', table, columns, values };
+}
+
+/**
+ * AlaSQL UPDATE shape: { table: { databaseid, tableid }, columns: [{ column: {
+ * columnid }, expression }], where }.
+ */
+function normalizeUpdate(stmt: AlaSqlNode): UpdateNode {
+	const tableNode = stmt.table as AlaSqlNode | undefined;
+	if (!tableNode) throw new EngineUnsupportedError('UPDATE requires a table', stmt);
+	const table = normalizeTableRef(tableNode);
+
+	if (!Array.isArray(stmt.columns) || (stmt.columns as unknown[]).length === 0) {
+		throw new EngineUnsupportedError('UPDATE requires a SET clause', stmt);
+	}
+	const assignments = (stmt.columns as AlaSqlNode[]).map((c) => {
+		const column = (c.column as AlaSqlNode | undefined)?.columnid;
+		if (typeof column !== 'string') throw new EngineUnsupportedError('UPDATE SET target must be a column', c);
+		return { column, expr: normalizeExpr(c.expression as AlaSqlNode) };
+	});
+
+	const where = stmt.where ? normalizeExpr(extractWhere(stmt.where as AlaSqlNode)) : undefined;
+	return { kind: 'update', table, assignments, where };
+}
+
+/** AlaSQL DELETE shape: { table: { databaseid, tableid }, where }. */
+function normalizeDelete(stmt: AlaSqlNode): DeleteNode {
+	const tableNode = stmt.table as AlaSqlNode | undefined;
+	if (!tableNode) throw new EngineUnsupportedError('DELETE requires a table', stmt);
+	const table = normalizeTableRef(tableNode);
+	const where = stmt.where ? normalizeExpr(extractWhere(stmt.where as AlaSqlNode)) : undefined;
+	return { kind: 'delete', table, where };
 }
 
 function normalizeSelect(stmt: AlaSqlNode): SelectNode {

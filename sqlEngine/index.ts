@@ -10,12 +10,13 @@
  * in normalize → bind → build → optimize → physical → execute.
  */
 
-import { EngineUnsupportedError } from './errors.ts';
 import { normalizeStatement } from './parser/normalizer.ts';
 import { bind } from './binder/bind.ts';
+import type { BoundInsert, BoundUpdate, BoundDelete } from './binder/bind.ts';
 import { buildLogicalPlan } from './logical/build.ts';
 import { compileToPhysical } from './physical/plan.ts';
 import { runSelect } from './executor/runSelect.ts';
+import { runInsert, runUpdate, runDelete } from './executor/runMutation.ts';
 import { optimize } from './optimizer/optimize.ts';
 import { registerStandardFunctions } from './functions/standard.ts';
 import { registerAggregateFunctions } from './functions/aggregates.ts';
@@ -30,16 +31,22 @@ export async function runStatement(input: RunStatementInput): Promise<unknown> {
 	registerStandardFunctions();
 	registerAggregateFunctions();
 
-	if (input.variant !== 'select') {
-		throw new EngineUnsupportedError(`${input.variant} is not implemented yet (phase 1: select only)`);
-	}
-
+	const ctx = { user: input.jsonMessage.hdb_user };
 	const ir = normalizeStatement(input.statement as Record<string, unknown>, input.variant);
-	const bound = bind(ir, { user: input.jsonMessage.hdb_user });
-	const logical = buildLogicalPlan(bound);
-	const optimized = optimize(logical);
-	const physical = compileToPhysical(optimized);
-	return runSelect(physical, { user: input.jsonMessage.hdb_user });
+	const bound = bind(ir, ctx);
+
+	switch (bound.kind) {
+		case 'insert':
+			return runInsert(bound as BoundInsert, ctx);
+		case 'update':
+			return runUpdate(bound as BoundUpdate, ctx);
+		case 'delete':
+			return runDelete(bound as BoundDelete, ctx);
+		default: {
+			const physical = compileToPhysical(optimize(buildLogicalPlan(bound)));
+			return runSelect(physical, ctx);
+		}
+	}
 }
 
 // Re-export the surface modules so a single import covers the engine boundary.

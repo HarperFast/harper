@@ -17,7 +17,15 @@
  * `qualified` mode and physical/PhysicalQualify).
  */
 
-import type { ExprNode, SelectNode, StatementNode, TableRefNode } from '../parser/ast.ts';
+import type {
+	ExprNode,
+	SelectNode,
+	StatementNode,
+	TableRefNode,
+	InsertNode,
+	UpdateNode,
+	DeleteNode,
+} from '../parser/ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 
 interface AttributeInfo {
@@ -64,11 +72,50 @@ function loadDatabases(): Record<string, Record<string, unknown>> {
 	return mod.getDatabases();
 }
 
+export interface BoundInsert extends InsertNode {
+	boundTable: BoundTable;
+}
+export interface BoundUpdate extends UpdateNode {
+	boundTable: BoundTable;
+}
+export interface BoundDelete extends DeleteNode {
+	boundTable: BoundTable;
+}
+
 export function bind(stmt: StatementNode, _ctx: BindContext): StatementNode {
-	if (stmt.kind !== 'select') {
-		throw new EngineUnsupportedError(`bind: only SELECT supported, got ${stmt.kind}`);
+	switch (stmt.kind) {
+		case 'select':
+			return bindSelect(stmt);
+		case 'insert':
+			return bindInsert(stmt);
+		case 'update':
+			return bindUpdate(stmt);
+		case 'delete':
+			return bindDelete(stmt);
+		default:
+			throw new EngineUnsupportedError(`bind: unsupported statement kind`);
 	}
-	return bindSelect(stmt);
+}
+
+/**
+ * Mutations are single-table. We resolve the target table to a BoundTable (the
+ * Resource class plus primaryKey/attributes) and leave column refs bare — the
+ * write executor evaluates assignment/value expressions against bare-keyed rows,
+ * exactly like the single-table SELECT path.
+ */
+function bindInsert(stmt: InsertNode): BoundInsert {
+	const boundTable = bindTableRef(stmt.table, loadDatabases());
+	return { ...stmt, table: { ...stmt.table, database: boundTable.database }, boundTable };
+}
+
+function bindUpdate(stmt: UpdateNode): BoundUpdate {
+	const boundTable = bindTableRef(stmt.table, loadDatabases());
+	return { ...stmt, table: { ...stmt.table, database: boundTable.database }, boundTable };
+}
+
+function bindDelete(stmt: DeleteNode): BoundDelete {
+	const boundTable = bindTableRef(stmt.table, loadDatabases());
+	return { ...stmt, table: { ...stmt.table, database: boundTable.database }, boundTable };
 }
 
 export function bindSelect(stmt: SelectNode): BoundSelect {

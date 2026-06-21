@@ -275,13 +275,15 @@ Each phase leaves the system shippable and behind the flag.
 
 **Phase 4 — Mutations.** `PhysicalInsert`/`Update`/`Delete` inside `transaction()`. INSERT supports literals and `INSERT … SELECT`. Response shapes verified against `core/unitTests/dataLayer/insert.test.js`, `update.test.js`, `delete.test.js`, `sql-update.test.js`.
 
-> **Status (investigated, not yet implemented).** Plan:
+> **Status — IMPLEMENTED (VALUES-form INSERT, UPDATE, DELETE).** What landed:
 >
-> - normalizer: handle `insert`/`update`/`delete` AlaSQL ASTs (Insert `{into:{databaseid,tableid}, columns:[{columnid}], values:[[{value}]]}`; Update `{table, columns:[{column:{columnid}, expression}], where}`; Delete `{table, where}`).
-> - binder: resolve the target table (single-table; reuse `bindTableRef`).
-> - logical/build: `Insert`/`Update`/`Delete` nodes; UPDATE/DELETE reuse the SELECT pipeline as the `selector` to find target rows.
-> - executor: `runInsert`/`runUpdate`/`runDelete` wrap the writes in `transaction(context, …)`.
-> - index.ts: dispatch by variant; return the **legacy response shapes** — INSERT `{message:"inserted N of M records", inserted_hashes, skipped_hashes}`, UPDATE `{message:"updated N of M records", update_hashes, skipped_hashes}`, DELETE `{message:"N record(s) successfully deleted", deleted_hashes, skipped_hashes}` (action strings `inserted`/`updated`; `txn_time`/`new_attributes` are internal and stripped). Permissions stay on the AST at the router boundary (unchanged).
+> - normalizer: `normalizeInsert`/`normalizeUpdate`/`normalizeDelete` over the AlaSQL ASTs (Insert `{into:{databaseid,tableid}, columns:[{columnid}], values:[[{value}]]}`; Update `{table, columns:[{column:{columnid}, expression}], where}`; Delete `{table, where}`). `INSERT … SELECT` is rejected for now (falls back to legacy).
+> - binder: `bindInsert`/`bindUpdate`/`bindDelete` resolve the single target table via `bindTableRef` (bare column refs, like single-table SELECT).
+> - executor `executor/runMutation.ts`: `runInsert`/`runUpdate`/`runDelete`. The `databases`-resolved entry is the Table class; its static `get`/`put`/`patch`/`delete`/`getNewId` are called inside one `transaction(context, …)` (injectable via `_setTransactionRunner` for unit tests) so the per-row writes join one atomic txn. UPDATE/DELETE find targets by running the ordinary SELECT pipeline (`SELECT * / SELECT pk FROM target WHERE …`) inside that transaction. INSERT skips existing-PK rows (get-then-put) to match legacy createRecords skip semantics; auto-generates a PK via `getNewId()` when absent.
+> - index.ts: dispatches by `bound.kind`; returns the **legacy response shapes** — INSERT `{message:"inserted N of M records", inserted_hashes, skipped_hashes}`, UPDATE `{message:"updated N of M records", update_hashes, skipped_hashes}`, DELETE `{message:"N of M records successfully deleted", deleted_hashes, skipped_hashes}`. Permissions stay on the AST at the router boundary (unchanged).
+> - 8 mutation unit tests (`unitTests/sqlEngine/mutation.test.js`) cover insert/skip/auto-PK, update (incl. relative `qty=qty+1`), delete, and single-transaction batching.
+>
+> **Deferred within phase 4:** `INSERT … SELECT`; an unconditional `UPDATE`/`DELETE` (no WHERE) is a full scan, so it is rejected under the default `allowFullScan:false` (→ legacy fallback in 'auto') — intentional, consistent with SELECT. Read-then-write uses one transaction (read sees a consistent snapshot); not a row-level locking read-modify-write (legacy has the same window). **Real-instance behavioral/differential test** (boots a local Harper instance, runs INSERT/UPDATE/DELETE through the new engine vs legacy) is the remaining verification beyond the unit mocks.
 >
 > **RESOLVED — the transactional-write invocation (source-confirmed).** The
 > `databases`-resolved entry (`databases[db][table]`, the same value the binder
