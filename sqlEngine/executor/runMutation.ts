@@ -27,6 +27,7 @@ import type { Row, SqlEngineContext } from '../types.ts';
 import { buildLogicalPlan } from '../logical/build.ts';
 import { optimize } from '../optimizer/optimize.ts';
 import { compileToPhysical } from '../physical/plan.ts';
+import type { PhysicalOp } from '../physical/op.ts';
 import { runSelect } from './runSelect.ts';
 import { compileExpr } from '../expressions/compile.ts';
 import { EngineRuntimeError } from '../errors.ts';
@@ -74,13 +75,18 @@ function primaryKeyOf(boundTable: BoundTable): string {
 	return boundTable.primaryKey;
 }
 
-/** Builds and runs `SELECT <projection> FROM <target> WHERE <where>`. */
-async function selectTargetRows(
+/**
+ * Builds the physical plan for `SELECT <projection> FROM <target> WHERE <where>`.
+ * Kept separate from execution so it runs BEFORE the write transaction is opened:
+ * if the selector can't be planned (e.g. a non-indexable WHERE), the
+ * EngineUnsupportedError is thrown before any transaction/side effect, so 'auto'
+ * mode falls back to legacy cleanly rather than aborting a half-open txn.
+ */
+function buildSelectorPlan(
 	boundTable: BoundTable,
 	where: ExprNode | undefined,
-	projection: SelectNode['projections'],
-	ctx: SqlEngineContext
-): Promise<Row[]> {
+	projection: SelectNode['projections']
+): PhysicalOp {
 	const select: SelectNode = {
 		kind: 'select',
 		distinct: false,
@@ -89,8 +95,7 @@ async function selectTargetRows(
 		joins: [],
 		where,
 	};
-	const physical = compileToPhysical(optimize(buildLogicalPlan(bindSelect(select))));
-	return runSelect(physical, ctx);
+	return compileToPhysical(optimize(buildLogicalPlan(bindSelect(select))));
 }
 
 export async function runInsert(bound: BoundInsert, ctx: SqlEngineContext): Promise<unknown> {
@@ -150,13 +155,16 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 	const pk = primaryKeyOf(bound.boundTable);
 	const assignments = bound.assignments.map((a) => ({ column: a.column, eval: compileExpr(a.expr, false).eval }));
 
+	// Plan the selector before opening the transaction (clean fallback on reject).
+	// Fetch the full matched rows so relative assignments (e.g. age = age + 1) can
+	// read existing values.
+	const selector = buildSelectorPlan(bound.boundTable, bound.where, [{ expr: { kind: 'star' } }]);
+
 	const transaction = getTransactionRunner();
 	const context: WriteContext = { user: ctx.user };
 
 	return transaction(context, async () => {
-		// Fetch the full matched rows so relative assignments (e.g. age = age + 1)
-		// can read existing values.
-		const rows = await selectTargetRows(bound.boundTable, bound.where, [{ expr: { kind: 'star' } }], ctx);
+		const rows = await runSelect(selector, ctx);
 		const update_hashes: unknown[] = [];
 		const skipped_hashes: unknown[] = [];
 		for (const row of rows) {
@@ -183,12 +191,15 @@ export async function runDelete(bound: BoundDelete, ctx: SqlEngineContext): Prom
 	const table = tableOf(bound);
 	const pk = primaryKeyOf(bound.boundTable);
 
+	// Plan the selector before opening the transaction (clean fallback on reject).
+	// Only the primary key is needed to delete.
+	const selector = buildSelectorPlan(bound.boundTable, bound.where, [{ expr: { kind: 'column', name: pk } }]);
+
 	const transaction = getTransactionRunner();
 	const context: WriteContext = { user: ctx.user };
 
 	return transaction(context, async () => {
-		// Only the primary key is needed to delete.
-		const rows = await selectTargetRows(bound.boundTable, bound.where, [{ expr: { kind: 'column', name: pk } }], ctx);
+		const rows = await runSelect(selector, ctx);
 		const deleted_hashes: unknown[] = [];
 		const skipped_hashes: unknown[] = [];
 		for (const row of rows) {

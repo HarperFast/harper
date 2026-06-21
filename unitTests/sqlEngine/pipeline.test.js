@@ -200,18 +200,31 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		});
 	});
 
-	it('LIKE suffix maps to ends_with', async () => {
-		const data = await runSql("SELECT name FROM dev.user WHERE name LIKE '%e'");
+	// ends_with / contains can't be served by an index (suffix/substring → full
+	// scan), so they must be combined with an index-driving condition; standalone
+	// they are rejected (see below). Here `id > 0` drives the scan and the LIKE
+	// rides along as a pushed filter.
+	it('LIKE suffix maps to ends_with (combined with an index driver)', async () => {
+		const data = await runSql("SELECT name FROM dev.user WHERE id > 0 AND name LIKE '%e'");
 		const names = data.map((r) => r.name).sort();
 		assert.deepStrictEqual(names, ['alice', 'dave']);
-		assert.strictEqual(mockTable._lastTarget.conditions[0].comparator, 'ends_with');
+		const comparators = mockTable._lastTarget.conditions.map((c) => c.comparator);
+		assert.ok(comparators.includes('ends_with'));
 	});
 
-	it('LIKE both ends maps to contains', async () => {
-		const data = await runSql("SELECT name FROM dev.user WHERE name LIKE '%a%'");
+	it('LIKE both ends maps to contains (combined with an index driver)', async () => {
+		const data = await runSql("SELECT name FROM dev.user WHERE id > 0 AND name LIKE '%a%'");
 		const names = data.map((r) => r.name).sort();
 		assert.deepStrictEqual(names, ['alice', 'carol', 'dave']);
-		assert.strictEqual(mockTable._lastTarget.conditions[0].comparator, 'contains');
+		const comparators = mockTable._lastTarget.conditions.map((c) => c.comparator);
+		assert.ok(comparators.includes('contains'));
+	});
+
+	it('rejects a standalone ends_with/contains even on an indexed attribute (full scan)', async () => {
+		// `name` is indexed, but suffix/substring match can't seek the index, so
+		// Table.search would 403; the engine must reject (→ legacy fallback) instead.
+		await assert.rejects(() => runSql("SELECT name FROM dev.user WHERE name LIKE '%e'"), EngineUnsupportedError);
+		await assert.rejects(() => runSql("SELECT name FROM dev.user WHERE name LIKE '%a%'"), EngineUnsupportedError);
 	});
 
 	it('ORDER BY indexed column pushes sort to Table.search', async () => {

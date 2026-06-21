@@ -165,6 +165,10 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('like-contains', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE '%a%'");
 		// Non-indexable predicate (qty not indexed) — exercises the fallback path.
 		await diff('between-unindexed', 'SELECT id FROM dev.widget WHERE qty BETWEEN 15 AND 35');
+		// Standalone suffix/substring LIKE can't seek even an indexed column — the
+		// new engine must reject and fall back (blocker-2 path), matching legacy.
+		await diff('like-suffix-standalone', "SELECT name FROM dev.widget WHERE name LIKE '%a'");
+		await diff('like-contains-standalone', "SELECT name FROM dev.widget WHERE name LIKE '%am%'");
 	});
 
 	test('SELECT — loose IN coercion (string literals vs numeric column)', async () => {

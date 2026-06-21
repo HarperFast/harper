@@ -49,13 +49,27 @@ function validateScan(scan: LogicalScan, allowFullScan: boolean): void {
 	);
 }
 
+/**
+ * Comparators that force a full scan even on an indexed attribute, because they
+ * can't seek/range a B-tree index (suffix/substring match). These mirror
+ * `core/resources/search.ts`'s `needFullScan` set — pushing one as the sole
+ * condition makes Table.search throw a 403, not an EngineUnsupportedError, so it
+ * must be rejected here (→ legacy fallback) instead of treated as index-served.
+ * `ne` against a non-null value is the same (an inequality can't seek); `ne null`
+ * (IS NOT NULL) is a range and stays index-servable.
+ */
+const FULL_SCAN_COMPARATORS = new Set(['ends_with', 'contains']);
+
 function conditionUsesIndex(
 	cond: ConditionNode,
 	attributes: { name: string; indexed: boolean }[] | undefined
 ): boolean {
 	if ('attribute' in cond && cond.attribute) {
 		const a = attributes?.find((x) => x.name === cond.attribute);
-		return !!a?.indexed;
+		if (!a?.indexed) return false;
+		if (FULL_SCAN_COMPARATORS.has(cond.comparator ?? '')) return false;
+		if (cond.comparator === 'ne' && cond.value !== null) return false;
+		return true;
 	}
 	if ('conditions' in cond) {
 		// AND: at least one indexable child suffices.
