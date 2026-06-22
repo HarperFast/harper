@@ -271,8 +271,17 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			req._legacyDeploy = true;
 			if (req._multipart) {
 				// Re-package the directory as a single buffered tarball. The legacy CBOR body
-				// below carries it as native binary, matching the pre-5.1 CLI.
-				req.payload = await packageDirectory(req._projectPath, req._packageOptions);
+				// below carries it as native binary, matching the pre-5.1 CLI. Wrap the
+				// packaging so a local failure (e.g. a file vanishing after the size walk)
+				// surfaces as itself rather than being mapped to "Failed to connect to Harper"
+				// by the catch below (which keys off err.code === 'ENOENT').
+				try {
+					req.payload = await packageDirectory(req._projectPath, req._packageOptions);
+				} catch (packageErr: any) {
+					throw new Error(`Failed to package component directory '${req._projectPath}': ${packageErr.message}`, {
+						cause: packageErr,
+					});
+				}
 				delete req._multipart;
 			}
 			console.error(
