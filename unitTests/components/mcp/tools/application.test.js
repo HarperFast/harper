@@ -8,6 +8,7 @@ const {
 	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const { listPrompts, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE_READ = {
@@ -73,11 +74,13 @@ class FakeRequestTarget {}
 describe('mcp/tools/application — registration', () => {
 	beforeEach(() => {
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setRequestTargetForTest(FakeRequestTarget);
 	});
 
 	afterEach(() => {
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setResourcesForTest(undefined);
 		_setRequestTargetForTest(undefined);
 		_resetApplicationToolsRegisteredForTest();
@@ -127,6 +130,40 @@ describe('mcp/tools/application — registration', () => {
 		assert.ok(
 			after.some((n) => n === 'create_Product'),
 			`prior tools must survive a failed rebuild, got: ${after.join(', ')}`
+		);
+	});
+
+	it('restores prior prompts (not just tools) when a rebuild throws mid-loop (#1404 review)', () => {
+		// First pass registers a table that also publishes an author prompt (§3.5).
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		Product.mcpPrompts = [{ name: 'greeting', description: 'say hi', render: () => ({ messages: [] }) }];
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		assert.ok(
+			listPrompts('application').prompts.some((p) => p.name === 'greeting'),
+			'baseline prompt registered'
+		);
+
+		// Second pass throws mid-rebuild; the only resource present is the bad one,
+		// so without restore both tools AND prompts would be left cleared.
+		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
+		Object.defineProperty(Bad, 'description', {
+			get() {
+				throw new Error('boom registering bad table');
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad }]]));
+		assert.throws(() => refreshApplicationTools(), /boom registering bad table/);
+
+		// The catch must restore prompts as well as tools — locking the symmetry.
+		const names = listPrompts('application').prompts.map((p) => p.name);
+		assert.ok(names.includes('greeting'), `prior prompts must survive a failed rebuild, got: ${names.join(', ')}`);
+		const tools = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.ok(
+			tools.some((n) => n === 'create_Product'),
+			'prior tools also restored alongside prompts'
 		);
 	});
 

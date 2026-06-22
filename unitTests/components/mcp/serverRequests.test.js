@@ -125,6 +125,54 @@ describe('mcp/serverRequests', () => {
 		assert.deepEqual(itcSent[0].message.result, { x: 1 });
 	});
 
+	it('does NOT fan out a response whose id is not a server-minted (srv-) id', () => {
+		// A client echoing an arbitrary id / a duplicate frame can't match any pending
+		// server→client request, so broadcasting it cluster-wide would be pure amplification.
+		routeClientResponse('s2', { id: 42, result: { x: 1 } });
+		routeClientResponse('s2', { id: 'client-generated', result: { x: 2 } });
+		assert.equal(itcSent.length, 0, 'non-srv ids must not trigger an ITC broadcast');
+	});
+
+	it('enforces a per-session cap independent of the global cap', async () => {
+		// Saturate one session; the per-session cap (25) trips well before the global 100.
+		// These never resolve here — afterEach's reset rejects+clears them.
+		for (let i = 0; i < 25; i++) {
+			sendServerRequest({
+				sessionId: 's1',
+				method: 'roots/list',
+				params: {},
+				clientCapabilities: CAPS,
+				deliver: () => {},
+			}).catch(() => {});
+		}
+		assert.equal(_pendingServerRequestCount(), 25);
+
+		// 26th for the same session is rejected by the per-session cap.
+		await assert.rejects(
+			sendServerRequest({
+				sessionId: 's1',
+				method: 'roots/list',
+				params: {},
+				clientCapabilities: CAPS,
+				deliver: () => {},
+			}),
+			/for this session/
+		);
+
+		// A different session is unaffected (well under both caps).
+		let frame;
+		const p = sendServerRequest({
+			sessionId: 's2',
+			method: 'roots/list',
+			params: {},
+			clientCapabilities: CAPS,
+			deliver: (f) => (frame = f),
+		});
+		assert.ok(frame, 'a different session can still issue a request');
+		routeClientResponse('s2', { id: frame.id, result: { ok: true } });
+		assert.deepEqual(await p, { ok: true });
+	});
+
 	it('resolves a pending request from a cross-worker ITC response', async () => {
 		let frame;
 		const p = sendServerRequest({
