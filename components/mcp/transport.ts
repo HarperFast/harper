@@ -771,10 +771,16 @@ async function dispatchPromptsGet(
 		// Per MCP §server/prompts an unknown prompt name is an invalid-params error.
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `Unknown prompt: ${name}`));
 	}
-	const args =
+	const rawArgs =
 		params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
-			? (params.arguments as Record<string, string>)
+			? (params.arguments as Record<string, unknown>)
 			: {};
+	// Per the MCP spec prompt arguments are strings; coerce defensively so a client
+	// sending a non-string value can't throw a TypeError inside an author's render().
+	// Omit null/undefined (rather than coercing to '') so the required-arg check below
+	// still treats them as missing.
+	const args: Record<string, string> = {};
+	for (const [k, v] of Object.entries(rawArgs)) if (v != null) args[k] = String(v);
 	const missing = (prompt.arguments ?? []).filter((a) => a.required && args[a.name] == null).map((a) => a.name);
 	if (missing.length > 0) {
 		return jsonResponse(

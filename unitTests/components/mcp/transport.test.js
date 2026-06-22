@@ -917,6 +917,30 @@ describe('mcp/transport', () => {
 				assert.equal(res.jsonBody.error.code, -32602);
 				assert.match(res.jsonBody.error.message, /who/);
 			});
+
+			it('prompts/get coerces non-string argument values to strings (gemini #1404 review)', async () => {
+				// A client sending a number must not throw a TypeError inside render's string ops.
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(54, 'prompts/get', { name: 'greet', arguments: { who: 42 } }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.equal(res.jsonBody.result.messages[0].content.text, 'Hello, 42!');
+			});
+
+			it('prompts/get still flags a required argument sent as null as missing', async () => {
+				// Coercion omits null/undefined so required-arg validation is preserved.
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(56, 'prompts/get', { name: 'greet', arguments: { who: null } }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32602);
+				assert.match(res.jsonBody.error.message, /who/);
+			});
 		});
 
 		describe('GET reconnect replay (§3.8 resumability)', () => {
