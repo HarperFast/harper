@@ -493,7 +493,7 @@ export async function loadComponent(
 						'setupDirectory' in extensionModule)
 				) {
 					harperLogger.warn?.(
-						`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API. For more information: https://docs.harperdb.io/docs/reference/components/plugins`
+						`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API. For more information: https://docs.harperdb.io/reference/components/plugin-api`
 					);
 				}
 
