@@ -977,7 +977,7 @@ function resolveIndexFormat(
 // Arm a custom-index object store for versioned (VT-cacheable) reads and writes: enable the
 // metadata-prefix encode/decode (isRocksDB) and self-versioning (autoVersion) on its encoder.
 // Idempotent — safe to call again on a re-opened or reindexed store.
-function armVersionedIndexEncoder(dbi: any, rootStore: RootDatabaseKind) {
+function armVersionedIndexEncoder(dbi: any, rootStore: any) {
 	if (dbi.encoder?.autoVersion) return;
 	handleLocalTimeForGets(dbi, rootStore);
 	if (dbi.encoder) dbi.encoder.autoVersion = true;
@@ -1362,8 +1362,18 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
+				// custom-object) index. An index created before this field existed has no indexFormat on
+				// disk; persist the resolved value now — even when nothing else changed — so the format is
+				// durable BEFORE any node is written. Otherwise an empty pre-existing index would resolve
+				// 'versioned', write versioned nodes, and on the next load re-derive 'legacy' from the
+				// now-non-empty store, opening versioned data with the legacy decoder (silent corruption).
+				// (Scoped by attribute.indexFormat != null: only RocksDB custom-object indexes set it.)
+				const indexFormatNeedsPersist =
+					attribute.indexFormat != null && attributeDescriptor?.indexFormat !== attribute.indexFormat;
 				if (
 					changed ||
+					indexFormatNeedsPersist ||
 					attributeDescriptor?.indexingFailed ||
 					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
 					attributeDescriptor?.restartNumber < currentRestartGeneration
@@ -1406,6 +1416,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
 							// existing format — its partial graph was already written under it.
 							if (
+								rootStore instanceof RocksDatabase &&
 								indexType &&
 								CUSTOM_INDEXES[indexType]?.useObjectStore &&
 								!process.env.HNSW_NO_AUTOVERSION &&

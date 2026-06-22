@@ -175,4 +175,55 @@ describe('HNSW index format migration', () => {
 		assert.equal(upgraded.indices.vector.encoder.autoVersion, true, 'the upgraded index encoder should be armed');
 		assert.equal(await countSearchMisses(upgraded), 0, 'upgraded index should be searchable with no corruption');
 	});
+
+	// Regression: a format resolved by the initializer must be PERSISTED even when nothing else
+	// changed. An index created before the indexFormat field existed has a descriptor with no
+	// indexFormat; on first load its (empty) store resolves to 'versioned'. If that resolution were
+	// not persisted, a later load — once the store is non-empty — would re-derive 'legacy' and open
+	// the versioned nodes with the legacy decoder (silent corruption).
+	it('persists an initializer-resolved format for a pre-existing descriptor that lacks indexFormat', async () => {
+		const TABLE = 'FmtBackfill';
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		// Create the index on an empty table; a fresh index persists indexFormat=versioned.
+		let Tbl = reload(TABLE, { type: 'HNSW', M: 16 });
+		assert.equal(descriptorFor(Tbl, TABLE, 'vector').indexFormat, 'versioned');
+
+		// Simulate the pre-feature on-disk state: a descriptor with NO indexFormat over a still-empty
+		// store. (Strip the field and write it back; the store has no nodes yet.)
+		const stripped = { ...descriptorFor(Tbl, TABLE, 'vector') };
+		delete stripped.indexFormat;
+		Tbl.dbisDB.putSync(`${TABLE}/vector`, stripped);
+		assert.equal(descriptorFor(Tbl, TABLE, 'vector').indexFormat, undefined, 'precondition: indexFormat stripped');
+
+		// Reload with no structural change: the initializer resolves versioned (empty store) and must
+		// PERSIST it (formatNeedsPersist), not just hold it in memory.
+		Tbl = reload(TABLE, { type: 'HNSW', M: 16 });
+		assert.equal(
+			descriptorFor(Tbl, TABLE, 'vector').indexFormat,
+			'versioned',
+			'a no-change reload must persist the initializer-resolved format'
+		);
+
+		// Now write a few nodes (versioned) and reload once more: the persisted format keeps it versioned
+		// even though the store is non-empty — the exact sequence that would silently corrupt without the
+		// fix. A small, well-separated set keeps the tiny graph at perfect recall so a miss can only mean
+		// the versioned nodes were read with the wrong (legacy) decoder, not a recall artifact.
+		let last;
+		for (let i = 0; i < 3; i++) last = Tbl.put({ id: i, vector: vec(i) });
+		await last;
+		Tbl = reload(TABLE, { type: 'HNSW', M: 16 });
+		assert.equal(descriptorFor(Tbl, TABLE, 'vector').indexFormat, 'versioned', 'non-empty store stays versioned');
+		assert.equal(Tbl.indices.vector.encoder.autoVersion, true, 'encoder re-armed versioned');
+		for (let i = 0; i < 3; i++) {
+			const results = await fromAsync(
+				Tbl.search({ sort: { attribute: 'vector', target: vec(i), distance: 'euclidean' }, select: ['id'], limit: 5 })
+			);
+			assert.ok(
+				results.some((r) => r.id === i),
+				`versioned node ${i} decodes and is findable after the round-trip (no decoder mismatch)`
+			);
+		}
+	});
 });
