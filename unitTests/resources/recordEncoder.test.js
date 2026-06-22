@@ -243,9 +243,14 @@ describe('RecordEncoder structure-version drift on read', () => {
 			`expected leftover-bytes detection (null + error log, or thrown error). decoded=${JSON.stringify(decoded)} messages=${JSON.stringify(messages)}`
 		);
 		if (hitNull) {
-			assert.ok(hitLog, `decoded to null but error log did not include "end of buffer not reached": ${JSON.stringify(messages)}`);
+			assert.ok(
+				hitLog,
+				`decoded to null but error log did not include "end of buffer not reached": ${JSON.stringify(messages)}`
+			);
 		} else if (decoded !== null && JSON.stringify(decoded) === JSON.stringify(wideRecord)) {
-			assert.fail('reader recovered the full record despite a truncated dict; symptom is not reproduced by this fixture');
+			assert.fail(
+				'reader recovered the full record despite a truncated dict; symptom is not reproduced by this fixture'
+			);
 		}
 	});
 });

@@ -464,10 +464,7 @@ export class RecordEncoder extends StructonEncoder {
 					const fresh = this.getStructures();
 					if (fresh) this._mergeStructures(fresh);
 				} catch (reloadError) {
-					harperLogger.warn?.(
-						'Failed to reload structures during decode-retry; continuing to error path',
-						reloadError
-					);
+					harperLogger.warn?.('Failed to reload structures during decode-retry; continuing to error path', reloadError);
 				}
 				this._reloadingStructures = true;
 				try {
