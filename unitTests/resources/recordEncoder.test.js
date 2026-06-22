@@ -154,17 +154,6 @@ describe('RecordEncoder missing-structure handling (harper#1163)', () => {
 });
 
 describe('RecordEncoder structure-version drift on read', () => {
-	// Production symptom from the v4→v5 in-place upgrade soak (Akamai staging): a burst of
-	// records on the first upgraded node failed to decode with
-	//   "Error decoding record Error: Data read, but end of buffer not reached"
-	// All affected records carry the same classic struct ID byte and decode through msgpackr's
-	// checkedRead. Mechanism: writer encoded against shared-structures version V (N+k fields),
-	// reader's local in-memory structures buffer is at V-1 (N fields), so the decoder finishes
-	// the N declared fields successfully but k field-bytes remain in the buffer. Distinct from
-	// the CAS-clobber path (harper#1441), which surfaces as missing-structure or "Unexpected end
-	// of MessagePack data" instead; this one is reader-side dictionary lag, not writer-side
-	// overwrite.
-
 	let errors, restoreError;
 	beforeEach(() => {
 		errors = [];
@@ -176,30 +165,20 @@ describe('RecordEncoder structure-version drift on read', () => {
 	});
 
 	it('recovers via getStructures() reload when persistent dict has caught up to writer', () => {
-		// In production the persistent structures buffer in storage is at the writer's version
-		// (saveStructures wrote it); only the in-memory singleton encoder dict lags. The fix
-		// catches "end of buffer not reached" once, calls getStructures() (which reads from
-		// storage), merges, and retries decode.
 		const writerStore = sharedStore();
 		const writer = makeEncoder(false, writerStore);
 		const bytes = Buffer.from(writer.encode({ id: 'x', payload: 'hello', tag: 'extra' }));
 
+		// In-memory dict is one entry behind the persistent store; the fix should reload and retry.
 		const reader = makeEncoder(false, writerStore);
 		reader.structures = writerStore.get().map((entry) => (Array.isArray(entry) ? entry.slice(0, -1) : entry));
 
-		const decoded = reader.decode(bytes);
-		assert.deepStrictEqual(
-			decoded,
-			{ id: 'x', payload: 'hello', tag: 'extra' },
-			`fix should reload structures on "end of buffer not reached" and recover the full record; got ${JSON.stringify(decoded)}`
-		);
+		assert.deepStrictEqual(reader.decode(bytes), { id: 'x', payload: 'hello', tag: 'extra' });
 		assert.strictEqual(errors.length, 0, 'recovery must not leak to the error log');
 	});
 
 	it('falls through to null + error log when reload does not advance the dict', () => {
-		// Guards the _reloadingStructures recursion guard: if a single reload doesn't actually
-		// advance the dict, the second decode must NOT retry again. Falls through to the existing
-		// null-on-corrupt-decode contract so we don't spin or shadow real corruption.
+		// _reloadingStructures guard: when reload returns the same stale dict, do not recurse.
 		const writerStore = sharedStore();
 		const writer = makeEncoder(false, writerStore);
 		const bytes = Buffer.from(writer.encode({ id: 'x', payload: 'hello', tag: 'extra' }));
@@ -208,49 +187,28 @@ describe('RecordEncoder structure-version drift on read', () => {
 		stuckStore.save(writerStore.get().map((entry) => (Array.isArray(entry) ? entry.slice(0, -1) : entry)));
 		const reader = makeEncoder(false, stuckStore);
 
-		const decoded = reader.decode(bytes);
-		assert.strictEqual(decoded, null, 'permanent truncation must still produce null');
+		assert.strictEqual(reader.decode(bytes), null);
 		assert.ok(
 			errors.some((e) => /end of buffer not reached/i.test((e[1] && e[1].message) || e.join(' '))),
-			'permanent failure must still surface in the error log (not silent)'
+			'permanent failure must still surface in the error log'
 		);
 	});
 
 	it('reports "Data read, but end of buffer not reached" when reader’s structures are behind writer’s', () => {
-		// Pure symptom: writer uses CLASSIC shared structures (randomAccessStructure=false). Its
-		// first encoded record installs a 3-field structure at index 0. Reader uses a DIFFERENT
-		// store seeded with a TRUNCATED structures dict (same index, only the first two fields).
-		// Models the v4→v5 first-upgrade window where the v5 receiver's local encoder dict for a
-		// given struct index lagged behind the writer's by one field. The bytes for the third
-		// field are still in the buffer; msgpackr decodes the two declared fields and checkedRead
-		// then flags the leftover bytes.
 		const writerStore = sharedStore();
 		const writer = makeEncoder(false, writerStore);
-		const wideRecord = { id: 'x', payload: 'hello', tag: 'extra' };
-		const bytes = Buffer.from(writer.encode(wideRecord));
+		const bytes = Buffer.from(writer.encode({ id: 'x', payload: 'hello', tag: 'extra' }));
 
-		const fullStructures = writerStore.get();
 		const stale = sharedStore();
-		stale.save(fullStructures.map((entry) => (Array.isArray(entry) ? entry.slice(0, -1) : entry)));
+		stale.save(writerStore.get().map((entry) => (Array.isArray(entry) ? entry.slice(0, -1) : entry)));
 		const reader = makeEncoder(false, stale);
 		const decoded = reader.decode(bytes);
 
 		const messages = errors.map((e) => (e[1] && e[1].message) || e.join(' '));
-		const hitLog = messages.some((m) => /end of buffer not reached/i.test(m));
-		const hitNull = decoded === null;
+		assert.strictEqual(decoded, null);
 		assert.ok(
-			hitLog || !hitNull,
-			`expected leftover-bytes detection (null + error log, or thrown error). decoded=${JSON.stringify(decoded)} messages=${JSON.stringify(messages)}`
+			messages.some((m) => /end of buffer not reached/i.test(m)),
+			`expected "end of buffer not reached" error; got: ${JSON.stringify(messages)}`
 		);
-		if (hitNull) {
-			assert.ok(
-				hitLog,
-				`decoded to null but error log did not include "end of buffer not reached": ${JSON.stringify(messages)}`
-			);
-		} else if (decoded !== null && JSON.stringify(decoded) === JSON.stringify(wideRecord)) {
-			assert.fail(
-				'reader recovered the full record despite a truncated dict; symptom is not reproduced by this fixture'
-			);
-		}
 	});
 });

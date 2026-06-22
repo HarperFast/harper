@@ -446,15 +446,9 @@ export class RecordEncoder extends StructonEncoder {
 				);
 				return null;
 			}
-			// Reader-side classic shared-structures dictionary lag: msgpackr decoded the N fields its
-			// local dict knew about, then checkedRead flagged leftover bytes for the (N+k)-th field.
-			// The persistent structures buffer is already at N+k (the writer published it via
-			// saveStructures); the local singleton encoder just hasn't reloaded since. Force a reload
-			// and retry once. Mirrors structon's auto-reload for the typed-struct missing case
-			// (harper#1163), but for classic structures the upstream path doesn't self-recover on
-			// tail-shape mismatch, so without this the record is silently laundered as null on every
-			// read. `_reloadingStructures` guards a single retry to avoid infinite recursion if the
-			// reload doesn't actually advance the dict.
+			// Classic shared-structures dict lag: persisted structures advanced past the in-memory copy,
+			// so msgpackr decodes the known fields and leaves the tail. Reload from storage and retry
+			// once. structon does the equivalent on typed-struct misses (harper#1163).
 			if (
 				!this._reloadingStructures &&
 				typeof this.getStructures === 'function' &&
@@ -464,7 +458,7 @@ export class RecordEncoder extends StructonEncoder {
 					const fresh = this.getStructures();
 					if (fresh) this._mergeStructures(fresh);
 				} catch (reloadError) {
-					harperLogger.warn?.('Failed to reload structures during decode-retry; continuing to error path', reloadError);
+					harperLogger.warn?.('Failed to reload structures during decode-retry', reloadError);
 				}
 				this._reloadingStructures = true;
 				try {
