@@ -184,22 +184,24 @@ export class RecordEncoder extends StructonEncoder {
 				// byte (0x42 for current-era ms timestamps) triggers metadata detection, and the
 				// ACTION_32_BIT-tagged flags word (flags = 0 — no expiration/residency/etc.) is required
 				// so decode consumes a metadata word rather than mis-reading the struct's first byte as
-				// flags. Encode the value normally (the metadata path's reserve-start mechanism is
-				// incompatible with struct/randomAccessStructure mode) and PREPEND the header into a
-				// fresh buffer. Never touch the shared timestampNextEncoding/metadataInNextEncoding
-				// globals — those belong to the enclosing primary-record write whose commit nests this
-				// index encode (harper#1307).
-				const encoded = superEncode.call(this, record, options);
-				const dataStart = encoded.start || 0;
-				const dataEnd = encoded.end != null ? encoded.end : encoded.length;
-				const out = Buffer.allocUnsafe(12 + (dataEnd - dataStart));
-				const dataView = new DataView(out.buffer, out.byteOffset, out.byteLength);
-				dataView.setFloat64(0, getNextMonotonicTime()); // version (big-endian, rocksdb stores it directly)
-				dataView.setUint32(8, ACTION_32_BIT << 24); // metadata word: ACTION_32_BIT tag, flags = 0
-				if (encoded.copy) encoded.copy(out, 12, dataStart, dataEnd);
-				else out.set(encoded.subarray(dataStart, dataEnd), 12);
-				lastValueEncoding = out.subarray(12);
-				return out;
+				// flags — the flags word being mandatory was the actual bug behind earlier failures,
+				// NOT any struct incompatibility. Use the same reserve-start mechanism the primary
+				// metadata path below uses (the 2048|valueStart option reserves valueStart bytes at the
+				// front of the encode buffer; we write the header in place), which works fine with the
+				// forced randomAccessStructure/typed-struct mode of custom-object indexes — verified
+				// against the cold/frozen-read (#1161) and concurrent multi-worker (#386) suites. This
+				// avoids a per-write extra allocation + full-payload copy. Never touch the shared
+				// timestampNextEncoding/metadataInNextEncoding globals — those belong to the enclosing
+				// primary-record write whose commit nests this index encode (harper#1307).
+				const valueStart = 12; // 8-byte version + 4-byte metadata word
+				const encoded = superEncode.call(this, record, options | 2048 | valueStart);
+				const position = encoded.start || 0;
+				const dataView =
+					encoded.dataView || (encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
+				dataView.setFloat64(position, getNextMonotonicTime()); // version (big-endian, rocksdb stores it directly)
+				dataView.setUint32(position + 8, ACTION_32_BIT << 24); // metadata word: ACTION_32_BIT tag, flags = 0
+				lastValueEncoding = encoded.subarray(position + valueStart, encoded.end);
+				return encoded;
 			}
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
 			// timestamp into the audit record, invalidation status and residency information
