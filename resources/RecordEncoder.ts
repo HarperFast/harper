@@ -114,10 +114,12 @@ export class RecordEncoder extends StructonEncoder {
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
+	declare _mergeStructures: any;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
+	_reloadingStructures?: boolean;
 	constructor(options) {
 		options.useBigIntExtension = true;
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
@@ -449,11 +451,7 @@ export class RecordEncoder extends StructonEncoder {
 			// Classic shared-structures dict lag: persisted structures advanced past the in-memory copy,
 			// so msgpackr decodes the known fields and leaves the tail. Reload from storage and retry
 			// once. structon does the equivalent on typed-struct misses (harper#1163).
-			if (
-				!this._reloadingStructures &&
-				typeof this.getStructures === 'function' &&
-				/end of buffer not reached/i.test(error?.message)
-			) {
+			if (!this._reloadingStructures && /end of buffer not reached/i.test(error?.message)) {
 				try {
 					const fresh = this.getStructures();
 					if (fresh) this._mergeStructures(fresh);
