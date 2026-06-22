@@ -933,6 +933,56 @@ export async function dropDatabase(databaseName) {
 
 	await deleteRootBlobPathsForDB(rootStore);
 }
+/**
+ * Resolve the storage format of a custom-index object store (e.g. HNSW): `'versioned'` (each node
+ * value is prefixed with a monotonic version the RocksDB Verification Table can extract → cached,
+ * decode-free graph traversal) or `'legacy'` (un-versioned, un-cached).
+ *
+ * The format is decided ONCE — when the index is created — and persisted on the attribute
+ * descriptor (`indexFormat`), so every worker and every reload reads the same authoritative value
+ * rather than re-deriving it from the store's current contents. Re-deriving per-open is racy: a
+ * store that is non-empty mid-backfill would be mis-read as legacy, and opening a versioned store
+ * with the legacy decoder corrupts reads. table() persists the resolved value (and always persists
+ * it BEFORE the first node is written, so by the time a store is non-empty its format is on disk).
+ *
+ * The empty-guard below is only the INITIALIZER for the first open under this feature (no format
+ * persisted yet): an empty store will be written versioned; a pre-existing non-empty store holds
+ * legacy un-prefixed values (incl. small-int id mappings the versioned decoder would misread) and
+ * stays legacy until an explicit reindex rebuilds it. The HNSW_NO_AUTOVERSION kill-switch only
+ * blocks a NEW index from initializing as versioned — an already-versioned store is still resolved
+ * versioned so its reads stay correct. The resolved value is stamped back onto `attribute` so the
+ * caller's attributesDbi.put persists it.
+ */
+function resolveIndexFormat(
+	dbiKey: string,
+	rootStore: RootDatabaseKind,
+	dbi: any,
+	attribute: any
+): 'versioned' | 'legacy' {
+	const persisted = (rootStore as any).dbisDb?.getSync(dbiKey)?.indexFormat;
+	let format: 'versioned' | 'legacy' = persisted ?? attribute.indexFormat;
+	if (format == null) {
+		format = 'legacy';
+		let isEmpty = true;
+		for (const _key of dbi.getKeys({ start: 0, end: Infinity, limit: 1 })) {
+			isEmpty = false;
+			break;
+		}
+		if (isEmpty && !process.env.HNSW_NO_AUTOVERSION) format = 'versioned';
+	}
+	attribute.indexFormat = format;
+	return format;
+}
+
+// Arm a custom-index object store for versioned (VT-cacheable) reads and writes: enable the
+// metadata-prefix encode/decode (isRocksDB) and self-versioning (autoVersion) on its encoder.
+// Idempotent — safe to call again on a re-opened or reindexed store.
+function armVersionedIndexEncoder(dbi: any, rootStore: RootDatabaseKind) {
+	if (dbi.encoder?.autoVersion) return;
+	handleLocalTimeForGets(dbi, rootStore);
+	if (dbi.encoder) dbi.encoder.autoVersion = true;
+}
+
 // opens an index, consulting with custom indexes that may use alternate store configuration
 function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
 	const objectStorage =
@@ -960,28 +1010,13 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		(dbi as any).rootStore = rootStore;
 		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
 		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
-		// Verification-Table cache can't track them. For a FRESH index, initialise the encoder as a
-		// versioned RocksDB store (isRocksDB → enables the metadata-prefix encode/decode) and mark it
+		// Verification-Table cache can't track them. A versioned index initialises its encoder as a
+		// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
 		// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
-		// decode-free graph traversal.
-		//
-		// Only do this for an empty index. A pre-existing index written before this feature holds
-		// un-prefixed values — including small-int id mappings the versioned-metadata decode would
-		// misread (a value < 32 looks like a metadata-flags word) — so enabling the versioned decoder
-		// on it would corrupt reads. Such indexes stay in legacy mode (correct, just uncached) until
-		// rebuilt. The empty check uses keys-only iteration, which is format-agnostic. (Multi-worker
-		// note: at table-define time on startup all workers see the same empty/non-empty state; a
-		// runtime-created index is empty for every worker's first open.)
-		if (isCustomObjectIndex && !process.env.HNSW_NO_AUTOVERSION) {
-			let isEmpty = true;
-			for (const _key of (dbi as any).getKeys({ start: 0, end: Infinity, limit: 1 })) {
-				isEmpty = false;
-				break;
-			}
-			if (isEmpty) {
-				handleLocalTimeForGets(dbi, rootStore);
-				if ((dbi as any).encoder) (dbi as any).encoder.autoVersion = true;
-			}
+		// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
+		// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
+		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
+			armVersionedIndexEncoder(dbi, rootStore);
 		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
@@ -1363,6 +1398,22 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							attribute.lastIndexedKey = indexOptionsChanged
 								? undefined
 								: (attributeDescriptor?.lastIndexedKey ?? undefined);
+							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
+							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
+							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
+							// new nodes can carry versions: flip the persisted format and re-arm the dbi encoder
+							// (openIndex armed it from the pre-rebuild format, which for a legacy index was
+							// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
+							// existing format — its partial graph was already written under it.
+							if (
+								indexType &&
+								CUSTOM_INDEXES[indexType]?.useObjectStore &&
+								!process.env.HNSW_NO_AUTOVERSION &&
+								attribute.lastIndexedKey === undefined
+							) {
+								attribute.indexFormat = 'versioned';
+								armVersionedIndexEncoder(dbi, rootStore);
+							}
 							attribute.indexingPID = process.pid;
 							// Persist the owning restart generation (see currentRestartGeneration above) so
 							// the trigger can re-detect an incomplete index after a worker restart even when
