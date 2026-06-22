@@ -89,6 +89,17 @@ suite('non-object record roots rejected on write (#1298)', { skip: skipSuite }, 
 		ok(r.status === 400, `expected 400, got ${r.status}: ${r.text}`);
 	});
 
+	// A bare JSON array is also a non-object root (typeof === 'object' but Array.isArray === true).
+	test('bare JSON array record root is rejected with 400', async () => {
+		const r = await request(restURL)
+			.put(`/${TABLE}/arr`)
+			.set(authHeaders)
+			.set('Content-Type', 'application/json')
+			.send('[1,2,3]')
+			.timeout(10_000);
+		ok(r.status === 400, `array root: expected 400, got ${r.status}: ${r.text}`);
+	});
+
 	// String / number JSON bodies are non-object roots too.
 	test('primitive (string/number) record roots are rejected with 400', async () => {
 		const asString = await request(restURL)
