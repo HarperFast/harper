@@ -933,6 +933,14 @@ export async function dropDatabase(databaseName) {
 
 	await deleteRootBlobPathsForDB(rootStore);
 }
+// HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
+// versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
+// as enabling the switch — the opposite of intent. Treat "" / "0" / "false" (and unset) as NOT set.
+function hnswAutoVersionDisabled(): boolean {
+	const value = process.env.HNSW_NO_AUTOVERSION;
+	return value != null && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+}
+
 /**
  * Resolve the storage format of a custom-index object store (e.g. HNSW): `'versioned'` (each node
  * value is prefixed with a monotonic version the RocksDB Verification Table can extract → cached,
@@ -968,7 +976,7 @@ function resolveIndexFormat(
 			isEmpty = false;
 			break;
 		}
-		if (isEmpty && !process.env.HNSW_NO_AUTOVERSION) format = 'versioned';
+		if (isEmpty && !hnswAutoVersionDisabled()) format = 'versioned';
 	}
 	attribute.indexFormat = format;
 	return format;
@@ -1419,7 +1427,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 								rootStore instanceof RocksDatabase &&
 								indexType &&
 								CUSTOM_INDEXES[indexType]?.useObjectStore &&
-								!process.env.HNSW_NO_AUTOVERSION &&
+								!hnswAutoVersionDisabled() &&
 								attribute.lastIndexedKey === undefined
 							) {
 								attribute.indexFormat = 'versioned';

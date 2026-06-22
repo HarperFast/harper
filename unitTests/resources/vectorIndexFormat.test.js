@@ -14,7 +14,7 @@
  * See resolveIndexFormat / armVersionedIndexEncoder and the reindex-upgrade branch in databases.ts.
  */
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -139,6 +139,26 @@ describe('HNSW index format migration', () => {
 			);
 			assert.ok(!Tbl.indices.vector.encoder.autoVersion, 'legacy index encoder must not be armed');
 			assert.equal(await countSearchMisses(Tbl), 0, 'legacy index should still be searchable');
+		} finally {
+			delete process.env.HNSW_NO_AUTOVERSION;
+		}
+	});
+
+	it('treats a falsy HNSW_NO_AUTOVERSION value ("false"/"0") as NOT set (env strings are truthy)', async () => {
+		const TABLE = 'FmtKillFalsy';
+		setupTestDBPath();
+		setMainIsWorker(true);
+		await seed(TABLE);
+
+		process.env.HNSW_NO_AUTOVERSION = 'false';
+		try {
+			const Tbl = reload(TABLE, { type: 'HNSW', M: 16 });
+			await Tbl.indexingOperation;
+			assert.equal(
+				descriptorFor(Tbl, TABLE, 'vector').indexFormat,
+				'versioned',
+				'HNSW_NO_AUTOVERSION="false" must not disable versioning'
+			);
 		} finally {
 			delete process.env.HNSW_NO_AUTOVERSION;
 		}
