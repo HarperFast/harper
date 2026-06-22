@@ -34,6 +34,8 @@ function wsUpgradeStatus(url: string): Promise<number> {
 		req.setTimeout(8000, () => req.destroy(new Error('ws upgrade timed out')));
 		// A successful upgrade emits 'upgrade'; a handler-less server answers as a normal response.
 		req.on('upgrade', (res, socket) => {
+			// Avoid an unhandled 'error' crashing the test process if the socket faults on teardown.
+			socket.on('error', () => {});
 			socket.destroy();
 			resolve(res.statusCode ?? 0);
 		});
