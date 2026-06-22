@@ -277,16 +277,22 @@ export class RecordEncoder extends StructonEncoder {
 				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
 				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
 				// trie, re-mints, and re-saves — so the record always references a persisted structure.
+				// structon's _saveTypedStructures calls saveStructures(structures) without the second
+				// arg, but prepareStructures attaches .isCompatible on the Map itself. Fall back to it
+				// so typed-only saves keep CAS protection; otherwise the else-branch check is
+				// `Map.length(undefined) !== undefined` = false, and a conflicting same-length typed
+				// struct silently clobbers the previous one.
+				const compat = isCompatible ?? (structures as any)?.isCompatible;
 				const committed = this.rootStore.transactionSync(
 					(txn) => {
 						const sharedStructuresKey = [Symbol.for('structures'), this.name];
 						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
 						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
-						if (typeof isCompatible == 'function') {
-							if (!isCompatible(existingStructures)) {
+						if (typeof compat == 'function') {
+							if (!compat(existingStructures)) {
 								return false;
 							}
-						} else if (existingStructures && existingStructures.length !== isCompatible) {
+						} else if (existingStructures && existingStructures.length !== compat) {
 							return false;
 						}
 						txn.putSync(sharedStructuresKey, structures);

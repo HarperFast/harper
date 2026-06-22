@@ -152,3 +152,98 @@ describe('RecordEncoder missing-structure handling (harper#1163)', () => {
 		assert.strictEqual(warnings.length, 0, 'genuine corruption should not use the missing-structure warning');
 	});
 });
+
+describe('RecordEncoder typed-struct CAS regression', () => {
+	function mockRocksRootStore() {
+		let buffer;
+		const meta = new Encoder({ useBigIntExtension: true });
+		return {
+			transactionSync(cb) {
+				const txn = {
+					getBinarySync() {
+						return buffer;
+					},
+					putSync(_key, val) {
+						buffer = meta.encode(val);
+					},
+				};
+				return cb(txn);
+			},
+			_readDecoded() {
+				return buffer ? meta.decode(buffer) : undefined;
+			},
+		};
+	}
+
+	function makeRocksEncoder(rootStore) {
+		const enc = new RecordEncoder({
+			structures: [],
+			randomAccessStructure: true,
+			getStructures: () => undefined,
+			saveStructures: () => true,
+		});
+		enc.isRocksDB = true;
+		enc.rootStore = rootStore;
+		enc.name = 'TestTable';
+		return enc;
+	}
+
+	function makeStructures(typedEntries, lastTypedLen) {
+		const m = new Map();
+		m.set('named', []);
+		m.set('typed', typedEntries);
+		m.isCompatible = (existing) => {
+			if (!existing) return lastTypedLen === 0;
+			const t = existing instanceof Map ? existing.get('typed') || [] : existing?.typed || [];
+			return t.length === lastTypedLen;
+		};
+		return m;
+	}
+
+	it('rejects a conflicting typed-only save when isCompatible is on structures, not the parameter', () => {
+		// structon's _saveTypedStructures (node_modules/structon/index.js:165) calls
+		// this.saveStructures(structures) without forwarding the second arg, but the structures
+		// object that prepareStructures returned has .isCompatible attached. Harper's saveStructures
+		// override must consult that attached function, otherwise its else-branch CAS check is
+		// `existingStructures.length !== undefined` which is `Map.length(undefined) !== undefined` =
+		// false, and a same-length-but-different-content typed-struct save silently clobbers the
+		// previous one. Records the first writer encoded against now reference a struct whose schema
+		// has been replaced, surfacing as "Data read, but end of buffer not reached" /
+		// "Unexpected end of MessagePack data" at decode (HarperFast/harper#1441).
+		const rootStore = mockRocksRootStore();
+		const enc = makeRocksEncoder(rootStore);
+
+		const firstStructures = makeStructures([[[3, 0, 'id']]], 0);
+		assert.strictEqual(enc.saveStructures(firstStructures), true, 'initial save should succeed');
+
+		// A different encoder (or thread) mints a different typed struct at the same lastTypedLen=0.
+		const conflicting = makeStructures([[[3, 0, 'differentField']]], 0);
+		const result = enc.saveStructures(conflicting);
+		assert.strictEqual(
+			result,
+			false,
+			'conflicting same-length typed-only save must be CAS-rejected; got true → silent clobber'
+		);
+
+		const persisted = rootStore._readDecoded();
+		const typed = persisted instanceof Map ? persisted.get('typed') : persisted?.typed;
+		assert.strictEqual(typed[0][0][2], 'id', 'persisted typed struct must still be the first writer’s');
+	});
+
+	it('continues to honor the explicit-parameter form (msgpackr.pack pathway)', () => {
+		// Guards against the fix breaking msgpackr's call site (node_modules/msgpackr/pack.js:190),
+		// which DOES pass structures.isCompatible as the second argument.
+		const rootStore = mockRocksRootStore();
+		const enc = makeRocksEncoder(rootStore);
+
+		const first = makeStructures([[[3, 0, 'id']]], 0);
+		assert.strictEqual(enc.saveStructures(first, first.isCompatible), true);
+
+		const conflicting = makeStructures([[[3, 0, 'differentField']]], 0);
+		assert.strictEqual(
+			enc.saveStructures(conflicting, conflicting.isCompatible),
+			false,
+			'explicit-arg path must keep rejecting conflicts'
+		);
+	});
+});
