@@ -1,8 +1,11 @@
 'use strict';
 
 import * as hdbUtil from '../utility/common_utils.ts';
+import * as hdbTerms from '../utility/hdbTerms.ts';
 import log from '../utility/logging/harper_logger.ts';
 import * as directivesController from './directives/directivesController.ts';
+
+const { DATA_VERSION, UPGRADE_VERSION } = hdbTerms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 /**
  * Iterates through the directives files to find uninstalled updates and runs the files.
@@ -11,16 +14,30 @@ import * as directivesController from './directives/directivesController.ts';
  * @returns {Promise<*[]>}
  */
 export async function processDirectives(upgradeObj: any) {
-	console.log('Starting upgrade process...');
+	const dataVersion = upgradeObj?.[DATA_VERSION];
+	const upgradeVersion = upgradeObj?.[UPGRADE_VERSION];
 
 	let loadedDirectives = directivesController.getVersionsForUpgrade(upgradeObj);
 	let upgradeDirectives = getUpgradeDirectivesToInstall(loadedDirectives);
 
-	let allResponses = [];
 	const dirLength = upgradeDirectives.length;
+
+	// A migration's version is the release that *introduced* it, not the software version being
+	// installed. Migrations run once, when the data crosses their version boundary, so a migration
+	// tagged 5.1.0 can run while installing a later release (e.g. 5.1.7) and the bare version is
+	// easily misread as a downgrade. Log the actual data -> software transition for context.
+	const header =
+		dirLength === 0
+			? `Starting upgrade process: no data migrations to apply (data ${dataVersion} -> software ${upgradeVersion}).`
+			: `Starting upgrade process: applying ${dirLength} data migration${dirLength === 1 ? '' : 's'} to bring data from ${dataVersion} up to software ${upgradeVersion}.`;
+	log.notify(header);
+	console.log(header);
+
+	let allResponses = [];
 	for (let i = 0; i < dirLength; i++) {
 		const vers = upgradeDirectives[i];
-		let notifyMsg = `Running upgrade for version ${vers.version}`;
+		const description = vers.description ? `: ${vers.description}` : '';
+		let notifyMsg = `Applying migration ${i + 1} of ${dirLength} (introduced in ${vers.version})${description}`;
 		log.notify(notifyMsg);
 		console.log(notifyMsg);
 

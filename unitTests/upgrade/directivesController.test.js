@@ -34,6 +34,9 @@ describe('directivesController — hdb_deployment table-creation directive', () 
 		const directive = directivesController.getDirectiveByVersion('5.1.0');
 		expect(directive, 'expected a directive registered for version 5.1.0').to.exist;
 		expect(directive.version).to.equal('5.1.0');
+		expect(directive.description, 'directive should carry a human-readable description for the upgrade log').to.be.a(
+			'string'
+		).that.is.not.empty;
 		expect(directive.async_functions).to.be.an('array').that.is.not.empty;
 		expect(directive.async_functions[0].name).to.equal('createHdbDeploymentIfMissing');
 	});
