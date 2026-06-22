@@ -8,6 +8,26 @@ import * as directivesController from './directives/directivesController.ts';
 const { DATA_VERSION, UPGRADE_VERSION } = hdbTerms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 /**
+ * Build the upgrade-process header line. Surfaces the real data -> software transition and the
+ * migration count so the per-migration directive version below isn't misread as a downgrade: a
+ * migration's version is the release that *introduced* it, not the software version being installed,
+ * so a migration tagged 5.1.0 can run while installing a later release (e.g. 5.1.7).
+ */
+export function formatUpgradeHeader(dataVersion: any, upgradeVersion: any, migrationCount: number) {
+	if (migrationCount === 0) {
+		return `Starting upgrade process: no data migrations to apply (data ${dataVersion} -> software ${upgradeVersion}).`;
+	}
+	const plural = migrationCount === 1 ? '' : 's';
+	return `Starting upgrade process: applying ${migrationCount} data migration${plural} to bring data from ${dataVersion} up to software ${upgradeVersion}.`;
+}
+
+/** Build a single migration's log line: which migration, the release that introduced it, and what it does. */
+export function formatMigrationLine(position: number, total: number, version: any, description?: any) {
+	const detail = description ? `: ${description}` : '';
+	return `Applying migration ${position} of ${total} (introduced in ${version})${detail}`;
+}
+
+/**
  * Iterates through the directives files to find uninstalled updates and runs the files.
  *
  * @param upgradeObj
@@ -22,22 +42,14 @@ export async function processDirectives(upgradeObj: any) {
 
 	const dirLength = upgradeDirectives.length;
 
-	// A migration's version is the release that *introduced* it, not the software version being
-	// installed. Migrations run once, when the data crosses their version boundary, so a migration
-	// tagged 5.1.0 can run while installing a later release (e.g. 5.1.7) and the bare version is
-	// easily misread as a downgrade. Log the actual data -> software transition for context.
-	const header =
-		dirLength === 0
-			? `Starting upgrade process: no data migrations to apply (data ${dataVersion} -> software ${upgradeVersion}).`
-			: `Starting upgrade process: applying ${dirLength} data migration${dirLength === 1 ? '' : 's'} to bring data from ${dataVersion} up to software ${upgradeVersion}.`;
+	const header = formatUpgradeHeader(dataVersion, upgradeVersion, dirLength);
 	log.notify(header);
 	console.log(header);
 
 	let allResponses = [];
 	for (let i = 0; i < dirLength; i++) {
 		const vers = upgradeDirectives[i];
-		const description = vers.description ? `: ${vers.description}` : '';
-		let notifyMsg = `Applying migration ${i + 1} of ${dirLength} (introduced in ${vers.version})${description}`;
+		let notifyMsg = formatMigrationLine(i + 1, dirLength, vers.version, vers.description);
 		log.notify(notifyMsg);
 		console.log(notifyMsg);
 
