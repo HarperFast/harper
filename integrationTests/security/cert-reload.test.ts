@@ -127,6 +127,19 @@ suite('TLS certificate hot-reload propagates to all workers (#586)', { skip: ski
 					privateKey: keyPath,
 				},
 			},
+			// Force the main-thread cert-file watcher (chokidar, in security/keys.ts) to poll the
+			// file instead of relying on native fs.watch/inotify. The GitHub Actions Linux runners
+			// back the temp dir with overlayfs/tmpfs, which silently DROPS inotify change events —
+			// so the on-disk cert swap below was intermittently never detected and the reload never
+			// fired, making this test time out ("cert never reloaded ... after 20s"). chokidar reads
+			// CHOKIDAR_USEPOLLING / CHOKIDAR_INTERVAL as process-global overrides (honored by every
+			// watcher in-process regardless of dependency depth), so this swaps detection to a stat
+			// poll that is immune to the inotify drop. It only changes HOW the swap is detected — the
+			// regression assertion (every worker serves the renewed cert) is unchanged, and the
+			// product still uses native watching by default. The integration-testing harness merges
+			// `env` into the spawned Harper process (harperLifecycle.js), so the override reaches the
+			// main thread that owns the watcher. 250ms keeps detection well within the 20s budget.
+			env: { CHOKIDAR_USEPOLLING: '1', CHOKIDAR_INTERVAL: '250' },
 		});
 	});
 
