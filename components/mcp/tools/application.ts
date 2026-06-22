@@ -16,7 +16,14 @@ import { createHash } from 'node:crypto';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
-import { addTool, clearProfileTools, snapshotProfileTools, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
+import {
+	addTool,
+	clearProfileTools,
+	snapshotProfileTools,
+	type AuthedUser,
+	type ToolCallContext,
+	type ToolResult,
+} from '../toolRegistry.ts';
 import {
 	addPrompt,
 	clearProfilePrompts,
@@ -74,6 +81,15 @@ interface ResourceClassLike {
 	 * Each entry maps an instance-method name to an MCP tool descriptor.
 	 * RBAC stays as whatever the Resource's method itself enforces; the MCP
 	 * layer does not invent new ACLs for these.
+	 *
+	 * The mapped method is invoked as `method(args, context)`, where `context`
+	 * exposes `{ user, profile, sessionId, signal?, progress?, serverRequest? }`
+	 * — the per-call MCP context. `progress` (emit `notifications/progress`),
+	 * `signal` (aborts on `notifications/cancelled`), and `serverRequest`
+	 * (`sampling/createMessage`, `elicitation/create`, `roots/list`) are present
+	 * ONLY when the call streams (client sent `_meta.progressToken` +
+	 * `Accept: text/event-stream`), so guard them: `context.progress?.(…)`.
+	 * Methods that declare only `(args)` keep working — the extra arg is ignored.
 	 */
 	mcpTools?: ReadonlyArray<{
 		name: string;
@@ -768,18 +784,31 @@ function registerCustomMcpPrompts(ResourceClass: ResourceClassLike, path: string
 }
 
 function makeCustomMethodHandler(toolName: string, ResourceClass: ResourceClassLike, methodName: string) {
-	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+	return async function (args: unknown, context: ToolCallContext): Promise<ToolResult> {
 		try {
 			// Instantiate per call. Component authors define custom methods on
 			// the instance side; the Harper context carries the user so any
 			// internal Resource calls the method makes pick up RBAC naturally.
 			const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
 			const instance = new Ctor(undefined, buildContext(context.user));
-			const method = instance[methodName] as ((a: unknown) => unknown) | undefined;
+			const method = instance[methodName] as ((a: unknown, ctx: unknown) => unknown) | undefined;
 			if (typeof method !== 'function') {
 				throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
 			}
-			const data = await method.call(instance, args ?? {});
+			// Forward the per-call MCP context as a curated second arg so author tools can
+			// emit progress, observe cancellation, and issue server→client requests
+			// (#1349 §3.3/§3.4/§3.7). progress/signal/serverRequest are only populated on a
+			// streaming call, so authors must guard them (`context.progress?.(…)`). A method
+			// that only declares `(args)` ignores the extra positional arg (back-compat).
+			const mcpContext: ToolCallContext = {
+				user: context.user,
+				profile: context.profile,
+				sessionId: context.sessionId,
+				signal: context.signal,
+				progress: context.progress,
+				serverRequest: context.serverRequest,
+			};
+			const data = await method.call(instance, args ?? {}, mcpContext);
 			return wrapResult(data ?? { ok: true });
 		} catch (err) {
 			return wrapError(toolName, err);

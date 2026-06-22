@@ -422,6 +422,61 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		assert.deepEqual(res.structuredContent, { results: ['a', 'b'] });
 	});
 
+	it('forwards the per-call MCP context (progress/signal/serverRequest) to the custom method (#1404)', async () => {
+		let received;
+		class Streamy {
+			async longJob(args, context) {
+				received = context;
+				context.progress?.({ progress: 1, total: 2 });
+				return { done: true };
+			}
+		}
+		Streamy.mcpTools = [{ name: 'long_job', method: 'longJob' }];
+		_setResourcesForTest(makeRegistry([['Streamy', { Resource: Streamy }]]));
+		registerApplicationTools();
+
+		const progress = () => {};
+		const serverRequest = async () => ({ ok: true });
+		const controller = new AbortController();
+		await getTool('long_job').handler(
+			{ n: 1 },
+			{
+				user: SUPER,
+				profile: 'application',
+				sessionId: 's',
+				signal: controller.signal,
+				progress,
+				serverRequest,
+			}
+		);
+		assert.ok(received, 'method received a second context argument');
+		assert.equal(received.progress, progress, 'progress fn forwarded');
+		assert.equal(received.serverRequest, serverRequest, 'serverRequest fn forwarded');
+		assert.equal(received.signal, controller.signal, 'AbortSignal forwarded');
+		assert.equal(received.user, SUPER);
+		assert.equal(received.profile, 'application');
+		assert.equal(received.sessionId, 's');
+	});
+
+	it('a custom method declaring only (args) still works — extra context arg ignored (back-compat)', async () => {
+		let captured;
+		class OldStyle {
+			async legacy(args) {
+				captured = args;
+				return { ok: true };
+			}
+		}
+		OldStyle.mcpTools = [{ name: 'legacy_tool', method: 'legacy' }];
+		_setResourcesForTest(makeRegistry([['OldStyle', { Resource: OldStyle }]]));
+		registerApplicationTools();
+		const res = await getTool('legacy_tool').handler(
+			{ a: 1 },
+			{ user: SUPER, profile: 'application', sessionId: 's', progress: () => {}, signal: new AbortController().signal }
+		);
+		assert.deepEqual(captured, { a: 1 });
+		assert.equal(res.isError, undefined);
+	});
+
 	it('handler errors from custom methods become isError=true', async () => {
 		class BlowsUp {
 			async kaboom() {
