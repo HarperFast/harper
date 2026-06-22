@@ -265,6 +265,13 @@ export class RecordEncoder extends StructonEncoder {
 		const superSaveStructures = this.saveStructures;
 		const superGetStructures = this.getStructures;
 		this.saveStructures = function (structures, isCompatible): boolean | undefined {
+			// structon's _saveTypedStructures calls saveStructures(structures) without the second
+			// arg, but prepareStructures attaches .isCompatible on the Map itself. Fall back to it
+			// so typed-only saves keep CAS protection on both storage paths; otherwise the LMDB
+			// branch forwards `undefined` and the RocksDB else-branch check is
+			// `Map.length(undefined) !== undefined` = false, and a conflicting same-length typed
+			// struct silently clobbers the previous one.
+			const compat = isCompatible ?? (structures as any).isCompatible;
 			if (this.isRocksDB) {
 				// transactionSync returns the callback's value on commit, but returns `undefined`
 				// when the txn was aborted (it swallows ERR_ALREADY_ABORTED). The success path here
@@ -277,12 +284,6 @@ export class RecordEncoder extends StructonEncoder {
 				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
 				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
 				// trie, re-mints, and re-saves — so the record always references a persisted structure.
-				// structon's _saveTypedStructures calls saveStructures(structures) without the second
-				// arg, but prepareStructures attaches .isCompatible on the Map itself. Fall back to it
-				// so typed-only saves keep CAS protection; otherwise the else-branch check is
-				// `Map.length(undefined) !== undefined` = false, and a conflicting same-length typed
-				// struct silently clobbers the previous one.
-				const compat = isCompatible ?? (structures as any)?.isCompatible;
 				const committed = this.rootStore.transactionSync(
 					(txn) => {
 						const sharedStructuresKey = [Symbol.for('structures'), this.name];
@@ -309,7 +310,7 @@ export class RecordEncoder extends StructonEncoder {
 				}
 				return false;
 			} else {
-				const result = superSaveStructures.call(this, structures, isCompatible);
+				const result = superSaveStructures.call(this, structures, compat);
 				this.structureUpdate = structures;
 				return result;
 			}
