@@ -251,12 +251,14 @@ class SubscriptionsSession {
 		} else isCollection = false; // must explicitly turn this off so topics that end in a slash are not treated as collections
 		const request = new RequestTarget(url);
 		Object.assign(request, {
+			// bind parameterised path segments (e.g. :id, *rest) first, so a route param can never override a
+			// framework-controlled field below — most importantly checkPermission (matches REST.ts / publishMessage)
+			...entry.params,
 			isCollection,
 			onlyChildren,
 			startTime,
 			omitCurrent,
 			checkPermission: this.user?.role?.permission ?? {},
-			...entry.params, // bind parameterised path segments (e.g. :id, *rest)
 		});
 		const resourcePath = entry.path;
 		const resource = entry.Resource;
