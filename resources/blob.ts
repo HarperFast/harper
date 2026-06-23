@@ -461,8 +461,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 									if (checkIfIsBeingWritten()) {
 										// Bound the wait for in-progress content the same way the open-retry loop bounds the
 										// wait for the file to appear (#1423): start a no-progress deadline on the first stuck
-										// read. checkIfIsBeingWritten() caches its result, so a writer that died or stalled
-										// without releasing its lock would otherwise pin us here forever (#1454).
+										// read. checkIfIsBeingWritten() caches its result, so an in-progress write whose source
+										// stream stalled — and so never reached its unlock() — keeps the lock held and would
+										// otherwise pin us here forever (the lock is in-process and released on unlock() or
+										// handle close, so this is a live stalled write, not a dead one) (#1454, cf #1444).
 										if (incompleteDeadline === 0) incompleteDeadline = Date.now() + getBlobReadTimeout();
 										// detects the race where the writer finished between our last async read
 										// and the watcher being set up (or the watcher missing the final write event)

@@ -816,7 +816,9 @@ describe('Blob test', () => {
 	it('#1454: a present-but-truncated blob with a writer still holding the lock fails 503 instead of spinning forever', async () => {
 		// The prod-dyn/prod-gar CPU storm: a blob file is present, its header records the full descriptor
 		// size (so the #1424 cross-check passes), but the body was never fully written — and the writer's
-		// lock still reads as held (a stalled/dead replication write that never released it). The reader
+		// lock still reads as held (a live replication write stalled on a wedged source stream, so it never
+		// reached unlock(); the lock is in-process and freed on unlock()/handle close, so a *dead* writer
+		// can't cause this — only a stalled live one). The reader
 		// catches up to the short body, sees `size > totalContentRead`, and — because the header size is
 		// "known" — resumeIfWriterFinished() re-entered readMore() with no backoff and no deadline,
 		// busy-spinning the worker at ~100% CPU. Pre-fix this read never resolves and this test hangs.
