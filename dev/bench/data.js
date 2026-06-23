@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782119938164,
+  "lastUpdate": 1782203109914,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -1023,6 +1023,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1040.86,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "79b532c2c6188e8ada7bcf547e6ee21a1e4587bd",
+          "message": "Clarify upgrade migration log: show the data→software transition and migration purpose (#1452)\n\n* Clarify upgrade migration log: show the data→software transition and migration purpose\n\nThe upgrade runner logged `Running upgrade for version <X>` where <X> is the\nversion that *introduced* a migration directive, not the software version being\ninstalled. With only the 5.1.0 directive registered, that line prints \"5.1.0\"\nfor any upgrade crossing it (e.g. while installing 5.1.7), which reads like a\ndowngrade and says nothing about what the migration does.\n\nLog a header with the real data → software transition and the migration count,\nand frame each migration as \"Applying migration N of M (introduced in <version>)\n— <description>\". Adds an optional `description` field to the directive object\n(set on the 5.1.0 directive). Log/notify text only — no change to upgrade logic.\n\nRefs #1451\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(upgrade): drop sinon/chai; extract pure log formatters for node:assert/strict tests\n\nAddresses the automated review on #1452. AGENTS.md prohibits new uses of sinon/\nrewire and targets node:assert/strict against real modules; the new test file had\nbootstrapped sinon + chai.\n\nExtract the log-string construction into two pure exported functions\n(formatUpgradeHeader, formatMigrationLine) and test them directly with\nnode:assert/strict — no stubbing, no sinon, no chai. processDirectives now calls\nthe helpers. Also widens coverage (pluralization, the no-description branch).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-22T23:47:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/79b532c2c6188e8ada7bcf547e6ee21a1e4587bd"
+        },
+        "date": 1782203109515,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6718.85,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 9754.7,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 9990.14,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 7611.32,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 5477.74,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 10133.88,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1338.1,
             "unit": "ops/sec"
           }
         ]
