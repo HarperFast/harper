@@ -288,6 +288,21 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 	}
 }
 
+// Returns a skeleton of `value` that produces the same classic/named structure (key list) when
+// encoded, but stubs every leaf — strings, numbers, Buffers, Blobs, Dates, etc. — to a primitive.
+// Plain objects and arrays are recursed so nested structures (e.g. a record's `headers` object) are
+// still built. Used to build the migration's canonical structure dictionary without re-reading
+// file-backed Blob payloads (which a raw encode of the real value would pull into memory).
+function shapeForStructure(value: any): any {
+	if (Array.isArray(value)) return value.map(shapeForStructure);
+	if (value && typeof value === 'object' && value.constructor === Object) {
+		const out: any = {};
+		for (const k in value) out[k] = shapeForStructure(value[k]);
+		return out;
+	}
+	return 1;
+}
+
 function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: boolean } = {}) {
 	options.disableWAL ??= false;
 	if (!existsSync(path)) {
@@ -606,12 +621,16 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
-							// Feed the decoded record to the observer so it accumulates the canonical
-							// classic structure for this shape (encode output is discarded). Guarded: a
-							// structure-building failure must never fail the migration of the record.
+							// Feed only the record's SHAPE to the observer so it accumulates the canonical
+							// classic structure (key list) for this shape; the encoded output is discarded.
+							// A classic/named structure depends only on the keys, so we stub every leaf value
+							// to a primitive — critically, this avoids re-reading file-backed Blob values (the
+							// real put runs inside encodeBlobsWithFilePath which keeps blobs as file references;
+							// a second raw encode here would otherwise readFileSync the full blob into memory
+							// just to build the dictionary). Guarded: structure-building must never fail the record.
 							if (observerEncoder) {
 								try {
-									observerEncoder.encode(value);
+									observerEncoder.encode(shapeForStructure(value));
 								} catch {}
 							}
 							recordsCopied++;
