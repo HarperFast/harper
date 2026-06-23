@@ -141,6 +141,18 @@ for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
 
 export const loadedPaths = new Map();
+
+// Tracks which components have already had `startOnMainThread` invoked, so it runs at most once
+// per component for the life of the process (the documented one-time main-thread init contract).
+// Keyed by stable component identity (name + resolved directory) rather than the module instance
+// (`loadedComponents`) or the per-pass `loadedPaths` map — a reload re-imports the module (new
+// instance) and `loadedPaths` is cleared on the reload path, so neither dedupes across reloads.
+// The stored value is the post-`startOnMainThread` module so a reload reuses the same wiring
+// (handleFile/handleDirectory, loadedComponents) without re-running main-thread init. See #460:
+// re-invoking `startOnMainThread` on every reload accumulated watchers/routes and re-ran
+// destructive one-time scans (e.g. the replicator's hdb_nodes subscription scan).
+export const mainThreadInitialized = new Map<string, any>();
+
 let errorReporter;
 export function setErrorReporter(reporter) {
 	errorReporter = reporter;
@@ -498,15 +510,31 @@ export async function loadComponent(
 				}
 
 				if (isMainThread) {
-					extensionModule =
-						(await extensionModule.startOnMainThread?.({
-							server,
-							ensureTable,
-							port,
-							securePort,
-							resources,
-							...componentConfig,
-						})) || extensionModule;
+					// `startOnMainThread` is one-time main-thread init: run it at most once per component
+					// for the life of the process (first load / first deploy). On a reload of an
+					// already-initialized component, skip the call and reuse the previously-initialized
+					// module so downstream wiring (handleFile/handleDirectory, loadedComponents) is
+					// preserved without re-running main-thread setup. Only components that actually
+					// export `startOnMainThread` are gated — a component with only setup handlers has no
+					// one-time hook to dedupe and must keep picking up its freshly loaded module on
+					// reload. See #460.
+					if (typeof extensionModule.startOnMainThread === 'function') {
+						const mainThreadKey = `${isRoot ? '' : basename(componentDirectory)}/${componentName}@${realpathSync(componentDirectory)}`;
+						if (mainThreadInitialized.has(mainThreadKey)) {
+							extensionModule = mainThreadInitialized.get(mainThreadKey);
+						} else {
+							extensionModule =
+								(await extensionModule.startOnMainThread({
+									server,
+									ensureTable,
+									port,
+									securePort,
+									resources,
+									...componentConfig,
+								})) || extensionModule;
+							mainThreadInitialized.set(mainThreadKey, extensionModule);
+						}
+					}
 					if (isRoot && network) {
 						if (env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY))
 							harperLogger.warn('Session affinity is not supported and will be ignored');
