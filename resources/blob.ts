@@ -1676,10 +1676,10 @@ async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
  * compressed blobs by a streamed inflate). Used by the repair sweep to verify a blob was durably
  * written after a peer fetch.
  */
-export function isBlobComplete(blob: Blob): Promise<boolean> {
-	if (!(blob instanceof FileBackedBlob)) return Promise.resolve(true); // inline blobs are always complete
+export async function isBlobComplete(blob: Blob): Promise<boolean> {
+	if (!(blob instanceof FileBackedBlob)) return true; // inline blobs are always complete
 	const storageInfo = storageInfoForBlob.get(blob);
-	if (!storageInfo?.fileId) return Promise.resolve(false);
+	if (!storageInfo?.fileId) return false;
 	return isBlobFileComplete(storageInfo);
 }
 
