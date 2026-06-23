@@ -211,4 +211,18 @@ describe('RecordEncoder structure-version drift on read', () => {
 			`expected "end of buffer not reached" error; got: ${JSON.stringify(messages)}`
 		);
 	});
+
+	it('recovers from over-read variant ("Unexpected end of MessagePack data") on the same dict drift', () => {
+		// Reader's in-memory dict has MORE fields than what the writer encoded with: over-read.
+		const writerStore = sharedStore();
+		const writer = makeEncoder(false, writerStore);
+		const bytes = Buffer.from(writer.encode({ id: 'x', payload: 'hello' }));
+
+		const reader = makeEncoder(false, writerStore);
+		const persisted = writerStore.get();
+		reader.structures = persisted.map((entry) => (Array.isArray(entry) ? [...entry, 'extra'] : entry));
+
+		assert.deepStrictEqual(reader.decode(bytes), { id: 'x', payload: 'hello' });
+		assert.strictEqual(errors.length, 0);
+	});
 });

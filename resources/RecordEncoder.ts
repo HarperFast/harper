@@ -448,18 +448,20 @@ export class RecordEncoder extends StructonEncoder {
 				);
 				return null;
 			}
-			// Classic shared-structures dict lag: persisted structures advanced past the in-memory copy,
-			// so msgpackr decodes the known fields and leaves the tail. Reload from storage and retry
-			// once. structon does the equivalent on typed-struct misses (harper#1163).
-			if (!this._reloadingStructures && /end of buffer not reached/i.test(error?.message)) {
-				try {
-					const fresh = this.getStructures();
-					if (fresh) this._mergeStructures(fresh);
-				} catch (reloadError) {
-					harperLogger.warn?.('Failed to reload structures during decode-retry', reloadError);
-				}
+			// In-memory structures dict diverged from durable (harper#1453); reload and retry. Guard
+			// is set before getStructures() because on RocksDB it itself decodes the structures buffer.
+			if (
+				!this._reloadingStructures &&
+				/end of buffer not reached|unexpected end of messagepack data/i.test(error?.message)
+			) {
 				this._reloadingStructures = true;
 				try {
+					try {
+						const fresh = this.getStructures();
+						if (fresh) this._mergeStructures(fresh);
+					} catch (reloadError) {
+						harperLogger.warn?.('Failed to reload structures during decode-retry', reloadError);
+					}
 					return this.decode(buffer, options);
 				} finally {
 					this._reloadingStructures = false;
