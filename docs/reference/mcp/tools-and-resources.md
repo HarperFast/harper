@@ -120,7 +120,7 @@ This is independent of the `http` exportType — the only switch that operators 
 
 ## Resources surface
 
-Both profiles serve `resources/list`, `resources/read`, and `resources/templates/list`. The resources are static (no `resources/subscribe` in v1).
+Both profiles serve `resources/list`, `resources/read`, and `resources/templates/list`. Row-backed application resources can additionally be watched with `resources/subscribe` — see [MCP Resource Subscriptions](./subscriptions.md).
 
 ### `harper://` URIs
 

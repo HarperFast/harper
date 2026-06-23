@@ -13,6 +13,8 @@ Harper implements the [Model Context Protocol](https://modelcontextprotocol.io) 
 - **Tool discovery and invocation.** LLM hosts get a typed list of operations they can call (`tools/list`) and a uniform JSON-RPC invocation envelope (`tools/call`). Per-tool input schemas come from Harper's operation catalog (operations profile) or from your `Table.attributes` and exported `Resource` classes (application profile).
 - **Resource exposure.** Synthetic `harper://` URIs surface metadata (server info, OpenAPI document, table schemas, operations catalog), and `https://` URIs mirror your application's REST surface so hosts can resolve real REST endpoints in-process.
 - **Server-push notifications.** `notifications/tools/list_changed` and `notifications/resources/list_changed` fire over an open Server-Sent Events channel when role mutations or schema changes alter what a session can see.
+- **Resource subscriptions.** <VersionBadge version="v5.1.10" /> Subscribe to a row-backed application resource with `resources/subscribe` and receive a `notifications/resources/updated` push whenever that record (or table) changes, driven by Harper's audit-log change feed. See [Resource Subscriptions](./subscriptions.md).
+- **Resumable notification streams.** <VersionBadge version="v5.1.10" /> A dropped GET-SSE connection can reconnect with a `Last-Event-ID` header and replay the notifications it missed from a bounded per-session buffer, so a brief network blip doesn't lose `list_changed` / `resources/updated` events. See [Resource Subscriptions](./subscriptions.md#resuming-a-dropped-stream).
 - **Per-session bookkeeping.** Sessions persist for the configured idle window; `Mcp-Session-Id` ties JSON-RPC requests, GET-SSE notifications, and the optional DELETE-session cleanup together.
 - **Built-in auth and RBAC.** Harper's existing Basic, JWT, and mTLS authentication paths run unchanged on the MCP endpoint. Tool and resource visibility is filtered through your role's `permission` block (`super_user`, `structure_user`, per-operation, per-table, per-attribute).
 - **Audit + rate limits.** Every `tools/call` writes to Harper's audit log (with credential redaction); per-session and per-tool token-bucket rate limits prevent a runaway agent from overwhelming a Harper worker.
@@ -62,8 +64,6 @@ See [MCP Tools and Resources](./tools-and-resources.md) for the full generation 
 The following items are explicitly deferred to a follow-on release:
 
 - OAuth 2.1 PRM (Protected Resource Metadata) authorization.
-- `resources/subscribe` (per-resource change subscriptions; `list_changed` is supported).
-- `Last-Event-ID` resumability for the GET-SSE channel.
 - Cross-worker session sharing (each MCP session is bound to the worker that accepted the GET stream).
-- TypeScript type reflection into JSON Schema for custom `mcpTools` entries (schemas are hand-authored in v1).
+- TypeScript type reflection into JSON Schema for custom `mcpTools` entries (schemas are hand-authored).
 - Global REST/operations rate limiting — only per-session/per-tool limits apply on the MCP surface.
