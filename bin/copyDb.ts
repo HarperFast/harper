@@ -444,6 +444,12 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			if (isPrimary && sourceDbi.encoder) sourceDbi.encoder.rootStore = sourceRootStore;
 
 			let targetDbi;
+			// A SEPARATE shared-mode encoder that observes each re-encoded record to build the canonical
+			// v5 classic shared-structures dictionary, captured here and persisted once after the loop.
+			// The migration's own/inline encoder (below) is left untouched so the migrated records stay
+			// self-describing; this observer only accumulates the structure shapes.
+			let observerEncoder: any;
+			let canonicalStructures: any;
 			if (!isPrimary) {
 				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
 			} else {
@@ -471,12 +477,41 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				const noopSaveStructures = () => true;
 				existingEncoder.saveStructures = noopSaveStructures;
 				tempEncoder.saveStructures = noopSaveStructures;
+
+				// Observer: shared structures on, so it accumulates one classic dictionary. We capture
+				// the full set from saveStructures (msgpackr passes it on every mint) rather than persist
+				// per-record — opening a targetRootStore transaction mid-encode would discard record
+				// writes; we persist once after the loop instead.
+				observerEncoder = new RecordEncoder({ name: key, structures: [] }) as any;
+				observerEncoder.name = key;
+				observerEncoder.isRocksDB = true;
+				observerEncoder.rootStore = targetRootStore;
+				observerEncoder.saveStructures = (structures: any) => {
+					canonicalStructures = Array.isArray(structures) ? structures.slice() : structures;
+					return true;
+				};
 			}
 
 			copyStructures(sourceDbi, key);
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
-			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction);
+			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
+
+			// Persist the canonical v5 classic structures the observer built, so every v5 runtime worker
+			// adopts one agreed dictionary on startup instead of minting its own from an empty durable and
+			// racing (the structure-id fork that silently nulls records; HarperFast/harper#1453). Written
+			// as a plain classic named array — the migrated records self-describe via inline definitions
+			// so they do not depend on this, and dropping the v4 typed structs avoids the typed-length
+			// mismatch that makes a classic encoder's saveStructures CAS reject (the reload/re-mint churn
+			// behind the fork). The runtime reads this composite key via RecordEncoder.getStructures.
+			if (isPrimary && canonicalStructures?.length) {
+				targetRootStore.transactionSync(
+					(txn) => {
+						txn.putSync([Symbol.for('structures'), key], canonicalStructures);
+					},
+					{ retryOnBusy: true }
+				);
+			}
 		}
 
 		// Note: audit store is not migrated because LMDB and RocksDB use fundamentally different
@@ -528,7 +563,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		targetRootStore.close();
 	}
 
-	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction) {
+	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder?) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
 		const MAX_RETRIES = 1000;
@@ -571,6 +606,14 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
+							// Feed the decoded record to the observer so it accumulates the canonical
+							// classic structure for this shape (encode output is discarded). Guarded: a
+							// structure-building failure must never fail the migration of the record.
+							if (observerEncoder) {
+								try {
+									observerEncoder.encode(value);
+								} catch {}
+							}
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;
 							if (outstandingWrites++ > 5000) {
