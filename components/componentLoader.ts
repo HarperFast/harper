@@ -519,7 +519,9 @@ export async function loadComponent(
 					// one-time hook to dedupe and must keep picking up its freshly loaded module on
 					// reload. See #460.
 					if (typeof extensionModule.startOnMainThread === 'function') {
-						const mainThreadKey = `${isRoot ? '' : basename(componentDirectory)}/${componentName}@${realpathSync(componentDirectory)}`;
+						// Reuse the already-resolved realpath (line 308) instead of a second realpathSync —
+						// same value, avoids a redundant sync FS call (PR #1464 review).
+						const mainThreadKey = `${isRoot ? '' : basename(resolvedFolder)}/${componentName}@${resolvedFolder}`;
 						if (mainThreadInitialized.has(mainThreadKey)) {
 							extensionModule = mainThreadInitialized.get(mainThreadKey);
 						} else {
