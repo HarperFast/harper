@@ -285,6 +285,56 @@ describe('mcp/resources', () => {
 				{ values: [], total: 0, hasMore: false }
 			);
 		});
+
+		describe('parameterised routes', () => {
+			beforeEach(() => {
+				_setHttpUrlPrefixForTest('https://app.test:9926');
+			});
+			afterEach(() => {
+				_setHttpUrlPrefixForTest(undefined);
+			});
+
+			it('lists parameterised routes as URI templates with {param} placeholders', () => {
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'widget/:id/action/:action',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+					{
+						pattern: 'files/*rest',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').map((t) => t.uriTemplate);
+				assert.ok(uris.includes('https://app.test:9926/widget/{id}/action/{action}'));
+				assert.ok(uris.includes('https://app.test:9926/files/{rest}'));
+			});
+
+			it('honors exportTypes.mcp === false, @hidden, and verb presence', () => {
+				const Hidden = makeTableResource({ verbs: ['get'] });
+				Hidden.hidden = true;
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'mcpoff/:id',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: { mcp: false } },
+					},
+					{ pattern: 'hidden/:id', entry: { Resource: Hidden, exportTypes: undefined } },
+					{ pattern: 'noverbs/:id', entry: { Resource: makeTableResource({ verbs: [] }), exportTypes: undefined } },
+					{ pattern: 'ok/:id', entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined } },
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').map((t) => t.uriTemplate);
+				assert.ok(uris.includes('https://app.test:9926/ok/{id}'));
+				assert.ok(!uris.some((u) => u.includes('/mcpoff/')));
+				assert.ok(!uris.some((u) => u.includes('/hidden/')));
+				assert.ok(!uris.some((u) => u.includes('/noverbs/')));
+			});
+		});
 	});
 
 	describe('readResource — harper://about', () => {

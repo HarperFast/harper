@@ -40,11 +40,17 @@ import type { McpProfile } from './transport.ts';
 // eagerly when imported at module-load. Unit tests that don't boot Harper
 // would fail to load this module. Lazy-resolve via require() inside the
 // getters below; test seams below let unit tests bypass the real bindings.
+interface ParamRouteEntry {
+	pattern: string;
+	entry: { Resource?: unknown; path?: string; exportTypes?: unknown };
+}
 type ResourcesType = Map<
 	string,
 	{ Resource: unknown; path: string; exportTypes: unknown; hasSubPaths: boolean; relativeURL: string }
 > & {
 	getMatch?: (path: string, exportType?: string) => { Resource: unknown; path: string } | undefined;
+	/** Parameterised routes (`:param`/`*wildcard`); kept out of the Map, enumerated as URI templates. */
+	paramRoutes?: ParamRouteEntry[];
 };
 type OpenApiGenerator = (resources: ResourcesType, serverHttpURL: string) => unknown;
 
@@ -222,6 +228,9 @@ export function listResourceTemplates(
 					'A Resource exported on the HTTP port. The URI is the canonical REST URL; resolution is in-process.',
 				mimeType: 'application/json',
 			});
+			// One concrete template per parameterised route, with `{param}` placeholders for its `:param`/`*wildcard`
+			// segments — more discoverable than the generic `{resourcePath}` catch-all above.
+			for (const template of enumerateParamRouteTemplates(serverHttpURL)) templates.push(template);
 		}
 	}
 	const start = offset ?? 0;
@@ -411,6 +420,46 @@ export async function subscribeToResource(
 			}
 		},
 	};
+}
+
+/**
+ * Render each registered parameterised route as an MCP URI template. Mirrors `routePatternToTemplate` in
+ * `Resources.ts` but works from the pattern string so this module stays free of a Resources import (preserving its
+ * test seams). Honors `exportTypes.mcp` and `@hidden` like the other enumerators.
+ */
+function enumerateParamRouteTemplates(prefix: string): ResourceTemplate[] {
+	const out: ResourceTemplate[] = [];
+	for (const route of getResources().paramRoutes ?? []) {
+		if (!isMcpExposed(route.entry)) continue;
+		const ResourceClass = route.entry.Resource as
+			| { prototype?: unknown; description?: string; hidden?: boolean }
+			| undefined;
+		// @hidden suppresses the Resource from descriptive surfaces (MCP + OpenAPI).
+		if (ResourceClass?.hidden === true) continue;
+		if (!hasRestVerbs(ResourceClass?.prototype)) continue;
+		const uriPath = paramPatternToUriTemplate(route.pattern);
+		const tableDoc = ResourceClass?.description;
+		const base = `Parameterised application resource at /${route.pattern}. Resolves in-process via Resources.getMatch.`;
+		out.push({
+			uriTemplate: `${prefix}/${uriPath}`,
+			name: route.pattern,
+			description: tableDoc ? `${tableDoc} ${base}` : base,
+			mimeType: 'application/json',
+		});
+	}
+	return out;
+}
+
+/** `widget/:id/action/:action` → `widget/{id}/action/{action}` (and `*rest` → `{rest}`). */
+function paramPatternToUriTemplate(pattern: string): string {
+	return pattern
+		.split('/')
+		.map((segment) => {
+			if (segment.charAt(0) === ':') return `{${segment.slice(1)}}`;
+			if (segment.charAt(0) === '*') return `{${segment.slice(1) || 'wildcard'}}`;
+			return segment;
+		})
+		.join('/');
 }
 
 export interface ReadResourceArgs {

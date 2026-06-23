@@ -86,6 +86,42 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | How are residencies enforced (replication)?         | `Table.ts → #section: lifecycle-admin` (residency block: `getResidencyRecord`, `setResidency`, `setResidencyById`, `getResidency`) |
 | How is the RecordObject prototype applied?          | `RecordEncoder.ts` (see `../DESIGN.md`)                                                                                            |
 | Where is the per-request transaction stored?        | `transaction.ts` + `contextStorage` (AsyncLocalStorage)                                                                            |
+| How does a URL path map to a Resource?              | `Resources.ts → getMatch` (exact/prefix fast path) then `matchParamRoute` (parameterised routes); see "Path routing" below         |
+
+---
+
+## Path routing & parameterised routes
+
+`Resources.ts` is the registry that maps URL paths to `Resource` classes. Resources are registered (`jsResource.ts`) from a component's exports:
+
+- **Default path (convention):** the export name, resolved relative to the component's directory — `export class Widget` → `<dir>/Widget`.
+- **Declared path (`static path`):** a `static path` field overrides the convention. A leading `/` makes it root-relative (top-level); `./` or a bare name is relative to the component directory.
+- **Export-name-as-path:** `export { Widget as '/widget/:id' }` — the export name is the path (also honors the leading-slash root rule).
+
+A path is **parameterised** if any segment begins with `:` (named param) or `*` (wildcard/catch-all):
+
+```ts
+export class Widget extends Resource {
+	static path = '/widget/:id/action/:action';
+	get(target) {
+		// GET /widget/10/action/jump → target.id === '10', target.action === 'jump'
+	}
+}
+
+export class Files extends Resource {
+	static path = '/files/*rest'; // GET /files/a/b/c.txt → target.rest === 'a/b/c.txt'
+}
+```
+
+Mechanics:
+
+- **Registration** (`Resources.set`): parameterised paths are compiled into `paramRoutes` (kept _out_ of the base `Map`) so the exact/prefix matching fast path is untouched. Routes are ordered most-specific-first (more leading static segments, then longer patterns; wildcards rank last).
+- **Matching** (`Resources.getMatch`): exact and prefix matches are tried first and win ("static wins"); only when no static resource matches — and only if `paramRoutes` is non-empty — does `matchParamRoute` run. Matched segment values are decoded and stored on `entry.params`.
+- **Binding to the target:** request handlers (`server/REST.ts`, `server/DurableSubscriptionsSession.ts`) `Object.assign(target, entry.params)` after building the `RequestTarget`, so `:id` lands on `target.id`, `*rest` on `target.rest`, etc.
+- Named params match exactly one segment; a wildcard captures the remainder (zero or more segments) and must be the final segment.
+- **Discovery surfaces:** because parameterised routes live outside the base Map, the enumerators read `resources.paramRoutes` explicitly — `openApi.ts` emits them as templated paths (`:id` → `{id}`) with path parameters, and `components/mcp/resources.ts` lists them via `resources/templates/list` as `{param}` URI templates. `routePatternToTemplate` (exported from `Resources.ts`) is the shared `:param`/`*wildcard` → `{param}` converter.
+
+Tests: `../unitTests/resources/paramRoutes.test.js` (unit) and `../integrationTests/apiTests/param-routes.test.mjs` (end-to-end); enumeration coverage in `../unitTests/resources/openApi.test.js` and `../unitTests/components/mcp/resources.test.js`.
 
 ---
 

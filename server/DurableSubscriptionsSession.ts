@@ -256,6 +256,7 @@ class SubscriptionsSession {
 			startTime,
 			omitCurrent,
 			checkPermission: this.user?.role?.permission ?? {},
+			...entry.params, // bind parameterised path segments (e.g. :id, *rest)
 		});
 		const resourcePath = entry.path;
 		const resource = entry.Resource;
@@ -412,6 +413,7 @@ async function publishMessage(message: any, data: any, context: any) {
 		);
 	message.url = entry.relativeURL;
 	const target = new RequestTarget(entry.relativeURL);
+	if (entry.params) Object.assign(target, entry.params); // bind parameterised path segments (e.g. :id, *rest)
 	target.checkPermission = context.user?.role?.permission ?? {};
 
 	const resource = entry.Resource;
