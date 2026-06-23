@@ -309,6 +309,11 @@ export interface LoadComponentOptions {
 	autoReload?: boolean;
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
+	// When provided, every Scope created during this load is added to this set instead of being
+	// auto-closed on worker shutdown. The caller then owns closing them. Used by transient loads
+	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
+	// across deploys (#1462).
+	collectScopes?: Set<Scope>;
 }
 
 /**
@@ -477,6 +482,7 @@ export async function loadComponent(
 								applicationScope: subApplicationScope,
 								autoReload: false,
 								appName: appName || componentName,
+								collectScopes: options.collectScopes,
 							});
 							componentFunctionality[componentName] = true;
 						}
@@ -545,9 +551,17 @@ export async function loadComponent(
 						origin
 					);
 
-					// Track the close so the worker's shutdown path waits for it (and thus for any async
-					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
-					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
+					if (options.collectScopes) {
+						// A transient/validation load owns these scopes and closes them itself once the
+						// load is validated (see operations.js deploy pre-flight). Skip the worker-shutdown
+						// auto-close so their deploy-lifecycle listeners — and this SHUTDOWN handler — don't
+						// accumulate across deploys (#1462).
+						options.collectScopes.add(scope);
+					} else {
+						// Track the close so the worker's shutdown path waits for it (and thus for any async
+						// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
+						onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
+					}
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 
