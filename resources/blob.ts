@@ -382,6 +382,11 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			pull: (controller) => {
 				let size = 0;
 				let retries = 100;
+				// No-progress deadline for the incomplete-content wait below, mirroring the open-retry loop's
+				// deadline (#1423). Computed lazily on the first stuck read so a healthy read never pays for
+				// it; bounds the case where the header reports a known size but the bytes never arrive (a
+				// present-but-truncated blob whose writer lock stays held) (#1454).
+				let incompleteDeadline = 0;
 				return new Promise(function readMore(resolve: () => void, reject: (error: Error) => void) {
 					function onError(error) {
 						close(fd);
@@ -406,7 +411,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 								if (retries-- > 0 && isBeingWritten !== false) {
 									checkIfIsBeingWritten();
 									logger.debug?.('File was empty, waiting for data to be written', filePath, retries);
-									setTimeout(() => readMore(resolve, reject), 20).unref();
+									timer = setTimeout(() => readMore(resolve, reject), 20).unref();
 								} else {
 									logger.debug?.('File was empty, throwing error', filePath, retries);
 									onError(
@@ -454,6 +459,11 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 								size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
 									if (checkIfIsBeingWritten()) {
+										// Bound the wait for in-progress content the same way the open-retry loop bounds the
+										// wait for the file to appear (#1423): start a no-progress deadline on the first stuck
+										// read. checkIfIsBeingWritten() caches its result, so a writer that died or stalled
+										// without releasing its lock would otherwise pin us here forever (#1454).
+										if (incompleteDeadline === 0) incompleteDeadline = Date.now() + getBlobReadTimeout();
 										// detects the race where the writer finished between our last async read
 										// and the watcher being set up (or the watcher missing the final write event)
 										const resumeIfWriterFinished = (): boolean => {
@@ -467,7 +477,24 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 												watcher.close();
 												watcher = null;
 											}
-											readMore(resolve, reject);
+											// The header reports a known final size but the bytes at `position` have not arrived.
+											// Re-entering readMore() synchronously here busy-spins the worker at ~100% CPU on a
+											// present-but-truncated blob (header rewritten to a self-consistent smaller size, lock
+											// still held) — the read at EOF returns 0 every time, with no backoff (#1454). Poll on
+											// the same short backoff the open-retry loop uses, and fail fast with a retryable 503
+											// once the no-progress deadline passes. The deadline is only set while we are stuck (no
+											// bytes readable), so a genuinely slow in-progress write — which makes progress and
+											// resolves the pull each chunk, starting each new pull with a fresh budget — is unaffected.
+											if (Date.now() >= incompleteDeadline) {
+												onError(
+													new BlobReadError(
+														`Blob read stalled for ${filePath}: header reports ${size} bytes but only ${totalContentRead} are readable and no further data is arriving`,
+														BLOB_UNAVAILABLE_STATUS
+													)
+												);
+											} else {
+												timer = setTimeout(() => readMore(resolve, reject), 20).unref();
+											}
 											return true;
 										};
 										// the file is not finished being written, watch the file for changes to resume reading

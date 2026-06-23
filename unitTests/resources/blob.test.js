@@ -813,6 +813,37 @@ describe('Blob test', () => {
 			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
 		}
 	});
+	it('#1454: a present-but-truncated blob with a writer still holding the lock fails 503 instead of spinning forever', async () => {
+		// The prod-dyn/prod-gar CPU storm: a blob file is present, its header records the full descriptor
+		// size (so the #1424 cross-check passes), but the body was never fully written — and the writer's
+		// lock still reads as held (a stalled/dead replication write that never released it). The reader
+		// catches up to the short body, sees `size > totalContentRead`, and — because the header size is
+		// "known" — resumeIfWriterFinished() re-entered readMore() with no backoff and no deadline,
+		// busy-spinning the worker at ~100% CPU. Pre-fix this read never resolves and this test hangs.
+		const { blob, filePath, store } = await makeDiskBackedBlob();
+		const lockKey = getFileId(blob) + ':blob';
+		assert(store.tryLock(lockKey), 'should be able to take the blob write lock for the test');
+		try {
+			// Cut the body short but leave the header (full size, == descriptor) intact — the case the
+			// #1424 descriptor cross-check cannot catch, distinct from truncateBlobConsistently above.
+			const fd = openSync(filePath, 'r+');
+			try {
+				ftruncateSync(fd, HEADER_SIZE + 256);
+			} finally {
+				closeSync(fd);
+			}
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+			const started = Date.now();
+			await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+				assert.equal(error.statusCode, 503);
+				return true;
+			});
+			assert(Date.now() - started < 5000, 'read should fail promptly, not spin');
+		} finally {
+			store.unlock(lockKey);
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+		}
+	});
 	afterEach(function () {
 		setAuditRetention(60000);
 		setDeletionDelay(50); // restore shorter, but need to have it happen for the last test
