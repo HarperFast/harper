@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782203109914,
+  "lastUpdate": 1782203112020,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -2466,6 +2466,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 190.94,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "79b532c2c6188e8ada7bcf547e6ee21a1e4587bd",
+          "message": "Clarify upgrade migration log: show the data→software transition and migration purpose (#1452)\n\n* Clarify upgrade migration log: show the data→software transition and migration purpose\n\nThe upgrade runner logged `Running upgrade for version <X>` where <X> is the\nversion that *introduced* a migration directive, not the software version being\ninstalled. With only the 5.1.0 directive registered, that line prints \"5.1.0\"\nfor any upgrade crossing it (e.g. while installing 5.1.7), which reads like a\ndowngrade and says nothing about what the migration does.\n\nLog a header with the real data → software transition and the migration count,\nand frame each migration as \"Applying migration N of M (introduced in <version>)\n— <description>\". Adds an optional `description` field to the directive object\n(set on the 5.1.0 directive). Log/notify text only — no change to upgrade logic.\n\nRefs #1451\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(upgrade): drop sinon/chai; extract pure log formatters for node:assert/strict tests\n\nAddresses the automated review on #1452. AGENTS.md prohibits new uses of sinon/\nrewire and targets node:assert/strict against real modules; the new test file had\nbootstrapped sinon + chai.\n\nExtract the log-string construction into two pure exported functions\n(formatUpgradeHeader, formatMigrationLine) and test them directly with\nnode:assert/strict — no stubbing, no sinon, no chai. processDirectives now calls\nthe helpers. Also widens coverage (pluralization, the no-description branch).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-22T23:47:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/79b532c2c6188e8ada7bcf547e6ee21a1e4587bd"
+        },
+        "date": 1782203111558,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.18,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 13.32,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.63,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 16.14,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 21.72,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 15.45,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 31,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 13.79,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 16.98,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 56.1,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 139.63,
             "unit": "ms"
           }
         ]
