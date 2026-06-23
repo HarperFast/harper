@@ -741,11 +741,20 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 // (ops escape hatch / kill switch — set 0 to force-disable). Read at call time so tests and operators
 // can change it without a restart. The timer re-arms while the source is paused (pipeline backpressure,
 // not a real stall) so a slow writeStream never trips a false destroy.
+// Largest delay setTimeout accepts; a larger value (or Infinity/NaN) is silently coerced to 1ms, which
+// would fire the watchdog almost immediately and destroy a healthy stream — so clamp/reject instead.
+const MAX_SET_TIMEOUT_MS = 2147483647; // 2^31 - 1
 function getBlobStreamIdleTimeoutMs(stream: Readable): number {
 	const configured = process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
-	if (configured != null) return Number(configured); // process-wide ops override / kill switch
-	const armed = (stream as { blobStreamIdleTimeoutMs?: number }).blobStreamIdleTimeoutMs;
-	return armed != null ? Number(armed) : 0; // off unless the owning caller armed this source
+	// env override (process-wide kill switch) when set, else the per-stream value the owning caller armed.
+	const raw =
+		configured != null
+			? Number(configured)
+			: Number((stream as { blobStreamIdleTimeoutMs?: number }).blobStreamIdleTimeoutMs ?? 0);
+	// A NaN/negative/zero value means off; cap a too-large value at the setTimeout max so it doesn't
+	// collapse to 1ms and instantly destroy the source.
+	if (!Number.isFinite(raw) || raw <= 0) return 0;
+	return Math.min(raw, MAX_SET_TIMEOUT_MS);
 }
 
 function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageInfo): Blob {

@@ -944,12 +944,14 @@ describe('saveBlob with idle source stream (replication wedge regression)', () =
 
 describe('saveBlob source-idle watchdog is opt-in (off by default, per-stream arm)', () => {
 	let OptInTable;
+	let savedIdleTimeoutEnv;
 	before(function () {
 		setupTestDBPath();
 		// Deliberately NO HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS: the watchdog must be OFF unless the owning
 		// caller arms the specific source. writeBlobWithStream is the generic primitive for every blob
 		// write (HTTP upload, origin-fetch cache fill, replication receive); bounding a source is the
 		// caller's job, not the primitive's. (The process-wide env override is exercised in the block above.)
+		savedIdleTimeoutEnv = process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
 		delete process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
 		OptInTable = table({
 			table: 'OptInTable',
@@ -959,6 +961,10 @@ describe('saveBlob source-idle watchdog is opt-in (off by default, per-stream ar
 				{ name: 'blob', type: 'Blob' },
 			],
 		});
+	});
+	after(function () {
+		if (savedIdleTimeoutEnv === undefined) delete process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
+		else process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS = savedIdleTimeoutEnv;
 	});
 
 	it('does NOT destroy an unarmed idle source (a slow non-replication write is left alone)', async () => {
