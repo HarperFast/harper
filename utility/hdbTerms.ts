@@ -597,6 +597,7 @@ export const CONFIG_PARAMS = {
 	REPLICATION_RECORDCONCURRENCY: 'replication_recordConcurrency',
 	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
 	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
+	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',
 	REPLICATION_LEADINGDUPLICATESKIP: 'replication_leadingDuplicateSkip',
 	REPLICATION_REPLAYTIMEOUT: 'replication_replayTimeout',
 	ROOTPATH: 'rootPath',
