@@ -942,6 +942,56 @@ describe('saveBlob with idle source stream (replication wedge regression)', () =
 	});
 });
 
+describe('saveBlob source-idle watchdog is opt-in (off by default, per-stream arm)', () => {
+	let OptInTable;
+	before(function () {
+		setupTestDBPath();
+		// Deliberately NO HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS: the watchdog must be OFF unless the owning
+		// caller arms the specific source. writeBlobWithStream is the generic primitive for every blob
+		// write (HTTP upload, origin-fetch cache fill, replication receive); bounding a source is the
+		// caller's job, not the primitive's. (The process-wide env override is exercised in the block above.)
+		delete process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
+		OptInTable = table({
+			table: 'OptInTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+
+	it('does NOT destroy an unarmed idle source (a slow non-replication write is left alone)', async () => {
+		const stream = new PassThrough();
+		stream.write(Buffer.from('slow-source-no-arm')); // chunk lands, never ended, never armed
+		const blob = await createBlob(stream);
+		const info = decodeFromDatabase(() => saveBlob(blob), OptInTable.primaryStore.rootStore);
+		let state = 'pending';
+		// eslint-disable-next-line promise/catch-or-return
+		(info.saving ?? Promise.resolve()).then(() => (state = 'resolved')).catch(() => (state = 'rejected'));
+		await delay(1500);
+		assert.strictEqual(state, 'pending', 'an unarmed idle source must NOT be force-destroyed by the watchdog');
+		stream.destroy(); // clean up the deliberately-stuck write so the blob lock is released
+		await delay(50);
+	});
+
+	it('settles when the owning caller arms the source via stream.blobStreamIdleTimeoutMs', async () => {
+		// How the replication receive path opts in: it sets this on its PassThrough; other callers stay off.
+		const stream = new PassThrough();
+		stream.blobStreamIdleTimeoutMs = 800;
+		stream.on('error', () => {});
+		stream.write(Buffer.from('armed-but-never-finished')); // chunk lands, then idle, never ended
+		const blob = await createBlob(stream);
+		const info = decodeFromDatabase(() => saveBlob(blob), OptInTable.primaryStore.rootStore);
+		let state = 'pending';
+		// eslint-disable-next-line promise/catch-or-return
+		(info.saving ?? Promise.resolve()).then(() => (state = 'resolved')).catch(() => (state = 'rejected'));
+		await delay(2500);
+		assert.notStrictEqual(state, 'pending', 'an armed idle source should be destroyed within its timeout and settle');
+	});
+});
+
+
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms)); // wait for audit log removal and deletion
 }
