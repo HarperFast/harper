@@ -176,8 +176,12 @@
             parent.appendChild(canvas);
 
             const color = toolColors[dataset.length > 0 ? dataset[0].tool : '_'];
+            const fmtTs = ts => {
+              const d = new Date(ts);
+              return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+            };
             const data = {
-              labels: dataset.map(d => d.commit.id.slice(0, 7)),
+              labels: dataset.map(d => fmtTs(d.commit.timestamp)),
               datasets: [
                 {
                   label: name,
@@ -193,7 +197,7 @@
                   {
                     scaleLabel: {
                       display: true,
-                      labelString: 'commit',
+                      labelString: 'commit time',
                     },
                   }
                 ],
@@ -214,7 +218,7 @@
                   afterTitle: items => {
                     const {index} = items[0];
                     const data = dataset[index];
-                    return '\n' + data.commit.message + '\n\n' + data.commit.timestamp + ' committed by @' + data.commit.committer.username + '\n';
+                    return '\n' + data.commit.id.slice(0, 7) + '  ' + data.commit.message + '\n\n' + data.commit.timestamp + ' committed by @' + data.commit.committer.username + '\n\n(click point to open commit)';
                   },
                   label: item => {
                     let label = item.value;
@@ -239,6 +243,9 @@
                 const index = activeElems[0]._index;
                 const url = dataset[index].commit.url;
                 window.open(url, '_blank');
+              },
+              onHover: (event, activeElems) => {
+                event.target.style.cursor = activeElems.length ? 'pointer' : 'default';
               },
             };
 

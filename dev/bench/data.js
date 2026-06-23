@@ -24,37 +24,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6424.8,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 9565.7,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 9750.27,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 7224.04,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 5238.82,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 10144.02,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1146.5,
             "unit": "ops/sec"
           }
@@ -81,37 +81,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6014.66,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 8531.99,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 8412.78,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 6739.69,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 4828.27,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 8647.48,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 939.49,
             "unit": "ops/sec"
           }
@@ -137,37 +137,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6079.56,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 8562.34,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 8380.27,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 6764.38,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 4776.19,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 8689.98,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 919.09,
             "unit": "ops/sec"
           }
@@ -194,37 +194,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6145.21,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 8761.31,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 8545.25,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 6579.87,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 4740.65,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 8608.6,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 931.98,
             "unit": "ops/sec"
           }
@@ -251,37 +251,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 7712.24,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 11959.71,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 11316.53,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 8650.02,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 6188.12,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 11683.37,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1239.61,
             "unit": "ops/sec"
           }
@@ -308,37 +308,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 5905.75,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 8302.94,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 8204.48,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 6536.22,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 4688.55,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 8503.27,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 870.34,
             "unit": "ops/sec"
           }
@@ -364,37 +364,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6023.1,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 8575.83,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 8601.1,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 6686.91,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 4802.03,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 8694.32,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 923.75,
             "unit": "ops/sec"
           }
@@ -421,37 +421,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 5872.86,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 8294.84,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 7968.52,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 6516.38,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 4586.22,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 8201.85,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 935.35,
             "unit": "ops/sec"
           }
@@ -478,37 +478,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6781.71,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 9811.01,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 9844.49,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 7368.17,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 5426.84,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 9933.56,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1171.12,
             "unit": "ops/sec"
           }
@@ -535,37 +535,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6641.83,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 9766.02,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 10020.76,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 7443.69,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 5356.61,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 9979.23,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1143,
             "unit": "ops/sec"
           }
@@ -592,37 +592,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6712.99,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 9691.4,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 10000.9,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 7587.2,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 5443.39,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 9936.07,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1218.38,
             "unit": "ops/sec"
           }
@@ -649,37 +649,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6212.04,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 8693.48,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 8775.26,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 6906.89,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 4951.42,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 8444.49,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 932.39,
             "unit": "ops/sec"
           }
@@ -706,37 +706,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6807.95,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 9922.31,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 10171.72,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 7672.01,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 5523.13,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 10255.92,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1190.65,
             "unit": "ops/sec"
           }
@@ -763,37 +763,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 8593.95,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 12795.83,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 12956.16,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 9576.56,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 6922.96,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 12867.96,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1477.43,
             "unit": "ops/sec"
           }
@@ -820,37 +820,37 @@ window.BENCHMARK_DATA = {
         "tool": "customBiggerIsBetter",
         "benches": [
           {
-            "name": "load",
+            "name": "load — bulk insert",
             "value": 6752.16,
             "unit": "records/sec"
           },
           {
-            "name": "workload C",
+            "name": "workload C — Read only (100% read)",
             "value": 9858.22,
             "unit": "ops/sec"
           },
           {
-            "name": "workload B",
+            "name": "workload B — Read mostly (95% read / 5% update)",
             "value": 10270.69,
             "unit": "ops/sec"
           },
           {
-            "name": "workload A",
+            "name": "workload A — Update heavy (50% read / 50% update)",
             "value": 7639.59,
             "unit": "ops/sec"
           },
           {
-            "name": "workload F",
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
             "value": 5550.2,
             "unit": "ops/sec"
           },
           {
-            "name": "workload D",
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
             "value": 10365.99,
             "unit": "ops/sec"
           },
           {
-            "name": "workload E",
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1178.93,
             "unit": "ops/sec"
           }
@@ -1107,57 +1107,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 14.49,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 13.97,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 19.61,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 16.95,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 23.12,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 16.14,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 32.57,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 13.74,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 17.52,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 46,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 154.68,
             "unit": "ms"
           }
@@ -1184,57 +1184,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 15.39,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 15.63,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.65,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 18.07,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 22.47,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 17.44,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 34.48,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 15.26,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 18.05,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 39.61,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 177.8,
             "unit": "ms"
           }
@@ -1260,57 +1260,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 15.41,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 15.72,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.63,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 18.02,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 22.6,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 17.56,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 34.95,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 15.05,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 18.42,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 194.35,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 37.49,
             "unit": "ms"
           }
@@ -1337,57 +1337,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 15.18,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 15.12,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.31,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 18.51,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 24.44,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 17.67,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 35.29,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 15.2,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 18.34,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 39.64,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 212.72,
             "unit": "ms"
           }
@@ -1414,57 +1414,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 12.38,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 12.7,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 17.98,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 14.04,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 21.85,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 13.67,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 28.9,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 12.12,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 15.93,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 147.81,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 42.51,
             "unit": "ms"
           }
@@ -1491,57 +1491,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 16.07,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 16.03,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.78,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 18.7,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 24.17,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 17.92,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 35.56,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 15.47,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 18.69,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 205.82,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 39.2,
             "unit": "ms"
           }
@@ -1567,57 +1567,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 15.32,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 15.04,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.08,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 18.27,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 23.16,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 17.47,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 34.71,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 14.99,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 18.61,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 187.87,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 39.9,
             "unit": "ms"
           }
@@ -1644,57 +1644,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 15.81,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 16.68,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 19.44,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 18.77,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 23.59,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 18.39,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 36.78,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 15.93,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 18.94,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 40.32,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 187.93,
             "unit": "ms"
           }
@@ -1721,57 +1721,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 14.09,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 13.6,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 19.42,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 16.51,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 22.62,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 15.56,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 31.5,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 13.98,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 17.3,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 174.74,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 46.74,
             "unit": "ms"
           }
@@ -1798,57 +1798,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 14.51,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 13.36,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.64,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 16.48,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 21.65,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 15.85,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 31.71,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 14.01,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 17.28,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 50.72,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 157.06,
             "unit": "ms"
           }
@@ -1875,57 +1875,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 14.23,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 13.42,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.36,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 16.21,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 21.13,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 15.7,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 31.55,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 14.1,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 19.8,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 49.88,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 144.45,
             "unit": "ms"
           }
@@ -1952,57 +1952,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 15.18,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 14.71,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.3,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 17.67,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 21.81,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 16.94,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 33.86,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 15.55,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 17.68,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 190.52,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 40.64,
             "unit": "ms"
           }
@@ -2029,57 +2029,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 13.97,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 13.09,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 18.19,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 15.95,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 20.73,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 15.29,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 30.7,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 13.64,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 16.96,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 46.18,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 150.82,
             "unit": "ms"
           }
@@ -2106,57 +2106,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 11.29,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 10.58,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 15.99,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 12.79,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 17.27,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 12.3,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 25.15,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 11.19,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 14.84,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 40.95,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 121.18,
             "unit": "ms"
           }
@@ -2183,57 +2183,57 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "C read p99",
+            "name": "C read p99 — read only",
             "value": 14.06,
             "unit": "ms"
           },
           {
-            "name": "B read p99",
+            "name": "B read p99 — read mostly",
             "value": 13.09,
             "unit": "ms"
           },
           {
-            "name": "B update p99",
+            "name": "B update p99 — read mostly",
             "value": 17.88,
             "unit": "ms"
           },
           {
-            "name": "A read p99",
+            "name": "A read p99 — update heavy",
             "value": 16.09,
             "unit": "ms"
           },
           {
-            "name": "A update p99",
+            "name": "A update p99 — update heavy",
             "value": 20.55,
             "unit": "ms"
           },
           {
-            "name": "F read p99",
+            "name": "F read p99 — read-modify-write",
             "value": 15.29,
             "unit": "ms"
           },
           {
-            "name": "F rmw p99",
+            "name": "F rmw p99 — read-modify-write",
             "value": 30.65,
             "unit": "ms"
           },
           {
-            "name": "D read p99",
+            "name": "D read p99 — read latest",
             "value": 13.22,
             "unit": "ms"
           },
           {
-            "name": "D insert p99",
+            "name": "D insert p99 — read latest",
             "value": 16.28,
             "unit": "ms"
           },
           {
-            "name": "E insert p99",
+            "name": "E insert p99 — short ranges",
             "value": 45.78,
             "unit": "ms"
           },
           {
-            "name": "E scan p99",
+            "name": "E scan p99 — short ranges",
             "value": 149.45,
             "unit": "ms"
           }
