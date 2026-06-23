@@ -19,18 +19,14 @@
 require('../testUtils');
 const assert = require('node:assert/strict');
 const { setupTestDBPath } = require('../testUtils');
-const { table, resetDatabases } = require('#src/resources/databases');
+const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 function makeTable() {
 	return table({
 		table: 'HttpCacheFork',
 		database: 'cache',
-		attributes: [
-			{ name: 'id', isPrimaryKey: true },
-			{ name: 'headers' },
-			{ name: 'content' },
-		],
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'headers' }, { name: 'content' }],
 	});
 }
 
@@ -48,7 +44,11 @@ describe('structure-id fork: stale worker in-memory dict vs canonical durable', 
 
 		// Establish the canonical durable structures + a stored record (nested headers object
 		// + the [id, headers, content] record structure), exactly like the live data.
-		await Tbl.put({ id: 'k0', headers: { 'content-type': 'text/html', 'cache-control': 'max-age=3600' }, content: Buffer.from('AAA') });
+		await Tbl.put({
+			id: 'k0',
+			headers: { 'content-type': 'text/html', 'cache-control': 'max-age=3600' },
+			content: Buffer.from('AAA'),
+		});
 		const canonical = enc.getStructures();
 		const canonicalNamed = canonical instanceof Map ? canonical.get('named') : canonical;
 		console.log('canonical durable named:', JSON.stringify(canonicalNamed));
@@ -67,10 +67,16 @@ describe('structure-id fork: stale worker in-memory dict vs canonical durable', 
 		console.log('forked in-memory named:', JSON.stringify(enc.structures));
 
 		// The read now decodes against the wrong structure-id mapping -> mismatch.
-		let forkedResult, forkedThrew = false;
-		try { forkedResult = enc.decode(Tbl.primaryStore.getBinary ? Tbl.primaryStore.getBinary('k0') : undefined); }
-		catch (e) { forkedThrew = true; forkedResult = e.message; }
-		const forkedBad = forkedThrew || !forkedResult || forkedResult.headers === undefined || forkedResult.content === undefined;
+		let forkedResult,
+			forkedThrew = false;
+		try {
+			forkedResult = enc.decode(Tbl.primaryStore.getBinary ? Tbl.primaryStore.getBinary('k0') : undefined);
+		} catch (e) {
+			forkedThrew = true;
+			forkedResult = e.message;
+		}
+		const forkedBad =
+			forkedThrew || !forkedResult || forkedResult.headers === undefined || forkedResult.content === undefined;
 		console.log('forked decode:', forkedThrew ? 'THREW ' + forkedResult : JSON.stringify(forkedResult).slice(0, 120));
 		assert.ok(forkedBad, 'a forked in-memory dict should mis-decode or fail the record (reproducing the live symptom)');
 

@@ -1,14 +1,11 @@
-// Regression test for the v4->v5 migration structure-id fork (HarperFast/harper#1453).
+// Regression guard for the v4->v5 migration structure-id fork fix (HarperFast/harper#1453).
 //
-// copyDbToRocks re-encodes records with a no-op saveStructures, so historically the only structures
-// written to durable were copyStructures()'s verbatim copy of the v4 buffer -- which, for a v4
-// random-access (typed) table, holds NONE of the v5 classic record-structures. The v5 workers then
-// minted those structures from scratch, concurrently, assigning the same structure-id to different
-// structures (the fork that silently nulls records). copyDbToRocks now persists the canonical classic
-// structures it minted at the end of migration so every worker adopts one agreed dictionary.
-//
-// This test asserts that after migration the durable shared-structures buffer actually carries the
-// record's named structure (so a fresh worker encoder loads it instead of minting from an empty dict).
+// copyDbToRocks now runs a separate observer encoder to build + persist the canonical v5 classic
+// structures, while leaving the migration encoder own/inline so the migrated records stay
+// self-describing. This guards that the change does NOT regress the migration: every record still
+// decodes after reopen. (Cross-process worker ADOPTION of the persisted dictionary -- the actual fork
+// prevention -- needs the runtime's multi-CF open + per-worker encoder wiring, which this single-handle
+// harness can't replicate; that is validated by the cluster repro. See the NOTE on the describe below.)
 const fs = require('fs-extra');
 const assert = require('node:assert/strict');
 const path = require('path');
@@ -70,7 +67,11 @@ describe('migration: records still decode after the canonical-structures change 
 				console.log(`record ${id}:`, JSON.stringify(rec));
 				if (!rec || rec.__threw || rec.content === undefined || rec.headers === undefined) failures.push(id);
 			}
-			assert.equal(failures.length, 0, `migrated records ${failures.join(',')} did not decode after reopen (structures did not resolve)`);
+			assert.equal(
+				failures.length,
+				0,
+				`migrated records ${failures.join(',')} did not decode after reopen (structures did not resolve)`
+			);
 		} finally {
 			cf.close();
 		}
