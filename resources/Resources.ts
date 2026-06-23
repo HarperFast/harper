@@ -41,7 +41,8 @@ function pathHasParams(path: string): boolean {
 function compileRouteSegments(path: string): RouteSegment[] {
 	return path.split('/').map((segment): RouteSegment => {
 		if (segment.charAt(0) === ':') return { type: 'param', value: segment.slice(1) };
-		if (segment.charAt(0) === '*') return { type: 'wildcard', value: segment.slice(1) || '*' };
+		// a bare `*` binds under the name `wildcard` so the key is a valid URI-template / OpenAPI variable name
+		if (segment.charAt(0) === '*') return { type: 'wildcard', value: segment.slice(1) || 'wildcard' };
 		return { type: 'static', value: segment };
 	});
 }

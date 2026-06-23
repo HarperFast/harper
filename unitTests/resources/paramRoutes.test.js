@@ -58,11 +58,12 @@ describe('Parameterised routes', () => {
 		assert.deepEqual(resources.getMatch('files').params, { rest: '' }, 'wildcard should match zero remaining segments');
 	});
 
-	it('captures a bare wildcard under the "*" key', () => {
+	it('captures a bare wildcard under the "wildcard" key', () => {
 		const resources = new Resources();
 		resources.set('proxy/*', makeResource('Proxy'));
 
-		assert.deepEqual(resources.getMatch('proxy/a/b').params, { '*': 'a/b' });
+		// a bare `*` normalizes to `wildcard` so the key is a valid URI-template / OpenAPI variable name
+		assert.deepEqual(resources.getMatch('proxy/a/b').params, { wildcard: 'a/b' });
 	});
 
 	it('prefers an exact static path over a parameterised one (static wins)', () => {

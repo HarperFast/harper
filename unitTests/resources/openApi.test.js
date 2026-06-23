@@ -226,6 +226,15 @@ describe('test openApi module', () => {
 			expect(params[0].description).to.match(/remaining path/);
 		});
 
+		it('names a bare wildcard {wildcard} so the path template is a valid OpenAPI variable', () => {
+			const paramResources = new Resources();
+			paramResources.set('proxy/*', { prototype: { get: () => [] } });
+
+			const api = generateJsonApi(paramResources, serverURL);
+			expect(api.paths).to.have.property('/proxy/{wildcard}');
+			expect(api.paths['/proxy/{wildcard}'].get.parameters.map((p) => p.name)).to.deep.equal(['wildcard']);
+		});
+
 		it('only emits the verbs the resource implements', () => {
 			const paramResources = new Resources();
 			paramResources.set('widget/:id', { prototype: { get: () => [], put: () => [] } });
