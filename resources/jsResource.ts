@@ -21,9 +21,18 @@ function isResource(value: any) {
  * Parameterised segments (`:id`, `*rest`) are preserved verbatim and interpreted later by the route matcher.
  */
 export function resolveResourcePath(prefix: string, declaredPath: string): string {
-	if (declaredPath.startsWith('/')) return declaredPath.replace(/^\/+/, '');
-	const relative = declaredPath.startsWith('./') ? declaredPath.slice(2) : declaredPath;
-	return prefix ? `${prefix}/${relative}` : relative;
+	let resolved: string;
+	if (declaredPath.startsWith('/')) {
+		// root-relative (top-level): strip the leading slash(es) so it is not joined to the component directory
+		resolved = declaredPath.replace(/^\/+/, '');
+	} else {
+		// './x' is component-relative, same as a bare name; preserve the historical `${prefix}/${name}` join
+		// (an empty prefix yields a leading slash, which Resources.set strips — but plain-Map consumers rely on it)
+		const relative = declaredPath.startsWith('./') ? declaredPath.slice(2) : declaredPath;
+		resolved = `${prefix}/${relative}`;
+	}
+	// a trailing slash would add an empty final segment that can never match (incoming URLs are normalized first)
+	return resolved.endsWith('/') ? resolved.replace(/\/+$/, '') : resolved;
 }
 
 /**

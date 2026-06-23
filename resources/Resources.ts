@@ -25,11 +25,11 @@ export interface CompiledRoute {
 	/** Normalized pattern (leading/trailing slashes stripped) — used as the identity key for the route. */
 	pattern: string;
 	segments: RouteSegment[];
-	/** Number of leading static segments; higher is more specific. */
-	staticCount: number;
-	hasWildcard: boolean;
 	entry: ResourceEntry;
 }
+
+/** Per-segment specificity used to order routes: a static segment beats a param, which beats a wildcard. */
+const SEGMENT_SPECIFICITY: { [K in RouteSegment['type']]: number } = { static: 3, param: 2, wildcard: 1 };
 
 /**
  * A path is parameterised if any of its segments begins with `:` (named parameter) or `*` (wildcard/catch-all).
@@ -161,23 +161,22 @@ export class Resources extends Map<string, ResourceEntry> {
 
 	/**
 	 * Register (or replace) a parameterised route. Routes are kept sorted most-specific-first so the first match wins:
-	 * routes with more leading static segments rank higher, longer patterns beat shorter ones, and wildcard routes
-	 * always rank last.
+	 * segment kinds are compared left-to-right (static beats param beats wildcard) and, when one route is a prefix of
+	 * another, the longer pattern wins.
 	 */
 	private setParamRoute(path: string, entry: ResourceEntry, resource: any, force?: boolean): void {
-		const segments = compileRouteSegments(path);
-		let staticCount = 0;
-		for (const segment of segments) {
-			if (segment.type === 'static') staticCount++;
-			else break;
+		// a trailing slash adds an empty final segment that can never match (incoming URLs are normalized first)
+		if (path.endsWith('/')) {
+			path = path.replace(/\/+$/, '');
+			entry.path = path;
 		}
-		const compiled: CompiledRoute = {
-			pattern: path,
-			segments,
-			staticCount,
-			hasWildcard: segments.some((segment) => segment.type === 'wildcard'),
-			entry,
-		};
+		const segments = compileRouteSegments(path);
+		// a wildcard captures the remainder of the path, so anything after it is unreachable — reject it outright
+		const wildcardIndex = segments.findIndex((segment) => segment.type === 'wildcard');
+		if (wildcardIndex > -1 && wildcardIndex !== segments.length - 1) {
+			throw new Error(`Wildcard segment must be the last segment in a route path: ${path}`);
+		}
+		const compiled: CompiledRoute = { pattern: path, segments, entry };
 		const existingIndex = this.paramRoutes.findIndex((route) => route.pattern === path);
 		if (existingIndex > -1) {
 			const existing = this.paramRoutes[existingIndex];
@@ -197,8 +196,12 @@ export class Resources extends Map<string, ResourceEntry> {
 			this.paramRoutes.push(compiled);
 		}
 		this.paramRoutes.sort((a, b) => {
-			if (a.hasWildcard !== b.hasWildcard) return a.hasWildcard ? 1 : -1;
-			if (b.staticCount !== a.staticCount) return b.staticCount - a.staticCount;
+			const shared = Math.min(a.segments.length, b.segments.length);
+			for (let i = 0; i < shared; i++) {
+				const weightA = SEGMENT_SPECIFICITY[a.segments[i].type];
+				const weightB = SEGMENT_SPECIFICITY[b.segments[i].type];
+				if (weightA !== weightB) return weightB - weightA;
+			}
 			return b.segments.length - a.segments.length;
 		});
 	}

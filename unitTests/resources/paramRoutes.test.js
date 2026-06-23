@@ -106,6 +106,33 @@ describe('Parameterised routes', () => {
 		assert.deepEqual(entry.params, { id: '7' });
 	});
 
+	it('ranks a more specific later segment ahead regardless of registration order', () => {
+		// both routes share `widget/:id` then diverge at the 3rd segment (static vs param); the static one wins
+		const resources = new Resources();
+		const Specific = makeResource('Specific');
+		const General = makeResource('General');
+		resources.set('widget/:id/:action', General); // registered first, but less specific
+		resources.set('widget/:id/action', Specific);
+
+		assert.strictEqual(resources.getMatch('widget/5/action').Resource, Specific);
+		assert.deepEqual(resources.getMatch('widget/5/jump').Resource, General);
+	});
+
+	it('rejects a wildcard that is not the final segment', () => {
+		const resources = new Resources();
+		assert.throws(() => resources.set('files/*rest/extra', makeResource('Bad')), /Wildcard segment must be the last/);
+	});
+
+	it('matches a route registered with a trailing slash', () => {
+		const resources = new Resources();
+		// `set` normalizes the trailing slash so the empty final segment never blocks a match
+		resources.set('widget/:id/', makeResource('W'));
+
+		const entry = resources.getMatch('widget/5');
+		assert.ok(entry);
+		assert.deepEqual(entry.params, { id: '5' });
+	});
+
 	it('does not consult parameterised routes for a plain static match (fast path)', () => {
 		const resources = new Resources();
 		const Plain = makeResource('Plain');
@@ -237,7 +264,14 @@ describe('resolveResourcePath', () => {
 		assert.strictEqual(resolveResourcePath('app/dir', 'Widget'), 'app/dir/Widget');
 	});
 
-	it('handles an empty prefix', () => {
-		assert.strictEqual(resolveResourcePath('', 'Widget'), 'Widget');
+	it('preserves the historical leading slash for a bare name with an empty prefix', () => {
+		// `${prefix}/${name}` with an empty prefix yields a leading slash; Resources.set strips it, but plain-Map
+		// consumers (e.g. the global-isolation component tests) rely on the exact `/Name` key.
+		assert.strictEqual(resolveResourcePath('', 'Widget'), '/Widget');
+	});
+
+	it('normalizes a trailing slash so the route can match normalized request URLs', () => {
+		assert.strictEqual(resolveResourcePath('app/dir', '/widget/:id/'), 'widget/:id');
+		assert.strictEqual(resolveResourcePath('app/dir', './Widget/'), 'app/dir/Widget');
 	});
 });
