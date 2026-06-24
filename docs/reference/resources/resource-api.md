@@ -866,6 +866,34 @@ Special properties:
 - `$updatedtime` — Returns the last-updated timestamp
 - `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
 
+#### Selecting related records
+
+When a field is defined as a [relationship](../database/schema.md#relationships), `select` can pull the related record(s) into each result as a nested property — the programmatic equivalent of the REST `select(name,author{name})` syntax.
+
+- **Whole related record** — list the relationship field by name. The related record (or an array of records for a to-many relationship) is attached as a nested property:
+
+  ```javascript
+  // `author` is a relationship field
+  const book = await Book.get({ id: 42, select: ['id', 'title', 'author'] });
+  book.author.name; // the full related Author record
+  ```
+
+- **Partial related record** — use an object `{ name, select }` to choose which fields of the related record to return. Unselected fields are omitted:
+
+  ```javascript
+  const book = await Book.get({ id: 42, select: ['id', 'title', { name: 'author', select: ['name'] }] });
+  ```
+
+- **Nesting** — a `select` inside an object entry may itself contain more `{ name, select }` objects, traversing multiple relationships in one query:
+
+  ```javascript
+  select: ['id', 'name', { name: 'segments', select: ['id', 'name', { name: 'client', select: ['id', 'name'] }] }];
+  ```
+
+A to-many relationship resolves to an array of records; depending on access pattern you may need to `await` the property before iterating it.
+
+**Join behavior:** selecting a relationship _without_ filtering on it behaves as a **LEFT JOIN** — records with no related row are still returned (the relationship property is omitted or empty). Adding a condition on a related attribute (e.g. `attribute: ['author', 'name']`) behaves as an **INNER JOIN** — only records with a matching related row are returned.
+
 ### `sort`
 
 Sort order object:
