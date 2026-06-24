@@ -47,24 +47,38 @@ The default `connect()` behavior subscribes to the resource and streams changes 
 
 ## Reading the request in `connect()`
 
-To read the incoming request (query parameters, headers, the path), define `connect()` as a **`static`** method. Its first argument is the `RequestTarget`, which exposes the query string via `target.get()`:
+To read the incoming request (query parameters, headers, the path), define `connect()` as a **`static`** method. Its first argument is the `RequestTarget`, which exposes the query string via `target.get()`. Because `target` is an ordinary argument, it is captured in the generator's scope — read it directly inside the `async *connect()` body:
 
 ```js
 export class Search extends Resource {
-	static connect(target) {
+	static async *connect(target) {
 		const query = target.get('q'); // GET /Search?q=harper
 		const apiKey = target.get('api_key');
-		return this.stream(query, apiKey); // return the generator that streams
-	}
-	static async *stream(query, apiKey) {
 		for (const hit of await runSearch(query)) yield { data: hit };
 	}
 }
 ```
 
-`connect()` itself is **not** the generator. It reads what it needs from `target` synchronously, then returns the `async *` generator that yields events. You can also return an inline generator: `return (async function* () { … })()`.
+This works even though the generator body doesn't begin executing until the first event is requested — the `target` argument is already bound when `connect()` is called.
 
-> **Note:** the `RequestTarget` argument is only passed to a **`static`** `connect()`. An instance method's first argument is not the target, so define `connect()` (and any delegated generator) as `static`.
+> **Note:** the `RequestTarget` argument is only passed to a **`static`** `connect()`. An instance method's first argument is not the target, so define `connect()` as `static`.
+
+### Doing synchronous work before streaming
+
+If you must read the request and act on it _synchronously_ — before the stream starts — split `connect()` into a reader that returns a separate generator. This is also required when reading the request `context` via `getContext()`, which must be captured in the synchronous call frame: it is no longer available once the generator body is deferred to the first event.
+
+```js
+export class Search extends Resource {
+	static connect(target) {
+		const query = target.get('q');
+		if (!query) throw new Error('q is required'); // reject before streaming starts
+		return this.stream(query);
+	}
+	static async *stream(query) {
+		for (const hit of await runSearch(query)) yield { data: hit };
+	}
+}
+```
 
 ## When to Use SSE vs WebSockets
 
