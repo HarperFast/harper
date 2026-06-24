@@ -1548,7 +1548,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 							// it as an error — the outer catch returns quietly once the iterator also throws.
 							attributeErrorReported[property] = true;
 							if (Table.primaryStore?.rootStore?.status === 'closed')
-								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`);
+								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
 							else logger.error(`Error indexing attribute ${property}`, error);
 						}
 					}
@@ -1651,7 +1651,8 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		// interruption instead of logging a misleading error and a "failed to persist" warning.
 		if (Table.primaryStore?.rootStore?.status === 'closed') {
 			logger.debug(
-				`Indexing of ${Table.tableName} interrupted by store shutdown; recovery resumes on the next worker generation`
+				`Indexing of ${Table.tableName} interrupted by store shutdown; recovery resumes on the next worker generation`,
+				error
 			);
 			return;
 		}

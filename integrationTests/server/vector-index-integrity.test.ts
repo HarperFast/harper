@@ -151,7 +151,7 @@ async function vectorSearchStable(
 		} catch (err: any) {
 			const transient = /INDEX_REBUILDING|is not indexed yet/.test(err?.message ?? '');
 			if (transient && Date.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, 250));
+				await sleep(250);
 				continue;
 			}
 			throw err;
