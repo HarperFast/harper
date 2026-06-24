@@ -61,6 +61,16 @@ export class MyTable extends tables.MyTable {
 }
 ```
 
+When delegating to `super`, match the argument form to the operation: a collection create passes the collection target and the record (`super.post(target, record)` — the target identifies the collection and carries no id, since the primary key is auto-generated), while updates pass the target and data (`super.put(target, data)` / `super.patch(target, data)`) and reads/deletes pass the target (`super.get(target)` / `super.delete(target)`).
+
+To return a specific HTTP status from a thrown error, set `.statusCode` (e.g. `400`) on the error object — a plain `.status` property is ignored:
+
+```javascript
+const error = new Error('Name is required');
+error.statusCode = 400; // use statusCode, NOT status
+throw error;
+```
+
 Finally, ensure everything is configured appropriately:
 
 ```yaml

@@ -187,7 +187,7 @@ let record = await MyTable.get('my-record');
 let outgoingStream = record.data.stream();
 ```
 
-Because blobs can be referenced before they are fully written, they are **not** ACID-compliant by default. Use `saveBeforeCommit: true` to wait for the full write before committing:
+Blobs are inherently a streaming API designed to work asynchronously, so they can be referenced before they are fully written and are **not** ACID-compliant by default. Use `saveBeforeCommit: true` to ensure the blob is fully saved before the transaction commits. Even then, a `Blob` is stored alongside the record rather than within it — if you need the data to be a true, ACID-committed part of the record, use a `Bytes` field instead of a `Blob`:
 
 ```javascript
 let blob = createBlob(stream, { saveBeforeCommit: true });
@@ -201,7 +201,7 @@ await MyTable.put({ id: 'my-record', data: blob });
 | ------------------ | --------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `type`             | `string`  | `undefined` | MIME type to associate with the blob (e.g., `image/jpeg`, `audio/mpeg`). Readable via `blob.type` and used when serving HTTP |
 | `size`             | `number`  | `undefined` | Size of the data in bytes, if known ahead of time. Otherwise inferred from a buffer or determined as a stream completes      |
-| `saveBeforeCommit` | `boolean` | `false`     | Wait for the blob to be fully written before committing the transaction                                                      |
+| `saveBeforeCommit` | `boolean` | `false`     | Wait until the blob is fully written before the transaction commits                                                          |
 | `compress`         | `boolean` | `false`     | Compress the stored data with deflate                                                                                        |
 | `flush`            | `boolean` | `false`     | Flush the file to disk after writing, before the `createBlob` promise chain resolves                                         |
 
@@ -220,7 +220,7 @@ REST clients that can't post raw binary typically send base64 inside JSON. Decod
 import { type RequestTargetOrId, tables, createBlob } from 'harper';
 
 export class Photo extends tables.Photo {
-	async post(target: RequestTargetOrId, record: any) {
+	static async post(target: RequestTargetOrId, record: any) {
 		if (record.data) {
 			record.data = createBlob(Buffer.from(record.data, record.encoding || 'base64'), {
 				type: record.contentType || 'application/octet-stream',
@@ -236,16 +236,18 @@ export class Photo extends tables.Photo {
 Return a response object with the blob's MIME type in headers and the blob itself as the body. Harper will stream it to the client:
 
 ```typescript
-async get(target: RequestTargetOrId) {
-	const record = await super.get(target);
-	if (record?.data) {
-		return {
-			status: 200,
-			headers: { 'Content-Type': record.data.type || 'application/octet-stream' },
-			body: record.data,
-		};
+export class Photo extends tables.Photo {
+	static async get(target: RequestTargetOrId) {
+		const record = await super.get(target);
+		if (record?.data) {
+			return {
+				status: 200,
+				headers: { 'Content-Type': record.data.type || 'application/octet-stream' },
+				body: record.data,
+			};
+		}
+		return record;
 	}
-	return record;
 }
 ```
 
