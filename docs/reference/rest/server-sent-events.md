@@ -45,6 +45,27 @@ export class MyResource extends Resource {
 
 The default `connect()` behavior subscribes to the resource and streams changes automatically.
 
+## Reading the request in `connect()`
+
+To read the incoming request (query parameters, headers, the path), define `connect()` as a **`static`** method. Its first argument is the `RequestTarget`, which exposes the query string via `target.get()`:
+
+```js
+export class Search extends Resource {
+	static connect(target) {
+		const query = target.get('q'); // GET /Search?q=harper
+		const apiKey = target.get('api_key');
+		return this.stream(query, apiKey); // return the generator that streams
+	}
+	static async *stream(query, apiKey) {
+		for (const hit of await runSearch(query)) yield { data: hit };
+	}
+}
+```
+
+`connect()` itself is **not** the generator. It reads what it needs from `target` synchronously, then returns the `async *` generator that yields events. You can also return an inline generator: `return (async function* () { … })()`.
+
+> **Note:** the `RequestTarget` argument is only passed to a **`static`** `connect()`. An instance method's first argument is not the target, so define `connect()` (and any delegated generator) as `static`.
+
 ## When to Use SSE vs WebSockets
 
 |                 | SSE                                   | WebSockets                       |
