@@ -1919,9 +1919,8 @@ export function makeTable(options) {
 								if (isBinaryRoot) {
 									received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
 								} else {
-									const full = stringify(recordUpdate);
-									received =
-										full == null ? String(recordUpdate) : full.length > 200 ? full.slice(0, 200) + '...' : full;
+									const full = stringify(recordUpdate) ?? typeof recordUpdate;
+									received = full.length > 200 ? full.slice(0, 200) + '...' : full;
 								}
 								throw new ClientError(
 									`A record must be an object, but received ${received}. To store binary data, put it ` +
