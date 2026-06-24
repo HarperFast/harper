@@ -408,10 +408,10 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 		// races that reopen it gets a "No locks available" LOCK error. Poll until the drop
 		// succeeds (workers release the lock quickly once their getDatabases pass finishes).
 		const r = await waitFor(() => client.req().send({ operation: 'drop_database', database: 'tuckerdoodle' }), {
-			until: (res) => res.body.message != null,
+			until: (res) => res?.body?.message != null,
 			timeoutSeconds: 10,
 		});
-		assert.equal(r.body.message, "successfully deleted 'tuckerdoodle'", r.text);
+		assert.equal(r?.body?.message, "successfully deleted 'tuckerdoodle'", r?.text);
 	});
 
 	// ── async job operations ────────────────────────────────────────────────
