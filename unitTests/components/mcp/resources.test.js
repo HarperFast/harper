@@ -308,7 +308,7 @@ describe('mcp/resources', () => {
 				];
 				_setResourcesForTest(map);
 
-				const uris = listResourceTemplates('application').map((t) => t.uriTemplate);
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
 				assert.ok(uris.includes('https://app.test:9926/widget/{id}/action/{action}'));
 				assert.ok(uris.includes('https://app.test:9926/files/{rest}'));
 			});
@@ -328,7 +328,7 @@ describe('mcp/resources', () => {
 				];
 				_setResourcesForTest(map);
 
-				const uris = listResourceTemplates('application').map((t) => t.uriTemplate);
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
 				assert.ok(uris.includes('https://app.test:9926/ok/{id}'));
 				assert.ok(!uris.some((u) => u.includes('/mcpoff/')));
 				assert.ok(!uris.some((u) => u.includes('/hidden/')));

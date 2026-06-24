@@ -134,6 +134,27 @@ describe('Parameterised routes', () => {
 		assert.deepEqual(entry.params, { id: '5' });
 	});
 
+	it('delete() removes a parameterised route so it no longer matches', () => {
+		const resources = new Resources();
+		resources.set('widget/:id', makeResource('W'));
+		assert.ok(resources.getMatch('widget/5'), 'route matches before delete');
+
+		assert.strictEqual(resources.delete('widget/:id'), true, 'delete reports the route was removed');
+		assert.strictEqual(resources.paramRoutes.length, 0, 'side array is pruned');
+		assert.strictEqual(resources.getMatch('widget/5'), undefined, 'route no longer matches after delete');
+	});
+
+	it('clear() drops parameterised routes alongside static entries', () => {
+		const resources = new Resources();
+		resources.set('plain', makeResource('Plain'));
+		resources.set('widget/:id', makeResource('W'));
+
+		resources.clear();
+		assert.strictEqual(resources.size, 0, 'Map entries cleared');
+		assert.strictEqual(resources.paramRoutes.length, 0, 'parameterised routes cleared');
+		assert.strictEqual(resources.getMatch('widget/5'), undefined);
+	});
+
 	it('does not consult parameterised routes for a plain static match (fast path)', () => {
 		const resources = new Resources();
 		const Plain = makeResource('Plain');

@@ -160,6 +160,22 @@ export class Resources extends Map<string, ResourceEntry> {
 		}
 	}
 
+	// Parameterised routes live in a side array rather than the base Map, so the Map-mutation methods below must keep
+	// it in sync — otherwise a removed/cleared route would keep matching against an unloaded Resource class.
+	delete(path: string): boolean {
+		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
+		const mapDeleted = super.delete(path);
+		const pattern = path.endsWith('/') ? path.replace(/\/+$/, '') : path; // patterns are stored trailing-slash-free
+		const before = this.paramRoutes.length;
+		this.paramRoutes = this.paramRoutes.filter((route) => route.pattern !== pattern);
+		return mapDeleted || this.paramRoutes.length < before;
+	}
+
+	clear(): void {
+		super.clear();
+		this.paramRoutes = [];
+	}
+
 	/**
 	 * Register (or replace) a parameterised route. Routes are kept sorted most-specific-first so the first match wins:
 	 * segment kinds are compared left-to-right (static beats param beats wildcard) and, when one route is a prefix of

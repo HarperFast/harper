@@ -230,7 +230,7 @@ export function listResourceTemplates(
 			});
 			// One concrete template per parameterised route, with `{param}` placeholders for its `:param`/`*wildcard`
 			// segments — more discoverable than the generic `{resourcePath}` catch-all above.
-			for (const template of enumerateParamRouteTemplates(serverHttpURL)) templates.push(template);
+			for (const template of enumerateParamRouteTemplates(serverHttpURL)) all.push(template);
 		}
 	}
 	const start = offset ?? 0;
