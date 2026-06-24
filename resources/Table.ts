@@ -482,7 +482,10 @@ export function makeTable(options) {
 											updateRecordedSequenceId = () => {
 												// the key for tracking the sequence ids and txn times received from this node
 												const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
-												const existingSeq = dbisDb.get(seqKey);
+												// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
+												// Promise on a block-cache miss; `Promise?.nodes` is undefined and per-peer sequence
+												// tracking would silently reset. The seq keyspace grows with peer count, so it evicts.
+												const existingSeq = (dbisDb as any).getSync(seqKey);
 												let nodeStates = existingSeq?.nodes;
 												if (!nodeStates) {
 													// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
@@ -966,7 +969,10 @@ export function makeTable(options) {
 		}
 
 		static getResidencyRecord(id: Id) {
-			return dbisDb.get([Symbol.for('residency_by_id'), id]);
+			// getSync (not get): callers consume the result synchronously (e.g. residency.includes(...) in a
+			// commit callback, or store it as context.previousResidency). On RocksDB get() would return a
+			// Promise on a cache miss, breaking those sync consumers once __dbis__ grows past the block cache.
+			return (dbisDb as any).getSync([Symbol.for('residency_by_id'), id]);
 		}
 
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
@@ -5302,7 +5308,9 @@ export function makeTable(options) {
 	function getResidencyId(ownerNodeNames) {
 		if (ownerNodeNames) {
 			const setKey = ownerNodeNames.join(',');
-			let residencyId = dbisDb.get([Symbol.for('residency_by_set'), setKey]);
+			// getSync (not get): a get() Promise on a RocksDB cache miss is always truthy, so this would
+			// return the Promise as the residencyId and skip minting a new one, corrupting the mapping.
+			let residencyId = (dbisDb as any).getSync([Symbol.for('residency_by_set'), setKey]);
 			if (residencyId) return residencyId;
 			dbisDb.put(
 				[Symbol.for('residency_by_set'), setKey],

@@ -240,7 +240,11 @@ export function loadCertificates() {
 
 								// If a record already exists for cert check to see who is newer, cert record or cert file.
 								// If cert file is newer, add it to table
-								const certRecord = certificateTable.primaryStore.get(certCn);
+								// getSync (not get): this runs in a synchronous loadAndWatch callback. On RocksDB get()
+								// returns a Promise on a block-cache miss, which is truthy but has no timestamp fields,
+								// so the staleness guard below is bypassed and a stale on-disk cert can overwrite a
+								// newer replicated record (TLS churn / downgrade) once hdb_certificate evicts.
+								const certRecord = certificateTable.primaryStore.getSync(certCn);
 								let fileTimestamp = statSync(path).mtimeMs;
 								let recordTimestamp =
 									!certRecord || certRecord.is_self_signed
