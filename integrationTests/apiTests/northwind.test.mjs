@@ -8752,7 +8752,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 			// ITC — the next request can land on a worker that hasn't cleared its cache yet.
 			// Poll a read of a previously-restricted column (contactname) as bulk_load_user
 			// until the new permissions are visible, then proceed with the CSV load (#1222).
-			await waitFor(
+			const propagated = await waitFor(
 				() =>
 					client.reqAs(headersBulkLoadUser).send({
 						operation: 'sql',
@@ -8760,6 +8760,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					}),
 				{ until: (r) => r.status === 200, timeoutSeconds: 10 }
 			);
+			assert.equal(propagated.status, 200, propagated.text);
 			await csvDataLoad(
 				headersBulkLoadUser,
 				'upsert',
@@ -11360,6 +11361,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					}),
 				{ until: (res) => res.status === 200 && Array.isArray(res.body) && res.body.length === 8, timeoutSeconds: 10 }
 			);
+			assert.equal(r.status, 200, r.text);
 			assert.equal(r.body.length, 8, r.text);
 			const expected_attributes = ['id', 'dog_name', 'age', 'adorable', 'id1', 'name'];
 			//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner'
@@ -11539,6 +11541,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					}),
 				{ until: (res) => res.status === 403, timeoutSeconds: 10 }
 			);
+			assert.equal(r.status, 403, r.text);
 			assert.equal(
 				r.body.error,
 				'This operation is not authorized due to role restrictions and/or invalid database items',
