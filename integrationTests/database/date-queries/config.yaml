@@ -1,0 +1,4 @@
+# QA-359 — Date/timestamp storage, round-trip, range filtering, sort, and edge cases.
+graphqlSchema:
+  files: '*.graphql'
+rest: true
