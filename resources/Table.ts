@@ -402,6 +402,10 @@ export function makeTable(options) {
 						viaNodeId: event.viaNodeId,
 						// use per-event expiresAt: batched txn context only holds the first event's expiration
 						expiresAt: event.expiresAt,
+						// bulk base-copy snapshot frame: apply current-state directly, without an audit/transaction-log
+						// entry or out-of-order resequencing (harper-pro#480). Only set for copy frames (between
+						// COPY_START and COPY_COMPLETE); post-copy audit-replay frames apply normally.
+						isCopyApply: event.isCopyApply,
 						async: true,
 					};
 					const id = event.id;
@@ -1966,8 +1970,25 @@ export function makeTable(options) {
 					const expiresAt: number =
 						options?.expiresAt ?? context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
+					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
+					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
+					// harper-pro#480). Durability for these (WAL-off) rows comes from an explicit RocksDB flush that
+					// gates the copy resume cursor on the receiver, not from an audit entry.
+					// RocksDB-only: with the singular version/localTime, a copied row's stored version === its replay
+					// sequence, so `version < copyStartTime` (the receiver's gate) reliably means "not re-delivered by
+					// the post-copy replay". On LMDB, localTime is stored separately from version and audit=false would
+					// drop it (breaking a later downstream full copy) and the replay cursor can diverge from version
+					// (risking a missed dedup), so LMDB falls back to the normal audited apply. Replication targets
+					// RocksDB anyway. (harper-pro#480)
+					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 
 					if (precedesExisting <= 0) {
+						if (isCopyApply) {
+							// A base-copy snapshot row must never regress a newer-or-equal live write that landed
+							// during the copy; those are re-delivered by the post-copy audit replay from copyStartTime.
+							write.skipped = true;
+							return;
+						}
 						// This block is to handle the case of saving an update where the transaction timestamp is older than the
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
@@ -2372,7 +2393,8 @@ export function makeTable(options) {
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
 							omitLocalRecord ? INVALIDATED : 0,
-							audit,
+							// copy-apply rows are snapshots, not transactions: write the record + indices but no audit entry
+							isCopyApply ? false : audit,
 							{
 								omitLocalRecord,
 								user: (context as any)?.user,
@@ -2382,7 +2404,8 @@ export function makeTable(options) {
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
 								transaction,
-								tableToTrack: databaseName === 'system' ? null : options?.replay ? null : tableName, // don't track analytics on system tables
+								// no per-row db-write analytics for a bulk copy; system tables never track
+								tableToTrack: isCopyApply || databaseName === 'system' ? null : options?.replay ? null : tableName,
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
