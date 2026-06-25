@@ -161,6 +161,17 @@ export function setErrorReporter(reporter) {
 let compName: string;
 export const getComponentName = () => compName;
 
+/**
+ * Symlink a component's `node_modules/harper` (and `harperdb`) to this running Harper install,
+ * rather than letting it resolve a separately-installed npm copy.
+ *
+ * This is what makes `import { tables } from 'harper'` (or `import 'harperdb'`) inside component
+ * code — including bundler-loaded code such as a Vite SSR entry — resolve to the SAME module
+ * instance Harper is running. That instance carries the live, process-wide exports
+ * (`tables`/`databases`/`Resource`/…) populated via `_assignPackageExport` (see ../globals.js and
+ * ../index.ts), so the import yields live data, not an empty separate copy. The link is verified on
+ * every non-root component load and repaired if missing or pointing elsewhere.
+ */
 function symlinkHarperModule(componentDirectory: string) {
 	return new Promise<void>((resolve, reject) => {
 		const store = Status.primaryStore;
