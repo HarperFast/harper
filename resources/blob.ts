@@ -771,8 +771,10 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 // on the source stream (the replication receive path does this on its PassThrough). A process-wide
 // HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS env var, when set, overrides the per-stream value for every write
 // (ops escape hatch / kill switch — set 0 to force-disable). Read at call time so tests and operators
-// can change it without a restart. The timer re-arms while the source is paused (pipeline backpressure,
-// not a real stall) so a slow writeStream never trips a false destroy.
+// can change it without a restart. While the source is paused (pipeline backpressure) the timer re-arms
+// only if the destination is still draining (writeStream.bytesWritten advancing) so a slow writeStream
+// never trips a false destroy — but a pause with zero downstream progress for the whole interval is a
+// genuine stall the 'data' re-arm can never clear, so it is destroyed.
 // Largest delay setTimeout accepts; a larger value (or Infinity/NaN) is silently coerced to 1ms, which
 // would fire the watchdog almost immediately and destroy a healthy stream — so clamp/reject instead.
 const MAX_SET_TIMEOUT_MS = 2147483647; // 2^31 - 1
@@ -787,6 +789,17 @@ function getBlobStreamIdleTimeoutMs(stream: Readable): number {
 	// collapse to 1ms and instantly destroy the source.
 	if (!Number.isFinite(raw) || raw <= 0) return 0;
 	return Math.min(raw, MAX_SET_TIMEOUT_MS);
+}
+
+// Decision for the source-idle watchdog on timer expiry. A non-paused expiry is a true source idle (no
+// data, no end, no error) and is always destroyed. While the source is paused (pipeline backpressure) it
+// is only a real wedge when the destination made zero progress over the interval: a paused source whose
+// writeStream is still draining (bytesWritten advanced since the last arm) is a slow-but-live write that
+// must be left alone. Without the progress check a genuinely stalled-but-paused receive (the disk-write
+// pipeline that never drains, leaving the replication socket paused on backpressure forever) re-arms
+// indefinitely and never recovers — the 19h prerender blob-replication wedge.
+export function shouldDestroyIdleBlobSource(paused: boolean, bytesWritten: number, lastProgressBytes: number): boolean {
+	return !(paused && bytesWritten > lastProgressBytes);
 }
 
 function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageInfo): Blob {
@@ -806,16 +819,21 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 		}
 		// Source-idle watchdog: destroys the source if no 'data' arrives for the threshold so pipeline
 		// rejects cleanly. Off unless the owning caller armed this source (or the env override is set);
-		// see getBlobStreamIdleTimeoutMs. On expiry, re-arm if the stream is paused (pipeline backpressure,
-		// not a real stall) so a slow writeStream doesn't trip a false destroy.
+		// see getBlobStreamIdleTimeoutMs. On expiry while the stream is paused (pipeline backpressure),
+		// re-arm only if the destination is still draining — bytesWritten advancing since the last arm
+		// means a slow-but-live writeStream, not a wedge. A pause with zero downstream progress for the
+		// whole interval is a genuine stall (disk hang / stuck pipeline) the 'data' re-arm can never
+		// clear — the receive socket stays paused on backpressure that never lifts — so destroy it.
 		let idleTimer: NodeJS.Timeout | undefined;
 		let armIdleTimer: (() => void) | undefined;
+		let lastProgressBytes = 0;
 		const idleTimeoutMs = getBlobStreamIdleTimeoutMs(stream);
 		if (idleTimeoutMs > 0) {
 			armIdleTimer = () => {
 				if (idleTimer) clearTimeout(idleTimer);
+				lastProgressBytes = writeStream.bytesWritten;
 				idleTimer = setTimeout(() => {
-					if (stream.isPaused()) {
+					if (!shouldDestroyIdleBlobSource(stream.isPaused(), writeStream.bytesWritten, lastProgressBytes)) {
 						armIdleTimer?.();
 						return;
 					}
@@ -823,6 +841,10 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 				}, idleTimeoutMs).unref();
 			};
 			stream.on('data', armIdleTimer);
+			// Re-arm on 'resume' too: when backpressure clears, the stream flips to flowing before the
+			// next 'data' fires, so an expiry landing in that window would see isPaused()===false and
+			// destroy a stream that just resumed — give it a fresh window instead.
+			stream.on('resume', armIdleTimer);
 			armIdleTimer();
 		}
 		let compressedStream: any;
@@ -850,6 +872,7 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			}
 			if (armIdleTimer) {
 				stream.removeListener('data', armIdleTimer);
+				stream.removeListener('resume', armIdleTimer);
 				armIdleTimer = undefined;
 			}
 			const fd = (writeStream as any).fd;

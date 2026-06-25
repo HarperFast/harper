@@ -23,6 +23,7 @@ const {
 	isSourceBlobUnavailable,
 	isBlobComplete,
 	findIncompleteBlobRefs,
+	shouldDestroyIdleBlobSource,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -1129,6 +1130,27 @@ describe('saveBlob source-idle watchdog is opt-in (off by default, per-stream ar
 		(info.saving ?? Promise.resolve()).then(() => (state = 'resolved')).catch(() => (state = 'rejected'));
 		await delay(2500);
 		assert.notStrictEqual(state, 'pending', 'an armed idle source should be destroyed within its timeout and settle');
+	});
+});
+
+describe('shouldDestroyIdleBlobSource (paused-source progress gate)', () => {
+	it('destroys a non-paused idle source regardless of bytes (true source idle: no data, no end)', () => {
+		assert.strictEqual(shouldDestroyIdleBlobSource(false, 100, 100), true);
+		assert.strictEqual(shouldDestroyIdleBlobSource(false, 200, 100), true);
+		assert.strictEqual(shouldDestroyIdleBlobSource(false, 0, 0), true);
+	});
+
+	it('leaves a paused source alone while the destination is still draining (slow-but-live writeStream)', () => {
+		// bytesWritten advanced since the last arm → real progress → re-arm, do not destroy.
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 4096, 1024), false);
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 1025, 1024), false);
+	});
+
+	it('destroys a paused source that made zero downstream progress over the interval (genuine wedge)', () => {
+		// Paused on backpressure but the writeStream never advanced for the whole timeout: the disk-write
+		// pipeline that never drains — the 19h prerender blob-replication wedge. Must be torn down.
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 1024, 1024), true);
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 0, 0), true);
 	});
 });
 
