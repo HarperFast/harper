@@ -1,0 +1,12 @@
+# QA-323 — Pure append-only insert workload to isolate LMDB vs RocksDB unique-PK durability.
+#
+# Single table with a UUID primary key — no business logic, no cross-table writes.
+# Every PUT to Ledger uses a caller-supplied unique id (UUID) or a colliding id (control).
+# After N inserts, count durable rows. If unique-PK count < N => real insert loss (DEFECT).
+# If only colliding-PK count < N => QA-322 shortfall was last-write-wins (not a defect).
+
+type Ledger @table @export {
+  id: ID @primaryKey
+  seq: Int
+  payload: String
+}
