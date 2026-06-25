@@ -30,6 +30,21 @@ npm link harper
 
 All installed components have `harper` automatically linked.
 
+Whether you reach them as globals or as `harper` imports, `tables`, `databases`, and the other APIs are the **same live, process-wide objects** — Harper runs as a single process, so a record written through one component is immediately visible to every other. The automatic link points `harper` at the **running** installation (not a separately-installed copy), so `import { tables } from 'harper'` resolves to that live runtime from any module Harper loads. Application module contexts are seeded from the same process globals, not given an isolated set of these objects.
+
+This includes bundler-built code. A Vite **server-side-render** entry, for example, can read data straight from Harper and render it into the HTML (no client-side fetch):
+
+```typescript
+import { tables } from 'harper';
+
+export async function render(url: string): Promise<string> {
+	const product = await tables.Product.get(idFromUrl(url));
+	return renderToString(/* <App product={product} /> */);
+}
+```
+
+When bundling for SSR, keep `harper` external so it resolves to the runtime instead of being bundled (symlinked dependencies are not reliably auto-externalized) — e.g. `ssr: { external: ['harper'] }` in `vite.config`.
+
 ## TypeScript Support
 
 Harper runs `.ts` files directly via Node.js's built-in [type stripping](https://nodejs.org/api/typescript.html#type-stripping). No build step or transpiler is required.
