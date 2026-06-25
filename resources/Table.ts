@@ -1999,6 +1999,39 @@ export function makeTable(options) {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
 							}
+							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
+							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
+							// by version. That log has time-based retention — auditRetention purges whole log files — so a
+							// lookup for a version older than the log's oldest retained entry has (essentially always)
+							// been purged. On RocksDB an exactStart miss scans the whole log to end-of-log (~17ms each in
+							// the field, all 100% misses while applying aged hdb_analytics during a system-DB copy,
+							// pegging the worker at ~100% CPU — harper-pro#480). Both of these lookups are already
+							// documented as best-effort-may-miss: a miss at the up-front check falls through to the walk
+							// (the additionalAuditRefs read-your-writes check above is the real duplicate guard, #1137),
+							// and the depth-cap check notes the lookup "can intermittently miss under load" with the
+							// authoritative full-copy record restoring exact convergence (#1148). This guard turns that
+							// tolerated miss into a deliberate skip for pre-retention versions — staying within the
+							// existing contract. (oldestRetainedAuditTime is the first physical/in-order entry's version;
+							// a transaction log appended out of timestamp order could in theory retain a smaller-versioned
+							// entry below it — but the same best-effort contract and full-copy convergence cover that.)
+							// Resolve the oldest retained entry once, for the same log the dedup reads.
+							let oldestRetainedAuditTime: number | undefined;
+							let oldestRetainedAuditTimeResolved = false;
+							const dedupVersionCouldBeRetained = (version: number): boolean => {
+								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
+								if (!oldestRetainedAuditTimeResolved) {
+									oldestRetainedAuditTimeResolved = true;
+									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
+									// Mirror replicationConnection's retention check and the cleanup key basis (localTime ??
+									// version). Fall back to the nominal time-based purge floor when the log is empty/unavailable.
+									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
+										oldestRetainedAuditTime = entry.localTime ?? entry.version;
+										break;
+									}
+									oldestRetainedAuditTime ??= Date.now() - auditRetention;
+								}
+								return version >= oldestRetainedAuditTime!;
+							};
 							// Up-front keyed dedup (RocksDB): a re-delivered out-of-order write whose exact
 							// (version, nodeId) is already in the audit log is a duplicate that was already applied — skip
 							// it here instead of paying the O(depth) resequencing walk below only to discard it in the
@@ -2010,7 +2043,7 @@ export function makeTable(options) {
 							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
 							// check above remains the read-your-writes guard.
-							if (isRocksDB) {
+							if (isRocksDB && dedupVersionCouldBeRetained(txnTime)) {
 								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -2070,6 +2103,7 @@ export function makeTable(options) {
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
 							const isReDeliveredDuplicate = () => {
+								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								return (
 									duplicate &&
