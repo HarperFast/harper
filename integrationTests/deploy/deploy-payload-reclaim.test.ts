@@ -79,6 +79,20 @@ async function callOperation(
 	return { status: res.status, body: parsed };
 }
 
+// Poll get_deployment until the row reaches a terminal status rather than relying on a fixed
+// sleep — the terminal commit settles asynchronously and a hardcoded timer is a flake source.
+async function getDeploymentWhenTerminal(ctx: ContextWithHarper, deploymentId: string, timeoutMs = 5000): Promise<any> {
+	const deadline = Date.now() + timeoutMs;
+	let last: any;
+	while (Date.now() < deadline) {
+		const got = await callOperation(ctx, { operation: 'get_deployment', deployment_id: deploymentId });
+		last = got;
+		if (got.status === 200 && (got.body?.status === 'success' || got.body?.status === 'failed')) return got;
+		await sleep(50);
+	}
+	return last;
+}
+
 suite('Deployment payload reclamation', (ctx: ContextWithHarper) => {
 	let fixtureDir: string;
 
@@ -126,9 +140,7 @@ suite('Deployment payload reclamation', (ctx: ContextWithHarper) => {
 		const result = JSON.parse(response.body);
 		ok(result.deployment_id, 'deploy response should include a deployment_id');
 
-		await sleep(200); // let the terminal commit settle
-
-		const got = await callOperation(ctx, { operation: 'get_deployment', deployment_id: result.deployment_id });
+		const got = await getDeploymentWhenTerminal(ctx, result.deployment_id);
 		strictEqual(got.status, 200, `get_deployment should return 200: ${JSON.stringify(got.body)}`);
 		const row = got.body;
 		strictEqual(row.status, 'success');

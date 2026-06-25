@@ -815,9 +815,11 @@ const DEFAULT_PAYLOAD_RETENTION_MAX_SIZE = 10 * 1024 * 1024; // 10 MiB
 
 function getPayloadRetentionMaxSize() {
 	const configured = configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE);
-	// Treat unset/blank config as "use the default" — Number('') and Number(null) are 0, which
-	// would otherwise be accepted as an aggressive always-drop threshold.
-	if (configured == null || configured === '') return DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
+	// Only a number or a numeric string is a valid threshold. Reject everything else (unset,
+	// boolean, array, blank/whitespace string) and fall back to the default — otherwise Number()
+	// coercion would turn `true`→1, `false`/``/`[]`→0 into an aggressive always-/near-always-drop.
+	if (typeof configured !== 'number' && typeof configured !== 'string') return DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
+	if (typeof configured === 'string' && configured.trim() === '') return DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
 	const parsed = Number(configured);
 	return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
 }
