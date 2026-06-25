@@ -572,6 +572,20 @@ async function deployComponent(req) {
 
 		if (recorder) {
 			response.deployment_id = recorder.deploymentId;
+			// Reclaim the payload tarball for large deploys: every peer has now installed from
+			// the blob (replicateOperation resolved) and the origin no longer needs it. Dropping
+			// the reference before finish() folds the null into the single terminal write, which
+			// unlinks the file locally and replicates the null so peers drop their copies too.
+			// Metadata (size, hash, event_log) is retained for the audit trail. Two guards keep
+			// the tarball when it's still the artifact you'd debug or retry with: failed deploys
+			// don't reach this branch, and a deploy that reached here only because
+			// ignore_replication_errors masked failed peers keeps its payload for those peers.
+			const payloadSize = recorder.row.payload_size;
+			const retentionMaxSize = getPayloadRetentionMaxSize();
+			if (typeof payloadSize === 'number' && payloadSize > retentionMaxSize && recorder.getFailedPeers().length === 0) {
+				const freed = recorder.dropPayload();
+				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
+			}
 			emit('phase', { phase: 'success', status: 'done' });
 			await recorder.finish('success');
 		}
@@ -793,6 +807,20 @@ async function getComponents() {
  * @returns {Promise<*>}
  */
 const DEFAULT_COMPONENT_FILE_MAX_SIZE = 5 * 1024 * 1024; // 5 MB
+
+// Deploys whose payload exceeds this size have their payload_blob dropped after a successful
+// deploy (see deployComponent). The metadata is retained; only the tarball bytes are reclaimed.
+// Configurable via deployment_payloadRetention_maxSize; set it very high to retain all payloads.
+const DEFAULT_PAYLOAD_RETENTION_MAX_SIZE = 10 * 1024 * 1024; // 10 MiB
+
+function getPayloadRetentionMaxSize() {
+	const configured = configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE);
+	// Treat unset/blank config as "use the default" — Number('') and Number(null) are 0, which
+	// would otherwise be accepted as an aggressive always-drop threshold.
+	if (configured == null || configured === '') return DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
+	const parsed = Number(configured);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
+}
 
 async function getComponentFile(req) {
 	const validation = validator.getComponentFileValidator(req);

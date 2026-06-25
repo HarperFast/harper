@@ -297,6 +297,23 @@ export class DeploymentRecorder {
 		await this.put();
 	}
 
+	/**
+	 * Drop the stored payload tarball, retaining the metadata (size, hash, event_log). Used to
+	 * reclaim storage for large deploys once every peer has installed from the blob and it is no
+	 * longer needed. Only mutates the in-memory record — the caller drops the payload before the
+	 * terminal finish() write so the null reference lands in that single put rather than a
+	 * separate one. Committing the row with no blob reference unlinks the file locally (via the
+	 * RecordEncoder retained-blob check) and replicates the null so peers drop their copies too.
+	 *
+	 * Returns the freed payload size (bytes) when a blob was present and dropped, otherwise 0.
+	 */
+	dropPayload(): number {
+		if (this.finished || this.record.payload_blob == null) return 0;
+		const freed = typeof this.record.payload_size === 'number' ? this.record.payload_size : 0;
+		this.record.payload_blob = null;
+		return freed;
+	}
+
 	async transitionPhase(phase: string, status?: DeploymentStatus): Promise<void> {
 		this.record.phase = phase;
 		if (status) this.record.status = status;
