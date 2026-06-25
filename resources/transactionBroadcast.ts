@@ -233,6 +233,24 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						} else matchingKey = null;
 					} while (true);
 				}
+			} else if (auditRecord.type === 'reload') {
+				// Whole-table reload marker (harper-pro#489): a copyApply base copy back-filled this table's
+				// rows as snapshots with no per-row audit entries, so deliver one signal to EVERY subscriber on
+				// the table (regardless of key — there is no recordId to walk the key hierarchy) so each re-reads
+				// the bulk-reloaded table. hdb_nodes peer discovery and hdb_certificate CA install rely on this.
+				const tableSubscriptions = subscriptions[auditRecord.tableId];
+				if (tableSubscriptions) {
+					for (const keySubscriptions of tableSubscriptions.values()) {
+						for (const subscription of keySubscriptions) {
+							if (subscription.startTime >= timestamp) continue;
+							try {
+								subscription.listener(null, auditRecord, timestamp, false);
+							} catch (error) {
+								warn(error);
+							}
+						}
+					}
+				}
 			}
 			if (allowYield && ++processed >= NOTIFY_BATCH_SIZE) {
 				// Yield the event loop. Save in-progress txn state so the next batch can resume.
