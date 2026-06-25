@@ -3231,6 +3231,62 @@ export function makeTable(options) {
 			// listener avoids duplicate delivery.
 			let dropDuringReplay = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			// #1419: Row-level `allowRead` is enforced on the REST read path but was historically NOT
+			// re-evaluated per event during subscription delivery. The connect-time check runs with `this`
+			// bound to the collection (no loaded record), so a row-level override always passes and every
+			// row's changes leak to any collection subscriber. Re-evaluate `allowRead` per record-bearing
+			// event below, binding a resource instance to that row's record — the delivery-path analog of
+			// the per-event value filter already applied downstream.
+			//
+			// Scope, to keep this a minimal, low-blast-radius shim:
+			//   1. Only when the resource OVERRIDES `allowRead`. The default is table/attribute-level RBAC
+			//      (record-independent) and is already enforced at connect, so re-running it per event is a
+			//      no-op — skipping it keeps zero overhead for the common case and confines this to the
+			//      legacy row-level-override pattern.
+			//   2. Only when the subscription has a user principal (`context.user`). Row-level `allowRead`
+			//      is a per-user decision, and the connect-time authorization that opened this subscription
+			//      already consumes the request's `checkPermission`/`authorize` flags before we get here, so
+			//      `context.user` is the persistent signal that this is an authorization-checked (external)
+			//      subscription. Internal subscribers — the only one today is the system `hdb_certificate`
+			//      watcher (no override, so already excluded by (1)) — and replication (which doesn't use
+			//      `subscribe` at all) have no user, so the cluster keeps replicating every row between nodes.
+			const subContext = this.getContext() as any;
+			const subUser = subContext?.user;
+			const RecordResource: any = this.constructor;
+			const filterRowReads = this.allowRead !== TableResource.prototype.allowRead && subUser != null;
+			// Returns false when the subscriber may not read this event's record. `end_txn` is a
+			// transaction-boundary control marker (no record) and always passes. Fails closed: if the
+			// override throws, the event is dropped rather than leaked.
+			//
+			// Known limitation (tracked as a follow-up): the event's `value` is the authoritative record
+			// only for `put`/`invalidate` (full-record) events. For `delete` (tombstone, null value),
+			// `message` (a published message payload, not a row), and `rawEvents` (compact/partial audit
+			// value) the bound record is not the full row, so an override that keys off row fields may
+			// mis-decide those event types. This fix closes the primary leak (record updates); authorizing
+			// those non-record-bearing event types against the full row is deferred.
+			const allowsEvent = filterRowReads
+				? (event: any): boolean => {
+						if (event.type === 'end_txn') return true;
+						try {
+							const recordResource = new RecordResource(event.id, subContext);
+							recordResource.setRecord(event.value ?? null);
+							const decision = recordResource.allowRead(subUser, { id: event.id }, subContext);
+							// Table `allowRead` is synchronous by contract, but nothing enforces it at runtime.
+							// `Boolean(promise)` is always true, so an async override would silently bypass this
+							// filter — fail closed on a thenable rather than leak the event.
+							if (decision != null && typeof decision.then === 'function') {
+								logger.error?.(
+									'Subscription row-level allowRead returned a Promise; Table allowRead must be synchronous — dropping event to avoid an authorization bypass'
+								);
+								return false;
+							}
+							return Boolean(decision);
+						} catch (error) {
+							logger.error?.('Error evaluating allowRead for subscription event; dropping event', error);
+							return false;
+						}
+					}
+				: null;
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
@@ -3266,8 +3322,11 @@ export function makeTable(options) {
 							type,
 							beginTxn,
 						};
+						// Queued events are filtered when the queue is drained through send() below; events
+						// sent directly (queue already drained) are filtered here. Each event is filtered once.
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
 						else {
+							if (allowsEvent && !allowsEvent(event)) return;
 							if (databaseName !== 'system') {
 								recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
 							}
@@ -3353,13 +3412,18 @@ export function makeTable(options) {
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
-									history.push({
+									const historyEntry = {
 										id,
 										localTime: auditRecord.localTime,
 										value,
 										version: auditRecord.version,
 										type: auditRecord.type,
-									});
+									};
+									// Filter denied rows BEFORE they consume a previousCount slot, so an authorized
+									// subscriber still receives up to `count` readable history events rather than a
+									// short count when newer rows belong to other owners (#1419).
+									if (allowsEvent && !allowsEvent(historyEntry)) continue;
+									history.push(historyEntry);
 									if (--count <= 0) break;
 								}
 							} catch (error) {
@@ -3501,6 +3565,7 @@ export function makeTable(options) {
 				subscription.send(error);
 			});
 			function send(event: any) {
+				if (allowsEvent && !allowsEvent(event)) return;
 				if (databaseName !== 'system') {
 					recordAction(event.size ?? 1, 'db-message', tableName, null);
 				}
