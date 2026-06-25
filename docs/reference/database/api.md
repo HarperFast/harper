@@ -51,6 +51,10 @@ for await (const record of Product.search(query)) {
 
 For the full set of methods available on table classes, see the [Resource API](../resources/resource-api.md).
 
+:::warning Data safety
+Programmatic `update`, `patch`, and `delete` calls operate directly on stored data, which may be live production data. A query that matches more records than intended — or a delete issued without confirmation — can be destructive and is not easily reversible. Scope destructive operations with specific conditions, validate the affected set before writing, and gate them behind your application's approval and authorization controls.
+:::
+
 ## `databases`
 
 `databases` is an object whose properties are Harper databases. Each database contains its tables as properties, the same way `tables` does for the default database. In fact, `databases.data === tables` is always true.
