@@ -861,6 +861,109 @@ describe('Blob test', () => {
 		const result = Buffer.isBuffer(encoded) ? encoded : await encoded;
 		assert(Buffer.isBuffer(result), 'a slice should pack without being rejected as incomplete');
 	});
+
+	// harper-pro#481: a blob write fed by a re-streamable external source (replication receive / origin
+	// fetch) that aborts mid-stream stamps the file with a PENDING_TYPE (0xfe) header. The bytes are
+	// still expected — the receiver holds a blob gap and re-streams on reconnect — so a downstream read
+	// must return 503 (retry), NOT 500 (confidently incomplete), which the peer would treat as permanent
+	// and advance its resume cursor past = silent loss. Distinct from an ERROR_TYPE (0xff) stub, which is
+	// a permanent error replicated as-is.
+	const PENDING_TYPE = 0xfe;
+	// Stamp a disk-backed blob's file with a PENDING stub the way the write-abort path does: an 8-byte
+	// header (type=PENDING_TYPE, size=message length) followed by the abort message. The record descriptor
+	// still records the full size, so descriptor cross-checks would mismatch — the PENDING type must be
+	// what routes the read to 503.
+	function writePendingStub(filePath) {
+		const message = Buffer.from('Blob source stream idle for 120000ms');
+		const stub = Buffer.concat([makeBlobHeader(message.length, PENDING_TYPE), message]);
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, stub, 0, stub.length, 0);
+			ftruncateSync(fd, stub.length);
+		} finally {
+			closeSync(fd);
+		}
+	}
+	it('#481: bytes() rejects a PENDING (half-replicated) blob with 503, not 500', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 503, 'a pending blob must read as retryable (503), not corrupt (500)');
+			return true;
+		});
+	});
+	it('#481: stream() rejects a PENDING (half-replicated) blob with 503, not 500', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+			assert.equal(error.statusCode, 503);
+			return true;
+		});
+	});
+	it('#481: isBlobComplete is false for a PENDING blob (repair sweep treats it as incomplete)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		assert.equal(await isBlobComplete(blob), false);
+	});
+	it('#481: replication-send does not pack a PENDING blob as complete (holds and retries)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		// Unlike an error stub (replicated as-is), a PENDING stub must not inline: the encode re-reads via
+		// blob.bytes(), which rejects 503, so the sender holds the gap rather than propagating the stub.
+		await assert.rejects(Promise.resolve(encodeBlobsAsBuffers(() => pack({ blob }))), (error) => {
+			assert.equal(error.statusCode, 503);
+			return true;
+		});
+	});
+	it('#481: a source-stream write that aborts leaves a PENDING (503) blob, not a 500 incomplete', async () => {
+		// Drive the real write-abort path: createBlob from a PassThrough armed with blobStreamIdleTimeoutMs
+		// the way the replication receive path arms its source (this is what the abort branch gates on, so an
+		// app-supplied one-shot stream is NOT mis-marked PENDING). Start the save, deliver a partial body, then
+		// destroy the source with an error. writeBlobWithStream's abort branch must stamp the file PENDING
+		// because the bytes are still expected.
+		const store = BlobTest.primaryStore.rootStore;
+		const source = new PassThrough();
+		source.blobStreamIdleTimeoutMs = 60000; // arm the source-idle watchdog (won't fire during the test)
+		const blob = await createBlob(source, { size: 20000 });
+		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
+		source.write(randomBytes(4000)); // a partial body lands before the abort
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		source.destroy(new Error('Blob source stream idle for 120000ms'));
+		await assert.rejects(Promise.resolve(saving), 'the aborted save rejects');
+		// the PENDING stub is written asynchronously in the abort callback; wait for the read to flip to 503
+		await waitFor(
+			async () => {
+				try {
+					await blob.bytes();
+					return false;
+				} catch (error) {
+					return error.statusCode === 503;
+				}
+			},
+			{ timeout: 2000, message: 'aborted source write should leave a PENDING (503) blob' }
+		);
+		unlinkSync(getFilePathForBlob(blob));
+	});
+	it('#481: an app-supplied (unarmed) source-stream abort is NOT marked PENDING (gate excludes one-shot streams)', async () => {
+		// Same abort shape, but the source is NOT armed with blobStreamIdleTimeoutMs — an ordinary app write,
+		// not a replication receive. The abort branch must NOT stamp it PENDING: nothing will ever re-stream
+		// those bytes, so a 503 (retry) read would hold forever (the #429 wedge). It stays the prior behavior.
+		const store = BlobTest.primaryStore.rootStore;
+		const source = new PassThrough();
+		const blob = await createBlob(source, { size: 20000 });
+		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
+		source.write(randomBytes(4000));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		source.destroy(new Error('connection reset'));
+		await assert.rejects(Promise.resolve(saving));
+		await new Promise((resolve) => setTimeout(resolve, 50)); // let any async abort-path write land
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.notEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
+			return true;
+		});
+		const filePath = getFilePathForBlob(blob);
+		if (existsSync(filePath)) unlinkSync(filePath);
+	});
 	it('#1424: bytes() rejects a file corrupted below the header rather than returning garbage (T3)', async () => {
 		const { blob, filePath } = await makeDiskBackedBlob();
 		// overwrite with fewer than HEADER_SIZE bytes, with byte[1] = DEFLATE_TYPE — the case that

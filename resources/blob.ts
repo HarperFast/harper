@@ -70,6 +70,12 @@ const HEADER_SIZE = 8;
 const UNCOMPRESSED_TYPE = 0;
 const DEFLATE_TYPE = 1;
 const ERROR_TYPE = 0xff;
+// A write that aborted on a re-streamable external source (replication receive / origin fetch) stamps the
+// file with this type so a downstream read returns 503 (retry) rather than 500 (confidently incomplete).
+// The bytes are still expected — the receive side holds a blob gap and re-streams on reconnect, which
+// overwrites this stub; a terminal give-up unlinks the file (→ 404). Distinct from ERROR_TYPE (a permanent
+// corrupt/error stub, replicated as-is). See harper-pro#481.
+const PENDING_TYPE = 0xfe;
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
@@ -212,6 +218,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					const headerValue = new DataView(rawBytes.buffer, rawBytes.byteOffset, 8).getBigUint64(0);
 					if (Number(headerValue >> 48n) === ERROR_TYPE) {
 						throw new BlobReadError('Error in blob: ' + rawBytes.subarray(HEADER_SIZE), BLOB_CORRUPT_STATUS);
+					}
+					if (Number(headerValue >> 48n) === PENDING_TYPE) {
+						// half-replicated blob whose source stream aborted; the bytes are still expected — retry (harper-pro#481)
+						throw new BlobReadError('Blob pending replication for ' + filePath, BLOB_UNAVAILABLE_STATUS);
 					}
 
 					size = Number(headerValue & 0xffffffffffffn);
@@ -432,6 +442,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 								return onError(
 									new BlobReadError('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead), BLOB_CORRUPT_STATUS)
 								);
+							}
+							if (Number(headerValue >> 48n) === PENDING_TYPE) {
+								// half-replicated blob whose source stream aborted; the bytes are still expected — retry (harper-pro#481)
+								return onError(new BlobReadError('Blob pending replication for ' + filePath, BLOB_UNAVAILABLE_STATUS));
 							}
 							size = Number(headerValue & 0xffffffffffffn);
 							if (size < UNKNOWN_SIZE) {
@@ -854,16 +868,38 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			}
 			const fd = (writeStream as any).fd;
 			if (error) {
-				store.unlock(lockKey);
 				if (fd) {
 					close(fd);
 					(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
 				}
 				if (storageInfo.deleteOnFailure) {
+					store.unlock(lockKey);
 					unlink(filePath, (error) => {
 						if (error) logger.debug?.('Error while deleting aborted blob file', error);
 					});
+				} else if (idleTimeoutMs > 0 && !(error as { sourceBlobUnavailable?: boolean }).sourceBlobUnavailable) {
+					// The write was fed by a re-streamable replication/origin source — the owning caller armed the
+					// source-idle watchdog (idleTimeoutMs > 0), which only the replication receive path does, never an
+					// app-supplied one-shot stream — and it aborted for a retriable reason: the source stalled or
+					// dropped, NOT a source-reported permanent absence (sourceBlobUnavailable, which the receive loop
+					// sets and then advances past + unlinks). The bytes are still expected: the receiver holds a blob
+					// gap and re-streams on reconnect. Stamp the file PENDING so a downstream read of this
+					// half-replicated blob returns 503 (retry) instead of 500 (confidently incomplete → the peer
+					// advances its resume cursor past it = silent loss, harper-pro#481). Hold the write lock until the
+					// marker is durable so no concurrent read/send observes the bare partial file (lock-free + short =
+					// classified 500 = the very loss this prevents). The re-stream overwrites this stub
+					// (createWriteStream flags 'w'); a terminal give-up on the receive side unlinks it (→ 404). Build
+					// the header directly rather than via createHeader so its compress-type OR can't collide with the
+					// PENDING type bits.
+					const messageBuffer = Buffer.from(error.toString());
+					const header = new Uint8Array(HEADER_SIZE);
+					new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
+					writeFile(filePath, Buffer.concat([header, messageBuffer]), (writeError: Error) => {
+						if (writeError) logger.debug?.('Error writing pending marker to blob file', writeError);
+						store.unlock(lockKey);
+					});
 				} else {
+					store.unlock(lockKey);
 					try {
 						if (statSync(filePath).size === 0) {
 							// if there was an error in the stream, nothing may have been written, so we can write the error message instead
@@ -1510,7 +1546,10 @@ addExtension({
 					// slice size, which legitimately differs from the full on-disk header size).
 					const isSlice = storageInfo.start !== undefined || storageInfo.end !== undefined;
 					const sizeMatchesDescriptor = type === ERROR_TYPE || isSlice || options.size == null || options.size === size;
-					if (size === buffer.length - HEADER_SIZE && sizeMatchesDescriptor) {
+					// A PENDING stub (half-replicated, bytes still expected) must never inline as complete — its
+					// header size is the abort-message length, which can coincide with the body length. Stay uncoded
+					// so the receiver holds the gap and retries rather than replicating the stub (harper-pro#481/#429).
+					if (type !== PENDING_TYPE && size === buffer.length - HEADER_SIZE && sizeMatchesDescriptor) {
 						// the file is there and complete, we can return the encoding
 						return Buffer.concat([pack([options]), buffer]);
 					}
@@ -1728,6 +1767,7 @@ async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
 	}
 	const headerValue = new DataView(header.buffer, header.byteOffset, 8).getBigUint64(0);
 	if (Number(headerValue >> 48n) === ERROR_TYPE) return false;
+	if (Number(headerValue >> 48n) === PENDING_TYPE) return false; // half-replicated, bytes still expected (harper-pro#481)
 	// The header size field holds the *uncompressed* content length for both compressed and
 	// uncompressed blobs (writeBlobWithStream stores deflate.bytesWritten, which is the input/
 	// uncompressed byte count). For an uncompressed blob that equals the on-disk body length;
