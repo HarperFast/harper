@@ -20,23 +20,46 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
-		// `restart: true` makes Harper restart right after accepting the deploy, which on a slow
-		// runner can delay or drop the HTTP response to this call — surfacing as a fetch
-		// `HeadersTimeoutError`. That is not a deploy failure: the readiness polling below (which
-		// waits for the /hints endpoint + seed data) is the authoritative success check. So
-		// tolerate a missing/failed response here instead of failing the whole suite in `before`.
+		// Deploying the component runs its `npm install`, which on CI intermittently hits transient
+		// registry network errors (ECONNRESET / ETIMEDOUT / "Failed to install dependencies"). Retry
+		// the deploy a few times on such transient failures before giving up.
+		//
+		// Separately, `restart: true` makes Harper restart right after accepting the deploy, which on
+		// a slow runner can delay or drop the HTTP *response* — surfacing as a fetch
+		// `HeadersTimeoutError`. That is not a deploy failure: the readiness polling below (which waits
+		// for the /hints endpoint + seed data) is the authoritative success check. So after retries are
+		// exhausted we tolerate a missing/failed response and let the poll decide, rather than failing
+		// the whole suite in `before`.
+		const isTransientDeployError = (e: unknown) =>
+			/ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|Failed to install dependencies|network/i.test(
+				String((e as any)?.message ?? e)
+			);
+		const DEPLOY_ATTEMPTS = 3;
 		let deployBody: any;
-		try {
-			deployBody = await sendOperation(ctx.harper, {
-				operation: 'deploy_component',
-				project: 'early-hints',
-				package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
-				restart: true,
-			});
-		} catch (e: any) {
-			// Log the full error (not just the message) so a genuine deploy failure — bad
-			// package, invalid operation — is debuggable when the readiness poll below times out.
-			console.log('[early-hints] deploy response not received; relying on readiness poll', e);
+		for (let attempt = 1; attempt <= DEPLOY_ATTEMPTS; attempt++) {
+			try {
+				deployBody = await sendOperation(ctx.harper, {
+					operation: 'deploy_component',
+					project: 'early-hints',
+					package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
+					restart: true,
+				});
+				break;
+			} catch (e: any) {
+				if (attempt < DEPLOY_ATTEMPTS && isTransientDeployError(e)) {
+					console.log(
+						`[early-hints] deploy attempt ${attempt}/${DEPLOY_ATTEMPTS} hit a transient install/network error; retrying`,
+						e
+					);
+					await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
+					continue;
+				}
+				// Non-transient, or retries exhausted: log the full error (so a genuine failure — bad
+				// package, invalid operation, sustained registry outage — is debuggable when the
+				// readiness poll later times out) and fall through to the poll.
+				console.log('[early-hints] deploy response not received; relying on readiness poll', e);
+				break;
+			}
 		}
 		if (deployBody) {
 			strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
