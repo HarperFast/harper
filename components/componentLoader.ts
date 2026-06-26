@@ -9,7 +9,7 @@ import {
 	rmSync,
 	symlinkSync,
 } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, sep } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -407,10 +407,23 @@ export async function loadComponent(
 						componentPath = join(componentDirectory, 'components', componentName);
 					} else {
 						let containerFolder = componentDirectory;
+						const hdbBasePath = getHdbBasePath();
+						const componentInsideHdb =
+							componentDirectory === hdbBasePath ||
+							componentDirectory.startsWith(hdbBasePath + sep);
 						componentPath = join(containerFolder, 'node_modules', componentName);
 						while (!existsSync(componentPath)) {
-							containerFolder = dirname(containerFolder);
-							if (containerFolder.length < getHdbBasePath().length) {
+							const parentFolder = dirname(containerFolder);
+							if (parentFolder === containerFolder) {
+								componentPath = null;
+								break;
+							}
+							containerFolder = parentFolder;
+							if (
+								componentInsideHdb &&
+								containerFolder !== hdbBasePath &&
+								!containerFolder.startsWith(hdbBasePath + sep)
+							) {
 								componentPath = null;
 								break;
 							}
