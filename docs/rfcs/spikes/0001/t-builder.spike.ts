@@ -125,17 +125,13 @@ type Select<T> =
 	T extends TableDef<infer S>
 		? Resolve<
 				{
-					[K in keyof S as IsReadonly<S[K]> extends false
-						? IsNullable<S[K]> extends false
-							? K
-							: never
-						: never]: TsOf<S[K]>;
+					[K in keyof S as IsReadonly<S[K]> extends false ? (IsNullable<S[K]> extends false ? K : never) : never]: TsOf<
+						S[K]
+					>;
 				} & {
-					[K in keyof S as IsReadonly<S[K]> extends false
-						? IsNullable<S[K]> extends true
-							? K
-							: never
-						: never]?: TsOf<S[K]>;
+					[K in keyof S as IsReadonly<S[K]> extends false ? (IsNullable<S[K]> extends true ? K : never) : never]?: TsOf<
+						S[K]
+					>;
 				} & {
 					readonly [K in keyof S as IsReadonly<S[K]> extends true
 						? IsNullable<S[K]> extends false
@@ -153,30 +149,27 @@ type Select<T> =
 		: never;
 
 /** A field is writable on insert unless it is the PK, server-managed, or a relation. */
-type Writable<F> = IsPrimaryKey<F> extends true
-	? false
-	: IsServerManaged<F> extends true
+type Writable<F> =
+	IsPrimaryKey<F> extends true
 		? false
-		: IsRelation<F> extends true
+		: IsServerManaged<F> extends true
 			? false
-			: true;
+			: IsRelation<F> extends true
+				? false
+				: true;
 
 /** The insert record: writable fields only, optionality preserved. */
 type Insert<T> =
 	T extends TableDef<infer S>
 		? Resolve<
 				{
-					[K in keyof S as Writable<S[K]> extends true
-						? IsNullable<S[K]> extends false
-							? K
-							: never
-						: never]: TsOf<S[K]>;
+					[K in keyof S as Writable<S[K]> extends true ? (IsNullable<S[K]> extends false ? K : never) : never]: TsOf<
+						S[K]
+					>;
 				} & {
-					[K in keyof S as Writable<S[K]> extends true
-						? IsNullable<S[K]> extends true
-							? K
-							: never
-						: never]?: TsOf<S[K]>;
+					[K in keyof S as Writable<S[K]> extends true ? (IsNullable<S[K]> extends true ? K : never) : never]?: TsOf<
+						S[K]
+					>;
 				}
 			>
 		: never;
