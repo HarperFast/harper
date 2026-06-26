@@ -437,6 +437,23 @@ Returns the number of records in the table. By default returns an approximate (f
 
 The name of the primary key attribute for the table.
 
+### `static path?: string`
+
+<VersionBadge version="v5.1.13" />
+
+Declares the URL path the resource is registered at, overriding the default export-name convention. A leading `/` makes the path root-relative (top-level); a leading `./` or a bare name resolves relative to the component directory. The path may contain `:name` (single-segment) and `*name` (trailing catch-all) parameters, whose matched values are bound onto the request target (e.g. `static path = '/widget/:id'` populates `target.id`).
+
+```js
+export class Widget extends Resource {
+	static path = '/widget/:id/action/:action';
+	get(target) {
+		// GET /widget/10/action/jump -> target.id === '10', target.action === 'jump'
+	}
+}
+```
+
+See [Exporting Resources as Endpoints → Path Parameters](./overview.md#path-parameters) for matching and precedence rules.
+
 ---
 
 ## Class-level metadata for MCP and OpenAPI

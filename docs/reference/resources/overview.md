@@ -120,14 +120,51 @@ Resources become HTTP/MQTT endpoints when they are exported. As the examples dem
 
 The shape of the export controls the resulting URL:
 
-| Export form                              | URL             | Notes                                                                        |
-| ---------------------------------------- | --------------- | ---------------------------------------------------------------------------- |
-| `export class Foo extends Resource {}`   | `/Foo/`         | The class name becomes the path segment. Path segments are case-sensitive.   |
-| `export const Bar = { Foo };`            | `/Bar/Foo/`     | Nest a class under an object to add a path prefix.                           |
-| `export const bar = { 'foo-baz': Foo };` | `/bar/foo-baz/` | Use object keys when you need lowercase, hyphens, or any non-identifier URL. |
-| `server.resources.set('my-path', Foo);`  | `/my-path/`     | Programmatic registration; useful when the path is dynamic.                  |
+| Export form                                 | URL             | Notes                                                                                                                          |
+| ------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `export class Foo extends Resource {}`      | `/Foo/`         | The class name becomes the path segment. Path segments are case-sensitive.                                                     |
+| `export const Bar = { Foo };`               | `/Bar/Foo/`     | Nest a class under an object to add a path prefix.                                                                             |
+| `export const bar = { 'foo-baz': Foo };`    | `/bar/foo-baz/` | Use object keys when you need lowercase, hyphens, or any non-identifier URL.                                                   |
+| `export { Foo as '/widget/:id' }`           | `/widget/:id`   | Rename the export to set the path directly, including a leading-slash top-level path. See [Path Parameters](#path-parameters). |
+| `static path = '/widget/:id'` (class field) | `/widget/:id`   | Declare the path on the class itself; overrides the export name. See [Path Parameters](#path-parameters).                      |
+| `server.resources.set('my-path', Foo);`     | `/my-path/`     | Programmatic registration; useful when the path is dynamic.                                                                    |
 
 URL path matching is case-sensitive — `/Foo/` and `/foo/` are different endpoints.
+
+### Path Parameters
+
+<VersionBadge version="v5.1.13" />
+
+A resource's path can declare dynamic segments. A `:name` segment matches a single path segment, and a `*name` segment is a catch-all that matches the rest of the path. Matched values are bound onto the request target so a handler reads them as `target.<name>`:
+
+```js
+export class Widget extends Resource {
+	// GET /widget/10/action/jump  ->  target.id === '10', target.action === 'jump'
+	static path = '/widget/:id/action/:action';
+	get(target) {
+		return { id: target.id, action: target.action };
+	}
+}
+
+export class Files extends Resource {
+	// GET /files/a/b/c.txt  ->  target.rest === 'a/b/c.txt'
+	static path = '/files/*rest';
+	get(target) {
+		return { path: target.rest };
+	}
+}
+```
+
+A bare `*` (no name) binds under `target.wildcard`. A wildcard must be the final segment of the path.
+
+**Declaring the path.** The path can come from a `static path` field on the class (the recommended lever, since it leaves the exports untouched) or from the export name (`export { Widget as '/widget/:id' }`). A `static path` takes precedence over the export name. In both forms:
+
+- A leading `/` makes the path **root-relative** (top-level), independent of the file's location — useful for fixed top-level routes such as `static path = '/.well-known/acme-challenge/:token'`.
+- A leading `./` or a bare name resolves **relative to the component directory**, the same as the default export-name behavior.
+
+**Resolution order.** Exact and static paths always win over parameterized ones — `/resource/admin` is matched by a `static`-pathed `/resource/admin` resource even when a `/resource/:id` resource is also registered. Among parameterized routes, more specific paths win: a literal segment beats a `:param`, which beats a `*` wildcard, compared left to right.
+
+Parameterized routes also surface in the generated OpenAPI document (as templated paths like `/widget/{id}/action/{action}`) and in MCP `resources/templates/list` (as `{param}` URI templates).
 
 ## Pages in This Section
 
