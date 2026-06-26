@@ -57,6 +57,39 @@ export function isMissingStructureError(error: any): boolean {
 		(message.startsWith(MISSING_TYPED_STRUCTURE_PREFIX) || message.startsWith(MISSING_CLASSIC_STRUCTURE_PREFIX))
 	);
 }
+
+// A "present-but-wrong" decode: the record references a shared-structure id that EXISTS in this
+// encoder's in-memory dictionary but maps to a DIFFERENT shape than the one it was encoded against
+// (the in-memory dictionary diverged from the canonical durable order). msgpackr surfaces this as a
+// length/shape mismatch — NOT a missing-structure error — so it never triggers msgpackr's missing-id
+// reload, and the encoder reads garbage / over-reads forever. Distinct from isMissingStructureError.
+const STRUCTURE_MISMATCH_MESSAGES = ['Unexpected end of MessagePack data', 'Data read, but end of buffer not reached'];
+export function isStructureMismatchError(error: any): boolean {
+	const message = error?.message;
+	return typeof message === 'string' && STRUCTURE_MISMATCH_MESSAGES.some((m) => message.includes(m));
+}
+
+// Extract the classic/named shared-structures array from any durable representation: a bare array
+// (classic-only), a Map / plain object carrying a `named` entry (typed tables persist
+// `{named, typed}`), or undefined.
+function namedStructures(dict: any): any[] {
+	if (!dict) return [];
+	if (Array.isArray(dict)) return dict;
+	if (dict instanceof Map) return dict.get('named') ?? [];
+	return dict.named ?? [];
+}
+
+// True iff `next` preserves every shape `existing` already published at each shared id — i.e. the
+// append-only invariant holds. A same-length-but-reordered dictionary is NOT a faithful extension.
+export function isFaithfulExtension(existing: any, next: any): boolean {
+	const a = namedStructures(existing);
+	const b = namedStructures(next);
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] && JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false;
+	}
+	return true;
+}
+const STRUCTURE_RELOAD_RECOVERED_METRIC = 'decode-structure-reload-recovered';
 export type Entry = {
 	key: any;
 	value: any;
@@ -114,7 +147,10 @@ export class RecordEncoder extends StructonEncoder {
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
+	declare _mergeStructures: any;
 	structureUpdate?: any;
+	// Reentrancy guard for the durable-wins reload-and-retry in decode() (one retry per decode).
+	_reloadingStructures?: boolean;
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
@@ -280,13 +316,25 @@ export class RecordEncoder extends StructonEncoder {
 				const committed = this.rootStore.transactionSync(
 					(txn) => {
 						const sharedStructuresKey = [Symbol.for('structures'), this.name];
-						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
+						// Read the LATEST committed structures (fresh), not the txn's start-snapshot. A
+						// concurrent worker may have committed since this txn began; the compatibility check
+						// below must see that, or it compares against a stale dictionary and admits a divergent
+						// write. Mirrors rocksdb-js's own saveStructures, which deliberately avoids the txn read.
+						const existingStructuresBuffer = this.rootStore.getBinarySync(sharedStructuresKey);
 						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {
 								return false;
 							}
 						} else if (existingStructures && existingStructures.length !== isCompatible) {
+							return false;
+						}
+						// Enforce the append-only invariant. The length-only checks above admit a dictionary
+						// that is the same length as durable but assigns a shared id to a DIFFERENT shape (a
+						// divergent encounter order). Committing it would clobber a peer's published order and
+						// silently corrupt every record already referencing it. Reject so msgpackr reloads the
+						// durable dictionary and rebuilds on top instead of overwriting it.
+						if (!isFaithfulExtension(existingStructures, structures)) {
 							return false;
 						}
 						txn.putSync(sharedStructuresKey, structures);
@@ -445,6 +493,27 @@ export class RecordEncoder extends StructonEncoder {
 					'data: ' + hexPreview
 				);
 				return null;
+			}
+			// A "present-but-wrong" decode (isStructureMismatchError): this encoder's in-memory shared
+			// structures diverge from the canonical durable order — e.g. the replication-apply / full-copy
+			// re-encode path builds its own encounter-order dictionary off the saveStructures CAS, so a
+			// read-heavy worker strands a divergent dictionary. msgpackr only auto-reloads on a *missing*
+			// id (and its decode-time merge is in-memory-wins), so this never self-heals: every read of the
+			// affected ids returns null. Reload the durable dictionary AUTHORITATIVELY (durable-wins, via the
+			// one-arg _mergeStructures) and retry once. The reentrancy guard prevents looping when the
+			// reload does not resolve it (genuinely corrupt bytes), in which case we fall through to null.
+			if (!this._reloadingStructures && isStructureMismatchError(error)) {
+				this._reloadingStructures = true;
+				try {
+					this._mergeStructures(this.getStructures());
+					const recovered = this.decode(buffer, options);
+					recordAction(true, STRUCTURE_RELOAD_RECOVERED_METRIC, this.name ?? this.rootStore?.name);
+					return recovered;
+				} catch {
+					// Reload did not resolve it — fall through to the generic error path below.
+				} finally {
+					this._reloadingStructures = false;
+				}
 			}
 			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;

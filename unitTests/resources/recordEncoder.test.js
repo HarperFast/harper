@@ -1,6 +1,11 @@
 require('../testUtils');
 const assert = require('assert');
-const { RecordEncoder, isMissingStructureError } = require('#src/resources/RecordEncoder');
+const {
+	RecordEncoder,
+	isMissingStructureError,
+	isStructureMismatchError,
+	isFaithfulExtension,
+} = require('#src/resources/RecordEncoder');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Encoder } = require('msgpackr');
 
@@ -150,5 +155,75 @@ describe('RecordEncoder missing-structure handling (harper#1163)', () => {
 		assert.strictEqual(enc.decode(truncated), null, 'corrupt (non-structure) decode should still return null');
 		assert.strictEqual(errors.length, 1, 'genuine corruption should use the generic error path');
 		assert.strictEqual(warnings.length, 0, 'genuine corruption should not use the missing-structure warning');
+	});
+});
+
+describe('RecordEncoder present-but-wrong recovery (durable-wins reload)', () => {
+	let errors, restoreError, restoreWarn;
+	beforeEach(() => {
+		errors = [];
+		restoreError = harperLogger.error;
+		restoreWarn = harperLogger.warn;
+		harperLogger.error = (...a) => errors.push(a);
+		harperLogger.warn = () => {};
+	});
+	afterEach(() => {
+		harperLogger.error = restoreError;
+		harperLogger.warn = restoreWarn;
+	});
+
+	const oneField = { a: 1 };
+	const threeField = { x: 1, y: 2, z: 3 };
+
+	it('heals a diverged in-memory dictionary by reloading durable (durable-wins) and retrying', () => {
+		// Canonical durable order: id0 = ['a'], id1 = ['x','y','z'] (the writer's encounter order).
+		const canonical = sharedStore();
+		const writer = makeEncoder(false, canonical);
+		writer.encode(oneField);
+		writer.encode(threeField);
+		const recordOneField = Buffer.from(writer.encode(oneField)); // references id0 = ['a'] (1 field)
+
+		// Reader builds its OWN divergent in-memory order from an empty store — the off-CAS minting the
+		// replication-apply path does — assigning id0 = ['x','y','z'] (the opposite order).
+		const reader = makeEncoder(false, sharedStore());
+		reader.encode(threeField); // reader in-memory id0 = ['x','y','z']
+		reader.encode(oneField); // reader in-memory id1 = ['a']
+		// Its authoritative durable, however, is the canonical order (what every other node committed).
+		reader.getStructures = canonical.get;
+
+		// Decoding a record written against the canonical order over-reads (id0 is a 3-field shape in
+		// memory vs the 1-field record) → a present-but-wrong structure-mismatch error. Without recovery
+		// this returns null forever; with it, the reader reloads canonical durable and heals.
+		const decoded = reader.decode(recordOneField);
+		assert.deepStrictEqual(decoded, oneField, 'diverged read should heal to the correct record');
+		assert.strictEqual(errors.length, 0, 'recovery should succeed without falling to the generic error path');
+	});
+
+	it('classifies present-but-wrong errors distinctly from missing-structure errors', () => {
+		assert.ok(isStructureMismatchError(new Error('Unexpected end of MessagePack data')));
+		assert.ok(isStructureMismatchError(new Error('Data read, but end of buffer not reached 64')));
+		assert.ok(!isStructureMismatchError(new Error('Could not find typed structure 1')));
+		assert.ok(!isStructureMismatchError(new Error('Record id is not defined for 42')));
+		assert.ok(!isStructureMismatchError(undefined));
+		// the two classifiers are mutually exclusive over the dependency's terminal messages
+		assert.ok(!isMissingStructureError(new Error('Unexpected end of MessagePack data')));
+	});
+
+	it('isFaithfulExtension accepts append-only growth but rejects a same-length reorder', () => {
+		const base = [['a'], ['x', 'y', 'z']];
+		assert.ok(isFaithfulExtension(base, [['a'], ['x', 'y', 'z'], ['n']]), 'appending on top is faithful');
+		assert.ok(isFaithfulExtension(undefined, [['a']]), 'seeding from empty is faithful');
+		assert.ok(!isFaithfulExtension(base, [['x', 'y', 'z'], ['a']]), 'a same-length reorder is NOT faithful');
+		assert.ok(!isFaithfulExtension(base, [['a']]), 'dropping a published id is NOT faithful');
+		// the {named, typed} Map form (typed tables) is unwrapped before comparison
+		const mapBase = new Map([
+			['named', base],
+			['typed', []],
+		]);
+		const mapNext = new Map([
+			['named', [['x', 'y', 'z'], ['a']]],
+			['typed', []],
+		]);
+		assert.ok(!isFaithfulExtension(mapBase, mapNext), 'reorder detected through the {named,typed} map form');
 	});
 });
