@@ -99,8 +99,10 @@ suite('Deployment payload reclamation', (ctx: ContextWithHarper) => {
 	before(async () => {
 		// Force the retention threshold to 1 byte so any real payload trips the drop. The
 		// harness applies this via HARPER_SET_CONFIG (flattened to deployment.payloadRetention.maxSize).
+		// Pass it as a string so this also exercises getPayloadRetentionMaxSize's numeric-string
+		// coercion — the shape an env-var/string-sourced override actually arrives in.
 		await startHarper(ctx, {
-			config: { deployment: { payloadRetention: { maxSize: 1 } } },
+			config: { deployment: { payloadRetention: { maxSize: '1' } } },
 			env: {},
 		});
 		fixtureDir = mkdtempSync(join(tmpdir(), 'deploy-reclaim-fixture-'));
