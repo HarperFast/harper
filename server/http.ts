@@ -500,15 +500,17 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			}
 			function onError(error) {
 				const headers = error.headers;
-				const status = error.statusCode || 500;
+				// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
+				const statusCode = error.statusCode ?? error.status;
+				const status = statusCode || 500;
 				try {
 					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
-				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
+				if (statusCode) {
+					if (statusCode === 500) harperLogger.warn(error);
 					else harperLogger.info(error);
 				} else harperLogger.error(error);
 			}
@@ -745,10 +747,12 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				}
 				return new Response(body, { status, headers: responseHeaders });
 			} catch (error) {
-				const status = error.statusCode || 500;
+				// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
+				const statusCode = error.statusCode ?? error.status;
+				const status = statusCode || 500;
 				logBunRequest(null, status, requestId, performance.now() - startTime);
-				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
+				if (statusCode) {
+					if (statusCode === 500) harperLogger.warn(error);
 					else harperLogger.info(error);
 				} else harperLogger.error(error);
 				return new Response(errorToString(error), { status });
