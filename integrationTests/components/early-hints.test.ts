@@ -34,7 +34,9 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 				restart: true,
 			});
 		} catch (e: any) {
-			console.log(`[early-hints] deploy response not received (${e?.message}); relying on readiness poll`);
+			// Log the full error (not just the message) so a genuine deploy failure — bad
+			// package, invalid operation — is debuggable when the readiness poll below times out.
+			console.log('[early-hints] deploy response not received; relying on readiness poll', e);
 		}
 		if (deployBody) {
 			strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
