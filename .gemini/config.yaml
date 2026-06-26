@@ -11,6 +11,6 @@ code_review:
     code_review: true
     include_drafts: true
 ignore_patterns:
-  - "package-lock.json"
+  - 'package-lock.json'
 
 # Note that you can also include a styleguide.md which provides a system prompt for the AI to follow for the reviews.
