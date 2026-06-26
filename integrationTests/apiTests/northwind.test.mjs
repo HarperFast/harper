@@ -11533,13 +11533,24 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 			// 'SQL ALTER non SU role with multi table join restrictions' above restricts
 			// dev.dog read access, but propagates via async ITC — poll until the
 			// restriction is enforced before asserting the 403 response body (#1222).
+			// A bare `status === 403` is NOT sufficient: a stale/partially-propagated
+			// role can also produce a 403 with a different body (e.g. empty
+			// unauthorized_access and only one invalid_schema_item), so poll until the
+			// full expected shape is visible — 1 unauthorized table + all 3 invalid items.
 			const r = await waitFor(
 				() =>
 					client.reqAs(headersTestUser).send({
 						operation: 'sql',
 						sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.country FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
 					}),
-				{ until: (res) => res.status === 403, timeoutSeconds: 10 }
+				{
+					until: (res) =>
+						res.status === 403 &&
+						res.body?.unauthorized_access?.length === 1 &&
+						res.body.unauthorized_access[0]?.table === 'dog' &&
+						res.body?.invalid_schema_items?.length === 3,
+					timeoutSeconds: 10,
+				}
 			);
 			assert.equal(r.status, 403, r.text);
 			assert.equal(
