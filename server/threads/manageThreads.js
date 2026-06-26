@@ -470,9 +470,26 @@ async function broadcast(message, includeSelf) {
 
 const awaitingResponses = new Map();
 let nextId = 1;
-function broadcastWithAcknowledgement(message) {
+// Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
+// whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
+// already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
+// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+const DEFAULT_ACK_TIMEOUT_MS = 30000;
+function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
 	return new Promise((resolve) => {
 		let waitingCount = 0;
+		let timer;
+		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
+		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
+		// the close listener, or the timeout below.
+		const pending = new Set();
+		const finish = () => {
+			if (timer) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			resolve();
+		};
 		for (let port of connectedPorts) {
 			// Job workers run a single isolated task and exit; they don't participate in
 			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
@@ -482,15 +499,17 @@ function broadcastWithAcknowledgement(message) {
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
+					if (!pending.delete(ackHandler)) return; // already settled for this port
 					awaitingResponses.delete(requestId);
 					if (--waitingCount === 0) {
-						resolve();
+						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
 						port.unref();
 					}
 				};
 				ackHandler.port = port;
+				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
 				awaitingResponses.set((message.requestId = requestId), ackHandler);
@@ -511,7 +530,21 @@ function broadcastWithAcknowledgement(message) {
 				harperLogger.error(`Unable to send message to worker`, error);
 			}
 		}
-		if (waitingCount === 0) resolve();
+		if (waitingCount === 0) return resolve();
+		if (timeout > 0) {
+			timer = setTimeout(() => {
+				timer = undefined;
+				const stuck = [];
+				for (let ackHandler of [...pending]) {
+					stuck.push(ackHandler.port?.threadId);
+					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+				}
+				harperLogger.warn(
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
+				);
+			}, timeout);
+			timer.unref?.();
+		}
 	});
 }
 
