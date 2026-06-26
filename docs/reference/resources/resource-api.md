@@ -819,28 +819,65 @@ For non-commutative operations — claim-once, hard caps, inventory floors, stat
 
 ## Returning Errors and Status Codes
 
-To control the HTTP status from a custom resource method:
+A custom resource method controls the HTTP status in a few ways. The key
+distinction is **throw vs. return**: throwing rolls the transaction back,
+while returning (resolving) commits it.
+
+To return an **error** status, throw — either an `Error` carrying a status, or
+a plain object. Both `statusCode` and `status` are honored:
 
 ```javascript
-// throw an error with an explicit statusCode
-const err = new Error('Not found');
-err.statusCode = 404;
-throw err;
-
-// return a Response
-return new Response(body, { status: 201 });
-
-// set it on the context
-this.getContext().response.status = 202;
+async get() {
+	const err = new Error('Not found');
+	err.statusCode = 404;
+	throw err;
+}
 ```
 
-A few patterns look like they should work but do not:
+```javascript
+async get() {
+	throw { status: 400, message: 'Invalid input' };
+}
+```
 
-- `throw { status: 400 }` — only `statusCode` is read, not `status`, so this surfaces as a 500.
-- `throw new Response(body, { status: 422 })` — a thrown `Response` is not honored and becomes a 500. Use `return` for a `Response`.
-- `return { status: 400, data: {...} }` — the `status` is ignored unless the object also carries a `headers` field, so this returns 200.
+To set the status on a **successful** response, return a `Response`, or set it
+on the context and return your data — either commits the transaction:
 
-Prefer `error.statusCode` for error paths and `return new Response(...)` for success paths. Note that an unhandled throw currently surfaces its message in the response body, so avoid putting sensitive detail in thrown error messages.
+```javascript
+async post(target, data) {
+	return new Response(body, { status: 201 });
+}
+```
+
+```javascript
+async get() {
+	this.getContext().response.status = 202;
+	return data;
+}
+```
+
+A thrown `Response` is honored too — it short-circuits with its own status,
+headers, and body — but, being a throw, it **rolls back the transaction**. Use
+it for error or redirect short-circuits; `return` a `Response` when a preceding
+write in the same method should commit:
+
+```javascript
+async post(target, data) {
+	// short-circuits to 422; any write earlier in this method is rolled back
+	throw new Response(body, { status: 422 });
+}
+```
+
+One pattern looks like it should work but does not:
+
+- `return { status: 400, data: {...} }` — a bare `status` on a returned plain
+  object is ignored (the response is 200) unless the object also carries a
+  `headers` field. `status` collides with ordinary record attributes, so
+  `headers` is the disambiguator. Return a `Response`, or set
+  `context.response.status`, instead.
+
+Note that an unhandled throw currently surfaces its message in the response
+body, so avoid putting sensitive detail in thrown error messages.
 
 ## Query Object
 
