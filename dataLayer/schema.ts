@@ -47,7 +47,9 @@ const PRIMARY_KEY_CONSTRAINTS = Joi.string()
 
 export async function createSchema(schemaCreateObject: any) {
 	let schemaStructure = await createSchemaStructure(schemaCreateObject);
-	signalling.signalSchemaChange(
+	// Await cross-worker propagation so the new schema is visible on every worker before
+	// returning success — otherwise describe_all on a lagging worker reports it missing (#1497).
+	await signalling.signalSchemaChange(
 		new SchemaEventMsg(process.pid, schemaCreateObject.operation, schemaCreateObject.schema)
 	);
 
@@ -170,7 +172,11 @@ export async function dropSchema(dropSchemaObject: any) {
 	}
 
 	await harperBridge.dropSchema(dropSchemaObject);
-	signalling.signalSchemaChange(new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema));
+	// Await cross-worker propagation before returning success so no worker keeps serving the
+	// dropped schema (#1497).
+	await signalling.signalSchemaChange(
+		new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema)
+	);
 
 	let response = await server.replication.replicateOperation(dropSchemaObject);
 	response.message = `successfully deleted '${dropSchemaObject.schema}'`;
@@ -276,7 +282,9 @@ export async function dropAttribute(dropAttributeObject: any) {
 	try {
 		await harperBridge.dropAttribute(dropAttributeObject);
 		dropAttributeFromGlobal(dropAttributeObject);
-		signalling.signalSchemaChange(
+		// Await cross-worker propagation before returning success so the dropped attribute is
+		// gone from every worker's cached schema (#1497).
+		await signalling.signalSchemaChange(
 			new SchemaEventMsg(
 				process.pid,
 				dropAttributeObject.operation,
@@ -327,7 +335,9 @@ export async function createAttribute(createAttributeObject: any) {
 	}
 
 	await harperBridge.createAttribute(createAttributeObject);
-	signalling.signalSchemaChange(
+	// Await cross-worker propagation before returning success so a query for the new attribute
+	// can't hit a lagging worker that still has the old (empty) attribute permissions (#1497).
+	await signalling.signalSchemaChange(
 		new SchemaEventMsg(
 			process.pid,
 			createAttributeObject.operation,
