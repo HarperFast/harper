@@ -125,10 +125,17 @@ async function vectorSearch(
 	headers: Record<string, string>,
 	resourcePath: string,
 	target: number[],
-	opts: { limit?: number; select?: string[]; ef?: number } = {}
+	opts: { limit?: number; select?: string[]; ef?: number | null } = {}
 ): Promise<any[]> {
 	const body: any = {
-		sort: { attribute: 'embedding', target, distance: 'cosine', ef: opts.ef ?? SEARCH_EF },
+		// ef defaults to SEARCH_EF (reliable recall on the small test graphs); pass `ef: null`
+		// to omit it and exercise Harper's default auto-scaling behavior.
+		sort: {
+			attribute: 'embedding',
+			target,
+			distance: 'cosine',
+			...(opts.ef !== null ? { ef: opts.ef ?? SEARCH_EF } : {}),
+		},
 	};
 	if (opts.limit !== undefined) body.limit = opts.limit;
 	if (opts.select !== undefined) body.select = opts.select;
