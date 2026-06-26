@@ -30,10 +30,17 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		// for the /hints endpoint + seed data) is the authoritative success check. So after retries are
 		// exhausted we tolerate a missing/failed response and let the poll decide, rather than failing
 		// the whole suite in `before`.
-		const isTransientDeployError = (e: unknown) =>
-			/ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|Failed to install dependencies|network/i.test(
-				String((e as any)?.message ?? e)
-			);
+		const isTransientDeployError = (e: unknown) => {
+			const err = e as any;
+			// Check message + code, the nested `cause` (undici fetch errors wrap the real
+			// ECONNRESET/timeout there), and the stringified error — a code-only error whose
+			// message omits the code, or an undefined message (String(e) === "[object Object]"),
+			// would otherwise slip past a message-only check.
+			const haystack = [err?.message, err?.code, err?.cause?.message, err?.cause?.code, String(err)]
+				.filter(Boolean)
+				.join(' ');
+			return /ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|Failed to install dependencies|network/i.test(haystack);
+		};
 		const DEPLOY_ATTEMPTS = 3;
 		let deployBody: any;
 		for (let attempt = 1; attempt <= DEPLOY_ATTEMPTS; attempt++) {
