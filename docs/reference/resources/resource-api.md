@@ -446,7 +446,7 @@ Declares the URL path the resource is registered at, overriding the default expo
 ```js
 export class Widget extends Resource {
 	static path = '/widget/:id/action/:action';
-	get(target) {
+	static get(target) {
 		// GET /widget/10/action/jump -> target.id === '10', target.action === 'jump'
 	}
 }

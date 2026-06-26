@@ -141,7 +141,7 @@ A resource's path can declare dynamic segments. A `:name` segment matches a sing
 export class Widget extends Resource {
 	// GET /widget/10/action/jump  ->  target.id === '10', target.action === 'jump'
 	static path = '/widget/:id/action/:action';
-	get(target) {
+	static get(target) {
 		return { id: target.id, action: target.action };
 	}
 }
@@ -149,7 +149,7 @@ export class Widget extends Resource {
 export class Files extends Resource {
 	// GET /files/a/b/c.txt  ->  target.rest === 'a/b/c.txt'
 	static path = '/files/*rest';
-	get(target) {
+	static get(target) {
 		return { path: target.rest };
 	}
 }
