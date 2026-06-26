@@ -360,12 +360,17 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 		}
 
 		// Each record's final vector is seedVector(i*100 + ROUNDS, dims).
-		// Searching for that exact vector must return it in the top-5.
+		// Searching for that exact vector must return it in the top-5. These are
+		// independent read-only searches, so run them concurrently rather than
+		// serializing N round-trips.
+		const churnResults = await Promise.all(
+			Array.from({ length: N }, (_, i) =>
+				vectorSearch(httpURL, headers, path, seedVector(i * 100 + ROUNDS, DIMS), { limit: 5 })
+			)
+		);
 		let misses = 0;
 		for (let i = 0; i < N; i++) {
-			const finalVec = seedVector(i * 100 + ROUNDS, DIMS);
-			const results = await vectorSearch(httpURL, headers, path, finalVec, { limit: 5 });
-			if (!results.some((r: any) => r.id === `churn-${i}`)) misses++;
+			if (!churnResults[i].some((r: any) => r.id === `churn-${i}`)) misses++;
 		}
 		const allowed = Math.ceil(N * 0.1);
 		ok(misses <= allowed, `expected ≤${allowed} misses after ${ROUNDS} churn rounds; got ${misses}/${N}`);
@@ -495,10 +500,18 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 		const headers = client.headers;
 		const path = `/${TABLE}/`;
 
-		// Step 2: Insert N records (plain [Float], no HNSW index yet).
-		for (let i = 0; i < N; i++) {
-			await insertRecord(httpURL, headers, path, { id: `reindex-${i}`, embedding: seedVector(i, DIMS) });
-		}
+		// Step 2: Insert N records (plain [Float], no HNSW index yet). Bulk-insert in a
+		// single request — there is no index during insert, so per-record ordering is
+		// irrelevant here; the backfill (Step 3) builds the index from the stored rows.
+		await client
+			.req()
+			.send({
+				operation: 'insert',
+				database: DB,
+				table: TABLE,
+				records: Array.from({ length: N }, (_, i) => ({ id: `reindex-${i}`, embedding: seedVector(i, DIMS) })),
+			})
+			.expect(200);
 
 		// Sanity-check: records exist.
 		const hashCheck = await client
@@ -537,12 +550,14 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 			}
 		}, 60_000);
 
-		// Step 5: All N pre-existing records must be reachable.
+		// Step 5: All N pre-existing records must be reachable. Independent read-only
+		// searches — run them concurrently rather than serializing N round-trips.
+		const reindexResults = await Promise.all(
+			Array.from({ length: N }, (_, i) => vectorSearch(httpURL, headers, path, seedVector(i, DIMS), { limit: 5 }))
+		);
 		let misses = 0;
 		for (let i = 0; i < N; i++) {
-			const vec = seedVector(i, DIMS);
-			const results = await vectorSearch(httpURL, headers, path, vec, { limit: 5 });
-			if (!results.some((r: any) => r.id === `reindex-${i}`)) misses++;
+			if (!reindexResults[i].some((r: any) => r.id === `reindex-${i}`)) misses++;
 		}
 		const allowed = Math.ceil(N * 0.1);
 		ok(misses <= allowed, `expected ≤${allowed} misses after backfill; got ${misses}/${N}`);
