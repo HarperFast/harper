@@ -104,6 +104,15 @@ function seedVector(seed: number, dims: number = 8): number[] {
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
+// Per-query HNSW search ef for these tests. Harper's search ef auto-scales with √N, tuned for
+// 5K–30K-node graphs (resources/indexes/HierarchicalNavigableSmallWorld.ts); on these tiny 40–50-node
+// test graphs that auto-scaled ef under-explores, so exact-match self-vector searches intermittently
+// miss records that ARE correctly indexed — flaking the recall assertions. A per-query ef wins over the
+// auto-scale (search() resolves "per-query ef first"); sizing it above the working set makes recall
+// reliable on the small graph without weakening the tolerances. A genuinely unindexed/disconnected
+// record (a real backfill bug) is still missed regardless of ef, so the integrity guards stand.
+const SEARCH_EF = 64;
+
 /**
  * Execute a vector sort search via the HTTP QUERY method.
  * Returns an array of records sorted by ascending cosine distance.
@@ -116,10 +125,10 @@ async function vectorSearch(
 	headers: Record<string, string>,
 	resourcePath: string,
 	target: number[],
-	opts: { limit?: number; select?: string[] } = {}
+	opts: { limit?: number; select?: string[]; ef?: number } = {}
 ): Promise<any[]> {
 	const body: any = {
-		sort: { attribute: 'embedding', target, distance: 'cosine' },
+		sort: { attribute: 'embedding', target, distance: 'cosine', ef: opts.ef ?? SEARCH_EF },
 	};
 	if (opts.limit !== undefined) body.limit = opts.limit;
 	if (opts.select !== undefined) body.select = opts.select;
@@ -165,7 +174,7 @@ async function vectorThresholdSearch(
 	value: number
 ): Promise<any[]> {
 	const body = {
-		conditions: [{ attribute: 'embedding', comparator, value, target }],
+		conditions: [{ attribute: 'embedding', comparator, value, target, ef: SEARCH_EF }],
 	};
 	return queryResource(httpURL, headers, resourcePath, body);
 }
