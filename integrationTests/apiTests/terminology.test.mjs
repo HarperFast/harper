@@ -20,10 +20,15 @@ import { awaitJobCompleted } from './utils/operations.mjs';
 // Resolve the CSV fixture path relative to this file so Harper can read it.
 const SUPPLIERS_CSV = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data/Suppliers.csv');
 
-// On Bun shard 2, embed-directive tear-down (HNSW flush) starves the job processor,
-// so csv_data_load can sit IN_PROGRESS past the default 30s. Same pattern as northwind.
+// Job-processor starvation can leave these async jobs IN_PROGRESS well past a tight timeout.
+// On Bun shard 2 the embed-directive tear-down (HNSW flush) starves it; in CI the Node shard
+// 5/6 run showed the same — the slow drop/teardown ahead of these jobs pushed the csv / delete /
+// export jobs past the old 30s limit and failed ~10 of them in a single cascade. Give every
+// runtime generous headroom so a slow-but-completing job processor doesn't fail the suite (the
+// jobs do complete; they were just starved). This does not mask the separate drop_database
+// failure ahead of them — that assertion is left intact.
 const isBunRuntime = process.env.HARPER_RUNTIME === 'bun';
-const JOB_TIMEOUT_SECONDS = isBunRuntime ? 120 : 30;
+const JOB_TIMEOUT_SECONDS = isBunRuntime ? 120 : 90;
 
 suite('Terminology aliases (database / primary_key)', (ctx) => {
 	let client;

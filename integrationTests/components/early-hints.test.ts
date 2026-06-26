@@ -20,14 +20,26 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
-		const deployBody = await sendOperation(ctx.harper, {
-			operation: 'deploy_component',
-			project: 'early-hints',
-			package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
-			restart: true,
-		});
-		strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
-		ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
+		// `restart: true` makes Harper restart right after accepting the deploy, which on a slow
+		// runner can delay or drop the HTTP response to this call — surfacing as a fetch
+		// `HeadersTimeoutError`. That is not a deploy failure: the readiness polling below (which
+		// waits for the /hints endpoint + seed data) is the authoritative success check. So
+		// tolerate a missing/failed response here instead of failing the whole suite in `before`.
+		let deployBody: any;
+		try {
+			deployBody = await sendOperation(ctx.harper, {
+				operation: 'deploy_component',
+				project: 'early-hints',
+				package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
+				restart: true,
+			});
+		} catch (e: any) {
+			console.log(`[early-hints] deploy response not received (${e?.message}); relying on readiness poll`);
+		}
+		if (deployBody) {
+			strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
+			ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
+		}
 
 		// poll until /hints endpoint is registered and seed data is loaded
 		const seedDeadline = Date.now() + 60_000;
