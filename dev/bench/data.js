@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782547747434,
+  "lastUpdate": 1782547750213,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -3002,6 +3002,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 44.47,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "572640741bdd980d4c2811fc28674358de455fda",
+          "message": "perf(describe): add skip_record_count to skip the per-table count scan (#1498)\n\ndescribe_all/describe_table/describe_schema compute record_count by scanning each\ntable's primary store, which dominates describe latency on large databases and is\npaid serially, per table, by describe_all. Add an opt-in `skip_record_count` flag\nthat omits record_count (and estimated_record_range) so callers needing only schema\nget a fast response; the count can then be fetched separately/asynchronously.\n\nThe cheap O(1) stats (table_size, db_audit_size, last_updated_record) are still\nreturned. The flag is Joi-validated and threaded through describeAll/describeSchema,\nand documented in the MCP operation input schemas.\n\nBackward compatible: omitting the flag preserves today's behavior, and\nvalidateBySchema already allows unknown keys, so older clients/servers are unaffected.\n\nSupports HarperFast/studio#1367.\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-26T04:24:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/572640741bdd980d4c2811fc28674358de455fda"
+        },
+        "date": 1782547749376,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 11.48,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 11.25,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 15.81,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 13.52,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 21,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 13.05,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 27.94,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 11.13,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 13.49,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 125.42,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 53.25,
             "unit": "ms"
           }
         ]
