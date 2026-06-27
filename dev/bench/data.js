@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782462545671,
+  "lastUpdate": 1782547747434,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -1251,6 +1251,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1054.24,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Dawson Toth",
+            "username": "dawsontoth",
+            "email": "dawson@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "572640741bdd980d4c2811fc28674358de455fda",
+          "message": "perf(describe): add skip_record_count to skip the per-table count scan (#1498)\n\ndescribe_all/describe_table/describe_schema compute record_count by scanning each\ntable's primary store, which dominates describe latency on large databases and is\npaid serially, per table, by describe_all. Add an opt-in `skip_record_count` flag\nthat omits record_count (and estimated_record_range) so callers needing only schema\nget a fast response; the count can then be fetched separately/asynchronously.\n\nThe cheap O(1) stats (table_size, db_audit_size, last_updated_record) are still\nreturned. The flag is Joi-validated and threaded through describeAll/describeSchema,\nand documented in the MCP operation input schemas.\n\nBackward compatible: omitting the flag preserves today's behavior, and\nvalidateBySchema already allows unknown keys, so older clients/servers are unaffected.\n\nSupports HarperFast/studio#1367.\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-26T04:24:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/572640741bdd980d4c2811fc28674358de455fda"
+        },
+        "date": 1782547746488,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8411.71,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 12136.67,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 11970.9,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 9031.53,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 6550.74,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 12162.44,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1558.84,
             "unit": "ops/sec"
           }
         ]
