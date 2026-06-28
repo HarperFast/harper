@@ -33,7 +33,7 @@ jobs:
     # Note: the `claude-review` label name is matched there too —
     # `_claude-review.yml`'s authorize `if:`, not in this caller.
     if: ${{ vars.CLAUDE_ALWAYS_ON == 'true' || github.event.action == 'labeled' }}
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@9eb635a9221ffcc1e467016b525a7655277d2d6c # main 2026-06-15 (post #59 — week-of-06-08 calibration: mechanical-diff no-log gate, setup/teardown-leak + undefined-context robustness, commit/replication atomicity)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@1bbc562d57d131363586fdde3e893380381f455e # main 2026-06-24 (#67 week-of-06-15 calibration: error/abort-path rule + throwaway/inert-CI-config ignore; #69 log finding-count fix)
     with:
       # Same SHA as the `uses:` ref above. The reusable uses this to
       # check out HarperFast/ai-review-prompts (layer files + bash
@@ -44,7 +44,7 @@ jobs:
       # introspect their own ref (`github.workflow_ref` resolves to the
       # CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
       # is parsed literally so we can't interpolate a variable.
-      ai-review-prompts-ref: 9eb635a9221ffcc1e467016b525a7655277d2d6c
+      ai-review-prompts-ref: 1bbc562d57d131363586fdde3e893380381f455e
       review-layers: |
         universal
         harper/common
