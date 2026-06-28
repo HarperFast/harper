@@ -34,7 +34,13 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 	// ─── describe_* ───────────────────────────────────────────────────────
 	describe_all: {
 		type: 'object',
-		properties: {},
+		properties: {
+			skip_record_count: {
+				type: 'boolean',
+				description:
+					'Omit each table’s `record_count` (and `estimated_record_range`) to skip the per-table count scan, which dominates latency on large databases. Defaults to false.',
+			},
+		},
 		description: 'Returns the full schema tree: every database, table, and attribute the caller can describe.',
 	},
 	describe_schema: {
@@ -42,12 +48,20 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 		properties: {
 			schema: { type: 'string', description: 'Database name (legacy: "schema"). Required.' },
 			database: { type: 'string', description: 'Database name (preferred). Required if `schema` is omitted.' },
+			skip_record_count: {
+				type: 'boolean',
+				description: 'Omit each table’s `record_count` to skip the count scan. Defaults to false.',
+			},
 		},
 	},
 	describe_database: {
 		type: 'object',
 		properties: {
 			database: { type: 'string', description: 'Database name. Required.' },
+			skip_record_count: {
+				type: 'boolean',
+				description: 'Omit each table’s `record_count` to skip the count scan. Defaults to false.',
+			},
 		},
 		required: ['database'],
 	},
@@ -57,6 +71,11 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 			database: { type: 'string', description: 'Database name.' },
 			schema: { type: 'string', description: 'Legacy alias for `database`.' },
 			table: { type: 'string', description: 'Table name. Required.' },
+			skip_record_count: {
+				type: 'boolean',
+				description:
+					'Omit `record_count` (and `estimated_record_range`) to skip the count scan and return schema/metadata faster. Defaults to false.',
+			},
 		},
 		required: ['table'],
 	},

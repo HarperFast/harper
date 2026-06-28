@@ -12799,6 +12799,35 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
+		test('Describe Table - skip_record_count omits the count scan', async () => {
+			await client
+				.req()
+				.send({ operation: 'describe_table', schema: 'northnwd', table: 'region', skip_record_count: true })
+				.expect((r) => {
+					// schema/metadata is still returned...
+					assert.ok(r.body.hasOwnProperty('primary_key'), r.text);
+					assert.ok(r.body.hasOwnProperty('attributes'), r.text);
+					assert.ok(r.body.hasOwnProperty('table_size'), r.text);
+					// ...but the expensive count (and its estimated range) is omitted.
+					assert.ok(!r.body.hasOwnProperty('record_count'), r.text);
+					assert.ok(!r.body.hasOwnProperty('estimated_record_range'), r.text);
+				})
+				.expect(200);
+		});
+
+		test('Describe All - skip_record_count omits the count scan', async () => {
+			await client
+				.req()
+				.send({ operation: 'describe_all', skip_record_count: true })
+				.expect((r) => {
+					const table = r.body.northnwd && r.body.northnwd.region;
+					assert.ok(table, r.text);
+					assert.ok(table.hasOwnProperty('primary_key'), r.text);
+					assert.ok(!table.hasOwnProperty('record_count'), r.text);
+				})
+				.expect(200);
+		});
+
 		test('Describe  SYSTEM schema as non-SU', async () => {
 			await client
 				.reqAs(headersTestUser)
