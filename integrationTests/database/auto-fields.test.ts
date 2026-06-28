@@ -1,6 +1,6 @@
 // @createdTime/@updatedTime auto-assign on insert, @createdTime preserved on PATCH/PUT, auto-UUID PK on id-omit, required-field 400, @sealed interactions. REST/ops/SQL parity.
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, notStrictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
@@ -164,6 +164,7 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 		ok(put.status === 200 || put.status === 204, `Initial PUT should succeed; got ${put.status}`);
 
 		const g0 = await restGet(client, '/AutoTimestamp/at-patch-1');
+		strictEqual(g0.status, 200, 'GET should succeed');
 		const createdAt0 = g0.body.createdAt as number;
 		const updatedAt0 = g0.body.updatedAt as number;
 		ok(typeof createdAt0 === 'number', `createdAt should be a number after insert; got ${createdAt0}`);
