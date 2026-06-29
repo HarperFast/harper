@@ -32,7 +32,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
-const FIXTURE_PATH = resolve(import.meta.dirname, '../qa-scratch/qa328-patch-merge');
+const FIXTURE_PATH = resolve(import.meta.dirname, 'concurrent-patch-merge');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
 
 const findings: string[] = [];

@@ -36,7 +36,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
-const FIXTURE_PATH = resolve(import.meta.dirname, '../qa-scratch/qa349-delete-update-race');
+const FIXTURE_PATH = resolve(import.meta.dirname, 'delete-update-race');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
 const ROUNDS = 40;
 const WORKERS = 4;

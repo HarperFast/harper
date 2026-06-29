@@ -30,7 +30,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
-const FIXTURE_PATH = resolve(import.meta.dirname, '../qa-scratch/qa323-lmdb-append');
+const FIXTURE_PATH = resolve(import.meta.dirname, 'unique-pk-append-durability');
 const skipSuite = process.platform === 'win32';
 const ENGINE = process.env.HARPER_STORAGE_ENGINE || 'rocksdb(default)';
 

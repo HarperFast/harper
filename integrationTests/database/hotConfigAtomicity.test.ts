@@ -36,7 +36,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
-const FIXTURE_PATH = resolve(import.meta.dirname, '../qa-scratch/qa334-hot-config');
+const FIXTURE_PATH = resolve(import.meta.dirname, 'hot-config-atomicity');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
 const skipSuite = process.platform === 'win32';
 

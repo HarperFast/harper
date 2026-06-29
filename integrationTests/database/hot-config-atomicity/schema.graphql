@@ -1,0 +1,14 @@
+# QA-334 — Feature-flag config record.
+# Single hot record ("global") with self-consistency invariant:
+#   checksum == flagA + flagB + version
+# A torn read = some fields from version N, some from N+1 (checksum mismatch).
+
+type Config @table @export {
+  id: ID @primaryKey
+  version: Int
+  flagA: Int
+  flagB: Int
+  payload: String
+  checksum: Int
+  readCount: Int
+}
