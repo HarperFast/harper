@@ -2,14 +2,14 @@
 # A collaborative document record with many independently-editable fields.
 # Each client PATCHes a DIFFERENT field; all should survive.
 type CollabDoc @table @export {
-  id: ID @primaryKey
-  title: String
-  body: String
-  status: String
-  viewCount: Float
-  lastEditedBy: String
-  tag: String
-  priority: Int
-  notes: String
-  extra: String
+	id: ID @primaryKey
+	title: String
+	body: String
+	status: String
+	viewCount: Float
+	lastEditedBy: String
+	tag: String
+	priority: Int
+	notes: String
+	extra: String
 }

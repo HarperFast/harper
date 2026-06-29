@@ -6,7 +6,7 @@
 # If only colliding-PK count < N => QA-322 shortfall was last-write-wins (not a defect).
 
 type Ledger @table @export {
-  id: ID @primaryKey
-  seq: Int
-  payload: String
+	id: ID @primaryKey
+	seq: Int
+	payload: String
 }

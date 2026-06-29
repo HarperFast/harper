@@ -48,7 +48,7 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 		const client = createApiClient(ctx.harper);
 		httpURL = ctx.harper.httpURL;
 		auth = client.headers.Authorization;
-		headers = { 'Content-Type': 'application/json', Authorization: auth };
+		headers = { 'Content-Type': 'application/json', 'Authorization': auth };
 
 		// Readiness poll: wait until /Config/ route is available
 		const deadline = Date.now() + 60_000;
@@ -59,7 +59,9 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 					signal: AbortSignal.timeout(3_000),
 				});
 				if (r.status !== 503 && r.status !== 404) break;
-			} catch { /* not ready */ }
+			} catch {
+				/* not ready */
+			}
 			await sleep(250);
 		}
 	});
@@ -80,14 +82,28 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 		return r.status;
 	}
 
-	async function getConfig(): Promise<{ version: number; flagA: number; flagB: number; payload: string; checksum: number; readCount: number } | null> {
+	async function getConfig(): Promise<{
+		version: number;
+		flagA: number;
+		flagB: number;
+		payload: string;
+		checksum: number;
+		readCount: number;
+	} | null> {
 		try {
 			const r = await fetch(`${httpURL}/Config/global`, {
 				headers: { Authorization: auth },
 				signal: AbortSignal.timeout(5_000),
 			});
 			if (r.status !== 200) return null;
-			return r.json() as Promise<{ version: number; flagA: number; flagB: number; payload: string; checksum: number; readCount: number }>;
+			return r.json() as Promise<{
+				version: number;
+				flagA: number;
+				flagB: number;
+				payload: string;
+				checksum: number;
+				readCount: number;
+			}>;
 		} catch {
 			return null;
 		}
@@ -112,7 +128,9 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 		const cfg = await getConfig();
 		ok(cfg !== null, 'GET /Config/global returned null after seed');
 
-		console.log(`[hot-snapshot T0] record: version=${cfg!.version} flagA=${cfg!.flagA} flagB=${cfg!.flagB} payload=${cfg!.payload} checksum=${cfg!.checksum}`);
+		console.log(
+			`[hot-snapshot T0] record: version=${cfg!.version} flagA=${cfg!.flagA} flagB=${cfg!.flagB} payload=${cfg!.payload} checksum=${cfg!.checksum}`
+		);
 
 		strictEqual(cfg!.version, 1, 'version should be 1');
 		strictEqual(cfg!.flagA, 10, 'flagA should be 10');
@@ -172,16 +190,21 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 		const tornRate = totalReads > 0 ? (tornReads / totalReads) * 100 : 0;
 		console.log(
 			`\n[hot-snapshot T1 ${ENGINE}]\n` +
-			`  total_reads=${totalReads} torn_reads=${tornReads} torn_rate=${tornRate.toFixed(4)}%\n` +
-			`  writer_versions_written=${writerVersion - 2}\n` +
-			(tornSamples.length > 0 ? `  torn samples:\n    ${tornSamples.join('\n    ')}\n` : '') +
-			`  >>> VERDICT: ${tornReads === 0
-				? `CLEAN — 0 torn reads across ${totalReads} total reads. Whole-record PUT is atomic to concurrent readers.`
-				: `DEFECT — ${tornReads}/${totalReads} torn reads (${tornRate.toFixed(4)}%). Checksum mismatch = fields from different versions in one GET.`
-			}`
+				`  total_reads=${totalReads} torn_reads=${tornReads} torn_rate=${tornRate.toFixed(4)}%\n` +
+				`  writer_versions_written=${writerVersion - 2}\n` +
+				(tornSamples.length > 0 ? `  torn samples:\n    ${tornSamples.join('\n    ')}\n` : '') +
+				`  >>> VERDICT: ${
+					tornReads === 0
+						? `CLEAN — 0 torn reads across ${totalReads} total reads. Whole-record PUT is atomic to concurrent readers.`
+						: `DEFECT — ${tornReads}/${totalReads} torn reads (${tornRate.toFixed(4)}%). Checksum mismatch = fields from different versions in one GET.`
+				}`
 		);
 
-		strictEqual(tornReads, 0, `${tornReads} torn reads detected out of ${totalReads} (${tornRate.toFixed(4)}% torn rate)`);
+		strictEqual(
+			tornReads,
+			0,
+			`${tornReads} torn reads detected out of ${totalReads} (${tornRate.toFixed(4)}% torn rate)`
+		);
 	});
 
 	// ── T2: monotonic version visibility ──────────────────────────────────────
@@ -229,13 +252,15 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 
 		console.log(
 			`\n[hot-snapshot T2 ${ENGINE}]\n` +
-			`  samples=${versionSequence.length} min=${minVer} max=${maxVer}\n` +
-			`  backwards_jumps=${backwardsJumps}` +
-			(backwardsDetails.length > 0 ? `\n  details: ${JSON.stringify(backwardsDetails)}` : '') + '\n' +
-			`  >>> VERDICT: ${backwardsJumps === 0
-				? `CLEAN — version visibility monotonically non-decreasing across ${versionSequence.length} samples.`
-				: `DEFECT — ${backwardsJumps} backwards version jumps (reader saw N+k then N — stale read or version rewind).`
-			}`
+				`  samples=${versionSequence.length} min=${minVer} max=${maxVer}\n` +
+				`  backwards_jumps=${backwardsJumps}` +
+				(backwardsDetails.length > 0 ? `\n  details: ${JSON.stringify(backwardsDetails)}` : '') +
+				'\n' +
+				`  >>> VERDICT: ${
+					backwardsJumps === 0
+						? `CLEAN — version visibility monotonically non-decreasing across ${versionSequence.length} samples.`
+						: `DEFECT — ${backwardsJumps} backwards version jumps (reader saw N+k then N — stale read or version rewind).`
+				}`
 		);
 
 		strictEqual(backwardsJumps, 0, `${backwardsJumps} backwards version jumps in ${versionSequence.length} samples`);
@@ -288,16 +313,17 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 		const underMax = underLatencies[underLatencies.length - 1];
 
 		const p99Ratio = baseP99 > 0 ? underP99 / baseP99 : 0;
-		const latencyVerdict = p99Ratio > 5
-			? `WARNING — p99 under writer is ${p99Ratio.toFixed(1)}x baseline (${underP99.toFixed(2)}ms vs ${baseP99.toFixed(2)}ms)`
-			: `STABLE — p99 ratio ${p99Ratio.toFixed(2)}x (within 5x threshold)`;
+		const latencyVerdict =
+			p99Ratio > 5
+				? `WARNING — p99 under writer is ${p99Ratio.toFixed(1)}x baseline (${underP99.toFixed(2)}ms vs ${baseP99.toFixed(2)}ms)`
+				: `STABLE — p99 ratio ${p99Ratio.toFixed(2)}x (within 5x threshold)`;
 
 		console.log(
 			`\n[hot-snapshot T3 ${ENGINE}]\n` +
-			`  baseline  (${N} reads): p50=${baseP50.toFixed(2)}ms p99=${baseP99.toFixed(2)}ms max=${baseMax.toFixed(2)}ms\n` +
-			`  under-writer (${N} reads): p50=${underP50.toFixed(2)}ms p99=${underP99.toFixed(2)}ms max=${underMax.toFixed(2)}ms\n` +
-			`  p99_ratio=${p99Ratio.toFixed(2)}x\n` +
-			`  >>> VERDICT: OBSERVATIONAL — ${latencyVerdict}`
+				`  baseline  (${N} reads): p50=${baseP50.toFixed(2)}ms p99=${baseP99.toFixed(2)}ms max=${baseMax.toFixed(2)}ms\n` +
+				`  under-writer (${N} reads): p50=${underP50.toFixed(2)}ms p99=${underP99.toFixed(2)}ms max=${underMax.toFixed(2)}ms\n` +
+				`  p99_ratio=${p99Ratio.toFixed(2)}x\n` +
+				`  >>> VERDICT: OBSERVATIONAL — ${latencyVerdict}`
 		);
 
 		ok(true, 'T3 observational pass');
@@ -315,13 +341,9 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 
 		const N_BUMP = 200;
 
-		const bumpResults = await Promise.allSettled(
-			Array.from({ length: N_BUMP }, () => bumpReadCount())
-		);
+		const bumpResults = await Promise.allSettled(Array.from({ length: N_BUMP }, () => bumpReadCount()));
 		const putResults = await Promise.allSettled(
-			Array.from({ length: 10 }, (_, i) =>
-				writeConfig(100 + i, (100 + i) * 10, (100 + i) * 20, `storm-v${100 + i}`)
-			)
+			Array.from({ length: 10 }, (_, i) => writeConfig(100 + i, (100 + i) * 10, (100 + i) * 20, `storm-v${100 + i}`))
 		);
 
 		await sleep(200);
@@ -331,28 +353,39 @@ suite(`hot-record read-snapshot atomicity [${ENGINE}]`, { skip: skipSuite }, (ct
 
 		const finalReadCount = finalCfg!.readCount ?? 0;
 		const gained = finalReadCount - startReadCount;
-		const bumpSuccesses = bumpResults.filter(r => r.status === 'fulfilled' && (r.value === 200 || r.value === 204)).length;
-		const putSuccesses = putResults.filter(r => r.status === 'fulfilled').length;
+		const bumpSuccesses = bumpResults.filter(
+			(r) => r.status === 'fulfilled' && (r.value === 200 || r.value === 204)
+		).length;
+		const putSuccesses = putResults.filter((r) => r.status === 'fulfilled').length;
 
 		const expectedChecksum = finalCfg!.flagA + finalCfg!.flagB + finalCfg!.version;
 		const selfConsistent = finalCfg!.checksum === expectedChecksum;
 
 		console.log(
 			`\n[hot-snapshot T4 ${ENGINE}]\n` +
-			`  N_BUMP=${N_BUMP} bump_successes=${bumpSuccesses} put_successes=${putSuccesses}\n` +
-			`  startReadCount=${startReadCount} finalReadCount=${finalReadCount} gained=${gained} expected=${N_BUMP}\n` +
-			`  final: version=${finalCfg!.version} flagA=${finalCfg!.flagA} flagB=${finalCfg!.flagB} ` +
-			`checksum=${finalCfg!.checksum} expectedChecksum=${expectedChecksum} selfConsistent=${selfConsistent}\n` +
-			`  >>> VERDICT: ${gained === N_BUMP && selfConsistent
-				? `CLEAN — readCount gained exactly ${N_BUMP}, record self-consistent after PUT storm.`
-				: [
-					gained !== N_BUMP ? `DEFECT — lost ${N_BUMP - gained} increments (gained ${gained}/${N_BUMP})` : null,
-					!selfConsistent ? `DEFECT — checksum mismatch (checksum=${finalCfg!.checksum} != expected=${expectedChecksum})` : null,
-				  ].filter(Boolean).join('; ')
-			}`
+				`  N_BUMP=${N_BUMP} bump_successes=${bumpSuccesses} put_successes=${putSuccesses}\n` +
+				`  startReadCount=${startReadCount} finalReadCount=${finalReadCount} gained=${gained} expected=${N_BUMP}\n` +
+				`  final: version=${finalCfg!.version} flagA=${finalCfg!.flagA} flagB=${finalCfg!.flagB} ` +
+				`checksum=${finalCfg!.checksum} expectedChecksum=${expectedChecksum} selfConsistent=${selfConsistent}\n` +
+				`  >>> VERDICT: ${
+					gained === N_BUMP && selfConsistent
+						? `CLEAN — readCount gained exactly ${N_BUMP}, record self-consistent after PUT storm.`
+						: [
+								gained !== N_BUMP ? `DEFECT — lost ${N_BUMP - gained} increments (gained ${gained}/${N_BUMP})` : null,
+								!selfConsistent
+									? `DEFECT — checksum mismatch (checksum=${finalCfg!.checksum} != expected=${expectedChecksum})`
+									: null,
+							]
+								.filter(Boolean)
+								.join('; ')
+				}`
 		);
 
 		strictEqual(gained, N_BUMP, `Expected readCount to gain ${N_BUMP}, gained ${gained} (lost ${N_BUMP - gained})`);
-		strictEqual(finalCfg!.checksum, expectedChecksum, `Final record checksum=${finalCfg!.checksum} != expected=${expectedChecksum} (torn state)`);
+		strictEqual(
+			finalCfg!.checksum,
+			expectedChecksum,
+			`Final record checksum=${finalCfg!.checksum} != expected=${expectedChecksum} (torn state)`
+		);
 	});
 });

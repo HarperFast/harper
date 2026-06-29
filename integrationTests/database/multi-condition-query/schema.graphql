@@ -1,8 +1,8 @@
 type Product @table @export {
-  id: Int @primaryKey
-  status: String @indexed
-  region: String @indexed
-  price: Float @indexed
-  category: String @indexed
-  notes: String
+	id: Int @primaryKey
+	status: String @indexed
+	region: String @indexed
+	price: Float @indexed
+	category: String @indexed
+	notes: String
 }

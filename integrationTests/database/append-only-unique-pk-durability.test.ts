@@ -80,7 +80,7 @@ for (const { workers } of SCENARIOS) {
 				const t = setTimeout(() => ac.abort(), timeoutMs);
 				return fetch(`${httpURL}${path}`, {
 					method: 'POST',
-					headers: { 'Content-Type': 'application/json', Authorization: client.headers.Authorization },
+					headers: { 'Content-Type': 'application/json', 'Authorization': client.headers.Authorization },
 					body: JSON.stringify(body),
 					signal: ac.signal,
 				}).finally(() => clearTimeout(t));
@@ -144,48 +144,44 @@ for (const { workers } of SCENARIOS) {
 
 			// ---- A: unique-PK (hard gate) ────────────────────────────────────────
 			// Every insert uses randomUUID() server-side → all N rows must be durable.
-			test(
-				'A: unique-PK — all N inserts must be durable (no append data-loss)',
-				{ timeout: 120_000 },
-				async () => {
-					await resetTable();
+			test('A: unique-PK — all N inserts must be durable (no append data-loss)', { timeout: 120_000 }, async () => {
+				await resetTable();
 
-					const beforeCount = await countRows();
-					strictEqual(beforeCount, 0, 'Table must be empty after reset');
+				const beforeCount = await countRows();
+				strictEqual(beforeCount, 0, 'Table must be empty after reset');
 
-					const { ok200, non200, ids } = await runInserts('/AppendUnique/', N_INSERTS, CONCURRENCY);
+				const { ok200, non200, ids } = await runInserts('/AppendUnique/', N_INSERTS, CONCURRENCY);
 
-					const uniqueIds = new Set(ids);
-					const dupeIds = ids.length - uniqueIds.size;
+				const uniqueIds = new Set(ids);
+				const dupeIds = ids.length - uniqueIds.size;
 
-					await sleep(200);
+				await sleep(200);
 
-					const durable = await countRows();
+				const durable = await countRows();
 
-					const allLanded = durable === N_INSERTS;
-					const classification = allLanded
-						? 'CLEAN — all unique-PK inserts durable'
-						: `DEFECT — ${N_INSERTS - durable} rows MISSING (insert data-loss on ${ENGINE})`;
+				const allLanded = durable === N_INSERTS;
+				const classification = allLanded
+					? 'CLEAN — all unique-PK inserts durable'
+					: `DEFECT — ${N_INSERTS - durable} rows MISSING (insert data-loss on ${ENGINE})`;
 
-					console.log(
-						`\n[append-durability A workers=${workers} engine=${ENGINE}]\n` +
+				console.log(
+					`\n[append-durability A workers=${workers} engine=${ENGINE}]\n` +
 						`  inserts fired=${N_INSERTS} ok200=${ok200} non200=${non200}\n` +
 						`  unique ids returned=${ids.length} duplicate ids (server collision)=${dupeIds}\n` +
 						`  durable count=${durable} expected=${N_INSERTS}\n` +
 						`  dropped=${N_INSERTS - durable}\n` +
 						`  *** ${classification} ***\n`
-					);
+				);
 
-					strictEqual(
-						durable,
-						N_INSERTS,
-						`APPEND DATA-LOSS on ${ENGINE} workers=${workers}: durable=${durable} of ${N_INSERTS} — ${N_INSERTS - durable} rows dropped`
-					);
+				strictEqual(
+					durable,
+					N_INSERTS,
+					`APPEND DATA-LOSS on ${ENGINE} workers=${workers}: durable=${durable} of ${N_INSERTS} — ${N_INSERTS - durable} rows dropped`
+				);
 
-					// Sanity: server must not generate duplicate UUIDs (masks count math)
-					strictEqual(dupeIds, 0, `Server generated ${dupeIds} duplicate UUIDs — test validity concern`);
-				}
-			);
+				// Sanity: server must not generate duplicate UUIDs (masks count math)
+				strictEqual(dupeIds, 0, `Server generated ${dupeIds} duplicate UUIDs — test validity concern`);
+			});
 
 			// ---- B: colliding-PK (control, informational) ────────────────────────
 			// All inserts map to a 5-slot pool → LWW → durable ≤ pool size (expected).
@@ -212,16 +208,13 @@ for (const { workers } of SCENARIOS) {
 
 					console.log(
 						`\n[append-durability B workers=${workers} engine=${ENGINE}]\n` +
-						`  inserts fired=${N_INSERTS} ok200=${ok200} non200=${non200}\n` +
-						`  durable count=${durable} (pool size=${POOL_SIZE} expected ≤ ${POOL_SIZE})\n` +
-						`  *** ${classification} ***\n`
+							`  inserts fired=${N_INSERTS} ok200=${ok200} non200=${non200}\n` +
+							`  durable count=${durable} (pool size=${POOL_SIZE} expected ≤ ${POOL_SIZE})\n` +
+							`  *** ${classification} ***\n`
 					);
 
 					ok(durable >= 1, `No rows durable at all — something is badly wrong`);
-					ok(
-						durable <= POOL_SIZE,
-						`Colliding-PK: durable=${durable} exceeds pool size=${POOL_SIZE} — unexpected`
-					);
+					ok(durable <= POOL_SIZE, `Colliding-PK: durable=${durable} exceeds pool size=${POOL_SIZE} — unexpected`);
 				}
 			);
 		}
