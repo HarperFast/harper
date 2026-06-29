@@ -11,7 +11,9 @@ const {
 	formatEnvValue,
 	upsertEnvValues,
 	removeEnvKeys,
+	isEncryptedEnvValue,
 	ENV_VALUE_MASK,
+	ENV_ENCRYPTED_PREFIX,
 } = require('#src/utility/envFile');
 
 describe('envFile', () => {
@@ -62,6 +64,23 @@ describe('envFile', () => {
 			assert.equal(isExampleEnvFile('config.example'), false);
 			assert.equal(isProtectedEnvFile('config.example'), false);
 			assert.equal(isProtectedEnvFile('env.js'), false);
+		});
+	});
+
+	describe('isEncryptedEnvValue', () => {
+		it('recognizes the enc:v1 envelope prefix', () => {
+			assert.equal(ENV_ENCRYPTED_PREFIX, 'enc:v1:');
+			assert.equal(isEncryptedEnvValue('enc:v1:abc123'), true);
+			assert.equal(isEncryptedEnvValue(`${ENV_ENCRYPTED_PREFIX}anything`), true);
+		});
+
+		it('treats plaintext and non-strings as not encrypted', () => {
+			assert.equal(isEncryptedEnvValue('plain'), false);
+			assert.equal(isEncryptedEnvValue('enc:v2:abc'), false);
+			assert.equal(isEncryptedEnvValue('ENC:V1:abc'), false); // case-sensitive marker
+			assert.equal(isEncryptedEnvValue(''), false);
+			assert.equal(isEncryptedEnvValue(undefined), false);
+			assert.equal(isEncryptedEnvValue(123), false);
 		});
 	});
 

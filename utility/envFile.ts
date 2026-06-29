@@ -70,6 +70,16 @@ export function renderMaskedEnv(keys: string[]): string {
 	return keys.map((key) => `${key}=${ENV_VALUE_MASK}`).join('\n') + '\n';
 }
 
+// Marker prefix for a value encrypted with the cluster env-secrets public key. The bytes after the
+// prefix are an opaque envelope (see docs/env-secret-encryption.md) that only the Pro env-secrets
+// component can decrypt; core just recognises the prefix and delegates to a registered decryptor.
+export const ENV_ENCRYPTED_PREFIX = 'enc:v1:';
+
+/** True if a parsed env value is an `enc:v1:` ciphertext envelope rather than a plaintext value. */
+export function isEncryptedEnvValue(value: unknown): boolean {
+	return typeof value === 'string' && value.startsWith(ENV_ENCRYPTED_PREFIX);
+}
+
 /**
  * Serialise a value so that `dotenv.parse` recovers it verbatim.
  *
