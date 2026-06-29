@@ -224,6 +224,9 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('count-bare', 'SELECT COUNT(*) FROM dev.widget WHERE id >= 1');
 		await diff('count-bare-group', 'SELECT tag, COUNT(*) FROM dev.widget WHERE id >= 1 GROUP BY tag');
 		await diff('min-max-bare', 'SELECT MIN(qty), MAX(qty) FROM dev.widget WHERE id >= 1');
+		// DISTINCT inside an aggregate must match legacy (dedup), not count every row.
+		// Index-served, so the new engine handles it directly (no legacy fallback).
+		await diff('count-distinct', 'SELECT COUNT(DISTINCT tag) AS n FROM dev.widget WHERE id >= 1');
 	});
 
 	test('SELECT — join', async () => {

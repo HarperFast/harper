@@ -60,6 +60,12 @@ export function physicalHashAggregate(
 		if (!desc || desc.kind !== 'aggregate') {
 			throw new EngineUnsupportedError(`unknown aggregate function: ${a.name}`);
 		}
+		// DISTINCT-in-aggregate dedup is not implemented; the accumulator would
+		// otherwise step every row (silent wrong result, e.g. COUNT(DISTINCT x)
+		// counting all rows). Reject so 'auto' falls back to legacy, which dedups.
+		if (a.distinct) {
+			throw new EngineUnsupportedError(`DISTINCT aggregate not supported yet: ${a.name}`);
+		}
 		const isStarArg = a.arg.kind === 'star';
 		const argEval = isStarArg ? null : compileExpr(a.arg as ExprNode, qualified).eval;
 		return {

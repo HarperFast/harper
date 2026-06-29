@@ -134,6 +134,12 @@ describe('sqlEngine phase 2: aggregates', () => {
 		assert.ok(grouped.every((r) => 'COUNT(*)' in r));
 	});
 
+	it('rejects DISTINCT aggregates (→ legacy fallback) rather than counting every row', async () => {
+		// The accumulator has no per-aggregate dedup, so handling COUNT(DISTINCT x)
+		// here would silently count all rows. It must reject so 'auto' falls back.
+		await assert.rejects(() => runSql('SELECT COUNT(DISTINCT category) FROM dev.orders'), /DISTINCT aggregate/);
+	});
+
 	it('COUNT(*) on empty result set returns 0', async () => {
 		const rows = await runSql("SELECT COUNT(*) AS cnt FROM dev.orders WHERE status = 'nonexistent'");
 		assert.strictEqual(rows.length, 1);
