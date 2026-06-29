@@ -231,6 +231,12 @@ requiredPermissions.set(
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_COMPONENT_FILE)
 );
 requiredPermissions.set(functionsOperations.setComponentFile.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.getEnvKeys.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_ENV_KEYS)
+);
+requiredPermissions.set(functionsOperations.setEnvValue.name, new (permission as any)(true, []));
+requiredPermissions.set(functionsOperations.deleteEnvValue.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.dropComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	functionsOperations.getCustomFunction.name,

@@ -403,6 +403,12 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.SET_COMPONENT_FILE,
 		new OperationFunctionObject(customFunctionOperations.setComponentFile)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ENV_KEYS, new OperationFunctionObject(customFunctionOperations.getEnvKeys));
+	opFuncMap.set(terms.OPERATIONS_ENUM.SET_ENV_VALUE, new OperationFunctionObject(customFunctionOperations.setEnvValue));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.DELETE_ENV_VALUE,
+		new OperationFunctionObject(customFunctionOperations.deleteEnvValue)
+	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.DROP_COMPONENT,
 		new OperationFunctionObject(customFunctionOperations.dropComponent)

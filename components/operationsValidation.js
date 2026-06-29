@@ -13,6 +13,10 @@ const { HDB_ERROR_MSGS } = hdbErrors;
 // File name can only be alphanumeric, dash and underscores
 const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
 
+// dotenv's accepted key character set. Restricting keys to this prevents a crafted key (e.g. one
+// containing `=` or a newline) from injecting extra assignments into a .env file.
+const ENV_KEY_REGEX = /^[\w.-]+$/;
+
 module.exports = {
 	getDropCustomFunctionValidator,
 	setCustomFunctionValidator,
@@ -23,6 +27,9 @@ module.exports = {
 	setComponentFileValidator,
 	getComponentFileValidator,
 	dropComponentFileValidator,
+	getEnvKeysValidator,
+	setEnvValueValidator,
+	deleteEnvValueValidator,
 };
 
 /**
@@ -167,6 +174,65 @@ function getComponentFileValidator(req) {
 	});
 
 	return validator.validateBySchema(req, getCompSchema);
+}
+
+/**
+ * Validate get_env_keys requests. `file` is optional and defaults to `.env` in the handler.
+ * @param req
+ * @returns {*}
+ */
+function getEnvKeysValidator(req) {
+	const schema = Joi.object({
+		project: Joi.string().required(),
+		file: Joi.string().custom(checkFilePath).optional(),
+	});
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate set_env_value requests: exactly one of (`key` + `value`) or `values` (a key→value map).
+ * @param req
+ * @returns {*}
+ */
+function setEnvValueValidator(req) {
+	const schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		file: Joi.string().custom(checkFilePath).optional(),
+		key: Joi.string().pattern(ENV_KEY_REGEX),
+		value: Joi.string().allow(''),
+		// `.unknown(false)` rejects keys that don't match ENV_KEY_REGEX. Without it the schema-wide
+		// `allowUnknown: true` (see validateBySchema) would let an invalid key (e.g. with a space or
+		// newline) pass through unvalidated and corrupt the file.
+		values: Joi.object().pattern(ENV_KEY_REGEX, Joi.string().allow('')).unknown(false),
+	})
+		.with('key', 'value')
+		.with('value', 'key')
+		.xor('key', 'values');
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate delete_env_value requests: exactly one of `key` or `keys` (an array of key names).
+ * @param req
+ * @returns {*}
+ */
+function deleteEnvValueValidator(req) {
+	const schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		file: Joi.string().custom(checkFilePath).optional(),
+		key: Joi.string().pattern(ENV_KEY_REGEX),
+		keys: Joi.array().items(Joi.string().pattern(ENV_KEY_REGEX)).min(1),
+	}).xor('key', 'keys');
+
+	return validator.validateBySchema(req, schema);
 }
 
 /**
