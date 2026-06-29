@@ -60,6 +60,13 @@ export interface JoinNode {
 export interface ProjectionNode {
 	expr: ExprNode;
 	alias?: string;
+	/**
+	 * Default output-column label when no `alias` is given, computed from the
+	 * original (pre-aggregate-rewrite) expression to match the legacy AlaSQL
+	 * column name (e.g. `COUNT(*)`, `SUM(price)`). Without it, an unaliased
+	 * aggregate would surface under the engine's internal `__agg_N__` name.
+	 */
+	label?: string;
 }
 
 export interface SortNode {

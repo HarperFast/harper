@@ -52,7 +52,7 @@ function buildSlot(p: ProjectionNode): Slot {
 		};
 	}
 	const compiled = compileExpr(p.expr);
-	const name = p.alias ?? expressionLabel(p);
+	const name = p.alias ?? p.label ?? expressionLabel(p);
 	return {
 		schema: [{ name, type: compiled.type, nullable: true }],
 		apply(row, out) {
@@ -108,7 +108,7 @@ function buildQualifiedSlot(p: ProjectionNode): QualifiedSlot {
 		};
 	}
 	const compiled = compileExpr(p.expr, true);
-	const name = p.alias ?? qualifiedLabel(p);
+	const name = p.alias ?? p.label ?? qualifiedLabel(p);
 	return {
 		emit(row, acc) {
 			acc.push([name, compiled.eval(row)]);

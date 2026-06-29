@@ -118,6 +118,22 @@ describe('sqlEngine phase 2: aggregates', () => {
 		assert.strictEqual(rows[0].cnt, 5);
 	});
 
+	it('unaliased aggregates use the legacy AlaSQL column label', async () => {
+		// Without an alias the output key must match legacy: `COUNT(*)`, `SUM(amount)`
+		// — not the engine's internal `__agg_N__` name. A consumer keying off
+		// `COUNT(*)` (e.g. scale.test.ts) breaks otherwise.
+		const count = await runSql('SELECT COUNT(*) FROM dev.orders');
+		assert.strictEqual(count[0]['COUNT(*)'], 5);
+
+		const sum = await runSql('SELECT SUM(amount) FROM dev.orders');
+		assert.strictEqual(sum[0]['SUM(amount)'], 650);
+
+		// Label holds in the GROUP BY projection path too (COUNT is never null, so
+		// this is free of the all-null-group key-omission quirk).
+		const grouped = await runSql('SELECT category, COUNT(*) FROM dev.orders GROUP BY category');
+		assert.ok(grouped.every((r) => 'COUNT(*)' in r));
+	});
+
 	it('COUNT(*) on empty result set returns 0', async () => {
 		const rows = await runSql("SELECT COUNT(*) AS cnt FROM dev.orders WHERE status = 'nonexistent'");
 		assert.strictEqual(rows.length, 1);

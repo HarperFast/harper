@@ -235,7 +235,26 @@ function normalizeProjection(col: AlaSqlNode): ProjectionNode {
 		}
 		return { expr: { kind: 'column', table: col.tableid, name: col.columnid }, alias };
 	}
-	return { expr: normalizeExpr(col), alias };
+	const expr = normalizeExpr(col);
+	// Give an unaliased aggregate the legacy AlaSQL column label (`COUNT(*)`,
+	// `SUM(price)`, …) so its output key matches the legacy engine. Other
+	// expressions keep the existing label fallback.
+	return { expr, alias, label: alias ? undefined : aggregateLabel(expr) };
+}
+
+/** Legacy AlaSQL default column name for an unaliased aggregate, else undefined. */
+function aggregateLabel(expr: ExprNode): string | undefined {
+	if (expr.kind !== 'aggCall') return undefined;
+	const arg =
+		expr.arg.kind === 'star'
+			? '*'
+			: expr.arg.kind === 'column'
+				? expr.arg.table
+					? `${expr.arg.table}.${expr.arg.name}`
+					: expr.arg.name
+				: undefined;
+	if (arg === undefined) return undefined;
+	return `${expr.name.toUpperCase()}(${expr.distinct ? 'DISTINCT ' : ''}${arg})`;
 }
 
 function normalizeSort(node: AlaSqlNode): SortNode {

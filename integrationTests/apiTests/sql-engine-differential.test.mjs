@@ -218,6 +218,12 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('sum+group', 'SELECT tag, SUM(qty) AS total FROM dev.widget WHERE id >= 1 GROUP BY tag');
 		await diff('min max avg', 'SELECT MIN(qty) AS mn, MAX(qty) AS mx, AVG(qty) AS av FROM dev.widget WHERE id >= 1');
 		await diff('having', 'SELECT tag, COUNT(*) AS n FROM dev.widget WHERE id >= 1 GROUP BY tag HAVING COUNT(*) > 1');
+		// Unaliased aggregates: the output-column label must match legacy AlaSQL
+		// (`COUNT(*)`, `MIN(qty)`, …). Every case above carries an `AS` alias, which
+		// masked a real label divergence the scale suite caught at indexed scale.
+		await diff('count-bare', 'SELECT COUNT(*) FROM dev.widget WHERE id >= 1');
+		await diff('count-bare-group', 'SELECT tag, COUNT(*) FROM dev.widget WHERE id >= 1 GROUP BY tag');
+		await diff('min-max-bare', 'SELECT MIN(qty), MAX(qty) FROM dev.widget WHERE id >= 1');
 	});
 
 	test('SELECT — join', async () => {
