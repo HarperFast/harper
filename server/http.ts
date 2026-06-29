@@ -256,7 +256,12 @@ function getPorts(options) {
 	if (port) ports.push({ port, secure: true });
 	port = options?.port;
 	if (port) ports.push({ port, secure: false });
-	if (ports.length === 0) {
+	// The operations API must never fall back to the app http ports: it binds on its own
+	// configured port(s)/domain socket only. Falling back here lets a port-less operations-api
+	// registration (e.g. an app config that carries an `operationsApi` block with no port)
+	// claim http.port/http.securePort on the main thread with noReusePort and no upgrade
+	// handler, which locks the http workers out of those ports and breaks all WebSockets (#1420).
+	if (ports.length === 0 && options?.usageType !== 'operations-api') {
 		// if no port is provided, default to http port
 		ports = [];
 		if (env.get(terms.CONFIG_PARAMS.HTTP_PORT) != null)

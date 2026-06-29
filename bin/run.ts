@@ -39,6 +39,8 @@ const UPGRADE_ERR = 'Got an error while trying to upgrade your Harper instance. 
 const HDB_NOT_FOUND_MSG = 'Harper not found, starting install process.';
 const INSTALL_ERR = 'There was an error during install. Exiting.';
 const HDB_STARTED = 'Harper successfully started.';
+const SAFE_MODE_MSG =
+	'Harper is running in safe mode (HARPER_SAFE_MODE); user applications and components will not be loaded.';
 
 function addUnhandleRejectionListener() {
 	process.on('unhandledRejection', (reason, promise) => {
@@ -198,6 +200,8 @@ async function main(calledByInstall = false) {
 			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
+
+		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
 
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_MIGRATEONSTART)) await migrateOnStart();

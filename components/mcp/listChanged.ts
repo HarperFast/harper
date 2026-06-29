@@ -16,7 +16,12 @@
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { listResources } from './resources.ts';
-import { type RegisteredSession, forEachSessionByProfile, getRegisteredSession } from './sessionRegistry.ts';
+import {
+	type RegisteredSession,
+	forEachSessionByProfile,
+	getRegisteredSession,
+	pushSessionFrame,
+} from './sessionRegistry.ts';
 import { listTools, type AuthedUser } from './toolRegistry.ts';
 import { refreshApplicationTools } from './tools/application.ts';
 import type { McpProfile } from './transport.ts';
@@ -127,7 +132,7 @@ function maybeNotifyToolsChanged(record: RegisteredSession): void {
 		const current = toolsListNames(record.profile, record);
 		if (sameSet(record.lastTools, current)) return;
 		record.lastTools = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/tools/list_changed' },
 		});
@@ -141,13 +146,33 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 		const current = resourcesListUris(record.profile, record);
 		if (sameSet(record.lastResources, current)) return;
 		record.lastResources = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/resources/list_changed' },
 		});
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged resources/* for session ${record.sessionId}: ${(err as Error).message}`);
 	}
+}
+
+/**
+ * Push `notifications/prompts/list_changed` to every session on a profile.
+ * Prompts carry no per-user RBAC (they're generic templates, §3.5), so unlike
+ * tools/resources this is a flat per-profile fan-out rather than a per-session
+ * user-diff. Called by the application registration when the prompt set actually
+ * changes (added/removed) — not on every rebuild.
+ */
+export function notifyPromptsListChanged(profile: McpProfile): void {
+	forEachSessionByProfile(profile, (record) => {
+		try {
+			pushSessionFrame(record, {
+				event: 'message',
+				data: { jsonrpc: '2.0', method: 'notifications/prompts/list_changed' },
+			});
+		} catch (err) {
+			harperLogger.trace(`MCP listChanged prompts/* for session ${record.sessionId}: ${(err as Error).message}`);
+		}
+	});
 }
 
 /**

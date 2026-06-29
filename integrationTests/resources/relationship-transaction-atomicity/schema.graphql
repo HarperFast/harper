@@ -1,0 +1,27 @@
+# QA-162 — Cross-table custom transaction with @relationship edge + rollback atomicity.
+#
+# One HTTP request (via a custom Resource) creates a parent Order row + a child OrderItem row
+# AND implicitly establishes the @relationship edge (FK from child to parent via orderId).
+# The probes:
+#   1. Mid-throw after parent write but before child write — does parent roll back?
+#      Is the relationship index left consistent (no dangling FK entry for a rolled-back row)?
+#   2. Success path — does the edge resolve bidirectionally (Order.items, OrderItem.order)?
+#   3. Concurrent children pointing at the same parent — any duplicate or missing edges?
+#
+# Relationship model:
+#   Order.items  = @relationship(to: orderId)    reverse (parent -> children list)
+#   OrderItem.order = @relationship(from: orderId) forward (child -> parent)
+
+type Order @table @export {
+	id: ID @primaryKey
+	total: Float
+	items: [OrderItem] @relationship(to: orderId)
+}
+
+type OrderItem @table @export {
+	id: ID @primaryKey
+	orderId: ID @indexed
+	name: String
+	price: Float
+	order: Order @relationship(from: orderId)
+}

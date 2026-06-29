@@ -1,0 +1,7 @@
+# QA-195 — Custom-Resource AUTHOR status-code + body contract.
+# Backing table for resource anchor; all behavior lives in resources.js.
+
+type Kv @table @export {
+	id: ID @primaryKey
+	v: String
+}

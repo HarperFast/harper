@@ -57,7 +57,13 @@ describe('Txn Expiration', () => {
 		}
 		await Promise.race([delay(50), result]);
 		assert(performedDBInteractions);
-		assert.equal(trackedTxns.size, existingTxns);
+		// Check the specific txn we started was expired and removed. Counting against
+		// existingTxns is unreliable: other tests' transactions can expire concurrently and
+		// shift the count underneath us during the 50ms window.
+		assert.ok(
+			!trackedTxns.has(lastTxn),
+			'expected the slow transaction to have been expired and removed from trackedTxns'
+		);
 	});
 	after(function () {
 		setTxnExpiration(30000);

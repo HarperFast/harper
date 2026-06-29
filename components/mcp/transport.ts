@@ -37,9 +37,30 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
-import { listResources, listResourceTemplates, readResource } from './resources.ts';
-import { registerSession, touchRegisteredSession } from './sessionRegistry.ts';
-import { getTool, listTools, type AuthedUser, type ToolResult } from './toolRegistry.ts';
+import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
+import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
+import {
+	addResourceSubscription,
+	removeResourceSubscription,
+	dropSessionSubscriptions,
+	restoreResourceSubscriptions,
+} from './subscriptions.ts';
+import {
+	sendServerRequest,
+	routeClientResponse,
+	dropSessionServerRequests,
+	isClientResponse,
+} from './serverRequests.ts';
+import {
+	registerSession,
+	touchRegisteredSession,
+	getRegisteredSession,
+	replaySince,
+	type SseEvent,
+} from './sessionRegistry.ts';
+import { getTool, listTools, type AuthedUser, type ToolCallContext, type ToolResult } from './toolRegistry.ts';
+import { cancelCall, registerCall, unregisterCall } from './callRegistry.ts';
+import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
 
 export type McpProfile = 'operations' | 'application';
 
@@ -80,6 +101,7 @@ const SESSION_HEADER = 'mcp-session-id';
 const PROTOCOL_HEADER = 'mcp-protocol-version';
 const ORIGIN_HEADER = 'origin';
 const ACCEPT_HEADER = 'accept';
+const LAST_EVENT_ID_HEADER = 'last-event-id';
 
 /**
  * Main entry. Adapters call this and map the returned shape to their
@@ -231,10 +253,28 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	// time instead of rolling it back to the load-time value.
 	session = await touchSession(session);
 
+	// A client's response to a server→client request (#3.7): route it to the
+	// worker awaiting it (resolve locally or fan out over ITC), then 202.
+	if (isClientResponse(message)) {
+		routeClientResponse(
+			session.id,
+			message as { id: JsonRpcId & (string | number); result?: unknown; error?: unknown }
+		);
+		return { status: 202, headers: {} };
+	}
+
 	// Fire-and-forget frames (notifications + client responses) always 202.
 	if (isClientFireAndForget(message)) {
 		if (method === 'notifications/initialized') {
 			await handleInitialized(session);
+		} else if (method === 'notifications/cancelled') {
+			// Abort the in-flight tools/call this references, if it ran on this
+			// worker (#1349 §3.3). Per-worker: a cancel that lands elsewhere is a
+			// no-op here — the call's client-disconnect teardown is the backstop.
+			const cancelParams = 'params' in message ? (message.params as { requestId?: JsonRpcId } | undefined) : undefined;
+			if (cancelParams?.requestId != null) {
+				cancelCall(session.id, cancelParams.requestId, 'cancelled by client');
+			}
 		}
 		return { status: 202, headers: {} };
 	}
@@ -245,8 +285,14 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (method === 'tools/list') return dispatchToolsList(request, session, message, messageId);
 	if (method === 'tools/call') return dispatchToolsCall(request, session, message, messageId);
 	if (method === 'resources/list') return dispatchResourcesList(request, message, messageId);
-	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, messageId);
+	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, message, messageId);
 	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
+	if (method === 'resources/subscribe') return await dispatchResourcesSubscribe(request, session, message, messageId);
+	if (method === 'resources/unsubscribe')
+		return await dispatchResourcesUnsubscribe(request, session, message, messageId);
+	if (method === 'prompts/list') return dispatchPromptsList(request, message, messageId);
+	if (method === 'prompts/get') return await dispatchPromptsGet(request, session, message, messageId);
+	if (method === 'completion/complete') return dispatchCompletion(request, message, messageId);
 	if (method === 'logging/setLevel') return dispatchSetLevel(session, message, messageId);
 	// `ping` (base-protocol liveness) → empty result. Routed here, after session
 	// validation, so a stale/expired/wrong-user session surfaces the normal
@@ -352,6 +398,29 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
 	record.logLevel = session.logLevel;
 	seedSessionSnapshot(sessionId);
+	// Tear down live resource subscriptions when this GET SSE stream closes
+	// (disconnect / DELETE / supersede / idle-prune all end via the queue's 'close').
+	// NOTE: pending server→client requests are NOT dropped here — they ride a
+	// per-call POST stream, so a GET reconnect/supersede must not reject an
+	// in-flight `serverRequest`. Those are cleared on session DELETE + by timeout.
+	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
+	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
+	// a URI that's no longer subscribable is dropped from the persisted list.
+	if (session.subscriptions?.length) {
+		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
+		if (restored.length !== session.subscriptions.length) {
+			session.subscriptions = restored;
+			await saveSession(session);
+		}
+	}
+	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
+	// the client missed (those with a higher id) before live frames flow. Re-sent
+	// raw so their original event ids are preserved. Best-effort + per-worker: the
+	// buffer is empty if this GET landed on a worker without the prior stream.
+	const lastEventId = request.headers[LAST_EVENT_ID_HEADER];
+	if (lastEventId) {
+		for (const frame of replaySince(record, lastEventId)) record.queue.send(frame);
+	}
 	return {
 		status: 200,
 		headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' },
@@ -481,49 +550,163 @@ async function dispatchToolsCall(
 		return jsonResponse(200, buildSuccess(messageId, toolResult));
 	}
 
-	let toolResult: ToolResult;
-	let status: 'ok' | 'isError' = 'ok';
-	let errorMessage: string | undefined;
-	try {
-		toolResult = await tool.handler(args, {
-			user,
+	// Per-call cancellation (#1349 §3.3): an inbound `notifications/cancelled`
+	// referencing this request id aborts `signal`. Registered for the call's
+	// lifetime, removed in `finally`.
+	const controller = new AbortController();
+	registerCall(session.id, messageId, controller);
+
+	// Invoke the handler, normalize errors to an isError tool result, release the
+	// rate-limit slot, and emit the audit entry. `progress` is wired only on the
+	// streaming path; absent here it's a no-op.
+	const invoke = async (
+		progress?: ToolCallContext['progress'],
+		serverRequest?: ToolCallContext['serverRequest']
+	): Promise<ToolResult> => {
+		let toolResult: ToolResult;
+		let status: 'ok' | 'isError' = 'ok';
+		let errorMessage: string | undefined;
+		try {
+			toolResult = await tool.handler(args, {
+				user,
+				profile: request.profile,
+				sessionId: session.id,
+				signal: controller.signal,
+				progress,
+				serverRequest,
+			});
+			if (toolResult?.isError) status = 'isError';
+		} catch (err) {
+			// Per MCP §server/tools → Error Handling: tool-execution errors come
+			// back as a successful JSON-RPC result with isError:true so the LLM
+			// can see and adapt. Stack traces stay in the server log; only the
+			// message goes to the wire (Harper-style hygiene).
+			const errMsg = (err as Error).message ?? 'tool execution failed';
+			harperLogger.warn(`MCP tools/call ${name} threw: ${(err as Error).stack ?? errMsg}`);
+			errorMessage = errMsg;
+			status = 'isError';
+			toolResult = {
+				isError: true,
+				content: [
+					{
+						type: 'text',
+						text: JSON.stringify({ kind: 'harper_error', message: errMsg }),
+					},
+				],
+			};
+		} finally {
+			decision.release();
+		}
+		emitAuditEntry({
+			timestamp: new Date(callStartedAt).toISOString(),
 			profile: request.profile,
 			sessionId: session.id,
+			tool: name,
+			user: user.username ?? request.user,
+			args: args as object,
+			status,
+			durationMs: Date.now() - callStartedAt,
+			...(errorMessage ? { errorMessage } : {}),
 		});
-		if (toolResult?.isError) status = 'isError';
-	} catch (err) {
-		// Per MCP §server/tools → Error Handling: tool-execution errors come
-		// back as a successful JSON-RPC result with isError:true so the LLM
-		// can see and adapt. Stack traces stay in the server log; only the
-		// message goes to the wire (Harper-style hygiene).
-		const errMsg = (err as Error).message ?? 'tool execution failed';
-		harperLogger.warn(`MCP tools/call ${name} threw: ${(err as Error).stack ?? errMsg}`);
-		errorMessage = errMsg;
-		status = 'isError';
-		toolResult = {
-			isError: true,
-			content: [
-				{
-					type: 'text',
-					text: JSON.stringify({ kind: 'harper_error', message: errMsg }),
-				},
-			],
-		};
-	} finally {
-		decision.release();
+		return toolResult;
+	};
+
+	// Stream the response (#1349 §3.4) only when the client both supplied a
+	// `_meta.progressToken` and accepts `text/event-stream`. Otherwise keep the
+	// single-JSON response (back-compat for clients/tools that don't stream).
+	const progressToken = extractProgressToken(message);
+	const wantsStream =
+		progressToken !== undefined && acceptsMediaType(request.headers[ACCEPT_HEADER], 'text/event-stream');
+
+	if (!wantsStream) {
+		try {
+			const toolResult = await invoke();
+			return jsonResponse(200, buildSuccess(messageId, toolResult));
+		} finally {
+			unregisterCall(session.id, messageId);
+		}
 	}
-	emitAuditEntry({
-		timestamp: new Date(callStartedAt).toISOString(),
-		profile: request.profile,
-		sessionId: session.id,
-		tool: name,
-		user: user.username ?? request.user,
-		args: args as object,
-		status,
-		durationMs: Date.now() - callStartedAt,
-		...(errorMessage ? { errorMessage } : {}),
+
+	// Streaming: hand back an SSE stream immediately and run the handler detached,
+	// pushing `notifications/progress` frames as it emits, then the final JSON-RPC
+	// response, then closing the stream. The adapters frame `sseIterable` to the
+	// wire (the same path the GET channel uses).
+	const queue = new IterableEventQueue<SseEvent>();
+	// Abort the handler if the client disconnects (#3.3): toSseStream emits 'close'
+	// on this queue when the response stream tears down, so a long-running handler
+	// stops (and releases its rate-limit slot) instead of streaming progress into a
+	// dead socket. On normal completion the IIFE's finally also emits 'close' — a
+	// harmless late abort after the handler already returned.
+	queue.once('close', () => controller.abort(new Error('MCP SSE client disconnected')));
+	const emitProgress: ToolCallContext['progress'] = (update) => {
+		if (controller.signal.aborted) return;
+		queue.send({
+			event: 'message',
+			data: {
+				jsonrpc: '2.0',
+				method: 'notifications/progress',
+				params: {
+					progressToken,
+					progress: update.progress,
+					...(update.total !== undefined ? { total: update.total } : {}),
+					...(update.message !== undefined ? { message: update.message } : {}),
+				},
+			},
+		});
+	};
+	// Server→client requests (#3.7): the handler can call back into the client
+	// during a streaming call. The request frame rides this SSE stream; the
+	// client's response arrives as a later POST and is correlated cross-worker.
+	const serverRequest: ToolCallContext['serverRequest'] = (method, params) =>
+		sendServerRequest({
+			sessionId: session.id,
+			method,
+			params,
+			clientCapabilities: session.clientCapabilities,
+			deliver: (frame) => queue.send({ event: 'message', data: frame }),
+		});
+	// Defer the detached run to the next macrotask so the adapter has wired up its
+	// toSseStream consumer (via the synchronous, microtask-only return path) before
+	// we produce. A synchronous handler could otherwise emit the final frame and
+	// 'close' before any listener exists; the queue buffers 'data' but not 'close',
+	// so the stream would drain the frames and then never end.
+	setImmediate(() => {
+		void (async () => {
+			try {
+				const toolResult = await invoke(emitProgress, serverRequest);
+				queue.send({ event: 'message', data: buildSuccess(messageId, toolResult) });
+			} catch (err) {
+				// `invoke` normalizes handler errors to an isError result, so reaching here
+				// means something unexpected threw outside that (e.g. emitAuditEntry or
+				// queue.send). Log and push a JSON-RPC error frame so the stream carries a
+				// terminal response instead of just closing; never let it become an
+				// unhandled rejection.
+				const errMsg = (err as Error).message ?? 'tool streaming failed';
+				harperLogger.warn(`MCP tools/call ${name} stream failed: ${(err as Error).stack ?? errMsg}`);
+				try {
+					queue.send({ event: 'message', data: buildError(messageId, ERROR_CODES.INTERNAL_ERROR, errMsg) });
+				} catch {
+					/* queue already torn down — nothing more to deliver */
+				}
+			} finally {
+				unregisterCall(session.id, messageId);
+				queue.emit('close');
+			}
+		})();
 	});
-	return jsonResponse(200, buildSuccess(messageId, toolResult));
+	return {
+		status: 200,
+		headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' },
+		sseIterable: queue,
+	};
+}
+
+/** Read a JSON-RPC request's `params._meta.progressToken` (string|number) if present. */
+function extractProgressToken(message: JsonRpcMessage): string | number | undefined {
+	const params =
+		'params' in message ? (message.params as { _meta?: { progressToken?: unknown } } | undefined) : undefined;
+	const token = params?._meta?.progressToken;
+	return typeof token === 'string' || typeof token === 'number' ? token : undefined;
 }
 
 function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
@@ -543,9 +726,184 @@ function dispatchResourcesList(request: NormRequest, message: JsonRpcMessage, me
 	return jsonResponse(200, buildSuccess(messageId, body));
 }
 
-function dispatchResourceTemplatesList(request: NormRequest, messageId: JsonRpcId): NormResponse {
-	const templates = listResourceTemplates(request.profile);
-	return jsonResponse(200, buildSuccess(messageId, { resourceTemplates: templates }));
+function dispatchResourceTemplatesList(
+	request: NormRequest,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): NormResponse {
+	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
+	const offset = decodeRequestCursor(params?.cursor);
+	if (offset === INVALID_CURSOR) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
+	}
+	const { resourceTemplates, nextCursor } = listResourceTemplates(request.profile, offset);
+	const result: { resourceTemplates: unknown[]; nextCursor?: string } = { resourceTemplates };
+	if (nextCursor) result.nextCursor = nextCursor;
+	return jsonResponse(200, buildSuccess(messageId, result));
+}
+
+function dispatchPromptsList(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
+	const params = 'params' in message ? (message.params as { cursor?: unknown } | undefined) : undefined;
+	const offset = decodeRequestCursor(params?.cursor);
+	if (offset === INVALID_CURSOR) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'invalid pagination cursor'));
+	}
+	const { prompts, nextCursor } = listPrompts(request.profile, offset);
+	const result: { prompts: unknown[]; nextCursor?: string } = { prompts };
+	if (nextCursor) result.nextCursor = nextCursor;
+	return jsonResponse(200, buildSuccess(messageId, result));
+}
+
+async function dispatchPromptsGet(
+	request: NormRequest,
+	session: McpSessionRecord,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params =
+		'params' in message ? (message.params as { name?: unknown; arguments?: unknown } | undefined) : undefined;
+	const name = typeof params?.name === 'string' ? params.name : undefined;
+	if (!name) {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'prompts/get requires params.name'));
+	}
+	const prompt = getPrompt(name);
+	if (!prompt || prompt.profile !== request.profile) {
+		// Per MCP §server/prompts an unknown prompt name is an invalid-params error.
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `Unknown prompt: ${name}`));
+	}
+	const rawArgs =
+		params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
+			? (params.arguments as Record<string, unknown>)
+			: {};
+	// Per the MCP spec prompt arguments are strings; coerce defensively so a client
+	// sending a non-string value can't throw a TypeError inside an author's render().
+	// Omit null/undefined (rather than coercing to '') so the required-arg check below
+	// still treats them as missing.
+	const args: Record<string, string> = {};
+	for (const [k, v] of Object.entries(rawArgs)) if (v != null) args[k] = String(v);
+	const missing = (prompt.arguments ?? []).filter((a) => a.required && args[a.name] == null).map((a) => a.name);
+	if (missing.length > 0) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, `missing required argument(s): ${missing.join(', ')}`)
+		);
+	}
+	try {
+		const rendered = await prompt.render(args, {
+			user: effectiveUser(request),
+			profile: request.profile,
+			sessionId: session.id,
+		});
+		return jsonResponse(
+			200,
+			buildSuccess(messageId, {
+				...(rendered.description ? { description: rendered.description } : {}),
+				messages: rendered.messages ?? [],
+			})
+		);
+	} catch (err) {
+		const errMsg = (err as Error).message ?? 'prompt render failed';
+		harperLogger.warn(`MCP prompts/get ${name} threw: ${(err as Error).stack ?? errMsg}`);
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, `prompt render failed: ${errMsg}`));
+	}
+}
+
+function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messageId: JsonRpcId): NormResponse {
+	const params =
+		'params' in message
+			? (message.params as
+					| {
+							ref?: { type?: unknown; uri?: unknown; name?: unknown };
+							argument?: { name?: unknown; value?: unknown };
+							context?: { arguments?: Record<string, string> };
+					  }
+					| undefined)
+			: undefined;
+	const refType = typeof params?.ref?.type === 'string' ? params.ref.type : undefined;
+	const argName = typeof params?.argument?.name === 'string' ? params.argument.name : undefined;
+	if (!refType || !argName) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'completion/complete requires ref.type and argument.name')
+		);
+	}
+	const value = typeof params?.argument?.value === 'string' ? params.argument.value : '';
+	let completion: { values: string[]; total: number; hasMore: boolean };
+	if (refType === 'ref/resource') {
+		completion = completeResourceArgument({
+			argument: { name: argName, value },
+			context: params?.context,
+			user: effectiveUser(request),
+			profile: request.profile,
+		});
+	} else if (refType === 'ref/prompt') {
+		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;
+		completion = completePromptArgument(request.profile, promptName, argName, value);
+	} else {
+		// Unknown ref type → an empty completion (spec: completion is best-effort).
+		completion = { values: [], total: 0, hasMore: false };
+	}
+	return jsonResponse(200, buildSuccess(messageId, { completion }));
+}
+
+async function dispatchResourcesSubscribe(
+	request: NormRequest,
+	session: McpSessionRecord,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params = 'params' in message ? (message.params as { uri?: unknown } | undefined) : undefined;
+	const uri = typeof params?.uri === 'string' ? params.uri : undefined;
+	if (!uri) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/subscribe requires params.uri')
+		);
+	}
+	// Require a live GET SSE stream: that's where notifications/resources/updated is
+	// delivered, and its 'close' is the only teardown hook for the subscription. A
+	// subscription opened without a stream would leak its audit-log iterator and
+	// drop every update silently.
+	if (!getRegisteredSession(session.id)) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
+		);
+	}
+	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
+	if (!ok) {
+		// Only row-backed application resources are subscribable; synthetic harper://*
+		// URIs (and unknown URIs) have no change source.
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
+	}
+	// Persist the URI on the durable record so it survives an SSE reconnect.
+	if (!session.subscriptions?.includes(uri)) {
+		session.subscriptions = [...(session.subscriptions ?? []), uri];
+		await saveSession(session);
+	}
+	return jsonResponse(200, buildSuccess(messageId, {}));
+}
+
+async function dispatchResourcesUnsubscribe(
+	request: NormRequest,
+	session: McpSessionRecord,
+	message: JsonRpcMessage,
+	messageId: JsonRpcId
+): Promise<NormResponse> {
+	const params = 'params' in message ? (message.params as { uri?: unknown } | undefined) : undefined;
+	const uri = typeof params?.uri === 'string' ? params.uri : undefined;
+	if (!uri) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/unsubscribe requires params.uri')
+		);
+	}
+	removeResourceSubscription(session.id, uri);
+	if (session.subscriptions?.includes(uri)) {
+		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
+		await saveSession(session);
+	}
+	return jsonResponse(200, buildSuccess(messageId, {}));
 }
 
 async function dispatchResourcesRead(
@@ -591,6 +949,12 @@ async function handleDelete(request: NormRequest): Promise<NormResponse> {
 	if (session.user !== request.user) {
 		return { status: 403, headers: {} };
 	}
+	// Explicit teardown: stop live subscriptions and reject any pending server→client
+	// requests for this session (the GET 'close' covers subscriptions on disconnect,
+	// but a DELETE may arrive with no open GET stream, and server-requests aren't
+	// GET-tied at all).
+	dropSessionSubscriptions(sessionId);
+	dropSessionServerRequests(sessionId);
 	await deleteSession(sessionId);
 	return { status: 204, headers: {} };
 }

@@ -475,6 +475,10 @@
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
 					"description": "Path or array of paths for blob storage. Default: <rootPath>/blobs"
 				},
+				"blobReadTimeout": {
+					"type": "number",
+					"description": "Max time (ms) a blob read will wait for an in-progress write to finish before failing with a 503, rather than holding the connection. Default: 20000"
+				},
 				"pageSize": { "type": "number", "description": "Database page size (bytes). Default: OS default" },
 				"reclamation": {
 					"type": "object",

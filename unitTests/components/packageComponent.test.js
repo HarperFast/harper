@@ -99,6 +99,40 @@ describe('streamPackagedDirectory round-trip', () => {
 			await fs.rm(sourceDir, { recursive: true, force: true });
 		}
 	});
+
+	it('packages a component that itself lives under a node_modules/ path (regression)', async function () {
+		this.timeout(15000);
+		// A component installed under node_modules — the case that made `harper deploy`
+		// of any npm-installed component ship an empty tarball (ignore matched the
+		// absolute path's `node_modules` segment for every entry).
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-under-nm-'));
+		const compDir = path.join(root, 'node_modules', '@scope', 'comp');
+		const compFiles = {
+			'package.json': '{"name":"comp","version":"1.0.0"}\n',
+			'dist/resources/Memory.js': 'exports.x = 1;\n',
+			'schemas/memory.graphql': 'type Memory { id: ID }\n',
+		};
+		for (const [rel, content] of Object.entries(compFiles)) {
+			const full = path.join(compDir, rel);
+			await fs.mkdir(path.dirname(full), { recursive: true });
+			await fs.writeFile(full, content);
+		}
+		// An inner node_modules that must still be excluded.
+		const innerDep = path.join(compDir, 'node_modules', 'dep', 'index.js');
+		await fs.mkdir(path.dirname(innerDep), { recursive: true });
+		await fs.writeFile(innerDep, 'module.exports = 1;\n');
+
+		const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-under-nm-out-'));
+		try {
+			await pipeline(streamPackagedDirectory(compDir, { skip_node_modules: true }), gunzip(), tar.extract(extractDir));
+			// Component source survives despite compDir living under node_modules/, and the
+			// inner node_modules is excluded — deepStrictEqual asserts both at once.
+			assert.deepStrictEqual(await readDirTree(extractDir), compFiles);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+			await fs.rm(extractDir, { recursive: true, force: true });
+		}
+	});
 });
 
 // keep eslint happy in case Readable isn't directly used in some branch

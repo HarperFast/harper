@@ -123,6 +123,66 @@ interrupted drop instead of resurrecting the table. Without this, surviving cata
 silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
 (with their data, if the column families were never actually removed).
 
+## MCP protocol surface (`components/mcp/`)
+
+The MCP Streamable-HTTP transport (spec `2025-06-18`) is served at `/mcp` under **two profiles**: an
+_operations_ profile (mounted on the Fastify operations server) and an _application_ profile (mounted on
+the Harper application HTTP server). Both share `transport.ts` (the JSON-RPC dispatcher) but differ in what
+they expose — operations surfaces management operations as tools; application surfaces exported
+Resources/tables. Profile gating runs throughout (`completeResourceArgument`, prompt visibility, tool
+`visibleTo`), so when adding a method, decide which profile(s) it belongs to rather than assuming both.
+
+A handful of design points are non-obvious and easy to break:
+
+- **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
+  (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
+  API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on
+  `'close'`. The streaming tool handler is therefore dispatched inside a `setImmediate` (a _detached_,
+  deferred task) so the adapter's consumer attaches **before** any frame is produced. Without the defer, a
+  fast handler emits its final frame + `close` synchronously; the queue buffers `'data'` but not `'close'`,
+  and the stream hangs. Any handler on this path must check `signal.aborted` first (cancellation can land
+  before the deferred task runs).
+
+- **Server→client requests are correlated across workers.** `serverRequests.ts` lets a streaming `tools/call`
+  call _back_ into the client (`sampling/createMessage`, `elicitation/create`, `roots/list`) and await the
+  reply. The request frame rides **the call's POST SSE stream**; the client's response is a _fresh POST_ that
+  can land on **any worker**. The pending-promise registry is per-worker, so a response with no local match
+  is fanned out over ITC (`MCP_CLIENT_RESPONSE`) and the worker holding the promise resolves it (mirrors
+  `components/status/crossThread.ts`). Request ids are `srv-${randomUUID()}` — **not** a per-worker counter,
+  which would collide on `(sessionId, id)` across workers and misroute responses. Methods are capability-gated
+  (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
+  (timeout + high-water-mark) so a non-responding client can't leak promises.
+
+- **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
+  Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as the
+  "Audit-store `'committed'` notification batching" section above). The targeting is the subtle part:
+  `getMatch` returns the matched Resource plus the remaining path on `relativeURL`, and `subscribeToResource`
+  sets **both** `request.id` (the record key, or `undefined`) **and** `request.isCollection` from it. A record
+  URI (`…/WorkItem/42`) watches that record; a collection URI (`…/WorkItem`, what `resources/list` advertises)
+  watches the whole table. `new RequestTarget(path)` parses an id out of the path on its own, so _both_ fields
+  must be overridden — otherwise a collection URI silently watches a phantom record named after the resource
+  and receives nothing. `harper://*` pseudo-resources are **list-changed-only** (not row-backed). Subscriptions
+  use `omitCurrent` (notify on change, not a retained snapshot — the notification just says "re-read this").
+
+- **Subscribe requires a live GET stream; teardown is asymmetric.** `resources/subscribe` rejects (`-32602`)
+  if no GET SSE stream has registered the session — the audit-log iterator has nowhere to deliver, and there'd
+  be no `RegisteredSession` close hook to stop it. The GET `'close'` handler drops **subscriptions only**
+  (`dropSessionSubscriptions`), _not_ pending server requests: those ride the per-call POST stream, so a normal
+  GET reconnect must not reject an in-flight `ctx.serverRequest`. A `DELETE` (explicit session teardown) drops
+  **both**, because it may arrive with no open GET stream.
+
+- **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
+  assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a
+  `Last-Event-ID` header, `replaySince` re-sends only the frames after that id. The event-id sequence **and**
+  the buffer carry across a supersede (a fresh GET replacing the old one for the same session id), so ids stay
+  monotonic and no frame is lost across a reconnect.
+
+- **Test seams avoid loading thread/audit machinery in unit tests.** `_setSubscribeImplForTest`
+  (`resources.ts`) and `_setItcForTest` (`serverRequests.ts`) inject fakes so the unit suite needn't spin up
+  the audit log or ITC. Consequence: the subscribe **targeting** logic (`id`/`isCollection` derivation) is
+  _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
+  record / N4 collection), not in unit tests.
+
 Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
 lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
 subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a

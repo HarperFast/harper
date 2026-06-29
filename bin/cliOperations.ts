@@ -9,7 +9,8 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
-import { streamPackagedDirectory, getPackagedDirectorySize } from '../components/packageComponent.ts';
+import { streamPackagedDirectory, getPackagedDirectorySize, packageDirectory } from '../components/packageComponent.ts';
+import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
@@ -36,6 +37,64 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'skip_node_modules',
 	'skip_symlinks',
 ]);
+
+// Streaming (multipart upload + SSE progress) deploy was introduced in 5.1.0. A CLI at >=
+// 5.1 talking to a server < 5.1 must not use it: the older server has no multipart body
+// parser (the upload is rejected) and its generic text/event-stream serializer emits a bare
+// `data:` frame with no `done` event (so the CLI reads no result — "Deploy completed (no
+// result payload)."). For those targets we fall back to the legacy deploy transport: the
+// tarball rides as a native binary `payload` in a CBOR-encoded body — exactly what the
+// pre-5.1 CLI sent (Content-Type: application/cbor) — so it stays compact (~1x) instead of
+// ballooning as a base64 string (~1.33x) or a {type,data} JSON byte array (~5x).
+const STREAMING_DEPLOY_MIN_MAJOR = 5;
+const STREAMING_DEPLOY_MIN_MINOR = 1;
+
+/**
+ * Parses a Harper version string (e.g. "5.0.31", "5.1.0-beta.2") and reports whether the
+ * server is new enough to accept the multipart + SSE streaming deploy. Unparseable input
+ * returns true so we never downgrade a deploy against a server we simply can't classify.
+ */
+function versionSupportsStreamingDeploy(version: unknown): boolean {
+	if (typeof version !== 'string') return true;
+	const match = version.match(/^(\d+)\.(\d+)/);
+	if (!match) return true;
+	const major = Number(match[1]);
+	const minor = Number(match[2]);
+	if (major !== STREAMING_DEPLOY_MIN_MAJOR) return major > STREAMING_DEPLOY_MIN_MAJOR;
+	return minor >= STREAMING_DEPLOY_MIN_MINOR;
+}
+
+/**
+ * Probes a remote target's Harper version via `registration_info` (a lightweight, long-lived
+ * operation present on both < 5.1 and >= 5.1 servers that returns `{ version }`) to decide
+ * whether the streaming deploy protocol is supported. Any probe failure — non-200, missing
+ * version, network error — resolves to `true` (assume modern) so we never break a deploy
+ * that would otherwise have worked; we only downgrade on a positive "older than 5.1" reading.
+ */
+async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
+	try {
+		const probeOptions = { ...options, headers: { ...options.headers, Accept: 'application/json' } };
+		delete probeOptions.streamResponse;
+		const response = await httpRequest(probeOptions, { operation: 'registration_info' });
+		if (response.statusCode !== 200 || !response.body) return true;
+		const version = JSON.parse(response.body)?.version;
+		return versionSupportsStreamingDeploy(version);
+	} catch {
+		return true;
+	}
+}
+
+// Build the JSON operation-field set from `req`, dropping the CLI's internal (`_`-prefixed)
+// and transport-only fields so neither the CLI internals nor credentials leak into the
+// request body. Shared by the multipart and legacy-JSON deploy body builders.
+function operationFields(req: any): any {
+	const fields: any = {};
+	for (const [key, value] of Object.entries(req)) {
+		if (key.startsWith('_') || TRANSPORT_ONLY_FIELDS.has(key)) continue;
+		fields[key] = value;
+	}
+	return fields;
+}
 
 export { cliOperations, buildRequest };
 const PREPARE_OPERATION: any = {
@@ -204,7 +263,33 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
 		}
-		const useSse = SSE_OPERATIONS.has(req.operation);
+		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
+		// When deploying to a remote target, probe its version first and downgrade to the
+		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always
+		// hit this same Harper build, so no probe is needed there.
+		if (req.operation === 'deploy_component' && target && !(await targetSupportsStreamingDeploy(options))) {
+			req._legacyDeploy = true;
+			if (req._multipart) {
+				// Re-package the directory as a single buffered tarball. The legacy CBOR body
+				// below carries it as native binary, matching the pre-5.1 CLI. Wrap the
+				// packaging so a local failure (e.g. a file vanishing after the size walk)
+				// surfaces as itself rather than being mapped to "Failed to connect to Harper"
+				// by the catch below (which keys off err.code === 'ENOENT').
+				try {
+					req.payload = await packageDirectory(req._projectPath, req._packageOptions);
+				} catch (packageErr: any) {
+					throw new Error(`Failed to package component directory '${req._projectPath}': ${packageErr.message}`, {
+						cause: packageErr,
+					});
+				}
+				delete req._multipart;
+			}
+			console.error(
+				'Target Harper predates streaming deploy (< 5.1); using legacy compatibility deploy (no live progress).'
+			);
+		}
+
+		const useSse = SSE_OPERATIONS.has(req.operation) && !req._legacyDeploy;
 		if (useSse) {
 			options.headers.Accept = 'text/event-stream';
 			options.streamResponse = true;
@@ -223,11 +308,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				req._packageOptions,
 				renderer ? (n) => renderer.countUploadBytes(n) : undefined
 			);
-			const fields = {};
-			for (const [key, value] of Object.entries(req)) {
-				if (key.startsWith('_') || TRANSPORT_ONLY_FIELDS.has(key)) continue;
-				fields[key] = value;
-			}
+			const fields = operationFields(req);
 			const multipart = buildMultipartBody(fields, {
 				name: 'payload',
 				filename: 'package.tar.gz',
@@ -241,6 +322,20 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			// Tap the body so bytes flowing into the HTTP request advance the upload bar.
 			// The renderer's Transform is identity — chunks pass through unmodified.
 			body = renderer ? renderer.tapUploadStream(multipart.stream) : multipart.stream;
+		} else if (req._legacyDeploy) {
+			const fields = operationFields(req);
+			if (Buffer.isBuffer(fields.payload)) {
+				// Directory deploy: CBOR-encode so the tarball travels as a native binary
+				// byte string (the pre-5.1 transport). The pre-5.1 server's cbor parser hands
+				// the handler a real Buffer payload. Accept JSON so the buffered response
+				// parses on the existing (non-SSE) path below.
+				options.headers['Content-Type'] = 'application/cbor';
+				options.headers.Accept = 'application/json';
+				body = encodeCbor(fields);
+			} else {
+				// Package deploy (no binary payload): plain JSON, as pre-5.1 sent it.
+				body = fields;
+			}
 		} else {
 			body = req;
 		}

@@ -402,6 +402,10 @@ export function makeTable(options) {
 						viaNodeId: event.viaNodeId,
 						// use per-event expiresAt: batched txn context only holds the first event's expiration
 						expiresAt: event.expiresAt,
+						// bulk base-copy snapshot frame: apply current-state directly, without an audit/transaction-log
+						// entry or out-of-order resequencing (harper-pro#480). Only set for copy frames (between
+						// COPY_START and COPY_COMPLETE); post-copy audit-replay frames apply normally.
+						isCopyApply: event.isCopyApply,
 						async: true,
 					};
 					const id = event.id;
@@ -482,7 +486,10 @@ export function makeTable(options) {
 											updateRecordedSequenceId = () => {
 												// the key for tracking the sequence ids and txn times received from this node
 												const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
-												const existingSeq = dbisDb.get(seqKey);
+												// getSync (not get): dbisDb is the raw __dbis__ store, so on RocksDB get() returns a
+												// Promise on a block-cache miss; `Promise?.nodes` is undefined and per-peer sequence
+												// tracking would silently reset. The seq keyspace grows with peer count, so it evicts.
+												const existingSeq = (dbisDb as any).getSync(seqKey);
 												let nodeStates = existingSeq?.nodes;
 												if (!nodeStates) {
 													// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
@@ -966,7 +973,10 @@ export function makeTable(options) {
 		}
 
 		static getResidencyRecord(id: Id) {
-			return dbisDb.get([Symbol.for('residency_by_id'), id]);
+			// getSync (not get): callers consume the result synchronously (e.g. residency.includes(...) in a
+			// commit callback, or store it as context.previousResidency). On RocksDB get() would return a
+			// Promise on a cache miss, breaking those sync consumers once __dbis__ grows past the block cache.
+			return (dbisDb as any).getSync([Symbol.for('residency_by_id'), id]);
 		}
 
 		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
@@ -1960,8 +1970,25 @@ export function makeTable(options) {
 					const expiresAt: number =
 						options?.expiresAt ?? context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
+					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
+					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
+					// harper-pro#480). Durability for these (WAL-off) rows comes from an explicit RocksDB flush that
+					// gates the copy resume cursor on the receiver, not from an audit entry.
+					// RocksDB-only: with the singular version/localTime, a copied row's stored version === its replay
+					// sequence, so `version < copyStartTime` (the receiver's gate) reliably means "not re-delivered by
+					// the post-copy replay". On LMDB, localTime is stored separately from version and audit=false would
+					// drop it (breaking a later downstream full copy) and the replay cursor can diverge from version
+					// (risking a missed dedup), so LMDB falls back to the normal audited apply. Replication targets
+					// RocksDB anyway. (harper-pro#480)
+					const isCopyApply = options?.isCopyApply === true && isRocksDB;
 
 					if (precedesExisting <= 0) {
+						if (isCopyApply) {
+							// A base-copy snapshot row must never regress a newer-or-equal live write that landed
+							// during the copy; those are re-delivered by the post-copy audit replay from copyStartTime.
+							write.skipped = true;
+							return;
+						}
 						// This block is to handle the case of saving an update where the transaction timestamp is older than the
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
@@ -1993,6 +2020,39 @@ export function makeTable(options) {
 								write.skipped = true;
 								return; // out-of-order write already folded into this record
 							}
+							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
+							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
+							// by version. That log has time-based retention — auditRetention purges whole log files — so a
+							// lookup for a version older than the log's oldest retained entry has (essentially always)
+							// been purged. On RocksDB an exactStart miss scans the whole log to end-of-log (~17ms each in
+							// the field, all 100% misses while applying aged hdb_analytics during a system-DB copy,
+							// pegging the worker at ~100% CPU — harper-pro#480). Both of these lookups are already
+							// documented as best-effort-may-miss: a miss at the up-front check falls through to the walk
+							// (the additionalAuditRefs read-your-writes check above is the real duplicate guard, #1137),
+							// and the depth-cap check notes the lookup "can intermittently miss under load" with the
+							// authoritative full-copy record restoring exact convergence (#1148). This guard turns that
+							// tolerated miss into a deliberate skip for pre-retention versions — staying within the
+							// existing contract. (oldestRetainedAuditTime is the first physical/in-order entry's version;
+							// a transaction log appended out of timestamp order could in theory retain a smaller-versioned
+							// entry below it — but the same best-effort contract and full-copy convergence cover that.)
+							// Resolve the oldest retained entry once, for the same log the dedup reads.
+							let oldestRetainedAuditTime: number | undefined;
+							let oldestRetainedAuditTimeResolved = false;
+							const dedupVersionCouldBeRetained = (version: number): boolean => {
+								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
+								if (!oldestRetainedAuditTimeResolved) {
+									oldestRetainedAuditTimeResolved = true;
+									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
+									// Mirror replicationConnection's retention check and the cleanup key basis (localTime ??
+									// version). Fall back to the nominal time-based purge floor when the log is empty/unavailable.
+									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
+										oldestRetainedAuditTime = entry.localTime ?? entry.version;
+										break;
+									}
+									oldestRetainedAuditTime ??= Date.now() - auditRetention;
+								}
+								return version >= oldestRetainedAuditTime!;
+							};
 							// Up-front keyed dedup (RocksDB): a re-delivered out-of-order write whose exact
 							// (version, nodeId) is already in the audit log is a duplicate that was already applied — skip
 							// it here instead of paying the O(depth) resequencing walk below only to discard it in the
@@ -2004,7 +2064,7 @@ export function makeTable(options) {
 							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
 							// check above remains the read-your-writes guard.
-							if (isRocksDB) {
+							if (isRocksDB && dedupVersionCouldBeRetained(txnTime)) {
 								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -2064,6 +2124,7 @@ export function makeTable(options) {
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
 							const isReDeliveredDuplicate = () => {
+								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								return (
 									duplicate &&
@@ -2366,7 +2427,8 @@ export function makeTable(options) {
 								? Math.max(txnTime, existingEntry?.version ?? 0) // RocksDB uses a singular version/local time, so it must be most recent
 								: txnTime,
 							omitLocalRecord ? INVALIDATED : 0,
-							audit,
+							// copy-apply rows are snapshots, not transactions: write the record + indices but no audit entry
+							isCopyApply ? false : audit,
 							{
 								omitLocalRecord,
 								user: (context as any)?.user,
@@ -2376,7 +2438,8 @@ export function makeTable(options) {
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
 								transaction,
-								tableToTrack: databaseName === 'system' ? null : options?.replay ? null : tableName, // don't track analytics on system tables
+								// no per-row db-write analytics for a bulk copy; system tables never track
+								tableToTrack: isCopyApply || databaseName === 'system' ? null : options?.replay ? null : tableName,
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
@@ -5302,7 +5365,9 @@ export function makeTable(options) {
 	function getResidencyId(ownerNodeNames) {
 		if (ownerNodeNames) {
 			const setKey = ownerNodeNames.join(',');
-			let residencyId = dbisDb.get([Symbol.for('residency_by_set'), setKey]);
+			// getSync (not get): a get() Promise on a RocksDB cache miss is always truthy, so this would
+			// return the Promise as the residencyId and skip minting a new one, corrupting the mapping.
+			let residencyId = (dbisDb as any).getSync([Symbol.for('residency_by_set'), setKey]);
 			if (residencyId) return residencyId;
 			dbisDb.put(
 				[Symbol.for('residency_by_set'), setKey],

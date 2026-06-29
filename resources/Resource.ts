@@ -44,6 +44,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	readonly #context: Context | SourceContext;
 	#isCollection: boolean;
 	static transactions: Transaction[] & { timestamp: number };
+	/**
+	 * The URL path this resource is registered at. When set, it overrides the export-name convention used during
+	 * resource registration. A leading `/` makes the path root-relative (top-level); otherwise it is resolved relative
+	 * to the component's directory. Paths may contain `:param` and `*wildcard` segments, whose matched values are bound
+	 * onto the request target (e.g. `static path = '/widget/:id'` populates `target.id`).
+	 */
+	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
 	static description?: string;

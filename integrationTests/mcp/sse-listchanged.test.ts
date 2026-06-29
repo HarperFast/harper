@@ -91,6 +91,39 @@ async function toolsCount(
 	return json?.result?.tools?.length ?? -1;
 }
 
+/** Send a JSON-RPC POST to the MCP endpoint and return the parsed response. */
+async function mcpCall(
+	baseUrl: string,
+	auth: string,
+	session: { sessionId: string; protocolVersion: string },
+	method: string,
+	params: Record<string, unknown>,
+	id: number
+): Promise<any> {
+	const res = await fetch(new URL('/mcp', baseUrl), {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+			'mcp-session-id': session.sessionId,
+			'mcp-protocol-version': session.protocolVersion,
+		},
+		body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+	});
+	return res.json();
+}
+
+/** Upsert a WorkItem record by id through the application REST API. */
+async function putWorkItem(ctx: ContextWithHarper, id: string, body: Record<string, unknown>): Promise<void> {
+	const res = await fetch(new URL(`/WorkItem/${id}`, ctx.harper.httpURL), {
+		method: 'PUT',
+		headers: { 'content-type': 'application/json', 'authorization': adminAuth(ctx) },
+		body: JSON.stringify(body),
+	});
+	ok(res.ok, `PUT WorkItem/${id} failed: ${res.status} ${await res.text()}`);
+}
+
 /**
  * Open a GET SSE stream and resolve with `{ status, contentType }` once headers
  * arrive (rejecting if they never flush — the N1 hang), plus a
@@ -238,6 +271,49 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 
 			const after = await toolsCount(ctx.harper.operationsAPIURL, auth, session);
 			ok(after > 0, `surface actually changed (tools ${before} → ${after})`);
+		} finally {
+			sse.close();
+		}
+	});
+
+	test('N3: application-profile delivers notifications/resources/updated after a subscribed record changes', async () => {
+		const id = `sub_${Date.now().toString(36)}`;
+		const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+		// Seed the record before subscribing — subscriptions use omitCurrent, so only
+		// changes after subscribe should notify (not this initial write).
+		await putWorkItem(ctx, id, { state: 'pending', payload: 'x' });
+
+		const session = await initialize(ctx.harper.httpURL, adminAuth(ctx));
+		const sse = await openSse(ctx.harper.httpURL, adminAuth(ctx), session, 2500);
+		try {
+			strictEqual(sse.status, 200, 'application GET SSE establishes');
+			const sub = await mcpCall(ctx.harper.httpURL, adminAuth(ctx), session, 'resources/subscribe', { uri }, 10);
+			strictEqual(sub.error, undefined, `resources/subscribe should succeed: ${JSON.stringify(sub.error)}`);
+			// Mutate the subscribed record → a committed change pushes resources/updated.
+			await putWorkItem(ctx, id, { state: 'done', payload: 'x', result: 'r' });
+			const evt = await sse.next((m) => m?.method === 'notifications/resources/updated', 5000);
+			ok(evt, 'notifications/resources/updated delivered after the subscribed record changed');
+			strictEqual(evt.params.uri, uri, 'notification carries the subscribed URI');
+		} finally {
+			sse.close();
+		}
+	});
+
+	test('N4: subscribing to a collection URI notifies on any record change in the table', async () => {
+		// The collection URI is what resources/list advertises (no record id). It must
+		// watch the whole table, not a phantom record named after the resource.
+		const uri = new URL('/WorkItem', ctx.harper.httpURL).href;
+		const session = await initialize(ctx.harper.httpURL, adminAuth(ctx));
+		const sse = await openSse(ctx.harper.httpURL, adminAuth(ctx), session, 2500);
+		try {
+			strictEqual(sse.status, 200, 'application GET SSE establishes');
+			const sub = await mcpCall(ctx.harper.httpURL, adminAuth(ctx), session, 'resources/subscribe', { uri }, 10);
+			strictEqual(sub.error, undefined, `collection resources/subscribe should succeed: ${JSON.stringify(sub.error)}`);
+			// A brand-new record in the table must trigger the collection subscription.
+			await putWorkItem(ctx, `coll_${Date.now().toString(36)}`, { state: 'pending', payload: 'z' });
+			const evt = await sse.next((m) => m?.method === 'notifications/resources/updated', 5000);
+			ok(evt, 'notifications/resources/updated delivered after a record changed in the subscribed collection');
+			strictEqual(evt.params.uri, uri, 'notification carries the subscribed collection URI');
 		} finally {
 			sse.close();
 		}

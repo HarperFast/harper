@@ -522,6 +522,165 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.args[3][1]).to.equal('path/to/storage');
 			expect(set_in_stub.args[4][1]).to.equal('path/for/rotated/logs');
 		});
+
+		it('Test error is thrown if operationsApi securePort collides with http securePort', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { securePort: 9926 },
+					operationsApi: { network: { port: 9925, securePort: 9926 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.securePort and operationsApi.network.securePort cannot be the same value (9926)'
+			);
+		});
+
+		it('Test error is thrown if operationsApi port collides with http port', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 9926 },
+					operationsApi: { network: { port: 9926 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.port and operationsApi.network.port cannot be the same value (9926)'
+			);
+		});
+
+		it('Test collision is detected when one port is a string and the other a number', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { securePort: 9926 },
+					operationsApi: { network: { securePort: '9926' } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.securePort and operationsApi.network.securePort cannot be the same value (9926)'
+			);
+		});
+
+		it('Test port 0 (OS-assigned) does not trigger a collision error', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub().returns(fake_validation);
+			config_utils_rw.__set__('configValidator', config_validator_stub);
+
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 0 },
+					operationsApi: { network: { port: 0 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+		});
+
+		it('Test non-numeric port values do not trigger a collision error', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub().returns(fake_validation);
+			config_utils_rw.__set__('configValidator', config_validator_stub);
+
+			// Malformed values (e.g. boolean true, which Number() would coerce to 1) must not be treated as ports here;
+			// the schema validator reports them.
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: true },
+					operationsApi: { network: { port: true } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+		});
+
+		it('Test no collision error is thrown when http and operationsApi ports are distinct', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub().returns(fake_validation);
+			config_utils_rw.__set__('configValidator', config_validator_stub);
+
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 9926, securePort: 9927 },
+					operationsApi: { network: { port: 9925, securePort: 9928 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+			expect(config_validator_stub.called).to.be.true;
+		});
 	});
 
 	describe('Test updateConfigObject function', () => {

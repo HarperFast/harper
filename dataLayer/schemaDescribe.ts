@@ -34,6 +34,7 @@ export async function describeAll(opObj: any = {}) {
 		let schemaPerms = {};
 		let tResults = [];
 		const exact_count = opObj?.exact_count;
+		const skip_record_count = opObj?.skip_record_count;
 		const include_computed = opObj?.include_computed;
 		for (let schema in databases) {
 			schemaList[schema] = true;
@@ -43,10 +44,10 @@ export async function describeAll(opObj: any = {}) {
 				try {
 					let desc;
 					if (sysCall || isSu || bypassAuth) {
-						desc = await descTable({ schema, table, exact_count, include_computed });
+						desc = await descTable({ schema, table, exact_count, skip_record_count, include_computed });
 					} else if (rolePerms && rolePerms[schema].describe && rolePerms[schema].tables[table].describe) {
 						const tAttrPerms = rolePerms[schema].tables[table].attribute_permissions;
-						desc = await descTable({ schema, table, exact_count, include_computed }, tAttrPerms);
+						desc = await descTable({ schema, table, exact_count, skip_record_count, include_computed }, tAttrPerms);
 					}
 					if (desc) {
 						tResults.push(desc);
@@ -124,6 +125,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			database: Joi.string(),
 			table: Joi.string().required(),
 			exact_count: Joi.boolean().strict(),
+			skip_record_count: Joi.boolean().strict(),
 			include_computed: Joi.boolean().strict(),
 		})
 	);
@@ -208,11 +210,17 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			.filter((source: any) => source && source !== 'Replicator');
 
 	try {
-		const recordCount = await tableObj.getRecordCount({ exactCount: !!describeTableObject.exact_count });
-		tableResult.record_count = recordCount.recordCount;
+		// `getRecordCount` scans the table's primary store, which dominates describe latency on large
+		// tables -- and `describe_all` pays it serially for every table. Callers that only need schema
+		// /metadata can pass `skip_record_count: true` to omit the scan and fetch the count separately
+		// (e.g. asynchronously). The remaining stats below are O(1), so they are always included.
+		if (!describeTableObject.skip_record_count) {
+			const recordCount = await tableObj.getRecordCount({ exactCount: !!describeTableObject.exact_count });
+			tableResult.record_count = recordCount.recordCount;
+			tableResult.estimated_record_range = recordCount.estimatedRange;
+		}
 		tableResult.table_size = tableObj.getSize();
 		tableResult.db_audit_size = tableObj.getAuditSize();
-		tableResult.estimated_record_range = recordCount.estimatedRange;
 		let auditStore = tableObj.auditStore;
 		if (auditStore) {
 			for (let key of auditStore.getKeys({ reverse: true, limit: 1 })) {
@@ -244,6 +252,7 @@ export async function describeSchema(describeSchemaObject: any) {
 		Joi.object({
 			database: Joi.string(),
 			exact_count: Joi.boolean().strict(),
+			skip_record_count: Joi.boolean().strict(),
 			include_computed: Joi.boolean().strict(),
 		})
 	);
@@ -277,6 +286,7 @@ export async function describeSchema(describeSchemaObject: any) {
 					schema: describeSchemaObject.schema,
 					table: tableName,
 					exact_count: describeSchemaObject.exact_count,
+					skip_record_count: describeSchemaObject.skip_record_count,
 					include_computed: describeSchemaObject.include_computed,
 				},
 				table_perms ? table_perms.attribute_permissions : null

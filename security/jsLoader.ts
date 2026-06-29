@@ -751,6 +751,12 @@ function getDefaultJSGlobalNames() {
 
 /**
  * Get the set of global variables that should be available to modules that run in scoped compartments/contexts.
+ *
+ * The compartment global is SEEDED from the process `global` — every Harper process-global
+ * (`tables`, `databases`, `Resource`, …; see ../globals.js) is copied across as a live reference,
+ * not a per-compartment copy. A compartment is therefore not given an alternate set of these
+ * objects; it shares the same ones as the rest of the process (with only `server`/`logger`/
+ * `resources`/`config` optionally overridden per scope).
  */
 function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 	const appGlobal = {};
@@ -774,6 +780,10 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 	});
 	return appGlobal;
 }
+// The object exposed as the `harper` module inside compartments (`import { tables } from 'harper'`).
+// `Resource`/`tables`/`databases`/`createBlob`/… below are the live, process-wide singletons (the
+// same values surfaced as the top-level package exports and bare globals), not per-compartment
+// copies — only `server`/`logger`/`resources`/`config` are scope-overridable.
 function getHarperExports(scope: ApplicationScope) {
 	return {
 		server: scope.server ?? server,

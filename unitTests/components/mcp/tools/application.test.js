@@ -8,6 +8,7 @@ const {
 	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const { listPrompts, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE_READ = {
@@ -73,11 +74,13 @@ class FakeRequestTarget {}
 describe('mcp/tools/application — registration', () => {
 	beforeEach(() => {
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setRequestTargetForTest(FakeRequestTarget);
 	});
 
 	afterEach(() => {
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setResourcesForTest(undefined);
 		_setRequestTargetForTest(undefined);
 		_resetApplicationToolsRegisteredForTest();
@@ -127,6 +130,40 @@ describe('mcp/tools/application — registration', () => {
 		assert.ok(
 			after.some((n) => n === 'create_Product'),
 			`prior tools must survive a failed rebuild, got: ${after.join(', ')}`
+		);
+	});
+
+	it('restores prior prompts (not just tools) when a rebuild throws mid-loop (#1404 review)', () => {
+		// First pass registers a table that also publishes an author prompt (§3.5).
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		Product.mcpPrompts = [{ name: 'greeting', description: 'say hi', render: () => ({ messages: [] }) }];
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		assert.ok(
+			listPrompts('application').prompts.some((p) => p.name === 'greeting'),
+			'baseline prompt registered'
+		);
+
+		// Second pass throws mid-rebuild; the only resource present is the bad one,
+		// so without restore both tools AND prompts would be left cleared.
+		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
+		Object.defineProperty(Bad, 'description', {
+			get() {
+				throw new Error('boom registering bad table');
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad }]]));
+		assert.throws(() => refreshApplicationTools(), /boom registering bad table/);
+
+		// The catch must restore prompts as well as tools — locking the symmetry.
+		const names = listPrompts('application').prompts.map((p) => p.name);
+		assert.ok(names.includes('greeting'), `prior prompts must survive a failed rebuild, got: ${names.join(', ')}`);
+		const tools = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.ok(
+			tools.some((n) => n === 'create_Product'),
+			'prior tools also restored alongside prompts'
 		);
 	});
 
@@ -383,6 +420,61 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		);
 		assert.deepEqual(captured, { productId: 'p1', limit: 2 });
 		assert.deepEqual(res.structuredContent, { results: ['a', 'b'] });
+	});
+
+	it('forwards the per-call MCP context (progress/signal/serverRequest) to the custom method (#1404)', async () => {
+		let received;
+		class Streamy {
+			async longJob(args, context) {
+				received = context;
+				context.progress?.({ progress: 1, total: 2 });
+				return { done: true };
+			}
+		}
+		Streamy.mcpTools = [{ name: 'long_job', method: 'longJob' }];
+		_setResourcesForTest(makeRegistry([['Streamy', { Resource: Streamy }]]));
+		registerApplicationTools();
+
+		const progress = () => {};
+		const serverRequest = async () => ({ ok: true });
+		const controller = new AbortController();
+		await getTool('long_job').handler(
+			{ n: 1 },
+			{
+				user: SUPER,
+				profile: 'application',
+				sessionId: 's',
+				signal: controller.signal,
+				progress,
+				serverRequest,
+			}
+		);
+		assert.ok(received, 'method received a second context argument');
+		assert.equal(received.progress, progress, 'progress fn forwarded');
+		assert.equal(received.serverRequest, serverRequest, 'serverRequest fn forwarded');
+		assert.equal(received.signal, controller.signal, 'AbortSignal forwarded');
+		assert.equal(received.user, SUPER);
+		assert.equal(received.profile, 'application');
+		assert.equal(received.sessionId, 's');
+	});
+
+	it('a custom method declaring only (args) still works — extra context arg ignored (back-compat)', async () => {
+		let captured;
+		class OldStyle {
+			async legacy(args) {
+				captured = args;
+				return { ok: true };
+			}
+		}
+		OldStyle.mcpTools = [{ name: 'legacy_tool', method: 'legacy' }];
+		_setResourcesForTest(makeRegistry([['OldStyle', { Resource: OldStyle }]]));
+		registerApplicationTools();
+		const res = await getTool('legacy_tool').handler(
+			{ a: 1 },
+			{ user: SUPER, profile: 'application', sessionId: 's', progress: () => {}, signal: new AbortController().signal }
+		);
+		assert.deepEqual(captured, { a: 1 });
+		assert.equal(res.isError, undefined);
 	});
 
 	it('handler errors from custom methods become isError=true', async () => {
