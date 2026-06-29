@@ -3,6 +3,7 @@ import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { models as harperModelsSingleton } from '../resources/models/Models.ts';
+import { registerBackend, defineBackend } from '../resources/models/backendRegistry.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -798,6 +799,10 @@ function getHarperExports(scope: ApplicationScope) {
 		// registry it reads from is populated at boot by
 		// `resources/models/bootstrap.ts`.
 		models: harperModelsSingleton,
+		// Public model-backend registration API (#1325) — same functions as the
+		// top-level package exports; components register backends through these.
+		registerBackend,
+		defineBackend,
 		createBlob,
 		RequestTarget,
 		getContext,

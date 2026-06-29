@@ -29,6 +29,28 @@ export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
 export type { Scope } from './components/Scope.ts';
+export type {
+	ModelBackend,
+	ModelCapabilities,
+	DefineBackendSpec,
+	EmbedOpts,
+	GenerateOpts,
+	GenerateInput,
+	GenerateResult,
+	GenerateChunk,
+	BackendOpts,
+	AccountingContext,
+	ModelCallResult,
+	TokenUsage,
+	Message,
+	ToolDef,
+	ToolCall,
+	ToolHandler,
+	ToolHandlerContext,
+	ToolTraceEntry,
+	ConversationAppender,
+	ConversationTurn,
+} from './resources/models/types.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export type { OptionsWatcher, Config, ConfigValue } from './components/OptionsWatcher.ts';
@@ -69,6 +91,10 @@ import type { server as ServerImport } from './server/Server.ts';
 import type { tables as TablesImport } from './resources/databases.ts';
 type ThreadsImport = unknown[]; // TODO: figure out actual type for this
 import type { transaction as TransactionImport } from './resources/transaction.ts';
+import type {
+	registerBackend as RegisterBackendImport,
+	defineBackend as DefineBackendImport,
+} from './resources/models/backendRegistry.ts';
 
 // These names are exposed TWO ways that resolve to the SAME live, process-wide value:
 //   1. as ambient globals (the `declare global` block below), and
@@ -84,9 +110,11 @@ declare global {
 	const contentTypes: typeof ContentTypesImport;
 	const createBlob: typeof CreateBlobImport;
 	const databases: typeof DatabasesImport;
+	const defineBackend: typeof DefineBackendImport;
 	const logger: Logger;
 	const models: typeof ModelsImport;
 	const operation: typeof OperationImport;
+	const registerBackend: typeof RegisterBackendImport;
 	const Resource: typeof ResourceImport;
 	const server: typeof ServerImport;
 	const tables: typeof TablesImport;
@@ -98,9 +126,11 @@ declare global {
 export declare const contentTypes: typeof ContentTypesImport;
 export declare const createBlob: typeof CreateBlobImport;
 export declare const databases: typeof DatabasesImport;
+export declare const defineBackend: typeof DefineBackendImport;
 export declare const logger: Logger;
 export declare const models: typeof ModelsImport;
 export declare const operation: typeof OperationImport;
+export declare const registerBackend: typeof RegisterBackendImport;
 export declare const Resource: typeof ResourceImport;
 export declare const server: typeof ServerImport;
 export declare const tables: typeof TablesImport;
@@ -111,9 +141,11 @@ export declare const transaction: typeof TransactionImport;
 exports.contentTypes = null;
 exports.createBlob = undefined;
 exports.databases = {};
+exports.defineBackend = undefined;
 exports.logger = {};
 exports.models = undefined;
 exports.operation = undefined;
+exports.registerBackend = undefined;
 exports.Resource = undefined;
 exports.server = {};
 exports.tables = {};
