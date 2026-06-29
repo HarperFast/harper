@@ -92,10 +92,13 @@ export function formatEnvValue(value: string): string {
 	throw new Error('Environment value contains an unsupported combination of quote characters');
 }
 
-// Does `s` contain an unescaped `quote`? A backslash escapes the following character.
+// Does `s` contain an unescaped `quote`? A backslash escapes the following character, but only for
+// double/backtick-quoted values — dotenv treats single-quoted values literally, so a value ending
+// in `\` (e.g. a Windows path `'C:\Users\name\'`) still closes at that quote.
 function closesQuote(s: string, quote: string): boolean {
+	const backslashEscapes = quote !== "'";
 	for (let i = 0; i < s.length; i++) {
-		if (s[i] === '\\') {
+		if (backslashEscapes && s[i] === '\\') {
 			i++;
 			continue;
 		}

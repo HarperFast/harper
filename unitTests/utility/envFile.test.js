@@ -185,6 +185,16 @@ describe('envFile', () => {
 		it('adds new keys to a file with no trailing newline', () => {
 			assert.equal(upsertEnvValues('A=1', { B: '2' }), 'A=1\nB=2\n');
 		});
+
+		it('treats a single-quoted value ending in a backslash as closed on its line', () => {
+			// A Windows path closes on its own line; the following key must not be swallowed as a
+			// continuation (which would corrupt it and append a duplicate).
+			const text = "WINPATH='C:\\Users\\name\\'\nNEXT=keep\n";
+			const result = upsertEnvValues(text, { NEXT: 'changed' });
+			assert.ok(result.includes("WINPATH='C:\\Users\\name\\'"), 'WINPATH preserved verbatim');
+			assert.equal(parse(result).NEXT, 'changed');
+			assert.equal((result.match(/^NEXT=/gm) || []).length, 1, 'NEXT updated in place, not duplicated');
+		});
 	});
 
 	describe('removeEnvKeys', () => {
