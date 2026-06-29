@@ -1,0 +1,6 @@
+graphqlSchema:
+  files: '*.graphql'
+rest: true
+# QA-352 — multi-condition indexed query correctness.
+# Table: Product { id, status @indexed, region @indexed, price @indexed, category @indexed, notes (non-indexed) }
+# Probes: AND-equality, AND+RANGE (between), OR, mixed indexed+CONTAINS, 3-way AND, empty, SQL parity.
