@@ -19,8 +19,12 @@ export function handleApplication(scope: Scope) {
 			// fails loudly on a missing var rather than receiving ciphertext as the value).
 			if (isEncryptedEnvValue(rawValue)) {
 				const decryptor = getEnvSecretDecryptor();
+				// Logged at error level (not warn) so an undecryptable secret is never silent — but
+				// skipped rather than fatal, so the node still boots and the bad value can be fixed via
+				// set_env_value, and a non-Pro node isn't crashed by a replicated encrypted value. The
+				// app sees a missing var (and should fail on it) rather than receiving ciphertext.
 				if (!decryptor) {
-					logger.warn(
+					logger.error(
 						`Environment variable ${key} from ${entry.absolutePath} is encrypted but no env-secret decryptor is registered (the Harper Pro env-secrets component is required); skipping`
 					);
 					continue;
@@ -28,7 +32,7 @@ export function handleApplication(scope: Scope) {
 				try {
 					value = decryptor(rawValue);
 				} catch (error) {
-					logger.warn(
+					logger.error(
 						`Failed to decrypt environment variable ${key} from ${entry.absolutePath}: ${(error as Error).message}; skipping`
 					);
 					continue;

@@ -16,7 +16,9 @@ Harper Pro **env-secrets** component. Core only:
   ([`resources/loadEnv.ts`](../resources/loadEnv.ts)).
 
 Without the Pro component no decryptor is registered, the hook is dormant, and an encrypted value is
-**skipped with a warning** at load (the app sees a missing var rather than ciphertext).
+**skipped with an error logged** at load — non-fatal, so the node still boots (and the value can be
+fixed via `set_env_value`) and a non-Pro node isn't crashed by a replicated encrypted value. The app
+sees a missing var (and should fail on it) rather than receiving ciphertext.
 
 ## Key model
 
