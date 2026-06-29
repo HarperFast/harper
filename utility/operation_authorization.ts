@@ -235,8 +235,14 @@ requiredPermissions.set(
 	functionsOperations.getEnvKeys.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_ENV_KEYS)
 );
-requiredPermissions.set(functionsOperations.setEnvValue.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.deleteEnvValue.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.setEnvValue.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_ENV_VALUE)
+);
+requiredPermissions.set(
+	functionsOperations.deleteEnvValue.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_ENV_VALUE)
+);
 requiredPermissions.set(functionsOperations.dropComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	functionsOperations.getCustomFunction.name,

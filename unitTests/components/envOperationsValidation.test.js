@@ -90,5 +90,10 @@ describe('env operation validators', () => {
 		it('rejects path traversal in file', () => {
 			assert.ok(!valid(validator.getEnvKeysValidator({ project: 'app', file: '../secrets' })));
 		});
+
+		it('rejects a project name with traversal or invalid characters', () => {
+			assert.ok(!valid(validator.getEnvKeysValidator({ project: '../etc' })));
+			assert.ok(!valid(validator.getEnvKeysValidator({ project: 'a/b' })));
+		});
 	});
 });

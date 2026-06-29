@@ -75,10 +75,11 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
-			// Need to remove auth variables, but we don't want to create an object unless
-			// the logging is actually going to happen.
+			// Need to remove auth variables and secret-bearing fields (value/values carry .env
+			// secrets from set_env_value), but we don't want to create an object unless the logging
+			// is actually going to happen.
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			const { hdb_user, hdbAuthHeader, password, payload, ...cleanBody } = req.body;
+			const { hdb_user, hdbAuthHeader, password, payload, value, values, ...cleanBody } = req.body;
 			operationLog.info(cleanBody);
 		}
 	} catch (e) {
