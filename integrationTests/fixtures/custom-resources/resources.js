@@ -21,7 +21,7 @@ export class WorkItem extends tables.WorkItem {
 			description: 'Draft a triage note for a work item',
 			arguments: [{ name: 'id', description: 'work item id', required: true }],
 			render: (args) => ({
-				messages: [{ role: 'user', content: { type: 'text', text: `Triage work item ${args.id}` } }],
+				messages: [{ role: 'user', content: { type: 'text', text: `Triage work item ${args?.id ?? ''}` } }],
 			}),
 		},
 	];

@@ -249,7 +249,7 @@ async function onSchemaChange(): Promise<void> {
  * registration doesn't change the acting user) and no operations-profile work (its tool/resource
  * set isn't derived from JS resources).
  */
-async function onResourcesRegistered(): Promise<void> {
+function onResourcesRegistered(): void {
 	try {
 		refreshApplicationTools();
 	} catch (err) {
@@ -289,11 +289,7 @@ export function initListChanged(): boolean {
 		installed++;
 	}
 	if (handlers.resourceHandler?.addListener) {
-		onResourcesRegisteredBound = () => {
-			onResourcesRegistered().catch((err) =>
-				harperLogger.trace(`MCP listChanged onResourcesRegistered: ${(err as Error).message}`)
-			);
-		};
+		onResourcesRegisteredBound = onResourcesRegistered;
 		handlers.resourceHandler.addListener(onResourcesRegisteredBound);
 		installed++;
 	}
