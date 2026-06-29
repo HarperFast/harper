@@ -23,7 +23,7 @@ import { systemInformation } from '../../utility/environment/systemInformation.t
 import * as jobRunner from '../jobs/jobRunner.ts';
 import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
 import * as auth from '../../security/auth.ts';
-import configUtils from '../../config/configUtils.js';
+import * as configUtils from '../../config/configUtils.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';

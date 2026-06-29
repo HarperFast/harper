@@ -5,7 +5,7 @@ import * as validator from './validationWrapper.ts';
 import moment from 'moment';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { getConfigPath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { LOG_LEVELS } from '../utility/hdbTerms.ts';
 

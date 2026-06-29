@@ -10,7 +10,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer } from 'node:http2';

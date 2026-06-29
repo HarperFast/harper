@@ -50,7 +50,7 @@ describe('ComponentLoader Status Integration', function () {
 		sandbox.spy(componentStatusRegistry, 'getStatus');
 
 		// Mock getConfigObj to avoid loading real config for root components
-		const configUtils = require('#js/config/configUtils');
+		const configUtils = require('#src/config/configUtils');
 		sandbox.stub(configUtils, 'getConfigObj').returns({});
 
 		// Clear the componentLoader from require cache to ensure it gets our spied lifecycle

@@ -6,7 +6,7 @@ const path = require('path');
 const validator = require('../validation/validationWrapper.ts');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const hdbLogger = require('../utility/logging/harper_logger.ts');
-const configUtils = require('../config/configUtils.js');
+const configUtils = require('../config/configUtils.ts');
 const { hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS } = hdbErrors;
 

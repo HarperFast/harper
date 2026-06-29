@@ -35,7 +35,7 @@ describe('startOnMainThread once-per-component (#460)', function () {
 			return '';
 		});
 
-		const configUtils = require('#js/config/configUtils');
+		const configUtils = require('#src/config/configUtils');
 		sandbox.stub(configUtils, 'getConfigObj').returns({});
 
 		componentLoader = require('#src/components/componentLoader');
