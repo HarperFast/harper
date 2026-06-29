@@ -195,6 +195,15 @@ describe('envFile', () => {
 			assert.equal(parse(result).NEXT, 'changed');
 			assert.equal((result.match(/^NEXT=/gm) || []).length, 1, 'NEXT updated in place, not duplicated');
 		});
+
+		it('treats a backtick-quoted value ending in a backslash as closed on its line', () => {
+			// dotenv treats backtick values literally (like single quotes), so this closes on its line.
+			const text = 'WINPATH=`C:\\Users\\name\\`\nNEXT=keep\n';
+			const result = upsertEnvValues(text, { NEXT: 'changed' });
+			assert.ok(result.includes('WINPATH=`C:\\Users\\name\\`'), 'WINPATH preserved verbatim');
+			assert.equal(parse(result).NEXT, 'changed');
+			assert.equal((result.match(/^NEXT=/gm) || []).length, 1, 'NEXT updated in place, not duplicated');
+		});
 	});
 
 	describe('removeEnvKeys', () => {
