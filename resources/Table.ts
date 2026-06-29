@@ -3243,7 +3243,9 @@ export function makeTable(options) {
 							// we only send the full message, this are individual messages that can be sent out of order
 							// TODO: Do we want to have a limit to how far out-of-order we are willing to send?
 							value = auditRecord.getValue?.(primaryStore, getFullRecord);
-						} else if (type !== 'end_txn') {
+						} else if (type !== 'end_txn' && type !== 'reload') {
+							// 'reload' is a whole-table marker with a null id and no record (harper-pro#489); pass it
+							// through verbatim so subscribers re-read the table, skipping the per-record lookup below.
 							// these are events that indicate that the primary record has changed. I believe we always want to simply
 							// send the latest value. Note that it is fine to synchronously access these records, they should have just
 							// been written, so are fresh in memory.
@@ -3603,6 +3605,41 @@ export function makeTable(options) {
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
 			transaction.addWrite(write);
+		}
+		/**
+		 * Write a single table-reload marker for this table (harper-pro#489): a LOCAL_ONLY audit entry of
+		 * type 'reload' with no record, committed in its own transaction. Subscribers driven off the audit
+		 * stream — hdb_nodes peer discovery and hdb_certificate CA install — treat it as "this table was
+		 * bulk-reloaded, re-read it". It is needed after a copyApply base copy, whose per-row snapshot rows
+		 * carry no audit entry, so the per-row events those subscribers rely on never fire. The marker is
+		 * never replicated (its LOCAL_ONLY bit makes the send path skip it without decoding the
+		 * peers-may-not-know type), and a lost marker self-heals on restart because each subscriber re-scans
+		 * the table when it (re)subscribes.
+		 */
+		static writeReloadMarker(context?: any) {
+			return transaction(context ?? {}, (txn: any) => {
+				// Bind the fresh transaction to this table's database (claims db + timestamp) exactly as the
+				// instance write paths do; a bare transaction() has no db and would fault in save().
+				const tableTxn = txnForContext({ transaction: txn } as any);
+				tableTxn.addWrite({
+					key: null,
+					store: primaryStore,
+					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
+						updateRecord(
+							null, // recordId: null — a whole-table signal, not a per-row change
+							undefined, // no record to store: this writes the audit entry only
+							undefined,
+							txnTime,
+							0,
+							true, // audit: emit the marker to the transaction log
+							{ nodeId: getThisNodeId(auditStore) ?? 0, transaction, localOnly: true, tableToTrack: null },
+							'reload',
+							false,
+							undefined
+						);
+					},
+				});
+			});
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
