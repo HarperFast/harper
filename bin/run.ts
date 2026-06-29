@@ -16,7 +16,7 @@ import chalk from 'chalk';
 import { packageJson } from '../utility/packageUtils.js';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as installation from '../utility/installation.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 import assignCMDENVVariables from '../utility/assignCmdEnvVariables.ts';
 import * as upgrade from './upgrade.js';
 import { compactOnStart, migrateOnStart } from './copyDb.ts';

@@ -10,7 +10,7 @@ import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
-import { updateConfigValue } from '../config/configUtils.js';
+import { updateConfigValue } from '../config/configUtils.ts';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';

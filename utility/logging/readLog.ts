@@ -6,7 +6,7 @@ import validator from '../../validation/readLogValidator.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { once } from 'events';
-import { getConfigPath } from '../../config/configUtils.js';
+import { getConfigPath } from '../../config/configUtils.ts';
 import { handleHDBError, hdbErrors } from '../errors/hdbError.ts';
 import { server } from '../../server/Server.ts';
 

@@ -15,7 +15,7 @@ import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
-import { initConfig, getConfigPath } from '../config/configUtils.js';
+import { initConfig, getConfigPath } from '../config/configUtils.ts';
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 

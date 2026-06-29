@@ -35,7 +35,7 @@ import { table } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { getConfigObj, getConfigPath } from '../config/configUtils.js';
+import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';

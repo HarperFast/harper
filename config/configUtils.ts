@@ -1,22 +1,29 @@
-'use strict';
+import * as hdbTerms from '../utility/hdbTerms.ts';
+import * as hdbUtils from '../utility/common_utils.ts';
+import logger from '../utility/logging/harper_logger.ts';
+import { configValidator } from '../validation/configValidator.ts';
+import fs from 'fs-extra';
+import YAML from 'yaml';
+import path from 'path';
+import { threadId } from 'node:worker_threads';
+import { randomBytes } from 'node:crypto';
+import isNumber from 'is-number';
+import propertiesReaderModule from 'properties-reader';
+import _ from 'lodash';
 
-const hdbTerms = require('../utility/hdbTerms.ts');
-const hdbUtils = require('../utility/common_utils.ts');
-const logger = require('../utility/logging/harper_logger.ts');
-const { configValidator } = require('../validation/configValidator.ts');
-const fs = require('fs-extra');
-const YAML = require('yaml');
-const path = require('path');
-const { threadId } = require('node:worker_threads');
-const { randomBytes } = require('node:crypto');
-const isNumber = require('is-number');
-const PropertiesReader = require('properties-reader');
-const _ = require('lodash');
-const { handleHDBError } = require('../utility/errors/hdbError.ts');
-const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors.ts');
-const { server } = require('../server/Server.ts');
-const { getBackupDirPath } = require('./configHelpers.ts');
-const { PACKAGE_ROOT } = require('../utility/packageUtils');
+// Aliased to a mutable, module-scoped binding so unit tests can swap the
+// implementation via rewire. The compiled default-import binding is otherwise
+// not addressable by name, and a default-exported CJS callable cannot be stubbed
+// through its shared module object the way named exports can.
+// eslint-disable-next-line prefer-const
+let PropertiesReader = propertiesReaderModule;
+import { handleHDBError } from '../utility/errors/hdbError.ts';
+import { HTTP_STATUS_CODES, HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
+import { server } from '../server/Server.ts';
+import { getBackupDirPath } from './configHelpers.ts';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import * as env from '../utility/environment/environmentManager.ts';
+import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -41,31 +48,10 @@ let flatDefaultConfigObj;
 let flatConfigObj;
 let configObj;
 
-exports.createConfigFile = createConfigFile;
-exports.getDefaultConfig = getDefaultConfig;
-exports.getConfigValue = getConfigValue;
-exports.initConfig = initConfig;
-exports.flattenConfig = flattenConfig;
-exports.updateConfigValue = updateConfigValue;
-exports.updateConfigObject = updateConfigObject;
-exports.getConfiguration = getConfiguration;
-exports.setConfiguration = setConfiguration;
-exports.readConfigFile = readConfigFile;
-exports.initOldConfig = initOldConfig;
-exports.getConfigFromFile = getConfigFromFile;
-exports.getConfigFilePath = getConfigFilePath;
-exports.addConfig = addConfig;
-exports.deleteConfigFromFile = deleteConfigFromFile;
-exports.getConfigObj = getConfigObj;
-exports.resolvePath = resolvePath;
-exports.getFlatConfigObj = getFlatConfigObj;
-exports.getConfigPath = getConfigPath;
-
-function resolvePath(relativePath) {
+export function resolvePath(relativePath: string) {
 	if (relativePath?.startsWith('~/')) {
 		return path.join(hdbUtils.getHomeDir(), relativePath.slice(1));
 	}
-	const env = require('../utility/environment/environmentManager.ts');
 	try {
 		return path.resolve(env.getHdbBasePath(), relativePath);
 	} catch (error) {
@@ -78,8 +64,7 @@ function resolvePath(relativePath) {
  * Use this for any config param that represents a file/directory path.
  * @param param
  */
-function getConfigPath(param) {
-	const env = require('../utility/environment/environmentManager.ts');
+export function getConfigPath(param: string) {
 	const value = env.get(param);
 	if (!value || typeof value !== 'string') return value;
 	if (value.startsWith('~/')) {
@@ -125,7 +110,7 @@ function atomicWriteFile(filePath, content) {
  * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
  */
-function createConfigFile(args, skipFsValidation = false) {
+export function createConfigFile(args, skipFsValidation = false) {
 	const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 
 	flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
@@ -184,7 +169,7 @@ function createConfigFile(args, skipFsValidation = false) {
 	flatConfigObj = flattenConfig(configObj);
 
 	// Create new config file and write config doc to it.
-	const hdbRoot = configDoc.getIn(['rootPath']);
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	fs.createFileSync(configFilePath);
 	if (configDoc.errors?.length > 0) {
@@ -247,7 +232,7 @@ function setSchemasConfig(configDoc, schemaConfJson) {
  * @param param
  * @returns {*}
  */
-function getDefaultConfig(param) {
+export function getDefaultConfig(param: string) {
 	if (flatDefaultConfigObj === undefined) {
 		const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 		flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
@@ -266,7 +251,7 @@ function getDefaultConfig(param) {
  * @param param
  * @returns {undefined|*}
  */
-function getConfigValue(param) {
+export function getConfigValue(param: string | null | undefined) {
 	if (param == null) {
 		logger.info(EMPTY_GET_VALUE);
 		return undefined;
@@ -283,7 +268,7 @@ function getConfigValue(param) {
 	return flatConfigObj[paramMap.toLowerCase()];
 }
 
-function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath()) {
+export function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath()) {
 	const cmdArgs = hdbUtils.getEnvCliRootPath();
 	if (cmdArgs) {
 		let harperConfigPath = resolvePath(path.join(cmdArgs, hdbTerms.HARPER_CONFIG_FILE));
@@ -293,7 +278,7 @@ function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath()) {
 		return harperConfigPath;
 	}
 	const hdbProperties = PropertiesReader(bootPropsFilePath);
-	return resolvePath(hdbProperties.get(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+	return resolvePath(hdbProperties.get(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY) as string);
 }
 
 /**
@@ -301,7 +286,7 @@ function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath()) {
  * read and parses the Harper config file and add to config object.
  * @param force
  */
-function initConfig(force = false) {
+export function initConfig(force = false) {
 	if (flatConfigObj === undefined || force) {
 		let bootPropsFilePath;
 		if (!hdbUtils.noBootFile()) {
@@ -358,7 +343,7 @@ function initConfig(force = false) {
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(configDoc);
 		const configObj = configDoc.toJSON();
-		server.config = configObj;
+		(server as any).config = configObj;
 		flatConfigObj = flattenConfig(configObj);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
@@ -531,7 +516,7 @@ function validateConfig(configDoc, skipFsValidation = false) {
  * @param param
  * @param value
  */
-function updateConfigObject(param, value) {
+export function updateConfigObject(param: string, value: any) {
 	if (flatConfigObj === undefined) {
 		// This is here to allow unit tests to work when HDB is not installed.
 		flatConfigObj = {};
@@ -554,9 +539,9 @@ function updateConfigObject(param, value) {
  * @param createBackup - if true backup file is created
  * @param update_config_obj - if true updates the in memory flattened config object
  */
-function updateConfigValue(
-	param,
-	value,
+export function updateConfigValue(
+	param: string,
+	value: any,
 	parsedArgs = undefined,
 	createBackup = false,
 	update_config_obj = false,
@@ -650,7 +635,7 @@ function updateConfigValue(
 			}
 			if (configParam?.startsWith('threads_')) {
 				// if threads was a number, recreate the threads object
-				const threadCount = configDoc.getIn(['threads']);
+				const threadCount = configDoc.getIn(['threads']) as number;
 				if (threadCount >= 0) {
 					configDoc.deleteIn(['threads']);
 					configDoc.setIn(['threads', 'count'], threadCount);
@@ -689,7 +674,7 @@ function updateConfigValue(
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc);
-	const hdbRoot = configDoc.getIn(['rootPath']);
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	let configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	if (!fs.existsSync(configFileLocation) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
 		configFileLocation = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
@@ -734,7 +719,7 @@ const PRESERVED_PROPERTIES = ['databases'];
  * @param obj
  * @returns {null}
  */
-function flattenConfig(obj) {
+export function flattenConfig(obj) {
 	if (obj.http) Object.assign(obj.http, obj?.customFunctions?.network);
 	if (obj?.operationsApi?.network) obj.operationsApi.network = { ...obj.http, ...obj.operationsApi.network };
 	if (obj?.operationsApi) obj.operationsApi.tls = { ...obj.tls, ...obj.operationsApi.tls };
@@ -830,7 +815,7 @@ function castConfigValue(param, value) {
  * Get Configuration - this function returns all the config settings
  * @returns {{}}
  */
-function getConfiguration() {
+export function getConfiguration() {
 	const bootPropsFilePath = hdbUtils.getPropsFilePath();
 	const configFilePath = getConfigFilePath(bootPropsFilePath);
 	const configDoc = parseYamlDoc(configFilePath);
@@ -843,7 +828,7 @@ function getConfiguration() {
  * @param setConfigJson
 
  */
-async function setConfiguration(setConfigJson) {
+export async function setConfiguration(setConfigJson) {
 	// eslint-disable-next-line no-unused-vars
 	const { operation, hdb_user, hdbAuthHeader, ...configFields } = setConfigJson;
 	try {
@@ -857,7 +842,7 @@ async function setConfiguration(setConfigJson) {
 	}
 }
 
-function readConfigFile() {
+export function readConfigFile() {
 	const bootPropsFilePath = hdbUtils.getPropsFilePath();
 	try {
 		fs.accessSync(bootPropsFilePath, fs.constants.F_OK | fs.constants.R_OK);
@@ -879,7 +864,7 @@ function readConfigFile() {
 }
 
 function parseYamlDoc(filePath) {
-	return YAML.parseDocument(fs.readFileSync(filePath, 'utf8'), { simpleKeys: true });
+	return YAML.parseDocument(fs.readFileSync(filePath, 'utf8'), { simpleKeys: true } as any);
 }
 
 /**
@@ -908,8 +893,6 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 	const anyEnvValue = defaultEnvValue || configEnvValue || setEnvValue;
-
-	const { applyRuntimeEnvConfig, hasPersistedEnvConfigState } = require('./harperConfigEnvVars.ts');
 
 	// Get rootPath for state file location
 	const rootPath = configDoc.getIn(['rootPath']);
@@ -945,7 +928,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 
 		// Update the YAML document's contents
 		// We update only the 'contents' property to preserve the Document instance and its methods
-		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true });
+		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true } as any);
 
 		// Check for YAML parsing errors
 		if (mergedDoc.errors?.length > 0) {
@@ -990,7 +973,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
  * --Located here instead of upgradeUtilities.js to prevent circular dependency--
  * @param oldConfigPath - a string with the old settings path ending in config/settings.js
  */
-function initOldConfig(oldConfigPath) {
+export function initOldConfig(oldConfigPath: string) {
 	const oldHdbProperties = PropertiesReader(oldConfigPath);
 	flatConfigObj = {};
 
@@ -1001,7 +984,7 @@ function initOldConfig(oldConfigPath) {
 		}
 		let paramKey = CONFIG_PARAM_MAP[configParam].toLowerCase();
 		if (paramKey === CONFIG_PARAMS.LOGGING_ROOT) {
-			flatConfigObj[paramKey] = path.dirname(value);
+			flatConfigObj[paramKey] = path.dirname(value as string);
 		} else {
 			flatConfigObj[paramKey] = value;
 		}
@@ -1014,7 +997,7 @@ function initOldConfig(oldConfigPath) {
  * @param param
  * @returns {undefined}
  */
-function getConfigFromFile(param) {
+export function getConfigFromFile(param: string) {
 	const config_file = readConfigFile();
 	return _.get(config_file, param.replaceAll('_', '.'));
 }
@@ -1025,7 +1008,7 @@ function getConfigFromFile(param) {
  * @param values - JSON value which should have top level element
  * @returns {Promise<void>}
  */
-async function addConfig(topLevelElement, values) {
+export async function addConfig(topLevelElement, values) {
 	const configDoc = parseYamlDoc(getConfigFilePath());
 	configDoc.hasIn([topLevelElement])
 		? configDoc.setIn([topLevelElement], values)
@@ -1040,16 +1023,16 @@ async function addConfig(topLevelElement, values) {
 	atomicWriteFile(getConfigFilePath(), String(configDoc));
 }
 
-function deleteConfigFromFile(param) {
+export function deleteConfigFromFile(param: string) {
 	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
 	const configDoc = parseYamlDoc(configFilePath);
 	configDoc.deleteIn(param);
-	const hdbRoot = configDoc.getIn(['rootPath']);
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
 	const configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	atomicWriteFile(configFileLocation, String(configDoc));
 }
 
-function getConfigObj() {
+export function getConfigObj() {
 	if (!configObj) {
 		initConfig();
 		return configObj;
@@ -1058,7 +1041,7 @@ function getConfigObj() {
 	return configObj;
 }
 
-function getFlatConfigObj() {
+export function getFlatConfigObj() {
 	if (!flatConfigObj) initConfig();
 	return flatConfigObj;
 }

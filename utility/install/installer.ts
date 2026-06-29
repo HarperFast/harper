@@ -19,7 +19,7 @@ import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
 import installValidator from '../../validation/installValidator.ts';
 import mountHdb from '../mount_hdb.ts';
-import * as configUtils from '../../config/configUtils.js';
+import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
 import checkJwtTokens from './checkJWTTokensExist.js';
