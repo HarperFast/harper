@@ -76,6 +76,28 @@ describe('defineBackend', () => {
 	it('throws when no method is supplied', () => {
 		assert.throws(() => defineBackend({ name: 'empty' }), ModelBackendRegistrationError);
 	});
+
+	it('rejects a non-function method instead of assigning it (function-ness, not truthiness)', () => {
+		// A truthy non-function is not a method: if it's the only one, the backend has none.
+		assert.throws(() => defineBackend({ name: 'bad', generate: 'oops' }), ModelBackendRegistrationError);
+		// Alongside a valid method, the bad value is simply not attached and the
+		// capability stays false — no `backend.generate is not a function` at call time.
+		const b = defineBackend({ name: 'mixed', embed: embedFn, generate: 'oops' });
+		assert.strictEqual(b.generate, undefined);
+		assert.strictEqual(b.capabilities().generate, false);
+	});
+
+	it('synthesizes generate() for a stream-only backend (capabilities.generate = true)', () => {
+		const b = defineBackend({
+			name: 'local:stream-only',
+			generateStream: async function* () {
+				yield { deltaContent: 'hi' };
+			},
+		});
+		assert.strictEqual(b.capabilities().generate, true);
+		assert.strictEqual(b.capabilities().stream, true);
+		assert.strictEqual(typeof b.generate, 'function');
+	});
 });
 
 describe('registerBackend + defineBackend end-to-end through Models', () => {
@@ -100,5 +122,24 @@ describe('registerBackend + defineBackend end-to-end through Models', () => {
 		);
 		const vectors = await models.embed('hi', { model: 'local:via-method' });
 		assert.ok(vectors[0] instanceof Float32Array);
+	});
+
+	it('models.generate() drains a stream-only backend via the synthesized generate', async () => {
+		registerBackend(
+			'generative',
+			'local:stream-only',
+			defineBackend({
+				name: 'local:stream-only',
+				generateStream: async function* () {
+					yield { deltaContent: 'Hello, ' };
+					yield { deltaContent: 'world' };
+					yield { finishReason: 'stop' };
+				},
+			})
+		);
+		const models = new Models(makeMockWriter(), () => {});
+		const result = await models.generate('hi', { model: 'local:stream-only' });
+		assert.strictEqual(result.content, 'Hello, world');
+		assert.strictEqual(result.finishReason, 'stop');
 	});
 });

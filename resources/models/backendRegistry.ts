@@ -1,5 +1,5 @@
 import { ServerError } from '../../utility/errors/hdbError.ts';
-import type { DefineBackendSpec, ModelBackend, ModelCapabilities } from './types.ts';
+import type { DefineBackendSpec, GenerateResult, ModelBackend, ModelCapabilities, ToolCall } from './types.ts';
 
 /**
  * Process-wide model backend registry.
@@ -108,22 +108,58 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 	if (!spec || typeof spec.name !== 'string' || spec.name.length === 0)
 		throw new ModelBackendRegistrationError('defineBackend requires a non-empty name');
 	const { name, embed, generate, generateStream, tools = false, adapters = false } = spec;
-	if (!embed && !generate && !generateStream)
+	// Gate on function-ness, not truthiness: a non-function value (`generate: 'oops'`)
+	// must be rejected at definition time, not assigned and crash at call time.
+	const hasEmbed = typeof embed === 'function';
+	const hasGenerate = typeof generate === 'function';
+	const hasStream = typeof generateStream === 'function';
+	if (!hasEmbed && !hasGenerate && !hasStream)
 		throw new ModelBackendRegistrationError(
-			`backend '${name}' must implement at least one of embed / generate / generateStream`
+			`backend '${name}' must implement at least one of embed / generate / generateStream (as functions)`
 		);
 	const capabilities: ModelCapabilities = Object.freeze({
-		embed: typeof embed === 'function',
-		generate: typeof generate === 'function',
-		stream: typeof generateStream === 'function',
+		embed: hasEmbed,
+		// A stream-only backend gains generate() via the synthesis below.
+		generate: hasGenerate || hasStream,
+		stream: hasStream,
 		tools,
 		adapters,
 	});
 	const backend: ModelBackend = { name, capabilities: () => capabilities };
-	if (embed) backend.embed = embed;
-	if (generate) backend.generate = generate;
-	if (generateStream) backend.generateStream = generateStream;
+	if (hasEmbed) backend.embed = embed;
+	if (hasGenerate) backend.generate = generate;
+	if (hasStream) backend.generateStream = generateStream;
+	// Stream-only generative backend: synthesize generate() by draining the stream,
+	// so a plain models.generate() works without the backend implementing both.
+	if (hasStream && !hasGenerate) backend.generate = synthesizeGenerateFromStream(generateStream!);
 	return backend;
+}
+
+/**
+ * Build a `generate` from a backend's `generateStream` by draining it into a
+ * single `GenerateResult`. Accumulates text and the terminal finish reason;
+ * tool calls are forwarded best-effort (only those that arrive complete in a
+ * single chunk — the chunk type carries no call index to reassemble fragments,
+ * so a backend that streams partial tool calls should implement `generate()`).
+ */
+function synthesizeGenerateFromStream(
+	generateStream: NonNullable<ModelBackend['generateStream']>
+): NonNullable<ModelBackend['generate']> {
+	return async (input, opts) => {
+		let content = '';
+		let finishReason: GenerateResult['finishReason'] = 'stop';
+		const toolCalls: ToolCall[] = [];
+		for await (const chunk of generateStream(input, opts)) {
+			if (chunk.deltaContent) content += chunk.deltaContent;
+			if (chunk.finishReason) finishReason = chunk.finishReason;
+			for (const tc of chunk.deltaToolCalls ?? []) {
+				if (typeof tc.id === 'string' && typeof tc.name === 'string') toolCalls.push(tc as ToolCall);
+			}
+		}
+		const output: GenerateResult =
+			toolCalls.length > 0 ? { content, finishReason, toolCalls } : { content, finishReason };
+		return { status: 'completed', output };
+	};
 }
 
 /** Remove all registrations. Test-only hygiene. */
