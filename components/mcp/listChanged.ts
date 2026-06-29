@@ -32,23 +32,18 @@ const MAX_RESOURCES_PAGE = 1000;
 let initialized = false;
 let onUserChangeBound: (() => void) | undefined;
 let onSchemaChangeBound: (() => void) | undefined;
+let onResourcesRegisteredBound: (() => void) | undefined;
+
+interface ItcHandlers {
+	userHandler?: { addListener?: (fn: () => void) => void };
+	schemaHandler?: { addListener?: (fn: () => void) => void };
+	resourceHandler?: { addListener?: (fn: () => void) => void };
+}
 
 // Test seams: avoid importing the real ITC handler from unit tests.
-let _itcHandlersOverride:
-	| {
-			userHandler?: { addListener?: (fn: () => void) => void };
-			schemaHandler?: { addListener?: (fn: () => void) => void };
-	  }
-	| undefined;
+let _itcHandlersOverride: ItcHandlers | undefined;
 
-export function _setItcHandlersForTest(
-	h:
-		| {
-				userHandler?: { addListener?: (fn: () => void) => void };
-				schemaHandler?: { addListener?: (fn: () => void) => void };
-		  }
-		| undefined
-): void {
+export function _setItcHandlersForTest(h: ItcHandlers | undefined): void {
 	_itcHandlersOverride = h;
 }
 
@@ -56,14 +51,10 @@ export function _resetListChangedForTest(): void {
 	initialized = false;
 	onUserChangeBound = undefined;
 	onSchemaChangeBound = undefined;
+	onResourcesRegisteredBound = undefined;
 }
 
-function loadItcHandlers():
-	| {
-			userHandler?: { addListener?: (fn: () => void) => void };
-			schemaHandler?: { addListener?: (fn: () => void) => void };
-	  }
-	| undefined {
+function loadItcHandlers(): ItcHandlers | undefined {
 	if (_itcHandlersOverride) return _itcHandlersOverride;
 	try {
 		return require('../../server/itc/serverHandlers');
@@ -250,6 +241,27 @@ async function onSchemaChange(): Promise<void> {
 }
 
 /**
+ * A component's JS resources (resources.js) register on the local worker AFTER the MCP component's
+ * own boot scan and after the schema-change rebuilds (which fire while the @table classes register —
+ * still before the JS subclass that extends them). That JS subclass is where authors declare
+ * `static mcpTools`/`mcpPrompts`, so without a rebuild here the application tool list never reflects
+ * them (#1448). Rebuild and re-notify application sessions; no user re-resolution (a resource
+ * registration doesn't change the acting user) and no operations-profile work (its tool/resource
+ * set isn't derived from JS resources).
+ */
+async function onResourcesRegistered(): Promise<void> {
+	try {
+		refreshApplicationTools();
+	} catch (err) {
+		harperLogger.warn(`MCP listChanged refreshApplicationTools (resources) failed: ${(err as Error).message}`);
+	}
+	for (const r of snapshotSessions('application')) {
+		maybeNotifyToolsChanged(r);
+		maybeNotifyResourcesChanged(r);
+	}
+}
+
+/**
  * Idempotent: subscribe once at component boot. Repeated calls are
  * no-ops. Returns true if subscriptions were actually installed (false
  * if Harper's ITC handlers aren't available in this process).
@@ -274,6 +286,15 @@ export function initListChanged(): boolean {
 			onSchemaChange().catch((err) => harperLogger.trace(`MCP listChanged onSchemaChange: ${(err as Error).message}`));
 		};
 		handlers.schemaHandler.addListener(onSchemaChangeBound);
+		installed++;
+	}
+	if (handlers.resourceHandler?.addListener) {
+		onResourcesRegisteredBound = () => {
+			onResourcesRegistered().catch((err) =>
+				harperLogger.trace(`MCP listChanged onResourcesRegistered: ${(err as Error).message}`)
+			);
+		};
+		handlers.resourceHandler.addListener(onResourcesRegisteredBound);
 		installed++;
 	}
 	initialized = installed > 0;

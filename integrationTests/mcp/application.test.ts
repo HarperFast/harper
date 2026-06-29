@@ -113,6 +113,12 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 	// operation persisted. (patch_ shares makeUpdateHandler + the { ok } ack schema
 	// with update_; a standard table exposes update_, not patch_, so the patch
 	// envelope is covered by the unit suite.)
+	//
+	// NOTE (#1448): the application tools now bind to the exported WorkItem subclass — the
+	// same object REST routes to — so create_ invokes its post() override (returns state
+	// 'pending' and stringifies the body into payload), not the base table class's default
+	// insert. The envelope contract is unchanged (create_ still returns { id }); we assert
+	// the override's effect on get_ rather than the raw input round-trip.
 	test('create_/get_/update_/delete_ round-trip via the SDK client validates output schemas (#1324)', async () => {
 		const { client, transport } = await newAppClient(ctx);
 
@@ -126,7 +132,8 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 
 		const got = await client.callTool({ name: 'get_WorkItem', arguments: { id: newId } });
 		ok(!got.isError, `get should succeed: ${JSON.stringify(got)}`);
-		strictEqual((got.structuredContent as { payload?: string } | undefined)?.payload, 'hello-1324');
+		// post() override sets state:'pending' on insert (vs the input 'open').
+		strictEqual((got.structuredContent as { state?: string } | undefined)?.state, 'pending');
 
 		const updated = await client.callTool({
 			name: 'update_WorkItem',

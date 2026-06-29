@@ -153,6 +153,22 @@ A handful of design points are non-obvious and easy to break:
   (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
   (timeout + high-water-mark) so a non-responding client can't leak promises.
 
+- **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
+  application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change
+  ITC events — both of which fire while the `@table` classes register, **before** the `jsResource` plugin
+  registers the component's exported `class X extends tables.X` subclass. That subclass is the object the
+  registry ends up holding (REST routes to it) and the only place author opt-ins (`static mcpTools`/
+  `mcpPrompts`) live, so a scan that ran earlier sees only the base table class and misses them (#1448). The
+  fix: `jsResource` fires `signalResourcesRegistered()` (a deliberately **local-only**, non-ITC signal in
+  `utility/signalling.ts`, backed by `resourceHandler` in `server/itc/serverHandlers.js` — each worker
+  registers its own JS resources, so the rebuild belongs in that worker) after registration; `listChanged`
+  subscribes and re-runs the scan. Consequence: the verb tools (`create_*` etc.) now bind to the subclass and
+  honor its `post`/`patch` overrides, matching REST — previously they bound to the base table class and
+  silently bypassed those overrides. Advertised CRUD output schemas are still table-derived, so an overridden
+  write verb whose return diverges from `{ id }`/`{ ok }`/`{ deleted }` advertises a subset shape (the in-use
+  SDK tolerates supersets; tightening per-override envelopes is sibling-issue work — see the `derive.ts`
+  envelope note).
+
 - **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
   Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as the
   "Audit-store `'committed'` notification batching" section above). The targeting is the subtle part:

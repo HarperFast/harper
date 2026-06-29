@@ -1,5 +1,33 @@
 // WorkItem: async write-then-patch pattern (CDI RT enqueueing + AI inference result attachment)
 export class WorkItem extends tables.WorkItem {
+	// Author-opt-in custom MCP surface declared on a subclass of an exported @table (#1448).
+	// These statics must reach the MCP application scanner end-to-end on a booted server.
+	static mcpTools = [
+		{
+			name: 'wi_progress',
+			method: 'mcpProgress',
+			description: 'Report the current progress for a work item',
+			inputSchema: {
+				type: 'object',
+				properties: { id: { type: 'string' } },
+				required: ['id'],
+				additionalProperties: false,
+			},
+		},
+	];
+	static mcpPrompts = [
+		{
+			name: 'wi_triage',
+			description: 'Draft a triage note for a work item',
+			arguments: [{ name: 'id', description: 'work item id', required: true }],
+			render: (args) => ({
+				messages: [{ role: 'user', content: { type: 'text', text: `Triage work item ${args.id}` } }],
+			}),
+		},
+	];
+	async mcpProgress(args, _context) {
+		return { id: args?.id, state: 'in_progress', percent: 42 };
+	}
 	async post(body, _ctx) {
 		const id = Math.random().toString(36).slice(2);
 		// Use static class method to create a new record by explicit id
