@@ -83,6 +83,11 @@ describe('bootstrapModels', () => {
 		assert.throws(() => resolveEmbedding('x'), ModelBackendNotFoundError);
 	});
 
+	it('skips an entry whose backend is not a string', async () => {
+		await bootstrapModels({ models: { embedding: { x: { backend: 123, model: 'm' } } } });
+		assert.throws(() => resolveEmbedding('x'), ModelBackendNotFoundError);
+	});
+
 	it('registers multiple logical names independently', async () => {
 		await bootstrapModels({
 			models: {

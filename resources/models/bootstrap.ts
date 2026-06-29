@@ -110,8 +110,8 @@ async function registerKind(kind: ModelKind, entries: Record<string, ModelEntry>
 			harperLogger.error(`models.${kind}.${logicalName} is not an object; skipping`);
 			continue;
 		}
-		if (!entry.backend) {
-			harperLogger.error(`models.${kind}.${logicalName}: 'backend' is missing; skipping`);
+		if (typeof entry.backend !== 'string' || entry.backend.length === 0) {
+			harperLogger.error(`models.${kind}.${logicalName}: 'backend' must be a non-empty string; skipping`);
 			continue;
 		}
 		// Warn before expansion: literal credentials in `harperdb-config.yaml`
