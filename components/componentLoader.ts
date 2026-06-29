@@ -359,7 +359,9 @@ export async function loadComponent(
 		// config's `models:` block before any user `handleApplication(scope)` runs,
 		// so `scope.models.embed(...)` works from app-init code as well as Resource
 		// methods. Per-entry errors are logged and skipped by `bootstrapModels`.
-		if (isRoot) bootstrapModels(config);
+		// Awaited so module-backed entries (#1471) finish importing before the
+		// per-component iteration below; built-in entries register synchronously.
+		if (isRoot) await bootstrapModels(config);
 
 		if (!isRoot) {
 			try {
