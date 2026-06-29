@@ -13,30 +13,30 @@
 
 # Timestamps as Float (epoch-ms), open schema
 type AutoTimestamp @table @export {
-  id: ID @primaryKey
-  payload: String
-  createdAt: Float @createdTime
-  updatedAt: Float @updatedTime
+	id: ID @primaryKey
+	payload: String
+	createdAt: Float @createdTime
+	updatedAt: Float @updatedTime
 }
 
 # Timestamps as String (ISO), sealed table — tests @sealed + auto-field parity
 type SealedTimestamp @table @sealed @export {
-  id: ID @primaryKey
-  payload: String
-  createdAt: String @createdTime
-  updatedAt: String @updatedTime
+	id: ID @primaryKey
+	payload: String
+	createdAt: String @createdTime
+	updatedAt: String @updatedTime
 }
 
 # Required (non-null) field — omit on insert should 400 even if a default existed
 type RequiredField @table @export {
-  id: ID @primaryKey
-  name: String!
-  optional: String
+	id: ID @primaryKey
+	name: String!
+	optional: String
 }
 
 # Open table — no auto fields; probes the "feature gap": no @default directive
 type PlainTable @table @export {
-  id: ID @primaryKey
-  status: String
-  count: Int
+	id: ID @primaryKey
+	status: String
+	count: Int
 }

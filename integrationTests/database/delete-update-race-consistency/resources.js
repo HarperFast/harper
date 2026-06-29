@@ -26,12 +26,9 @@ export class RaceOp extends Resource {
 
 		if (op === 'delete-delete') {
 			// (e) Two concurrent DELETEs
-			const [r1, r2] = await Promise.allSettled([
-				tables.Widget.delete(key),
-				tables.Widget.delete(key),
-			]);
+			const [r1, r2] = await Promise.allSettled([tables.Widget.delete(key), tables.Widget.delete(key)]);
 			deleteResult = r1.status === 'fulfilled' ? 'ok' : r1.reason?.message;
-			writeResult  = r2.status === 'fulfilled' ? 'ok' : r2.reason?.message;
+			writeResult = r2.status === 'fulfilled' ? 'ok' : r2.reason?.message;
 			return { op, key, del1: deleteResult, del2: writeResult };
 		}
 
@@ -53,13 +50,13 @@ export class RaceOp extends Resource {
 		]);
 
 		deleteError = delP.status === 'rejected' ? delP.reason?.message : null;
-		writeError  = writeP.status === 'rejected' ? writeP.reason?.message : null;
+		writeError = writeP.status === 'rejected' ? writeP.reason?.message : null;
 
 		return {
 			op,
 			key,
 			deleteOk: delP.status === 'fulfilled',
-			writeOk:  writeP.status === 'fulfilled',
+			writeOk: writeP.status === 'fulfilled',
 			deleteError,
 			writeError,
 		};

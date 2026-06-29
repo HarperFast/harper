@@ -3,7 +3,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
+import { ok } from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -43,9 +43,9 @@ async function restPut(ctx: ContextWithHarper, table: string, record: object): P
 	const url = `${(ctx.harper as any).httpURL.replace(/\/$/, '')}/${table}/${id}`;
 	const res = await fetch(url, {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+		headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
 		body: JSON.stringify(record),
-	}).catch((e) => null);
+	}).catch(() => null);
 	if (!res) return { status: 0, body: null };
 	const body = await res.json().catch(() => null);
 	return { status: res.status, body };
@@ -59,7 +59,11 @@ async function restGet(ctx: ContextWithHarper, table: string, id: string): Promi
 	return { status: res.status, body };
 }
 
-async function restSearch(ctx: ContextWithHarper, table: string, query: string): Promise<{ status: number; body: any }> {
+async function restSearch(
+	ctx: ContextWithHarper,
+	table: string,
+	query: string
+): Promise<{ status: number; body: any }> {
 	const url = `${(ctx.harper as any).httpURL.replace(/\/$/, '')}/${table}/${query}`;
 	const res = await fetch(url, { headers: { Authorization: authHeader } }).catch(() => null);
 	if (!res) return { status: 0, body: null };
@@ -79,7 +83,7 @@ async function opsInsert(ctx: ContextWithHarper, table: string, records: object[
 async function rawSql(ctx: ContextWithHarper, sql: string): Promise<{ status: number; body: any }> {
 	const res = await fetch((ctx.harper as any).operationsAPIURL, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+		headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
 		body: JSON.stringify({ operation: 'sql', sql }),
 	}).catch(() => null);
 	if (!res) return { status: 0, body: null };
@@ -104,11 +108,10 @@ const RANGE_START = '2021-01-01T00:00:00.000Z';
 const RANGE_END = '2024-12-31T23:59:59.999Z';
 const RANGE_START_MS = Date.parse(RANGE_START);
 const RANGE_END_MS = Date.parse(RANGE_END);
-const ORACLE_IN_RANGE = SEED_ROWS
-	.filter((r) => {
-		const ms = Date.parse(r.createdAt);
-		return ms >= RANGE_START_MS && ms <= RANGE_END_MS;
-	})
+const ORACLE_IN_RANGE = SEED_ROWS.filter((r) => {
+	const ms = Date.parse(r.createdAt);
+	return ms >= RANGE_START_MS && ms <= RANGE_END_MS;
+})
 	.map((r) => r.id)
 	.sort();
 // Oracle: ev-2022, ev-2024a, ev-2024b
@@ -129,7 +132,9 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 				const url = `${(ctx.harper as any).httpURL.replace(/\/$/, '')}/Event/`;
 				const res = await fetch(url, { headers: { Authorization: authHeader } });
 				if (res.status !== 404) break;
-			} catch { /* not ready */ }
+			} catch {
+				/* not ready */
+			}
 			await sleep(300);
 		}
 
@@ -169,7 +174,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(a1) ISO-string round-trip',
 			instantOk ? 'CORRECT' : 'DEFECT',
-			`stored type=${typeof storedVal} value=${JSON.stringify(storedVal)} instantPreserved=${instantOk}`,
+			`stored type=${typeof storedVal} value=${JSON.stringify(storedVal)} instantPreserved=${instantOk}`
 		);
 		ok(instantOk, `(a1) Instant not preserved: stored=${JSON.stringify(storedVal)} expected=${ISO}`);
 	});
@@ -194,17 +199,14 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(a2) Epoch-ms round-trip',
 			instantOk ? 'CORRECT' : 'DEFECT',
-			`inserted epoch=${EPOCH_MS} stored type=${typeof storedVal} value=${JSON.stringify(storedVal)} instantOk=${instantOk}`,
+			`inserted epoch=${EPOCH_MS} stored type=${typeof storedVal} value=${JSON.stringify(storedVal)} instantOk=${instantOk}`
 		);
 		ok(instantOk, `(a2) Epoch-ms instant not preserved: ${JSON.stringify(storedVal)}`);
 	});
 
 	test('(a3) ISO-string vs epoch-ms — same instant stored consistently?', async () => {
 		// Both rt-iso and rt-epoch point to the same instant; compare their stored representations
-		const [isoR, epochR] = await Promise.all([
-			restGet(ctx, 'Event', 'rt-iso'),
-			restGet(ctx, 'Event', 'rt-epoch'),
-		]);
+		const [isoR, epochR] = await Promise.all([restGet(ctx, 'Event', 'rt-iso'), restGet(ctx, 'Event', 'rt-epoch')]);
 		if (isoR.status !== 200 || epochR.status !== 200) {
 			record('(a3) ISO vs epoch representation', 'INFO', 'skip — prior reads failed');
 			ok(true);
@@ -221,7 +223,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(a3) ISO vs epoch representation',
 			sameInstant ? 'INFO' : 'DEFECT',
-			`iso-stored=${JSON.stringify(v1)}(${typeof v1}) epoch-stored=${JSON.stringify(v2)}(${typeof v2}) sameInstant=${sameInstant} sameType=${sameRepresentation}`,
+			`iso-stored=${JSON.stringify(v1)}(${typeof v1}) epoch-stored=${JSON.stringify(v2)}(${typeof v2}) sameInstant=${sameInstant} sameType=${sameRepresentation}`
 		);
 		ok(sameInstant, `(a3) Same instant stored as different values: ${JSON.stringify(v1)} vs ${JSON.stringify(v2)}`);
 	});
@@ -241,7 +243,10 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			return;
 		}
 
-		const gotIds = body.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id)).sort();
+		const gotIds = body
+			.map((r: any) => r.id)
+			.filter((id: string) => SEED_ROWS.some((s) => s.id === id))
+			.sort();
 		const correct = JSON.stringify(gotIds) === JSON.stringify(ORACLE_IN_RANGE);
 
 		const missing = ORACLE_IN_RANGE.filter((id) => !gotIds.includes(id));
@@ -250,7 +255,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(b1) REST FIQL range unindexed',
 			correct ? 'CORRECT' : 'DEFECT',
-			`got=${JSON.stringify(gotIds)} oracle=${JSON.stringify(ORACLE_IN_RANGE)} missing=${JSON.stringify(missing)} extra=${JSON.stringify(extra)}`,
+			`got=${JSON.stringify(gotIds)} oracle=${JSON.stringify(ORACLE_IN_RANGE)} missing=${JSON.stringify(missing)} extra=${JSON.stringify(extra)}`
 		);
 		ok(correct, `(b1) FIQL range: missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`);
 	});
@@ -265,7 +270,10 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			return;
 		}
 
-		const gotIds = body.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id)).sort();
+		const gotIds = body
+			.map((r: any) => r.id)
+			.filter((id: string) => SEED_ROWS.some((s) => s.id === id))
+			.sort();
 		const correct = JSON.stringify(gotIds) === JSON.stringify(ORACLE_IN_RANGE);
 		const missing = ORACLE_IN_RANGE.filter((id) => !gotIds.includes(id));
 		const extra = gotIds.filter((id: string) => !ORACLE_IN_RANGE.includes(id));
@@ -273,7 +281,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(b2) REST FIQL range indexed',
 			correct ? 'CORRECT' : 'DEFECT',
-			`got=${JSON.stringify(gotIds)} oracle=${JSON.stringify(ORACLE_IN_RANGE)} missing=${JSON.stringify(missing)} extra=${JSON.stringify(extra)}`,
+			`got=${JSON.stringify(gotIds)} oracle=${JSON.stringify(ORACLE_IN_RANGE)} missing=${JSON.stringify(missing)} extra=${JSON.stringify(extra)}`
 		);
 		ok(correct, `(b2) FIQL indexed range: missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`);
 	});
@@ -290,7 +298,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		await sleep(100);
 
 		const query = `?createdAt=ge=date:${encodeURIComponent(RANGE_START)}&createdAt=le=date:${encodeURIComponent(RANGE_END)}`;
-		const { status, body } = await restSearch(ctx, 'Event', query);
+		const { body } = await restSearch(ctx, 'Event', query);
 		const ids: string[] = Array.isArray(body) ? body.map((r: any) => r.id) : [];
 
 		const inIncluded = ids.includes('boundary-in');
@@ -299,7 +307,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(b3) boundary inclusivity (=le= includes boundary, 1ms-after excluded)',
 			inIncluded && outExcluded ? 'CORRECT' : 'DEFECT',
-			`boundary-in included=${inIncluded}, boundary-out excluded=${outExcluded}`,
+			`boundary-in included=${inIncluded}, boundary-out excluded=${outExcluded}`
 		);
 		ok(inIncluded, '(b3) boundary-in should be included with =le=');
 		ok(outExcluded, '(b3) boundary-out (1ms after) should be excluded');
@@ -317,7 +325,10 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		});
 
 		const rows: any[] = Array.isArray(res) ? res : [];
-		const gotIds = rows.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id)).sort();
+		const gotIds = rows
+			.map((r: any) => r.id)
+			.filter((id: string) => SEED_ROWS.some((s) => s.id === id))
+			.sort();
 		const correct = JSON.stringify(gotIds) === JSON.stringify(ORACLE_IN_RANGE);
 		const missing = ORACLE_IN_RANGE.filter((id) => !gotIds.includes(id));
 		const extra = gotIds.filter((id: string) => !ORACLE_IN_RANGE.includes(id));
@@ -325,7 +336,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(b4) ops search_by_conditions ge+le unindexed',
 			correct ? 'CORRECT' : 'DEFECT',
-			`got=${JSON.stringify(gotIds)} oracle=${JSON.stringify(ORACLE_IN_RANGE)} missing=${JSON.stringify(missing)} extra=${JSON.stringify(extra)}`,
+			`got=${JSON.stringify(gotIds)} oracle=${JSON.stringify(ORACLE_IN_RANGE)} missing=${JSON.stringify(missing)} extra=${JSON.stringify(extra)}`
 		);
 		ok(correct, `(b4) search_by_conditions: missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`);
 	});
@@ -338,7 +349,11 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		// Harper REST sort requires @indexed on the sort column — 404 without index is expected behavior
 		const { status, body } = await restSearch(ctx, 'Event', '?sort(+createdAt)&limit(50)');
 		if (status === 404) {
-			record('(c1) REST sort createdAt ASC unindexed', 'EDGE', `HTTP 404: sort on unindexed Date col requires @indexed (by design)`);
+			record(
+				'(c1) REST sort createdAt ASC unindexed',
+				'EDGE',
+				`HTTP 404: sort on unindexed Date col requires @indexed (by design)`
+			);
 			ok(true); // by-design: REST sort requires @indexed
 			return;
 		}
@@ -355,7 +370,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(c1) REST sort createdAt ASC unindexed',
 			inOrder ? 'CORRECT' : 'DEFECT',
-			`ids=${JSON.stringify(ids)} positions=${JSON.stringify(positions)} inOrder=${inOrder}`,
+			`ids=${JSON.stringify(ids)} positions=${JSON.stringify(positions)} inOrder=${inOrder}`
 		);
 		ok(inOrder, `(c1) Sort ASC not chronological: ${JSON.stringify(ids)}`);
 	});
@@ -364,7 +379,11 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		// REST sort on unindexed col → 404 by design; note behavior
 		const { status, body } = await restSearch(ctx, 'Event', '?sort(-createdAt)&limit(50)');
 		if (status === 404) {
-			record('(c2) REST sort createdAt DESC unindexed', 'EDGE', `HTTP 404: sort on unindexed Date col requires @indexed (by design)`);
+			record(
+				'(c2) REST sort createdAt DESC unindexed',
+				'EDGE',
+				`HTTP 404: sort on unindexed Date col requires @indexed (by design)`
+			);
 			ok(true);
 			return;
 		}
@@ -382,7 +401,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(c2) REST sort createdAt DESC unindexed',
 			inOrder ? 'CORRECT' : 'DEFECT',
-			`ids=${JSON.stringify(ids)} expected-reverse=${JSON.stringify(REVERSE)} inOrder=${inOrder}`,
+			`ids=${JSON.stringify(ids)} expected-reverse=${JSON.stringify(REVERSE)} inOrder=${inOrder}`
 		);
 		ok(inOrder, `(c2) Sort DESC not reverse-chronological: ${JSON.stringify(ids)}`);
 	});
@@ -402,7 +421,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(c3) REST sort createdAt ASC indexed',
 			inOrder ? 'CORRECT' : 'DEFECT',
-			`positions=${JSON.stringify(positions)} inOrder=${inOrder}`,
+			`positions=${JSON.stringify(positions)} inOrder=${inOrder}`
 		);
 		ok(inOrder, `(c3) Sort indexed ASC not chronological`);
 	});
@@ -422,7 +441,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(c4) SQL ORDER BY createdAt ASC',
 			inOrder ? 'CORRECT' : 'DEFECT',
-			`positions=${JSON.stringify(positions)} inOrder=${inOrder}`,
+			`positions=${JSON.stringify(positions)} inOrder=${inOrder}`
 		);
 		ok(true); // non-fatal — we note the state
 	});
@@ -439,19 +458,29 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		]);
 
 		if (rUnindexed.status !== 200 || rIndexed.status !== 200) {
-			record('(d1) indexed range == unindexed range', 'INFO', `one request failed: unindexed=${rUnindexed.status} indexed=${rIndexed.status}`);
+			record(
+				'(d1) indexed range == unindexed range',
+				'INFO',
+				`one request failed: unindexed=${rUnindexed.status} indexed=${rIndexed.status}`
+			);
 			ok(true);
 			return;
 		}
 
-		const unIdx = (rUnindexed.body as any[]).map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id)).sort();
-		const idx = (rIndexed.body as any[]).map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id)).sort();
+		const unIdx = (rUnindexed.body as any[])
+			.map((r: any) => r.id)
+			.filter((id: string) => SEED_ROWS.some((s) => s.id === id))
+			.sort();
+		const idx = (rIndexed.body as any[])
+			.map((r: any) => r.id)
+			.filter((id: string) => SEED_ROWS.some((s) => s.id === id))
+			.sort();
 		const parity = JSON.stringify(unIdx) === JSON.stringify(idx);
 
 		record(
 			'(d1) indexed range == unindexed range',
 			parity ? 'CORRECT' : 'DEFECT',
-			`unindexed=${JSON.stringify(unIdx)} indexed=${JSON.stringify(idx)} parity=${parity}`,
+			`unindexed=${JSON.stringify(unIdx)} indexed=${JSON.stringify(idx)} parity=${parity}`
 		);
 		ok(parity, `(d1) Range parity failure: unindexed=${JSON.stringify(unIdx)} vs indexed=${JSON.stringify(idx)}`);
 	});
@@ -465,7 +494,6 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		const CANONICAL_Z = '2026-01-01T07:00:00.000Z';
 		const OFFSET_STR = '2026-01-01T12:00:00+05:00';
 		const CANONICAL_MS = Date.parse(CANONICAL_Z);
-		const OFFSET_MS = Date.parse(OFFSET_STR); // same instant
 
 		await opsInsert(ctx, 'Event', [
 			{ id: 'tz-z-2026', label: 'tz-z', createdAt: CANONICAL_Z, seqNum: 201 },
@@ -492,7 +520,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(e1) tz +05:00 normalized to Z instant',
 			offsetNormalized && sameInstant ? 'CORRECT' : 'DEFECT',
-			`z-stored=${JSON.stringify(zVal)} offset-stored=${JSON.stringify(offVal)} sameInstant=${sameInstant} offsetNormalized=${offsetNormalized}`,
+			`z-stored=${JSON.stringify(zVal)} offset-stored=${JSON.stringify(offVal)} sameInstant=${sameInstant} offsetNormalized=${offsetNormalized}`
 		);
 
 		// Check that a FIQL range query treats them as the same instant
@@ -507,16 +535,24 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(e1b) tz: both Z and +05:00 found in same 1s range query',
 			bothFound ? 'CORRECT' : 'DEFECT',
-			`rangeIds (filtered)=${JSON.stringify(rangeIds.filter((id) => id.startsWith('tz-')))} bothFound=${bothFound}`,
+			`rangeIds (filtered)=${JSON.stringify(rangeIds.filter((id) => id.startsWith('tz-')))} bothFound=${bothFound}`
 		);
-		ok(sameInstant, `(e1) +05:00 and Z not stored as same instant: z=${JSON.stringify(zVal)} offset=${JSON.stringify(offVal)}`);
+		ok(
+			sameInstant,
+			`(e1) +05:00 and Z not stored as same instant: z=${JSON.stringify(zVal)} offset=${JSON.stringify(offVal)}`
+		);
 	});
 
 	test('(e2) Pre-epoch date (1900-01-01T00:00:00Z)', async () => {
 		const PRE_EPOCH = '1900-01-01T00:00:00.000Z';
 		const PRE_EPOCH_MS = Date.parse(PRE_EPOCH); // -2208988800000
 
-		const { status } = await restPut(ctx, 'Event', { id: 'preepoch', label: 'pre-epoch', createdAt: PRE_EPOCH, seqNum: 203 });
+		const { status } = await restPut(ctx, 'Event', {
+			id: 'preepoch',
+			label: 'pre-epoch',
+			createdAt: PRE_EPOCH,
+			seqNum: 203,
+		});
 		if (status === 0 || status >= 400) {
 			record('(e2) Pre-epoch insert', 'EDGE', `insert rejected: status=${status}`);
 			ok(true);
@@ -532,7 +568,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(e2) Pre-epoch date (1900-01-01)',
 			ok2 ? 'CORRECT' : 'DEFECT',
-			`stored=${JSON.stringify(stored)} expectedMs=${PRE_EPOCH_MS} instantOk=${ok2}`,
+			`stored=${JSON.stringify(stored)} expectedMs=${PRE_EPOCH_MS} instantOk=${ok2}`
 		);
 		ok(true); // non-fatal — documenting behavior
 	});
@@ -541,7 +577,12 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		const FAR_FUTURE = '9999-12-31T23:59:59.000Z';
 		const FAR_MS = Date.parse(FAR_FUTURE); // 253402300799000
 
-		const { status } = await restPut(ctx, 'Event', { id: 'farfuture', label: 'far-future', createdAt: FAR_FUTURE, seqNum: 204 });
+		const { status } = await restPut(ctx, 'Event', {
+			id: 'farfuture',
+			label: 'far-future',
+			createdAt: FAR_FUTURE,
+			seqNum: 204,
+		});
 		if (status === 0 || status >= 400) {
 			record('(e3) Far-future date (9999-12-31)', 'EDGE', `insert rejected: status=${status}`);
 			ok(true);
@@ -557,13 +598,18 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(e3) Far-future date (9999-12-31)',
 			instantOk ? 'CORRECT' : 'DEFECT',
-			`stored=${JSON.stringify(stored)} instantOk=${instantOk}`,
+			`stored=${JSON.stringify(stored)} instantOk=${instantOk}`
 		);
 		ok(true);
 	});
 
 	test('(e4) Invalid date string — clean 400 or stored garbage?', async () => {
-		const { status } = await restPut(ctx, 'Event', { id: 'invalid-date', label: 'invalid', createdAt: 'not-a-date', seqNum: 205 });
+		const { status } = await restPut(ctx, 'Event', {
+			id: 'invalid-date',
+			label: 'invalid',
+			createdAt: 'not-a-date',
+			seqNum: 205,
+		});
 
 		if (status >= 400 && status < 500) {
 			record('(e4) Invalid date string', 'CORRECT', `correctly rejected: HTTP ${status}`);
@@ -580,7 +626,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			record(
 				'(e4) Invalid date string',
 				isNaNDate ? 'DEFECT' : 'INFO',
-				`accepted and stored: ${JSON.stringify(stored)} isNaN=${isNaNDate} (status=${status})`,
+				`accepted and stored: ${JSON.stringify(stored)} isNaN=${isNaNDate} (status=${status})`
 			);
 			// Not a hard fail (storage engine behavior may vary), but note it
 			ok(true);
@@ -592,7 +638,12 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 	});
 
 	test('(e5) Null date — stored and read back as null?', async () => {
-		const { status } = await restPut(ctx, 'Event', { id: 'null-date', label: 'null-date', createdAt: null, seqNum: 206 });
+		const { status } = await restPut(ctx, 'Event', {
+			id: 'null-date',
+			label: 'null-date',
+			createdAt: null,
+			seqNum: 206,
+		});
 		if (status >= 400) {
 			record('(e5) Null date', 'EDGE', `null rejected: status=${status}`);
 			ok(true);
@@ -606,7 +657,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(e5) Null date stored as null',
 			stored === null || stored === undefined ? 'CORRECT' : 'DEFECT',
-			`stored=${JSON.stringify(stored)} (getStatus=${getStatus})`,
+			`stored=${JSON.stringify(stored)} (getStatus=${getStatus})`
 		);
 		ok(true);
 	});
@@ -623,10 +674,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		]);
 		await sleep(100);
 
-		const [rbA, rbB] = await Promise.all([
-			restGet(ctx, 'Event', 'submilli-a'),
-			restGet(ctx, 'Event', 'submilli-b'),
-		]);
+		const [rbA, rbB] = await Promise.all([restGet(ctx, 'Event', 'submilli-a'), restGet(ctx, 'Event', 'submilli-b')]);
 
 		const vA = rbA.body?.createdAt;
 		const vB = rbB.body?.createdAt;
@@ -637,7 +685,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(e6) Sub-millisecond / 1ms precision',
 			distinguishable ? 'CORRECT' : 'DEFECT',
-			`a=${JSON.stringify(vA)} b=${JSON.stringify(vB)} diff=${msB - msA}ms distinguishable=${distinguishable}`,
+			`a=${JSON.stringify(vA)} b=${JSON.stringify(vB)} diff=${msB - msA}ms distinguishable=${distinguishable}`
 		);
 		ok(distinguishable, `(e6) 1ms precision lost: a=${JSON.stringify(vA)} b=${JSON.stringify(vB)}`);
 	});
@@ -657,7 +705,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		record(
 			'(e7) Date-string as PK — lookup by ISO-date key',
 			found ? 'CORRECT' : 'DEFECT',
-			`status=${status} found=${found} body-label=${body?.label}`,
+			`status=${status} found=${found} body-label=${body?.label}`
 		);
 		ok(true);
 	});
@@ -685,14 +733,20 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 		if (rows.length === 0) {
 			record('(f1) SQL createdAt > ISO-literal (#1397)', 'KNOWN-DEFECT', `silent-empty (#1397 still present)`);
 		} else {
-			record('(f1) SQL createdAt > ISO-literal (#1397)', 'CORRECT', `date-literal filter now returns rows: ${JSON.stringify(gotIds)}`);
+			record(
+				'(f1) SQL createdAt > ISO-literal (#1397)',
+				'CORRECT',
+				`date-literal filter now returns rows: ${JSON.stringify(gotIds)}`
+			);
 		}
 		ok(true); // note state only
 	});
 
 	test('(f2) SQL epoch-number filter (should work — baseline)', async () => {
 		const AFTER_MS = Date.parse('2021-01-01T00:00:00.000Z');
-		const oracle = SEED_ROWS.filter((r) => Date.parse(r.createdAt) > AFTER_MS).map((r) => r.id).sort();
+		const oracle = SEED_ROWS.filter((r) => Date.parse(r.createdAt) > AFTER_MS)
+			.map((r) => r.id)
+			.sort();
 
 		const { status, body } = await rawSql(ctx, `SELECT id FROM ${SCHEMA}.Event WHERE createdAt > ${AFTER_MS}`);
 		if (status !== 200 || !Array.isArray(body)) {
@@ -701,13 +755,16 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			return;
 		}
 
-		const got = body.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id)).sort();
+		const got = body
+			.map((r: any) => r.id)
+			.filter((id: string) => SEED_ROWS.some((s) => s.id === id))
+			.sort();
 		const correct = oracle.every((id) => got.includes(id));
 
 		record(
 			'(f2) SQL createdAt > epoch-number baseline',
 			correct ? 'CORRECT' : 'DEFECT',
-			`got=${JSON.stringify(got)} oracle=${JSON.stringify(oracle)} correct=${correct}`,
+			`got=${JSON.stringify(got)} oracle=${JSON.stringify(oracle)} correct=${correct}`
 		);
 		ok(correct, `(f2) SQL epoch filter missing rows: got=${JSON.stringify(got)} oracle=${JSON.stringify(oracle)}`);
 	});
@@ -715,7 +772,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 	test('(f3) SQL BETWEEN epoch numbers', async () => {
 		const { status, body } = await rawSql(
 			ctx,
-			`SELECT id FROM ${SCHEMA}.Event WHERE createdAt BETWEEN ${RANGE_START_MS} AND ${RANGE_END_MS}`,
+			`SELECT id FROM ${SCHEMA}.Event WHERE createdAt BETWEEN ${RANGE_START_MS} AND ${RANGE_END_MS}`
 		);
 		if (status !== 200 || !Array.isArray(body)) {
 			record('(f3) SQL BETWEEN epoch numbers', 'DEFECT', `HTTP ${status}`);
@@ -723,13 +780,16 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			return;
 		}
 
-		const got = body.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id)).sort();
+		const got = body
+			.map((r: any) => r.id)
+			.filter((id: string) => SEED_ROWS.some((s) => s.id === id))
+			.sort();
 		const correct = JSON.stringify(got) === JSON.stringify(ORACLE_IN_RANGE);
 
 		record(
 			'(f3) SQL BETWEEN epoch numbers',
 			correct ? 'CORRECT' : 'DEFECT',
-			`got=${JSON.stringify(got)} oracle=${JSON.stringify(ORACLE_IN_RANGE)}`,
+			`got=${JSON.stringify(got)} oracle=${JSON.stringify(ORACLE_IN_RANGE)}`
 		);
 		ok(correct, `(f3) SQL BETWEEN epoch: got=${JSON.stringify(got)} oracle=${JSON.stringify(ORACLE_IN_RANGE)}`);
 	});

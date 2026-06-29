@@ -109,7 +109,10 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 		const t0 = Date.now();
 		const put = await restPut(client, '/AutoTimestamp/at-rest-1', { payload: 'hello' });
 		const t1 = Date.now();
-		ok(put.status === 200 || put.status === 204, `PUT should succeed; got ${put.status} body=${JSON.stringify(put.body)}`);
+		ok(
+			put.status === 200 || put.status === 204,
+			`PUT should succeed; got ${put.status} body=${JSON.stringify(put.body)}`
+		);
 
 		const g = await restGet(client, '/AutoTimestamp/at-rest-1');
 		strictEqual(g.status, 200, `GET after PUT should 200; got ${g.status}`);
@@ -119,7 +122,11 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 		const updatedAutoAssigned = typeof updatedAt === 'number' && updatedAt >= t0 && updatedAt <= t1 + 1000;
 
 		if (createdAutoAssigned && updatedAutoAssigned) {
-			logFinding({ probe: 'a-b-REST-insert', verdict: 'CORRECT', detail: `@createdTime=${createdAt} @updatedTime=${updatedAt} both auto-set on insert` });
+			logFinding({
+				probe: 'a-b-REST-insert',
+				verdict: 'CORRECT',
+				detail: `@createdTime=${createdAt} @updatedTime=${updatedAt} both auto-set on insert`,
+			});
 		} else {
 			logFinding({
 				probe: 'a-b-REST-insert',
@@ -127,15 +134,24 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 				detail: `createdAt=${createdAt} (ok=${createdAutoAssigned}) updatedAt=${updatedAt} (ok=${updatedAutoAssigned}) — auto-assignment may be broken`,
 			});
 		}
-		ok(createdAutoAssigned, `@createdTime should be auto-set on insert; got createdAt=${createdAt}, window=[${t0},${t1 + 1000}]`);
-		ok(updatedAutoAssigned, `@updatedTime should be auto-set on insert; got updatedAt=${updatedAt}, window=[${t0},${t1 + 1000}]`);
+		ok(
+			createdAutoAssigned,
+			`@createdTime should be auto-set on insert; got createdAt=${createdAt}, window=[${t0},${t1 + 1000}]`
+		);
+		ok(
+			updatedAutoAssigned,
+			`@updatedTime should be auto-set on insert; got updatedAt=${updatedAt}, window=[${t0},${t1 + 1000}]`
+		);
 	});
 
 	// (c): Auto-generated PK when omitted on POST
 	test('(c) Auto-generated PK: POST without id returns an assigned PK', async () => {
 		const post = await restPost(client, '/AutoTimestamp/', { payload: 'auto-pk-test' });
 		// Harper may return 200/201 with body, or 204 — check for assigned PK
-		ok(post.status >= 200 && post.status < 300, `POST should succeed; got ${post.status} body=${JSON.stringify(post.body)}`);
+		ok(
+			post.status >= 200 && post.status < 300,
+			`POST should succeed; got ${post.status} body=${JSON.stringify(post.body)}`
+		);
 
 		// If the body contains an id, confirm it looks like a UUID/auto-generated string
 		const assignedId = post.body?.id ?? post.body;
@@ -143,18 +159,36 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 			logFinding({ probe: 'c-auto-pk-POST', verdict: 'CORRECT', detail: `auto-PK assigned=${assignedId}` });
 		} else if (assignedId && typeof assignedId === 'object') {
 			// may be a wrapped response
-			logFinding({ probe: 'c-auto-pk-POST', verdict: 'CORRECT', detail: `auto-PK assigned (object response)=${JSON.stringify(assignedId)}` });
+			logFinding({
+				probe: 'c-auto-pk-POST',
+				verdict: 'CORRECT',
+				detail: `auto-PK assigned (object response)=${JSON.stringify(assignedId)}`,
+			});
 		} else {
-			logFinding({ probe: 'c-auto-pk-POST', verdict: 'CORRECT-PARTIAL', detail: `POST 2xx but PK not in response body — auto-PK may still be assigned, response body=${JSON.stringify(post.body)}` });
+			logFinding({
+				probe: 'c-auto-pk-POST',
+				verdict: 'CORRECT-PARTIAL',
+				detail: `POST 2xx but PK not in response body — auto-PK may still be assigned, response body=${JSON.stringify(post.body)}`,
+			});
 		}
 
 		// Verify via ops sql that at least one AutoTimestamp record with payload='auto-pk-test' exists
 		const sql = await sqlQuery(client, `SELECT id FROM data.AutoTimestamp WHERE payload = 'auto-pk-test'`);
 		ok(sql.status === 200, `SQL check should 200; got ${sql.status}`);
-		ok(Array.isArray(sql.body) && sql.body.length >= 1, `At least one auto-pk record should exist; got ${JSON.stringify(sql.body)}`);
+		ok(
+			Array.isArray(sql.body) && sql.body.length >= 1,
+			`At least one auto-pk record should exist; got ${JSON.stringify(sql.body)}`
+		);
 		const pkRow = sql.body[0];
-		ok(pkRow.id && typeof pkRow.id === 'string' && pkRow.id.length > 0, `Auto-generated PK should be a non-empty string; got ${JSON.stringify(pkRow.id)}`);
-		logFinding({ probe: 'c-auto-pk-SQL', verdict: 'CORRECT', detail: `auto-PK persisted, type=string, id=${pkRow.id}` });
+		ok(
+			pkRow.id && typeof pkRow.id === 'string' && pkRow.id.length > 0,
+			`Auto-generated PK should be a non-empty string; got ${JSON.stringify(pkRow.id)}`
+		);
+		logFinding({
+			probe: 'c-auto-pk-SQL',
+			verdict: 'CORRECT',
+			detail: `auto-PK persisted, type=string, id=${pkRow.id}`,
+		});
 	});
 
 	// (d): @createdTime preserved on PATCH (not overwritten with new timestamp)
@@ -173,7 +207,10 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 
 		// PATCH — update payload only
 		const patch = await restPatch(client, '/AutoTimestamp/at-patch-1', { payload: 'updated' });
-		ok(patch.status === 200 || patch.status === 204, `PATCH should succeed; got ${patch.status} body=${JSON.stringify(patch.body)}`);
+		ok(
+			patch.status === 200 || patch.status === 204,
+			`PATCH should succeed; got ${patch.status} body=${JSON.stringify(patch.body)}`
+		);
 
 		const g1 = await restGet(client, '/AutoTimestamp/at-patch-1');
 		const createdAt1 = g1.body.createdAt as number;
@@ -183,7 +220,11 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 		const updatedBumped = typeof updatedAt1 === 'number' && updatedAt1 >= updatedAt0;
 
 		if (createdPreserved && updatedBumped) {
-			logFinding({ probe: 'd-PATCH-createdTime-preserved', verdict: 'CORRECT', detail: `createdAt preserved=${createdAt0}, updatedAt bumped ${updatedAt0}→${updatedAt1}` });
+			logFinding({
+				probe: 'd-PATCH-createdTime-preserved',
+				verdict: 'CORRECT',
+				detail: `createdAt preserved=${createdAt0}, updatedAt bumped ${updatedAt0}→${updatedAt1}`,
+			});
 		} else {
 			logFinding({
 				probe: 'd-PATCH-createdTime-preserved',
@@ -207,33 +248,55 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 
 		// Attempt to set a bogus createdAt (far in the future)
 		const bogusCreatedAt = Date.now() + 99_999_999;
-		const patch = await restPatch(client, '/AutoTimestamp/at-override-1', { payload: 'changed', createdAt: bogusCreatedAt });
-		ok(patch.status === 200 || patch.status === 204, `PATCH with explicit createdAt should not 400; got ${patch.status}`);
+		const patch = await restPatch(client, '/AutoTimestamp/at-override-1', {
+			payload: 'changed',
+			createdAt: bogusCreatedAt,
+		});
+		ok(
+			patch.status === 200 || patch.status === 204,
+			`PATCH with explicit createdAt should not 400; got ${patch.status}`
+		);
 
 		const g1 = await restGet(client, '/AutoTimestamp/at-override-1');
 		const createdAtAfter = g1.body.createdAt as number;
 
 		if (createdAtAfter === createdAtOriginal) {
-			logFinding({ probe: 'e-PATCH-override-createdTime', verdict: 'CORRECT', detail: `@createdTime override ignored; original ${createdAtOriginal} retained` });
+			logFinding({
+				probe: 'e-PATCH-override-createdTime',
+				verdict: 'CORRECT',
+				detail: `@createdTime override ignored; original ${createdAtOriginal} retained`,
+			});
 		} else if (createdAtAfter === bogusCreatedAt) {
-			logFinding({ probe: 'e-PATCH-override-createdTime', verdict: 'FOOTGUN', detail: `@createdTime was OVERWRITEABLE via PATCH; new value=${createdAtAfter} (bogus)` });
+			logFinding({
+				probe: 'e-PATCH-override-createdTime',
+				verdict: 'FOOTGUN',
+				detail: `@createdTime was OVERWRITEABLE via PATCH; new value=${createdAtAfter} (bogus)`,
+			});
 		} else {
-			logFinding({ probe: 'e-PATCH-override-createdTime', verdict: 'FOOTGUN', detail: `@createdTime changed unexpectedly: orig=${createdAtOriginal} after=${createdAtAfter}` });
+			logFinding({
+				probe: 'e-PATCH-override-createdTime',
+				verdict: 'FOOTGUN',
+				detail: `@createdTime changed unexpectedly: orig=${createdAtOriginal} after=${createdAtAfter}`,
+			});
 		}
 		// Note: per source code analysis line 1912, on partial update (PATCH) with entry?.value set,
 		// createdAt is only restored if fullUpdate OR if recordUpdate[createdTimeProperty.name] is truthy.
 		// When caller sends createdAt in the PATCH body, it IS truthy → code runs entry?.value[createdTimeProperty.name]
 		// i.e., it restores from existing record. So the override SHOULD be silently ignored (correct behavior).
 		// This test verifies that expectation.
-		ok(createdAtAfter === createdAtOriginal, `@createdTime override via PATCH should be ignored; original=${createdAtOriginal}, got=${createdAtAfter}`);
+		ok(
+			createdAtAfter === createdAtOriginal,
+			`@createdTime override via PATCH should be ignored; original=${createdAtOriginal}, got=${createdAtAfter}`
+		);
 	});
 
 	// (f): @sealed table + @createdTime: field omitted on insert auto-assigned; unknown field rejected
 	test('(f) @sealed table: @createdTime auto-assigned on insert; unknown field rejected', async () => {
-		const t0 = Date.now();
 		const put = await restPut(client, '/SealedTimestamp/st-1', { payload: 'sealed-test' });
-		const t1 = Date.now();
-		ok(put.status === 200 || put.status === 204, `PUT on sealed table (omitting auto-fields) should succeed; got ${put.status} body=${JSON.stringify(put.body)}`);
+		ok(
+			put.status === 200 || put.status === 204,
+			`PUT on sealed table (omitting auto-fields) should succeed; got ${put.status} body=${JSON.stringify(put.body)}`
+		);
 
 		const g = await restGet(client, '/SealedTimestamp/st-1');
 		strictEqual(g.status, 200, `GET should 200`);
@@ -248,8 +311,14 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 			verdict: createdIsISO && updatedIsISO ? 'CORRECT' : 'FOOTGUN',
 			detail: `createdAt=${createdAt} (ISO=${createdIsISO}), updatedAt=${updatedAt} (ISO=${updatedIsISO}) on @sealed insert`,
 		});
-		ok(createdIsISO, `@createdTime (String type) on @sealed table should be auto-assigned ISO string; got ${createdAt}`);
-		ok(updatedIsISO, `@updatedTime (String type) on @sealed table should be auto-assigned ISO string; got ${updatedAt}`);
+		ok(
+			createdIsISO,
+			`@createdTime (String type) on @sealed table should be auto-assigned ISO string; got ${createdAt}`
+		);
+		ok(
+			updatedIsISO,
+			`@updatedTime (String type) on @sealed table should be auto-assigned ISO string; got ${updatedAt}`
+		);
 
 		// Now try inserting an undeclared field — @sealed should reject it
 		const putUnknown = await restPut(client, '/SealedTimestamp/st-bogus', { payload: 'x', unknownField: 'boom' });
@@ -275,9 +344,17 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 		const hasCount = 'count' in g.body;
 
 		if (!hasStatus && !hasCount) {
-			logFinding({ probe: 'g-no-default-directive', verdict: 'GAP', detail: `Harper has NO @default directive: omitted optional fields are absent (null/undefined), not defaulted. Feature gap, not a silent-ignore (like D-151).` });
+			logFinding({
+				probe: 'g-no-default-directive',
+				verdict: 'GAP',
+				detail: `Harper has NO @default directive: omitted optional fields are absent (null/undefined), not defaulted. Feature gap, not a silent-ignore (like D-151).`,
+			});
 		} else {
-			logFinding({ probe: 'g-no-default-directive', verdict: 'FOOTGUN', detail: `Unexpected: omitted fields appeared in body=${JSON.stringify(g.body)}` });
+			logFinding({
+				probe: 'g-no-default-directive',
+				verdict: 'FOOTGUN',
+				detail: `Unexpected: omitted fields appeared in body=${JSON.stringify(g.body)}`,
+			});
 		}
 		// GAP is expected and correct characterization; test passes unconditionally for this probe
 		// since we're documenting a feature gap, not asserting Harper does default values
@@ -293,7 +370,10 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 			verdict: requiredRejected ? 'CORRECT' : 'FOOTGUN',
 			detail: `PUT omitting required 'name' field → ${put.status}; body=${JSON.stringify(put.body)}`,
 		});
-		ok(requiredRejected, `Omitting a required (non-null) field should 400/422; got ${put.status} body=${JSON.stringify(put.body)}`);
+		ok(
+			requiredRejected,
+			`Omitting a required (non-null) field should 400/422; got ${put.status} body=${JSON.stringify(put.body)}`
+		);
 	});
 
 	// (i): Surface parity — ops insert also auto-assigns @createdTime/@updatedTime
@@ -301,7 +381,10 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 		const t0 = Date.now();
 		const ins = await opsInsert(client, 'AutoTimestamp', [{ id: 'at-ops-1', payload: 'ops-insert' }]);
 		const t1 = Date.now();
-		ok(ins.status === 200 || ins.status === 204, `ops insert should succeed; got ${ins.status} body=${JSON.stringify(ins.body)}`);
+		ok(
+			ins.status === 200 || ins.status === 204,
+			`ops insert should succeed; got ${ins.status} body=${JSON.stringify(ins.body)}`
+		);
 
 		const g = await restGet(client, '/AutoTimestamp/at-ops-1');
 		strictEqual(g.status, 200, `GET after ops insert should 200`);
@@ -322,7 +405,10 @@ suite('auto-fields: @createdTime, @updatedTime, auto-PK, required-field', { skip
 	// (i-sql): SQL INSERT also auto-assigns @createdTime/@updatedTime
 	test('(i-sql) SQL INSERT: @createdTime and @updatedTime auto-assigned', async () => {
 		const t0 = Date.now();
-		const ins = await sqlQuery(client, `INSERT INTO data.AutoTimestamp (id, payload) VALUES ('at-sql-1', 'sql-insert')`);
+		const ins = await sqlQuery(
+			client,
+			`INSERT INTO data.AutoTimestamp (id, payload) VALUES ('at-sql-1', 'sql-insert')`
+		);
 		const t1 = Date.now();
 		ok(ins.status === 200, `SQL INSERT should succeed; got ${ins.status} body=${JSON.stringify(ins.body)}`);
 

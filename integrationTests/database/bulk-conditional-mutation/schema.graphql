@@ -1,9 +1,9 @@
 type BulkOrder @table @export {
-  id: ID @primaryKey
-  status: String @indexed
-  createdAt: Float
-  region: String @indexed
-  category: String
-  price: Float
-  expired: Boolean
+	id: ID @primaryKey
+	status: String @indexed
+	createdAt: Float
+	region: String @indexed
+	category: String
+	price: Float
+	expired: Boolean
 }
