@@ -219,6 +219,24 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 60_000, in
 	throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
+/**
+ * Run `fn(0..n-1)` with at most `limit` requests in flight at once, preserving
+ * result order. Faster than serializing N round-trips, but caps the fan-out so a
+ * large burst can't exhaust sockets on slow CI runners (vs. firing all N at once).
+ */
+async function mapConcurrent<T>(n: number, limit: number, fn: (i: number) => Promise<T>): Promise<T[]> {
+	const results: T[] = new Array(n);
+	let next = 0;
+	const worker = async () => {
+		while (next < n) {
+			const i = next++;
+			results[i] = await fn(i);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, n) }, worker));
+	return results;
+}
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -349,12 +367,10 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 
 		// Each record's final vector is seedVector(i*100 + ROUNDS, dims).
 		// Searching for that exact vector must return it in the top-5. These are
-		// independent read-only searches, so run them concurrently rather than
-		// serializing N round-trips.
-		const churnResults = await Promise.all(
-			Array.from({ length: N }, (_, i) =>
-				vectorSearch(httpURL, headers, path, seedVector(i * 100 + ROUNDS, DIMS), { limit: 5 })
-			)
+		// independent read-only searches, so run them concurrently (bounded fan-out)
+		// rather than serializing N round-trips.
+		const churnResults = await mapConcurrent(N, 10, (i) =>
+			vectorSearch(httpURL, headers, path, seedVector(i * 100 + ROUNDS, DIMS), { limit: 5 })
 		);
 		let misses = 0;
 		for (let i = 0; i < N; i++) {
@@ -479,27 +495,25 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 
 		await restartHttpWorkers(client, `/${TABLE}/`);
 
-		// Step 4: Poll until backfill completes (search returns results).
-		// During indexing the HNSW index has isIndexing=true and searches return 503.
-		await waitFor(async () => {
-			try {
-				const results = await vectorSearch(httpURL, headers, path, seedVector(0, DIMS), { limit: 5 });
-				return results.length > 0;
-			} catch {
-				return false;
-			}
-		}, 60_000);
-
-		// Step 5: All N pre-existing records must be reachable. Independent read-only
-		// searches — run them concurrently rather than serializing N round-trips.
-		const reindexResults = await Promise.all(
-			Array.from({ length: N }, (_, i) => vectorSearch(httpURL, headers, path, seedVector(i, DIMS), { limit: 5 }))
-		);
-		let misses = 0;
-		for (let i = 0; i < N; i++) {
-			if (!reindexResults[i].some((r: any) => r.id === `reindex-${i}`)) misses++;
-		}
+		// Steps 4 & 5: All N pre-existing records must be reachable after backfill.
+		// The backfill settles per HTTP worker after the restart: during indexing a
+		// worker's HNSW index has isIndexing=true (searches 503), and a worker that
+		// hasn't yet reloaded the index-adding schema reports "embedding is not
+		// indexed". Either state makes a record look like a miss, so poll the full
+		// recall check (bounded-concurrency read-back) until it converges rather than
+		// asserting on a single burst fired the instant one worker happens to be ready.
 		const allowed = Math.ceil(N * 0.1);
+		let misses = N;
+		await waitFor(async () => {
+			const reindexResults = await mapConcurrent(N, 10, (i) =>
+				vectorSearch(httpURL, headers, path, seedVector(i, DIMS), { limit: 5 }).catch(() => [] as any[])
+			);
+			misses = 0;
+			for (let i = 0; i < N; i++) {
+				if (!reindexResults[i].some((r: any) => r.id === `reindex-${i}`)) misses++;
+			}
+			return misses <= allowed;
+		}, 60_000);
 		ok(misses <= allowed, `expected ≤${allowed} misses after backfill; got ${misses}/${N}`);
 
 		// Step 6: Post-backfill mutations must work correctly.
