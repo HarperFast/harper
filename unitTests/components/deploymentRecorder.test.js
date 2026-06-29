@@ -276,6 +276,66 @@ describe('DeploymentRecorder.seal', () => {
 	});
 });
 
+describe('DeploymentRecorder.dropPayload', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	it('nulls the payload_blob and returns the freed size, retaining size/hash metadata', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.row.payload_blob = { fake: true };
+		recorder.row.payload_size = 12_345;
+		recorder.row.payload_hash = 'abc123';
+		const freed = recorder.dropPayload();
+		assert.strictEqual(freed, 12_345);
+		assert.strictEqual(recorder.row.payload_blob, null, 'blob reference is dropped');
+		assert.strictEqual(recorder.row.payload_size, 12_345, 'size metadata is retained');
+		assert.strictEqual(recorder.row.payload_hash, 'abc123', 'hash metadata is retained');
+	});
+
+	it('is a no-op returning 0 when there is no payload_blob', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		// create() initializes payload_blob to null.
+		assert.strictEqual(recorder.dropPayload(), 0);
+	});
+
+	it('returns 0 (freed nothing) when payload_size is unknown but still drops the blob', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.row.payload_blob = { fake: true };
+		recorder.row.payload_size = null;
+		assert.strictEqual(recorder.dropPayload(), 0);
+		assert.strictEqual(recorder.row.payload_blob, null);
+	});
+
+	it('is a no-op after finish() — leaves the blob reference untouched', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		const blob = { fake: true };
+		recorder.row.payload_blob = blob;
+		recorder.row.payload_size = 999;
+		await recorder.finish('success');
+		assert.strictEqual(recorder.dropPayload(), 0);
+		assert.strictEqual(recorder.row.payload_blob, blob, 'a finished recorder does not mutate the row');
+	});
+
+	it('folds the dropped reference into the single terminal write when sealed', async () => {
+		// Mirrors the deploy flow: ingest sets the blob, seal() before replicate, dropPayload()
+		// just before finish() so the null lands in finish()'s one put rather than a separate one.
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.row.payload_blob = { fake: true };
+		recorder.row.payload_size = 20 * 1024 * 1024;
+		recorder.seal();
+		const freed = recorder.dropPayload();
+		assert.strictEqual(freed, 20 * 1024 * 1024);
+		await recorder.finish('success');
+		const persisted = await installed.mock.get(recorder.deploymentId);
+		assert.strictEqual(persisted.payload_blob, null, 'terminal row has no blob reference');
+		assert.strictEqual(persisted.payload_size, 20 * 1024 * 1024, 'terminal row retains the size');
+		assert.strictEqual(persisted.status, 'success');
+	});
+});
+
 describe('awaitDeploymentRow', () => {
 	let installed;
 	beforeEach(() => {
