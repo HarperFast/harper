@@ -6,11 +6,19 @@
  *   2. Implements the corresponding verb on its prototype.
  *
  * Tool dispatch delegates to the static `Resource.get/post/put/delete/search`
- * methods, which wrap `transactional()` internally. That means
- * `allowRead/allowCreate/allowUpdate/allowDelete` per-record predicates run
- * unchanged, and restricted-attribute writes are rejected at runtime by
- * `Table.allowUpdate` even when the input schema permits them — defense in
- * depth.
+ * methods, which wrap `transactional()` internally. That entry point runs the
+ * `allowRead/allowCreate/allowUpdate/allowDelete` per-record predicates and
+ * rejects restricted-attribute writes at runtime — the same authorization path
+ * REST flows through.
+ *
+ * For that authorization to be correct the handlers MUST dispatch on the *live*
+ * Resource class resolved from the registry at call time (see `liveResource`),
+ * never a class reference captured when the tools were registered: a component's
+ * `resources.js` subclass — which carries the row-level `allow*` overrides — is
+ * registered after this profile builds its tools and overwrites the base table
+ * entry at the same path. A captured reference would be the base table class,
+ * whose `allow*` only checks table-level RBAC, silently skipping the per-record
+ * guard REST enforces.
  */
 import { createHash } from 'node:crypto';
 import * as env from '../../../utility/environment/environmentManager.ts';
@@ -146,10 +154,17 @@ export function _setRequestTargetForTest(ctor: RequestTargetCtor | undefined): v
 	_requestTargetCtorOverride = ctor;
 }
 
+// Cache the Resources module object (not the `resources` registry itself):
+// `liveResource` calls `loadResources()` on every verb-tool invocation, so we
+// avoid repeating `require`'s path resolution on the hot path. `resources` is a
+// live binding, so reading it off the cached module each call still reflects the
+// current registry.
+let _resourcesModule: { resources?: ResourcesRegistry } | undefined;
 function loadResources(): ResourcesRegistry | undefined {
 	if (_resourcesOverride) return _resourcesOverride;
 	try {
-		return require('../../../resources/Resources').resources as ResourcesRegistry;
+		_resourcesModule ??= require('../../../resources/Resources');
+		return _resourcesModule!.resources as ResourcesRegistry;
 	} catch (err) {
 		harperLogger.trace(`MCP application tools: Resources registry unavailable (${(err as Error).message})`);
 		return undefined;
@@ -164,6 +179,29 @@ function loadRequestTarget(): RequestTargetCtor | undefined {
 		// Tests that don't use the real RequestTarget can supply a fake.
 		return undefined;
 	}
+}
+
+/**
+ * Resolve the Resource class to dispatch on for `path` from the LIVE registry at
+ * call time — never a reference captured at registration time.
+ *
+ * Why this matters for authorization: a component's `resources.js` can export a
+ * Resource subclass (`class Doc extends tables.Doc`) that overrides the row-level
+ * `allowRead/allowCreate/allowUpdate/allowDelete` predicates. That subclass is
+ * registered (overwriting the auto-generated base table entry at the same path)
+ * AFTER the MCP profile registers its tools, and its registration does not
+ * re-trigger `refreshApplicationTools`. A class reference captured at tool-build
+ * time is therefore the *base table* class, whose `allow*` only checks
+ * table-level RBAC — so a low-privilege user with table-level grants would pass
+ * while the subclass's per-record guard (which REST honors) is silently skipped.
+ * Resolving live keeps MCP dispatch in lockstep with the class REST resolves.
+ *
+ * Falls back to the registration-time class only if the registry lookup fails
+ * (e.g. the entry was removed), so a stale tool still dispatches *something*.
+ */
+function liveResource(path: string, fallback: ResourceClassLike): ResourceClassLike {
+	const entry = loadResources()?.get(path);
+	return (entry?.Resource as ResourceClassLike | undefined) ?? fallback;
 }
 
 const DEFAULT_SEARCH_LIMIT = 100;
@@ -278,10 +316,11 @@ function wrapError(toolName: string, err: unknown): ToolResult {
 
 // ─── Verb-specific handler factories ───────────────────────────────────────
 
-function makeGetHandler(toolName: string, ResourceClass: ResourceClassLike) {
+function makeGetHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
 	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		const a = (args ?? {}) as Record<string, unknown>;
 		try {
+			const ResourceClass = liveResource(path, capturedClass);
 			const target = makeTarget();
 			target.id = a.id;
 			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
@@ -293,10 +332,11 @@ function makeGetHandler(toolName: string, ResourceClass: ResourceClassLike) {
 	};
 }
 
-function makeSearchHandler(toolName: string, ResourceClass: ResourceClassLike) {
+function makeSearchHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
 	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		const a = (args ?? {}) as Record<string, unknown>;
 		try {
+			const ResourceClass = liveResource(path, capturedClass);
 			const target = makeTarget();
 			if (Array.isArray(a.conditions)) target.conditions = a.conditions as unknown[];
 			if (typeof a.operator === 'string') target.operator = a.operator;
@@ -341,10 +381,11 @@ async function collectRows(rawData: unknown): Promise<unknown[]> {
 	return [rawData];
 }
 
-function makeCreateHandler(toolName: string, ResourceClass: ResourceClassLike) {
+function makeCreateHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
 	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		const a = (args ?? {}) as Record<string, unknown>;
 		try {
+			const ResourceClass = liveResource(path, capturedClass);
 			const target = makeTarget();
 			// Mark the target as a collection so `Resource.post` resolves the table
 			// (not a single record) and routes to `create()` — without this, the
@@ -365,11 +406,12 @@ function makeCreateHandler(toolName: string, ResourceClass: ResourceClassLike) {
 	};
 }
 
-function makeUpdateHandler(toolName: string, ResourceClass: ResourceClassLike, verb: 'put' | 'patch') {
+function makeUpdateHandler(toolName: string, path: string, capturedClass: ResourceClassLike, verb: 'put' | 'patch') {
 	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		const a = (args ?? {}) as Record<string, unknown>;
 		const { id, ...rest } = a;
 		try {
+			const ResourceClass = liveResource(path, capturedClass);
 			const target = makeTarget();
 			target.id = id;
 			// Call the verb method *on* ResourceClass so `this` stays bound to the
@@ -391,10 +433,11 @@ function makeUpdateHandler(toolName: string, ResourceClass: ResourceClassLike, v
 	};
 }
 
-function makeDeleteHandler(toolName: string, ResourceClass: ResourceClassLike) {
+function makeDeleteHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
 	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		const a = (args ?? {}) as Record<string, unknown>;
 		try {
+			const ResourceClass = liveResource(path, capturedClass);
 			const target = makeTarget();
 			target.id = a.id;
 			const data = await ResourceClass.delete!(target, buildContext(context.user));
@@ -576,7 +619,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 			profile: 'application',
 			annotations: mergeAnnotations('get', { readOnlyHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
-			handler: makeGetHandler(name, ResourceClass),
+			handler: makeGetHandler(name, path, ResourceClass),
 		});
 		count++;
 	}
@@ -591,7 +634,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 			profile: 'application',
 			annotations: mergeAnnotations('search', { readOnlyHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
-			handler: makeSearchHandler(name, ResourceClass),
+			handler: makeSearchHandler(name, path, ResourceClass),
 		});
 		count++;
 	}
@@ -605,7 +648,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 			profile: 'application',
 			annotations: mergeAnnotations('create', {}, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'insert'),
-			handler: makeCreateHandler(name, ResourceClass),
+			handler: makeCreateHandler(name, path, ResourceClass),
 		});
 		count++;
 	}
@@ -621,7 +664,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 			// so the observable outcome on repeat call is identical.
 			annotations: mergeAnnotations('update', { idempotentHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
-			handler: makeUpdateHandler(name, ResourceClass, 'put'),
+			handler: makeUpdateHandler(name, path, ResourceClass, 'put'),
 		});
 		count++;
 	} else if (verbs.updatePatch) {
@@ -636,7 +679,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 			// omitted, opt-in via static mcp.annotations.patch.idempotentHint.
 			annotations: mergeAnnotations('patch', {}, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
-			handler: makeUpdateHandler(name, ResourceClass, 'patch'),
+			handler: makeUpdateHandler(name, path, ResourceClass, 'patch'),
 		});
 		count++;
 	}
@@ -656,7 +699,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 			// omits idempotentHint until verified end-to-end.
 			annotations: mergeAnnotations('delete', { destructiveHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'delete'),
-			handler: makeDeleteHandler(name, ResourceClass),
+			handler: makeDeleteHandler(name, path, ResourceClass),
 		});
 		count++;
 	}
@@ -745,7 +788,7 @@ function registerCustomMcpTools(ResourceClass: ResourceClassLike, path: string):
 			// visibleTo filter beyond "the user is authenticated" — the runtime
 			// rejects unauthorized calls naturally.
 			visibleTo: () => true,
-			handler: makeCustomMethodHandler(def.name, ResourceClass, methodName),
+			handler: makeCustomMethodHandler(def.name, path, ResourceClass, methodName),
 		});
 		count++;
 	}
@@ -783,12 +826,15 @@ function registerCustomMcpPrompts(ResourceClass: ResourceClassLike, path: string
 	return count;
 }
 
-function makeCustomMethodHandler(toolName: string, ResourceClass: ResourceClassLike, methodName: string) {
+function makeCustomMethodHandler(toolName: string, path: string, capturedClass: ResourceClassLike, methodName: string) {
 	return async function (args: unknown, context: ToolCallContext): Promise<ToolResult> {
 		try {
 			// Instantiate per call. Component authors define custom methods on
 			// the instance side; the Harper context carries the user so any
 			// internal Resource calls the method makes pick up RBAC naturally.
+			// Resolve the live registry class (see `liveResource`) so the exported
+			// subclass's method runs, in parity with the verb tools and REST.
+			const ResourceClass = liveResource(path, capturedClass);
 			const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
 			const instance = new Ctor(undefined, buildContext(context.user));
 			const method = instance[methodName] as ((a: unknown, ctx: unknown) => unknown) | undefined;
