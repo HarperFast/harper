@@ -93,4 +93,54 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
+
+	it('reclaims a stale aside copy left by an earlier deploy', async function () {
+		this.timeout(20000);
+
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-reclaim-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+
+		// A leftover aside from a previous deploy whose worker has since exited — the kind
+		// of residue the best-effort cleanup tolerates, to be reclaimed by the next deploy.
+		const staleAside = path.join(componentsRoot, '.deploy-aside', 'web', 'stale-from-last-deploy');
+		await fs.mkdir(staleAside, { recursive: true });
+		await fs.writeFile(path.join(staleAside, 'leftover'), 'x');
+
+		const sourceDir = await makeFixture({
+			'package.json': '{"name":"web","version":"2.0.0"}\n',
+			'index.js': 'module.exports = () => 2;\n',
+		});
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = dirPath;
+
+		await extractApplication(app);
+
+		// Cleanup is fire-and-forget; with no live worker holding it, the staging dir is
+		// reclaimed promptly. Poll briefly so the assertion isn't racing the deferred rm.
+		const asideRoot = path.join(componentsRoot, '.deploy-aside', 'web');
+		const deadline = Date.now() + 5000;
+		let asideGone = false;
+		while (Date.now() < deadline) {
+			if (
+				!(await fs
+					.stat(asideRoot)
+					.then(() => true)
+					.catch(() => false))
+			) {
+				asideGone = true;
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		assert.ok(asideGone, 'stale aside staging dir should be reclaimed by the deploy');
+		assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '2.0.0');
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		await fs.rm(sourceDir, { recursive: true, force: true });
+	});
 });

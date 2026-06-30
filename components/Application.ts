@@ -20,6 +20,7 @@ import {
 	writeFile,
 } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -260,7 +261,7 @@ export async function extractApplication(application: Application) {
 	try {
 		await access(application.dirPath, constants.F_OK);
 		await mkdir(asideStagingDir, { recursive: true });
-		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}`));
+		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
 		didRenameAside = true;
 	} catch (err) {
 		// Ignore does not exist error
