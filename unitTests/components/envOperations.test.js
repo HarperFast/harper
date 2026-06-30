@@ -114,14 +114,12 @@ describe('env operations (handlers)', () => {
 		});
 	});
 
-	describe('set_component_file (blocking)', () => {
-		it('refuses to overwrite a .env file and points at set_env_value', async () => {
-			await assert.rejects(
-				() => operations.setComponentFile({ project: PROJECT, file: '.env', payload: 'API_KEY=********' }),
-				/set_env_value/
-			);
-			// the real values must be untouched by the rejected write
-			assert.equal(parse(fs.readFileSync(envPath(), 'utf8')).API_KEY, 'secret123');
+	describe('set_component_file on a .env file', () => {
+		it('writes the file verbatim (not blocked — clients decide how to edit .env files)', async () => {
+			const payload = 'API_KEY=rewritten\nNEW_KEY=added\n';
+			const result = await operations.setComponentFile({ project: PROJECT, file: '.env', payload });
+			assert.match(result.message, /Successfully set component: \.env/);
+			assert.equal(fs.readFileSync(envPath(), 'utf8'), payload);
 		});
 	});
 

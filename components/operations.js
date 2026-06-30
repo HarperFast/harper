@@ -896,14 +896,6 @@ async function setComponentFile(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	// A whole-file write would clobber the other secrets and overwrite real values with the masked
-	// placeholders an editor was shown. Route protected .env edits through the merge-preserving env
-	// ops. Template files (.env.example etc.) are not secret and may be written verbatim.
-	if (isProtectedEnvFile(req.file)) {
-		const msg = `'${req.file}' is a protected .env file; use 'set_env_value' or 'delete_env_value' to edit it`;
-		throw handleHDBError(new Error(msg), msg, HTTP_STATUS_CODES.BAD_REQUEST);
-	}
-
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
 	const pathToComp = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file);
 	if (req.payload !== undefined) {
