@@ -98,8 +98,14 @@ export class Models implements ModelsContract {
 			this.#recordFailure(resolved.backend, 'embed', opts.model, accounting, undefined, startedAt, resolved.error);
 			throw resolved.error;
 		}
-		// Try candidates in order; record each attempt and fall through on failure.
-		let lastError: unknown;
+		// Try candidates in order, recording each attempt. Fall through to the next on
+		// ANY backend error — candidates are heterogeneous, so a limit/input error on
+		// one may still succeed on another; treating an error as "not worth a fallback"
+		// is a router/caller policy, not a facade default (#1537). If every candidate
+		// fails, surface the FIRST (primary) error: the caller asked for that backend,
+		// so it is the most diagnostic. A caller abort short-circuits.
+		let firstError: unknown = undefined;
+		let hasError = false;
 		for (const backend of resolved.candidates) {
 			// Don't spend a backend call on an already-cancelled request — between
 			// candidates the caller may have aborted (and at entry it may already be).
@@ -115,13 +121,14 @@ export class Models implements ModelsContract {
 				return result.output;
 			} catch (err) {
 				this.#recordFailure(backend, 'embed', opts.model, accounting, undefined, attemptStart, err);
-				lastError = err;
-				// Caller cancelled — stop. Any other failure (incl. a backend `pending`
-				// result or a backend-internal abort) falls through to the next candidate.
-				if (signal?.aborted) throw err;
+				if (!hasError) {
+					firstError = err;
+					hasError = true;
+				}
+				if (signal?.aborted) throw err; // caller cancelled — stop, surface the abort
 			}
 		}
-		throw lastError;
+		throw firstError;
 	}
 
 	async generate(input: GenerateInput, opts: GenerateOpts = {}): Promise<GenerateResult> {
@@ -148,7 +155,11 @@ export class Models implements ModelsContract {
 			this.#recordFailure(resolved.backend, 'generate', opts.model, accounting, opts, startedAt, resolved.error);
 			throw resolved.error;
 		}
-		let lastError: unknown;
+		// See embed(): fall through on any backend error (heterogeneous candidates;
+		// skip-policy is a router/caller concern, #1537), surface the FIRST error if all
+		// fail, abort short-circuits.
+		let firstError: unknown = undefined;
+		let hasError = false;
 		for (const backend of resolved.candidates) {
 			// Don't spend a backend call on an already-cancelled request — between
 			// candidates the caller may have aborted (and at entry it may already be).
@@ -165,13 +176,14 @@ export class Models implements ModelsContract {
 				return result.usage ? { ...result.output, usage: result.usage } : result.output;
 			} catch (err) {
 				this.#recordFailure(backend, 'generate', opts.model, accounting, opts, attemptStart, err);
-				lastError = err;
-				// Caller cancelled — stop. Any other failure (incl. a backend `pending`
-				// result or a backend-internal abort) falls through to the next candidate.
-				if (signal?.aborted) throw err;
+				if (!hasError) {
+					firstError = err;
+					hasError = true;
+				}
+				if (signal?.aborted) throw err; // caller cancelled — stop, surface the abort
 			}
 		}
-		throw lastError;
+		throw firstError;
 	}
 
 	generateStream(input: GenerateInput, opts: GenerateOpts = {}): AsyncIterable<GenerateChunk> {
