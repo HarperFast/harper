@@ -134,3 +134,65 @@ models:
 | `model`  | —            | Bedrock model identifier; the vendor prefix selects the request format |
 
 The model identifier's vendor prefix (`anthropic.`, `meta.`, `amazon.titan-`, `cohere.`, `mistral.`) determines the request/response format Harper uses; an unrecognized prefix is rejected with an error. Tool support depends on the underlying model family. Bedrock embedding APIs accept one text per request, so batch `embed()` calls are issued sequentially.
+
+## Custom backends
+
+<VersionBadge version="v5.1.15" />
+
+Beyond the four built-ins, a component or application can register its own backend — including an in-process one that runs inference locally instead of calling an HTTP service. A registered backend is selected by its logical name through the same `model` option as a configured backend.
+
+Custom backends are registered programmatically; the `backend` field in the [`models` configuration](./overview#configuration) selects only the built-ins above.
+
+### defineBackend()
+
+```typescript
+defineBackend(spec: DefineBackendSpec): ModelBackend
+```
+
+Builds a `ModelBackend` from the methods it implements. `capabilities()` is derived from which of `embed` / `generate` / `generateStream` are supplied; `tools` and `adapters` cannot be inferred from method presence, so declare them explicitly.
+
+| Field            | Type       | Default | Description                                                          |
+| ---------------- | ---------- | ------- | -------------------------------------------------------------------- |
+| `name`           | `string`   | —       | Backend name, used in analytics and error messages (required)        |
+| `embed`          | `function` | —       | `embed(input, opts)` implementation, if the backend embeds           |
+| `generate`       | `function` | —       | `generate(input, opts)` implementation, if the backend generates     |
+| `generateStream` | `function` | —       | `generateStream(input, opts)` implementation, if the backend streams |
+| `tools`          | `boolean`  | `false` | Whether `generate` supports tool calls                               |
+| `adapters`       | `boolean`  | `false` | Whether the backend supports per-call adapter selection              |
+
+`embed` and `generate` return the shape the built-in backends return: `{ status: 'completed', output, usage? }`, where `output` is `Float32Array[]` for `embed` and `{ content, finishReason }` for `generate`. `generateStream` is an async generator yielding incremental `{ deltaContent?, deltaToolCalls?, finishReason? }` chunks — the same [`generateStream()`](./api#generatestream) shape, not a wrapped result. At least one method must be supplied. A backend that supplies only `generateStream` still satisfies `generate()`: Harper drains the stream into a single result.
+
+### registerBackend()
+
+```typescript
+registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void
+```
+
+Registers `backend` under the logical name `id` for the given `kind`. Also available as `models.registerBackend(...)` / `scope.models.registerBackend(...)`. Register during component initialization (for example, in `handleApplication`) so the backend is in place before requests arrive; the registry is process-wide, so each worker thread that loads the component registers its own instance.
+
+Use a provider-namespaced `id` (e.g. `local:bge-small`) to avoid collisions when more than one component registers backends.
+
+```javascript
+import { models, registerBackend, defineBackend } from 'harper';
+import { init, embed } from 'some-local-embedding-library';
+
+await init();
+
+registerBackend(
+	'embedding',
+	'local:bge-small',
+	defineBackend({
+		name: 'local:bge-small',
+		async embed(input) {
+			const texts = Array.isArray(input) ? input : [input];
+			const vectors = await embed(texts);
+			return { status: 'completed', output: vectors.map((v) => Float32Array.from(v)) };
+		},
+	})
+);
+
+// Selected like any other model:
+const [vector] = await models.embed('What is Harper?', { model: 'local:bge-small' });
+```
+
+A registered backend takes precedence over a configuration entry with the same logical name, because registration runs after the configuration is loaded. A backend whose `capabilities()` disagrees with the methods it actually implements is registered as-is and fails at call time — `defineBackend()` keeps the two consistent.

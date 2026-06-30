@@ -99,6 +99,16 @@ Each chunk may carry:
 
 Errors detected before the call starts (unknown model name, missing capability) throw synchronously; errors during generation propagate through the iterable.
 
+## registerBackend()
+
+<VersionBadge version="v5.1.15" />
+
+```typescript
+models.registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void
+```
+
+Registers a custom backend under a logical name, selectable by the `model` option on later calls. This is the programmatic path for in-process or third-party backends; pair it with `defineBackend()` to build the backend from a few methods. The same functions are exported from `harper` as `registerBackend` / `defineBackend`. See [Custom backends](./backends#custom-backends) for the full guide.
+
 ## Errors and timeouts
 
 - An unconfigured logical model name throws a not-found error. The error names the missing logical name only — it does not enumerate configured names.

@@ -7,7 +7,7 @@ title: Models
 
 <VersionBadge version="v5.1.0" />
 
-Harper provides a unified API for calling AI models — text embeddings and text generation — from application code. Models are configured by an operator under logical names; application code requests a model by its logical name and Harper routes the call to the configured backend (Ollama, OpenAI, Anthropic, or Amazon Bedrock). Swapping providers is a configuration change, not a code change.
+Harper provides a unified API for calling AI models — text embeddings and text generation — from application code. Models are configured by an operator under logical names; application code requests a model by its logical name and Harper routes the call to the configured backend (Ollama, OpenAI, Anthropic, or Amazon Bedrock) — or to a [custom backend](./backends#custom-backends) a component registers. Swapping providers is a configuration change, not a code change.
 
 The API is exposed as a single process-wide `models` object:
 
