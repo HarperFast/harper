@@ -383,6 +383,34 @@ describe('Blob test', () => {
 		slicedStreamResults = streamToBuffer(slicedStream);
 		assert.equal(await slicedStreamResults, expectedResults.slice(1000, 11000));
 	});
+	it('slice a multi-chunk blob via stream() seeks past the read chunk size (#1457)', async () => {
+		// 0x40000 is the stream() read-buffer size. The older slice tests only cover offsets within the
+		// first chunk; exercise slices whose start and/or end land in later chunks so the seek and the
+		// content-offset accounting are covered (previously the slice would read and discard every chunk
+		// from byte 0, and the past-first-chunk trim was off by HEADER_SIZE).
+		const CHUNK = 0x40000;
+		const data = randomBytes(CHUNK * 2 + 5000);
+		const blob = await createBlob(data); // > FILE_STORAGE_THRESHOLD → file-backed
+		await BlobTest.put({ id: 50, blob });
+		const record = await BlobTest.get(50);
+		const cases = [
+			[100, 200], // within the first chunk (regression guard)
+			[0, CHUNK], // exactly the first chunk
+			[CHUNK - 100, CHUNK + 100], // straddles the first/second chunk boundary
+			[CHUNK + 1000, CHUNK + 2000], // start and end both in the second chunk (seek path)
+			[CHUNK * 2 + 100, undefined], // start in the third chunk, run to EOF
+			[5000, data.length], // start in the first chunk, run to EOF across chunks
+		];
+		for (const [start, end] of cases) {
+			const sliced = end === undefined ? record.blob.slice(start) : record.blob.slice(start, end);
+			const streamed = await streamToBytes(sliced.stream());
+			const expected = data.subarray(start, end);
+			assert(
+				streamed.equals(expected),
+				`slice(${start}, ${end}) stream mismatch: got ${streamed.length} bytes, expected ${expected.length}`
+			);
+		}
+	});
 	it('Abort reading a blob', async () => {
 		let testString = 'this is a test string for deletion'.repeat(800);
 		let blob = await createBlob(Readable.from(testString));
@@ -1266,4 +1294,12 @@ async function streamToBuffer(stream) {
 		retrievedDataFromStream.push(chunk);
 	}
 	return Buffer.concat(retrievedDataFromStream).toString();
+}
+
+async function streamToBytes(stream) {
+	const chunks = [];
+	for await (const chunk of stream) {
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks);
 }

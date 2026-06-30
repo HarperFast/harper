@@ -340,7 +340,20 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		let totalContentRead = 0;
 		let watcher: FSWatcher;
 		let timer: NodeJS.Timeout;
+		// The start() open-retry timer lives in a different scope/phase than pull()'s `timer`; track it
+		// separately so a cancel() during the file-creation wait clears it instead of leaking an fd (#1457).
+		let openTimer: NodeJS.Timeout;
 		let isBeingWritten: boolean;
+		// Close the descriptor at most once. Without nulling `fd`, a later close()/cancel() (e.g. a
+		// GC-driven cancel after a successful read) would close a descriptor the OS may have reassigned to
+		// an unrelated file/socket; and a cancel() before start()'s open() resolves would call
+		// close(undefined) and throw. Guarding on `fd != null` fixes both (#1457).
+		const closeFd = () => {
+			if (fd != null) {
+				close(fd);
+				fd = null;
+			}
+		};
 		let previouslyFinishedWriting = false;
 		const blob = this;
 		// Authoritative (uncompressed) content length from the record descriptor, captured before the
@@ -365,10 +378,11 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 								if (Date.now() < deadline) {
 									logger.debug?.('File does not exist yet, waiting for it to be created', filePath);
 									// the file doesn't exist, so we need to wait for it to be created
-									return setTimeout(() => {
+									openTimer = setTimeout(() => {
 										checkIfIsBeingWritten();
 										openFile(resolve, reject);
 									}, 20).unref();
+									return openTimer;
 								}
 							}
 							// ENOENT: the file is gone. A writer still holding the lock means we timed out waiting
@@ -400,9 +414,15 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				// it; bounds the case where the header reports a known size but the bytes never arrive (a
 				// present-but-truncated blob whose writer lock stays held) (#1454).
 				let incompleteDeadline = 0;
+				// Settle this pull exactly once. A slow async read that completes with an error after the
+				// watcher-timeout path already called onError() (and closed the fd) would otherwise run
+				// onError twice — double close + duplicated #onError callbacks (#1457).
+				let settled = false;
 				return new Promise(function readMore(resolve: () => void, reject: (error: Error) => void) {
 					function onError(error) {
-						close(fd);
+						if (settled) return;
+						settled = true;
+						closeFd();
 						clearTimeout(timer);
 						if (watcher) watcher.close();
 						reject(error);
@@ -411,6 +431,9 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					// allocate a buffer for reading. Note that we could do a stat to get the size, but that is a little more complicated, and might be a little extra overhead
 					const buffer = Buffer.allocUnsafe(0x40000);
 					read(fd, buffer, 0, buffer.length, position, (error, bytesRead, buffer) => {
+						// A late read completion after the pull already settled (via onError or terminal
+						// close) must not re-enter the state machine (#1457).
+						if (settled) return;
 						// TODO: Implement support for decompression
 						totalContentRead += bytesRead;
 						if (error) return onError(error);
@@ -472,6 +495,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 						} else if (bytesRead === 0) {
 							const buffer = Buffer.allocUnsafe(8);
 							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
+								if (settled) return;
 								if (error) return onError(error);
 								size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
@@ -571,7 +595,8 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 									}
 									return;
 								}
-								close(fd);
+								settled = true;
+								closeFd();
 								controller.close();
 								resolve();
 							});
@@ -579,19 +604,26 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 							buffer = buffer.subarray(0, bytesRead);
 						}
 						if (start !== undefined || end !== undefined) {
+							// content offset of the first byte currently in `buffer`. The 8-byte header is only
+							// present in — and stripped from — the first read at file position 0; every later read
+							// starts HEADER_SIZE into the file relative to its content offset.
+							const contentStart = position === 0 ? 0 : position - HEADER_SIZE;
 							if (start && totalContentRead < start) {
-								// we are before the start of the slice, so we need to read more
-								position += bytesRead;
+								// we are before the start of the slice. Seek straight to it (HEADER_SIZE + start)
+								// instead of reading and discarding a 256KB buffer per chunk from byte 0. The header
+								// has already been validated and the size detected on the first read (#1457).
+								position = HEADER_SIZE + start;
+								totalContentRead = start;
 								return readMore(resolve, reject);
 							}
 							if (end && totalContentRead >= end) {
 								// we are past or reached the end of the slice, so we have reached the end, indicate
-								if (totalContentRead > end) buffer = buffer.subarray(0, end - position);
+								if (totalContentRead > end) buffer = buffer.subarray(0, end - contentStart);
 								totalContentRead = size = end;
 							}
-							if (start && start > position) {
-								// we need to skip ahead to the start of the slice
-								buffer = buffer.subarray(start - position);
+							if (start && start > contentStart) {
+								// we need to skip ahead to the start of the slice within this chunk
+								buffer = buffer.subarray(start - contentStart);
 							}
 						}
 						position += bytesRead;
@@ -604,7 +636,8 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 							return resolve();
 						}
 						if (totalContentRead === size) {
-							close(fd);
+							settled = true;
+							closeFd();
 							controller.close();
 						}
 						resolve();
@@ -612,8 +645,9 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				});
 			},
 			cancel() {
-				close(fd);
+				closeFd();
 				clearTimeout(timer);
+				clearTimeout(openTimer);
 				if (watcher) watcher.close();
 			},
 		});
