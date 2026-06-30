@@ -91,10 +91,18 @@ suite('Fail-closed when allow* throws/rejects (#1422 gap 1)', { skip: skipSuite 
 
 	test('HAPPY PATH: a granting allowRead still authorizes — point-read and collection both 200', async () => {
 		const pointRead = await request(restURL).get(`/Allowed/${IDS[0]}`).set(aliceHeaders);
-		strictEqual(pointRead.status, 200, `granting allowRead must allow point-read: ${pointRead.status} ${pointRead.text}`);
+		strictEqual(
+			pointRead.status,
+			200,
+			`granting allowRead must allow point-read: ${pointRead.status} ${pointRead.text}`
+		);
 
 		const collection = await request(restURL).get('/Allowed/?id=ge=row-00&sort(id)').set(aliceHeaders);
-		strictEqual(collection.status, 200, `granting allowRead must allow collection: ${collection.status} ${collection.text}`);
+		strictEqual(
+			collection.status,
+			200,
+			`granting allowRead must allow collection: ${collection.status} ${collection.text}`
+		);
 		const rows: any[] = Array.isArray(collection.body) ? collection.body : [];
 		strictEqual(rows.length, IDS.length, `granting allowRead should return all ${IDS.length} rows, saw ${rows.length}`);
 	});
