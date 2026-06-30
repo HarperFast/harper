@@ -34,9 +34,13 @@ describe('models singleton', () => {
 		assert.strictEqual(global.models, modelsSingleton);
 	});
 
-	it('_assignPackageExport wires the registerBackend / defineBackend free functions', () => {
-		assert.strictEqual(typeof global.registerBackend, 'function');
-		assert.strictEqual(typeof global.defineBackend, 'function');
+	it('exposes registerBackend / defineBackend / registerRouter as methods on the singleton, not free globals (#1534)', () => {
+		assert.strictEqual(typeof modelsSingleton.registerBackend, 'function');
+		assert.strictEqual(typeof modelsSingleton.defineBackend, 'function');
+		assert.strictEqual(typeof modelsSingleton.registerRouter, 'function');
+		// The generic free globals were removed — only `models` is exported.
+		assert.strictEqual(global.registerBackend, undefined);
+		assert.strictEqual(global.defineBackend, undefined);
 	});
 });
 
