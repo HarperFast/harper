@@ -4,7 +4,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 
-import { dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import {
 	access,
 	constants,
@@ -13,6 +13,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	rename,
 	rm,
 	stat,
 	symlink,
@@ -233,11 +234,23 @@ export async function extractApplication(application: Application) {
 		}
 	}
 
-	// Create the application directory
+	// Replace any existing component directory atomically instead of clearing it in
+	// place. A previous version's worker can still be running and actively writing
+	// into this directory — e.g. a live Next.js app writing into `.next/cache` — and
+	// an in-place recursive rm races that writer: rm empties `.next`, then its leaf
+	// `rmdir('.next')` fails with ENOTEMPTY because the worker just re-created a cache
+	// entry. (`force: true` only suppresses ENOENT; ENOTEMPTY is not retried unless
+	// `maxRetries` is set, and a continuously-writing app would outlast retries
+	// anyway.) Renaming the old directory aside is atomic and immune to the race: the
+	// still-running worker keeps writing into the renamed inode harmlessly until it's
+	// replaced on restart, and the aside copy is removed best-effort below.
+	const dirName = basename(application.dirPath);
+	const asideSuffix = '.old-';
+	let previousDirPath: string | undefined;
 	try {
 		await access(application.dirPath, constants.F_OK);
-		// directory already exists; clear it
-		await rm(application.dirPath, { recursive: true, force: true });
+		previousDirPath = join(dirname(application.dirPath), `${dirName}${asideSuffix}${process.pid}-${Date.now()}`);
+		await rename(application.dirPath, previousDirPath);
 	} catch (err) {
 		// Ignore does not exist error
 		if (err.code !== 'ENOENT') {
@@ -273,6 +286,39 @@ export async function extractApplication(application: Application) {
 	if (shouldDeleteTarball && tarballPath) {
 		await rm(tarballPath, { force: true });
 	}
+
+	// Remove the renamed-aside previous version. The old worker may still hold files
+	// open in it (the live writer that motivated the rename), so this is best-effort:
+	// tolerate failure, and sweep any leftovers from earlier deploys whose workers
+	// have since exited. The unique suffix means a lingering aside dir never blocks a
+	// future deploy.
+	if (previousDirPath) {
+		await sweepAsideDirs(dirname(application.dirPath), dirName, asideSuffix);
+	}
+}
+
+/**
+ * Best-effort removal of `<dirName>.old-*` directories left behind by extractApplication's
+ * atomic swap. A still-running worker can keep an aside dir non-empty, so failures are
+ * logged and ignored — the next deploy retries once that worker has exited.
+ */
+async function sweepAsideDirs(parentDirPath: string, dirName: string, asideSuffix: string) {
+	const prefix = `${dirName}${asideSuffix}`;
+	let entries: string[];
+	try {
+		entries = await readdir(parentDirPath);
+	} catch {
+		return;
+	}
+	await Promise.all(
+		entries
+			.filter((entry) => entry.startsWith(prefix))
+			.map((entry) =>
+				rm(join(parentDirPath, entry), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+					logger.warn?.(`Could not remove previous component directory ${entry}: ${err.message}`)
+				)
+			)
+	);
 }
 
 /**
