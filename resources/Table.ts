@@ -1300,7 +1300,10 @@ export function makeTable(options) {
 										if (!property.name) property = { name: property };
 										if (!property.checkPermission && (target as any).checkPermission)
 											property.checkPermission = (target as any).checkPermission;
-										if (!relatedTable.prototype.allowRead.call(null, user, property, context)) return false;
+										// Invoke the related table's allowRead on a properly-bound instance rather than
+										// `.call(null, ...)` so `this` is a valid resource of the related type.
+										const relatedResource = new relatedTable(undefined, context);
+										if (!relatedResource.allowRead(user, property, context)) return false;
 										if (!property.select) return property.name; // no select was applied, just return the name
 									}
 									return property;
