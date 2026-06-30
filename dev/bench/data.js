@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782808082496,
+  "lastUpdate": 1782808084505,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -3404,6 +3404,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 182.95,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "deb638f8bd4681f2195385e30766b06d79fdf432",
+          "message": "chore(ci): bump ai-review-prompts to 9cf49d2 (calibration #70 + prompt-ref tracking #71) (#1519)\n\n* chore(ci): bump ai-review-prompts to 67d7611 (prompt-ref tracking)\n\nForward bump 1bbc562 -> 67d7611 (ai-review-prompts #71): the log step now\nrecords which prompt version produced each ai-review-log entry — a\n`**Prompt ref:**` body field plus a `prompt:<shortsha>` label — so\ncalibration can attribute verdicts to a specific prompt version instead\nof a date bucket. No prompt-content change vs 1bbc562 (which already\ncarried the #67 calibration + #69 log-count fix); this turns on\nper-version tracking.\n\n`uses:` and `ai-review-prompts-ref:` move in lockstep.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* chore(ci): re-point bump to 9cf49d2 (add #70 week-of-06-22 calibration)\n\n#70 (week-of-06-22 calibration) merged after this bump was opened, so\nre-point 67d7611 -> 9cf49d2 to land the calibration AND the #71 prompt-ref\ntracking together in a single bump rather than forcing a second one.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T04:45:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/deb638f8bd4681f2195385e30766b06d79fdf432"
+        },
+        "date": 1782808084098,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.49,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.06,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.05,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.18,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.67,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.52,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 34.96,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.02,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.89,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 165.7,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 46.45,
             "unit": "ms"
           }
         ]
