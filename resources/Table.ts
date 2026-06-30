@@ -1209,7 +1209,12 @@ export function makeTable(options) {
 				let allowed = true;
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowRead(context.user, target, context);
+					try {
+						allowed = this.allowRead(context.user, target, context);
+					} catch (_allowError) {
+						// allow* threw — fail closed rather than letting the request proceed
+						throw new AccessViolation(context.user);
+					}
 				}
 				return promiseNormalize(
 					when(
@@ -2570,7 +2575,13 @@ export function makeTable(options) {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			if (target.checkPermission) {
 				// requesting authorization verification
-				const allowed = this.allowRead((context as any).user, target, context);
+				let allowed;
+				try {
+					allowed = this.allowRead((context as any).user, target, context);
+				} catch (_allowError) {
+					// allow* threw — fail closed rather than letting the request proceed
+					throw new AccessViolation((context as any).user);
+				}
 				if (!allowed) {
 					throw new AccessViolation((context as any).user);
 				}
