@@ -764,6 +764,10 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, qu
 			const { findAndValidateUser } = require('../security/user');
 			const fresh: any = await findAndValidateUser(username, undefined, false);
 			if (!fresh?.role) return false;
+			// Advance the subscription's context to the fresh user so downstream checks — context.user
+			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
+			// not the stale user captured at subscribe time.
+			if (context) (context as any).user = fresh;
 			// Re-run the same table/RBAC-level allowRead the subscription was granted with, against the
 			// fresh user. No per-record evaluation — this matches how access was originally granted.
 			const reTarget: any = new RequestTarget();

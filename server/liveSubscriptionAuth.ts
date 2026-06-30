@@ -103,9 +103,9 @@ export function registerLiveSubscription(opts: {
 	// 'close' to cover any iterable that closes without an end().
 	const originalEnd = typeof subscription.end === 'function' ? subscription.end.bind(subscription) : null;
 	if (originalEnd) {
-		subscription.end = function () {
+		subscription.end = function (...args: any[]) {
 			unregister();
-			return originalEnd();
+			return originalEnd(...args);
 		};
 	}
 	subscription.on?.('close', unregister);

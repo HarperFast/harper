@@ -77,7 +77,10 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 	let seq = 0;
 
 	const insert = (record: Record<string, unknown>) =>
-		client.req().send({ operation: 'insert', schema: 'data', table: 'Owned', records: [record] }).expect(200);
+		client
+			.req()
+			.send({ operation: 'insert', schema: 'data', table: 'Owned', records: [record] })
+			.expect(200);
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
@@ -110,7 +113,9 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 				role: ROLE,
 				permission: {
 					super_user: false,
-					data: { tables: { Owned: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] } } },
+					data: {
+						tables: { Owned: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] } },
+					},
 				},
 			})
 			.expect(200);
@@ -160,7 +165,12 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 		// Issue a short-lived operation token for Bob (independent of the dropped Alice).
 		const tokenResp = await client
 			.req()
-			.send({ operation: 'create_authentication_tokens', username: BOB.username, password: BOB.password, expires_in: 3 });
+			.send({
+				operation: 'create_authentication_tokens',
+				username: BOB.username,
+				password: BOB.password,
+				expires_in: 3,
+			});
 		strictEqual(tokenResp.status, 200, `token issue failed: ${tokenResp.status} ${tokenResp.text}`);
 		const token = tokenResp.body?.operation_token;
 		ok(token, 'expected an operation_token');
@@ -177,7 +187,11 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			const probe = stream.count();
 			await insert({ id: `r-${seq++}`, value: 'token-after' });
 			await sleep(1500);
-			strictEqual(stream.count(), probe, `subscription kept delivering after token expiry (${stream.count() - probe} extra)`);
+			strictEqual(
+				stream.count(),
+				probe,
+				`subscription kept delivering after token expiry (${stream.count() - probe} extra)`
+			);
 		} finally {
 			stream.close();
 		}
