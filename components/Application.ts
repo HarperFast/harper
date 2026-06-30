@@ -126,6 +126,11 @@ export function isSSHAuthFailure(stderr: string): boolean {
 	);
 }
 
+// Hidden directory under the components root holding component versions renamed aside
+// during a deploy swap (see extractApplication). The leading dot keeps
+// loadComponentDirectories from loading its contents as components.
+export const ASIDE_STAGING_DIR = '.deploy-aside';
+
 /**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
  *
@@ -244,13 +249,19 @@ export async function extractApplication(application: Application) {
 	// anyway.) Renaming the old directory aside is atomic and immune to the race: the
 	// still-running worker keeps writing into the renamed inode harmlessly until it's
 	// replaced on restart, and the aside copy is removed best-effort below.
-	const dirName = basename(application.dirPath);
-	const asideSuffix = '.old-';
-	let previousDirPath: string | undefined;
+	//
+	// The aside lives under a hidden, component-scoped staging directory inside the
+	// components root: same filesystem as the source so the rename stays atomic, the
+	// leading dot keeps loadComponentDirectories from picking it up as a phantom
+	// component, and the per-component path means a sibling component never collides
+	// with (or sweeps) another's aside.
+	const asideStagingDir = join(dirname(application.dirPath), ASIDE_STAGING_DIR, basename(application.dirPath));
+	let didRenameAside = false;
 	try {
 		await access(application.dirPath, constants.F_OK);
-		previousDirPath = join(dirname(application.dirPath), `${dirName}${asideSuffix}${process.pid}-${Date.now()}`);
-		await rename(application.dirPath, previousDirPath);
+		await mkdir(asideStagingDir, { recursive: true });
+		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}`));
+		didRenameAside = true;
 	} catch (err) {
 		// Ignore does not exist error
 		if (err.code !== 'ENOENT') {
@@ -287,38 +298,17 @@ export async function extractApplication(application: Application) {
 		await rm(tarballPath, { force: true });
 	}
 
-	// Remove the renamed-aside previous version. The old worker may still hold files
-	// open in it (the live writer that motivated the rename), so this is best-effort:
-	// tolerate failure, and sweep any leftovers from earlier deploys whose workers
-	// have since exited. The unique suffix means a lingering aside dir never blocks a
-	// future deploy.
-	if (previousDirPath) {
-		await sweepAsideDirs(dirname(application.dirPath), dirName, asideSuffix);
+	// Remove this component's aside copies. The old worker may still hold files open
+	// in the just-renamed copy (the live writer that motivated the rename), so this is
+	// best-effort: removing the whole staging subdirectory also clears leftovers from
+	// earlier deploys whose workers have since exited, and a copy that survives because
+	// its worker is still live is swept by the next deploy. The failure is expected in
+	// the live-worker case, so it's logged at trace rather than as a warning.
+	if (didRenameAside) {
+		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
+		);
 	}
-}
-
-/**
- * Best-effort removal of `<dirName>.old-*` directories left behind by extractApplication's
- * atomic swap. A still-running worker can keep an aside dir non-empty, so failures are
- * logged and ignored — the next deploy retries once that worker has exited.
- */
-async function sweepAsideDirs(parentDirPath: string, dirName: string, asideSuffix: string) {
-	const prefix = `${dirName}${asideSuffix}`;
-	let entries: string[];
-	try {
-		entries = await readdir(parentDirPath);
-	} catch {
-		return;
-	}
-	await Promise.all(
-		entries
-			.filter((entry) => entry.startsWith(prefix))
-			.map((entry) =>
-				rm(join(parentDirPath, entry), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-					logger.warn?.(`Could not remove previous component directory ${entry}: ${err.message}`)
-				)
-			)
-	);
 }
 
 /**

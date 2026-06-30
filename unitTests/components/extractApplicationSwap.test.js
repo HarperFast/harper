@@ -80,6 +80,16 @@ describe('extractApplication directory swap', () => {
 		assert.strictEqual(await fs.readFile(path.join(dirPath, 'index.js'), 'utf8'), 'module.exports = () => 2;\n');
 		assert.ok(writes > 0, 'writer should have run during the swap');
 
+		// The renamed-aside copy must stay hidden: the only non-dot entry under the
+		// components root is the live component, so loadComponentDirectories (which loads
+		// every visible dir as a component) can't pick up an aside as a phantom component.
+		const rootEntries = await fs.readdir(componentsRoot);
+		assert.deepStrictEqual(
+			rootEntries.filter((entry) => !entry.startsWith('.')),
+			['web'],
+			`unexpected non-hidden entries under components root: ${rootEntries.join(', ')}`
+		);
+
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
