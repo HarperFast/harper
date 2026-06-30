@@ -815,7 +815,8 @@ export function findLastAggregationTime(
 ): number | undefined {
 	let scanned = 0;
 	for (const entry of primaryStore.getRange({ start: Infinity, end: false, reverse: true })) {
-		if (entry.value?.time && entry.value?.id?.[1] === localNodeId) return entry.value.time;
+		if (entry.value?.time && Array.isArray(entry.value.id) && entry.value.id[1] === localNodeId)
+			return entry.value.time;
 		if (++scanned >= maxScan) break;
 	}
 	return undefined;
