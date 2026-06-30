@@ -163,14 +163,12 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 
 	test('bearer token expiry terminates an active subscription', async () => {
 		// Issue a short-lived operation token for Bob (independent of the dropped Alice).
-		const tokenResp = await client
-			.req()
-			.send({
-				operation: 'create_authentication_tokens',
-				username: BOB.username,
-				password: BOB.password,
-				expires_in: 3,
-			});
+		const tokenResp = await client.req().send({
+			operation: 'create_authentication_tokens',
+			username: BOB.username,
+			password: BOB.password,
+			expires_in: 3,
+		});
 		strictEqual(tokenResp.status, 200, `token issue failed: ${tokenResp.status} ${tokenResp.text}`);
 		const token = tokenResp.body?.operation_token;
 		ok(token, 'expected an operation_token');
