@@ -130,6 +130,14 @@ Queries analytics data for a specific metric over a time range.
 ]
 ```
 
+### Read behavior
+
+`get_analytics` queries read against the latest committed data without holding a consistent read
+snapshot open for the duration of the query. This keeps long-running analytics scans easier on the
+rest of the system — a query never pins a snapshot that would otherwise block storage compaction
+for its duration. The trade-off is that results are not guaranteed to reflect a single point in
+time: rows written while the query is iterating may be included.
+
 ## Related
 
 - [Analytics Overview](./overview)
