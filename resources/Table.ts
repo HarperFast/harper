@@ -1211,7 +1211,7 @@ export function makeTable(options) {
 					// requesting authorization verification
 					try {
 						allowed = this.allowRead(context.user, target, context);
-					} catch (_allowError) {
+					} catch {
 						// allow* threw — fail closed rather than letting the request proceed
 						throw new AccessViolation(context.user);
 					}
@@ -2578,7 +2578,7 @@ export function makeTable(options) {
 				let allowed;
 				try {
 					allowed = this.allowRead((context as any).user, target, context);
-				} catch (_allowError) {
+				} catch {
 					// allow* threw — fail closed rather than letting the request proceed
 					throw new AccessViolation((context as any).user);
 				}

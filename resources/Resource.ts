@@ -709,7 +709,7 @@ function transactional(
 									: options.type === 'create'
 										? resource.allowCreate(context.user, data, context)
 										: resource.allowDelete(context.user, query, context);
-					} catch (_allowError) {
+					} catch {
 						// allow* threw — fail closed rather than letting the request proceed
 						throw new AccessViolation(context.user);
 					}
