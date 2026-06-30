@@ -35,6 +35,7 @@ const {
 	statSync,
 	truncateSync,
 	writeFileSync,
+	readdirSync,
 } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
@@ -419,6 +420,53 @@ describe('Blob test', () => {
 			break;
 		}
 		// just make sure there is no error
+	});
+	it('cancel a blob stream mid-read does not throw or reject (#1457)', async () => {
+		// Cancelling while an fs.read may be in flight must not recurse into read(null) (sync throw) or
+		// reject the cancelled pull (unhandled rejection) — the cancel-race the cross-model review caught.
+		const data = randomBytes(0x40000 * 2 + 1000); // multi-chunk, file-backed
+		const blob = await createBlob(data);
+		await BlobTest.put({ id: 51, blob });
+		const record = await BlobTest.get(51);
+		const rejections = [];
+		const onRej = (e) => rejections.push(e);
+		process.on('unhandledRejection', onRej);
+		try {
+			// cancel before any chunk is pulled (start()'s open may still be in flight)
+			await record.blob.stream().getReader().cancel();
+			// cancel after the first chunk, with a second read likely in flight
+			const reader = record.blob.stream().getReader();
+			await reader.read();
+			const racing = reader.read();
+			await reader.cancel();
+			await racing.catch(() => {});
+			await new Promise((res) => setTimeout(res, 50)); // let any late fs.read callback fire
+		} finally {
+			process.off('unhandledRejection', onRej);
+		}
+		assert.deepEqual(rejections, [], 'cancel must not produce unhandled rejections');
+		// the blob is still readable afterwards (no wedged state)
+		assert((await (await BlobTest.get(51)).blob.bytes()).equals(data));
+	});
+	it('cancel before open() resolves does not leak fds (#1457)', async () => {
+		const fdDir = '/proc/self/fd';
+		if (!existsSync(fdDir)) return; // Linux-only fd accounting
+		const data = randomBytes(20000);
+		const blob = await createBlob(data);
+		await BlobTest.put({ id: 52, blob });
+		const record = await BlobTest.get(52);
+		const countFds = () => readdirSync(fdDir).length;
+		await record.blob.stream().getReader().cancel(); // warm up lazy config lookups
+		await new Promise((res) => setTimeout(res, 50));
+		const before = countFds();
+		for (let i = 0; i < 50; i++) {
+			// cancel immediately, while start()'s open() is still in flight: the descriptor it later
+			// acquires must be closed by the cancelled-guard, not leaked.
+			await record.blob.stream().getReader().cancel();
+		}
+		await new Promise((res) => setTimeout(res, 100)); // let in-flight opens resolve and self-close
+		const after = countFds();
+		assert(after - before < 10, `fd leak across 50 cancels: grew from ${before} to ${after}`);
 	});
 	it('Abort writing a blob', async () => {
 		let testString = 'this is a test string'.repeat(256);

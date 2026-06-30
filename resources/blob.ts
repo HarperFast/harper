@@ -343,6 +343,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		// The start() open-retry timer lives in a different scope/phase than pull()'s `timer`; track it
 		// separately so a cancel() during the file-creation wait clears it instead of leaking an fd (#1457).
 		let openTimer: NodeJS.Timeout;
+		// Stream-wide cancellation gate. cancel() can null `fd` but cannot reach pull()'s per-pull
+		// `settled` flag, so this is the cross-phase signal that stops start()/pull() from opening or
+		// reading once the consumer has cancelled (e.g. an aborted ranged response) (#1457).
+		let cancelled = false;
 		let isBeingWritten: boolean;
 		// Close the descriptor at most once. Without nulling `fd`, a later close()/cancel() (e.g. a
 		// GC-driven cancel after a successful read) would close a descriptor the OS may have reassigned to
@@ -371,6 +375,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				// lookup) is computed lazily on the first miss, so a healthy read never pays for it.
 				let deadline = 0;
 				const openFile = (resolve: (value: any) => void, reject: (error: Error) => void) => {
+					if (cancelled) return resolve(undefined); // consumer cancelled before/while opening; stop retrying
 					open(filePath, 'r', (error, openedFd) => {
 						if (error) {
 							if (error.code === 'ENOENT' && isBeingWritten !== false) {
@@ -400,6 +405,9 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 							blob.#onError?.forEach((callback) => callback(readError));
 						} else {
 							fd = openedFd;
+							// the consumer cancelled while open() was in flight: pull()/cancel() will not run
+							// again, so close the descriptor we just acquired rather than leaking it (#1457)
+							if (cancelled) closeFd();
 							resolve(openedFd);
 						}
 					});
@@ -419,6 +427,9 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				// onError twice — double close + duplicated #onError callbacks (#1457).
 				let settled = false;
 				return new Promise(function readMore(resolve: () => void, reject: (error: Error) => void) {
+					// A queued timer/watcher callback can re-enter readMore after the stream was cancelled (fd
+					// is gone); stop here so we never issue read() on a closed/nulled descriptor (#1457).
+					if (cancelled || fd == null) return resolve();
 					function onError(error) {
 						if (settled) return;
 						settled = true;
@@ -432,8 +443,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					const buffer = Buffer.allocUnsafe(0x40000);
 					read(fd, buffer, 0, buffer.length, position, (error, bytesRead, buffer) => {
 						// A late read completion after the pull already settled (via onError or terminal
-						// close) must not re-enter the state machine (#1457).
-						if (settled) return;
+						// close) or after the stream was cancelled (fd nulled, EBADF/partial read) must not
+						// re-enter the state machine — otherwise a recursive read() would hit a null fd and
+						// throw synchronously, or onError() would reject an already-cancelled stream (#1457).
+						if (settled || cancelled) return resolve();
 						// TODO: Implement support for decompression
 						totalContentRead += bytesRead;
 						if (error) return onError(error);
@@ -495,7 +508,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 						} else if (bytesRead === 0) {
 							const buffer = Buffer.allocUnsafe(8);
 							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
-								if (settled) return;
+								if (settled || cancelled) return resolve();
 								if (error) return onError(error);
 								size = Number(new DataView(buffer.buffer, buffer.byteOffset, 8).getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
@@ -645,6 +658,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				});
 			},
 			cancel() {
+				cancelled = true;
 				closeFd();
 				clearTimeout(timer);
 				clearTimeout(openTimer);
