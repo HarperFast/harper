@@ -8,23 +8,24 @@ const {
 	resolveGenerative,
 	ModelBackendNotFoundError,
 } = require('#src/resources/models/backendRegistry');
+const { join } = require('node:path');
 
 describe('bootstrapModels', () => {
 	beforeEach(() => clearRegistry());
 
-	it('is a no-op when rootConfig is undefined/null', () => {
-		bootstrapModels(undefined);
-		bootstrapModels(null);
+	it('is a no-op when rootConfig is undefined/null', async () => {
+		await bootstrapModels(undefined);
+		await bootstrapModels(null);
 		assert.throws(() => resolveEmbedding('default'), ModelBackendNotFoundError);
 	});
 
-	it('is a no-op when rootConfig.models is absent', () => {
-		bootstrapModels({});
+	it('is a no-op when rootConfig.models is absent', async () => {
+		await bootstrapModels({});
 		assert.throws(() => resolveEmbedding('default'), ModelBackendNotFoundError);
 	});
 
-	it('registers an ollama embedding entry under its logical name', () => {
-		bootstrapModels({
+	it('registers an ollama embedding entry under its logical name', async () => {
+		await bootstrapModels({
 			models: {
 				embedding: {
 					fast: { backend: 'ollama', host: 'localhost:11434', model: 'nomic-embed-text' },
@@ -35,8 +36,8 @@ describe('bootstrapModels', () => {
 		assert.strictEqual(backend.name, 'ollama');
 	});
 
-	it('registers an ollama generative entry under its logical name', () => {
-		bootstrapModels({
+	it('registers an ollama generative entry under its logical name', async () => {
+		await bootstrapModels({
 			models: {
 				generative: {
 					default: { backend: 'ollama', host: 'localhost:11434', model: 'llama3.2' },
@@ -47,8 +48,8 @@ describe('bootstrapModels', () => {
 		assert.strictEqual(backend.name, 'ollama');
 	});
 
-	it('skips entries with unknown backend without throwing', () => {
-		bootstrapModels({
+	it('skips entries with unknown backend without throwing', async () => {
+		await bootstrapModels({
 			models: {
 				embedding: {
 					default: { backend: 'magic-backend', model: 'm' },
@@ -64,8 +65,8 @@ describe('bootstrapModels', () => {
 		assert.throws(() => resolveEmbedding('default'), ModelBackendNotFoundError);
 	});
 
-	it('skips entries that are not objects', () => {
-		bootstrapModels({
+	it('skips entries that are not objects', async () => {
+		await bootstrapModels({
 			models: {
 				embedding: {
 					bad: 'just a string',
@@ -77,13 +78,18 @@ describe('bootstrapModels', () => {
 		assert.throws(() => resolveEmbedding('bad'), ModelBackendNotFoundError);
 	});
 
-	it('skips entries missing a backend field', () => {
-		bootstrapModels({ models: { embedding: { x: { model: 'm' } } } });
+	it('skips entries missing a backend field', async () => {
+		await bootstrapModels({ models: { embedding: { x: { model: 'm' } } } });
 		assert.throws(() => resolveEmbedding('x'), ModelBackendNotFoundError);
 	});
 
-	it('registers multiple logical names independently', () => {
-		bootstrapModels({
+	it('skips an entry whose backend is not a string', async () => {
+		await bootstrapModels({ models: { embedding: { x: { backend: 123, model: 'm' } } } });
+		assert.throws(() => resolveEmbedding('x'), ModelBackendNotFoundError);
+	});
+
+	it('registers multiple logical names independently', async () => {
+		await bootstrapModels({
 			models: {
 				generative: {
 					default: { backend: 'ollama', host: 'a:1', model: 'mA' },
@@ -103,8 +109,8 @@ describe('bootstrapModels', () => {
 			delete process.env[ENV_VAR];
 		});
 
-		it('registers an openai entry under its logical name', () => {
-			bootstrapModels({
+		it('registers an openai entry under its logical name', async () => {
+			await bootstrapModels({
 				models: {
 					generative: {
 						default: { backend: 'openai', apiKey: 'sk-test', model: 'gpt-4o-mini' },
@@ -114,9 +120,9 @@ describe('bootstrapModels', () => {
 			assert.strictEqual(resolveGenerative('default').name, 'openai');
 		});
 
-		it('resolves ${ENV_VAR} apiKey before constructing the backend', () => {
+		it('resolves ${ENV_VAR} apiKey before constructing the backend', async () => {
 			process.env[ENV_VAR] = 'sk-real-key';
-			bootstrapModels({
+			await bootstrapModels({
 				models: {
 					generative: {
 						default: { backend: 'openai', apiKey: `\${${ENV_VAR}}`, model: 'gpt-4o-mini' },
@@ -129,10 +135,10 @@ describe('bootstrapModels', () => {
 			assert.strictEqual(resolveGenerative('default').name, 'openai');
 		});
 
-		it('logs error + skips when ${ENV_VAR} apiKey is unset', () => {
+		it('logs error + skips when ${ENV_VAR} apiKey is unset', async () => {
 			// ENV_VAR is intentionally not set in this test; the placeholder
 			// stays literal and the backend constructor throws.
-			bootstrapModels({
+			await bootstrapModels({
 				models: {
 					generative: {
 						default: { backend: 'openai', apiKey: `\${${ENV_VAR}}`, model: 'gpt-4o-mini' },
@@ -143,8 +149,8 @@ describe('bootstrapModels', () => {
 			assert.throws(() => resolveGenerative('default'), { name: 'ModelBackendNotFoundError' });
 		});
 
-		it('logs error + skips when apiKey is missing entirely', () => {
-			bootstrapModels({
+		it('logs error + skips when apiKey is missing entirely', async () => {
+			await bootstrapModels({
 				models: {
 					generative: {
 						default: { backend: 'openai', model: 'gpt-4o-mini' },
@@ -154,8 +160,8 @@ describe('bootstrapModels', () => {
 			assert.throws(() => resolveGenerative('default'), { name: 'ModelBackendNotFoundError' });
 		});
 
-		it('registers ollama + openai entries side by side', () => {
-			bootstrapModels({
+		it('registers ollama + openai entries side by side', async () => {
+			await bootstrapModels({
 				models: {
 					embedding: {
 						'default': { backend: 'ollama', model: 'nomic-embed-text' },
@@ -176,8 +182,8 @@ describe('bootstrapModels', () => {
 
 	// #633 (Phase 6): anthropic + bedrock entries.
 	describe('anthropic + bedrock backends (#633)', () => {
-		it('registers an anthropic generative entry', () => {
-			bootstrapModels({
+		it('registers an anthropic generative entry', async () => {
+			await bootstrapModels({
 				models: {
 					generative: {
 						claude: { backend: 'anthropic', apiKey: 'sk-ant-test', model: 'claude-opus-4-7' },
@@ -187,8 +193,8 @@ describe('bootstrapModels', () => {
 			assert.strictEqual(resolveGenerative('claude').name, 'anthropic');
 		});
 
-		it('registers a bedrock generative entry (SDK loads lazily; construction is cheap)', () => {
-			bootstrapModels({
+		it('registers a bedrock generative entry (SDK loads lazily; construction is cheap)', async () => {
+			await bootstrapModels({
 				models: {
 					generative: {
 						'bedrock-claude': {
@@ -202,8 +208,8 @@ describe('bootstrapModels', () => {
 			assert.strictEqual(resolveGenerative('bedrock-claude').name, 'bedrock');
 		});
 
-		it('registers a bedrock embedding entry', () => {
-			bootstrapModels({
+		it('registers a bedrock embedding entry', async () => {
+			await bootstrapModels({
 				models: {
 					embedding: {
 						titan: { backend: 'bedrock', region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' },
@@ -213,8 +219,8 @@ describe('bootstrapModels', () => {
 			assert.strictEqual(resolveEmbedding('titan').name, 'bedrock');
 		});
 
-		it('logs error + skips when an anthropic embedding entry is configured (no Anthropic embed API)', () => {
-			bootstrapModels({
+		it('logs error + skips when an anthropic embedding entry is configured (no Anthropic embed API)', async () => {
+			await bootstrapModels({
 				models: {
 					embedding: {
 						oops: { backend: 'anthropic', apiKey: 'sk-ant', model: 'claude' },
@@ -224,8 +230,8 @@ describe('bootstrapModels', () => {
 			assert.throws(() => resolveEmbedding('oops'), { name: 'ModelBackendNotFoundError' });
 		});
 
-		it('all four backends side by side', () => {
-			bootstrapModels({
+		it('all four backends side by side', async () => {
+			await bootstrapModels({
 				models: {
 					embedding: {
 						local: { backend: 'ollama', model: 'nomic-embed-text' },
@@ -251,6 +257,74 @@ describe('bootstrapModels', () => {
 			assert.strictEqual(resolveGenerative('gpt').name, 'openai');
 			assert.strictEqual(resolveGenerative('claude').name, 'anthropic');
 			assert.strictEqual(resolveGenerative('bedrock-claude').name, 'bedrock');
+		});
+	});
+
+	// #1471: a non-built-in `backend` value is resolved as a module specifier.
+	describe('module backends (#1471)', () => {
+		const FIXTURES = join(__dirname, 'fixtures');
+
+		it('registers a backend from a module specifier (default-export factory)', async () => {
+			await bootstrapModels({
+				models: {
+					embedding: {
+						local: { backend: join(FIXTURES, 'embed-backend-module.cjs'), model: 'bge-test' },
+					},
+				},
+			});
+			assert.strictEqual(resolveEmbedding('local').name, 'module:bge-test');
+		});
+
+		it('skips a module that exports no usable factory', async () => {
+			await bootstrapModels({
+				models: {
+					embedding: {
+						bad: { backend: join(FIXTURES, 'no-factory-module.cjs'), model: 'm' },
+					},
+				},
+			});
+			assert.throws(() => resolveEmbedding('bad'), ModelBackendNotFoundError);
+		});
+
+		it('skips an unimportable backend specifier; a sibling built-in still registers', async () => {
+			await bootstrapModels({
+				models: {
+					embedding: {
+						nope: { backend: '@harper-test/does-not-exist', model: 'm' },
+						good: { backend: 'ollama', model: 'nomic-embed-text' },
+					},
+				},
+			});
+			assert.throws(() => resolveEmbedding('nope'), ModelBackendNotFoundError);
+			assert.strictEqual(resolveEmbedding('good').name, 'ollama');
+		});
+
+		it('registers from a module with a named `register` export', async () => {
+			await bootstrapModels({
+				models: { embedding: { r: { backend: join(FIXTURES, 'register-export-module.cjs'), model: 'm' } } },
+			});
+			assert.strictEqual(resolveEmbedding('r').name, 'module:register-export');
+		});
+
+		it('registers from a default class with a static `register` method', async () => {
+			await bootstrapModels({
+				models: { embedding: { c: { backend: join(FIXTURES, 'class-register-module.cjs'), model: 'm' } } },
+			});
+			assert.strictEqual(resolveEmbedding('c').name, 'module:class-register');
+		});
+
+		it('resolves a relative specifier against the Harper instance root', async () => {
+			const env = require('#src/utility/environment/environmentManager');
+			const prev = env.getHdbBasePath();
+			env.setHdbBasePath(FIXTURES);
+			try {
+				await bootstrapModels({
+					models: { embedding: { rel: { backend: './embed-backend-module.cjs', model: 'rel-test' } } },
+				});
+				assert.strictEqual(resolveEmbedding('rel').name, 'module:rel-test');
+			} finally {
+				env.setHdbBasePath(prev);
+			}
 		});
 	});
 });
