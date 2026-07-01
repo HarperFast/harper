@@ -2,7 +2,7 @@ import { parse } from 'dotenv';
 import logger from '../utility/logging/harper_logger.ts';
 import { Scope } from '../components/Scope.ts';
 import { isEncryptedEnvValue } from '../utility/envFile.ts';
-import { getEnvSecretDecryptor } from './envSecretDecryptor.ts';
+import { getSecretDecryptor } from './secretDecryptor.ts';
 
 export function handleApplication(scope: Scope) {
 	const override = (scope.options.getAll() as { override?: boolean }).override ?? false;
@@ -18,7 +18,7 @@ export function handleApplication(scope: Scope) {
 			// registered a decryptor; otherwise the secret stays opaque and is skipped (so the app
 			// fails loudly on a missing var rather than receiving ciphertext as the value).
 			if (isEncryptedEnvValue(rawValue)) {
-				const decryptor = getEnvSecretDecryptor();
+				const decryptor = getSecretDecryptor();
 				// Logged at error level (not warn) so an undecryptable secret is never silent — but
 				// skipped rather than fatal, so the node still boots and the bad value can be fixed via
 				// set_env_value, and a non-Pro node isn't crashed by a replicated encrypted value. The

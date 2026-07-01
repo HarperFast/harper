@@ -11,7 +11,7 @@ Harper Pro **env-secrets** component. Core only:
 - recognises the `enc:v1:` value prefix ([`utility/envFile.ts`](../utility/envFile.ts) →
   `isEncryptedEnvValue`),
 - exposes a decryptor registration hook
-  ([`resources/envSecretDecryptor.ts`](../resources/envSecretDecryptor.ts)), and
+  ([`resources/secretDecryptor.ts`](../resources/secretDecryptor.ts)), and
 - decrypts via the registered decryptor when loading `.env` files at runtime
   ([`resources/loadEnv.ts`](../resources/loadEnv.ts)).
 

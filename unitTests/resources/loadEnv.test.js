@@ -2,11 +2,7 @@
 
 const assert = require('node:assert');
 const { handleApplication } = require('#src/resources/loadEnv');
-const {
-	registerEnvSecretDecryptor,
-	getEnvSecretDecryptor,
-	clearEnvSecretDecryptor,
-} = require('#src/resources/envSecretDecryptor');
+const { registerSecretDecryptor, getSecretDecryptor, clearSecretDecryptor } = require('#src/resources/secretDecryptor');
 
 // A minimal Scope stand-in: captures the entry handler so the test can drive it directly.
 function fakeScope(options = {}) {
@@ -29,18 +25,18 @@ describe('loadEnv env-secret decryption hook', () => {
 	const TOUCHED = ['__ENVTEST_A', '__ENVTEST_B', '__ENVTEST_C', '__ENVTEST_D', '__ENVTEST_E'];
 
 	afterEach(() => {
-		clearEnvSecretDecryptor();
+		clearSecretDecryptor();
 		for (const k of TOUCHED) delete process.env[k];
 	});
 
-	describe('envSecretDecryptor registry', () => {
+	describe('secretDecryptor registry', () => {
 		it('registers, returns, and clears the decryptor', () => {
-			assert.equal(getEnvSecretDecryptor(), undefined);
+			assert.equal(getSecretDecryptor(), undefined);
 			const fn = (v) => v;
-			registerEnvSecretDecryptor(fn);
-			assert.equal(getEnvSecretDecryptor(), fn);
-			clearEnvSecretDecryptor();
-			assert.equal(getEnvSecretDecryptor(), undefined);
+			registerSecretDecryptor(fn);
+			assert.equal(getSecretDecryptor(), fn);
+			clearSecretDecryptor();
+			assert.equal(getSecretDecryptor(), undefined);
 		});
 	});
 
@@ -53,7 +49,7 @@ describe('loadEnv env-secret decryption hook', () => {
 	});
 
 	it('decrypts enc:v1 values when a decryptor is registered', () => {
-		registerEnvSecretDecryptor((value) => `decrypted(${value.slice('enc:v1:'.length)})`);
+		registerSecretDecryptor((value) => `decrypted(${value.slice('enc:v1:'.length)})`);
 		const scope = fakeScope();
 		handleApplication(scope);
 		scope.fire(addEntry('__ENVTEST_A=plain\n__ENVTEST_C=enc:v1:SECRET'));
@@ -69,7 +65,7 @@ describe('loadEnv env-secret decryption hook', () => {
 	});
 
 	it('skips a value the decryptor cannot decrypt rather than storing ciphertext', () => {
-		registerEnvSecretDecryptor(() => {
+		registerSecretDecryptor(() => {
 			throw new Error('bad envelope');
 		});
 		const scope = fakeScope();
