@@ -409,8 +409,7 @@ export async function loadComponent(
 						let containerFolder = componentDirectory;
 						const hdbBasePath = getHdbBasePath();
 						const componentInsideHdb =
-							componentDirectory === hdbBasePath ||
-							componentDirectory.startsWith(hdbBasePath + sep);
+							componentDirectory === hdbBasePath || componentDirectory.startsWith(hdbBasePath + sep);
 						componentPath = join(containerFolder, 'node_modules', componentName);
 						while (!existsSync(componentPath)) {
 							const parentFolder = dirname(containerFolder);
