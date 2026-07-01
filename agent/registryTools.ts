@@ -47,30 +47,43 @@ export function ensureOperationsToolsRegistered(): void {
 }
 
 /**
- * Adapt every Operations-profile registry tool visible to `agentUser` into the
- * agent's {@link AgentTool} shape. Call {@link ensureOperationsToolsRegistered}
- * first so the profile is populated.
+ * Adapt every Operations-profile registry tool into the agent's {@link AgentTool}
+ * shape. Call {@link ensureOperationsToolsRegistered} first so the profile is
+ * populated.
+ *
+ * Two identities, deliberately split:
+ *   - `listingUser` filters `visibleTo` at compose time — which tools the LLM is
+ *     *shown*. Listing is not a security boundary, so a startup snapshot is fine.
+ *   - `resolveIdentity()` is called *per tool call* to set `hdb_user`, so the
+ *     operation is enforced against the agent user's *current* role. This is what
+ *     honors a role revocation/change without a restart — the enforcement identity
+ *     is never cached in the handler closure.
  */
-export function composeRegistryTools(agentUser: AuthedUser): AgentTool[] {
+export function composeRegistryTools(listingUser: AuthedUser, resolveIdentity: () => Promise<AuthedUser>): AgentTool[] {
 	const defs = snapshotProfileTools('operations');
 	const out: AgentTool[] = [];
 	for (const def of defs) {
-		if (!def.visibleTo(agentUser)) continue;
-		out.push(adaptRegistryTool(def, agentUser));
+		if (!def.visibleTo(listingUser)) continue;
+		out.push(adaptRegistryTool(def, resolveIdentity));
 	}
-	log.info?.(`Agent composed ${out.length} operations tool(s) for user '${agentUser?.username ?? 'unknown'}'`);
+	log.info?.(`Agent composed ${out.length} operations tool(s) for user '${listingUser?.username ?? 'unknown'}'`);
 	return out;
 }
 
-function adaptRegistryTool(def: RegistryToolDef, agentUser: AuthedUser): AgentTool {
+function adaptRegistryTool(def: RegistryToolDef, resolveIdentity: () => Promise<AuthedUser>): AgentTool {
 	return {
 		def: { name: def.name, description: def.description, parameters: def.inputSchema },
 		// The loop's approval gate keys off `destructive`; the registry expresses the same
 		// intent as the MCP `destructiveHint` annotation.
 		destructive: def.annotations?.destructiveHint === true,
 		handler: async (args: object, ctx: AgentToolContext) => {
+			// Resolve the enforcement identity fresh so a live role change is honored. If the
+			// configured user can no longer be resolved, `resolveIdentity` throws (fail closed) —
+			// the loop turns that into a recoverable tool error rather than running with stale or
+			// escalated privileges.
+			const user = await resolveIdentity();
 			const context: ToolCallContext = {
-				user: agentUser,
+				user,
 				profile: 'operations',
 				sessionId: ctx.sessionId,
 				...(ctx.signal ? { signal: ctx.signal } : {}),

@@ -69,17 +69,33 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const abortControllers = new Map<string, AbortController>();
 	let liveConfig: AgentConfig = config;
 
-	// Populate the Operations MCP profile on the main thread, then adapt the tools visible to the
-	// agent's configured identity. Enforcement still runs per-call under this user (see registryTools).
+	// Populate the Operations MCP profile on the main thread. `agentIdentity` resolves the enforcement
+	// identity fresh on each call (so a live role change is honored, and an unresolvable non-default
+	// user fails closed); the startup snapshot below is only for `visibleTo` listing.
 	ensureOperationsToolsRegistered();
-	const agentUser = await resolveAgentUser(opts.server, config.user);
-	const registryTools = composeRegistryTools(agentUser);
+	const agentIdentity = () => resolveAgentIdentity(opts.server, liveConfig.user);
+	let registryTools = await composeRegistryToolsForListing(agentIdentity);
 
 	let composed = composeToolset({
 		allowDestructive: liveConfig.allowDestructive,
 		onFollowup: handleFollowup,
 		registryTools,
 	});
+
+	// Build the listing snapshot best-effort: if the configured user can't be resolved (and isn't the
+	// default bootstrap user), `agentIdentity` fails closed — the agent then runs with only its
+	// operator-only tools until the operator fixes `agent.user`. Never falls back to an escalated list.
+	async function composeRegistryToolsForListing(resolveIdentity: () => Promise<AuthedUser>): Promise<AgentTool[]> {
+		try {
+			const listingUser = await resolveIdentity();
+			return composeRegistryTools(listingUser, resolveIdentity);
+		} catch (err) {
+			log.error?.(
+				`Registry tools disabled — agent.user='${liveConfig.user}' could not be resolved: ${err instanceof Error ? err.message : String(err)}`
+			);
+			return [];
+		}
+	}
 
 	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
 	// every boot would flood the log without telling anyone anything actionable.
@@ -197,30 +213,37 @@ function buildSystemPrompt(scopes: AgentScopes): string {
 }
 
 /**
- * Resolve the identity the agent's tool calls run as. Registry tools are both
- * listed (`visibleTo`) and enforced (`hdb_user` at call time) against this user,
- * so an operator who sets `agent.user` to a restricted role gets a narrowed
- * surface automatically.
+ * Resolve the identity the agent's tool calls run as. Registry tools are enforced
+ * (`hdb_user` at call time) against this user, so an operator who sets `agent.user`
+ * to a restricted role gets a narrowed surface — and a later role change is honored,
+ * because this runs per call rather than once at startup.
  *
- * Fallback: if the configured user can't be resolved (e.g. the `hdb_agent`
- * system user hasn't been created yet), fall back to a super_user identity and
- * warn. This over-grants for a *restricted* role that fails to load — acceptable
- * for the default super_user agent; the durable fix is creating/loading the
- * system user at startup (#626 follow-up).
+ * Failure policy — fail closed, with one bounded exception:
+ *   - If `agent.user` resolves to a permissioned user, use it.
+ *   - If it can't be resolved AND it's the *default* `hdb_agent` bootstrap user,
+ *     fall back to a super_user identity (the system user isn't provisioned yet —
+ *     #626 defers creating it). This is the documented default-agent behavior.
+ *   - If it can't be resolved and the operator configured a *non-default* user,
+ *     throw. Silently escalating a misconfigured/transient restricted account to
+ *     super_user is the vulnerability we refuse to introduce.
  */
-async function resolveAgentUser(server: StartOpts['server'], username: string): Promise<AuthedUser> {
+async function resolveAgentIdentity(server: StartOpts['server'], username: string): Promise<AuthedUser> {
+	let resolved: AuthedUser | undefined;
 	if (typeof server.getUser === 'function') {
 		try {
 			const user = await server.getUser(username, null, null);
-			if (user?.role?.permission) return user;
-			log.warn?.(`agent.user='${username}' did not resolve to a permissioned user; using super_user fallback`);
+			if (user?.role?.permission) resolved = user;
 		} catch (err) {
-			log.warn?.(
-				`Failed to resolve agent.user='${username}': ${err instanceof Error ? err.message : String(err)}; using super_user fallback`
-			);
+			log.warn?.(`Failed to resolve agent.user='${username}': ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
-	return { username, role: { permission: { super_user: true } } };
+	if (resolved) return resolved;
+
+	if (username === DEFAULT_CONFIG.user) {
+		log.warn?.(`Default agent user '${username}' is not provisioned yet; using super_user bootstrap identity`);
+		return { username, role: { permission: { super_user: true } } };
+	}
+	throw new Error(`agent.user '${username}' could not be resolved to a permissioned user; failing closed`);
 }
 
 function resolveScopes(
