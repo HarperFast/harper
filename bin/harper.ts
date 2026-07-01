@@ -23,6 +23,7 @@ Documentation: https://docs.harperdb.io/
 By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
 
 Commands:
+agent [message]                 - Chat with the built-in agent (interactive, or one-shot with a message)
 copy-db <source> <target>       - Copies a database from source path to target path
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
@@ -109,6 +110,11 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.MCP: {
 			const { runMcpCli } = require('./mcp');
 			const code = await runMcpCli(process.argv.slice(3));
+			process.exit(code);
+		}
+		case SERVICE_ACTIONS_ENUM.AGENT: {
+			const { runAgentCli } = require('./agentCli');
+			const code = await runAgentCli(process.argv.slice(3));
 			process.exit(code);
 		}
 		// eslint-disable-next-line no-fallthrough
