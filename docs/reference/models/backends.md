@@ -146,10 +146,10 @@ Custom backends are registered programmatically; the `backend` field in the [`mo
 ### defineBackend()
 
 ```typescript
-defineBackend(spec: DefineBackendSpec): ModelBackend
+models.defineBackend(spec: DefineBackendSpec): ModelBackend
 ```
 
-Builds a `ModelBackend` from the methods it implements. `capabilities()` is derived from which of `embed` / `generate` / `generateStream` are supplied; `tools` and `adapters` cannot be inferred from method presence, so declare them explicitly.
+A method on `models` (reachable as `models.defineBackend(...)` / `scope.models.defineBackend(...)`). Builds a `ModelBackend` from the methods it implements. `capabilities()` is derived from which of `embed` / `generate` / `generateStream` are supplied; `tools` and `adapters` cannot be inferred from method presence, so declare them explicitly.
 
 | Field            | Type       | Default | Description                                                          |
 | ---------------- | ---------- | ------- | -------------------------------------------------------------------- |
@@ -165,23 +165,23 @@ Builds a `ModelBackend` from the methods it implements. `capabilities()` is deri
 ### registerBackend()
 
 ```typescript
-registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void
+models.registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void
 ```
 
-Registers `backend` under the logical name `id` for the given `kind`. Also available as `models.registerBackend(...)` / `scope.models.registerBackend(...)`. Register during component initialization (for example, in `handleApplication`) so the backend is in place before requests arrive; the registry is process-wide, so each worker thread that loads the component registers its own instance.
+Registers `backend` under the logical name `id` for the given `kind`. A method on `models` (reachable as `models.registerBackend(...)` / `scope.models.registerBackend(...)`). Register during component initialization (for example, in `handleApplication`) so the backend is in place before requests arrive; the registry is process-wide, so each worker thread that loads the component registers its own instance.
 
 Use a provider-namespaced `id` (e.g. `local:bge-small`) to avoid collisions when more than one component registers backends.
 
 ```javascript
-import { models, registerBackend, defineBackend } from 'harper';
+import { models } from 'harper';
 import { init, embed } from 'some-local-embedding-library';
 
 await init();
 
-registerBackend(
+models.registerBackend(
 	'embedding',
 	'local:bge-small',
-	defineBackend({
+	models.defineBackend({
 		name: 'local:bge-small',
 		async embed(input) {
 			const texts = Array.isArray(input) ? input : [input];

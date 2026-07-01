@@ -27,6 +27,7 @@ const batch = await models.embed(['first document', 'second document']);
 | Option      | Type                      | Default     | Description                                                                                                                         |
 | ----------- | ------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `model`     | `string`                  | `'default'` | Logical name of a configured embedding model                                                                                        |
+| `requires`  | `Capability[]`            | —           | Capabilities the chosen backend must satisfy; used by [routing](./routing#capability-routing) to select a candidate in the group    |
 | `inputType` | `'document'` \| `'query'` | —           | Hint for models that distinguish document embeddings from query embeddings (e.g. `nomic-embed-text`); ignored by models that do not |
 | `signal`    | `AbortSignal`             | —           | Cancels the call; composed with the backend's configured `requestTimeoutMs`                                                         |
 
@@ -53,14 +54,15 @@ const result = await models.generate(
 console.log(result.content);
 ```
 
-| Option           | Type                                         | Default     | Description                                                                                            |
-| ---------------- | -------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
-| `model`          | `string`                                     | `'default'` | Logical name of a configured generative model                                                          |
-| `temperature`    | `number`                                     | backend     | Sampling temperature, passed through to the backend                                                    |
-| `maxTokens`      | `number`                                     | backend     | Completion token limit, passed through to the backend                                                  |
-| `responseFormat` | `'text'` \| `'json'` \| `{ schema: object }` | `'text'`    | Structured output. `{ schema }` requests output conforming to a JSON Schema; support varies by backend |
-| `toolMode`       | `'return'` \| `'auto'`                       | `'return'`  | How tool calls are handled — see [Tool Calling](./tool-calling)                                        |
-| `signal`         | `AbortSignal`                                | —           | Cancels the call; composed with the backend's configured `requestTimeoutMs`                            |
+| Option           | Type                                         | Default     | Description                                                                                                                                    |
+| ---------------- | -------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`          | `string`                                     | `'default'` | Logical name of a configured generative model                                                                                                  |
+| `requires`       | `Capability[]`                               | —           | Capabilities the backend must satisfy (e.g. `tools`); used by [routing](./routing#capability-routing). Tools in the input auto-require `tools` |
+| `temperature`    | `number`                                     | backend     | Sampling temperature, passed through to the backend                                                                                            |
+| `maxTokens`      | `number`                                     | backend     | Completion token limit, passed through to the backend                                                                                          |
+| `responseFormat` | `'text'` \| `'json'` \| `{ schema: object }` | `'text'`    | Structured output. `{ schema }` requests output conforming to a JSON Schema; support varies by backend                                         |
+| `toolMode`       | `'return'` \| `'auto'`                       | `'return'`  | How tool calls are handled — see [Tool Calling](./tool-calling)                                                                                |
+| `signal`         | `AbortSignal`                                | —           | Cancels the call; composed with the backend's configured `requestTimeoutMs`                                                                    |
 
 Additional options apply only when `toolMode: 'auto'`; they are documented in [Tool Calling](./tool-calling).
 
@@ -107,7 +109,7 @@ Errors detected before the call starts (unknown model name, missing capability) 
 models.registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void
 ```
 
-Registers a custom backend under a logical name, selectable by the `model` option on later calls. This is the programmatic path for in-process or third-party backends; pair it with `defineBackend()` to build the backend from a few methods. The same functions are exported from `harper` as `registerBackend` / `defineBackend`. See [Custom backends](./backends#custom-backends) for the full guide.
+Registers a custom backend under a logical name, selectable by the `model` option on later calls. This is the programmatic path for in-process or third-party backends; pair it with `models.defineBackend()` to build the backend from a few methods. Both are methods on `models` — reachable as `models.registerBackend(...)` / `scope.models.registerBackend(...)` (and likewise for `defineBackend`), not standalone `harper` exports. See [Custom backends](./backends#custom-backends) for the full guide.
 
 ## Errors and timeouts
 
