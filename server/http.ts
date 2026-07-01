@@ -16,7 +16,7 @@ import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
-import { Request, BunRequest, isBun } from './serverHelpers/Request.ts';
+import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
@@ -326,17 +326,25 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		// uWebSockets.js directly instead of a Node http server. This is the flag used to run the
 		// integration suite through uWS (no symphony/UDS needed). WebSocket upgrades are not yet
 		// wired on this path, so it's opt-in and separate from HARPER_UWS_UDS.
-		if (process.env.HARPER_UWS_HTTP && !secure && !isOperationsServer && !String(port).includes('/')) {
-			const lastColon = String(port).lastIndexOf(':');
+		const lastColon = String(port).lastIndexOf(':');
+		const uwsPort = lastColon > 0 ? +String(port).slice(lastColon + 1) : +port;
+		if (
+			process.env.HARPER_UWS_HTTP &&
+			!secure &&
+			!isOperationsServer &&
+			!String(port).includes('/') &&
+			!Number.isNaN(uwsPort)
+		) {
 			uwsServeConfigs[port] = {
-				port: lastColon > 0 ? +String(port).slice(lastColon + 1) : +port,
+				port: uwsPort,
 				host: lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : undefined,
 				secure: false,
 				handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
 			};
 			// Marker so the httpServers guard is satisfied and the caller has a truthy handle; the
-			// actual listen happens in threadServer.js from uwsServeConfigs.
-			httpServers[port] = { uws: true } as any;
+			// actual listen happens in threadServer.js from uwsServeConfigs. onWebSocket() detects
+			// this marker (server.uws) and wires native uWS WebSocket handling into the same config.
+			httpServers[port] = { uws: true, port } as any;
 			return httpServers[port];
 		}
 		const keepAliveTimeout = env.get(serverPrefix + '_keepAliveTimeout');
@@ -1100,7 +1108,33 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		const server = getHTTPServer(port, secure, options);
 
-		if (!websocketServers[port]) {
+		if ((server as any)?.uws) {
+			// uWS-backed port (HARPER_UWS_HTTP): uWS owns the socket, so route upgrades through uWS's
+			// native app.ws() rather than the Node ws.WebSocketServer + server 'upgrade' event. We wire a
+			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
+			const cfg = uwsServeConfigs[port];
+			if (cfg && !cfg.wsHandler) {
+				cfg.wsHandler = (ws: any, upgrade: any) => {
+					try {
+						const request: any = new UwsRequest({
+							method: 'GET',
+							url: upgrade.url,
+							headers: upgrade.headers,
+							secure,
+							ip: upgrade.ip,
+						});
+						request.isWebSocket = true;
+						const chainCompletion = httpChain[port](request);
+						websocketChains[port](ws, request, chainCompletion);
+					} catch (error) {
+						harperLogger.warn('Error in handling WS connection', error);
+						try {
+							ws.close();
+						} catch {}
+					}
+				};
+			}
+		} else if (!websocketServers[port]) {
 			websocketServers[port] = new WebSocketServer({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener

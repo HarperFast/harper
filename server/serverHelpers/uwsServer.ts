@@ -16,6 +16,7 @@
  * upstream in makeUwsHandler — streaming bodies are a follow-up.
  */
 import { STATUS_CODES } from 'node:http';
+import { EventEmitter } from 'node:events';
 import { UwsRequest } from './Request.ts';
 import { Headers } from './Headers.ts';
 
@@ -37,6 +38,19 @@ export interface UwsServerOptions {
 	handler: (request: UwsRequest) => Promise<HarperResponse | undefined> | HarperResponse | undefined;
 	/** Max bytes to buffer for a request body before rejecting (default 100 MiB, matching ws maxPayload). */
 	maxBodyBytes?: number;
+	/**
+	 * Optional WebSocket handler. When provided, uWS accepts upgrades on this app/port and calls this
+	 * with a ws-library-shaped {@link UwsWebSocket} adapter plus the captured upgrade request, so
+	 * Harper's existing websocket chain (auth + listeners) runs unchanged.
+	 */
+	wsHandler?: (ws: UwsWebSocket, upgrade: UwsUpgrade) => void;
+}
+
+export interface UwsUpgrade {
+	url: string;
+	headers: Record<string, string | string[]>;
+	ip: string;
+	adapter?: UwsWebSocket;
 }
 
 export interface HarperResponse {
@@ -53,8 +67,12 @@ const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
 	const { default: uWS } = await import('uWebSockets.js' as any);
-	const { socketPath, port, host, secure = false, handler, maxBodyBytes = 100 * 1024 * 1024 } = options;
+	const { socketPath, port, host, secure = false, handler, wsHandler, maxBodyBytes = 100 * 1024 * 1024 } = options;
 	const app: UwsApp = uWS.App();
+
+	// Accept WebSocket upgrades on this app/port when a ws handler is supplied. Registered before the
+	// HTTP routes so uWS routes upgrade requests here; normal requests still fall through to app.get/any.
+	if (wsHandler) registerWsBehavior(app, wsHandler, maxBodyBytes);
 
 	const onRequest = (res: UwsResponse, req: UwsRequestRaw, hasBody: boolean) => {
 		// uWS HttpRequest is only valid synchronously inside this callback — copy everything now.
@@ -232,4 +250,159 @@ function streamResponse(
 	});
 	source.once('end', () => finish(true));
 	source.once('error', () => finish(true)); // headers already sent; just terminate the response
+}
+
+// Normalize uWS's remote-address text (raw IPv6 form, IPv4-mapped for v4 peers) to a readable IP.
+function normalizeAddress(text: string): string {
+	const mapped = /^0000:0000:0000:0000:0000:ffff:([0-9a-f]{4}):([0-9a-f]{4})$/.exec(text);
+	if (mapped) {
+		const hi = parseInt(mapped[1], 16);
+		const lo = parseInt(mapped[2], 16);
+		return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+	}
+	return text;
+}
+
+function registerWsBehavior(
+	app: UwsApp,
+	wsHandler: (ws: UwsWebSocket, upgrade: UwsUpgrade) => void,
+	maxPayload: number
+): void {
+	app.ws('/*', {
+		maxPayload,
+		// Capture the upgrade request synchronously (uWS's HttpRequest is only valid here) and upgrade.
+		// Auth runs after open() in the ws chain, matching the Node path (which upgrades then authorizes).
+		upgrade: (res: UwsResponse, req: UwsRequestRaw, context: unknown) => {
+			const query = req.getQuery();
+			const url = req.getUrl() + (query ? '?' + query : '');
+			const headers: Record<string, string | string[]> = {};
+			req.forEach((k: string, v: string) => {
+				const existing = headers[k];
+				if (existing === undefined) headers[k] = v;
+				else if (Array.isArray(existing)) existing.push(v);
+				else headers[k] = [existing, v];
+			});
+			const ip = normalizeAddress(Buffer.from(res.getRemoteAddressAsText()).toString());
+			const upgradeData: UwsUpgrade = { url, headers, ip };
+			res.upgrade(
+				upgradeData,
+				req.getHeader('sec-websocket-key'),
+				req.getHeader('sec-websocket-protocol'),
+				req.getHeader('sec-websocket-extensions'),
+				context
+			);
+		},
+		open: (ws: any) => {
+			const data = ws.getUserData() as UwsUpgrade;
+			const adapter = new UwsWebSocket(ws);
+			adapter._socket.remoteAddress = data.ip;
+			data.adapter = adapter;
+			wsHandler(adapter, data);
+		},
+		message: (ws: any, message: ArrayBuffer, isBinary: boolean) =>
+			ws.getUserData().adapter?._message(message, isBinary),
+		drain: (ws: any) => ws.getUserData().adapter?._drain(),
+		close: (ws: any, code: number, message: ArrayBuffer) => ws.getUserData().adapter?._closed(code, message),
+	});
+}
+
+/**
+ * A backpressure-aware stand-in for the `ws` library's underlying socket. Harper's WS consumers read
+ * `remoteAddress` and gate on `writableNeedDrain` / `'drain'`; uWS surfaces those via getBufferedAmount()
+ * and the behavior's drain callback.
+ */
+class UwsSocketShim extends EventEmitter {
+	remoteAddress = '';
+	#raw: any;
+	constructor(raw: any) {
+		super();
+		this.#raw = raw;
+	}
+	get writableNeedDrain(): boolean {
+		try {
+			return this.#raw.getBufferedAmount() > 0;
+		} catch {
+			return false;
+		}
+	}
+}
+
+/**
+ * Adapts a uWS WebSocket to the subset of the `ws` library's WebSocket interface that Harper's WS
+ * consumers use (MQTT-over-WS in server/mqtt.ts, subscriptions in server/REST.ts): send/close/
+ * terminate/ping, the 'message'/'close'/'error' events, `_socket`, and `readyState`. This lets the
+ * existing websocket chain run unchanged on the uWS transport.
+ */
+export class UwsWebSocket extends EventEmitter {
+	#raw: any;
+	#open = true;
+	#closeEmitted = false;
+	public _socket: UwsSocketShim;
+	public binaryType = 'nodebuffer';
+
+	constructor(raw: any) {
+		super();
+		this.#raw = raw;
+		this._socket = new UwsSocketShim(raw);
+	}
+	get readyState(): number {
+		return this.#open ? 1 /* OPEN */ : 3 /* CLOSED */;
+	}
+	send(data: any, optionsOrCb?: any, maybeCb?: any): void {
+		// ws-library signature is send(data[, options][, callback]); tolerate either arrangement.
+		const cb: ((error?: Error) => void) | undefined =
+			typeof optionsOrCb === 'function' ? optionsOrCb : typeof maybeCb === 'function' ? maybeCb : undefined;
+		if (!this.#open) {
+			cb?.(new Error('WebSocket is not open'));
+			return;
+		}
+		try {
+			const isBinary = typeof data !== 'string';
+			const payload = isBinary && !Buffer.isBuffer(data) && !(data instanceof Uint8Array) ? Buffer.from(data) : data;
+			this.#raw.send(payload, isBinary);
+			cb?.();
+		} catch (error) {
+			cb?.(error as Error);
+		}
+	}
+	close(code?: number, reason?: string): void {
+		if (!this.#open) return;
+		this.#open = false;
+		try {
+			if (code != null) this.#raw.end(code, reason);
+			else this.#raw.end();
+		} catch {
+			/* already closed by the peer */
+		}
+	}
+	terminate(): void {
+		if (!this.#open) return;
+		this.#open = false;
+		try {
+			this.#raw.close();
+		} catch {
+			/* already closed */
+		}
+	}
+	ping(): void {
+		try {
+			this.#raw.ping();
+		} catch {
+			/* not open */
+		}
+	}
+	// uWS behavior hooks:
+	_message(message: ArrayBuffer, isBinary: boolean): void {
+		// Copy out of uWS's buffer — it's neutered once this callback returns and consumers read async.
+		this.emit('message', Buffer.from(new Uint8Array(message)), isBinary);
+	}
+	_drain(): void {
+		this._socket.emit('drain');
+	}
+	_closed(code: number, message: ArrayBuffer): void {
+		this.#open = false;
+		if (this.#closeEmitted) return;
+		this.#closeEmitted = true;
+		this.emit('close', code, message ? Buffer.from(new Uint8Array(message)) : Buffer.alloc(0));
+	}
 }

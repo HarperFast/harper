@@ -236,3 +236,73 @@ function readBody(request) {
 		assert.strictEqual(res.statusMessage, 'Too Many Requests');
 	});
 });
+
+let WebSocket;
+try {
+	({ WebSocket } = require('ws'));
+} catch {
+	/* ws is a core dependency; skip if somehow absent */
+}
+
+(uwsAvailable && WebSocket ? describe : describe.skip)(
+	'uWS WebSocket adapter (createUwsServer wsHandler)',
+	function () {
+		let server;
+		const port = 34100 + (process.pid % 1500); // avoid collisions across concurrent suites
+		const opened = [];
+
+		before(async function () {
+			server = await createUwsServer({
+				port,
+				handler: async () => ({ status: 200, body: 'http' }),
+				wsHandler: (ws, upgrade) => {
+					opened.push({ url: upgrade.url, auth: upgrade.headers.authorization, ip: upgrade.ip });
+					ws.on('message', (data) => ws.send(Buffer.concat([Buffer.from('echo:'), data])));
+					ws.send('welcome'); // text frame
+				},
+			});
+		});
+
+		after(function () {
+			if (server) server.close();
+		});
+
+		it('serves plain HTTP on the same port as WebSocket', async function () {
+			const body = await new Promise((resolve, reject) => {
+				http
+					.request({ host: '127.0.0.1', port, path: '/' }, (res) => {
+						const chunks = [];
+						res.on('data', (c) => chunks.push(c));
+						res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+					})
+					.on('error', reject)
+					.end();
+			});
+			assert.strictEqual(body, 'http');
+		});
+
+		it('accepts an upgrade, exposes url/headers/ip, and round-trips text and binary frames', function (done) {
+			const client = new WebSocket(`ws://127.0.0.1:${port}/sub?x=1`, { headers: { authorization: 'Bearer t' } });
+			const frames = [];
+			client.on('open', () => client.send(Buffer.from([1, 2, 3])));
+			client.on('message', (data, isBinary) => {
+				frames.push({ isBinary, data: Buffer.from(data) });
+				if (frames.length >= 2) client.close(1000, 'bye');
+			});
+			client.on('error', done);
+			client.on('close', (code) => {
+				try {
+					assert.strictEqual(opened[0].url, '/sub?x=1');
+					assert.strictEqual(opened[0].auth, 'Bearer t');
+					assert.strictEqual(opened[0].ip, '127.0.0.1');
+					assert.strictEqual(frames[0].data.toString(), 'welcome');
+					assert.ok(frames[1].data.equals(Buffer.concat([Buffer.from('echo:'), Buffer.from([1, 2, 3])])));
+					assert.strictEqual(code, 1000);
+					done();
+				} catch (error) {
+					done(error);
+				}
+			});
+		});
+	}
+);
