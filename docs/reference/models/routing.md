@@ -53,7 +53,7 @@ If no candidate in the group satisfies the required capabilities, the call throw
 
 When a candidate fails, `embed` / `generate` record the attempt and try the next candidate. Every attempt — success or failure — is written to [model-call analytics](./analytics), so a fallthrough is observable.
 
-- **Any backend error falls through** to the next candidate. Candidates are heterogeneous — a limit or input error on one backend may succeed on another with different constraints — so whether an error is "worth a fallback" is a router or caller policy, not a facade default.
+- **Any backend error falls through** to the next candidate — the facade's default is to fall back on any error. Candidates are heterogeneous (a limit or input error on one backend may succeed on another with different constraints), so _filtering_ which errors should skip the fallback is a router or caller policy, not something the facade decides.
 - **A caller abort short-circuits.** If the call's `signal` is already aborted, the loop stops and surfaces the abort rather than spending another backend call.
 - **The primary error is surfaced.** If every candidate fails, the error thrown is the **first (primary)** candidate's — the model you asked for, and usually the most diagnostic — not the last fallback's.
 
@@ -97,4 +97,4 @@ models.registerRouter({
 });
 ```
 
-A custom router that returns no candidates for a backend that _does_ satisfy the requirement surfaces a plain "no routing candidates available" error — not a misleading capability error against a backend that actually supports the call.
+A custom router that returns no candidates when a backend _does_ satisfy the requirement surfaces a plain "no routing candidates available" error — not a misleading capability error against a backend that actually supports the call.
