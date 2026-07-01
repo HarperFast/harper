@@ -3,7 +3,6 @@ import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { models as harperModelsSingleton } from '../resources/models/Models.ts';
-import { registerBackend, defineBackend } from '../resources/models/backendRegistry.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -797,12 +796,12 @@ function getHarperExports(scope: ApplicationScope) {
 		// `harper.models` — same singleton that's surfaced as the top-level
 		// `models` package export (see `resources/models/Models.ts`).  The
 		// registry it reads from is populated at boot by
-		// `resources/models/bootstrap.ts`.
+		// `resources/models/bootstrap.ts`. The backend-registration API
+		// (`registerBackend` / `defineBackend`) and custom routing
+		// (`registerRouter`) are methods on this singleton (#1534, #1326) —
+		// components reach them via `models.registerBackend(...)`, not as
+		// separate top-level exports.
 		models: harperModelsSingleton,
-		// Public model-backend registration API (#1325) — same functions as the
-		// top-level package exports; components register backends through these.
-		registerBackend,
-		defineBackend,
 		createBlob,
 		RequestTarget,
 		getContext,

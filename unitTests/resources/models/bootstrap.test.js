@@ -9,9 +9,13 @@ const {
 	ModelBackendNotFoundError,
 } = require('#src/resources/models/backendRegistry');
 const { join } = require('node:path');
+const { getRouter, clearRouting } = require('#src/resources/models/routing');
 
 describe('bootstrapModels', () => {
-	beforeEach(() => clearRegistry());
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
 
 	it('is a no-op when rootConfig is undefined/null', async () => {
 		await bootstrapModels(undefined);
@@ -22,6 +26,36 @@ describe('bootstrapModels', () => {
 	it('is a no-op when rootConfig.models is absent', async () => {
 		await bootstrapModels({});
 		assert.throws(() => resolveEmbedding('default'), ModelBackendNotFoundError);
+	});
+
+	it('records a `fallback` group so the router returns the ordered candidates (#1326)', async () => {
+		await bootstrapModels({
+			models: {
+				generative: {
+					default: { backend: 'ollama', model: 'a', fallback: ['alt'] },
+					alt: { backend: 'ollama', model: 'b' },
+				},
+			},
+		});
+		const candidates = getRouter().route({ kind: 'generative', logicalName: 'default', requires: [] });
+		assert.strictEqual(candidates.length, 2);
+		assert.strictEqual(candidates[0], resolveGenerative('default'));
+		assert.strictEqual(candidates[1], resolveGenerative('alt'));
+	});
+
+	it('clears a removed fallback group on the next bootstrap, not leaving stale routing (#1326)', async () => {
+		await bootstrapModels({
+			models: {
+				generative: {
+					default: { backend: 'ollama', model: 'a', fallback: ['alt'] },
+					alt: { backend: 'ollama', model: 'b' },
+				},
+			},
+		});
+		assert.strictEqual(getRouter().route({ kind: 'generative', logicalName: 'default', requires: [] }).length, 2);
+		// Reload without the fallback — the stale group must not survive.
+		await bootstrapModels({ models: { generative: { default: { backend: 'ollama', model: 'a' } } } });
+		assert.strictEqual(getRouter().route({ kind: 'generative', logicalName: 'default', requires: [] }).length, 1);
 	});
 
 	it('registers an ollama embedding entry under its logical name', async () => {

@@ -34,6 +34,7 @@ import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { getHdbBasePath } from '../../utility/environment/environmentManager.ts';
+import { setFallbackGroup, clearFallbackGroups } from './routing.ts';
 
 /**
  * Field names treated as credentials. When present in config as a literal
@@ -56,6 +57,8 @@ interface ModelEntry {
 	organization?: string;
 	// bedrock
 	region?: string;
+	/** Ordered fallback group: other logical names tried, in order, after this one (#1326). */
+	fallback?: string[];
 }
 
 interface ModelsConfig {
@@ -82,6 +85,9 @@ const FACTORIES: Record<string, BackendRegisterFn> = {
  * prior registration under the same logical name (registry uses `.set()`).
  */
 export async function bootstrapModels(rootConfig: RootConfig | undefined | null): Promise<void> {
+	// Rebuild fallback groups from scratch each (re)load so a removed/changed `fallback:`
+	// (or a removed `models:` block) doesn't leave stale routing behind (#1326).
+	clearFallbackGroups();
 	const block = rootConfig?.models;
 	if (!block) return;
 	await registerKind('embedding', block.embedding);
@@ -133,6 +139,8 @@ async function registerKind(kind: ModelKind, entries: Record<string, ModelEntry>
 				// Not a built-in name: treat `backend` as a module specifier (#1471).
 				await registerFromModule(kind, logicalName, entry.backend, config);
 			}
+			// Record the ordered fallback group (other logical names) for the router (#1326).
+			if (entry.fallback?.length) setFallbackGroup(kind, logicalName, entry.fallback);
 		} catch (err) {
 			harperLogger.error(`models.${kind}.${logicalName}: registration failed (${(err as Error)?.message ?? err})`);
 		}
