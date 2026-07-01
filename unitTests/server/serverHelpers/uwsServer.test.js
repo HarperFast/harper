@@ -121,6 +121,43 @@ function readBody(request) {
 		assert.ok(res.body.equals(payload), 'echoed body must match sent body exactly');
 	});
 
+	it('routes a body-bearing QUERY request through the body path', async function () {
+		const res = await udsRequest(socketPath, {
+			method: 'QUERY',
+			pathName: '/echo',
+			headers: { 'content-length': 5 },
+			body: 'hello',
+		});
+		assert.strictEqual(res.status, 200);
+		assert.strictEqual(res.body.toString(), 'hello');
+	});
+
+	it('rejects a body over maxBodyBytes with 413', async function () {
+		const overLimitSocket = path.join(os.tmpdir(), `uws-413-test-${process.pid}.sock`);
+		if (fs.existsSync(overLimitSocket)) fs.unlinkSync(overLimitSocket);
+		const overLimitServer = await createUwsServer({
+			socketPath: overLimitSocket,
+			maxBodyBytes: 1024,
+			handler: async (request) => ({ status: 200, body: await readBody(request) }),
+		});
+		try {
+			const res = await udsRequest(overLimitSocket, {
+				method: 'POST',
+				pathName: '/echo',
+				headers: { 'content-length': 8192 },
+				body: Buffer.alloc(8192),
+			});
+			assert.strictEqual(res.status, 413);
+		} finally {
+			overLimitServer.close();
+			try {
+				fs.unlinkSync(overLimitSocket);
+			} catch {
+				/* best effort */
+			}
+		}
+	});
+
 	it('preserves duplicate request headers as an array', async function () {
 		const res = await udsRequest(socketPath, {
 			method: 'GET',

@@ -73,7 +73,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 			Promise.resolve(handler(request))
 				.then((response) => {
 					if (ac.signal.aborted) return;
-					writeResponse(res, ac, response);
+					writeResponse(res, response);
 				})
 				.catch((error) => {
 					if (ac.signal.aborted) return;
@@ -108,9 +108,10 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		}
 	};
 
-	// Route by method rather than a single app.any(hasBody:true): bodyless methods dispatch
-	// immediately instead of waiting on an onData that we shouldn't depend on firing. The any()
-	// fallback covers unknown/exotic methods as bodyless so they can never stall the connection.
+	// Route the known-bodyless methods so they dispatch immediately, and treat everything else —
+	// including non-standard body-bearing methods like QUERY (REST vector search) — as having a
+	// body. uWS still fires onData(len=0, isLast=true) for a bodyless request that lands on the
+	// any() fallback, so this can't stall the connection.
 	const bodyless = (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false);
 	const withBody = (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, true);
 	app.get('/*', bodyless);
@@ -118,11 +119,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	app.options('/*', bodyless);
 	app.connect('/*', bodyless);
 	app.trace('/*', bodyless);
-	app.post('/*', withBody);
-	app.put('/*', withBody);
-	app.patch('/*', withBody);
-	app.del('/*', withBody);
-	app.any('/*', bodyless);
+	app.any('/*', withBody);
 
 	await new Promise<void>((resolve, reject) => {
 		app.listen_unix((listenSocket: unknown) => {
@@ -137,7 +134,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	};
 }
 
-function writeResponse(res: UwsResponse, ac: AbortController, response: HarperResponse | undefined): void {
+function writeResponse(res: UwsResponse, response: HarperResponse | undefined): void {
 	if (!response) {
 		res.cork(() => res.writeStatus('404 Not Found').end('Not found\n'));
 		return;

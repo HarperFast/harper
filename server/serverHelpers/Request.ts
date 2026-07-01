@@ -545,30 +545,18 @@ export class UwsRequest {
 	}
 }
 
-class UwsRequestBody {
+// Extends Readable so the uWS body matches the RequestBody/BunRequestBody contract: on/pipe plus
+// `for await` async iteration and destroy() (used by abort handling), not just a duck-typed subset.
+class UwsRequestBody extends Readable {
 	#buffer: Buffer | undefined;
-	#readable: Readable | undefined;
 	constructor(buffer?: Buffer) {
+		super();
 		this.#buffer = buffer;
 	}
-	#getReadable() {
-		if (!this.#readable) {
-			const buffer = this.#buffer;
-			this.#readable = new Readable({
-				read() {
-					if (buffer && buffer.length) this.push(buffer);
-					this.push(null);
-				},
-			});
-		}
-		return this.#readable;
-	}
-	on(event: string, listener: (...args: any[]) => void) {
-		this.#getReadable().on(event, listener);
-		return this;
-	}
-	pipe(destination: any, options?: any) {
-		return this.#getReadable().pipe(destination, options);
+	_read() {
+		if (this.#buffer && this.#buffer.length) this.push(this.#buffer);
+		this.#buffer = undefined;
+		this.push(null);
 	}
 }
 

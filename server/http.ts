@@ -584,7 +584,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				uwsServeConfigs[udsPath] = {
 					socketPath: udsPath,
 					secure: true,
-					handler: makeUwsHandler(port, isOperationsServer),
+					handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
 				};
 			} else {
 				// Create a plain HTTP server (no TLS) with the same request handler
@@ -627,16 +627,20 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
  * analytics, logging) but returns a plain Harper response descriptor for createUwsServer to
  * serialize onto the uWS HttpResponse. The Fastify status===-1 fallback is not wired here.
  */
-function makeUwsHandler(port: number | string, isOperationsServer: boolean) {
-	return async (request: any) => {
+function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
+	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
+	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
+	// mutates. `headers` is normalized in place the same way the Bun path does.
+	const handle = async (request: any) => {
 		const startTime = performance.now();
 		let requestId = 0;
 		if (isOperationsServer) request.isOperationsServer = true;
 		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
 		let response = await httpChain[port](request);
 		if (!response) response = unhandled(request);
-		if (!response.headers?.set) response.headers = new Headers(response.headers);
-		for (const [key, value] of universalHeaders) response.headers.set(key, value);
+		let headers = response.headers;
+		if (!headers?.set) headers = new Headers(headers);
+		for (const [key, value] of universalHeaders) headers.set(key, value);
 		if (response.status === -1) {
 			logBunRequest(request, 404, requestId, performance.now() - startTime);
 			return { status: 404, headers: new Headers({ 'content-type': 'text/plain' }), body: 'Not found\n' };
@@ -646,7 +650,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean) {
 		if (!response.handlesHeaders) {
 			let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
 			if (response.wasCacheMiss) serverTiming += ', miss';
-			appendHeader(response.headers, 'Server-Timing', serverTiming, true);
+			appendHeader(headers, 'Server-Timing', serverTiming, true);
 		}
 		recordAction(
 			executionTime,
@@ -658,9 +662,31 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean) {
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logBunRequest(request, status, requestId, executionTime);
-		response.status = status;
-		response.body = await uwsBodyToBuffer(response.body, request.signal);
-		return response;
+		return {
+			status,
+			headers,
+			handlesHeaders: response.handlesHeaders,
+			body: await uwsBodyToBuffer(response.body, request.signal),
+		};
+	};
+	// Shed data-modifying requests when the event queue is backed up (503), mirroring the Node UDS
+	// path — GET/OPTIONS/HEAD are cheap and always run, everything else goes through the throttle.
+	const throttledHandle = throttle(
+		handle,
+		(_request: any) => {
+			recordAction(true, 'service-unavailable', port);
+			return {
+				status: 503,
+				headers: new Headers({ 'content-type': 'text/plain' }),
+				body: 'Service unavailable, exceeded request queue limit',
+			};
+		},
+		requestQueueLimit
+	);
+	return (request: any) => {
+		const method = request.method;
+		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
+		return throttledHandle(request);
 	};
 }
 
@@ -677,10 +703,11 @@ async function uwsBodyToBuffer(body: any, signal?: AbortSignal): Promise<string 
 	if (typeof body.pipe === 'function') {
 		const chunks: Buffer[] = [];
 		await new Promise<void>((resolve, reject) => {
-			const onAbort = () => {
+			const cleanup = () => signal?.removeEventListener('abort', onAbort);
+			function onAbort() {
 				body.destroy?.();
 				reject(new Error('client aborted'));
-			};
+			}
 			if (signal?.aborted) return onAbort();
 			signal?.addEventListener('abort', onAbort, { once: true });
 			const dest = new Writable({
@@ -689,13 +716,19 @@ async function uwsBodyToBuffer(body: any, signal?: AbortSignal): Promise<string 
 					cb();
 				},
 				final(cb) {
-					signal?.removeEventListener('abort', onAbort);
+					cleanup();
 					cb();
 					resolve();
 				},
 			});
-			body.on('error', reject);
-			dest.on('error', reject);
+			body.on('error', (error) => {
+				cleanup();
+				reject(error);
+			});
+			dest.on('error', (error) => {
+				cleanup();
+				reject(error);
+			});
 			body.pipe(dest);
 		});
 		return Buffer.concat(chunks);

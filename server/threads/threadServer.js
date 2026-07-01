@@ -305,8 +305,16 @@ function listenOnPorts() {
 			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
 			listening.push(
 				createUwsServer(cfg).then(({ close }) => {
-					// Register a minimal server-like entry so closeServers() can tear it down on shutdown.
-					SERVERS[udsPath] = { close, closeAllConnections: close, closeIdleConnections() {} };
+					// Register a minimal server-like entry so closeServers() can tear it down. uWS's
+					// close() is synchronous and takes no callback, so wrap it to invoke the callback
+					// closeServers() passes; omit closeIdleConnections so the Node keep-alive drain loop
+					// (which would spin and then force-exit noisily against this shim) is skipped.
+					SERVERS[udsPath] = {
+						close(callback) {
+							close();
+							callback?.();
+						},
+					};
 					harperLogger.info('uWS domain socket listening on ' + udsPath);
 					return { port: udsPath };
 				})
