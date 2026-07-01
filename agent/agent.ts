@@ -8,16 +8,18 @@
  * is realized lazily on first use, and the loop runs in-process.
  *
  * The component intentionally avoids `handleApplication`: it has nothing
- * worker-thread-shaped to do. Operator-only tools (FS, schedule, fetch) are
- * inline; registry-backed tools (#615/#617/#618) will fold in via toolset.ts
- * once those land.
+ * worker-thread-shaped to do. Two tool sources compose: operator-only tools
+ * (FS, schedule, fetch) that are inline, and RBAC-filtered registry tools
+ * (#615/#617) drained for the agent's configured user via `registryTools.ts`.
  */
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { Models } from '../resources/models/Models.ts';
+import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
 import { composeToolset } from './toolset.ts';
+import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
@@ -37,6 +39,8 @@ const DEFAULT_CONFIG: AgentConfig = {
 interface StartOpts {
 	server: {
 		registerOperation: (def: { name: string; execute: (op: any) => any | Promise<any> }) => void;
+		/** Resolve a Harper user (with role/permissions) by username. Password/request unused here. */
+		getUser?: (username: string, password: string | null, request: unknown) => Promise<AuthedUser> | AuthedUser;
 	};
 	// Component-level config plumbed by componentLoader (`...componentConfig`).
 	enabled?: boolean;
@@ -64,9 +68,17 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const models = new Models();
 	const abortControllers = new Map<string, AbortController>();
 	let liveConfig: AgentConfig = config;
+
+	// Populate the Operations MCP profile on the main thread, then adapt the tools visible to the
+	// agent's configured identity. Enforcement still runs per-call under this user (see registryTools).
+	ensureOperationsToolsRegistered();
+	const agentUser = await resolveAgentUser(opts.server, config.user);
+	const registryTools = composeRegistryTools(agentUser);
+
 	let composed = composeToolset({
 		allowDestructive: liveConfig.allowDestructive,
 		onFollowup: handleFollowup,
+		registryTools,
 	});
 
 	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
@@ -141,6 +153,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			composed = composeToolset({
 				allowDestructive: liveConfig.allowDestructive,
 				onFollowup: handleFollowup,
+				registryTools,
 			});
 		}
 		// NOTE: an already in-flight run captured its toolset (and autoApprove) at start, so flipping
@@ -181,6 +194,33 @@ function buildSystemPrompt(scopes: AgentScopes): string {
 		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via http_fetch against this server.',
 		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. Be concise and verify your work.',
 	].join('\n');
+}
+
+/**
+ * Resolve the identity the agent's tool calls run as. Registry tools are both
+ * listed (`visibleTo`) and enforced (`hdb_user` at call time) against this user,
+ * so an operator who sets `agent.user` to a restricted role gets a narrowed
+ * surface automatically.
+ *
+ * Fallback: if the configured user can't be resolved (e.g. the `hdb_agent`
+ * system user hasn't been created yet), fall back to a super_user identity and
+ * warn. This over-grants for a *restricted* role that fails to load — acceptable
+ * for the default super_user agent; the durable fix is creating/loading the
+ * system user at startup (#626 follow-up).
+ */
+async function resolveAgentUser(server: StartOpts['server'], username: string): Promise<AuthedUser> {
+	if (typeof server.getUser === 'function') {
+		try {
+			const user = await server.getUser(username, null, null);
+			if (user?.role?.permission) return user;
+			log.warn?.(`agent.user='${username}' did not resolve to a permissioned user; using super_user fallback`);
+		} catch (err) {
+			log.warn?.(
+				`Failed to resolve agent.user='${username}': ${err instanceof Error ? err.message : String(err)}; using super_user fallback`
+			);
+		}
+	}
+	return { username, role: { permission: { super_user: true } } };
 }
 
 function resolveScopes(
