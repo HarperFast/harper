@@ -35,9 +35,12 @@ describe('mcp/lifecycle', () => {
 			assert.deepEqual([...SUPPORTED_PROTOCOL_VERSIONS], [PROTOCOL_VERSION_PREFERRED, PROTOCOL_VERSION_BACKCOMPAT]);
 		});
 
-		it('advertises tools.listChanged, resources.listChanged, logging capabilities', () => {
+		it('advertises tools.listChanged, resources.listChanged, prompts.listChanged, logging capabilities', () => {
 			assert.equal(SERVER_CAPABILITIES.tools.listChanged, true);
 			assert.equal(SERVER_CAPABILITIES.resources.listChanged, true);
+			assert.equal(SERVER_CAPABILITIES.resources.subscribe, true);
+			assert.equal(SERVER_CAPABILITIES.prompts.listChanged, true);
+			assert.deepEqual(SERVER_CAPABILITIES.completions, {});
 			assert.deepEqual(SERVER_CAPABILITIES.logging, {});
 		});
 

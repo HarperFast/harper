@@ -6,7 +6,7 @@ const { join } = require('node:path');
 const { writeFileSync, mkdtempSync, rmSync, renameSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
 const { replace, fake, restore, spy } = require('sinon');
-const configUtils = require('#js/config/configUtils');
+const configUtils = require('#src/config/configUtils');
 const { stringify } = require('yaml');
 
 describe('RootConfigWatcher', () => {

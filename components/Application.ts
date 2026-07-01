@@ -1,10 +1,10 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.js';
+import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 
-import { dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import {
 	access,
 	constants,
@@ -13,6 +13,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	rename,
 	rm,
 	stat,
 	symlink,
@@ -20,6 +21,7 @@ import {
 } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -125,6 +127,11 @@ export function isSSHAuthFailure(stderr: string): boolean {
 		stderr.includes('Host key verification failed')
 	);
 }
+
+// Hidden directory under the components root holding component versions renamed aside
+// during a deploy swap (see extractApplication). The leading dot keeps
+// loadComponentDirectories from loading its contents as components.
+export const ASIDE_STAGING_DIR = '.deploy-aside';
 
 /**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
@@ -237,11 +244,29 @@ export async function extractApplication(application: Application) {
 		}
 	}
 
-	// Create the application directory
+	// Replace any existing component directory atomically instead of clearing it in
+	// place. A previous version's worker can still be running and actively writing
+	// into this directory — e.g. a live Next.js app writing into `.next/cache` — and
+	// an in-place recursive rm races that writer: rm empties `.next`, then its leaf
+	// `rmdir('.next')` fails with ENOTEMPTY because the worker just re-created a cache
+	// entry. (`force: true` only suppresses ENOENT; ENOTEMPTY is not retried unless
+	// `maxRetries` is set, and a continuously-writing app would outlast retries
+	// anyway.) Renaming the old directory aside is atomic and immune to the race: the
+	// still-running worker keeps writing into the renamed inode harmlessly until it's
+	// replaced on restart, and the aside copy is removed best-effort below.
+	//
+	// The aside lives under a hidden, component-scoped staging directory inside the
+	// components root: same filesystem as the source so the rename stays atomic, the
+	// leading dot keeps loadComponentDirectories from picking it up as a phantom
+	// component, and the per-component path means a sibling component never collides
+	// with (or sweeps) another's aside.
+	const asideStagingDir = join(dirname(application.dirPath), ASIDE_STAGING_DIR, basename(application.dirPath));
+	let didRenameAside = false;
 	try {
 		await access(application.dirPath, constants.F_OK);
-		// directory already exists; clear it
-		await rm(application.dirPath, { recursive: true, force: true });
+		await mkdir(asideStagingDir, { recursive: true });
+		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
+		didRenameAside = true;
 	} catch (err) {
 		// Ignore does not exist error
 		if (err.code !== 'ENOENT') {
@@ -277,6 +302,18 @@ export async function extractApplication(application: Application) {
 	if (shouldDeleteTarball && tarballPath) {
 		await rm(tarballPath, { force: true });
 	}
+
+	// Remove this component's aside copies. The old worker may still hold files open
+	// in the just-renamed copy (the live writer that motivated the rename), so this is
+	// best-effort: removing the whole staging subdirectory also clears leftovers from
+	// earlier deploys whose workers have since exited, and a copy that survives because
+	// its worker is still live is swept by the next deploy. The failure is expected in
+	// the live-worker case, so it's logged at trace rather than as a warning.
+	if (didRenameAside) {
+		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
+		);
+	}
 }
 
 /**
@@ -296,13 +333,13 @@ export async function installApplication(application: Application) {
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
 		// If no package.json, nothing to install
-		application.logger.debug(`Application ${application.name} has no package.json; skipping install`);
+		application.logger.info(`Application ${application.name} has no package.json; skipping install`);
 		return;
 	}
 	try {
 		// Does node_modules exist?
 		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
-		application.logger.debug(`Application ${application.name} already has node_modules; skipping install`);
+		application.logger.info(`Application ${application.name} already has node_modules; skipping install`);
 		return;
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;

@@ -154,7 +154,17 @@ if (isMainThread) {
 				env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },
 			});
 		} catch (e) {
-			log.error(e);
+			log.error(`Failed to start worker for job ${message.jobId}:`, e);
+			try {
+				await jobs.updateJob({
+					id: message.jobId,
+					status: hdbTerms.JOB_STATUS_ENUM.ERROR,
+					message: e.message ?? String(e),
+					end_datetime: moment().valueOf(),
+				});
+			} catch (updateErr) {
+				log.error(`Unable to mark job ${message.jobId} as failed:`, updateErr);
+			}
 		}
 	});
 }

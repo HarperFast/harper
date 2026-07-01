@@ -29,6 +29,31 @@ export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
 export type { Scope } from './components/Scope.ts';
+export type {
+	ModelBackend,
+	ModelCapabilities,
+	DefineBackendSpec,
+	Capability,
+	ModelRouter,
+	RouteRequest,
+	EmbedOpts,
+	GenerateOpts,
+	GenerateInput,
+	GenerateResult,
+	GenerateChunk,
+	BackendOpts,
+	AccountingContext,
+	ModelCallResult,
+	TokenUsage,
+	Message,
+	ToolDef,
+	ToolCall,
+	ToolHandler,
+	ToolHandlerContext,
+	ToolTraceEntry,
+	ConversationAppender,
+	ConversationTurn,
+} from './resources/models/types.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export type { OptionsWatcher, Config, ConfigValue } from './components/OptionsWatcher.ts';
@@ -70,6 +95,16 @@ import type { tables as TablesImport } from './resources/databases.ts';
 type ThreadsImport = unknown[]; // TODO: figure out actual type for this
 import type { transaction as TransactionImport } from './resources/transaction.ts';
 
+// These names are exposed TWO ways that resolve to the SAME live, process-wide value:
+//   1. as ambient globals (the `declare global` block below), and
+//   2. as named exports of the `harper` package (the `export declare const` block below).
+// At runtime each is populated in place by `_assignPackageExport(name, value)` (see globals.js),
+// which assigns BOTH `global[name]` and `exports[name]` to the one shared instance. So
+// `tables`/`databases`/etc. are not per-module or per-compartment copies: the bare global `tables`
+// and `import { tables } from 'harper'` are the same object, available in any module Harper loads —
+// resources, plugins, and e.g. a Vite SSR entry (whose `node_modules/harper` is symlinked to this
+// running install, see components/componentLoader.ts). Application VM compartments are *seeded* from
+// this process global, not given an alternate set (see security/jsLoader.ts `getGlobalObject`).
 declare global {
 	const contentTypes: typeof ContentTypesImport;
 	const createBlob: typeof CreateBlobImport;

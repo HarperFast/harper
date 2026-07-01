@@ -113,7 +113,7 @@ suite('Transaction Logs', (ctx) => {
 	test('delete_transaction_logs_before suiteStart deletes no files', async () => {
 		// `suiteStart` is from before any inserts happened — no log files should
 		// have been rotated out yet, so the job should run to completion with
-		// `log_files_deleted: 0`.
+		// `log_files_deleted: 0` and `entries_deleted: 0`.
 		const response = await client
 			.req()
 			.send({
@@ -127,6 +127,7 @@ suite('Transaction Logs', (ctx) => {
 		const jobId = getJobId(response.body);
 		const jobResponse = await awaitJob(client, jobId, 15);
 		assert.equal(jobResponse.body[0].result.log_files_deleted, 0, jobResponse.text);
+		assert.equal(jobResponse.body[0].result.entries_deleted, 0, jobResponse.text);
 	});
 
 	test('drop test_logs table', async () => {

@@ -1,4 +1,4 @@
-import { join } from 'path';
+import { join, relative, sep } from 'node:path';
 import { stat, readdir } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import tar from 'tar-fs';
@@ -10,6 +10,21 @@ interface PackageOptions {
 }
 
 const DEFAULT_OPTIONS: PackageOptions = { skip_node_modules: false, skip_symlinks: false };
+
+const WEBPACK_CACHE_SEGMENT = join('cache', 'webpack');
+
+/**
+ * Whether `fullPath` (an absolute path under `directory`) should be excluded from the package when
+ * `skip_node_modules` is set. The path is first made relative to `directory`, so packaging a component
+ * that itself lives under a `node_modules/` path — i.e. any npm-installed component — does not match
+ * every entry. tar-fs invokes `ignore` with the absolute path, so a substring test on it wrongly
+ * excluded the whole tree. Shared by the stream packer and the size walk so the two cannot diverge.
+ */
+function isExcluded(directory: string, fullPath: string, options: PackageOptions): boolean {
+	if (!options.skip_node_modules) return false;
+	const rel = relative(directory, fullPath);
+	return rel.split(sep).includes('node_modules') || rel.includes(WEBPACK_CACHE_SEGMENT);
+}
 
 /**
  * Package a directory into a tar+gzip stream. The returned Readable can be
@@ -27,11 +42,7 @@ export function streamPackagedDirectory(
 ): Readable {
 	const packStream = tar.pack(directory, {
 		dereference: !options.skip_symlinks,
-		ignore: options.skip_node_modules
-			? (name: string) => {
-					return name.includes('node_modules') || name.includes(join('cache', 'webpack'));
-				}
-			: undefined,
+		ignore: (name: string) => isExcluded(directory, name, options),
 		map: (header) => {
 			if (header.type === 'directory') {
 				header.mode = 0o755;
@@ -71,7 +82,7 @@ export async function getPackagedDirectorySize(
 		}
 		for (const entry of entries) {
 			const fullPath = join(dir, entry.name);
-			if (options.skip_node_modules && (entry.name === 'node_modules' || fullPath.includes(join('cache', 'webpack')))) {
+			if (isExcluded(directory, fullPath, options)) {
 				continue;
 			}
 			if (entry.isDirectory()) {

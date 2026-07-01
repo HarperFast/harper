@@ -1,0 +1,29 @@
+# Baseline table: primary key only, no secondary indexes.
+type baseline @table @export {
+	id: ID @primaryKey
+	field0: String
+	field1: String
+	field2: String
+	field3: String
+	field4: String
+}
+
+# 3-index variant: three additional @indexed fields.
+type indexed3 @table @export {
+	id: ID @primaryKey
+	field0: String @indexed
+	field1: String @indexed
+	field2: String @indexed
+	field3: String
+	field4: String
+}
+
+# 5-index variant: five additional @indexed fields.
+type indexed5 @table @export {
+	id: ID @primaryKey
+	field0: String @indexed
+	field1: String @indexed
+	field2: String @indexed
+	field3: String @indexed
+	field4: String @indexed
+}

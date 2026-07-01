@@ -1,4 +1,4 @@
-import { ClientError, ServerError, Violation } from '../utility/errors/hdbError.ts';
+import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
@@ -333,7 +333,7 @@ export function searchByIndex(
 				403
 			);
 		if (index?.isIndexing)
-			throw new ServerError(`"${attribute_name}" is not indexed yet, can not search for this attribute`, 503);
+			throw new IndexRebuildingError(`"${attribute_name}" is not indexed yet, can not search for this attribute`);
 		if (value === null && index && !index.indexNulls)
 			throw new ClientError(
 				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
@@ -402,24 +402,9 @@ export function searchByIndex(
 				}
 				return entry;
 			});
-			// Rerank: a quantized index navigates on approximate distances, so for a nearest-neighbor
-			// (sort) query, recompute the exact distance from each loaded record's full-precision vector
-			// and re-sort — restoring exact ordering and $distance. (lt/le threshold queries still use the
-			// index's approximate distance for now; exact threshold filtering needs over-fetch — follow-up.)
-			if (
-				index.customIndex.int8 &&
-				index.customIndex.exactDistance &&
-				(comparator as any) === 'sort' &&
-				(searchCondition as any).target &&
-				typeof attribute_name === 'string'
-			) {
-				const rescored = (loaded as any[]).filter((e) => e !== SKIP && e && e.value);
-				for (const e of rescored)
-					e.distance = index.customIndex.exactDistance(searchCondition, e.value[attribute_name]);
-				// comparison-based (not subtraction) so Infinity sentinels for missing vectors
-				// sort last without producing NaN (Infinity - Infinity).
-				rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
-				return rescored as any;
+			if (index.customIndex.rescoreResults) {
+				const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
+				if (rescored != null) return rescored as any;
 			}
 			return loaded;
 		}

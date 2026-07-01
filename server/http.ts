@@ -10,14 +10,14 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
 import { Request, BunRequest, isBun } from './serverHelpers/Request.ts';
-import { appendHeader, Headers } from './serverHelpers/Headers.ts';
+import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable } from 'node:stream';
@@ -256,7 +256,12 @@ function getPorts(options) {
 	if (port) ports.push({ port, secure: true });
 	port = options?.port;
 	if (port) ports.push({ port, secure: false });
-	if (ports.length === 0) {
+	// The operations API must never fall back to the app http ports: it binds on its own
+	// configured port(s)/domain socket only. Falling back here lets a port-less operations-api
+	// registration (e.g. an app config that carries an `operationsApi` block with no port)
+	// claim http.port/http.securePort on the main thread with noReusePort and no upgrade
+	// handler, which locks the http workers out of those ports and breaks all WebSockets (#1420).
+	if (ports.length === 0 && options?.usageType !== 'operations-api') {
 		// if no port is provided, default to http port
 		ports = [];
 		if (env.get(terms.CONFIG_PARAMS.HTTP_PORT) != null)
@@ -439,7 +444,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 								}
 							}
 						} // else the fast path, if we don't have to defer
-						else nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						// toWriteHeadHeaders converts iterable headers to an object writeHead accepts (a flat
+						// array form is required otherwise, and `Array.from` would pass invalid nested tuples).
+						else nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 					}
 					if (sentBody) nodeResponse.end(body);
 				}
@@ -457,7 +464,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				logRequest(nodeRequest, status, requestId, executionTime);
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
-					if (body[Symbol.iterator] || body[Symbol.asyncIterator]) body = Readable.from(body);
+					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
+					// `Readable.from()` is redundant and breaks destroy propagation: on client
+					// disconnect we destroy the wrapper, which does NOT close the wrapped stream
+					// (so e.g. an SSE PassThrough never sees 'close' and its session leaks). A
+					// real stream already has `.pipe`, so it flows through the branch below.
+					else if (!(body instanceof Readable) && (body[Symbol.iterator] || body[Symbol.asyncIterator]))
+						body = Readable.from(body);
 
 					// if it is a stream, pipe it
 					if (body?.pipe) {
@@ -489,7 +502,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const headers = error.headers;
 				const status = error.statusCode || 500;
 				try {
-					nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
@@ -743,9 +756,13 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		};
 
 		// Store the config for Bun.serve() — will be started by threadServer.js listenOnPorts()
+		// The operations API is main-thread-only and must NOT use SO_REUSEPORT — it's the one
+		// exclusive port, which lets tooling (e.g. the integration-test loopback pool) detect an
+		// address that's already in use instead of silently co-binding. Mirrors the Node path,
+		// which sets server.noReusePort for isOperationsServer (see above).
 		const config: any = {
 			fetch: fetchHandler,
-			reusePort: process.platform !== 'darwin' && process.platform !== 'win32',
+			reusePort: !isOperationsServer && process.platform !== 'darwin' && process.platform !== 'win32',
 		};
 		if (secure) {
 			// TLS config for Bun
@@ -801,11 +818,17 @@ async function bunDelegateToNodeServer(
 			if (bunRequest?.user && !headers['authorization']) {
 				headers[INTERNAL_USER_HEADER] = JSON.stringify(bunRequest.user);
 			}
+			// `payloadAsStream` makes inject() resolve as soon as the response headers are
+			// written and exposes the body as a Readable, instead of buffering the whole
+			// payload and resolving only on response end. Without it a long-lived SSE
+			// response (the MCP server-push GET) never ends, so `await inject()` would
+			// hang forever and the client would never receive headers.
 			const injectResult = await fastify.inject({
 				method: webRequest.method,
 				url: url.pathname + url.search,
 				headers,
 				payload: body,
+				payloadAsStream: true,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -816,7 +839,32 @@ async function bunDelegateToNodeServer(
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
-			return new Response(injectResult.rawPayload?.length > 0 ? injectResult.rawPayload : null, {
+			const responseStream = injectResult.stream();
+			// Event-stream responses (MCP SSE) must reach the client incrementally — return
+			// the body as a stream. Everything else keeps the prior buffered behavior:
+			// drain to a single payload so Content-Length stays set and callers see no change.
+			const contentType = String(injectResult.headers['content-type'] ?? '');
+			if (contentType.includes('text/event-stream')) {
+				// Propagate client disconnect back to the hijacked Fastify reply. When Bun
+				// cancels the response body it destroys this stream; destroying the inject
+				// response (the same object the SSE adapter listens on for 'close') runs the
+				// adapter's teardown, which unsubscribes the session's queue 'data' listener
+				// and drops the registry entry. Without this the inject bridge would never
+				// signal disconnect and the session would leak — its attached data listener
+				// keeps the registry's idle-prune backstop from ever reclaiming it.
+				const injectResponse = injectResult.raw?.res;
+				if (injectResponse && typeof injectResponse.destroy === 'function') {
+					responseStream.once('close', () => injectResponse.destroy());
+				}
+				return new Response(Readable.toWeb(responseStream) as unknown as BodyInit, {
+					status: injectResult.statusCode,
+					headers: webHeaders,
+				});
+			}
+			const chunks: Buffer[] = [];
+			for await (const chunk of responseStream) chunks.push(Buffer.from(chunk));
+			const payload = Buffer.concat(chunks);
+			return new Response(payload.length > 0 ? payload : null, {
 				status: injectResult.statusCode,
 				headers: webHeaders,
 			});

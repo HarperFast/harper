@@ -3,10 +3,14 @@ const {
 	listResources,
 	listResourceTemplates,
 	readResource,
+	completeResourceArgument,
 	_setResourcesForTest,
 	_setOpenApiGeneratorForTest,
 	_setHttpUrlPrefixForTest,
 } = require('#src/components/mcp/resources');
+// listResources now takes a decoded offset; the transport decodes the opaque
+// cursor (rejecting invalid ones with -32602). Tests decode nextCursor to page.
+const { decodeCursor } = require('#src/components/mcp/pagination');
 
 function makeFakeResources(entries) {
 	// Mirrors the shape of resources/Resources.ts — a Map with .getMatch(path).
@@ -146,35 +150,190 @@ describe('mcp/resources', () => {
 		it('round-trips opaquely through nextCursor', () => {
 			const all = listResources({ user: SUPER, profile: 'application', limit: 1000 }).resources;
 			let collected = [];
-			let cursor;
+			let offset;
 			for (let i = 0; i < 10; i++) {
-				const page = listResources({ user: SUPER, profile: 'application', limit: 1, cursor });
+				const page = listResources({ user: SUPER, profile: 'application', limit: 1, offset });
 				collected = collected.concat(page.resources);
-				cursor = page.nextCursor;
-				if (!cursor) break;
+				if (!page.nextCursor) break;
+				offset = decodeCursor(page.nextCursor);
 			}
 			assert.deepEqual(
 				collected.map((r) => r.uri),
 				all.map((r) => r.uri)
 			);
 		});
-
-		it('treats a bad cursor as offset 0', () => {
-			const page = listResources({ user: SUPER, profile: 'application', limit: 1, cursor: '$$nonsense$$' });
-			const first = listResources({ user: SUPER, profile: 'application', limit: 1 });
-			assert.equal(page.resources[0].uri, first.resources[0].uri);
-		});
 	});
 
 	describe('listResourceTemplates', () => {
 		it('declares the harper://schema template on the application profile', () => {
-			const templates = listResourceTemplates('application');
-			assert.ok(templates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
+			const { resourceTemplates } = listResourceTemplates('application');
+			assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
 		});
 
 		it('returns no application-only templates on the operations profile', () => {
-			const templates = listResourceTemplates('operations');
-			assert.equal(templates.length, 0);
+			const { resourceTemplates, nextCursor } = listResourceTemplates('operations');
+			assert.equal(resourceTemplates.length, 0);
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('does not emit a nextCursor when all templates fit on the first page', () => {
+			const { nextCursor } = listResourceTemplates('application');
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('paginates with an opaque cursor when limit is smaller than the template count', () => {
+			const all = listResourceTemplates('application').resourceTemplates;
+			// Only assert paging behavior when the profile actually has >1 template.
+			if (all.length < 2) return;
+			const page1 = listResourceTemplates('application', 0, 1);
+			assert.equal(page1.resourceTemplates.length, 1);
+			assert.ok(page1.nextCursor, 'first page hands back a nextCursor');
+			const offset = require('#src/components/mcp/pagination').decodeCursor(page1.nextCursor);
+			const page2 = listResourceTemplates('application', offset, 1);
+			assert.equal(page2.resourceTemplates.length, all.length - 1);
+			assert.equal(page2.nextCursor, undefined, 'last page has no nextCursor');
+			assert.notDeepEqual(page1.resourceTemplates[0], page2.resourceTemplates[0]);
+		});
+	});
+
+	describe('completeResourceArgument (ref/resource)', () => {
+		afterEach(() => _setHttpUrlPrefixForTest(undefined));
+
+		it('completes {database} from RBAC-visible tables', () => {
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: SUPER, profile: 'application' })
+					.values,
+				['data']
+			);
+			// alice can read data.product → sees the data database
+			assert.deepEqual(
+				completeResourceArgument({
+					argument: { name: 'database', value: '' },
+					user: ALICE_READ_ONLY,
+					profile: 'application',
+				}).values,
+				['data']
+			);
+			// nobody has no table perms → no databases
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: NOBODY, profile: 'application' })
+					.values,
+				[]
+			);
+		});
+
+		it('completes {table} within a database, RBAC-filtered, prefix-matched', () => {
+			const superAll = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(superAll.values, ['customer', 'product']);
+			const alice = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: ALICE_READ_ONLY,
+				profile: 'application',
+			});
+			assert.deepEqual(alice.values, ['product']);
+			const prefixed = completeResourceArgument({
+				argument: { name: 'table', value: 'pro' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(prefixed.values, ['product']);
+		});
+
+		it('completes {resourcePath} from mcp-exposed resource paths when an app URL is advertised', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.ok(values.includes('Product') && values.includes('Customer'));
+		});
+
+		it('returns empty {resourcePath} when no app HTTP URL template is advertised', () => {
+			_setHttpUrlPrefixForTest(''); // '' → guessAppHttpUrlPrefix() returns undefined (no template)
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(values, [], 'no {resourcePath} template advertised → no completions');
+		});
+
+		it('returns empty on the operations profile (no resource templates there)', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			for (const name of ['database', 'table', 'resourcePath']) {
+				const { values } = completeResourceArgument({
+					argument: { name, value: '' },
+					context: { arguments: { database: 'data' } },
+					user: SUPER,
+					profile: 'operations',
+				});
+				assert.deepEqual(values, [], `operations profile must not complete ${name}`);
+			}
+		});
+
+		it('returns an empty completion for an unknown variable', () => {
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'mystery', value: '' }, user: SUPER, profile: 'application' }),
+				{ values: [], total: 0, hasMore: false }
+			);
+		});
+
+		describe('parameterised routes', () => {
+			beforeEach(() => {
+				_setHttpUrlPrefixForTest('https://app.test:9926');
+			});
+			afterEach(() => {
+				_setHttpUrlPrefixForTest(undefined);
+			});
+
+			it('lists parameterised routes as URI templates with {param} placeholders', () => {
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'widget/:id/action/:action',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+					{
+						pattern: 'files/*rest',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
+				assert.ok(uris.includes('https://app.test:9926/widget/{id}/action/{action}'));
+				assert.ok(uris.includes('https://app.test:9926/files/{rest}'));
+			});
+
+			it('honors exportTypes.mcp === false, @hidden, and verb presence', () => {
+				const Hidden = makeTableResource({ verbs: ['get'] });
+				Hidden.hidden = true;
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'mcpoff/:id',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: { mcp: false } },
+					},
+					{ pattern: 'hidden/:id', entry: { Resource: Hidden, exportTypes: undefined } },
+					{ pattern: 'noverbs/:id', entry: { Resource: makeTableResource({ verbs: [] }), exportTypes: undefined } },
+					{ pattern: 'ok/:id', entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined } },
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
+				assert.ok(uris.includes('https://app.test:9926/ok/{id}'));
+				assert.ok(!uris.some((u) => u.includes('/mcpoff/')));
+				assert.ok(!uris.some((u) => u.includes('/hidden/')));
+				assert.ok(!uris.some((u) => u.includes('/noverbs/')));
+			});
 		});
 	});
 
@@ -505,6 +664,52 @@ describe('mcp/resources', () => {
 			const allUris = result.resources.map((r) => r.uri);
 			assert.ok(!allUris.some((u) => u.includes('orphan')));
 			assert.ok(allUris.some((u) => u.includes('visible')));
+		});
+	});
+
+	describe('enumerate — description prefix + @hidden suppression', () => {
+		it('prepends ResourceClass.description to https://* resource entries', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog — what shows up in the storefront listing.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const product = resources.find((r) => r.uri === 'https://localhost/Product');
+			assert.ok(product, 'Product https resource present');
+			assert.match(product.description, /Product catalog/, 'prefixed with class description');
+			assert.match(product.description, /Application resource at \/Product/, 'still has the default suffix');
+		});
+
+		it('prepends ResourceClass.description to harper://schema/* entries', () => {
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog row — one per SKU.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const schema = resources.find((r) => r.uri === 'harper://schema/data/product');
+			assert.ok(schema, 'schema entry present');
+			assert.match(schema.description, /Product catalog row/);
+		});
+
+		it('omits @hidden Resources from both https://* and harper://schema/* enumerations', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const HiddenThing = makeTableResource({ databaseName: 'data', tableName: 'hidden_thing' });
+			HiddenThing.hidden = true;
+			HiddenThing.description = 'Should not surface.';
+			_setResourcesForTest(makeFakeResources([['HiddenThing', HiddenThing]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const uris = resources.map((r) => r.uri);
+			assert.ok(!uris.includes('https://localhost/HiddenThing'), 'https entry suppressed');
+			assert.ok(!uris.includes('harper://schema/data/hidden_thing'), 'schema entry suppressed');
+		});
+
+		it('uses the default-only description when ResourceClass has no static description', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Plain = makeTableResource({ databaseName: 'data', tableName: 'plain' });
+			_setResourcesForTest(makeFakeResources([['Plain', Plain]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const plain = resources.find((r) => r.uri === 'https://localhost/Plain');
+			assert.ok(plain);
+			assert.match(plain.description, /^Application resource at \/Plain/, 'no prefix when no class description');
 		});
 	});
 

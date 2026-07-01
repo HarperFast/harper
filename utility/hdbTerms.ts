@@ -532,6 +532,7 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_HTTP2: 'operationsApi_network_http2',
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
+	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
@@ -597,6 +598,9 @@ export const CONFIG_PARAMS = {
 	REPLICATION_RECORDCONCURRENCY: 'replication_recordConcurrency',
 	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
 	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
+	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',
+	REPLICATION_LEADINGDUPLICATESKIP: 'replication_leadingDuplicateSkip',
+	REPLICATION_REPLAYTIMEOUT: 'replication_replayTimeout',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
@@ -604,6 +608,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_CACHING: 'storage_caching',
 	STORAGE_COMPRESSION: 'storage_compression',
 	STORAGE_NOREADAHEAD: 'storage_noReadAhead',
+	STORAGE_RANDOMACCESSFIELDS: 'storage_randomAccessFields',
 	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
 	STORAGE_ENCRYPTION: 'storage_encryption',
 	STORAGE_MAXTRANSACTIONQUEUETIME: 'storage_maxTransactionQueueTime',
@@ -613,6 +618,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_PATH: 'storage_path',
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
 	STORAGE_BLOBCLEANUPSPEED: 'storage_blobCleanupSpeed',
+	STORAGE_BLOBREADTIMEOUT: 'storage_blobReadTimeout',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	STORAGE_MAXFREESPACETOLOAD: 'storage_maxFreeSpaceToLoad',
 	STORAGE_MAXFREESPACETORETAIN: 'storage_maxFreeSpaceToRetain',
@@ -625,6 +631,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_RECLAMATION_THRESHOLD: 'storage_reclamation_threshold',
 	STORAGE_RECLAMATION_INTERVAL: 'storage_reclamation_interval',
 	STORAGE_RECLAMATION_EVICTIONFACTOR: 'storage_reclamation_evictionFactor',
+	STORAGE_TRANSACTIONLOG_COOLINGINTERVAL: 'storage_transactionLog_coolingInterval',
 	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
 	STORAGE_ROCKS_BLOCKCACHESIZE: 'storage_rocks_blockCacheSize',
@@ -855,11 +862,15 @@ export const ITC_EVENT_TYPES = {
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
 	RESOURCE_OPENAPI_RESPONSE: 'resource_openapi_response',
+	// MCP §3.7: route a client's response to a server→client request back to the
+	// worker awaiting it (the response POST can land on any worker).
+	MCP_CLIENT_RESPONSE: 'mcp_client_response',
 } as const;
 
 /** Supported thread types */
 export const THREAD_TYPES = {
 	HTTP: 'http',
+	JOB: 'job',
 } as const;
 
 /** A version string for pre 4.0.0 comparison */

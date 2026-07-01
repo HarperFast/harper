@@ -18,6 +18,7 @@ import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
+import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -43,8 +44,20 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	readonly #context: Context | SourceContext;
 	#isCollection: boolean;
 	static transactions: Transaction[] & { timestamp: number };
+	/**
+	 * The URL path this resource is registered at. When set, it overrides the export-name convention used during
+	 * resource registration. A leading `/` makes the path root-relative (top-level); otherwise it is resolved relative
+	 * to the component's directory. Paths may contain `:param` and `*wildcard` segments, whose matched values are bound
+	 * onto the request target (e.g. `static path = '/widget/:id'` populates `target.id`).
+	 */
+	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
+	static description?: string;
+	static properties?: { [name: string]: JsonSchemaFragment };
+	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
+	static mcp?: { annotations?: { [verb: string]: { [key: string]: unknown } } };
+	static hidden?: boolean;
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
 		const context = source?.getContext ? (source.getContext() ?? null) : undefined;
@@ -524,6 +537,7 @@ function transactional(
 				if (
 					typeof idOrQuery === 'object' &&
 					idOrQuery &&
+					!(idOrQuery instanceof URLSearchParams) &&
 					(!Array.isArray(idOrQuery) || typeof idOrQuery[0] === 'object')
 				) {
 					// (data, context) form

@@ -2,6 +2,7 @@ import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { getIdOfRemoteNode } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
+import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
 import { endIteratorOnCorruptFrame } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
@@ -42,6 +43,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 	updates = 0; // the number of updates to the list of logs that have occurred
 	rootStore: RocksDatabase;
 	reusableIterable = true; // flag indicating that iterable can be reused to resume iterating through audit log
+	// Highest structureVersion appended to each per-node TransactionLog, tracked per tableId. Drives the
+	// per-log HAS_STRUCTURE_UPDATE flag in put(). Keyed by (log, tableId): a per-node log interleaves entries
+	// from every table, but structureVersion is per-table (each table has its own encoder / structure
+	// dictionary), so a single log-wide watermark would let a high-version table suppress the flag for
+	// another table's first use of a new structure. In-memory only: a reset to 0 on restart at most re-flags
+	// the first entry per (log, table) — a redundant, idempotent structure resend, never an under-flag.
+	structureVersionByLogTable: WeakMap<TransactionLog, Map<number, number>> = new WeakMap();
 	constructor(rootDatabase: RocksDatabase) {
 		super();
 		this.log = rootDatabase.useLog('local');
@@ -63,6 +71,36 @@ export class RocksTransactionLogStore extends EventEmitter {
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
+			// Make every per-node log self-describing for structure progression. HAS_STRUCTURE_UPDATE is a
+			// one-shot, process-wide-per-table flag (saveStructures sets it; the next audit write to that table
+			// consumes it), so it lands on whichever write happens to follow a mint — in whatever log that write
+			// targets. Logs are partitioned per origin node (logById), so the flag can be recorded in a different
+			// log than the one whose entries first *reference* the new structure; a linear reader of that other
+			// log (replication) then never sees the update and decodes later entries against a stale structure set,
+			// yielding undecodable records (HarperFast/harper#1348). Re-derive the flag here from the monotonic
+			// per-table structureVersion so any entry that advances this (log, table) structure count carries it,
+			// regardless of where the original one-shot flag was consumed. A new structure (count increase) is the
+			// only structure change that affects decoding; structon's one count-stable mutation — promoting a
+			// field from ascii8 to string8 — decodes identically (ASCII bytes are valid UTF-8 and both types read
+			// through the same UTF-8 path), so it needs no flag. The `|=` only adds the flag, never clearing one
+			// the encoder already set.
+			const structureVersion = auditRecord.structureVersion ?? 0;
+			let versionByTable = this.structureVersionByLogTable.get(log);
+			if (!versionByTable) this.structureVersionByLogTable.set(log, (versionByTable = new Map()));
+			if (structureVersion > (versionByTable.get(auditRecord.tableId) ?? 0)) {
+				auditRecord.extendedType = (auditRecord.extendedType ?? 0) | HAS_STRUCTURE_UPDATE;
+				// Advance the (log, table) watermark only once this entry DURABLY commits (in the commit hook
+				// below) — never here. Audit entries are pending until commit and discarded if the transaction
+				// aborts (or if serialization / addEntry throws), so a watermark raised now could suppress
+				// HAS_STRUCTURE_UPDATE on a later committed entry at the same structureVersion and re-open the gap
+				// this guards (harper#1348 review). Before commit, a same-version entry simply re-flags — a
+				// redundant, harmless structure resend.
+				(options.transaction.pendingStructureWatermarks ??= []).push([
+					versionByTable,
+					auditRecord.tableId,
+					structureVersion,
+				]);
+			}
 			const flagAndStructureVersion =
 				(auditRecord.previousVersion ? HAS_PREVIOUS_VERSION : 0) |
 				(auditRecord.previousResidencyId ? HAS_PREVIOUS_RESIDENCY_ID : 0) |
@@ -79,14 +117,25 @@ export class RocksTransactionLogStore extends EventEmitter {
 			}
 			entryBinary = createAuditEntry(auditRecord, position);
 		}
-		if (this.listenerCount('aftercommit')) {
-			if (!options.transaction.logEntries) {
-				options.transaction.logEntries = [];
-				options.transaction.onCommit = () => {
-					this.emit('aftercommit', options.transaction.logEntries);
-				};
-			}
-			options.transaction.logEntries.push(auditRecord);
+		if (this.listenerCount('aftercommit')) (options.transaction.logEntries ??= []).push(auditRecord);
+		// One commit hook per transaction handles both deferred side effects — the `aftercommit` emit and the
+		// per-(log, table) structureVersion watermark advances — so they apply only after a durable commit (never
+		// on an aborted/discarded transaction). This store is the sole setter of transaction.onCommit.
+		if (
+			!options.transaction.logStoreCommitHook &&
+			(options.transaction.logEntries || options.transaction.pendingStructureWatermarks)
+		) {
+			options.transaction.logStoreCommitHook = true;
+			options.transaction.onCommit = () => {
+				const advances = options.transaction.pendingStructureWatermarks;
+				if (advances) {
+					for (const [perTable, tableId, version] of advances) {
+						if (version > (perTable.get(tableId) ?? 0)) perTable.set(tableId, version);
+					}
+				}
+				const entries = options.transaction.logEntries;
+				if (entries) this.emit('aftercommit', entries);
+			};
 		}
 		log.addEntry(entryBinary, options.transaction.id);
 	}

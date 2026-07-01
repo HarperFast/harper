@@ -1,8 +1,31 @@
 'use strict';
 
 import * as hdbUtil from '../utility/common_utils.ts';
+import * as hdbTerms from '../utility/hdbTerms.ts';
 import log from '../utility/logging/harper_logger.ts';
 import * as directivesController from './directives/directivesController.ts';
+
+const { DATA_VERSION, UPGRADE_VERSION } = hdbTerms.UPGRADE_JSON_FIELD_NAMES_ENUM;
+
+/**
+ * Build the upgrade-process header line. Surfaces the real data -> software transition and the
+ * migration count so the per-migration directive version below isn't misread as a downgrade: a
+ * migration's version is the release that *introduced* it, not the software version being installed,
+ * so a migration tagged 5.1.0 can run while installing a later release (e.g. 5.1.7).
+ */
+export function formatUpgradeHeader(dataVersion: any, upgradeVersion: any, migrationCount: number) {
+	if (migrationCount === 0) {
+		return `Starting upgrade process: no data migrations to apply (data ${dataVersion} -> software ${upgradeVersion}).`;
+	}
+	const plural = migrationCount === 1 ? '' : 's';
+	return `Starting upgrade process: applying ${migrationCount} data migration${plural} to bring data from ${dataVersion} up to software ${upgradeVersion}.`;
+}
+
+/** Build a single migration's log line: which migration, the release that introduced it, and what it does. */
+export function formatMigrationLine(position: number, total: number, version: any, description?: any) {
+	const detail = description ? `: ${description}` : '';
+	return `Applying migration ${position} of ${total} (introduced in ${version})${detail}`;
+}
 
 /**
  * Iterates through the directives files to find uninstalled updates and runs the files.
@@ -11,16 +34,22 @@ import * as directivesController from './directives/directivesController.ts';
  * @returns {Promise<*[]>}
  */
 export async function processDirectives(upgradeObj: any) {
-	console.log('Starting upgrade process...');
+	const dataVersion = upgradeObj?.[DATA_VERSION];
+	const upgradeVersion = upgradeObj?.[UPGRADE_VERSION];
 
 	let loadedDirectives = directivesController.getVersionsForUpgrade(upgradeObj);
 	let upgradeDirectives = getUpgradeDirectivesToInstall(loadedDirectives);
 
-	let allResponses = [];
 	const dirLength = upgradeDirectives.length;
+
+	const header = formatUpgradeHeader(dataVersion, upgradeVersion, dirLength);
+	log.notify(header);
+	console.log(header);
+
+	let allResponses = [];
 	for (let i = 0; i < dirLength; i++) {
 		const vers = upgradeDirectives[i];
-		let notifyMsg = `Running upgrade for version ${vers.version}`;
+		let notifyMsg = formatMigrationLine(i + 1, dirLength, vers.version, vers.description);
 		log.notify(notifyMsg);
 		console.log(notifyMsg);
 

@@ -57,7 +57,13 @@ describe('Txn Expiration', () => {
 		}
 		await Promise.race([delay(50), result]);
 		assert(performedDBInteractions);
-		assert.equal(trackedTxns.size, existingTxns);
+		// Check the specific txn we started was expired and removed. Counting against
+		// existingTxns is unreliable: other tests' transactions can expire concurrently and
+		// shift the count underneath us during the 50ms window.
+		assert.ok(
+			!trackedTxns.has(lastTxn),
+			'expected the slow transaction to have been expired and removed from trackedTxns'
+		);
 	});
 	after(function () {
 		setTxnExpiration(30000);
@@ -121,7 +127,15 @@ describe('Read Txn Expiration', () => {
 		assert.equal(result.name, 'two');
 	});
 
-	after(function () {
+	after(async function () {
 		setReadTxnExpiration(300000);
+		// On Node v24 the V8 exit-time finalizer order can call mdb_cursor_close on a cursor
+		// whose txn was force-aborted by checkReadTxnTimeouts above. Drain in-flight ops and
+		// reap orphaned cursor wrappers now, while the env is still in a stable state.
+		await new Promise((r) => setImmediate(r));
+		if (typeof global.gc === 'function') {
+			global.gc();
+			await new Promise((r) => setImmediate(r));
+		}
 	});
 });

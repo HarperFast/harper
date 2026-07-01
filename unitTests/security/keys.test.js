@@ -9,7 +9,7 @@ const path = require('path');
 const env_mgr = require('#src/utility/environment/environmentManager');
 const keys = rewire('#src/security/keys');
 const { generateSerialNumber } = require('#src/security/keys');
-const config_utils = require('#js/config/configUtils');
+const config_utils = require('#src/config/configUtils');
 const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
@@ -333,5 +333,171 @@ describe('Test keys module', () => {
 		}
 
 		expect(thrownError, 'createTLSSelector must not throw for cert with non-array uses').to.be.undefined;
+	});
+
+	describe('private-key hot-reload triggers a TLS context rebuild', () => {
+		// handlePrivateKeyReload is the single chokepoint for both the chokidar watcher and the
+		// periodic poll. On a worker, the new cert arrives via the hdb_certificate subscription, but
+		// the key only lands in the in-thread privateKeys map — without a rebuild the worker keeps a
+		// secure context pairing the new cert with the old key. These tests pin the rotation guard
+		// (the part that decides whether a reload triggers a rebuild) directly.
+		let privateKeysMap;
+		let liveTLSRebuilders;
+		let handlePrivateKeyReload;
+		let spy;
+		let keyName;
+
+		beforeEach(() => {
+			privateKeysMap = keys.__get__('privateKeys');
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			handlePrivateKeyReload = keys.__get__('handlePrivateKeyReload');
+			keyName = 'unit-key-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.pem';
+			spy = sinon.spy();
+			liveTLSRebuilders.add(spy);
+		});
+
+		afterEach(() => {
+			liveTLSRebuilders.delete(spy);
+			privateKeysMap.delete(keyName);
+		});
+
+		it('rebuilds on the initial load of a key (recovery: key appears/restored after boot)', () => {
+			// At normal startup liveTLSRebuilders is empty so this is a no-op; once selectors are
+			// registered (modeled here by the spy), a key that first appears must rebuild or the
+			// worker would stay stranded on a context built without it.
+			handlePrivateKeyReload(keyName, 'KEY-A');
+			expect(privateKeysMap.get(keyName)).to.equal('KEY-A');
+			expect(spy.calledOnce, 'first appearance of a key must trigger a rebuild when rebuilders exist').to.be.true;
+		});
+
+		it('rebuilds when the key rotates to a new value', () => {
+			privateKeysMap.set(keyName, 'KEY-A');
+			handlePrivateKeyReload(keyName, 'KEY-B');
+			expect(privateKeysMap.get(keyName)).to.equal('KEY-B');
+			expect(spy.calledOnce, 'a rotated key must trigger exactly one rebuild fan-out').to.be.true;
+		});
+
+		it('does not rebuild when the reloaded key is unchanged', () => {
+			privateKeysMap.set(keyName, 'KEY-A');
+			handlePrivateKeyReload(keyName, 'KEY-A');
+			expect(spy.called, 'an identical-content reload must not trigger a rebuild').to.be.false;
+		});
+	});
+
+	describe('createTLSSelector live-reload registration', () => {
+		// Live server selectors must register for key-rotation rebuilds; transient single-use
+		// selectors (getReplicationCert) must not, or they would accumulate in the registry.
+		it('registers a rebuilder for a live selector but not for a transient one', async () => {
+			const liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			const snapshot = [...liveTLSRebuilders];
+			try {
+				const transient = keys.createTLSSelector('https', undefined, false);
+				await transient.initialize(null);
+				expect(liveTLSRebuilders.size, 'transient selector must not register').to.equal(snapshot.length);
+
+				const live = keys.createTLSSelector('https');
+				await live.initialize(null);
+				expect(liveTLSRebuilders.size, 'live selector must register exactly one rebuilder').to.equal(
+					snapshot.length + 1
+				);
+			} finally {
+				// Drop any rebuilders added by this test so later tests aren't perturbed.
+				liveTLSRebuilders.clear();
+				snapshot.forEach((r) => liveTLSRebuilders.add(r));
+			}
+		});
+	});
+
+	describe('certificate file_timestamp staleness guard', () => {
+		let certTable;
+		let certCn;
+		let originalMtime;
+		let originalRecord;
+
+		// Re-run a single load cycle against the existing (seeded) certificate table.
+		async function reloadCertificates() {
+			keys.__set__('configuredCertsLoaded', false);
+			keys.__set__('certificateTable', undefined);
+			await keys.loadCertificates();
+		}
+
+		before(async () => {
+			const { databases } = require('#src/resources/databases');
+			certTable = databases.system.hdb_certificate;
+			certCn = actual_cert.name;
+			// These tests mutate the cert file mtime and the stored record; snapshot both so we
+			// can restore them and avoid polluting state for any later-added tests.
+			originalMtime = fs.statSync(test_cert_path).mtime;
+			originalRecord = { ...(await certTable.get(certCn)) };
+		});
+
+		beforeEach(() => {
+			// loadCertificates() returns only the last processed cert's put promise. Drop the
+			// certificateAuthority from the config so the non-CA cert is the awaited write,
+			// guaranteeing reloadCertificates() resolves after certCn is committed.
+			sandbox.restore();
+			sandbox.stub(config_utils, 'getConfigFromFile').callsFake((key) => {
+				if (key === 'tls')
+					return {
+						certificate: test_cert_path,
+						privateKey: test_private_key_path,
+					};
+				if (key === 'rootPath') return root_path;
+				return undefined;
+			});
+		});
+
+		after(async () => {
+			fs.utimesSync(test_cert_path, originalMtime, originalMtime);
+			await certTable.put(originalRecord);
+		});
+
+		it('persists file_timestamp matching the certificate file mtime on load', async () => {
+			const record = await certTable.get(certCn);
+			const mtimeMs = fs.statSync(test_cert_path).mtimeMs;
+			expect(record.file_timestamp, 'file_timestamp should be persisted on the record').to.equal(mtimeMs);
+		});
+
+		it('reloads the certificate when the file is newer than the stored record', async () => {
+			const past = Date.now() - 24 * 60 * 60 * 1000;
+			await certTable.put({
+				...(await certTable.get(certCn)),
+				name: certCn,
+				certificate: 'SENTINEL-OLD',
+				is_self_signed: false,
+				file_timestamp: past,
+			});
+			const now = new Date();
+			fs.utimesSync(test_cert_path, now, now);
+
+			await reloadCertificates();
+
+			const record = await certTable.get(certCn);
+			expect(record.certificate, 'a newer file should overwrite the stored cert').to.not.equal('SENTINEL-OLD');
+			expect(record.file_timestamp, 'file_timestamp should advance to the file mtime').to.equal(
+				fs.statSync(test_cert_path).mtimeMs
+			);
+		});
+
+		it('skips reload when the certificate file is older than the stored record', async () => {
+			// The stored record claims a file_timestamp far in the future, while the file mtime is
+			// set newer than "now" but still older than that record. This distinguishes reading
+			// file_timestamp (correct -> skip) from falling back to __updatedtime__ (~now -> reload).
+			const future = Date.now() + 24 * 60 * 60 * 1000;
+			await certTable.put({
+				...(await certTable.get(certCn)),
+				name: certCn,
+				certificate: 'SENTINEL-FUTURE',
+				is_self_signed: false,
+				file_timestamp: future,
+			});
+			const fileTime = new Date(Date.now() + 60 * 60 * 1000);
+			fs.utimesSync(test_cert_path, fileTime, fileTime);
+
+			await reloadCertificates();
+
+			const record = await certTable.get(certCn);
+			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
+		});
 	});
 });

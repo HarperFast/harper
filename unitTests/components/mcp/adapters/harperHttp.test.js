@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
+const { EventEmitter } = require('node:events');
 const { createHarperHttpHandler } = require('#src/components/mcp/adapters/harperHttp');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
 const { Headers } = require('#src/server/serverHelpers/Headers');
@@ -28,6 +29,44 @@ function makeHeaders(init = {}) {
 
 function bodyStream(text) {
 	return Readable.from([Buffer.from(text, 'utf8')]);
+}
+
+// Mirrors server/serverHelpers/Request.ts `RequestBody`: exposes ONLY the
+// stream event API (`.on`), NOT `Symbol.asyncIterator`. The real wrapper is
+// what production hands the adapter; a `for await` over it threw
+// `TypeError: body is not async iterable` and 500'd every request (#1317).
+function eventOnlyBody(text) {
+	const emitter = new EventEmitter();
+	const wrapper = {
+		on(event, listener) {
+			emitter.on(event, listener);
+			return wrapper;
+		},
+	};
+	queueMicrotask(() => {
+		emitter.emit('data', Buffer.from(text, 'utf8'));
+		emitter.emit('end');
+	});
+	return wrapper;
+}
+
+// A body that emits 'close' without ever emitting 'end' or 'error' — what
+// IncomingMessage does on a premature client disconnect. Before the 'close'
+// handler in readBody, this hung the read promise forever and leaked the
+// buffered chunks (#1320 review).
+function abortedBody(partialText) {
+	const emitter = new EventEmitter();
+	const wrapper = {
+		on(event, listener) {
+			emitter.on(event, listener);
+			return wrapper;
+		},
+	};
+	queueMicrotask(() => {
+		if (partialText) emitter.emit('data', Buffer.from(partialText, 'utf8'));
+		emitter.emit('close');
+	});
+	return wrapper;
 }
 
 async function next() {
@@ -71,6 +110,41 @@ describe('mcp/adapters/harperHttp', () => {
 			() => 'next-handler-result'
 		);
 		assert.equal(out, 'next-handler-result');
+	});
+
+	it('reads a body exposing only the stream event API, no async iterator (#1317 regression)', async () => {
+		const handler = createHarperHttpHandler('application');
+		const result = await handler(
+			{
+				method: 'POST',
+				headers: makeHeaders({ 'content-type': 'application/json' }),
+				body: eventOnlyBody(
+					JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+				),
+				user: { username: 'alice' },
+			},
+			next
+		);
+		assert.equal(result.status, 200);
+		assert.equal(JSON.parse(result.body).id, 7);
+	});
+
+	it('rejects (does not hang) when the request body closes before end (#1320 review)', async () => {
+		const handler = createHarperHttpHandler('application');
+		// Without the 'close' handler in readBody this await would never settle and
+		// the test would time out; assert it rejects promptly instead.
+		await assert.rejects(
+			handler(
+				{
+					method: 'POST',
+					headers: makeHeaders({ 'content-type': 'application/json' }),
+					body: abortedBody('{ "jsonrpc": "2.0"'),
+					user: { username: 'alice' },
+				},
+				next
+			),
+			/request aborted/
+		);
 	});
 
 	it('reads chunked body streams (Buffer + string mix)', async () => {

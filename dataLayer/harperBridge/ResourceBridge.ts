@@ -493,16 +493,19 @@ export class ResourceBridge extends BridgeMethods {
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
-						const deleted = table.primaryStore.purgeLogs({ before });
+						const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
+						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
 						break;
 					}
 				}
 			}
 		} else if (table.primaryStore instanceof RocksDatabase) {
-			totalResults.log_files_deleted += table.primaryStore.purgeLogs({ before }).length;
+			const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
+			totalResults.log_files_deleted += deleted.length;
+			totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
 		} else {
-			await table.deleteHistory(before, deleteObj.cleanup_deleted_records);
+			totalResults.entries_deleted += await table.deleteHistory(before, deleteObj.cleanup_deleted_records);
 		}
 		return totalResults;
 	}

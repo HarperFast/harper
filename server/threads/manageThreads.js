@@ -22,7 +22,10 @@ const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
-let threadTerminationTimeout = 10000; // threads, you got 10 seconds to die
+// Threads get 10s to die before they're forced. In dev (`harper dev`) we widen this: a reload's old
+// worker may be disposing a native runtime (e.g. @harperfast/vite's rolldown dev server) and forcing it
+// down mid-disposal crashes the process, so give that teardown more room before the forced backstop.
+let threadTerminationTimeout = process.env.DEV_MODE === 'true' || process.env.DEV_MODE === '1' ? 30000 : 10000;
 const RESTART_TYPE = 'restart';
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
@@ -196,17 +199,19 @@ function startWorker(path, options = {}) {
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
+	const isJobWorker = options.name === hdbTerms.THREAD_TYPES.JOB;
 	for (let { port1, existingPort } of channelsToConnect) {
 		existingPort.postMessage(
 			{
 				type: ADDED_PORT,
 				port: port1,
 				threadId: worker.threadId,
+				isJobWorker,
 			},
 			[port1]
 		);
 	}
-	addPort(worker, true);
+	addPort(worker, true, isJobWorker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -277,20 +282,99 @@ async function restartWorkers(
 			// threads
 			maxWorkersDown = maxWorkersDown * workers.length;
 		}
-		let waitingToFinish = []; // array of workers that we are waiting to restart
-		// make a copy of the workers before iterating them, as the workers
-		// array will be mutating a lot during this
-		let waitingToStart = [];
+		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
+		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
+		// We can only start the replacement *before* the old worker releases its port when the OS lets
+		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT)
+		// and Bun — the replacement can't bind until the old worker exits, so there we keep the original
+		// ordering: shut the old worker down first, then start the replacement (an unavoidable brief gap).
+		const canPreStartReplacement = process.platform !== 'win32' && !isBun;
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
+			if (overlapping && startReplacementThreads && canPreStartReplacement) {
+				// Overlapping restart: start the replacement and wait until it is accepting connections
+				// *before* shutting down the worker it replaces. The replacement joins the (SO_REUSEPORT)
+				// listener group while the old worker is still serving, so the pool never loses capacity
+				// and clients never see a connection-refused gap during the restart. (Startups are awaited
+				// one at a time, so at most one extra worker is booting at once regardless of maxWorkersDown.)
+				// Mark the old worker shut down up front: if it happens to exit while we are booting its
+				// replacement, startWorker's unexpected-exit handler must not auto-restart it (that would
+				// leave a duplicate once the replacement is up). Restored below if the replacement fails.
+				worker.wasShutdown = true;
+				let newWorker = worker.startCopy();
+				// Likewise suppress auto-restart on the replacement *while it boots*: if it fails to come up
+				// we leave the existing worker in place, and a background retry succeeding later would push the
+				// pool over its configured worker count. Re-enabled once it has started.
+				newWorker.wasShutdown = true;
+				let started = await new Promise((resolve) => {
+					// Generous backstop so a replacement that deadlocks during init can't wedge the whole
+					// restart forever. Far longer than any legitimate startup, so it never fires in practice.
+					let timeout = setTimeout(
+						() => {
+							harperLogger.error(
+								'Replacement worker did not start in time; leaving the existing worker in place',
+								newWorker.threadId
+							);
+							newWorker.terminate(); // canPreStartReplacement excludes Bun, so terminate() is safe here
+							cleanup();
+							resolve(false);
+						},
+						Math.max(threadTerminationTimeout * 2, 60000)
+					).unref();
+					const startListener = (message) => {
+						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
+							harperLogger.trace('Worker has started', newWorker.threadId);
+							newWorker.wasShutdown = false; // now a normal managed worker; allow future auto-restart
+							cleanup();
+							resolve(true);
+						}
+					};
+					// If the replacement dies before it ever starts listening, don't wait forever — and
+					// crucially, leave the still-healthy worker it was meant to replace in place rather than
+					// taking the pool down (e.g. a faulty deploy whose workers keep crashing).
+					const exitListener = () => {
+						harperLogger.warn(
+							'Replacement worker exited before starting; leaving the existing worker in place',
+							newWorker.threadId
+						);
+						cleanup();
+						resolve(false);
+					};
+					const cleanup = () => {
+						clearTimeout(timeout);
+						newWorker.off('message', startListener);
+						newWorker.off('exit', exitListener);
+					};
+					harperLogger.trace('Waiting for worker to start', newWorker.threadId);
+					newWorker.on('message', startListener);
+					newWorker.on('exit', exitListener);
+				});
+				if (!started) {
+					// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
+					// protection if it is still alive (it may have exited on its own during the wait).
+					if (workers.includes(worker)) worker.wasShutdown = false;
+					continue;
+				}
+			}
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
-			worker.postMessage({
-				restartNumber: module.exports.restartNumber,
-				type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
-			});
+			try {
+				worker.postMessage({
+					restartNumber: module.exports.restartNumber,
+					type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
+				});
+			} catch (err) {
+				// the worker exited on its own while we were starting its replacement — nothing left to
+				// shut down (its overlapping replacement, if any, is already up). Skip to the next worker.
+				if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') continue;
+				throw err;
+			}
 			worker.wasShutdown = true;
 			worker.emit('shutdown', {});
-			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
+			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
+			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
+			// well before the replacement finishes booting and binds.
+			if (overlapping && startReplacementThreads && !canPreStartReplacement) worker.startCopy();
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				let timeout = setTimeout(() => {
@@ -306,41 +390,22 @@ async function restartWorkers(
 				}, threadTerminationTimeout * 2).unref();
 				worker.on('exit', () => {
 					clearTimeout(timeout);
-					waitingToFinish.splice(waitingToFinish.indexOf(whenDone));
+					const index = waitingToFinish.indexOf(whenDone);
+					if (index > -1) waitingToFinish.splice(index, 1);
+					// non-overlapping types have no advance replacement, so start it once the old one is gone
 					if (!overlapping && startReplacementThreads) worker.startCopy();
 					resolve();
 				});
 			});
 			waitingToFinish.push(whenDone);
-			if (overlapping && startReplacementThreads) {
-				let newWorker = worker.startCopy();
-				let whenStarted = new Promise((resolve) => {
-					const startListener = (message) => {
-						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
-							harperLogger.trace('Worker has started', newWorker.threadId);
-							resolve();
-							waitingToStart.splice(waitingToStart.indexOf(whenStarted));
-							newWorker.off('message', startListener);
-						}
-					};
-					harperLogger.trace('Waiting for worker to start', newWorker.threadId);
-					newWorker.on('message', startListener);
-				});
-				waitingToStart.push(whenStarted);
-				if (waitingToFinish.length >= maxWorkersDown) {
-					// wait for one to finish before terminating to restart more
-					await Promise.race(waitingToFinish);
-				}
-				if (waitingToStart.length >= maxWorkersDown) {
-					// wait for one to finish before starting to restart more
-					await Promise.race(waitingToStart);
-				}
+			if (waitingToFinish.length >= maxWorkersDown) {
+				// throttle how many workers are draining/down at once to limit load
+				await Promise.race(waitingToFinish);
 			}
 		}
 		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
 		// to finish, so not that important
 		await Promise.all(waitingToFinish);
-		await Promise.all(waitingToStart);
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
@@ -405,22 +470,46 @@ async function broadcast(message, includeSelf) {
 
 const awaitingResponses = new Map();
 let nextId = 1;
-function broadcastWithAcknowledgement(message) {
+// Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
+// whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
+// already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
+// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+const DEFAULT_ACK_TIMEOUT_MS = 30000;
+function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
 	return new Promise((resolve) => {
 		let waitingCount = 0;
+		let timer;
+		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
+		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
+		// the close listener, or the timeout below.
+		const pending = new Set();
+		const finish = () => {
+			if (timer) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			resolve();
+		};
 		for (let port of connectedPorts) {
+			// Job workers run a single isolated task and exit; they don't participate in
+			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
+			// the job worker's ACK while the job worker's event loop is busy waiting for the
+			// same broadcast to complete (re-entrant schema change triggered by the job op).
+			if (port.isJobWorker) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
+					if (!pending.delete(ackHandler)) return; // already settled for this port
 					awaitingResponses.delete(requestId);
 					if (--waitingCount === 0) {
-						resolve();
+						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
 						port.unref();
 					}
 				};
 				ackHandler.port = port;
+				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
 				awaitingResponses.set((message.requestId = requestId), ackHandler);
@@ -441,7 +530,21 @@ function broadcastWithAcknowledgement(message) {
 				harperLogger.error(`Unable to send message to worker`, error);
 			}
 		}
-		if (waitingCount === 0) resolve();
+		if (waitingCount === 0) return resolve();
+		if (timeout > 0) {
+			timer = setTimeout(() => {
+				timer = undefined;
+				const stuck = [];
+				for (let ackHandler of [...pending]) {
+					stuck.push(ackHandler.port?.threadId);
+					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+				}
+				harperLogger.warn(
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
+				);
+			}, timeout);
+			timer.unref?.();
+		}
 	});
 }
 
@@ -570,7 +673,8 @@ function removePort(port, deadThreadId) {
 	}
 }
 
-function addPort(port, keepRef) {
+function addPort(port, keepRef, isJobWorker) {
+	if (isJobWorker) port.isJobWorker = true;
 	connectedPorts.push(port);
 	// Capture threadId now — Bun resets port.threadId to -1 by the time 'exit' fires.
 	const portThreadId = port.threadId;
@@ -578,7 +682,7 @@ function addPort(port, keepRef) {
 		.on('message', (message) => {
 			if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
-				addPort(message.port);
+				addPort(message.port, false, message.isJobWorker);
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {

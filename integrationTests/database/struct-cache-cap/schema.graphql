@@ -1,0 +1,35 @@
+# QA-175 — per-encoder typedStructs cap under WIDTH-heterogeneous ingest.
+#
+# Premise under test: width-variety ALONE (same field NAMES on every record, but
+# per-field VALUE width varying across records — small int vs 32-bit vs 64-bit Long,
+# float32-ish vs float64, short vs multi-KB string) drives the structon/msgpackr
+# per-encoder `typedStructs` dictionary to mint distinct structures. The real
+# live-event-scoring field incident minted ~15,700 distinct encoder structures this
+# way and OOM'd; the fix was the structon `maxOwnStructures` cap (RecordEncoder pins
+# it to 256). This test confirms the cap HOLDS: het ingest should PLATEAU at ~256,
+# not grow unbounded.
+#
+# Both tables share an IDENTICAL field-name set (n, f, s) — key-set homogeneity is
+# held constant so the only variable is value WIDTH. Declared (not @sealed) so the
+# value types can flex across records; the encoder still mints typedStructs per
+# distinct typed shape, which is exactly the growth we're bounding.
+
+# randomAccessFields: true puts the primary store on structon's TYPED random-access
+# struct path — the same path the live-event-scoring incident ran on. Only on this
+# path does the per-encoder `typedStructs` dictionary grow (and only here does the
+# maxOwnStructures=256 cap bite). Without it (5.1 default = off) records fall back to
+# msgpackr classic shared structures, which key on the field-NAME set and so reuse a
+# single structure regardless of value width — typedStructs stays 0.
+type WidthHom @table(randomAccessFields: true) @export {
+	id: ID @primaryKey
+	n: Any
+	f: Any
+	s: Any
+}
+
+type WidthHet @table(randomAccessFields: true) @export {
+	id: ID @primaryKey
+	n: Any
+	f: Any
+	s: Any
+}

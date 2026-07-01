@@ -10,6 +10,15 @@ describe('validateGetAnalytics', function () {
 		assert.strictEqual(validateGetAnalytics({ metric: 'cpu-usage' }), undefined);
 	});
 
+	it('should accept a string log filter', function () {
+		assert.strictEqual(validateGetAnalytics({ metric: 'rocksdb-txnlog-stats', log: 'audit' }), undefined);
+	});
+
+	it('should reject a non-string log filter', function () {
+		const error = validateGetAnalytics({ metric: 'rocksdb-txnlog-stats', log: 42 });
+		assert.ok(error instanceof Error);
+	});
+
 	it('should accept a fully-specified valid request', function () {
 		assert.strictEqual(
 			validateGetAnalytics({
@@ -174,5 +183,17 @@ describe('validateGetAnalytics', function () {
 	it('should reject a condition with attribute but no comparator or value', function () {
 		const error = validateGetAnalytics({ metric: 'cpu-usage', conditions: [{ attribute: 'path' }] });
 		assert.ok(error instanceof Error);
+	});
+
+	// ── replicated ───────────────────────────────────────────────────────────
+
+	it('should accept replicated as a boolean', function () {
+		assert.strictEqual(validateGetAnalytics({ metric: 'cpu-usage', replicated: true }), undefined);
+	});
+
+	it('should reject replicated as the string "true"', function () {
+		const error = validateGetAnalytics({ metric: 'cpu-usage', replicated: 'true' });
+		assert.ok(error instanceof Error);
+		assert.ok(error.message.includes('replicated'), `expected "replicated" in: ${error.message}`);
 	});
 });

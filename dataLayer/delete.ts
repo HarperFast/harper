@@ -109,7 +109,8 @@ export async function deleteAuditLogsBefore(deleteObj: any) {
 	await pGlobalSchema(deleteObj.schema, deleteObj.table);
 	harperLogger.info(`Finished deleting audit logs before ${deleteObj.timestamp}`);
 
-	return new DeleteAuditLogsBeforeResults(results.start_timestamp, results.end_timestamp, results.transactions_deleted);
+	// `deleteTransactionLogsBefore` returns `entries_deleted`; the legacy result exposes it as `transactions_deleted`.
+	return new DeleteAuditLogsBeforeResults(results.start_timestamp, results.end_timestamp, results.entries_deleted);
 }
 
 /**

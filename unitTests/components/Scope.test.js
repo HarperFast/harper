@@ -335,6 +335,60 @@ describe('Scope', () => {
 		await scope.close();
 	});
 
+	it('should not create entry handler from options change before handleEntry is called (RE-8)', async () => {
+		// Reproduce the race in RE-8: OptionsWatcher fires a `change` event for the
+		// `files` key BEFORE handleApplication (and thus handleEntry) runs. In the
+		// broken code, #optionsWatcherChangeListener would create an entry handler
+		// without any plugin callback attached. Chokidar's initial scan would then
+		// emit `add` events with no consumer. When handleEntry was later called it
+		// reused the existing handler — but the initial `add` events were already gone.
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
+
+		await scope.ready;
+
+		// Simulate the race: emit a `change` event on scope.options for the `files`
+		// key, as if OptionsWatcher's second config read (triggered by chokidar's own
+		// `ready` event) completed before handleApplication called handleEntry. In the
+		// broken code this created an entry handler immediately, starting a chokidar
+		// scan with no plugin callback attached.
+		scope.options.emit('change', ['files'], 'test.js', { files: 'test.js' });
+
+		// Yield to the event loop long enough for any spuriously-created entry handler
+		// to start its chokidar watcher and complete its initial scan. In the broken
+		// code the scan would fire `add` events here with no listener; in the fixed
+		// code no entry handler is created at all during the change event.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		// Now call handleEntry — this is what jsResource.handleApplication does.
+		// If the bug is present, the entry handler already exists (from the change
+		// listener) and its initial scan has already fired and is gone. The callback
+		// would never receive the initial `add` event and the test would time out.
+		const handleEntrySpy = spy();
+		const entryHandler = scope.handleEntry(handleEntrySpy);
+		assert.ok(entryHandler instanceof EntryHandler, 'Entry handler should be created');
+
+		// The callback must receive the initial `add` event for test.js.
+		// In the buggy code this would time out because initial scan events are lost.
+		await waitFor(() => handleEntrySpy.callCount > 0, {
+			timeout: 2000,
+			message: 'handleEntry callback must be called with initial add event (RE-8 regression)',
+		});
+
+		const firstCall = handleEntrySpy.getCall(0).args[0];
+		assert.equal(firstCall.eventType, 'add', 'initial event should be `add`');
+		assert.equal(firstCall.absolutePath, this.testFilePath, 'initial event should be for the test file');
+
+		await scope.close();
+	});
+
 	describe('deploy lifecycle integration', () => {
 		// These cases ensure that when a deploy is in flight for the parent
 		// component, file changes from the deploy itself (extract + npm install)

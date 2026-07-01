@@ -2,7 +2,7 @@
 
 import { assert } from 'chai';
 import axios from 'axios';
-import { setupTestApp } from './setupTestApp.mjs';
+import { setupTestApp, baseUrl, operationsUrl, testHost } from './setupTestApp.mjs';
 import { request } from 'http';
 
 describe('test REST with property updates', function () {
@@ -11,35 +11,35 @@ describe('test REST with property updates', function () {
 	});
 
 	it('post with sub-property manipulation', async () => {
-		let response = await axios.put('http://localhost:9926/namespace/SubObject/5', {
+		let response = await axios.put(`${baseUrl}/namespace/SubObject/5`, {
 			id: '5',
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
 		});
 		assert.equal(response.status, 204);
-		response = await axios.post('http://localhost:9926/namespace/SubObject/5', {
+		response = await axios.post(`${baseUrl}/namespace/SubObject/5`, {
 			subPropertyValue: 'a new value',
 			subArrayItem: { name: 'a new item' },
 		});
 		assert.equal(response.status, 200);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/5');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/5`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.subObject.subProperty, 'a new value');
 		assert.equal(response.data.subArray[1].name, 'a new item');
 	});
 	it('get with sub-property access via dot', async () => {
-		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+		let response = await axios.put(`${baseUrl}/namespace/SubObject/6`, {
 			id: '5',
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
 			extraProperty: 'this is not in the schema',
 		});
 		assert.equal(response.status, 204);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6.subObject');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/6.subObject`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.name, 'a sub-object');
 		// this should return 404 because the property is not in the schema (and should be treated as a full id)
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6.extraProperty', {
+		response = await axios.get(`${baseUrl}/namespace/SubObject/6.extraProperty`, {
 			validateStatus: function () {
 				return true;
 			},
@@ -47,17 +47,17 @@ describe('test REST with property updates', function () {
 		assert.equal(response.status, 404);
 	});
 	it('get with sub-property access via ?select', async () => {
-		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+		let response = await axios.put(`${baseUrl}/namespace/SubObject/6`, {
 			id: '5',
 			any: { name: 'can be an object' },
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
 		});
 		assert.equal(response.status, 204);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(subObject)');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/6?select(subObject)`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.name, 'a sub-object');
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(any,)');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/6?select(any,)`);
 		assert.equal(response.data.any.name, 'can be an object');
 	});
 	it('put with wrong type on attribute', async () => {
@@ -67,7 +67,7 @@ describe('test REST with property updates', function () {
 			'accept': 'application/json',
 		};
 		let response = await axios.put(
-			'http://localhost:9926/FourProp/555',
+			`${baseUrl}/FourProp/555`,
 			JSON.stringify({
 				id: '555',
 				name: 33,
@@ -86,52 +86,52 @@ describe('test REST with property updates', function () {
 	});
 
 	it('put with nested path', async () => {
-		let response = await axios.put('http://localhost:9926/namespace/SubObject/multi/part/id/3', {
+		let response = await axios.put(`${baseUrl}/namespace/SubObject/multi/part/id/3`, {
 			any: 'can be a string',
 			subObject: { name: 'deeply nested' },
 			subArray: [],
 		});
 		assert.equal(response.status, 204);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/id/3');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/multi/part/id/3`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.subObject.name, 'deeply nested');
 		assert.deepEqual(response.data.id, 'multi/part/id/3');
 		assert.deepEqual(response.data.any, 'can be a string');
-		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/multi/`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data[0].subObject.name, 'deeply nested');
 		assert.equal(response.data.length, 1);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/multi/part/`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data[0].subObject.name, 'deeply nested');
 		assert.equal(response.data.length, 1);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/?any=not-here');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/multi/?any=not-here`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.length, 0);
 
-		response = await axios.delete('http://localhost:9926/namespace/SubObject/multi/part/');
-		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/');
+		response = await axios.delete(`${baseUrl}/namespace/SubObject/multi/part/`);
+		response = await axios.get(`${baseUrl}/namespace/SubObject/multi/part/`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.length, 0);
 	});
 
 	it('put with encoded slashes, dots', async () => {
-		let response = await axios.put('http://localhost:9926/namespace/SubObject/i%2Flike%2Fslashes%2E', {
+		let response = await axios.put(`${baseUrl}/namespace/SubObject/i%2Flike%2Fslashes%2E`, {
 			any: 'can be a string',
 			subObject: { name: 'deeply nested' },
 			subArray: [],
 		});
 		assert.equal(response.status, 204);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/i%2Flike%2Fslashes%2E');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/i%2Flike%2Fslashes%2E`);
 		assert.equal(response.status, 200);
 	});
 
 	it('get with timestamps and no PK on record', async () => {
-		let response = await axios.put('http://localhost:9926/HasTimeStampsNoPK/33', {
+		let response = await axios.put(`${baseUrl}/HasTimeStampsNoPK/33`, {
 			name: 'Look Ma, no primary key!',
 		});
 		assert.equal(response.status, 204);
-		response = await axios.get('http://localhost:9926/HasTimeStampsNoPK/33');
+		response = await axios.get(`${baseUrl}/HasTimeStampsNoPK/33`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.name, 'Look Ma, no primary key!');
 		assert(response.data.updated > 1689025407526);
@@ -140,7 +140,7 @@ describe('test REST with property updates', function () {
 	});
 
 	it('check headers on get', async () => {
-		await axios.get('http://localhost:9926/namespace/SubObject/6', {
+		await axios.get(`${baseUrl}/namespace/SubObject/6`, {
 			headers: {
 				'Custom-Header': 'custom-value',
 			},
@@ -160,18 +160,18 @@ describe('test REST with property updates', function () {
 
 	describe('joins', async () => {
 		before(async () => {
-			await axios.put('http://localhost:9926/Related/6', {
+			await axios.put(`${baseUrl}/Related/6`, {
 				id: '6',
 				name: 'Related 6',
 				another: 'Another value',
 			});
-			await axios.put('http://localhost:9926/namespace/SubObject/33', {
+			await axios.put(`${baseUrl}/namespace/SubObject/33`, {
 				id: '33',
 				subObject: { name: 'a sub-object' },
 				subArray: [{ name: 'a sub-object of an array' }],
 				relatedId: '6',
 			});
-			await axios.put('http://localhost:9926/namespace/SubObject/34', {
+			await axios.put(`${baseUrl}/namespace/SubObject/34`, {
 				id: '34',
 				subObject: { name: 'a sub-object' },
 				subArray: [{ name: 'a sub-object of an array' }],
@@ -179,23 +179,23 @@ describe('test REST with property updates', function () {
 			});
 		});
 		it('get data with related data joined', async function () {
-			let response = await axios.get('http://localhost:9926/namespace/SubObject/34?select(id,related)');
+			let response = await axios.get(`${baseUrl}/namespace/SubObject/34?select(id,related)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.related.name, 'Related 6');
 		});
 		it('query for data with related data joined', async function () {
-			let response = await axios.get('http://localhost:9926/namespace/SubObject/?id=33&select(id,related)');
+			let response = await axios.get(`${baseUrl}/namespace/SubObject/?id=33&select(id,related)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data[0].related.name, 'Related 6');
 		});
 		it('query for data by related id with related data joined', async function () {
-			let response = await axios.get('http://localhost:9926/namespace/SubObject/?relatedId=6&select(id,related)');
+			let response = await axios.get(`${baseUrl}/namespace/SubObject/?relatedId=6&select(id,related)`);
 			assert.equal(response.status, 200);
 			assert.equal(response.data[1].related.name, 'Related 6');
 		});
 		it('query for data by related value with related data joined', async function () {
 			let response = await axios.get(
-				'http://localhost:9926/namespace/SubObject/?related.name=Related 6' + '&sort(-related.name)&select(id,related)'
+				`${baseUrl}/namespace/SubObject/?related.name=Related 6` + '&sort(-related.name)&select(id,related)'
 			);
 			assert.equal(response.status, 200);
 			assert.equal(response.data[1].related.name, 'Related 6');
@@ -205,7 +205,7 @@ describe('test REST with property updates', function () {
 			let response = await new Promise((resolve) => {
 				let req = request(
 					{
-						hostname: 'localhost',
+						hostname: testHost,
 						method: 'GET',
 						port: 9926,
 						path:
@@ -233,7 +233,7 @@ describe('test REST with property updates', function () {
 	});
 	describe('check operations', function () {
 		it('search_by_value returns all attributes', async function () {
-			let response = await axios.post('http://localhost:9925', {
+			let response = await axios.post(operationsUrl, {
 				operation: 'search_by_value',
 				schema: 'data',
 				table: 'FourProp',
@@ -244,7 +244,7 @@ describe('test REST with property updates', function () {
 		});
 		it('search_by_conditions with join', async function () {
 			let response = await axios.post(
-				'http://localhost:9925',
+				operationsUrl,
 				{
 					operation: 'search_by_conditions',
 					schema: 'data',
@@ -262,7 +262,7 @@ describe('test REST with property updates', function () {
 		});
 		it('search_by_conditions with different properties', async function () {
 			let response = await axios.post(
-				'http://localhost:9925',
+				operationsUrl,
 				{
 					operation: 'search_by_conditions',
 					table: 'SubObject',
@@ -299,7 +299,7 @@ describe('test REST with property updates', function () {
 
 		it('sql returns all attributes of four property object', async function () {
 			let response = await axios.post(
-				'http://localhost:9925',
+				operationsUrl,
 				{
 					operation: 'sql',
 					sql: 'SELECT * FROM data.FourProp',
@@ -314,19 +314,19 @@ describe('test REST with property updates', function () {
 			assert(response.data.some((record) => record.title === 'title0'));
 		});
 		it('sql returns all attributes and sub-object of array', async function () {
-			let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+			let response = await axios.put(`${baseUrl}/namespace/SubObject/6`, {
 				id: '6',
 				subObject: { name: 'another sub-object' },
 				subArray: [{ name: 'another sub-object of an array' }],
 			});
-			response = await axios.post('http://localhost:9925', {
+			response = await axios.post(operationsUrl, {
 				operation: 'sql',
 				sql: 'SELECT * FROM data.SubObject',
 			});
 			assert(response.data.some((record) => record.subObject?.name === 'another sub-object'));
 		});
 		it('describe_table returns all attributes', async function () {
-			let response = await axios.post('http://localhost:9925', {
+			let response = await axios.post(operationsUrl, {
 				operation: 'describe_table',
 				schema: 'data',
 				table: 'FourProp',
@@ -337,7 +337,7 @@ describe('test REST with property updates', function () {
 			assert(!response.data.attributes.find((attr) => attr.attribute === 'ageInMonths'));
 		});
 		it('describe_table with include_computed returns all attributes', async function () {
-			let response = await axios.post('http://localhost:9925', {
+			let response = await axios.post(operationsUrl, {
 				operation: 'describe_table',
 				schema: 'data',
 				table: 'FourProp',
@@ -361,17 +361,17 @@ describe('test REST with property updates with loadAsInstance=false', function (
 	});
 
 	it('get with sub-property access via ?select', async () => {
-		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+		let response = await axios.put(`${baseUrl}/namespace/SubObject/6`, {
 			id: '5',
 			any: { name: 'can be an object' },
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
 		});
 		assert.equal(response.status, 204);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(subObject)');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/6?select(subObject)`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.name, 'a sub-object');
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(any,)');
+		response = await axios.get(`${baseUrl}/namespace/SubObject/6?select(any,)`);
 		assert.equal(response.data.any.name, 'can be an object');
 	});
 

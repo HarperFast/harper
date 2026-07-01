@@ -5,6 +5,11 @@ const {
 	deriveCreateSchema,
 	deriveUpdateSchema,
 	deriveDeleteSchema,
+	deriveGetOutputSchema,
+	deriveCreateOutputSchema,
+	deriveUpdateOutputSchema,
+	derivePatchOutputSchema,
+	deriveDeleteOutputSchema,
 } = require('#src/components/mcp/tools/schemas/derive');
 
 const PRODUCT_ATTRS = [
@@ -105,6 +110,61 @@ describe('mcp/tools/schemas/derive', () => {
 			const schema = deriveDeleteSchema(PRODUCT_ATTRS);
 			assert.deepEqual(schema.required, ['id']);
 			assert.equal(Object.keys(schema.properties).length, 1);
+		});
+	});
+
+	// Output schemas (#1324): create/update/patch/delete advertise the result
+	// envelope their handlers actually return — an object (MCP requires
+	// structuredContent/outputSchema to be object-shaped), not the full record.
+	describe('output schemas', () => {
+		it('deriveGetOutputSchema returns the full record shape', () => {
+			const schema = deriveGetOutputSchema(PRODUCT_ATTRS);
+			assert.equal(schema.type, 'object');
+			assert.ok('name' in schema.properties, 'record fields present');
+			assert.ok('updated' in schema.properties, 'server-assigned fields present on read');
+		});
+
+		it('deriveCreateOutputSchema is { id } typed by the primary key', () => {
+			const schema = deriveCreateOutputSchema(PRODUCT_ATTRS);
+			assert.equal(schema.type, 'object');
+			assert.deepEqual(Object.keys(schema.properties), ['id']);
+			assert.deepEqual(schema.required, ['id']);
+			assert.equal(schema.additionalProperties, false);
+			// PK is type ID -> string.
+			assert.equal(schema.properties.id.type, 'string');
+			// Does not require server-assigned fields a fresh record may lack (#1324).
+			assert.ok(!('updated' in schema.properties), 'no @updatedTime in create output');
+		});
+
+		it('deriveCreateOutputSchema falls back to a string id when no PK is declared', () => {
+			const schema = deriveCreateOutputSchema([{ name: 'name', type: 'String' }]);
+			assert.equal(schema.properties.id.type, 'string');
+		});
+
+		it('deriveCreateOutputSchema types a numeric primary key as integer', () => {
+			const schema = deriveCreateOutputSchema([{ name: 'pk', type: 'Long', isPrimaryKey: true }]);
+			assert.equal(schema.properties.id.type, 'integer');
+		});
+
+		for (const [label, fn] of [
+			['deriveUpdateOutputSchema', deriveUpdateOutputSchema],
+			['derivePatchOutputSchema', derivePatchOutputSchema],
+		]) {
+			it(`${label} is a { ok: boolean } acknowledgement`, () => {
+				const schema = fn(PRODUCT_ATTRS);
+				assert.equal(schema.type, 'object');
+				assert.deepEqual(schema.required, ['ok']);
+				assert.equal(schema.properties.ok.type, 'boolean');
+				assert.equal(schema.additionalProperties, false);
+			});
+		}
+
+		it('deriveDeleteOutputSchema is a { deleted: boolean } object', () => {
+			const schema = deriveDeleteOutputSchema(PRODUCT_ATTRS);
+			assert.equal(schema.type, 'object');
+			assert.deepEqual(schema.required, ['deleted']);
+			assert.equal(schema.properties.deleted.type, 'boolean');
+			assert.equal(schema.additionalProperties, false);
 		});
 	});
 

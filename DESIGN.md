@@ -42,6 +42,8 @@ The mitigations live in three places:
 
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
 
+**Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
+
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
 When `migrateOnStart` opens a source LMDB primary store to read records out for the RocksDB copy, it constructs an `OpenDBIObject` and calls `sourceRootStore.openDB(key, dbiInit)`. Critically, the per-attribute `compression` setting from the corresponding `__dbis__` entry must be assigned onto `dbiInit` before that call — `dbiInit.compression = attribute.compression`. Without it, lmdb-js doesn't install its decompression layer; every read on the DBI returns raw compressed bytes. msgpackr then misreads bytes in the `0x40–0x7F` range as shared-structure refs, calls `loadStructures` → decodes the (also compressed) structures buffer → finds more bytes in that range → recurses → stack overflow.
@@ -107,3 +109,114 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
+
+## Table drops, the `dropping` tombstone, and ghost tables
+
+A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
+in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
+persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
+destructive work, then drops the column families (awaited - a failed drop must surface as the
+operation's error, never a swallowed rejection), then removes the catalog rows. If the process
+dies or a drop fails partway, the tombstone survives; both the boot-time schema load in
+`databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
+interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
+silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
+(with their data, if the column families were never actually removed).
+
+## MCP protocol surface (`components/mcp/`)
+
+The MCP Streamable-HTTP transport (spec `2025-06-18`) is served at `/mcp` under **two profiles**: an
+_operations_ profile (mounted on the Fastify operations server) and an _application_ profile (mounted on
+the Harper application HTTP server). Both share `transport.ts` (the JSON-RPC dispatcher) but differ in what
+they expose — operations surfaces management operations as tools; application surfaces exported
+Resources/tables. Profile gating runs throughout (`completeResourceArgument`, prompt visibility, tool
+`visibleTo`), so when adding a method, decide which profile(s) it belongs to rather than assuming both.
+
+A handful of design points are non-obvious and easy to break:
+
+- **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
+  (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
+  API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on
+  `'close'`. The streaming tool handler is therefore dispatched inside a `setImmediate` (a _detached_,
+  deferred task) so the adapter's consumer attaches **before** any frame is produced. Without the defer, a
+  fast handler emits its final frame + `close` synchronously; the queue buffers `'data'` but not `'close'`,
+  and the stream hangs. Any handler on this path must check `signal.aborted` first (cancellation can land
+  before the deferred task runs).
+
+- **Server→client requests are correlated across workers.** `serverRequests.ts` lets a streaming `tools/call`
+  call _back_ into the client (`sampling/createMessage`, `elicitation/create`, `roots/list`) and await the
+  reply. The request frame rides **the call's POST SSE stream**; the client's response is a _fresh POST_ that
+  can land on **any worker**. The pending-promise registry is per-worker, so a response with no local match
+  is fanned out over ITC (`MCP_CLIENT_RESPONSE`) and the worker holding the promise resolves it (mirrors
+  `components/status/crossThread.ts`). Request ids are `srv-${randomUUID()}` — **not** a per-worker counter,
+  which would collide on `(sessionId, id)` across workers and misroute responses. Methods are capability-gated
+  (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
+  (timeout + high-water-mark) so a non-responding client can't leak promises.
+
+- **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
+  Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as the
+  "Audit-store `'committed'` notification batching" section above). The targeting is the subtle part:
+  `getMatch` returns the matched Resource plus the remaining path on `relativeURL`, and `subscribeToResource`
+  sets **both** `request.id` (the record key, or `undefined`) **and** `request.isCollection` from it. A record
+  URI (`…/WorkItem/42`) watches that record; a collection URI (`…/WorkItem`, what `resources/list` advertises)
+  watches the whole table. `new RequestTarget(path)` parses an id out of the path on its own, so _both_ fields
+  must be overridden — otherwise a collection URI silently watches a phantom record named after the resource
+  and receives nothing. `harper://*` pseudo-resources are **list-changed-only** (not row-backed). Subscriptions
+  use `omitCurrent` (notify on change, not a retained snapshot — the notification just says "re-read this").
+
+- **Subscribe requires a live GET stream; teardown is asymmetric.** `resources/subscribe` rejects (`-32602`)
+  if no GET SSE stream has registered the session — the audit-log iterator has nowhere to deliver, and there'd
+  be no `RegisteredSession` close hook to stop it. The GET `'close'` handler drops **subscriptions only**
+  (`dropSessionSubscriptions`), _not_ pending server requests: those ride the per-call POST stream, so a normal
+  GET reconnect must not reject an in-flight `ctx.serverRequest`. A `DELETE` (explicit session teardown) drops
+  **both**, because it may arrive with no open GET stream.
+
+- **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
+  assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a
+  `Last-Event-ID` header, `replaySince` re-sends only the frames after that id. The event-id sequence **and**
+  the buffer carry across a supersede (a fresh GET replacing the old one for the same session id), so ids stay
+  monotonic and no frame is lost across a reconnect.
+
+- **Test seams avoid loading thread/audit machinery in unit tests.** `_setSubscribeImplForTest`
+  (`resources.ts`) and `_setItcForTest` (`serverRequests.ts`) inject fakes so the unit suite needn't spin up
+  the audit log or ITC. Consequence: the subscribe **targeting** logic (`id`/`isCollection` derivation) is
+  _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
+  record / N4 collection), not in unit tests.
+
+Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
+lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
+subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a
+same-named table within one process requires @harperfast/rocksdb-js >= the column-family
+eviction fix (1.4.3 / rocksdb-js#<main PR>): older bindings keep the dropped column family's
+by-name registry entry alive whenever other worker threads hold handles, so the recreate
+silently reuses a dangling handle and every write fails with "Invalid column family specified
+in write batch", poisoning the whole database env until restart. The regression suite for all
+of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
+bindings).
+
+## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
+
+A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
+by completely separate routes, and the two must reconverge or HTTPS breaks on that worker.
+Certificates propagate through data: only the main thread watches the cert file (`isMainThread`
+guard in `loadCertificates`) and writes the new PEM into the `system.hdb_certificate` table; every
+worker is subscribed to that table and rebuilds its secure contexts (`updateTLS` inside
+`createTLSSelector`) on the notification. Private keys never touch the table — each worker watches
+its own key file (the private-key `loadAndWatch` has no `isMainThread` guard) and loads the PEM
+straight into its in-thread `privateKeys` map. `getPrivateKeyByName` reads that map first, so an
+already-built secure context has the key bytes baked in (`setCert`/`setKey` at build time); a later
+map update does not touch contexts already built.
+
+The hazard when a rotation changes **both**: the cert can win the race to a worker (table write +
+subscription) and trigger `updateTLS` before that worker has reloaded the matching key, producing a
+context that pairs the new cert with the old key — every handshake on it then fails, and nothing
+rebuilds it until the _next_ cert-table change. The fix: a private-key reload (`handlePrivateKeyReload`,
+the single sink for both the chokidar watcher and PR #1394's periodic poll) triggers a debounced
+rebuild of every live selector via the module-level `liveTLSRebuilders` set, so the worker reconverges
+on its own. Subtleties to preserve: the rotation guard (`previous !== undefined && previous !== key`)
+must skip both the initial load and identical-content reloads or watchers thrash; transient one-shot
+selectors (`getReplicationCert`) pass `liveReload=false` so they don't accumulate in the never-pruned
+set; and the cert subscription shares the same debounced `scheduleRebuild` (same 1500ms cadence), so
+its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
+`integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
+(it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.

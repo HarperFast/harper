@@ -12,6 +12,37 @@ function isResource(value: any) {
 }
 
 /**
+ * Resolve the URL path a resource should be registered at, given the directory it was discovered in (`prefix`) and a
+ * declared path (either the resource's `static path` field or its export name).
+ *
+ * - A leading `/` makes the path root-relative (top-level), ignoring the component directory.
+ * - A leading `./` (or no leading slash) resolves the path relative to the component directory.
+ *
+ * Parameterised segments (`:id`, `*rest`) are preserved verbatim and interpreted later by the route matcher.
+ */
+export function resolveResourcePath(prefix: string, declaredPath: string): string {
+	let resolved: string;
+	if (declaredPath.startsWith('/')) {
+		// root-relative (top-level): strip the leading slash(es) so it is not joined to the component directory
+		resolved = declaredPath.replace(/^\/+/, '');
+	} else {
+		// './x' is component-relative, same as a bare name; preserve the historical `${prefix}/${name}` join
+		// (an empty prefix yields a leading slash, which Resources.set strips — but plain-Map consumers rely on it)
+		const relative = declaredPath.startsWith('./') ? declaredPath.slice(2) : declaredPath;
+		resolved = `${prefix}/${relative}`;
+	}
+	// a trailing slash would add an empty final segment that can never match (incoming URLs are normalized first)
+	return resolved.endsWith('/') ? resolved.replace(/\/+$/, '') : resolved;
+}
+
+/**
+ * The path a resource declares for itself via a `static path` field, if any.
+ */
+function declaredPath(exported: any): string | undefined {
+	return typeof exported?.path === 'string' ? exported.path : undefined;
+}
+
+/**
  * Error thrown when a JavaScript resource module fails to load
  */
 export class ResourceLoadError extends Error {
@@ -58,9 +89,11 @@ export async function handleApplication(scope: Scope) {
 			const resourceModule: any = await scope.import(entryEvent.absolutePath);
 			const root = dirname(entryEvent.urlPath).replace(/\\/g, '/').replace(/^\/$/, '');
 			if (isResource(resourceModule.default)) {
-				// register the resource
-				scope.resources.set(root, resourceModule.default);
-				scope.logger.debug?.(`Registered root resource: ${root}`);
+				// register the resource, honoring a `static path` field if the resource declares one
+				const declared = declaredPath(resourceModule.default);
+				const path = declared ? resolveResourcePath(root, declared) : root;
+				scope.resources.set(path, resourceModule.default);
+				scope.logger.debug?.(`Registered root resource: ${path}`);
 			}
 			recurseForResources(scope, resourceModule, root);
 		} catch (error) {
@@ -74,13 +107,15 @@ function recurseForResources(scope: Scope, resourceModule: any, prefix: string) 
 	for (const name in resourceModule) {
 		// check each of the module exports to see if it implements a Resource handler
 		const exported = resourceModule[name];
-		const resourcePath = `${prefix}/${name}`;
 		if (isResource(exported)) {
+			// A `static path` field overrides the export name; otherwise the export name itself is the declared path
+			// (which may be a leading-slash root path, e.g. `export { Widget as '/widget/:id' }`).
+			const resourcePath = resolveResourcePath(prefix, declaredPath(exported) ?? name);
 			// expose as an endpoint
 			scope.resources.set(resourcePath, exported);
 			scope.logger.debug?.(`Registered resource: ${resourcePath}`);
 		} else if (typeof exported === 'object') {
-			recurseForResources(scope, exported, resourcePath);
+			recurseForResources(scope, exported, `${prefix}/${name}`);
 		}
 	}
 }

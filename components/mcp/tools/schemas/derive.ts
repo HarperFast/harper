@@ -14,6 +14,8 @@
 export interface HarperAttribute {
 	name: string;
 	type?: string;
+	description?: string;
+	hidden?: boolean;
 	nullable?: boolean;
 	isPrimaryKey?: boolean;
 	properties?: HarperAttribute[];
@@ -67,7 +69,7 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 }
 
 function attributeToProperty(attr: HarperAttribute): object {
-	let base: object;
+	let base: { type?: string | string[]; description?: string; [key: string]: unknown };
 	if (attr.type === 'Object' && attr.properties) {
 		base = {
 			type: 'object',
@@ -79,14 +81,17 @@ function attributeToProperty(attr: HarperAttribute): object {
 			items: attributeToProperty(attr.elements),
 		};
 	} else {
-		base = harperTypeToJsonSchema(attr.type);
+		base = harperTypeToJsonSchema(attr.type) as typeof base;
 	}
-	if (attr.nullable && 'type' in (base as { type?: unknown })) {
-		const t = (base as { type: string | string[] }).type;
-		const types = Array.isArray(t) ? t : [t];
+	if (attr.nullable && 'type' in base) {
+		const t = base.type;
+		const types = Array.isArray(t) ? t : [t as string];
 		if (!types.includes('null')) {
-			(base as { type: string[] }).type = [...types, 'null'];
+			base.type = [...types, 'null'];
 		}
+	}
+	if (attr.description && !base.description) {
+		base.description = attr.description;
 	}
 	return base;
 }
@@ -108,6 +113,22 @@ function attributeAllowed(
 }
 
 /**
+ * Composed visibility: an attribute is visible when it is NOT @hidden AND the
+ * caller is allowed under attribute_permissions for the requested mode. The
+ * `@hidden` directive is a metadata-visibility signal — it suppresses the
+ * attribute from MCP descriptors and OpenAPI emit. RBAC remains the
+ * enforcement mechanism for data access.
+ */
+function attributeVisible(
+	attr: HarperAttribute,
+	permissions: AttributePermissionEntry[] | undefined,
+	mode: Mode
+): boolean {
+	if (attr.hidden) return false;
+	return attributeAllowed(attr.name, permissions, mode);
+}
+
+/**
  * Build a JSON Schema object covering some subset of the table's attributes.
  * `mode` controls how attribute_permissions are interpreted; `include`
  * optionally limits to a subset (e.g. primary-key-only for `delete_*`).
@@ -122,7 +143,7 @@ function buildPropertiesObject(
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (include && !include(attr)) continue;
-		if (!attributeAllowed(attr.name, permissions, mode)) continue;
+		if (!attributeVisible(attr, permissions, mode)) continue;
 		// Skip auto-managed columns from write inputs — Harper assigns them.
 		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
 		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
@@ -164,7 +185,7 @@ export function deriveSearchSchema(
 ): object {
 	// `conditions` is freeform — Harper supports many comparators; we expose
 	// the common subset and rely on server-side validation for the rest.
-	const readableAttrs = attributes.filter((a) => attributeAllowed(a.name, permissions, 'read'));
+	const readableAttrs = attributes.filter((a) => attributeVisible(a, permissions, 'read'));
 	const attrNames = readableAttrs.map((a) => a.name);
 	return {
 		type: 'object',
@@ -252,5 +273,133 @@ export function deriveDeleteSchema(
 				: { type: 'string', description: 'Primary key.' },
 		},
 		required: ['id'],
+	};
+}
+
+/**
+ * Full record shape — every visible attribute as it appears in returned records.
+ * Used as the outputSchema for `get_*` only. Reflects what the server returns,
+ * not what the client sends: server-assigned fields (@createdTime,
+ * @updatedTime, @primaryKey) appear as required in output even though they're
+ * optional on input.
+ *
+ * `create_*`/`update_*`/`patch_*`/`delete_*` deliberately do NOT use this —
+ * their handlers return a result envelope (id / ack / deleted), not the full
+ * record, and the record's required server-assigned fields aren't guaranteed at
+ * write time (e.g. a freshly created record may lack @updatedTime) (#1324).
+ * `search_*` omits outputSchema — envelope shape is tracked in a sibling issue.
+ */
+function deriveRecordSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	const properties: Record<string, object> = {};
+	const required: string[] = [];
+	for (const attr of attributes) {
+		if (!attributeVisible(attr, permissions, 'read')) continue;
+		properties[attr.name] = attributeToProperty(attr);
+		const requiredOnOutput =
+			attr.nullable === false || attr.assignCreatedTime || attr.assignUpdatedTime || attr.isPrimaryKey;
+		if (requiredOnOutput) required.push(attr.name);
+	}
+	const schema: {
+		type: string;
+		properties: Record<string, object>;
+		required?: string[];
+		additionalProperties: boolean;
+	} = {
+		type: 'object',
+		properties,
+		additionalProperties: false,
+	};
+	if (required.length > 0) schema.required = required;
+	return schema;
+}
+
+export function deriveGetOutputSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveRecordSchema(attributes, permissions);
+}
+
+/**
+ * Acknowledgement envelope — `{ ok: boolean }`. MCP requires `structuredContent`
+ * (and therefore `outputSchema`) to describe a JSON *object*, so write verbs that
+ * have no meaningful payload advertise this minimal object rather than a scalar.
+ */
+function deriveAckSchema(okDescription: string): object {
+	return {
+		type: 'object',
+		properties: { ok: { type: 'boolean', description: okDescription } },
+		required: ['ok'],
+		additionalProperties: false,
+	};
+}
+
+/**
+ * Output schema for create responses. `makeCreateHandler` resolves the new
+ * record's primary key (a scalar) and wraps it as `{ id }`, so advertise that
+ * envelope — typed by the primary-key attribute — rather than the full record
+ * (which the handler never returns and whose server-assigned fields aren't
+ * guaranteed at create time) (#1324).
+ */
+export function deriveCreateOutputSchema(
+	attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	const pk = findPrimaryKey(attributes);
+	const idSchema = pk ? attributeToProperty(pk) : { type: 'string' };
+	return {
+		type: 'object',
+		properties: {
+			id: {
+				...idSchema,
+				description: pk ? `Primary key of the created record (${pk.name}).` : 'Primary key of the created record.',
+			},
+		},
+		required: ['id'],
+		additionalProperties: false,
+	};
+}
+
+/**
+ * Output schema for update (PUT) responses. `Table.put` resolves to undefined;
+ * the handler surfaces `{ ok: true }` (#1324).
+ */
+export function deriveUpdateOutputSchema(
+	_attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveAckSchema('True when the record was written.');
+}
+
+/**
+ * Output schema for patch responses. `Table.patch` resolves to undefined; the
+ * handler surfaces `{ ok: true }` (#1324).
+ */
+export function derivePatchOutputSchema(
+	_attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveAckSchema('True when the record was patched.');
+}
+
+/**
+ * Output schema for delete responses. `Table.delete` resolves to a boolean;
+ * `makeDeleteHandler` wraps it as `{ deleted }` so the result carries
+ * structuredContent (an object, as MCP requires) (#1324).
+ */
+export function deriveDeleteOutputSchema(_attributes: HarperAttribute[]): object {
+	return {
+		type: 'object',
+		properties: {
+			deleted: {
+				type: 'boolean',
+				description: 'True when a record was deleted; false when no record matched the primary key.',
+			},
+		},
+		required: ['deleted'],
+		additionalProperties: false,
 	};
 }

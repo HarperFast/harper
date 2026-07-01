@@ -16,6 +16,7 @@ import { table, type Table } from '../../resources/databases.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { McpLogLevel } from './logging.ts';
 import { clearSessionRateState } from './rateLimit.ts';
 import { unregisterSession } from './sessionRegistry.ts';
 import { clearSessionCache } from './toolRegistry.ts';
@@ -41,6 +42,27 @@ export interface McpSessionRecord {
 	user: string;
 	createdAt: number;
 	lastActivity: number;
+	/**
+	 * Minimum `notifications/message` severity set via `logging/setLevel`.
+	 * Persisted here (not just on the in-memory SSE record) so it survives an
+	 * SSE reconnect and is order-independent of GET-stream open; the live
+	 * RegisteredSession is seeded from it. Expires with the session's TTL, so no
+	 * separate cache to prune. Undefined = the client hasn't opted into logging.
+	 */
+	logLevel?: McpLogLevel;
+	/**
+	 * Resource URIs the client has subscribed to via `resources/subscribe`
+	 * (#1349 §3.6). Persisted so they can be restored on an SSE reconnect (the
+	 * live per-worker subscription objects can't be). Row-backed URIs only;
+	 * undefined/empty = no subscriptions.
+	 */
+	subscriptions?: string[];
+	/**
+	 * Client capabilities from `initialize` `params.capabilities` (#1349 §3.7).
+	 * Stored so server→client requests (sampling/elicitation/roots) are only sent
+	 * to clients that declared support. Undefined = client declared none.
+	 */
+	clientCapabilities?: Record<string, unknown>;
 }
 
 let _sessionTable: Table | undefined;
@@ -65,6 +87,9 @@ function declareSessionTable(): Table {
 			{ name: 'user' },
 			{ name: 'createdAt' },
 			{ name: 'lastActivity' },
+			{ name: 'logLevel' },
+			{ name: 'subscriptions' },
+			{ name: 'clientCapabilities' },
 		],
 	});
 }
@@ -94,9 +119,11 @@ function getTable(): Table {
 export async function createSession({
 	user,
 	protocolVersion,
+	clientCapabilities,
 }: {
 	user: string;
 	protocolVersion: string;
+	clientCapabilities?: Record<string, unknown>;
 }): Promise<McpSessionRecord> {
 	const now = Date.now();
 	const record: McpSessionRecord = {
@@ -106,6 +133,7 @@ export async function createSession({
 		user,
 		createdAt: now,
 		lastActivity: now,
+		...(clientCapabilities ? { clientCapabilities } : {}),
 	};
 	await (getTable() as any).put(record);
 	return record;

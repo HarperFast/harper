@@ -366,3 +366,124 @@ describe('registerBedrockBackend', () => {
 		assert.strictEqual(resolveEmbedding('titan').name, 'bedrock');
 	});
 });
+
+// ---- finding 2: inference-profile model IDs + nova guard -------------------------
+
+describe('familyOf (cross-region inference-profile IDs + nova)', () => {
+	beforeEach(() => _resetSdkCacheForTests());
+
+	// us.* inference profile — Claude is now exclusively on-demand via inference profiles
+	it('resolves us.anthropic.claude-* to anthropic family', async () => {
+		const { sdk } = fakeSdk(() =>
+			jsonBodyResponse({
+				content: [{ type: 'text', text: 'hi' }],
+				stop_reason: 'end_turn',
+				usage: {},
+			})
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0' });
+		// Must not throw on family resolution; should succeed and produce Anthropic body shape
+		const result = await b.generate('q', { accounting: ACCOUNTING });
+		assert.strictEqual(result.output.content, 'hi');
+	});
+
+	it('resolves eu.anthropic.claude-* to anthropic family', async () => {
+		const { sdk, sent } = fakeSdk(() =>
+			jsonBodyResponse({ content: [{ type: 'text', text: 'bonjour' }], stop_reason: 'end_turn', usage: {} })
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'eu-west-1', model: 'eu.anthropic.claude-3-5-haiku-20241022-v1:0' });
+		const result = await b.generate('q', { accounting: ACCOUNTING });
+		assert.strictEqual(result.output.content, 'bonjour');
+		// Anthropic body shape: must have anthropic_version
+		const body = JSON.parse(sent[0].command.body);
+		assert.ok(body.anthropic_version, 'should use Anthropic body shape');
+	});
+
+	it('resolves global.anthropic.* to anthropic family', async () => {
+		const { sdk } = fakeSdk(() =>
+			jsonBodyResponse({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: {} })
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'global.anthropic.claude-3-opus-20240229-v1:0' });
+		// Should not throw on family dispatch
+		await b.generate('q', { accounting: ACCOUNTING });
+	});
+
+	it('resolves us.meta.llama3-* to meta family', async () => {
+		const { sdk } = fakeSdk(() =>
+			jsonBodyResponse({
+				generation: 'llama reply',
+				stop_reason: 'stop',
+				prompt_token_count: 1,
+				generation_token_count: 2,
+			})
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'us.meta.llama3-70b-instruct-v1:0' });
+		const result = await b.generate('q', { accounting: ACCOUNTING });
+		assert.strictEqual(result.output.content, 'llama reply');
+	});
+
+	it('still throws on a completely unknown vendor prefix', async () => {
+		const { sdk } = fakeSdk(() => jsonBodyResponse({}));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'unknownco.something-v1' });
+		await assert.rejects(() => b.generate('q', { accounting: ACCOUNTING }), /not supported for model family 'unknown'/);
+	});
+
+	it('throws a descriptive error for amazon.nova-* models (not yet supported)', async () => {
+		const { sdk } = fakeSdk(() => jsonBodyResponse({}));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'amazon.nova-pro-v1:0' });
+		await assert.rejects(
+			() => b.generate('q', { accounting: ACCOUNTING }),
+			/amazon\.nova models are not yet supported/
+		);
+	});
+
+	it('throws a descriptive error for us.amazon.nova-* inference-profile IDs', async () => {
+		const { sdk } = fakeSdk(() => jsonBodyResponse({}));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'us.amazon.nova-micro-v1:0' });
+		await assert.rejects(
+			() => b.generate('q', { accounting: ACCOUNTING }),
+			/amazon\.nova models are not yet supported/
+		);
+	});
+});
+
+// ---- finding 5b: Bedrock streaming tool-call accumulator cardinality cap --------
+
+describe('Bedrock Anthropic-stream tool-call accumulator cardinality cap', () => {
+	beforeEach(() => _resetSdkCacheForTests());
+
+	it('throws BedrockBackendError when more than 128 distinct content-block indices accumulate', async () => {
+		// Build a stream that emits 129 content_block_start tool_use events with
+		// distinct indices but no content_block_stop events.
+		async function* bigStream() {
+			for (let i = 0; i < 129; i++) {
+				yield {
+					chunk: {
+						bytes: new TextEncoder().encode(
+							JSON.stringify({
+								type: 'content_block_start',
+								index: i,
+								content_block: { type: 'tool_use', id: `c${i}`, name: `fn${i}` },
+							})
+						),
+					},
+				};
+			}
+		}
+		const { sdk } = fakeSdk(() => ({ body: bigStream() }));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+		await assert.rejects(async () => {
+			for await (const _c of b.generateStream('q', { accounting: ACCOUNTING })) {
+				/* drain */
+			}
+		}, /tool-call accumulator exceeded 128/);
+	});
+});

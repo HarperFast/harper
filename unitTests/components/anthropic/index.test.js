@@ -375,6 +375,39 @@ describe('AnthropicBackend', () => {
 	});
 });
 
+// ---- finding 5b: Anthropic streaming tool-call accumulator cardinality cap ------
+
+describe('Anthropic streaming tool-call accumulator cardinality cap', () => {
+	it('throws AnthropicBackendError when more than 128 distinct content-block indices accumulate', async () => {
+		// Emit 129 content_block_start events for distinct tool_use indices without
+		// any content_block_stop events, so the map grows past the cap.
+		function bigToolStream() {
+			const enc = new TextEncoder();
+			const stream = new ReadableStream({
+				start(controller) {
+					for (let i = 0; i < 129; i++) {
+						const event = {
+							type: 'content_block_start',
+							index: i,
+							content_block: { type: 'tool_use', id: `c${i}`, name: `fn${i}` },
+						};
+						controller.enqueue(enc.encode(`event: content_block_start\ndata: ${JSON.stringify(event)}\n\n`));
+					}
+					controller.close();
+				},
+			});
+			return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+		}
+		const fetch = mockFetch(() => bigToolStream());
+		const b = new AnthropicBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+		await assert.rejects(async () => {
+			for await (const _c of b.generateStream('q', { accounting: ACCOUNTING })) {
+				/* drain */
+			}
+		}, /tool-call accumulator exceeded 128/);
+	});
+});
+
 describe('registerAnthropicBackend', () => {
 	beforeEach(() => clearRegistry());
 

@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
+const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -14,11 +15,40 @@ const {
 	isSaving,
 	cleanupOrphans,
 	cleanupUnusedBlobs,
+	collectRetainedFileIds,
+	getFileId,
+	saveBlob,
+	decodeFromDatabase,
+	startPreCommitBlobsForRecord,
+	isSourceBlobUnavailable,
+	isBlobComplete,
+	findIncompleteBlobRefs,
+	shouldDestroyIdleBlobSource,
 } = require('#src/resources/blob');
-const { existsSync } = require('fs');
+const {
+	existsSync,
+	unlinkSync,
+	openSync,
+	writeSync,
+	ftruncateSync,
+	closeSync,
+	statSync,
+	truncateSync,
+	writeFileSync,
+} = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+const HEADER_SIZE = 8;
+// Build the 8-byte blob file header: 2-byte storage type followed by a 6-byte content size.
+function makeBlobHeader(size, type = 0) {
+	const header = Buffer.alloc(HEADER_SIZE);
+	new DataView(header.buffer).setBigInt64(0, BigInt(size) | (BigInt(type) << 48n));
+	return header;
+}
 
 describe('Blob test', () => {
 	let BlobTest;
@@ -281,6 +311,40 @@ describe('Blob test', () => {
 		});
 		setDeletionDelay(500); // restore the default
 	});
+	it('blob unlink is gated on the removal committing (#1364)', async () => {
+		// removeEntry must only unlink the old blobs once the record removal commits. An
+		// expiration scan whose transaction is force-committed without the delete (or an
+		// aborted/version-conflicted removal) leaves the record in place; unlinking its blobs
+		// regardless would orphan the reference and wedge replication on ENOENT.
+		setDeletionDelay(0);
+		const realStore = BlobTest.primaryStore;
+		const blob = await createBlob(randomBytes(20000)); // > FILE_STORAGE_THRESHOLD → file-backed
+		await BlobTest.put({ id: 720, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath, 'expected file-backed blob');
+		assert(existsSync(filePath), 'blob file should exist after put');
+
+		// Fetch a real entry (value + metadataFlags) the way the eviction scan does.
+		let entry;
+		for (const e of realStore.getRange({ start: 720, end: 721, versions: true })) {
+			if (e.key === 720) entry = e;
+		}
+		assert(entry && entry.value, 'expected a real entry carrying the blob');
+
+		// Removal that never commits (rejects): the blob must be preserved.
+		removeEntry({ remove: () => Promise.reject(new Error('aborted')) }, entry, undefined);
+		await delay(40);
+		assert(existsSync(filePath), 'blob must survive when the removal does not commit (#1364)');
+
+		// Removal that commits: the blob is unlinked.
+		removeEntry({ remove: () => Promise.resolve(true) }, entry, undefined);
+		await waitFor(() => !existsSync(filePath), {
+			message: 'blob should be unlinked once the removal commits',
+		});
+
+		await BlobTest.delete(720); // cleanup the real record (its blob file is already gone)
+		setDeletionDelay(500); // restore the default
+	});
 	it('slowly create a blob and save it before it is done', async () => {
 		let testString = 'this is a test string'.repeat(256);
 		let expectedResults = '';
@@ -492,6 +556,124 @@ describe('Blob test', () => {
 		const existing = await BlobTest.get(250);
 		assert.equal(await existing.blob.text(), 'first');
 	});
+	it('#406: startPreCommitBlobsForRecord tracks an already-saved blob only when trackPersistedBlobs is set', async () => {
+		// A replication-received blob is saved out-of-band by receiveBlobs BEFORE the apply, so at pre-commit
+		// it has a fileId but no saveBeforeCommit flag. It must be tracked (so a superseded apply's cleanup
+		// can unlink it — #406), but ONLY on the source-apply path: a local write carrying an already-saved
+		// blob references another row's blob and must not be unlinked on abort/skip.
+		const receivedBlob = createBlob(Buffer.alloc(20000, 'c'));
+		await decodeFromDatabase(() => saveBlob(receivedBlob).saving, BlobTest.primaryStore.rootStore);
+		const record = { id: 1, blob: receivedBlob };
+		const store = BlobTest.primaryStore.rootStore;
+		// local write (trackPersistedBlobs falsy): an already-saved blob is NOT tracked
+		assert.equal(startPreCommitBlobsForRecord(record, store, false, false), undefined);
+		// source/replication apply (trackPersistedBlobs true): tracked for skip/abort cleanup
+		const preCommit = startPreCommitBlobsForRecord(record, store, false, true);
+		assert(preCommit && preCommit.blobs.includes(receivedBlob), 'received blob tracked on source apply');
+		unlinkSync(getFilePathForBlob(receivedBlob)); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('isSourceBlobUnavailable: only the replication source-missing marker, not local/transient faults', () => {
+		// The classification gate for pre-commit tolerance: the replication receiver flags an unrecoverable
+		// source-missing blob with `sourceBlobUnavailable` (markSourceBlobUnavailable, harper-pro#403). A
+		// local/transient save fault (disk full, a local ENOENT) is unmarked and must NOT be tolerated.
+		assert.equal(
+			isSourceBlobUnavailable(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true })),
+			true
+		);
+		assert.equal(isSourceBlobUnavailable(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })), false);
+		assert.equal(isSourceBlobUnavailable(new Error('disk full')), false);
+		assert.equal(isSourceBlobUnavailable({ sourceBlobUnavailable: false }), false);
+		assert.equal(isSourceBlobUnavailable(null), false);
+		assert.equal(isSourceBlobUnavailable(undefined), false);
+	});
+	it('complete() fault contract: needs-saving aborts on a transient fault, track-only never aborts (#1353/#1376)', async () => {
+		// CONTRACT HISTORY — do not "restore" the old all-blobs-abort assertion:
+		//   #1353 introduced complete() awaiting EVERY pre-commit blob, so any save fault (even on an
+		//     already-saving, replication-received blob) aborted the commit.
+		//   #1376 then split pre-commit blobs into two sets and changed the contract:
+		//     - blobsNeedingSaving (saveInRecord / saveBeforeCommit): complete() awaits these. A
+		//       transient/local fault MUST still reject → the write aborts and retries (no silent loss).
+		//       A replication source-missing blob (sourceBlobUnavailable marker) is tolerated so the
+		//       record still commits with a diverged reference, backfilled later (harper-pro#403/#388).
+		//     - blobsToTrackOnly (already-saving, replication-received): complete() deliberately does
+		//       NOT await these — awaiting a paused/back-pressured copy stream's blob would deadlock the
+		//       WS (commit fails → onCommit never fires → outstandingCommits never decrements →
+		//       WS paused forever, harper-pro#414). Their durability is NOT enforced by commit-abort
+		//       anymore; it moved to the replication resume cursor: a fault sets hasBlobGap=true and
+		//       pins lastDurableSequenceId so the blob is re-streamed on reconnect
+		//       (harper-pro replication/replicationConnection.ts).
+		// So a transient fault aborts ONLY on the needs-saving path; on the track-only path complete()
+		// must NOT reject. The pre-#1376 assertion drove the fault through the track-only path, which is
+		// why it became stale: complete() no longer awaits that set.
+		const store = BlobTest.primaryStore.rootStore;
+
+		// --- needs-saving path (saveBeforeCommit) ---
+
+		// transient/local fault → complete() awaits the save and the unmarked rejection MUST propagate so
+		// the write aborts and retries.
+		const failStream = new PassThrough();
+		const failBlob = await createBlob(failStream, { saveBeforeCommit: true });
+		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, true);
+		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
+		await assert.rejects(
+			rejectPc.complete(),
+			'a local/transient save fault on a needs-saving blob must still abort the commit'
+		);
+
+		// source-unavailable → the replication marker is tolerated even on the awaited needs-saving path,
+		// so the record still commits with a diverged reference.
+		const goneStream = new PassThrough();
+		const goneBlob = await createBlob(goneStream, { saveBeforeCommit: true });
+		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, true);
+		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
+		await assert.doesNotReject(toleratePc.complete(), 'a source-unavailable blob must not abort the commit');
+
+		// --- track-only path (already-saving replication-received blob) ---
+
+		// A replication-received blob is saved out-of-band before the apply (fileId already set, no
+		// saveBeforeCommit), so startPreCommitBlobsForRecord(trackPersistedBlobs=true) puts it in
+		// blobsToTrackOnly. complete() must NOT await it: a transient fault here does NOT abort the commit
+		// (durability is the resume cursor's job via hasBlobGap — see comment above). Without this, a
+		// paused copy stream would deadlock the WS (harper-pro#414).
+		const trackOnlyStream = new PassThrough();
+		const trackOnlyBlob = await createBlob(trackOnlyStream);
+		decodeFromDatabase(() => saveBlob(trackOnlyBlob, true), store); // out-of-band save: assigns fileId, begins the pipeline
+		isSaving(trackOnlyBlob)?.catch(() => {}); // complete() won't await this save, so absorb its rejection ourselves
+		const trackOnlyPc = startPreCommitBlobsForRecord({ id: 3, blob: trackOnlyBlob }, store, false, true);
+		assert(
+			trackOnlyPc && trackOnlyPc.blobs.includes(trackOnlyBlob),
+			'an already-saved replication blob is tracked for cleanup'
+		);
+		trackOnlyStream.destroy(new Error('disk full')); // unmarked transient fault on the track-only blob
+		await assert.doesNotReject(
+			trackOnlyPc.complete(),
+			'a transient fault on a track-only blob must NOT abort the commit (durability handled by the resume cursor)'
+		);
+	});
+	it('#406: cleanupUnusedBlobs deletes non-retained blobs but keeps retained ones', async () => {
+		// The retained-fileId guard: a skipped/aborted write may carry a blob whose fileId the surviving
+		// record still references; deleting it would corrupt that record.
+		setDeletionDelay(0);
+		const keep = createBlob(Buffer.alloc(20000, 'k'));
+		const drop = createBlob(Buffer.alloc(20000, 'p'));
+		await decodeFromDatabase(() => saveBlob(keep).saving, BlobTest.primaryStore.rootStore);
+		await decodeFromDatabase(() => saveBlob(drop).saving, BlobTest.primaryStore.rootStore);
+		const keepPath = getFilePathForBlob(keep);
+		const dropPath = getFilePathForBlob(drop);
+		cleanupUnusedBlobs([keep, drop], new Set([getFileId(keep)]));
+		await waitFor(() => !existsSync(dropPath), { message: `non-retained blob ${dropPath} should be deleted` });
+		assert(existsSync(keepPath), 'retained blob must NOT be deleted');
+		unlinkSync(keepPath); // not referenced by any record; remove so it isn't counted as an orphan
+	});
+	it('#406: collectRetainedFileIds returns the fileIds of saved blobs in a record', async () => {
+		const blob = createBlob(Buffer.from('x'));
+		await decodeFromDatabase(() => saveBlob(blob).saving, BlobTest.primaryStore.rootStore);
+		const ids = collectRetainedFileIds({ attr: blob, other: 5 });
+		assert(ids instanceof Set);
+		assert(ids.has(getFileId(blob)));
+		assert.equal(collectRetainedFileIds(null), undefined); // no record
+		assert.equal(collectRetainedFileIds({ no: 'blobs' }), undefined); // no blobs → no set allocated
+	});
 	it('cleanupUnusedBlobs is a no-op for unsaved blobs and clears the list', () => {
 		const unsavedBlob = createBlob(Buffer.from('not yet saved'));
 		const list = [unsavedBlob];
@@ -500,9 +682,375 @@ describe('Blob test', () => {
 		cleanupUnusedBlobs(list); // does not throw on empty list
 		cleanupUnusedBlobs(undefined); // does not throw when never tracked
 	});
+	it('isBlobComplete: true for saved blob, false for unsaved/ENOENT', async () => {
+		// native Blob (not FileBackedBlob) — always complete, no file backing
+		assert.equal(await isBlobComplete(new Blob(['hello'])), true, 'native Blob → true');
+
+		// unsaved FileBackedBlob (no fileId yet) — can't be complete
+		const freshBlob = createBlob(Buffer.from('hello'));
+		assert.equal(await isBlobComplete(freshBlob), false, 'unsaved blob (no fileId) → false');
+
+		// fully saved blob — file present, header matches size
+		const savedBlob = await createBlob(randomBytes(20000)); // > FILE_STORAGE_THRESHOLD → file-backed
+		await decodeFromDatabase(() => saveBlob(savedBlob).saving, BlobTest.primaryStore.rootStore);
+		assert.equal(await isBlobComplete(savedBlob), true, 'saved blob → true');
+
+		// truncated file — header records the original size but the file body is short, so the
+		// size check (header size === fileSize - HEADER_SIZE) fails
+		const truncatedBlob = await createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(truncatedBlob).saving, BlobTest.primaryStore.rootStore);
+		const truncatedPath = getFilePathForBlob(truncatedBlob);
+		const truncatedFullSize = statSync(truncatedPath).size;
+		truncateSync(truncatedPath, truncatedFullSize - 100); // drop 100 body bytes, header still claims the full size
+		assert.equal(await isBlobComplete(truncatedBlob), false, 'truncated blob (size mismatch) → false');
+		unlinkSync(truncatedPath);
+
+		// error-stub file — an 8-byte header whose top 16 bits are the ERROR_TYPE marker (0xff),
+		// written when a save failed; isBlobFileComplete treats it as incomplete
+		const errorBlob = await createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(errorBlob).saving, BlobTest.primaryStore.rootStore);
+		const errorPath = getFilePathForBlob(errorBlob);
+		const errorHeader = Buffer.alloc(8);
+		errorHeader.writeBigUInt64BE(0xffn << 48n); // ERROR_TYPE in the high 16 bits
+		writeFileSync(errorPath, errorHeader);
+		assert.equal(await isBlobComplete(errorBlob), false, 'error-stub blob (ERROR_TYPE header) → false');
+		unlinkSync(errorPath);
+
+		// delete the file to simulate ENOENT (missing blob)
+		const blobPath = getFilePathForBlob(savedBlob);
+		unlinkSync(blobPath);
+		assert.equal(await isBlobComplete(savedBlob), false, 'missing blob file (ENOENT) → false');
+	});
+	it('isBlobComplete: compressed (DEFLATE) blob — complete when fully saved, false when truncated', async () => {
+		// A compressed blob stores the *uncompressed* length in its header, but the on-disk body is
+		// the (smaller) compressed stream. The naive `header size === fileSize - HEADER_SIZE` check
+		// therefore wrongly reports a correctly-saved compressed blob as incomplete (Codex finding on
+		// harper#1387). Use highly compressible content so the compressed body is clearly shorter than
+		// the uncompressed size — otherwise the bug wouldn't even be observable.
+		const compressiblePayload = Buffer.alloc(20000, 'a'); // > FILE_STORAGE_THRESHOLD and very compressible
+		const compressedBlob = await createBlob(compressiblePayload, { compress: true });
+		await decodeFromDatabase(() => saveBlob(compressedBlob).saving, BlobTest.primaryStore.rootStore);
+		const compressedPath = getFilePathForBlob(compressedBlob);
+		// sanity: the on-disk body really is shorter than the uncompressed payload, so a body-length
+		// comparison against the header (uncompressed) size would fail
+		assert(
+			statSync(compressedPath).size - 8 < compressiblePayload.length,
+			'compressed body should be smaller than the uncompressed payload'
+		);
+		assert.equal(await isBlobComplete(compressedBlob), true, 'fully-saved compressed blob → true');
+
+		// truncating the compressed body breaks the deflate stream → inflate fails → incomplete
+		const fullSize = statSync(compressedPath).size;
+		truncateSync(compressedPath, fullSize - 20); // drop trailing compressed bytes
+		assert.equal(await isBlobComplete(compressedBlob), false, 'truncated compressed blob → false');
+		unlinkSync(compressedPath);
+	});
+	it('findIncompleteBlobRefs: yields records with missing blobs, skips complete ones', async () => {
+		// record 901: blob saved normally — must NOT appear in the sweep
+		const completeBlob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 901, blob: completeBlob });
+
+		// record 902: blob file deleted after save — must appear in the sweep
+		const gapBlob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 902, blob: gapBlob });
+		const gapPath = getFilePathForBlob(gapBlob);
+		unlinkSync(gapPath);
+
+		// record 903: no blob at all — the HAS_BLOBS metadata flag is never set, so the per-record
+		// gate (entry.metadataFlags & HAS_BLOBS) skips it and it is never yielded
+		await BlobTest.put({ id: 903 });
+
+		const foundIds = new Set();
+		for await (const ref of findIncompleteBlobRefs(getDatabases().test)) {
+			foundIds.add(ref.recordId);
+		}
+
+		assert(!foundIds.has(901), 'complete-blob record must not be yielded');
+		assert(foundIds.has(902), 'record with deleted blob file must be yielded');
+		assert(!foundIds.has(903), 'record without the HAS_BLOBS flag must not be yielded');
+
+		// cleanup: remove the complete blob file so cleanupOrphans stays clean
+		unlinkSync(getFilePathForBlob(completeBlob));
+	});
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);
 		assert.equal(orphansDeleted, 0);
+	});
+
+	// Helper: produce a blob backed ONLY by its on-disk file (no in-memory contentBuffer), the way a
+	// node reads a blob it didn't write itself — a fresh full-copy replica or a read after the record
+	// fell out of the in-memory cache. We save a blob to disk, encode it to its storage reference, then
+	// decode a fresh instance from that reference. The descriptor `size` rides along and is the
+	// authoritative value the read/send paths cross-validate against.
+	async function makeDiskBackedBlob(payloadSize = 20000) {
+		// Build the blob from a stream, so it is backed only by its on-disk file (no in-memory
+		// contentBuffer) — the way a node reads a blob it didn't write itself (full-copy replica, or a
+		// read after the record fell out of cache). saveBlob writes the file and records the size in both
+		// the header and the descriptor; the read/send paths cross-validate the two.
+		const store = BlobTest.primaryStore.rootStore;
+		const blob = await createBlob(Readable.from(randomBytes(payloadSize)), { size: payloadSize });
+		await decodeFromDatabase(() => saveBlob(blob).saving, store);
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath && existsSync(filePath), 'expected a file-backed blob');
+		assert.equal(blob.size, payloadSize);
+		return { blob, filePath, store };
+	}
+	// Rewrite the on-disk file to a self-consistent-but-smaller state: header says `newSize`, body is
+	// `newSize` bytes. The record descriptor still says the full size, so only a descriptor cross-check
+	// (not the header's internal consistency) catches it.
+	function truncateBlobConsistently(filePath, newSize) {
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, makeBlobHeader(newSize), 0, HEADER_SIZE, 0);
+			ftruncateSync(fd, HEADER_SIZE + newSize);
+		} finally {
+			closeSync(fd);
+		}
+	}
+
+	it('#1424: bytes() rejects a blob truncated to a self-consistent smaller size (T4)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		truncateBlobConsistently(filePath, 256);
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 500);
+			assert.match(error.message, /size mismatch/);
+			return true;
+		});
+	});
+	it('#1424: stream() rejects a blob truncated to a self-consistent smaller size (T4)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		truncateBlobConsistently(filePath, 256);
+		await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+			assert.equal(error.statusCode, 500);
+			return true;
+		});
+	});
+	it('#1424: replication-send does not emit a truncated blob as complete (T4)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		truncateBlobConsistently(filePath, 256);
+		// encodeBlobsAsBuffers returns a promise when a blob has to be re-read; the truncated read rejects
+		// rather than packing the short file as a complete blob (which would propagate via full copy).
+		await assert.rejects(Promise.resolve(encodeBlobsAsBuffers(() => pack({ blob }))), (error) => {
+			assert.equal(error.statusCode, 500);
+			return true;
+		});
+	});
+	it('#1424: replication-send preserves an error-state blob stub (does not reject)', async () => {
+		// An error-state stub (header type 0xff, header size = error-message length) is intentionally
+		// replicated as-is so the receiver keeps the error marker. The descriptor cross-check must skip it,
+		// even though the descriptor size (20000) differs from the stub's header size.
+		const { blob, filePath } = await makeDiskBackedBlob();
+		const message = Buffer.from('disk full while writing blob');
+		const fd = openSync(filePath, 'r+');
+		try {
+			const stub = Buffer.concat([makeBlobHeader(message.length, 0xff), message]);
+			writeSync(fd, stub, 0, stub.length, 0);
+			ftruncateSync(fd, stub.length);
+		} finally {
+			closeSync(fd);
+		}
+		const encoded = encodeBlobsAsBuffers(() => pack({ blob }));
+		const result = Buffer.isBuffer(encoded) ? encoded : await encoded;
+		assert(Buffer.isBuffer(result) && result.length > message.length, 'error stub should be packed, not rejected');
+	});
+	it('#1424: replication-send packs a slice against the full file (not mis-flagged as truncated)', async () => {
+		// A slice carries a reduced descriptor size that legitimately differs from the full on-disk header
+		// size; the descriptor cross-check must skip slices so a valid slice still replicates.
+		const { blob } = await makeDiskBackedBlob();
+		const sliced = blob.slice(0, 200);
+		const encoded = encodeBlobsAsBuffers(() => pack({ blob: sliced }));
+		const result = Buffer.isBuffer(encoded) ? encoded : await encoded;
+		assert(Buffer.isBuffer(result), 'a slice should pack without being rejected as incomplete');
+	});
+
+	// harper-pro#481: a blob write fed by a re-streamable external source (replication receive / origin
+	// fetch) that aborts mid-stream stamps the file with a PENDING_TYPE (0xfe) header. The bytes are
+	// still expected — the receiver holds a blob gap and re-streams on reconnect — so a downstream read
+	// must return 503 (retry), NOT 500 (confidently incomplete), which the peer would treat as permanent
+	// and advance its resume cursor past = silent loss. Distinct from an ERROR_TYPE (0xff) stub, which is
+	// a permanent error replicated as-is.
+	const PENDING_TYPE = 0xfe;
+	// Stamp a disk-backed blob's file with a PENDING stub the way the write-abort path does: an 8-byte
+	// header (type=PENDING_TYPE, size=message length) followed by the abort message. The record descriptor
+	// still records the full size, so descriptor cross-checks would mismatch — the PENDING type must be
+	// what routes the read to 503.
+	function writePendingStub(filePath) {
+		const message = Buffer.from('Blob source stream idle for 120000ms');
+		const stub = Buffer.concat([makeBlobHeader(message.length, PENDING_TYPE), message]);
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, stub, 0, stub.length, 0);
+			ftruncateSync(fd, stub.length);
+		} finally {
+			closeSync(fd);
+		}
+	}
+	it('#481: bytes() rejects a PENDING (half-replicated) blob with 503, not 500', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 503, 'a pending blob must read as retryable (503), not corrupt (500)');
+			return true;
+		});
+	});
+	it('#481: stream() rejects a PENDING (half-replicated) blob with 503, not 500', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+			assert.equal(error.statusCode, 503);
+			return true;
+		});
+	});
+	it('#481: isBlobComplete is false for a PENDING blob (repair sweep treats it as incomplete)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		assert.equal(await isBlobComplete(blob), false);
+	});
+	it('#481: replication-send does not pack a PENDING blob as complete (holds and retries)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		writePendingStub(filePath);
+		// Unlike an error stub (replicated as-is), a PENDING stub must not inline: the encode re-reads via
+		// blob.bytes(), which rejects 503, so the sender holds the gap rather than propagating the stub.
+		await assert.rejects(Promise.resolve(encodeBlobsAsBuffers(() => pack({ blob }))), (error) => {
+			assert.equal(error.statusCode, 503);
+			return true;
+		});
+	});
+	it('#481: a source-stream write that aborts leaves a PENDING (503) blob, not a 500 incomplete', async () => {
+		// Drive the real write-abort path: createBlob from a PassThrough armed with blobStreamIdleTimeoutMs
+		// the way the replication receive path arms its source (this is what the abort branch gates on, so an
+		// app-supplied one-shot stream is NOT mis-marked PENDING). Start the save, deliver a partial body, then
+		// destroy the source with an error. writeBlobWithStream's abort branch must stamp the file PENDING
+		// because the bytes are still expected.
+		const store = BlobTest.primaryStore.rootStore;
+		const source = new PassThrough();
+		source.blobStreamIdleTimeoutMs = 60000; // arm the source-idle watchdog (won't fire during the test)
+		const blob = await createBlob(source, { size: 20000 });
+		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
+		source.write(randomBytes(4000)); // a partial body lands before the abort
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		source.destroy(new Error('Blob source stream idle for 120000ms'));
+		await assert.rejects(Promise.resolve(saving), 'the aborted save rejects');
+		// the PENDING stub is written asynchronously in the abort callback; wait for the read to flip to 503
+		await waitFor(
+			async () => {
+				try {
+					await blob.bytes();
+					return false;
+				} catch (error) {
+					return error.statusCode === 503;
+				}
+			},
+			{ timeout: 2000, message: 'aborted source write should leave a PENDING (503) blob' }
+		);
+		unlinkSync(getFilePathForBlob(blob));
+	});
+	it('#481: an app-supplied (unarmed) source-stream abort is NOT marked PENDING (gate excludes one-shot streams)', async () => {
+		// Same abort shape, but the source is NOT armed with blobStreamIdleTimeoutMs — an ordinary app write,
+		// not a replication receive. The abort branch must NOT stamp it PENDING: nothing will ever re-stream
+		// those bytes, so a 503 (retry) read would hold forever (the #429 wedge). It stays the prior behavior.
+		const store = BlobTest.primaryStore.rootStore;
+		const source = new PassThrough();
+		const blob = await createBlob(source, { size: 20000 });
+		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
+		source.write(randomBytes(4000));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		source.destroy(new Error('connection reset'));
+		await assert.rejects(Promise.resolve(saving));
+		await new Promise((resolve) => setTimeout(resolve, 50)); // let any async abort-path write land
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.notEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
+			return true;
+		});
+		const filePath = getFilePathForBlob(blob);
+		if (existsSync(filePath)) unlinkSync(filePath);
+	});
+	it('#1424: bytes() rejects a file corrupted below the header rather than returning garbage (T3)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		// overwrite with fewer than HEADER_SIZE bytes, with byte[1] = DEFLATE_TYPE — the case that
+		// previously decompressed an empty body into ~8 garbage bytes returned as valid content.
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, Buffer.from([0, 1, 0]), 0, 3, 0);
+			ftruncateSync(fd, 3);
+		} finally {
+			closeSync(fd);
+		}
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 500);
+			return true;
+		});
+	});
+	it('#1423: reading a cleanly-missing blob file returns a prompt 404 (with an ENOENT code for old consumers)', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		unlinkSync(filePath);
+		// The 404 also carries `code: 'ENOENT'` so a consumer that only understands `error.code` — e.g. an
+		// older replication receiver predating the statusCode taxonomy — still classifies a missing source
+		// blob as a permanent absence and advances its resume cursor (harper-pro#403/#405) instead of wedging.
+		await assert.rejects(blob.bytes(), (error) => {
+			assert.equal(error.statusCode, 404);
+			assert.equal(error.code, 'ENOENT');
+			return true;
+		});
+		await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+			assert.equal(error.statusCode, 404);
+			assert.equal(error.code, 'ENOENT');
+			return true;
+		});
+	});
+	it('#1423: a missing file with an in-progress writer times out as 503 instead of hanging', async () => {
+		const { blob, filePath, store } = await makeDiskBackedBlob();
+		const lockKey = getFileId(blob) + ':blob';
+		assert(store.tryLock(lockKey), 'should be able to take the blob write lock for the test');
+		try {
+			unlinkSync(filePath); // file gone while a "writer" still holds the lock
+			// Set as a string, the way an env-var config override arrives: getBlobReadTimeout must coerce it
+			// to a number, or `Date.now() + '150'` would concatenate into a far-future deadline (the timeout
+			// would never fire). Pre-coercion this assertion would hang instead of rejecting promptly.
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+			const started = Date.now();
+			await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+				assert.equal(error.statusCode, 503);
+				return true;
+			});
+			assert(Date.now() - started < 5000, 'read should fail promptly, not hang');
+		} finally {
+			store.unlock(lockKey);
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+		}
+	});
+	it('#1454: a present-but-truncated blob with a writer still holding the lock fails 503 instead of spinning forever', async () => {
+		// The prod-dyn/prod-gar CPU storm: a blob file is present, its header records the full descriptor
+		// size (so the #1424 cross-check passes), but the body was never fully written — and the writer's
+		// lock still reads as held (a live replication write stalled on a wedged source stream, so it never
+		// reached unlock(); the lock is in-process and freed on unlock()/handle close, so a *dead* writer
+		// can't cause this — only a stalled live one). The reader
+		// catches up to the short body, sees `size > totalContentRead`, and — because the header size is
+		// "known" — resumeIfWriterFinished() re-entered readMore() with no backoff and no deadline,
+		// busy-spinning the worker at ~100% CPU. Pre-fix this read never resolves and this test hangs.
+		const { blob, filePath, store } = await makeDiskBackedBlob();
+		const lockKey = getFileId(blob) + ':blob';
+		assert(store.tryLock(lockKey), 'should be able to take the blob write lock for the test');
+		try {
+			// Cut the body short but leave the header (full size, == descriptor) intact — the case the
+			// #1424 descriptor cross-check cannot catch, distinct from truncateBlobConsistently above.
+			const fd = openSync(filePath, 'r+');
+			try {
+				ftruncateSync(fd, HEADER_SIZE + 256);
+			} finally {
+				closeSync(fd);
+			}
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+			const started = Date.now();
+			await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+				assert.equal(error.statusCode, 503);
+				return true;
+			});
+			assert(Date.now() - started < 5000, 'read should fail promptly, not spin');
+		} finally {
+			store.unlock(lockKey);
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+		}
 	});
 	afterEach(function () {
 		setAuditRetention(60000);
@@ -512,6 +1060,203 @@ describe('Blob test', () => {
 		setDeletionDelay(500); // restore original
 	});
 });
+
+describe('saveBlob with idle source stream (replication wedge regression)', () => {
+	let WedgeTable;
+	let savedIdleTimeoutEnv;
+	before(function () {
+		setupTestDBPath();
+		// Enable the source-stream idle timeout for these tests so the wedge case has a finite
+		// settle deadline. The value must be short enough that the 'never-ended' test settles
+		// inside its 3s wait.
+		savedIdleTimeoutEnv = process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
+		process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS = '1500';
+		WedgeTable = table({
+			table: 'WedgeTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	after(function () {
+		if (savedIdleTimeoutEnv === undefined) delete process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
+		else process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS = savedIdleTimeoutEnv;
+	});
+
+	it('settles saveBlob.saving when the source PassThrough was destroyed before save started', async () => {
+		// Mirrors the replication-receive race: the BLOB_CHUNK handler creates a PassThrough in
+		// blobsInFlight; a later chunk with `finished:true, error:"..."` calls stream.destroy(err).
+		// When the audit entry then arrives, receiveBlobs retrieves the destroyed stream and
+		// saveBlob's pipeline runs over an already-destroyed source. Without the idle watchdog,
+		// pipeline() may not observe the destroy, saveBlob.saving never settles, and the per-
+		// (sender, receiver, database) replication tuple wedges at status "Receiving".
+		const stream = new PassThrough();
+		stream.on('error', () => {}); // suppress 'unhandled error' from the manual destroy
+		stream.destroy(new Error('Blob error: simulated upstream tear-down'));
+		const blob = await createBlob(stream);
+		const info = decodeFromDatabase(() => saveBlob(blob), WedgeTable.primaryStore.rootStore);
+
+		let state = 'pending';
+		// eslint-disable-next-line promise/catch-or-return
+		(info.saving ?? Promise.resolve())
+			.then(() => {
+				state = 'resolved';
+			})
+			.catch(() => {
+				state = 'rejected';
+			});
+
+		await delay(2000);
+		assert.notStrictEqual(
+			state,
+			'pending',
+			'saveBlob.saving never settled; in replication this wedges the per-database receive consumer indefinitely'
+		);
+	});
+
+	it('settles saveBlob.saving when the source stream has chunks but is never ended', async () => {
+		// Production scenario: a sender's BLOB_CHUNK frames arrive partial. Some content lands but
+		// the closing `finished:true` (or error) frame never does. The PassThrough sits idle:
+		// neither ended nor destroyed. Without the idle watchdog, pipeline waits forever and the
+		// tracked saveBlob.saving promise pins outstandingBlobsToFinish, stalling the apply
+		// consumer's drain await with no log signature.
+		const stream = new PassThrough();
+		stream.write(Buffer.from('chunk-but-no-finish'));
+		// NO destroy, NO end: prod-observed state of an abandoned blob stream.
+
+		const blob = await createBlob(stream);
+		const info = decodeFromDatabase(() => saveBlob(blob), WedgeTable.primaryStore.rootStore);
+
+		let state = 'pending';
+		// eslint-disable-next-line promise/catch-or-return
+		(info.saving ?? Promise.resolve())
+			.then(() => {
+				state = 'resolved';
+			})
+			.catch(() => {
+				state = 'rejected';
+			});
+
+		await delay(3000);
+		assert.notStrictEqual(
+			state,
+			'pending',
+			'saveBlob.saving did not settle within 3s for an idle source stream; pipeline waits forever and wedges the per-database replication apply consumer (production: lastReceivedStatus stuck on "Receiving")'
+		);
+	});
+
+	it('settles when a mid-stream chunk arrives, then a destroy, then no further chunks', async () => {
+		// More faithful repro of the receive path: PassThrough is created in blobsInFlight, some
+		// chunks arrive, the stream is destroyed (e.g. by a sender-side error frame), then
+		// saveBlob is started by the audit-record receive. No further chunks ever land. In the
+		// production receiver this leaves pipeline() waiting on a torn-down source that never
+		// ends nor errors from this side, holding outstandingBlobsToFinish forever.
+		const stream = new PassThrough();
+		stream.on('error', () => {});
+
+		stream.write(Buffer.from('partial-blob-payload-'));
+		stream.destroy(new Error('Blob error: simulated tear-down mid-stream'));
+
+		const blob = await createBlob(stream);
+		const info = decodeFromDatabase(() => saveBlob(blob), WedgeTable.primaryStore.rootStore);
+
+		let state = 'pending';
+		// eslint-disable-next-line promise/catch-or-return
+		(info.saving ?? Promise.resolve())
+			.then(() => {
+				state = 'resolved';
+			})
+			.catch(() => {
+				state = 'rejected';
+			});
+
+		await delay(3000);
+		assert.notStrictEqual(
+			state,
+			'pending',
+			'saveBlob.saving never settled with a partially-written-then-destroyed source: replication wedge'
+		);
+	});
+});
+
+describe('saveBlob source-idle watchdog is opt-in (off by default, per-stream arm)', () => {
+	let OptInTable;
+	let savedIdleTimeoutEnv;
+	before(function () {
+		setupTestDBPath();
+		// Deliberately NO HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS: the watchdog must be OFF unless the owning
+		// caller arms the specific source. writeBlobWithStream is the generic primitive for every blob
+		// write (HTTP upload, origin-fetch cache fill, replication receive); bounding a source is the
+		// caller's job, not the primitive's. (The process-wide env override is exercised in the block above.)
+		savedIdleTimeoutEnv = process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
+		delete process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
+		OptInTable = table({
+			table: 'OptInTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	after(function () {
+		if (savedIdleTimeoutEnv === undefined) delete process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
+		else process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS = savedIdleTimeoutEnv;
+	});
+
+	it('does NOT destroy an unarmed idle source (a slow non-replication write is left alone)', async () => {
+		const stream = new PassThrough();
+		stream.write(Buffer.from('slow-source-no-arm')); // chunk lands, never ended, never armed
+		const blob = await createBlob(stream);
+		const info = decodeFromDatabase(() => saveBlob(blob), OptInTable.primaryStore.rootStore);
+		let state = 'pending';
+		// eslint-disable-next-line promise/catch-or-return
+		(info.saving ?? Promise.resolve()).then(() => (state = 'resolved')).catch(() => (state = 'rejected'));
+		await delay(1500);
+		assert.strictEqual(state, 'pending', 'an unarmed idle source must NOT be force-destroyed by the watchdog');
+		stream.destroy(); // clean up the deliberately-stuck write so the blob lock is released
+		await delay(50);
+	});
+
+	it('settles when the owning caller arms the source via stream.blobStreamIdleTimeoutMs', async () => {
+		// How the replication receive path opts in: it sets this on its PassThrough; other callers stay off.
+		const stream = new PassThrough();
+		stream.blobStreamIdleTimeoutMs = 800;
+		stream.on('error', () => {});
+		stream.write(Buffer.from('armed-but-never-finished')); // chunk lands, then idle, never ended
+		const blob = await createBlob(stream);
+		const info = decodeFromDatabase(() => saveBlob(blob), OptInTable.primaryStore.rootStore);
+		let state = 'pending';
+		// eslint-disable-next-line promise/catch-or-return
+		(info.saving ?? Promise.resolve()).then(() => (state = 'resolved')).catch(() => (state = 'rejected'));
+		await delay(2500);
+		assert.notStrictEqual(state, 'pending', 'an armed idle source should be destroyed within its timeout and settle');
+	});
+});
+
+describe('shouldDestroyIdleBlobSource (paused-source progress gate)', () => {
+	it('destroys a non-paused idle source regardless of bytes (true source idle: no data, no end)', () => {
+		assert.strictEqual(shouldDestroyIdleBlobSource(false, 100, 100), true);
+		assert.strictEqual(shouldDestroyIdleBlobSource(false, 200, 100), true);
+		assert.strictEqual(shouldDestroyIdleBlobSource(false, 0, 0), true);
+	});
+
+	it('leaves a paused source alone while the destination is still draining (slow-but-live writeStream)', () => {
+		// bytesWritten advanced since the last arm → real progress → re-arm, do not destroy.
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 4096, 1024), false);
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 1025, 1024), false);
+	});
+
+	it('destroys a paused source that made zero downstream progress over the interval (genuine wedge)', () => {
+		// Paused on backpressure but the writeStream never advanced for the whole timeout: the disk-write
+		// pipeline that never drains — the 19h prerender blob-replication wedge. Must be torn down.
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 1024, 1024), true);
+		assert.strictEqual(shouldDestroyIdleBlobSource(true, 0, 0), true);
+	});
+});
+
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms)); // wait for audit log removal and deletion
 }

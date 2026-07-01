@@ -5,6 +5,9 @@ const {
 	composeSignal,
 	assignFiniteTokenCount,
 	parseJsonResponse,
+	readBoundedJson,
+	MAX_RESPONSE_BODY_BYTES,
+	MAX_ERROR_BODY_BYTES,
 	requireModel,
 	requireCredential,
 	normalizeOrigin,
@@ -236,5 +239,84 @@ describe('backendHelpers', () => {
 				'http://localhost:11434'
 			);
 		});
+	});
+});
+
+// ---- finding 5a: bounded body reader -------------------------------------------
+
+/**
+ * Build a Response whose body is a ReadableStream that emits the given Uint8Array
+ * chunks in order. This exercises the streaming read path in readBoundedJson.
+ */
+function streamedResponse(chunks, { status = 200 } = {}) {
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const chunk of chunks) controller.enqueue(chunk);
+			controller.close();
+		},
+	});
+	return new Response(stream, { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+const enc = new TextEncoder();
+
+describe('readBoundedJson', () => {
+	it('parses a normal JSON body under the cap', async () => {
+		const res = streamedResponse([enc.encode(JSON.stringify({ value: 42 }))]);
+		const body = await readBoundedJson(res, '/test', FakeBackendError, MAX_RESPONSE_BODY_BYTES);
+		assert.deepStrictEqual(body, { value: 42 });
+	});
+
+	it('parses a body split across multiple chunks', async () => {
+		const payload = JSON.stringify({ hello: 'world' });
+		// Split at byte 4 to ensure multi-chunk merge works.
+		const a = enc.encode(payload.slice(0, 4));
+		const b = enc.encode(payload.slice(4));
+		const res = streamedResponse([a, b]);
+		const result = await readBoundedJson(res, '/api', FakeBackendError, MAX_RESPONSE_BODY_BYTES);
+		assert.deepStrictEqual(result, { hello: 'world' });
+	});
+
+	it('throws the backend error class when the body exceeds maxBytes', async () => {
+		// Build a body that is 3 bytes over a 10-byte cap.
+		const big = enc.encode('x'.repeat(13));
+		const res = streamedResponse([big]);
+		await assert.rejects(
+			() => readBoundedJson(res, '/big', FakeBackendError, 10),
+			(err) => {
+				assert.ok(err instanceof FakeBackendError);
+				assert.ok(err.message.includes('/big'), 'error should name the endpoint');
+				return true;
+			}
+		);
+	});
+
+	it('throws the backend error class on invalid JSON (not a raw SyntaxError)', async () => {
+		const res = streamedResponse([enc.encode('not-valid-json')]);
+		await assert.rejects(
+			() => readBoundedJson(res, '/parse', FakeBackendError, MAX_RESPONSE_BODY_BYTES),
+			(err) => {
+				assert.ok(err instanceof FakeBackendError);
+				return true;
+			}
+		);
+	});
+
+	it('throws the backend error class when the response has no body', async () => {
+		// Response with null body (e.g. HEAD response or server returning no content).
+		const res = new Response(null, { status: 200 });
+		await assert.rejects(
+			() => readBoundedJson(res, '/nobody', FakeBackendError, MAX_RESPONSE_BODY_BYTES),
+			FakeBackendError
+		);
+	});
+
+	it('parseJsonResponse uses the 256 MiB success-body cap', () => {
+		// Raised from 64 MiB to 256 MiB to accommodate large OpenAI embedding batch responses (125–190 MiB JSON).
+		assert.strictEqual(MAX_RESPONSE_BODY_BYTES, 256 * 1024 * 1024);
+	});
+
+	it('MAX_ERROR_BODY_BYTES is 256 KiB', () => {
+		assert.strictEqual(MAX_ERROR_BODY_BYTES, 256 * 1024);
 	});
 });

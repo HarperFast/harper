@@ -1,0 +1,13 @@
+type Product @table @export {
+	id: ID @primaryKey
+	category: String @indexed
+	price: Float
+	inStock: Boolean
+}
+
+type Attribute @table @export {
+	id: ID @primaryKey
+	productId: String @indexed
+	key: String @indexed
+	attrValue: String
+}

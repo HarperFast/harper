@@ -9,6 +9,10 @@ import { bypassAuth } from '#src/security/auth';
 import { bypassAuth as bypassAuthMQTT } from '#src/server/mqtt';
 import environmentManager from '#src/utility/environment/environmentManager';
 import { getDatabases } from '#src/resources/databases';
+import {
+	getNextAvailableLoopbackAddress,
+	releaseAllLoopbackAddressesForCurrentProcess,
+} from '@harperfast/integration-testing';
 const { setProperty } = environmentManager;
 const config = {};
 
@@ -17,6 +21,16 @@ const headers = {
 	'content-type': 'application/cbor',
 	'accept': 'application/cbor',
 };
+
+// Exported URL variables — updated by setupTestApp() before the server starts.
+// Test files should import these rather than hard-coding localhost URLs so that
+// concurrent agent runs each get their own isolated loopback address.
+export let baseUrl = 'http://localhost:9926';
+export let wsBaseUrl = 'ws://localhost:9926';
+export let operationsUrl = 'http://localhost:9925';
+export let mqttUrl = 'mqtt://localhost:1883';
+export let mqttsUrl = 'mqtts://localhost:8883';
+export let testHost = 'localhost';
 
 let seed = 0;
 export function random() {
@@ -67,9 +81,29 @@ export async function setupTestApp() {
 	// setupTestDBPath() has nothing to preserve and setUp() later can't find hdb_role.
 	getDatabases();
 	let path = setupTestDBPath();
+
+	if (!serverStarted) {
+		// Acquire a unique loopback address (127.0.0.x) for this process so
+		// concurrent test runs don't collide on the same ports.
+		const address = await getNextAvailableLoopbackAddress();
+		testHost = address;
+		baseUrl = `http://${address}:9926`;
+		wsBaseUrl = `ws://${address}:9926`;
+		operationsUrl = `http://${address}:9925`;
+		mqttUrl = `mqtt://${address}:1883`;
+		mqttsUrl = `mqtts://${address}:8883`;
+		// Expose host to CJS helpers (e.g. utility.js) that can't use ES live bindings.
+		process.env.HARPER_TEST_HOST = address;
+		process.env.HARPER_TEST_OPS_PORT = '9925';
+		process.on('beforeExit', () => releaseAllLoopbackAddressesForCurrentProcess().catch(() => {}));
+	}
+
 	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
+	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, `${testHost}:9925`);
 	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
-	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, 9926);
+	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, `${testHost}:9926`);
+	setProperty(hdbTerms.CONFIG_PARAMS.MQTT_NETWORK_PORT, `${testHost}:1883`);
+	setProperty(hdbTerms.CONFIG_PARAMS.MQTT_NETWORK_SECUREPORT, `${testHost}:8883`);
 	setProperty(hdbTerms.CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, true);
 	process.env.SCHEMAS_DATA_PATH = path;
 	// make it easy to see what is going on when unit testing
@@ -109,7 +143,7 @@ export async function setupTestApp() {
 				}
 			}
 
-			await axios.put('http://localhost:9926/VariedProps/' + object.id, encode(object), {
+			await axios.put(`${baseUrl}/VariedProps/` + object.id, encode(object), {
 				method: 'PUT',
 				responseType: 'arraybuffer',
 				headers,
@@ -127,14 +161,14 @@ export async function setupTestApp() {
 				birthday,
 				title: 'title' + i,
 			};
-			await axios.put('http://localhost:9926/FourProp/' + object.id, encode(object), {
+			await axios.put(`${baseUrl}/FourProp/` + object.id, encode(object), {
 				method: 'PUT',
 				responseType: 'arraybuffer',
 				headers,
 			});
 			if (i >= 10) {
 				// make sure deletion works properly for searches as well
-				await axios.delete('http://localhost:9926/FourProp/' + object.id);
+				await axios.delete(`${baseUrl}/FourProp/` + object.id);
 			}
 		}
 	} catch (error) {

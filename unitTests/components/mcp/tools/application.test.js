@@ -1,10 +1,14 @@
 const assert = require('node:assert/strict');
 const {
 	registerApplicationTools,
+	refreshApplicationTools,
 	_setResourcesForTest,
 	_setRequestTargetForTest,
+	_resetCustomToolWarningsForTest,
+	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const { listPrompts, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE_READ = {
@@ -70,13 +74,114 @@ class FakeRequestTarget {}
 describe('mcp/tools/application — registration', () => {
 	beforeEach(() => {
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setRequestTargetForTest(FakeRequestTarget);
 	});
 
 	afterEach(() => {
 		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
 		_setResourcesForTest(undefined);
 		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+	});
+
+	it('rebuilds the tool set when a table appears after initial registration (#1317)', () => {
+		// First pass: no exported tables yet (MCP loaded before the app's schema).
+		_setResourcesForTest(makeRegistry([]));
+		registerApplicationTools();
+		assert.equal(listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.length, 0);
+
+		// Table registers later, then a schema-change fires refreshApplicationTools.
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		refreshApplicationTools();
+		const names = listTools({ user: SUPER, profile: 'application', sessionId: 's2', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.ok(
+			names.some((n) => n === 'create_Product'),
+			`expected create_Product after refresh, got: ${names.join(', ')}`
+		);
+	});
+
+	it('restores the prior tool set when a rebuild throws mid-loop (#1320 review)', () => {
+		// First pass registers a healthy table.
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const before = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.length;
+		assert.ok(before > 0, 'baseline tools registered');
+
+		// Second pass includes a resource that throws during registration.
+		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
+		Object.defineProperty(Bad, 'description', {
+			get() {
+				throw new Error('boom registering bad table');
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad }]]));
+		assert.throws(() => refreshApplicationTools(), /boom registering bad table/);
+
+		// The registry must not be left empty: the prior Product tools are restored.
+		const after = listTools({ user: SUPER, profile: 'application', sessionId: 's2', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.ok(
+			after.some((n) => n === 'create_Product'),
+			`prior tools must survive a failed rebuild, got: ${after.join(', ')}`
+		);
+	});
+
+	it('restores prior prompts (not just tools) when a rebuild throws mid-loop (#1404 review)', () => {
+		// First pass registers a table that also publishes an author prompt (§3.5).
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		Product.mcpPrompts = [{ name: 'greeting', description: 'say hi', render: () => ({ messages: [] }) }];
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		assert.ok(
+			listPrompts('application').prompts.some((p) => p.name === 'greeting'),
+			'baseline prompt registered'
+		);
+
+		// Second pass throws mid-rebuild; the only resource present is the bad one,
+		// so without restore both tools AND prompts would be left cleared.
+		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
+		Object.defineProperty(Bad, 'description', {
+			get() {
+				throw new Error('boom registering bad table');
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad }]]));
+		assert.throws(() => refreshApplicationTools(), /boom registering bad table/);
+
+		// The catch must restore prompts as well as tools — locking the symmetry.
+		const names = listPrompts('application').prompts.map((p) => p.name);
+		assert.ok(names.includes('greeting'), `prior prompts must survive a failed rebuild, got: ${names.join(', ')}`);
+		const tools = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.ok(
+			tools.some((n) => n === 'create_Product'),
+			'prior tools also restored alongside prompts'
+		);
+	});
+
+	it('re-registration is idempotent — no duplicate tools', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const first = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 500 }).tools.length;
+		registerApplicationTools();
+		const second = listTools({ user: SUPER, profile: 'application', sessionId: 's2', limit: 500 }).tools.length;
+		assert.equal(second, first);
+	});
+
+	it('refreshApplicationTools is a no-op before the profile is registered', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', attributes: [{ name: 'id' }] });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		refreshApplicationTools(); // never registered → should not populate
+		assert.equal(listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.length, 0);
 	});
 
 	it('emits get_/search_/create_/update_/delete_ tools for a fully-implemented Resource', () => {
@@ -234,6 +339,34 @@ describe('mcp/tools/application — registration', () => {
 		assert.equal(getTool('search_Product').annotations?.readOnlyHint, true);
 		assert.equal(getTool('delete_Product').annotations?.destructiveHint, true);
 	});
+
+	it('advertises result-shaped outputSchema on all write verbs; omits it only on search_ (#1324)', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		// MCP spec: outputSchema describes structuredContent (an object). Every CRUD
+		// handler now returns an object envelope, so each advertises a matching
+		// schema. search_* envelope shape is deferred to a sibling issue.
+		assert.equal(getTool('search_Product').outputSchema, undefined, 'search_ must not advertise outputSchema');
+		assert.ok(getTool('get_Product').outputSchema, 'get_ advertises outputSchema');
+		assert.ok(getTool('create_Product').outputSchema, 'create_ advertises outputSchema');
+		assert.ok(getTool('update_Product').outputSchema, 'update_ advertises outputSchema');
+		// delete_ now advertises a { deleted: boolean } schema matching its handler.
+		const del = getTool('delete_Product');
+		assert.deepEqual(del.outputSchema?.required, ['deleted']);
+		assert.equal(del.outputSchema?.properties?.deleted?.type, 'boolean');
+	});
+
+	it('honors static outputSchemas.delete override when an author supplies a structured envelope', () => {
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+		Product.outputSchemas = {
+			delete: { type: 'object', properties: { deleted: { type: 'boolean' } }, required: ['deleted'] },
+		};
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const del = getTool('delete_Product');
+		assert.deepEqual(del.outputSchema, Product.outputSchemas.delete);
+	});
 });
 
 describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
@@ -287,6 +420,61 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		);
 		assert.deepEqual(captured, { productId: 'p1', limit: 2 });
 		assert.deepEqual(res.structuredContent, { results: ['a', 'b'] });
+	});
+
+	it('forwards the per-call MCP context (progress/signal/serverRequest) to the custom method (#1404)', async () => {
+		let received;
+		class Streamy {
+			async longJob(args, context) {
+				received = context;
+				context.progress?.({ progress: 1, total: 2 });
+				return { done: true };
+			}
+		}
+		Streamy.mcpTools = [{ name: 'long_job', method: 'longJob' }];
+		_setResourcesForTest(makeRegistry([['Streamy', { Resource: Streamy }]]));
+		registerApplicationTools();
+
+		const progress = () => {};
+		const serverRequest = async () => ({ ok: true });
+		const controller = new AbortController();
+		await getTool('long_job').handler(
+			{ n: 1 },
+			{
+				user: SUPER,
+				profile: 'application',
+				sessionId: 's',
+				signal: controller.signal,
+				progress,
+				serverRequest,
+			}
+		);
+		assert.ok(received, 'method received a second context argument');
+		assert.equal(received.progress, progress, 'progress fn forwarded');
+		assert.equal(received.serverRequest, serverRequest, 'serverRequest fn forwarded');
+		assert.equal(received.signal, controller.signal, 'AbortSignal forwarded');
+		assert.equal(received.user, SUPER);
+		assert.equal(received.profile, 'application');
+		assert.equal(received.sessionId, 's');
+	});
+
+	it('a custom method declaring only (args) still works — extra context arg ignored (back-compat)', async () => {
+		let captured;
+		class OldStyle {
+			async legacy(args) {
+				captured = args;
+				return { ok: true };
+			}
+		}
+		OldStyle.mcpTools = [{ name: 'legacy_tool', method: 'legacy' }];
+		_setResourcesForTest(makeRegistry([['OldStyle', { Resource: OldStyle }]]));
+		registerApplicationTools();
+		const res = await getTool('legacy_tool').handler(
+			{ a: 1 },
+			{ user: SUPER, profile: 'application', sessionId: 's', progress: () => {}, signal: new AbortController().signal }
+		);
+		assert.deepEqual(captured, { a: 1 });
+		assert.equal(res.isError, undefined);
 	});
 
 	it('handler errors from custom methods become isError=true', async () => {
@@ -358,6 +546,119 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		assert.ok(names.includes('get_Product'), 'verb tool still emitted');
 		assert.ok(names.includes('bulk_discount'), 'custom tool also emitted');
 	});
+
+	describe('warn-once on missing description / inputSchema', () => {
+		let warnCalls;
+		let originalWarn;
+		const harperLogger =
+			require('#src/utility/logging/harper_logger').default || require('#src/utility/logging/harper_logger');
+
+		beforeEach(() => {
+			_resetCustomToolWarningsForTest();
+			warnCalls = [];
+			originalWarn = harperLogger.warn;
+			harperLogger.warn = (msg) => {
+				warnCalls.push(msg);
+			};
+		});
+		afterEach(() => {
+			harperLogger.warn = originalWarn;
+		});
+
+		it('warns once when description is missing, then falls back to a generic description', () => {
+			class WithoutDesc {
+				async run() {
+					return {};
+				}
+			}
+			WithoutDesc.mcpTools = [{ name: 'silent_tool', method: 'run', inputSchema: { type: 'object' } }];
+			_setResourcesForTest(makeRegistry([['Sloppy', { Resource: WithoutDesc }]]));
+			registerApplicationTools();
+			const tool = getTool('silent_tool');
+			assert.match(tool.description, /Custom MCP tool exposed/, 'falls back to generic description');
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			assert.equal(descWarns.length, 1, 'warned exactly once on first registration');
+		});
+
+		it('warns once when inputSchema is missing, then falls back to permissive', () => {
+			class WithoutInput {
+				async run() {
+					return {};
+				}
+			}
+			WithoutInput.mcpTools = [{ name: 'shapeless_tool', method: 'run', description: 'x' }];
+			_setResourcesForTest(makeRegistry([['Sloppy', { Resource: WithoutInput }]]));
+			registerApplicationTools();
+			const tool = getTool('shapeless_tool');
+			assert.equal(tool.inputSchema.additionalProperties, true, 'falls back to permissive schema');
+			const inputWarns = warnCalls.filter((m) => m.includes('without an inputSchema'));
+			assert.equal(inputWarns.length, 1, 'warned exactly once on first registration');
+		});
+
+		it('does not re-warn on subsequent registerApplicationTools() calls for the same key', () => {
+			class WithoutBoth {
+				async run() {
+					return {};
+				}
+			}
+			WithoutBoth.mcpTools = [{ name: 'naked_tool', method: 'run' }];
+			_setResourcesForTest(makeRegistry([['Sloppy', { Resource: WithoutBoth }]]));
+			registerApplicationTools();
+			registerApplicationTools();
+			registerApplicationTools();
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			const inputWarns = warnCalls.filter((m) => m.includes('without an inputSchema'));
+			assert.equal(descWarns.length, 1, 'description warn fires once across re-registrations');
+			assert.equal(inputWarns.length, 1, 'inputSchema warn fires once across re-registrations');
+		});
+
+		it('warns separately per (path, tool-name) key', () => {
+			class A {
+				async r() {
+					return {};
+				}
+			}
+			A.mcpTools = [{ name: 'same_name', method: 'r' }];
+			class B {
+				async r() {
+					return {};
+				}
+			}
+			B.mcpTools = [{ name: 'same_name', method: 'r' }];
+			_setResourcesForTest(
+				makeRegistry([
+					['A', { Resource: A }],
+					['B', { Resource: B }],
+				])
+			);
+			registerApplicationTools();
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			// Note: addTool overwrites by name so only one tool survives, but both registrations warned distinctly.
+			assert.equal(descWarns.length, 2, 'each path warned independently');
+		});
+
+		it('does NOT warn when description and inputSchema are both present', () => {
+			class WellBehaved {
+				async run() {
+					return {};
+				}
+			}
+			WellBehaved.mcpTools = [
+				{
+					name: 'good_tool',
+					method: 'run',
+					description: 'Does the thing well.',
+					inputSchema: { type: 'object', properties: { x: { type: 'string' } } },
+				},
+			];
+			_setResourcesForTest(makeRegistry([['Tidy', { Resource: WellBehaved }]]));
+			registerApplicationTools();
+			const descWarns = warnCalls.filter((m) => m.includes('without a description'));
+			const inputWarns = warnCalls.filter((m) => m.includes('without an inputSchema'));
+			assert.equal(descWarns.length, 0);
+			assert.equal(inputWarns.length, 0);
+		});
+	});
 });
 
 describe('mcp/tools/application — leak invariants', () => {
@@ -422,6 +723,112 @@ describe('mcp/tools/application — handler dispatch', () => {
 		assert.deepEqual(res.structuredContent, { id: '42', name: 'widget' });
 	});
 
+	it('create_ marks the target as a collection so Resource.post routes to create (#1317)', async () => {
+		let captured;
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			staticHandlers: {
+				// Collection insert resolves to the new record's primary key (a scalar).
+				post: async (target, data) => {
+					captured = { isCollection: target.isCollection, data };
+					return 'new-1';
+				},
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('create_Product').handler(
+			{ name: 'widget' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(captured.isCollection, true, 'create target must be flagged as a collection');
+		assert.deepEqual(captured.data, { name: 'widget' });
+		assert.equal(res.isError, undefined);
+		// #1324: the scalar PK is wrapped as { id } so the result carries
+		// structuredContent matching create_'s outputSchema (strict SDK clients
+		// reject a bare scalar against a declared outputSchema with -32600).
+		assert.deepEqual(res.structuredContent, { id: 'new-1' });
+	});
+
+	it('create_ passes a structured Resource.post result through unchanged (#1324)', async () => {
+		// A custom Resource may return a full record/envelope (and advertise it via
+		// static outputSchemas.create); it must NOT be re-wrapped as { id }.
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			staticHandlers: {
+				post: async (_target, data) => ({ id: 'new-1', ...data }),
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('create_Product').handler(
+			{ name: 'widget' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { id: 'new-1', name: 'widget' });
+	});
+
+	it('delete_ returns a { deleted: boolean } envelope as structuredContent (#1324)', async () => {
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			verbs: ['delete'],
+			staticHandlers: {
+				// Table.delete resolves to a boolean.
+				delete: async () => true,
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('delete_Product').handler(
+			{ id: '42' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { deleted: true });
+	});
+
+	it('delete_ reports deleted:false when no record matched (#1324)', async () => {
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			verbs: ['delete'],
+			staticHandlers: {
+				delete: async () => false,
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('delete_Product').handler(
+			{ id: 'missing' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.deepEqual(res.structuredContent, { deleted: false });
+	});
+
+	it('delete_ passes a structured Resource.delete result through unchanged (#1324)', async () => {
+		// A custom Resource may return a structured delete envelope (and advertise it
+		// via static outputSchemas.delete); Boolean()-coercion must not flatten it.
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			verbs: ['delete'],
+			staticHandlers: {
+				delete: async () => ({ deleted: false, reason: 'not_found' }),
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('delete_Product').handler(
+			{ id: 'missing' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.deepEqual(res.structuredContent, { deleted: false, reason: 'not_found' });
+	});
+
 	it('search_ enforces limit cap, encodes nextCursor when more pages exist', async () => {
 		const rows = Array.from({ length: 21 }, (_, i) => ({ id: String(i) }));
 		const Product = makeTableResource({
@@ -469,21 +876,47 @@ describe('mcp/tools/application — handler dispatch', () => {
 			tableName: 'product',
 			verbs: ['put'],
 			staticHandlers: {
+				// Table.put resolves to undefined.
 				put: async (target, data) => {
 					captured = { id: target.id, data };
-					return { ok: true };
+					return undefined;
 				},
 			},
 		});
 		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
 		registerApplicationTools();
-		await getTool('update_Product').handler(
+		const res = await getTool('update_Product').handler(
 			{ id: '42', name: 'widget', price: 9.99 },
 			{ user: SUPER, profile: 'application', sessionId: 's' }
 		);
 		assert.equal(captured.id, '42');
 		assert.deepEqual(captured.data, { name: 'widget', price: 9.99 });
 		assert.equal('id' in captured.data, false, 'id is stripped from the data body');
+		// #1324: undefined put result surfaces as a { ok: true } ack carrying
+		// structuredContent that matches update_'s outputSchema.
+		assert.deepEqual(res.structuredContent, { ok: true });
+	});
+
+	it('update_ invokes the verb method bound to the Resource (this preserved) (#1324)', async () => {
+		// Regression: makeUpdateHandler must call ResourceClass.put *on* the class.
+		// A detached call (`const fn = ResourceClass.put; fn(...)`) loses `this`, and
+		// the real static Resource dispatcher then reads `this.directURLMapping` off
+		// undefined and throws. A `this`-less mock (the prior tests) can't catch this,
+		// so use a non-arrow handler that dereferences `this`.
+		let boundThis;
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', verbs: ['put'] });
+		Product.put = async function () {
+			boundThis = this.tableName; // detached call → `this` undefined → throws
+			return undefined;
+		};
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const res = await getTool('update_Product').handler(
+			{ id: '42', name: 'widget' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+		assert.equal(res.isError, undefined, `update must not error on a this-referencing handler: ${JSON.stringify(res)}`);
+		assert.equal(boundThis, 'product', 'put must be called with `this` bound to the Resource class');
 	});
 
 	it('handler exceptions surface as isError=true with kind=harper_error', async () => {

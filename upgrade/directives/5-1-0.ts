@@ -82,6 +82,7 @@ async function patchHdbDeploymentIsHashAttribute() {
 
 const directive510 = {
 	version: '5.1.0',
+	description: 'create system.hdb_deployment table for deployment tracking',
 	sync_functions: [] as Array<() => unknown>,
 	async_functions: [createHdbDeploymentIfMissing] as Array<() => Promise<unknown>>,
 };

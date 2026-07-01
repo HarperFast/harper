@@ -67,6 +67,25 @@ export class ServerError extends Error {
 }
 
 /**
+ * Thrown when a query targets an attribute whose secondary index is still being (re)built. It is a
+ * distinct, retryable 503 so callers can tell a transient "index rebuilding" condition apart from a
+ * permanent failure and retry, rather than mis-handling the generic 503 (e.g. as a "no result").
+ * See issue #1355.
+ */
+export class IndexRebuildingError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string) {
+		super(message, 503);
+		// Set name explicitly: ServerError/Error leave it as 'Error', so without this the stack
+		// trace, JSON serialization, and any caller keying on error.name would not identify it.
+		this.name = 'IndexRebuildingError';
+		this.code = 'INDEX_REBUILDING';
+		this.retryable = true;
+	}
+}
+
+/**
  * This handler method is used to effectively evaluate caught errors and either translates them into a custom HdbError or,
  * if it is already a HdbError, just returns the error to continue being thrown up the stack
  *

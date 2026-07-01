@@ -22,6 +22,7 @@ import { createApiClient } from './utils/client.mjs';
 const SCHEMA = 'dev';
 const ATTR_TEST_TABLE = 'create_attr_test';
 const DROP_ATTR_TABLE = 'AttributeDropTest';
+const SCHEMALESS_TABLE = 'MqttRetained';
 
 const TEST_ROLE = 'test_dev_role';
 const TEST_USER = 'test_user';
@@ -310,5 +311,78 @@ suite('Configuration', (ctx) => {
 			.send({ operation: 'drop_role', id: TEST_ROLE })
 			.expect((r) => assert.equal(r.body.message, `${TEST_ROLE} successfully deleted`, r.text))
 			.expect(200);
+	});
+
+	// ── schema-less table (no declared attributes) ───────────────────────────
+
+	test('create schema-less table with no declared attributes', async () => {
+		await client
+			.req()
+			.send({ operation: 'create_table', schema: SCHEMA, table: SCHEMALESS_TABLE, hash_attribute: 'id' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
+			.expect(200);
+	});
+
+	test('schema-less table accepts insert with arbitrary fields', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'insert',
+				schema: SCHEMA,
+				table: SCHEMALESS_TABLE,
+				records: [
+					{
+						id: '/sensors/temperature/room1',
+						payload: '{"temperature":22.5,"unit":"C"}',
+						qos: 1,
+						retained: true,
+						timestamp: 1699000000000,
+					},
+				],
+			})
+			.expect((r) => assert.equal(r.body.message, 'inserted 1 of 1 records', r.text))
+			.expect(200);
+	});
+
+	test('schema-less table stores and retrieves arbitrary fields', async () => {
+		const r = await client
+			.req()
+			.send({ operation: 'sql', sql: `SELECT * FROM ${SCHEMA}.${SCHEMALESS_TABLE}` })
+			.expect(200);
+		assert.ok(Array.isArray(r.body), r.text);
+		assert.equal(r.body.length, 1, r.text);
+		const record = r.body[0];
+		assert.equal(record.id, '/sensors/temperature/room1', r.text);
+		assert.equal(record.payload, '{"temperature":22.5,"unit":"C"}', r.text);
+		assert.equal(record.qos, 1, r.text);
+		assert.equal(record.retained, true, r.text);
+	});
+
+	test('schema-less table upsert overwrites retained message for same id', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'upsert',
+				schema: SCHEMA,
+				table: SCHEMALESS_TABLE,
+				records: [
+					{
+						id: '/sensors/temperature/room1',
+						payload: '{"temperature":23.0,"unit":"C"}',
+						qos: 1,
+						retained: true,
+						timestamp: 1699001000000,
+					},
+				],
+			})
+			.expect((r) => assert.ok(r.body.upserted_hashes?.length === 1, r.text))
+			.expect(200);
+
+		const r = await client
+			.req()
+			.send({ operation: 'sql', sql: `SELECT * FROM ${SCHEMA}.${SCHEMALESS_TABLE}` })
+			.expect(200);
+		assert.equal(r.body.length, 1, `expected 1 retained record after upsert\n${r.text}`);
+		assert.equal(r.body[0].payload, '{"temperature":23.0,"unit":"C"}', r.text);
 	});
 });

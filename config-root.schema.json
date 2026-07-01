@@ -294,6 +294,11 @@
 					"minimum": 1,
 					"description": "Time (ms) without socket activity before a replication connection is considered dead and terminated. Default: 2x pingInterval"
 				},
+				"replayTimeout": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Max total wall-clock time (ms) that crash-recovery transaction-log replay may run before it is aborted so the node can finish booting. Default: 600000 (10 minutes)."
+				},
 				"failOver": {
 					"type": "boolean",
 					"description": "Attempt fail-over to different node when unreachable. Default: true"
@@ -460,17 +465,36 @@
 					"description": "Max write queue time before rejecting (e.g. '45s')."
 				},
 				"noReadAhead": { "type": "boolean", "description": "Advise OS to not read ahead. Default: false" },
+				"randomAccessFields": {
+					"type": "boolean",
+					"description": "Encode records as typed random-access structures, optimizing for fast field access and smaller records. Best for tables with stable, homogeneous field types; wide or variably-typed schemas should leave this off. Applies to each primary table on open, so changing it switches encoding for tables that have not pinned the choice via the @table(randomAccessFields:) directive (safe at runtime: existing records still decode, only new writes change). Default: false"
+				},
 				"prefetchWrites": { "type": "boolean", "description": "Load data prior to write transactions. Default: true" },
 				"path": { "type": "string", "description": "Directory for all database files. Default: <rootPath>/database" },
 				"blobPaths": {
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
 					"description": "Path or array of paths for blob storage. Default: <rootPath>/blobs"
 				},
+				"blobReadTimeout": {
+					"type": "number",
+					"description": "Max time (ms) a blob read will wait for an in-progress write to finish before failing with a 503, rather than holding the connection. Default: 20000"
+				},
 				"pageSize": { "type": "number", "description": "Database page size (bytes). Default: OS default" },
 				"reclamation": {
 					"type": "object",
 					"description": "Reclamation process configuration.",
 					"additionalProperties": true
+				},
+				"transactionLog": {
+					"type": "object",
+					"description": "Transaction log configuration.",
+					"additionalProperties": true,
+					"properties": {
+						"coolingInterval": {
+							"type": ["string", "number"],
+							"description": "How often to advise mapped transaction-log pages cold (MADV_COLD) so the kernel reclaims them first under memory pressure (e.g. '30s'). Non-destructive; helps memory reclamation during replication catch-up. Set to 0 to disable. Default: '30s'"
+						}
+					}
 				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}

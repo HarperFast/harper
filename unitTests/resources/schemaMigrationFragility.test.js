@@ -382,6 +382,123 @@ describe('schema-migration fragility: stale `changed` reused after re-fetch unde
 	});
 });
 
+describe('schema-migration fragility: non-indexed attributes missing from table.attributes after resetDatabases() (RE-7)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 're7NonIndexedAttrs';
+	const TABLE = 'Pet';
+	const testRoot = path.resolve(__dirname, '../envDir/re7NonIndexedAttrs');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+
+		resetDatabases();
+		// Initial schema: only the primary key — simulates the main thread's stale view
+		// before a worker restart expands the schema.
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		// Simulate a worker restart writing the expanded schema to attributesDbi.
+		// table() updates BOTH in-memory Table.attributes AND attributesDbi, so after
+		// this call attributesDbi has all four attributes.
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'breed' }, { name: 'age' }],
+		});
+		// Re-create the stale main-thread state: reset in-memory Table.attributes back to
+		// [id] only, while attributesDbi still has all four.  This is exactly the mismatch
+		// that exists on the main thread after a worker restarts and writes a new schema —
+		// the main thread's Table.attributes hasn't been updated yet.
+		const staleTable = getDatabases()[DB]?.[TABLE];
+		staleTable.attributes.splice(0, staleTable.attributes.length, { name: 'id', isPrimaryKey: true });
+		// Simulate the ITC schema-change handler calling resetDatabases() in the main thread
+		// (the path that describe_database goes through).  Without the fix, initStores()
+		// only re-syncs indexed/pk attributes and the non-indexed fields stay missing.
+		resetDatabases();
+	});
+
+	after(async () => {
+		await fs.remove(testRoot);
+	});
+
+	it('table.attributes includes all non-indexed fields after resetDatabases()', () => {
+		const tbl = getDatabases()[DB]?.[TABLE];
+		assert.ok(tbl, `${DB}.${TABLE} should be registered after resetDatabases()`);
+		const attrNames = tbl.attributes.map((a) => a.name);
+		assert.ok(attrNames.includes('name'), `expected "name" in attributes, got: ${attrNames}`);
+		assert.ok(attrNames.includes('breed'), `expected "breed" in attributes, got: ${attrNames}`);
+		assert.ok(attrNames.includes('age'), `expected "age" in attributes, got: ${attrNames}`);
+	});
+
+	it('removes non-indexed attributes dropped from the schema after resetDatabases()', () => {
+		// Simulate schema shrinking (field removal), then another resetDatabases().
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		// table() updates in-memory Table.attributes directly (databases.ts:997), so after the
+		// call above the in-memory state is already [id, name].  Re-create the stale main-thread
+		// view — still holding the old [id, name, breed, age] — so that the removal loop in
+		// initStores() actually needs to drop breed and age.  Two adjacent removals (breed AND
+		// age) also guard against a regression of the splice-while-iterating bug: splicing the
+		// array being iterated by `for...of` skipped the next element, so the loop must collect
+		// removals first and apply them after the iteration.
+		const tblForRemoval = getDatabases()[DB]?.[TABLE];
+		tblForRemoval.attributes.splice(
+			0,
+			tblForRemoval.attributes.length,
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'name' },
+			{ name: 'breed' },
+			{ name: 'age' }
+		);
+		resetDatabases();
+		const tbl = getDatabases()[DB]?.[TABLE];
+		const attrNames = tbl.attributes.map((a) => a.name);
+		assert.ok(attrNames.includes('name'), `expected "name" in attributes`);
+		assert.ok(!attrNames.includes('breed'), `"breed" should be removed, got: ${attrNames}`);
+		assert.ok(!attrNames.includes('age'), `"age" should be removed, got: ${attrNames}`);
+	});
+
+	it('preserves runtime-only relationship attributes across resetDatabases()', () => {
+		// Relationship attrs are runtime-only — table()'s persistence loop skips them
+		// (databases.ts:1138, `if (attribute.relationship) continue`), so they are present in
+		// table.attributes but never written to attributesDbi.  After resetDatabases(),
+		// initStores() rebuilds `attributes` from attributesDbi only — so the relationship attr
+		// won't appear there.  The removal loop must not drop it; otherwise updatedAttributes()
+		// would strip the resolver/search support and downstream GraphQL nested queries return
+		// undefined (the integration symptom: graphql-querying-test "handles query by nested
+		// attribute" assertions).
+		table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		const tblWithRel = getDatabases()[DB]?.[TABLE];
+		// Inject a runtime-only relationship attribute, mirroring what graphql.ts does after
+		// parsing a `@relationship` directive — these never round-trip through attributesDbi.
+		tblWithRel.attributes.push({ name: 'related', relationship: { from: 'relatedId' } });
+		resetDatabases();
+		const tbl = getDatabases()[DB]?.[TABLE];
+		const attrNames = tbl.attributes.map((a) => a.name);
+		assert.ok(
+			attrNames.includes('related'),
+			`relationship attribute "related" should survive resetDatabases() but was dropped — got: ${attrNames}`
+		);
+	});
+});
+
 describe('schema-migration fragility: stale store reused after LMDB to RocksDB engine migration (F4)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 

@@ -291,6 +291,12 @@ const INVALIDATE = 4;
 const PATCH = 5;
 const RELOCATE = 6;
 const STRUCTURES = 7;
+// Whole-table "reload" marker: a control entry (no record) signalling that a table was bulk-reloaded
+// and subscribers should re-read it. Used after a copyApply base copy, whose per-row snapshot writes
+// carry no audit entry (harper-pro#489). The entry type lives in the low nibble of the action byte
+// (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, leaving 9–15 free for
+// future actions. Markers are always written LOCAL_ONLY so an unknown type never reaches a peer.
+const RELOAD = 8;
 export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
@@ -301,6 +307,16 @@ export const HAS_ORIGINATING_OPERATION = 2048;
 export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
 export const HAS_BLOBS = 0x2000;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x4000;
+/**
+ * Marks a record (and its audit entry) as local-only: it is persisted on this node but must
+ * never be forwarded to replication peers. The bit lives in the record metadata bitmap (and is
+ * mirrored into the audit entry's extendedType) so the replication send path can skip it by a
+ * bitmask test on the already-decoded metadataFlags/extendedType integer — without decoding the
+ * record value (a critical send-path throughput optimization). Bit 15 (0x8000) was confirmed
+ * unused across the record metadata bitmap and the audit extendedType space; it sits below the
+ * lower-byte action region (which extendedType forbids) and within the always-32-bit metadata form.
+ */
+export const LOCAL_ONLY = 0x8000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -316,6 +332,8 @@ const EVENT_TYPES = {
 	[RELOCATE]: 'relocate',
 	structures: STRUCTURES,
 	[STRUCTURES]: 'structures',
+	reload: RELOAD,
+	[RELOAD]: 'reload',
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
 };
@@ -522,7 +540,10 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const usernameEnd = (decoder.position += length);
 		let value: any;
 		return {
-			type: EVENT_TYPES[action & 7],
+			// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9–15
+			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
+			// identical to the historical `& 7` for every pre-reload entry (bit 3 was always clear).
+			type: EVENT_TYPES[action & 0xf],
 			tableId,
 			nodeId,
 			get recordId() {
@@ -563,7 +584,10 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (!value) {
 						value = decodeFromDatabase(
-							() => store.decoder.decode(buffer.subarray(decoder.position, end)),
+							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
+							// its own time), so skip the prefix heuristic — otherwise a classic record whose
+							// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
+							() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
 							store.rootStore
 						);
 					}

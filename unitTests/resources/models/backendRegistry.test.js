@@ -7,7 +7,10 @@ const {
 	resolveEmbedding,
 	resolveGenerative,
 	clearRegistry,
+	registerBackend,
+	defineBackend,
 	ModelBackendNotFoundError,
+	ModelBackendRegistrationError,
 } = require('#src/resources/models/backendRegistry');
 
 function fakeBackend(name) {
@@ -84,5 +87,69 @@ describe('backendRegistry', () => {
 			assert.ok(!err.message.includes('secret-backend-name'), 'error should not enumerate registered backend names');
 			assert.ok(err.message.includes('embedding.other'));
 		}
+	});
+});
+
+describe('registerBackend', () => {
+	const embedSpec = { embed: async () => ({ status: 'completed', output: [] }) };
+	const generateSpec = {
+		generate: async () => ({ status: 'completed', output: { content: '', finishReason: 'stop' } }),
+	};
+
+	beforeEach(() => clearRegistry());
+
+	it('registers and resolves an embedding backend by id', () => {
+		const backend = defineBackend({ name: 'local:e', ...embedSpec });
+		registerBackend('embedding', 'local:e', backend);
+		assert.strictEqual(resolveEmbedding('local:e'), backend);
+	});
+
+	it('registers and resolves a generative backend by id', () => {
+		const backend = defineBackend({ name: 'local:g', ...generateSpec });
+		registerBackend('generative', 'local:g', backend);
+		assert.strictEqual(resolveGenerative('local:g'), backend);
+	});
+
+	it('accepts a stream-only generative backend', () => {
+		const backend = defineBackend({ name: 'local:s', generateStream: async function* () {} });
+		registerBackend('generative', 'local:s', backend);
+		assert.strictEqual(resolveGenerative('local:s'), backend);
+	});
+
+	it('re-registering the same id replaces the prior backend', () => {
+		const a = defineBackend({ name: 'a', ...embedSpec });
+		const b = defineBackend({ name: 'b', ...embedSpec });
+		registerBackend('embedding', 'x', a);
+		registerBackend('embedding', 'x', b);
+		assert.strictEqual(resolveEmbedding('x'), b);
+	});
+
+	it('throws on an invalid kind', () => {
+		assert.throws(() => registerBackend('bogus', 'x', fakeBackend('k')), ModelBackendRegistrationError);
+	});
+
+	it('throws on an empty id', () => {
+		assert.throws(
+			() => registerBackend('embedding', '', defineBackend({ name: 'k', ...embedSpec })),
+			ModelBackendRegistrationError
+		);
+	});
+
+	it('throws when an embedding backend has no embed()', () => {
+		assert.throws(
+			() => registerBackend('embedding', 'x', defineBackend({ name: 'g-only', ...generateSpec })),
+			ModelBackendRegistrationError
+		);
+	});
+
+	it('throws when a generative backend has neither generate() nor generateStream()', () => {
+		assert.throws(
+			() => registerBackend('generative', 'x', defineBackend({ name: 'e-only', ...embedSpec })),
+			ModelBackendRegistrationError
+		);
+	});
+
+	it('throws when the backend lacks a name or capabilities()', () => {
+		assert.throws(() => registerBackend('embedding', 'x', { embed: async () => ({}) }), ModelBackendRegistrationError);
 	});
 });

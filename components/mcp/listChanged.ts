@@ -16,8 +16,14 @@
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { listResources } from './resources.ts';
-import { type RegisteredSession, forEachSessionByProfile, getRegisteredSession } from './sessionRegistry.ts';
+import {
+	type RegisteredSession,
+	forEachSessionByProfile,
+	getRegisteredSession,
+	pushSessionFrame,
+} from './sessionRegistry.ts';
 import { listTools, type AuthedUser } from './toolRegistry.ts';
+import { refreshApplicationTools } from './tools/application.ts';
 import type { McpProfile } from './transport.ts';
 
 const MAX_TOOLS_PAGE = 1000;
@@ -126,7 +132,7 @@ function maybeNotifyToolsChanged(record: RegisteredSession): void {
 		const current = toolsListNames(record.profile, record);
 		if (sameSet(record.lastTools, current)) return;
 		record.lastTools = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/tools/list_changed' },
 		});
@@ -140,13 +146,33 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 		const current = resourcesListUris(record.profile, record);
 		if (sameSet(record.lastResources, current)) return;
 		record.lastResources = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/resources/list_changed' },
 		});
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged resources/* for session ${record.sessionId}: ${(err as Error).message}`);
 	}
+}
+
+/**
+ * Push `notifications/prompts/list_changed` to every session on a profile.
+ * Prompts carry no per-user RBAC (they're generic templates, §3.5), so unlike
+ * tools/resources this is a flat per-profile fan-out rather than a per-session
+ * user-diff. Called by the application registration when the prompt set actually
+ * changes (added/removed) — not on every rebuild.
+ */
+export function notifyPromptsListChanged(profile: McpProfile): void {
+	forEachSessionByProfile(profile, (record) => {
+		try {
+			pushSessionFrame(record, {
+				event: 'message',
+				data: { jsonrpc: '2.0', method: 'notifications/prompts/list_changed' },
+			});
+		} catch (err) {
+			harperLogger.trace(`MCP listChanged prompts/* for session ${record.sessionId}: ${(err as Error).message}`);
+		}
+	});
 }
 
 /**
@@ -196,6 +222,19 @@ async function onUserChange(): Promise<void> {
  * grants).
  */
 async function onSchemaChange(): Promise<void> {
+	// Rebuild the application tool registry first so `tools/list` reflects the
+	// current schema graph (a table may have been added/removed after the MCP
+	// component loaded). No-op when the application profile isn't enabled.
+	// Guarded: a throw here (e.g. an unexpected Resource shape during schema
+	// iteration) must not abort the session-notification loops below.
+	try {
+		refreshApplicationTools();
+	} catch (err) {
+		// warn, not trace: a tool-rebuild failure leaves `tools/list` stale, which
+		// is invisible at default log levels if only traced. The notification loops
+		// below still run.
+		harperLogger.warn(`MCP listChanged refreshApplicationTools failed: ${(err as Error).message}`);
+	}
 	for (const r of snapshotSessions('application')) {
 		await refreshSessionUser(r);
 		maybeNotifyToolsChanged(r);

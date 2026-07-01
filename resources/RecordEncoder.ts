@@ -15,6 +15,7 @@ import {
 	HAS_BLOBS,
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
+	LOCAL_ONLY,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import './blob.ts';
@@ -34,6 +35,28 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+
+// Analytics counter incremented whenever a record cannot be decoded because its shared structure is
+// missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
+// monitoring; the store name is passed as the metric path.
+const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
+
+// Terminal error messages msgpackr/structon throw when a record references a shared structure that
+// is not in this node's structures buffer. Both the typed (random-access) path (structon's
+// readStruct) and the classic path (msgpackr's createSecondByteReader) reload the structures from
+// durable storage and retry before throwing, so reaching one of these means the structure is
+// genuinely absent on this node — not merely stale in memory. Matched by message prefix because
+// neither dependency throws a typed error.
+const MISSING_TYPED_STRUCTURE_PREFIX = 'Could not find typed structure ';
+const MISSING_CLASSIC_STRUCTURE_PREFIX = 'Record id is not defined for ';
+
+export function isMissingStructureError(error: any): boolean {
+	const message = error?.message;
+	return (
+		typeof message === 'string' &&
+		(message.startsWith(MISSING_TYPED_STRUCTURE_PREFIX) || message.startsWith(MISSING_CLASSIC_STRUCTURE_PREFIX))
+	);
+}
 export type Entry = {
 	key: any;
 	value: any;
@@ -94,8 +117,13 @@ export class RecordEncoder extends StructonEncoder {
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
+	useVersions: boolean;
 	constructor(options) {
 		options.useBigIntExtension = true;
+		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
+		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
+		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
+		options.maxOwnStructures ??= 256;
 		/**
 		 * The base class for records that provides the read-only methods for accessing
 		 * metadata and will be assigned computed property getters. On its own, these instances
@@ -113,6 +141,11 @@ export class RecordEncoder extends StructonEncoder {
 
 		options.structPrototype = RecordObject.prototype;
 		super(options);
+		// Whether this store carries per-record version/timestamp metadata. Only versioned stores
+		// (primary table DBIs) prefix records with the metadata header; non-versioned internal DBIs
+		// (e.g. __dbis__, useVersions=false) must not — see the encode hook + harper#1307. Default to
+		// true when unspecified so an option that doesn't propagate can't silently strip prefixes.
+		this.useVersions = options.useVersions !== false;
 		// structon (the StructonEncoder base) always installs the struct write hook. For DBIs
 		// that don't opt into struct mode (non-primary, e.g. __dbis__), force it to bail (return
 		// 0) so objects are written in plain msgpackr records mode — decodable by readers without
@@ -125,6 +158,17 @@ export class RecordEncoder extends StructonEncoder {
 		if (!options.randomAccessStructure) this._writeStruct = () => 0;
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
+			if (!this.useVersions) {
+				// harper#1307: this store does not carry version metadata, so it never prefixes its records.
+				// Encode plainly and LEAVE any in-flight *NextEncoding globals untouched for their real owner:
+				// they belong to a versioned write (recordUpdater staged the primary's metadata and a nested
+				// __dbis__ write — e.g. via getThisNodeId — runs before the primary encode; or they leaked from
+				// a versioned write whose encode was skipped). Consuming/clearing them here would strip the
+				// primary record's prefix, and prefixing OUR record (e.g. a __dbis__ `seq` cursor) makes it
+				// undecodable on the non-versioned read path (null → replication wedge).
+				lastValueEncoding = superEncode.call(this, record, options);
+				return lastValueEncoding;
+			}
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
 			// timestamp into the audit record, invalidation status and residency information
 			if (timestampNextEncoding || metadataInNextEncoding >= 0) {
@@ -222,7 +266,18 @@ export class RecordEncoder extends StructonEncoder {
 		const superGetStructures = this.getStructures;
 		this.saveStructures = function (structures, isCompatible): boolean | undefined {
 			if (this.isRocksDB) {
-				return this.rootStore.transactionSync(
+				// transactionSync returns the callback's value on commit, but returns `undefined`
+				// when the txn was aborted (it swallows ERR_ALREADY_ABORTED). The success path here
+				// returns an explicit `true`; anything else means the shared structures were NOT
+				// durably committed (a CAS conflict → `false`, or a swallowed abort → `undefined`).
+				//
+				// We must report a non-commit as `false` (not the buggy `undefined`, which msgpackr
+				// reads as success and then writes a record referencing a structure that was never
+				// saved → later "Record id is not defined" on decode). Returning `false` makes msgpackr
+				// re-pack; paired with the msgpackr fix that marks structures uninitialized on
+				// save-failure, the re-pack reloads the durable structures, rebuilds the transition
+				// trie, re-mints, and re-saves — so the record always references a persisted structure.
+				const committed = this.rootStore.transactionSync(
 					(txn) => {
 						const sharedStructuresKey = [Symbol.for('structures'), this.name];
 						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
@@ -235,10 +290,18 @@ export class RecordEncoder extends StructonEncoder {
 							return false;
 						}
 						txn.putSync(sharedStructuresKey, structures);
-						this.structureUpdate = structures;
+						return true;
 					},
 					{ retryOnBusy: true }
 				);
+				// Only record the structure update once the txn has actually committed. Setting it
+				// inside the callback would leave it dangling on an aborted txn and could flag a
+				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
+				if (committed === true) {
+					this.structureUpdate = structures;
+					return true;
+				}
+				return false;
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
@@ -262,7 +325,14 @@ export class RecordEncoder extends StructonEncoder {
 		let nextByte = buffer[start];
 		let metadataFlags = 0;
 		try {
-			if ((this.isRocksDB && nextByte === 66) || (nextByte < 32 && end > 2)) {
+			// The metadata/timestamp prefix is detected heuristically by the first byte. For rocksdb a
+			// local-timestamp prefix starts with 66 — but 66 (0x42) is also classic shared-structure
+			// record-id #2, so a timestamp-less classic record beginning with that id is misread as a
+			// timestamped record (8 bytes stripped → corrupt). Callers that pass a value known to have no
+			// prefix (e.g. the audit store's getValue) set options.noMetadata to skip the heuristic. Typed
+			// structs start at 0x20-0x3f and never hit this, which is why it only surfaces with classic
+			// structures (typed structures off).
+			if (!options?.noMetadata && ((this.isRocksDB && nextByte === 66) || (nextByte < 32 && end > 2))) {
 				// record with metadata
 				// this means that the record starts with a local timestamp (that was assigned by lmdb-js).
 				// we copy it so we can decode it as float-64; we need to do it first because if structural data
@@ -354,7 +424,29 @@ export class RecordEncoder extends StructonEncoder {
 			} // else a normal entry
 			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
-			harperLogger.error('Error decoding record', error, 'data: ' + buffer.slice(0, 40).toString('hex'));
+			const hexPreview = buffer.slice(0, 40).toString('hex');
+			if (isMissingStructureError(error)) {
+				// This record references a shared structure that is genuinely absent on this node — the
+				// dependency already reloaded from durable storage and retried before throwing (typically a
+				// replica that received the record but not the structure-buffer update; see
+				// HarperFast/harper#1163). We still return null so internal reads (e.g. the metadata/__dbis__
+				// scan during initialization) remain non-fatal, but surface the otherwise-silent condition
+				// distinctly — a dedicated warning plus an analytics counter — so the dropped record is
+				// detectable and alertable rather than laundered as legitimate emptiness into query results,
+				// caches, and downstream consumers.
+				// this.name is set on the RocksDB encoder; for LMDB fall back to the root store's name so
+				// the metric/warning still attribute the dropped record to a store.
+				const storeName = this.name ?? this.rootStore?.name;
+				recordAction(true, MISSING_STRUCTURE_METRIC, storeName);
+				harperLogger.warn(
+					'Record references a shared structure missing on this node; decoded as null (see HarperFast/harper#1163)',
+					error,
+					'store: ' + storeName,
+					'data: ' + hexPreview
+				);
+				return null;
+			}
+			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
 	}
@@ -563,6 +655,21 @@ export function setNextEncoding(timestamp: number, metadata: number, expiresAt =
 	nodeIdAtNextEncoding = nodeId;
 	residencyIdAtNextEncoding = residencyId;
 }
+/**
+ * Reset the module-level "next encoding" metadata to its no-metadata defaults. These globals are
+ * set just before a versioned encode and consumed (and reset) by the encode hook. If the consuming
+ * encode is skipped — e.g. a delete, whose record is never encoded — they would otherwise leak into
+ * the next encode on ANY store, including a non-versioned DBI (__dbis__) that then prefixes its
+ * record with another store's timestamp/nodeId and becomes undecodable. See harper#1307.
+ */
+export function clearNextEncoding() {
+	timestampNextEncoding = 0;
+	metadataInNextEncoding = -1;
+	expiresAtNextEncoding = -1;
+	nodeIdAtNextEncoding = -1;
+	residencyIdAtNextEncoding = 0;
+	additionalAuditRefsNextEncoding = undefined;
+}
 export function recordUpdater(store, tableId, auditStore) {
 	return function (
 		id,
@@ -576,6 +683,9 @@ export function recordUpdater(store, tableId, auditStore) {
 		resolveRecord?: boolean, // indicates that we are resolving (from source) record that was previously invalidated
 		auditRecord?: any
 	) {
+		// harper#1309: reset so a record===undefined call (delete/no-op) cannot carry stale bytes
+		// into the audit encodedRecord or write-size analytics of this call.
+		lastValueEncoding = undefined;
 		const isRocksDB = store instanceof RocksDatabase;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
@@ -632,6 +742,13 @@ export function recordUpdater(store, tableId, auditStore) {
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
 				extendedType |= HAS_ADDITIONAL_AUDIT_REFS_AUDIT;
+			}
+			if (options?.localOnly) {
+				// Mark this write as local-only: set the bit in BOTH the persisted record metadata
+				// (so the full-copy send loop, which reads entry.metadataFlags, skips it) AND the audit
+				// entry's extendedType (so the audit-forward send path skips it by bitmask without decode).
+				metadataInNextEncoding |= LOCAL_ONLY;
+				extendedType |= LOCAL_ONLY;
 			}
 			if (previousResidencyId !== residencyId) {
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;
@@ -748,6 +865,15 @@ export function recordUpdater(store, tableId, auditStore) {
 		} catch (error) {
 			error.message += ' id: ' + id + ' options: ' + putOptions;
 			throw error;
+		} finally {
+			// harper#1307: clear the metadata globals staged above so they cannot leak past this call
+			// into the next store's encode (notably a raw __dbis__ `seq`/residency write, which would
+			// then be prefixed and become undecodable). Unconditional is safe: a successful put encodes
+			// SYNCHRONOUSLY — rocksdb via putSync, and lmdb's put() also encodes inline at call time — so
+			// the encode hook already consumed and reset these globals before this finally runs, making
+			// the clear a no-op there. It only does work when no encode consumed them: a delete
+			// (record === undefined, never encoded) or a write that threw before its encode.
+			clearNextEncoding();
 		}
 	};
 }
@@ -756,11 +882,29 @@ export function setAdditionalAuditRefs(refs: Array<{ version: number; nodeId: nu
 }
 export function removeEntry(store: any, entry: any, options?: any) {
 	if (!entry) return;
+	const removal = store.remove(entry.key, options);
 	if (entry.value && entry.metadataFlags & HAS_BLOBS) {
-		// if it used to have blobs, we need to delete the old blobs
-		deleteBlobsInObject(entry.value);
+		// Delete the old blobs only once the removal commits. Scheduling the unlink up front
+		// (as before) orphaned the blob when the removal didn't actually land — an expiration
+		// scan whose transaction is force-committed without this delete, or an aborted/version-
+		// conflicted removal — leaving a record that references a now-missing blob and wedges
+		// replication on ENOENT. The removal promise resolves when the write commits (false on
+		// a conditional-version miss; rejects on abort), so gate the unlink on it. See #1364.
+		const deleteOldBlobs = () => deleteBlobsInObject(entry.value);
+		if (removal && typeof removal.then === 'function') {
+			// Swallow rejections (aborted removal) — leave the blob in place in that case.
+			removal.then(
+				(committed: any) => {
+					if (committed !== false) deleteOldBlobs();
+				},
+				() => {}
+			);
+		} else {
+			// Synchronous (already-durable) removal: delete immediately.
+			deleteOldBlobs();
+		}
 	}
-	return store.remove(entry.key, options);
+	return removal;
 }
 export interface RecordObject {
 	getUpdatedTime(): number;

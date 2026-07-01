@@ -3,52 +3,54 @@
 const assert = require('node:assert/strict');
 const rewire = require('rewire');
 const sinon = require('sinon');
+const fs = require('fs-extra');
+const YAML = require('yaml');
+// configUtils now imports these as ES modules; stub them on the shared module
+// objects (configUtils reads the same cached instances) instead of swapping the
+// bindings via rewire, which the TS-compiled output no longer exposes by name.
+const harperConfigEnvVars = require('#src/config/harperConfigEnvVars');
+const loggerModule = require('#src/utility/logging/harper_logger');
+const loggerObj = loggerModule.default || loggerModule;
 
-const configUtils = rewire('#js/config/configUtils');
+const configUtils = rewire('#src/config/configUtils');
 const applyRuntimeEnvVarConfig = configUtils.__get__('applyRuntimeEnvVarConfig');
 
 describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	let mockConfigDoc;
 	let applyRuntimeEnvConfigStub;
+	let hasPersistedEnvConfigStateStub;
 	let fsWriteFileSyncStub;
 	let fsRenameSyncStub;
 	let loggerStub;
 	let YAMLStub;
 
 	before(function () {
-		// Create stubs for dependencies
-		applyRuntimeEnvConfigStub = sinon.stub();
-		fsWriteFileSyncStub = sinon.stub();
-		fsRenameSyncStub = sinon.stub();
+		// Stub the dependencies on their shared module objects. configUtils calls
+		// harperConfigEnvVars.applyRuntimeEnvConfig / .hasPersistedEnvConfigState,
+		// fs.writeFileSync / .renameSync, the logger methods, and YAML.parse/stringify
+		// via these same cached modules, so stubbing here intercepts those calls.
+		applyRuntimeEnvConfigStub = sinon.stub(harperConfigEnvVars, 'applyRuntimeEnvConfig');
+		hasPersistedEnvConfigStateStub = sinon.stub(harperConfigEnvVars, 'hasPersistedEnvConfigState');
+		fsWriteFileSyncStub = sinon.stub(fs, 'writeFileSync');
+		fsRenameSyncStub = sinon.stub(fs, 'renameSync');
 		loggerStub = {
-			debug: sinon.stub(),
-			warn: sinon.stub(),
-			error: sinon.stub(),
+			debug: sinon.stub(loggerObj, 'debug'),
+			warn: sinon.stub(loggerObj, 'warn'),
+			error: sinon.stub(loggerObj, 'error'),
 		};
 
 		// Create default YAML stub
 		YAMLStub = {
-			parseDocument: sinon.stub().returns({ errors: [] }),
-			stringify: sinon.stub().returns('yaml: content'),
+			parseDocument: sinon.stub(YAML, 'parseDocument').returns({ errors: [] }),
+			stringify: sinon.stub(YAML, 'stringify').returns('yaml: content'),
 		};
-
-		// Inject stubs
-		configUtils.__set__('logger', loggerStub);
-		configUtils.__set__('fs', { writeFileSync: fsWriteFileSyncStub, renameSync: fsRenameSyncStub });
-		configUtils.__set__('YAML', YAMLStub);
-
-		// Mock harperConfigEnvVars module
-		configUtils.__set__('require', function (modulePath) {
-			if (modulePath.startsWith('./harperConfigEnvVars')) {
-				return { applyRuntimeEnvConfig: applyRuntimeEnvConfigStub };
-			}
-			return require(modulePath);
-		});
 	});
 
 	beforeEach(function () {
 		// Reset stubs
 		applyRuntimeEnvConfigStub.reset();
+		hasPersistedEnvConfigStateStub.reset();
+		hasPersistedEnvConfigStateStub.returns(false); // default: no prior state
 		fsWriteFileSyncStub.reset();
 		fsRenameSyncStub.reset();
 		loggerStub.debug.reset();
@@ -77,14 +79,31 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		sinon.restore();
 	});
 
-	it('should skip when no env vars set', function () {
+	it('should skip when no env vars set and no prior state', function () {
 		delete process.env.HARPER_DEFAULT_CONFIG;
+		delete process.env.HARPER_CONFIG;
 		delete process.env.HARPER_SET_CONFIG;
+		hasPersistedEnvConfigStateStub.returns(false);
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
 		assert.strictEqual(applyRuntimeEnvConfigStub.called, false);
 		assert.strictEqual(fsWriteFileSyncStub.called, false);
+	});
+
+	it('should run cleanup when no env vars set but prior state exists (var removed)', function () {
+		// All three vars were applied on a prior boot and then removed: the wrapper must NOT
+		// short-circuit — applyRuntimeEnvConfig has to restore originals and clear the snapshot.
+		delete process.env.HARPER_DEFAULT_CONFIG;
+		delete process.env.HARPER_CONFIG;
+		delete process.env.HARPER_SET_CONFIG;
+		hasPersistedEnvConfigStateStub.returns(true);
+
+		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
+
+		assert.strictEqual(applyRuntimeEnvConfigStub.called, true, 'cleanup must run when state exists');
+		assert.strictEqual(applyRuntimeEnvConfigStub.firstCall.args[1], '/test/root');
+		assert.strictEqual(fsWriteFileSyncStub.called, true);
 	});
 
 	it('should apply HARPER_DEFAULT_CONFIG when set', function () {

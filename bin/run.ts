@@ -16,7 +16,7 @@ import chalk from 'chalk';
 import { packageJson } from '../utility/packageUtils.js';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as installation from '../utility/installation.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 import assignCMDENVVariables from '../utility/assignCmdEnvVariables.ts';
 import * as upgrade from './upgrade.js';
 import { compactOnStart, migrateOnStart } from './copyDb.ts';
@@ -39,6 +39,8 @@ const UPGRADE_ERR = 'Got an error while trying to upgrade your Harper instance. 
 const HDB_NOT_FOUND_MSG = 'Harper not found, starting install process.';
 const INSTALL_ERR = 'There was an error during install. Exiting.';
 const HDB_STARTED = 'Harper successfully started.';
+const SAFE_MODE_MSG =
+	'Harper is running in safe mode (HARPER_SAFE_MODE); user applications and components will not be loaded.';
 
 function addUnhandleRejectionListener() {
 	process.on('unhandledRejection', (reason, promise) => {
@@ -198,6 +200,8 @@ async function main(calledByInstall = false) {
 			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
+
+		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
 
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_MIGRATEONSTART)) await migrateOnStart();

@@ -9,7 +9,7 @@ import {
 	rmSync,
 	symlinkSync,
 } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, sep } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -27,6 +27,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
+import { trackScopeClose } from './scopeShutdown.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -34,7 +35,7 @@ import { table } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { getConfigObj, getConfigPath } from '../config/configUtils.js';
+import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
@@ -68,6 +69,9 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const appEntry of cfFolders) {
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
+			// Skip hidden entries: component names are never dot-prefixed, and this keeps
+			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
+			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			cfsLoaded.push(
@@ -140,6 +144,18 @@ for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
 
 export const loadedPaths = new Map();
+
+// Tracks which components have already had `startOnMainThread` invoked, so it runs at most once
+// per component for the life of the process (the documented one-time main-thread init contract).
+// Keyed by stable component identity (name + resolved directory) rather than the module instance
+// (`loadedComponents`) or the per-pass `loadedPaths` map — a reload re-imports the module (new
+// instance) and `loadedPaths` is cleared on the reload path, so neither dedupes across reloads.
+// The stored value is the post-`startOnMainThread` module so a reload reuses the same wiring
+// (handleFile/handleDirectory, loadedComponents) without re-running main-thread init. See #460:
+// re-invoking `startOnMainThread` on every reload accumulated watchers/routes and re-ran
+// destructive one-time scans (e.g. the replicator's hdb_nodes subscription scan).
+export const mainThreadInitialized = new Map<string, any>();
+
 let errorReporter;
 export function setErrorReporter(reporter) {
 	errorReporter = reporter;
@@ -148,6 +164,17 @@ export function setErrorReporter(reporter) {
 let compName: string;
 export const getComponentName = () => compName;
 
+/**
+ * Symlink a component's `node_modules/harper` (and `harperdb`) to this running Harper install,
+ * rather than letting it resolve a separately-installed npm copy.
+ *
+ * This is what makes `import { tables } from 'harper'` (or `import 'harperdb'`) inside component
+ * code — including bundler-loaded code such as a Vite SSR entry — resolve to the SAME module
+ * instance Harper is running. That instance carries the live, process-wide exports
+ * (`tables`/`databases`/`Resource`/…) populated via `_assignPackageExport` (see ../globals.js and
+ * ../index.ts), so the import yields live data, not an empty separate copy. The link is verified on
+ * every non-root component load and repaired if missing or pointing elsewhere.
+ */
 function symlinkHarperModule(componentDirectory: string) {
 	return new Promise<void>((resolve, reject) => {
 		const store = Status.primaryStore;
@@ -335,7 +362,9 @@ export async function loadComponent(
 		// config's `models:` block before any user `handleApplication(scope)` runs,
 		// so `scope.models.embed(...)` works from app-init code as well as Resource
 		// methods. Per-entry errors are logged and skipped by `bootstrapModels`.
-		if (isRoot) bootstrapModels(config);
+		// Awaited so module-backed entries (#1471) finish importing before the
+		// per-component iteration below; built-in entries register synchronously.
+		if (isRoot) await bootstrapModels(config);
 
 		if (!isRoot) {
 			try {
@@ -383,10 +412,22 @@ export async function loadComponent(
 						componentPath = join(componentDirectory, 'components', componentName);
 					} else {
 						let containerFolder = componentDirectory;
+						const hdbBasePath = getHdbBasePath();
+						const componentInsideHdb =
+							componentDirectory === hdbBasePath || componentDirectory.startsWith(hdbBasePath + sep);
 						componentPath = join(containerFolder, 'node_modules', componentName);
 						while (!existsSync(componentPath)) {
-							containerFolder = dirname(containerFolder);
-							if (containerFolder.length < getHdbBasePath().length) {
+							const parentFolder = dirname(containerFolder);
+							if (parentFolder === containerFolder) {
+								componentPath = null;
+								break;
+							}
+							containerFolder = parentFolder;
+							if (
+								componentInsideHdb &&
+								containerFolder !== hdbBasePath &&
+								!containerFolder.startsWith(hdbBasePath + sep)
+							) {
 								componentPath = null;
 								break;
 							}
@@ -469,7 +510,9 @@ export async function loadComponent(
 						origin
 					);
 
-					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => scope.close());
+					// Track the close so the worker's shutdown path waits for it (and thus for any async
+					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
+					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 
@@ -495,15 +538,33 @@ export async function loadComponent(
 				}
 
 				if (isMainThread) {
-					extensionModule =
-						(await extensionModule.startOnMainThread?.({
-							server,
-							ensureTable,
-							port,
-							securePort,
-							resources,
-							...componentConfig,
-						})) || extensionModule;
+					// `startOnMainThread` is one-time main-thread init: run it at most once per component
+					// for the life of the process (first load / first deploy). On a reload of an
+					// already-initialized component, skip the call and reuse the previously-initialized
+					// module so downstream wiring (handleFile/handleDirectory, loadedComponents) is
+					// preserved without re-running main-thread setup. Only components that actually
+					// export `startOnMainThread` are gated — a component with only setup handlers has no
+					// one-time hook to dedupe and must keep picking up its freshly loaded module on
+					// reload. See #460.
+					if (typeof extensionModule.startOnMainThread === 'function') {
+						// Reuse the already-resolved realpath (line 308) instead of a second realpathSync —
+						// same value, avoids a redundant sync FS call (PR #1464 review).
+						const mainThreadKey = `${isRoot ? '' : basename(resolvedFolder)}/${componentName}@${resolvedFolder}`;
+						if (mainThreadInitialized.has(mainThreadKey)) {
+							extensionModule = mainThreadInitialized.get(mainThreadKey);
+						} else {
+							extensionModule =
+								(await extensionModule.startOnMainThread({
+									server,
+									ensureTable,
+									port,
+									securePort,
+									resources,
+									...componentConfig,
+								})) || extensionModule;
+							mainThreadInitialized.set(mainThreadKey, extensionModule);
+						}
+					}
 					if (isRoot && network) {
 						if (env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY))
 							harperLogger.warn('Session affinity is not supported and will be ignored');
@@ -555,13 +616,43 @@ export async function loadComponent(
 		compName = parentCompName;
 		if (isMainThread && !watchesSetup && autoReload) {
 			let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+			let restarting = false; // a reload cycle (loadComponentDirectories + restartWorkers) is in flight
+			let pending = false; // a request arrived while a cycle was running — run exactly one more afterward
+
+			// Run reload cycles strictly one at a time. Requests that arrive while a cycle is in flight are
+			// collapsed into a single follow-up cycle (not one per request), so a burst of changes — or a
+			// regenerate-on-reload loop — can't stack overlapping restarts. Overlapping restarts pile worker
+			// threads up and push them past the forced-termination grace, which crashes a worker that is
+			// mid-teardown of a native runtime (e.g. @harperfast/vite's rolldown dev server).
+			const runRestartCycle = async () => {
+				if (restarting) {
+					pending = true;
+					return;
+				}
+				restarting = true;
+				try {
+					do {
+						pending = false;
+						resetRestartNeeded();
+						// Per-cycle try/catch: a failed reload (e.g. a saved syntax error) must log and move on
+						// — not abort the loop and discard a pending follow-up, like the save that fixes it.
+						try {
+							await loadComponentDirectories();
+							await restartWorkers();
+						} catch (error) {
+							harperLogger.error('Error during component reload', error);
+						}
+					} while (pending); // a request landed mid-cycle → run once more, coalescing the rest
+				} finally {
+					restarting = false;
+				}
+			};
+
 			subscribeToRestartRequests(() => {
 				if (debounceTimer) clearTimeout(debounceTimer);
-				debounceTimer = setTimeout(async () => {
+				debounceTimer = setTimeout(() => {
 					debounceTimer = null;
-					resetRestartNeeded();
-					await loadComponentDirectories();
-					restartWorkers();
+					void runRestartCycle();
 				}, 500);
 			});
 		}

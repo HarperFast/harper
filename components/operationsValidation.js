@@ -6,7 +6,7 @@ const path = require('path');
 const validator = require('../validation/validationWrapper.ts');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const hdbLogger = require('../utility/logging/harper_logger.ts');
-const configUtils = require('../config/configUtils.js');
+const configUtils = require('../config/configUtils.ts');
 const { hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS } = hdbErrors;
 
@@ -241,7 +241,9 @@ function deployComponentValidator(req) {
 		install_command: Joi.string().optional(),
 		install_timeout: Joi.number().optional(),
 		install_allow_scripts: Joi.boolean().optional(),
+		deployment_timeout: Joi.number().min(0).optional(),
 		force: Joi.boolean().optional(),
+		ignore_replication_errors: Joi.boolean().optional(),
 		urlPath: Joi.string()
 			.min(1)
 			.custom((value, helpers) => {

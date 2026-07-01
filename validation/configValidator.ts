@@ -114,6 +114,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 	const commonEntryFields = {
 		model: string.optional(),
 		requestTimeoutMs: number.min(1).optional(),
+		// Ordered fallback group — other logical names tried, in order, after this one (#1326).
+		fallback: Joi.array().items(string).optional(),
 	};
 	const ollamaEntrySchema = Joi.object({
 		backend: string.valid('ollama').required(),
@@ -193,6 +195,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			copyTablesToCatchUp: boolean.optional(),
 			pingInterval: number.min(1).optional().empty(null),
 			pingTimeout: number.min(1).optional().empty(null),
+			copyTimeout: number.min(1).optional().empty(null),
+			replayTimeout: number.min(1).optional().empty(null),
 		}).optional(),
 		componentsRoot: rootConstraints.optional(),
 		localStudio: Joi.object({

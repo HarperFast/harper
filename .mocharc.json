@@ -5,7 +5,7 @@
 	"recursive": true,
 	"enable-source-maps": true,
 	"exclude": ["unitTests/security/jsLoader/fixtures/**"],
-	"node-option": ["expose-internals", "enable-source-maps", "experimental-vm-modules"],
+	"node-option": ["expose-internals", "enable-source-maps", "experimental-vm-modules", "expose-gc"],
 	"require": ["unitTests/mocha.init.js"],
 	"exit": true
 }

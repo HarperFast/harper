@@ -3,12 +3,102 @@ import logger from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { server } from '../server/Server.ts';
 
-interface ResourceEntry {
+export interface ResourceEntry {
 	Resource: any;
 	path: string;
 	exportTypes: any;
 	hasSubPaths: boolean;
 	relativeURL: string;
+	/**
+	 * Bound parameters extracted from a parameterised path (e.g. `:id`/`*rest` segments). Only set when the entry was
+	 * matched via a parameterised route; reset on every match so it is never stale.
+	 */
+	params?: { [key: string]: string };
+}
+
+export type RouteSegment =
+	| { type: 'static'; value: string }
+	| { type: 'param'; value: string }
+	| { type: 'wildcard'; value: string };
+
+export interface CompiledRoute {
+	/** Normalized pattern (leading/trailing slashes stripped) — used as the identity key for the route. */
+	pattern: string;
+	segments: RouteSegment[];
+	entry: ResourceEntry;
+}
+
+/** Per-segment specificity used to order routes: a static segment beats a param, which beats a wildcard. */
+const SEGMENT_SPECIFICITY: { [K in RouteSegment['type']]: number } = { static: 3, param: 2, wildcard: 1 };
+
+/**
+ * A path is parameterised if any of its segments begins with `:` (named parameter) or `*` (wildcard/catch-all).
+ */
+function pathHasParams(path: string): boolean {
+	return path.split('/').some((segment) => segment.charAt(0) === ':' || segment.charAt(0) === '*');
+}
+
+function compileRouteSegments(path: string): RouteSegment[] {
+	return path.split('/').map((segment): RouteSegment => {
+		if (segment.charAt(0) === ':') return { type: 'param', value: segment.slice(1) };
+		// a bare `*` binds under the name `wildcard` so the key is a valid URI-template / OpenAPI variable name
+		if (segment.charAt(0) === '*') return { type: 'wildcard', value: segment.slice(1) || 'wildcard' };
+		return { type: 'static', value: segment };
+	});
+}
+
+/**
+ * Convert a parameterised route's segments into a URI template: `:id`/`*rest` segments become `{id}`/`{rest}`.
+ * Returns the templated path (no leading slash) and the ordered parameters with their kind. Shared by the OpenAPI
+ * and MCP enumerators so a route renders the same way everywhere.
+ */
+export function routePatternToTemplate(segments: RouteSegment[]): {
+	template: string;
+	params: Array<{ name: string; wildcard: boolean }>;
+} {
+	const params: Array<{ name: string; wildcard: boolean }> = [];
+	const template = segments
+		.map((segment) => {
+			if (segment.type === 'static') return segment.value;
+			params.push({ name: segment.value, wildcard: segment.type === 'wildcard' });
+			return `{${segment.value}}`;
+		})
+		.join('/');
+	return { template, params };
+}
+
+function decode(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		// malformed percent-encoding: fall back to the raw segment rather than throwing during routing
+		return value;
+	}
+}
+
+/**
+ * Attempt to match a request's path segments against a compiled route's segments. Returns the extracted parameters
+ * on a successful match, or undefined if the route does not match.
+ */
+function matchSegments(routeSegments: RouteSegment[], urlSegments: string[]): { [key: string]: string } | undefined {
+	const params: { [key: string]: string } = {};
+	for (let i = 0; i < routeSegments.length; i++) {
+		const segment = routeSegments[i];
+		if (segment.type === 'wildcard') {
+			// a wildcard captures the remainder of the path (zero or more segments) and is always the final segment
+			params[segment.value] = urlSegments.slice(i).map(decode).join('/');
+			return params;
+		}
+		if (i >= urlSegments.length) return undefined; // not enough segments to satisfy this route
+		if (segment.type === 'static') {
+			if (segment.value !== urlSegments[i]) return undefined;
+		} else {
+			params[segment.value] = decode(urlSegments[i]);
+		}
+	}
+	// every route segment was consumed; reject if the URL has extra trailing segments
+	if (urlSegments.length !== routeSegments.length) return undefined;
+	return params;
 }
 
 /**
@@ -19,6 +109,13 @@ export class Resources extends Map<string, ResourceEntry> {
 	loginPath?: (request: any) => string;
 
 	allTypes: Map<any, any> = new Map();
+
+	/**
+	 * Parameterised routes (paths containing `:param` or `*wildcard` segments). These are kept out of the base Map so
+	 * the exact/prefix matching fast path is untouched; they are only consulted by {@link getMatch} when no static
+	 * resource matches.
+	 */
+	paramRoutes: CompiledRoute[] = [];
 
 	// @ts-expect-error override with different signature
 	set(path: string, resource: any, exportTypes?: { [key: string]: boolean }, force?: boolean): void {
@@ -31,6 +128,10 @@ export class Resources extends Map<string, ResourceEntry> {
 			hasSubPaths: false,
 			relativeURL: '', // reset after each match
 		};
+		if (pathHasParams(path)) {
+			this.setParamRoute(path, entry, resource, force);
+			return;
+		}
 		const existingEntry = super.get(path);
 		if (
 			existingEntry &&
@@ -57,6 +158,93 @@ export class Resources extends Map<string, ResourceEntry> {
 				slashIndex += 2;
 			}
 		}
+	}
+
+	// Parameterised routes live in a side array rather than the base Map, so the Map-mutation methods below must keep
+	// it in sync — otherwise a removed/cleared route would keep matching against an unloaded Resource class.
+	delete(path: string): boolean {
+		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
+		const mapDeleted = super.delete(path);
+		const pattern = path.endsWith('/') ? path.replace(/\/+$/, '') : path; // patterns are stored trailing-slash-free
+		const before = this.paramRoutes.length;
+		this.paramRoutes = this.paramRoutes.filter((route) => route.pattern !== pattern);
+		return mapDeleted || this.paramRoutes.length < before;
+	}
+
+	clear(): void {
+		super.clear();
+		this.paramRoutes = [];
+	}
+
+	/**
+	 * Register (or replace) a parameterised route. Routes are kept sorted most-specific-first so the first match wins:
+	 * segment kinds are compared left-to-right (static beats param beats wildcard) and, when one route is a prefix of
+	 * another, the longer pattern wins.
+	 */
+	private setParamRoute(path: string, entry: ResourceEntry, resource: any, force?: boolean): void {
+		// a trailing slash adds an empty final segment that can never match (incoming URLs are normalized first)
+		if (path.endsWith('/')) {
+			path = path.replace(/\/+$/, '');
+			entry.path = path;
+		}
+		const segments = compileRouteSegments(path);
+		// a wildcard captures the remainder of the path, so anything after it is unreachable — reject it outright
+		const wildcardIndex = segments.findIndex((segment) => segment.type === 'wildcard');
+		if (wildcardIndex > -1 && wildcardIndex !== segments.length - 1) {
+			throw new Error(`Wildcard segment must be the last segment in a route path: ${path}`);
+		}
+		const compiled: CompiledRoute = { pattern: path, segments, entry };
+		const existingIndex = this.paramRoutes.findIndex((route) => route.pattern === path);
+		if (existingIndex > -1) {
+			const existing = this.paramRoutes[existingIndex];
+			if (
+				!force &&
+				(existing.entry.Resource.databaseName !== resource.databaseName ||
+					existing.entry.Resource.tableName !== resource.tableName)
+			) {
+				// conflicting registrations for the same parameterised path; surface it like the static-path conflict
+				const error = new ServerError(`Conflicting paths for ${path}`);
+				logger.error(error);
+				const { ErrorResource } = require('./ErrorResource');
+				compiled.entry.Resource = new ErrorResource(error);
+			}
+			this.paramRoutes[existingIndex] = compiled;
+		} else {
+			this.paramRoutes.push(compiled);
+		}
+		this.paramRoutes.sort((a, b) => {
+			const shared = Math.min(a.segments.length, b.segments.length);
+			for (let i = 0; i < shared; i++) {
+				const weightA = SEGMENT_SPECIFICITY[a.segments[i].type];
+				const weightB = SEGMENT_SPECIFICITY[b.segments[i].type];
+				if (weightA !== weightB) return weightB - weightA;
+			}
+			return b.segments.length - a.segments.length;
+		});
+	}
+
+	/**
+	 * Match a URL against the registered parameterised routes. On a match, the route's entry is returned with
+	 * `relativeURL` (the trailing query string, if any) and `params` populated. Returns undefined if nothing matches.
+	 */
+	private matchParamRoute(url: string, exportType?: string): ResourceEntry | undefined {
+		const queryIndex = url.indexOf('?');
+		const pathPart = queryIndex > -1 ? url.slice(0, queryIndex) : url;
+		const search = queryIndex > -1 ? url.slice(queryIndex) : '';
+		let normalized = pathPart;
+		if (normalized.charAt(0) === '/') normalized = normalized.slice(1);
+		if (normalized.endsWith('/')) normalized = normalized.slice(0, -1);
+		const urlSegments = normalized === '' ? [] : normalized.split('/');
+		for (const route of this.paramRoutes) {
+			if (exportType && route.entry.exportTypes?.[exportType] === false) continue;
+			const params = matchSegments(route.segments, urlSegments);
+			if (params) {
+				route.entry.relativeURL = search;
+				route.entry.params = params;
+				return route.entry;
+			}
+		}
+		return undefined;
 	}
 
 	/**
@@ -117,6 +305,11 @@ export class Resources extends Map<string, ResourceEntry> {
 		if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {
 			foundEntry.relativeURL = searchIndex > -1 ? url.slice(searchIndex) : '';
 		} else if (!foundEntry) {
+			// no static resource matched; try parameterised routes before falling back to an explicit root resource
+			if (this.paramRoutes.length) {
+				const paramMatch = this.matchParamRoute(url, exportType);
+				if (paramMatch) return paramMatch;
+			}
 			// still not found, see if there is an explicit root path
 			foundEntry = this.get('');
 			if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {

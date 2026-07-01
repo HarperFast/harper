@@ -420,7 +420,14 @@ suite('@embed directive end-to-end with fake Ollama', (ctx: any) => {
 		strictEqual(firstBody.id, id);
 		strictEqual(firstBody.content, expectedContent, 'cache should reflect the source-returned content');
 
-		// The embedder must have run exactly once during the cache write.
+		// The cache write fires the embed hook asynchronously — the GET response is
+		// returned before the write's txn commits (see Table.ts:~4275 design note),
+		// so the embed call may land on a later event-loop tick. Poll up to ~500ms
+		// (same approach used below for search_by_hash) before asserting.
+		for (let attempt = 0; attempt < 20; attempt++) {
+			if (fake.embedCallCount() > baselineEmbedCalls) break;
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
 		strictEqual(
 			fake.embedCallCount(),
 			baselineEmbedCalls + 1,
