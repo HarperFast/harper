@@ -69,6 +69,9 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const appEntry of cfFolders) {
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
+			// Skip hidden entries: component names are never dot-prefixed, and this keeps
+			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
+			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			cfsLoaded.push(

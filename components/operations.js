@@ -16,7 +16,7 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
-const { Application, prepareApplication } = require('./Application.ts');
+const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
 const { DeploymentRecorder, awaitDeploymentRow } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
@@ -732,7 +732,7 @@ async function getComponents() {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
 				const itemName = item.name;
-				if (itemName === 'node_modules') continue;
+				if (itemName === 'node_modules' || itemName === ASIDE_STAGING_DIR) continue;
 				const itemPath = path.join(dir, itemName);
 				if (item.isDirectory() || item.isSymbolicLink()) {
 					let res = {
