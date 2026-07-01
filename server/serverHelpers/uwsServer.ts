@@ -38,6 +38,8 @@ export interface UwsServerOptions {
 	handler: (request: UwsRequest) => Promise<HarperResponse | undefined> | HarperResponse | undefined;
 	/** Max bytes to buffer for a request body before rejecting (default 100 MiB, matching ws maxPayload). */
 	maxBodyBytes?: number;
+	/** Max WebSocket frame payload; falls back to maxBodyBytes when unset. */
+	wsMaxPayload?: number;
 	/**
 	 * Optional WebSocket handler. When provided, uWS accepts upgrades on this app/port and calls this
 	 * with a ws-library-shaped {@link UwsWebSocket} adapter plus the captured upgrade request, so
@@ -67,12 +69,21 @@ const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
 	const { default: uWS } = await import('uWebSockets.js' as any);
-	const { socketPath, port, host, secure = false, handler, wsHandler, maxBodyBytes = 100 * 1024 * 1024 } = options;
+	const {
+		socketPath,
+		port,
+		host,
+		secure = false,
+		handler,
+		wsHandler,
+		wsMaxPayload,
+		maxBodyBytes = 100 * 1024 * 1024,
+	} = options;
 	const app: UwsApp = uWS.App();
 
 	// Accept WebSocket upgrades on this app/port when a ws handler is supplied. Registered before the
 	// HTTP routes so uWS routes upgrade requests here; normal requests still fall through to app.get/any.
-	if (wsHandler) registerWsBehavior(app, wsHandler, maxBodyBytes);
+	if (wsHandler) registerWsBehavior(app, wsHandler, wsMaxPayload ?? maxBodyBytes);
 
 	const onRequest = (res: UwsResponse, req: UwsRequestRaw, hasBody: boolean) => {
 		// uWS HttpRequest is only valid synchronously inside this callback — copy everything now.
@@ -88,15 +99,22 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 			else headers[k] = [existing, v];
 		});
 
+		// Capture the peer address synchronously (res is only valid in this callback). Only populated for
+		// the direct-TCP path, where it's authoritative; behind symphony on a UDS it's left unset so the
+		// real client IP comes from X-Forwarded-For (UwsRequest.ip falls back to XFF only when no socket
+		// address is set). request.ip feeds local-auth (security/auth.ts AUTHORIZE_LOCAL), rate limiting,
+		// and logging.
+		const ip = port != null ? normalizeAddress(Buffer.from(res.getRemoteAddressAsText()).toString()) : undefined;
+
 		const ac = new AbortController();
 		res.onAborted(() => ac.abort());
 
 		const dispatch = (bodyBuffer?: Buffer) => {
-			const request = new UwsRequest({ method, url, headers, secure, bodyBuffer, signal: ac.signal });
+			const request = new UwsRequest({ method, url, headers, secure, bodyBuffer, signal: ac.signal, ip });
 			Promise.resolve(handler(request))
 				.then((response) => {
 					if (ac.signal.aborted) return;
-					writeResponse(res, response, ac.signal);
+					writeResponse(res, response, ac.signal, method);
 				})
 				.catch((error) => {
 					if (ac.signal.aborted) return;
@@ -172,13 +190,21 @@ function writeHeaders(res: UwsResponse, headers: Headers): void {
 	}
 }
 
-function writeResponse(res: UwsResponse, response: HarperResponse | undefined, signal?: AbortSignal): void {
+function writeResponse(
+	res: UwsResponse,
+	response: HarperResponse | undefined,
+	signal?: AbortSignal,
+	method?: string
+): void {
 	if (!response) {
 		res.cork(() => res.writeStatus('404 Not Found').end('Not found\n'));
 		return;
 	}
 	const status = response.status || 200;
-	const body = response.body;
+	// A HEAD response must carry no body. The REST layer already nulls it, but uWS (unlike Node's
+	// ServerResponse) has no HEAD guard, so enforce it here for any handler that returns one.
+	const isHead = method === 'HEAD';
+	const body = isHead ? null : response.body;
 
 	// Normalize headers to a Harper Headers instance so we can iterate uniformly.
 	const headers = response.headers instanceof Headers ? response.headers : new Headers(response.headers as any);

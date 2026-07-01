@@ -501,10 +501,14 @@ export class UwsRequest {
 		return this.#isSecure ? 'https' : 'http';
 	}
 	get ip() {
-		// UDS connections have no remote address; symphony forwards the real client IP via XFF.
+		// A real peer address (direct-TCP path) is authoritative and unspoofable, so it wins. Only the
+		// symphony-UDS path — where the socket has no client address (#ip is left unset) and symphony is
+		// the trusted setter/stripper of X-Forwarded-For — falls back to XFF. This prevents a direct
+		// client from spoofing `X-Forwarded-For: 127.0.0.1` to satisfy local auth (security/auth.ts).
+		if (this.#ip) return this.#ip;
 		const xff = this.headers.get('x-forwarded-for');
 		if (xff) return (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
-		return this.#ip ?? '';
+		return '';
 	}
 	get authorized() {
 		// TLS terminated upstream — client authorization not available at this hop.

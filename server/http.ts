@@ -1114,6 +1114,8 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
 			const cfg = uwsServeConfigs[port];
 			if (cfg && !cfg.wsHandler) {
+				// Honor a configured WebSocket maxPayload on the uWS transport too (else it defaults to 100 MiB).
+				if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
 				cfg.wsHandler = (ws: any, upgrade: any) => {
 					try {
 						const request: any = new UwsRequest({

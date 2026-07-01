@@ -254,7 +254,10 @@ try {
 		before(async function () {
 			server = await createUwsServer({
 				port,
-				handler: async () => ({ status: 200, body: 'http' }),
+				handler: async (req) => ({
+					status: 200,
+					body: req.pathname === '/ip' ? String(req.ip) : req.pathname === '/head' ? 'should-be-suppressed' : 'http',
+				}),
 				wsHandler: (ws, upgrade) => {
 					opened.push({ url: upgrade.url, auth: upgrade.headers.authorization, ip: upgrade.ip });
 					ws.on('message', (data) => ws.send(Buffer.concat([Buffer.from('echo:'), data])));
@@ -279,6 +282,34 @@ try {
 					.end();
 			});
 			assert.strictEqual(body, 'http');
+		});
+
+		it('populates request.ip from the TCP peer address', async function () {
+			const body = await new Promise((resolve, reject) => {
+				http
+					.request({ host: '127.0.0.1', port, path: '/ip' }, (res) => {
+						const chunks = [];
+						res.on('data', (c) => chunks.push(c));
+						res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+					})
+					.on('error', reject)
+					.end();
+			});
+			assert.strictEqual(body, '127.0.0.1');
+		});
+
+		it('suppresses the body for a HEAD request', async function () {
+			const res = await new Promise((resolve, reject) => {
+				const req = http.request({ host: '127.0.0.1', port, path: '/head', method: 'HEAD' }, (r) => {
+					const chunks = [];
+					r.on('data', (c) => chunks.push(c));
+					r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(chunks) }));
+				});
+				req.on('error', reject);
+				req.end();
+			});
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(res.body.length, 0);
 		});
 
 		it('accepts an upgrade, exposes url/headers/ip, and round-trips text and binary frames', function (done) {
