@@ -9,16 +9,20 @@
  *
  * The component intentionally avoids `handleApplication`: it has nothing
  * worker-thread-shaped to do. Two tool sources compose: operator-only tools
- * (FS, schedule, fetch) that are inline, and RBAC-filtered registry tools
- * (#615/#617) drained for the agent's configured user via `registryTools.ts`.
+ * (FS, schedule, fetch, and the V8 inspector) that are inline, and RBAC-filtered
+ * registry tools (#615/#617) drained for the agent's configured user via
+ * `registryTools.ts`.
  */
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import * as env from '../utility/environment/environmentManager.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { Models } from '../resources/models/Models.ts';
 import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
+import { workers } from '../server/threads/manageThreads.js';
 import { composeToolset } from './toolset.ts';
+import { buildInspectorTools } from './tools/inspectorTool.ts';
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
@@ -76,9 +80,20 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const agentIdentity = () => resolveAgentIdentity(opts.server, liveConfig.user);
 	let registryTools = await composeRegistryToolsForListing(agentIdentity);
 
+	// Operator-only V8 inspector tools. Debug config is read once here — enabling threads_debug opens the
+	// worker inspector ports at thread boot, so it can't be toggled without a restart anyway. Worker
+	// count is a live closure over the pool, so attaches range-check against the current worker set.
+	const inspectorTools = buildInspectorTools({
+		debugEnabled: env.get(CONFIG_PARAMS.THREADS_DEBUG) !== false,
+		startingPort: (env.get(CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT) as number | undefined) ?? undefined,
+		host: (env.get(CONFIG_PARAMS.THREADS_DEBUG_HOST) as string | undefined) ?? '127.0.0.1',
+		getWorkerCount: () => workers.length,
+	});
+
 	let composed = composeToolset({
 		allowDestructive: liveConfig.allowDestructive,
 		onFollowup: handleFollowup,
+		inspectorTools,
 		registryTools,
 	});
 
@@ -169,6 +184,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			composed = composeToolset({
 				allowDestructive: liveConfig.allowDestructive,
 				onFollowup: handleFollowup,
+				inspectorTools,
 				registryTools,
 			});
 		}
