@@ -25,7 +25,11 @@ const TAIL_READ_BYTES = 1 * 1024 * 1024; // 1 MiB — enough for thousands of no
 type Access = 'read' | 'write';
 
 async function resolveScoped(scopes: AgentScopes, path: string, access: Access): Promise<string> {
-	const absolute = resolve(path);
+	// A relative path is resolved against componentsRoot (the write scope / app root) rather than the
+	// process cwd — the agent addresses component files by their path relative to the components dir
+	// (e.g. `product_app/schema.json`) and doesn't know the absolute root. Absolute paths are used as-is
+	// and still validated against the scope roots below.
+	const absolute = isAbsolute(path) ? resolve(path) : resolve(scopes.componentsRoot, path);
 	const candidates = [scopes.componentsRoot];
 	if (access === 'read') {
 		candidates.push(scopes.logDir, scopes.configDir);

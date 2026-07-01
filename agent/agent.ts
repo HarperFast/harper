@@ -109,6 +109,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
 			generateOpts: { model: liveConfig.model },
+			systemPrompt: buildSystemPrompt(scopes),
 		})
 			.catch((err) => log.error?.(`Agent run failed for ${sessionId}: ${(err as Error)?.message ?? err}`))
 			.finally(() => {
@@ -159,6 +160,27 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	for (const op of operations) opts.server.registerOperation(op);
 
 	log.info?.(`Agent component initialized with ${composed.tools.length} tools`);
+}
+
+/**
+ * Grounding prompt so the agent knows what it is, where its files live, and how a Harper app is
+ * shaped. Without it the model can't know the absolute componentsRoot and guesses literal path
+ * prefixes (e.g. "componentsRoot/…") that fall outside the write scope.
+ */
+function buildSystemPrompt(scopes: AgentScopes): string {
+	return [
+		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
+		'You operate this instance for an operator via tools: Harper operations (describe_all, search, deploy_component, restart, set_configuration, add_role, …), scoped filesystem tools (read_file, write_file, list_dir, grep_files, tail_file), schedule_followup, and http_fetch.',
+		'',
+		'Filesystem:',
+		`- Components (apps) directory — your WRITE scope: ${scopes.componentsRoot}`,
+		`- Log directory (read-only): ${scopes.logDir}`,
+		`- Config directory (read-only): ${scopes.configDir}`,
+		'- Pass write_file/read_file paths RELATIVE to the components directory (e.g. "my_app/schema.graphql"), or an absolute path within a scope. Do NOT prefix paths with "componentsRoot".',
+		'',
+		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via http_fetch against this server.',
+		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. Be concise and verify your work.',
+	].join('\n');
 }
 
 function resolveScopes(
