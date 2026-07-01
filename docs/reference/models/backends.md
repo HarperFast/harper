@@ -141,15 +141,15 @@ The model identifier's vendor prefix (`anthropic.`, `meta.`, `amazon.titan-`, `c
 
 Beyond the four built-ins, a component or application can register its own backend — including an in-process one that runs inference locally instead of calling an HTTP service. A registered backend is selected by its logical name through the same `model` option as a configured backend.
 
-Custom backends are registered programmatically; the `backend` field in the [`models` configuration](./overview#configuration) selects only the built-ins above.
+Custom backends can be added two ways: **registered programmatically** (below), or **selected in config** by pointing the `backend` field at a module — see [Config-selectable backends](#config-selectable-backends).
 
 ### defineBackend()
 
 ```typescript
-defineBackend(spec: DefineBackendSpec): ModelBackend
+models.defineBackend(spec: DefineBackendSpec): ModelBackend
 ```
 
-Builds a `ModelBackend` from the methods it implements. `capabilities()` is derived from which of `embed` / `generate` / `generateStream` are supplied; `tools` and `adapters` cannot be inferred from method presence, so declare them explicitly.
+A method on `models` (reachable as `models.defineBackend(...)` / `scope.models.defineBackend(...)`). Builds a `ModelBackend` from the methods it implements. `capabilities()` is derived from which of `embed` / `generate` / `generateStream` are supplied; `tools` and `adapters` cannot be inferred from method presence, so declare them explicitly.
 
 | Field            | Type       | Default | Description                                                          |
 | ---------------- | ---------- | ------- | -------------------------------------------------------------------- |
@@ -165,23 +165,23 @@ Builds a `ModelBackend` from the methods it implements. `capabilities()` is deri
 ### registerBackend()
 
 ```typescript
-registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void
+models.registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void
 ```
 
-Registers `backend` under the logical name `id` for the given `kind`. Also available as `models.registerBackend(...)` / `scope.models.registerBackend(...)`. Register during component initialization (for example, in `handleApplication`) so the backend is in place before requests arrive; the registry is process-wide, so each worker thread that loads the component registers its own instance.
+Registers `backend` under the logical name `id` for the given `kind`. A method on `models` (reachable as `models.registerBackend(...)` / `scope.models.registerBackend(...)`). Register during component initialization (for example, in `handleApplication`) so the backend is in place before requests arrive; the registry is process-wide, so each worker thread that loads the component registers its own instance.
 
 Use a provider-namespaced `id` (e.g. `local:bge-small`) to avoid collisions when more than one component registers backends.
 
 ```javascript
-import { models, registerBackend, defineBackend } from 'harper';
+import { models } from 'harper';
 import { init, embed } from 'some-local-embedding-library';
 
 await init();
 
-registerBackend(
+models.registerBackend(
 	'embedding',
 	'local:bge-small',
-	defineBackend({
+	models.defineBackend({
 		name: 'local:bge-small',
 		async embed(input) {
 			const texts = Array.isArray(input) ? input : [input];
@@ -196,3 +196,23 @@ const [vector] = await models.embed('What is Harper?', { model: 'local:bge-small
 ```
 
 A registered backend takes precedence over a configuration entry with the same logical name, because registration runs after the configuration is loaded. A backend whose `capabilities()` disagrees with the methods it actually implements is registered as-is and fails at call time — `defineBackend()` keeps the two consistent.
+
+### Config-selectable backends
+
+A `backend` value in the [`models` configuration](./overview#configuration) that isn't a built-in name is resolved as a **module specifier** and imported at startup; the module's default export — or a `register` export — is a factory that registers the backend. This lets an operator select a custom backend entirely from config, the same way the built-ins are selected.
+
+```yaml
+models:
+  embedding:
+    default:
+      backend: '@acme/embedder' # an installed package
+      model: bge-small
+```
+
+The `backend` specifier is resolved as:
+
+- a **bare package** (`@acme/embedder`) — resolved from the Harper instance's `node_modules`; install the backend as a dependency. Preferred, since it carries no filesystem path and travels with the deployment.
+- an **instance-root-relative path** (`./backends/local.js`) — resolved against the Harper instance root.
+- an **absolute path**.
+
+The factory has the signature `({ logicalName, kind, config }) => void | Promise<void>` and registers via [`models.registerBackend`](#registerbackend); it receives the config entry with `${VAR}` placeholders already resolved. A `backend` that is neither a built-in nor an importable module is logged and skipped at startup, leaving other entries unaffected.
