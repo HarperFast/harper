@@ -601,7 +601,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					},
 					(nodeRequest: IncomingMessage, nodeResponse: any) => {
 						const method = nodeRequest.method;
-						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
+						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD')
+							requestHandler(nodeRequest, nodeResponse);
 						else throttledRequestHandler(nodeRequest, nodeResponse);
 					}
 				);
@@ -658,26 +659,37 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean) {
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logBunRequest(request, status, requestId, executionTime);
 		response.status = status;
-		response.body = await uwsBodyToBuffer(response.body);
+		response.body = await uwsBodyToBuffer(response.body, request.signal);
 		return response;
 	};
 }
 
-/** uWS spike: collapse a Harper response body into a string/Buffer (the spike adapter does not stream). */
-async function uwsBodyToBuffer(body: any): Promise<string | Buffer | null> {
+/**
+ * uWS spike: collapse a Harper response body into a string/Buffer (the spike adapter does not
+ * stream). `signal` aborts the collapse if the client disconnects mid-response, so a large or slow
+ * producer can't keep buffering into a dead socket.
+ */
+async function uwsBodyToBuffer(body: any, signal?: AbortSignal): Promise<string | Buffer | null> {
 	if (body == null) return null;
 	if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) return body;
 	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
-	if (typeof body.then === 'function') return uwsBodyToBuffer(await body);
+	if (typeof body.then === 'function') return uwsBodyToBuffer(await body, signal);
 	if (typeof body.pipe === 'function') {
 		const chunks: Buffer[] = [];
 		await new Promise<void>((resolve, reject) => {
+			const onAbort = () => {
+				body.destroy?.();
+				reject(new Error('client aborted'));
+			};
+			if (signal?.aborted) return onAbort();
+			signal?.addEventListener('abort', onAbort, { once: true });
 			const dest = new Writable({
 				write(chunk, _enc, cb) {
 					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 					cb();
 				},
 				final(cb) {
+					signal?.removeEventListener('abort', onAbort);
 					cb();
 					resolve();
 				},
@@ -690,7 +702,10 @@ async function uwsBodyToBuffer(body: any): Promise<string | Buffer | null> {
 	}
 	if (body[Symbol.asyncIterator] || body[Symbol.iterator]) {
 		const chunks: Buffer[] = [];
-		for await (const chunk of body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		for await (const chunk of body) {
+			if (signal?.aborted) throw new Error('client aborted');
+			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		}
 		return Buffer.concat(chunks);
 	}
 	return String(body);

@@ -10,11 +10,12 @@
  * by symphony upstream, the real client IP arrives via X-Forwarded-For, so this server only
  * speaks plaintext HTTP/1.1 and never touches certificates.
  *
- * NOTE: this is the adapter core only. Wiring it into getUwsHTTPServer()/threadServer.js
- * (alongside the Node and Bun UDS paths) and adding `uWebSockets.js` as an optional
- * dependency is the remaining productionization step. The request-construction and
- * response-serialization paths here are exercised by the spike benchmark in ~/dev/tmp/uws-poc.
+ * Wired into the UDS path in http.ts (getHTTPServer → uwsServeConfigs) and started in
+ * threadServer.js when HARPER_UWS_UDS is set; `uWebSockets.js` is an optionalDependency
+ * (ABI/platform-specific, built by CI). Response streaming is still collapsed to a buffer
+ * upstream in makeUwsHandler — streaming bodies are a follow-up.
  */
+import { STATUS_CODES } from 'node:http';
 import { UwsRequest } from './Request.ts';
 import { Headers } from './Headers.ts';
 
@@ -41,20 +42,9 @@ export interface HarperResponse {
 	wasCacheMiss?: boolean;
 }
 
-const STATUS_TEXT: Record<number, string> = {
-	200: '200 OK',
-	201: '201 Created',
-	204: '204 No Content',
-	301: '301 Moved Permanently',
-	302: '302 Found',
-	304: '304 Not Modified',
-	400: '400 Bad Request',
-	401: '401 Unauthorized',
-	403: '403 Forbidden',
-	404: '404 Not Found',
-	500: '500 Internal Server Error',
-};
-const statusText = (s: number) => STATUS_TEXT[s] ?? `${s} `;
+// uWS writeStatus() needs a full "<code> <reason>" line; an empty reason phrase is rejected by
+// some reverse-proxy parsers, so fall back to "Unknown" for codes Node doesn't know.
+const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
 	const { default: uWS } = await import('uWebSockets.js' as any);
@@ -68,7 +58,11 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		const url = req.getUrl() + (query ? '?' + query : '');
 		const headers: Record<string, string | string[]> = {};
 		req.forEach((k: string, v: string) => {
-			headers[k] = v;
+			// uWS calls this once per header line, so preserve repeats (e.g. multiple Cookie/Forwarded).
+			const existing = headers[k];
+			if (existing === undefined) headers[k] = v;
+			else if (Array.isArray(existing)) existing.push(v);
+			else headers[k] = [existing, v];
 		});
 
 		const ac = new AbortController();
@@ -102,7 +96,10 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 					ac.abort();
 					return;
 				}
-				const part = Buffer.from(chunk); // copy: uWS neuters the ArrayBuffer on return
+				// uWS neuters/reuses the ArrayBuffer once this callback returns, and the body is read
+				// asynchronously in the handler — so copy the bytes out now. `Buffer.from(arrayBuffer)`
+				// would alias uWS's memory; wrapping in a Uint8Array first forces an owned copy.
+				const part = Buffer.from(new Uint8Array(chunk));
 				buf = buf ? Buffer.concat([buf, part]) : part;
 				if (isLast) dispatch(buf ?? undefined);
 			});
@@ -111,9 +108,21 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		}
 	};
 
-	app.get('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false));
-	app.head('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false));
-	app.any('/*', (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, true));
+	// Route by method rather than a single app.any(hasBody:true): bodyless methods dispatch
+	// immediately instead of waiting on an onData that we shouldn't depend on firing. The any()
+	// fallback covers unknown/exotic methods as bodyless so they can never stall the connection.
+	const bodyless = (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, false);
+	const withBody = (res: UwsResponse, req: UwsRequestRaw) => onRequest(res, req, true);
+	app.get('/*', bodyless);
+	app.head('/*', bodyless);
+	app.options('/*', bodyless);
+	app.connect('/*', bodyless);
+	app.trace('/*', bodyless);
+	app.post('/*', withBody);
+	app.put('/*', withBody);
+	app.patch('/*', withBody);
+	app.del('/*', withBody);
+	app.any('/*', bodyless);
 
 	await new Promise<void>((resolve, reject) => {
 		app.listen_unix((listenSocket: unknown) => {
@@ -137,8 +146,7 @@ function writeResponse(res: UwsResponse, ac: AbortController, response: HarperRe
 	let body = response.body;
 
 	// Normalize headers to a Harper Headers instance so we can iterate uniformly.
-	const headers =
-		response.headers instanceof Headers ? response.headers : new Headers(response.headers as any);
+	const headers = response.headers instanceof Headers ? response.headers : new Headers(response.headers as any);
 
 	if (!response.handlesHeaders) {
 		if (!body) {
