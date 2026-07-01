@@ -322,6 +322,23 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	if (!httpServers[port]) {
 		// TODO: These should all come from httpOptions or operationsApiOptions
 		const serverPrefix = isOperationsServer ? 'operationsApi_network' : (usageType ?? 'http');
+		// uWS plaintext-HTTP path (#914, HARPER_UWS_HTTP): back a non-secure TCP HTTP port with
+		// uWebSockets.js directly instead of a Node http server. This is the flag used to run the
+		// integration suite through uWS (no symphony/UDS needed). WebSocket upgrades are not yet
+		// wired on this path, so it's opt-in and separate from HARPER_UWS_UDS.
+		if (process.env.HARPER_UWS_HTTP && !secure && !isOperationsServer && !String(port).includes('/')) {
+			const lastColon = String(port).lastIndexOf(':');
+			uwsServeConfigs[port] = {
+				port: lastColon > 0 ? +String(port).slice(lastColon + 1) : +port,
+				host: lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : undefined,
+				secure: false,
+				handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+			};
+			// Marker so the httpServers guard is satisfied and the caller has a truthy handle; the
+			// actual listen happens in threadServer.js from uwsServeConfigs.
+			httpServers[port] = { uws: true } as any;
+			return httpServers[port];
+		}
 		const keepAliveTimeout = env.get(serverPrefix + '_keepAliveTimeout');
 		const requestTimeout = env.get(serverPrefix + '_timeout');
 		const headersTimeout = env.get(serverPrefix + '_headersTimeout');
@@ -666,7 +683,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 			status,
 			headers,
 			handlesHeaders: response.handlesHeaders,
-			body: await uwsBodyToBuffer(response.body, request.signal),
+			body: await normalizeUwsBody(response.body, request.signal),
 		};
 	};
 	// Shed data-modifying requests when the event queue is backed up (503), mirroring the Node UDS
@@ -691,51 +708,27 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 }
 
 /**
- * uWS spike: collapse a Harper response body into a string/Buffer (the spike adapter does not
- * stream). `signal` aborts the collapse if the client disconnects mid-response, so a large or slow
- * producer can't keep buffering into a dead socket.
+ * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
+ * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
+ * stream it incrementally (buffering an SSE/event-stream body here would never return). `signal`
+ * aborts the collapse of a sync iterable if the client disconnects mid-response.
  */
-async function uwsBodyToBuffer(body: any, signal?: AbortSignal): Promise<string | Buffer | null> {
+async function normalizeUwsBody(
+	body: any,
+	signal?: AbortSignal
+): Promise<string | Buffer | Uint8Array | Readable | null> {
 	if (body == null) return null;
 	if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) return body;
 	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
-	if (typeof body.then === 'function') return uwsBodyToBuffer(await body, signal);
-	if (typeof body.pipe === 'function') {
+	if (typeof body.then === 'function') return normalizeUwsBody(await body, signal);
+	// Already a Node stream — stream it as-is (re-wrapping in Readable.from breaks destroy propagation).
+	if (typeof body.pipe === 'function') return body;
+	// Async-iterable (e.g. an event queue) — adapt to a Readable and stream it.
+	if (body[Symbol.asyncIterator]) return Readable.from(body);
+	// Sync iterable — small/finite, collapse to a buffer.
+	if (body[Symbol.iterator]) {
 		const chunks: Buffer[] = [];
-		await new Promise<void>((resolve, reject) => {
-			const cleanup = () => signal?.removeEventListener('abort', onAbort);
-			function onAbort() {
-				body.destroy?.();
-				reject(new Error('client aborted'));
-			}
-			if (signal?.aborted) return onAbort();
-			signal?.addEventListener('abort', onAbort, { once: true });
-			const dest = new Writable({
-				write(chunk, _enc, cb) {
-					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-					cb();
-				},
-				final(cb) {
-					cleanup();
-					cb();
-					resolve();
-				},
-			});
-			body.on('error', (error) => {
-				cleanup();
-				reject(error);
-			});
-			dest.on('error', (error) => {
-				cleanup();
-				reject(error);
-			});
-			body.pipe(dest);
-		});
-		return Buffer.concat(chunks);
-	}
-	if (body[Symbol.asyncIterator] || body[Symbol.iterator]) {
-		const chunks: Buffer[] = [];
-		for await (const chunk of body) {
+		for (const chunk of body) {
 			if (signal?.aborted) throw new Error('client aborted');
 			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 		}

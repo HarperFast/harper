@@ -299,9 +299,9 @@ function listenOnPorts() {
 	// request through httpChain[port] via UwsRequest.
 	const uwsServeConfigs = httpComponent.uwsServeConfigs;
 	if (uwsServeConfigs) {
-		for (const udsPath in uwsServeConfigs) {
-			const cfg = uwsServeConfigs[udsPath];
-			if (existsSync(udsPath)) unlinkSync(udsPath);
+		for (const key in uwsServeConfigs) {
+			const cfg = uwsServeConfigs[key];
+			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
 			listening.push(
 				createUwsServer(cfg).then(({ close }) => {
@@ -309,14 +309,14 @@ function listenOnPorts() {
 					// close() is synchronous and takes no callback, so wrap it to invoke the callback
 					// closeServers() passes; omit closeIdleConnections so the Node keep-alive drain loop
 					// (which would spin and then force-exit noisily against this shim) is skipped.
-					SERVERS[udsPath] = {
+					SERVERS[key] = {
 						close(callback) {
 							close();
 							callback?.();
 						},
 					};
-					harperLogger.info('uWS domain socket listening on ' + udsPath);
-					return { port: udsPath };
+					harperLogger.info('uWS listening on ' + (cfg.socketPath ?? cfg.port));
+					return { port: key };
 				})
 			);
 		}

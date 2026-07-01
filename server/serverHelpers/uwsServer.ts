@@ -26,7 +26,12 @@ type UwsResponse = any;
 type UwsRequestRaw = any;
 
 export interface UwsServerOptions {
-	socketPath: string;
+	/** Bind a Unix domain socket at this path (the symphony-fronted topology). */
+	socketPath?: string;
+	/** Bind a TCP port instead of a UDS (plaintext HTTP, e.g. the main http port). */
+	port?: number;
+	/** Optional host/interface for the TCP bind (defaults to all interfaces). */
+	host?: string;
 	secure?: boolean;
 	/** httpChain[port]-style handler: (request) => Harper response descriptor (or undefined). */
 	handler: (request: UwsRequest) => Promise<HarperResponse | undefined> | HarperResponse | undefined;
@@ -48,7 +53,7 @@ const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
 	const { default: uWS } = await import('uWebSockets.js' as any);
-	const { socketPath, secure = false, handler, maxBodyBytes = 100 * 1024 * 1024 } = options;
+	const { socketPath, port, host, secure = false, handler, maxBodyBytes = 100 * 1024 * 1024 } = options;
 	const app: UwsApp = uWS.App();
 
 	const onRequest = (res: UwsResponse, req: UwsRequestRaw, hasBody: boolean) => {
@@ -73,7 +78,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 			Promise.resolve(handler(request))
 				.then((response) => {
 					if (ac.signal.aborted) return;
-					writeResponse(res, response);
+					writeResponse(res, response, ac.signal);
 				})
 				.catch((error) => {
 					if (ac.signal.aborted) return;
@@ -122,10 +127,15 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	app.any('/*', withBody);
 
 	await new Promise<void>((resolve, reject) => {
-		app.listen_unix((listenSocket: unknown) => {
-			if (listenSocket) resolve();
-			else reject(new Error(`uWS failed to bind unix socket ${socketPath}`));
-		}, socketPath);
+		const onListen = (listenSocket: unknown) =>
+			listenSocket ? resolve() : reject(new Error(`uWS failed to bind ${host ?? ''}:${port ?? socketPath}`));
+		// uWS shares the port across workers (SO_REUSEPORT) by default, matching the Node reusePort path.
+		if (port != null) {
+			if (host) app.listen(host, port, onListen);
+			else app.listen(port, onListen);
+		} else {
+			app.listen_unix(onListen, socketPath!);
+		}
 	});
 
 	return {
@@ -134,37 +144,92 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	};
 }
 
-function writeResponse(res: UwsResponse, response: HarperResponse | undefined): void {
+// Write every response header except Content-Length (uWS derives that from end(body); for streaming
+// there is no fixed length and it must be omitted so uWS uses chunked transfer encoding).
+function writeHeaders(res: UwsResponse, headers: Headers): void {
+	for (const [name, value] of headers) {
+		if ((name as string).toLowerCase() === 'content-length') continue;
+		if (Array.isArray(value)) for (const v of value) res.writeHeader(name, String(v));
+		else if (value != null) res.writeHeader(name, String(value));
+	}
+}
+
+function writeResponse(res: UwsResponse, response: HarperResponse | undefined, signal?: AbortSignal): void {
 	if (!response) {
 		res.cork(() => res.writeStatus('404 Not Found').end('Not found\n'));
 		return;
 	}
 	const status = response.status || 200;
-	let body = response.body;
+	const body = response.body;
 
 	// Normalize headers to a Harper Headers instance so we can iterate uniformly.
 	const headers = response.headers instanceof Headers ? response.headers : new Headers(response.headers as any);
 
-	if (!response.handlesHeaders) {
-		if (!body) {
-			headers.set('Content-Length', '0');
-		} else if (typeof body === 'string') {
-			headers.set('Content-Length', String(Buffer.byteLength(body)));
-		} else if ((body as Buffer | Uint8Array).length >= 0) {
-			headers.set('Content-Length', String((body as Buffer | Uint8Array).length));
-		}
+	// Streaming body (Node stream / normalized async-iterable): write incrementally with backpressure.
+	if (body != null && typeof (body as any).pipe === 'function') {
+		streamResponse(res, status, headers, body as any, signal);
+		return;
 	}
 
 	res.cork(() => {
 		res.writeStatus(statusText(status));
-		for (const [name, value] of headers) {
-			// uWS derives Content-Length from end(body); writing it explicitly would duplicate it.
-			if ((name as string).toLowerCase() === 'content-length') continue;
-			if (Array.isArray(value)) for (const v of value) res.writeHeader(name, String(v));
-			else if (value != null) res.writeHeader(name, String(value));
-		}
+		writeHeaders(res, headers);
 		if (body == null) res.end();
-		else if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) res.end(body as any);
-		else res.end(); // streaming bodies (pipe/iterables) not handled in the spike adapter
+		else res.end(body as any); // string | Buffer | Uint8Array
 	});
+}
+
+/**
+ * Stream a Node Readable to the uWS response with backpressure. uWS only flushes the status/headers
+ * on the first body write, so for text/event-stream (SSE) — where the client must see the stream
+ * open before any event — we emit a spec-valid comment line to force the flush. Client disconnect
+ * (via `signal`) or a source error destroys the source and stops writing (writing to an aborted uWS
+ * response is invalid).
+ */
+function streamResponse(
+	res: UwsResponse,
+	status: number,
+	headers: Headers,
+	source: { on: Function; once: Function; pause: Function; resume: Function; destroy?: Function },
+	signal?: AbortSignal
+): void {
+	let finished = false;
+	const finish = (endResponse: boolean) => {
+		if (finished) return;
+		finished = true;
+		signal?.removeEventListener('abort', onAbort);
+		if (endResponse) res.cork(() => res.end());
+	};
+	function onAbort() {
+		if (finished) return;
+		finished = true;
+		source.destroy?.();
+	}
+	if (signal?.aborted) return onAbort();
+	signal?.addEventListener('abort', onAbort, { once: true });
+
+	const isSse = String(headers.get('content-type') ?? '').includes('text/event-stream');
+	res.cork(() => {
+		res.writeStatus(statusText(status));
+		writeHeaders(res, headers);
+		if (isSse) res.write(':\n\n'); // SSE comment: flushes headers immediately, ignored by clients
+	});
+
+	source.on('data', (chunk: Buffer) => {
+		if (finished) return;
+		let ok = true;
+		res.cork(() => {
+			ok = res.write(chunk);
+		});
+		if (!ok) {
+			// Backpressure: pause the source until uWS drains, then resume.
+			source.pause();
+			res.onWritable(() => {
+				if (!finished) source.resume();
+				return true;
+			});
+		}
+	});
+	source.once('end', () => finish(true));
+	source.once('error', () => finish(true)); // headers already sent; just terminate the response
 }

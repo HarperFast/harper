@@ -10,6 +10,19 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
+const { Readable } = require('node:stream');
+
+// A Readable that emits the given chunks one per read() tick (async), then ends.
+function chunkStream(chunks) {
+	let i = 0;
+	return new Readable({
+		read() {
+			if (i >= chunks.length) return void this.push(null);
+			const chunk = chunks[i++];
+			setImmediate(() => this.push(chunk));
+		},
+	});
+}
 
 let createUwsServer;
 let uwsAvailable = true;
@@ -65,6 +78,22 @@ function readBody(request) {
 					headers: { 'content-type': 'application/json' },
 					body: JSON.stringify(request.headers.get('x-dup')),
 				};
+			case '/sse':
+				return {
+					status: 200,
+					headers: { 'content-type': 'text/event-stream' },
+					body: chunkStream(['data: a\n\n', 'data: b\n\n', 'data: c\n\n']),
+				};
+			case '/stream':
+				return {
+					status: 200,
+					headers: { 'content-type': 'application/octet-stream' },
+					body: chunkStream(['X', 'Y', 'Z']),
+				};
+			case '/bigstream': {
+				const chunk = Buffer.alloc(64 * 1024, 0x61); // 64 KiB of 'a'
+				return { status: 200, body: chunkStream(Array.from({ length: 64 }, () => chunk)) }; // 4 MiB total
+			}
 			case '/method':
 				return { status: 200, body: 'method=' + request.method };
 			case '/boom':
@@ -165,6 +194,28 @@ function readBody(request) {
 			headers: { 'x-dup': ['a', 'b'] },
 		});
 		assert.deepStrictEqual(JSON.parse(res.body.toString()), ['a', 'b']);
+	});
+
+	it('streams a text/event-stream (SSE) body, flushing headers up front', async function () {
+		const res = await udsRequest(socketPath, { pathName: '/sse' });
+		assert.strictEqual(res.status, 200);
+		assert.match(res.headers['content-type'], /text\/event-stream/);
+		const body = res.body.toString();
+		assert.ok(body.startsWith(':\n\n'), 'SSE stream is opened with a comment to flush headers');
+		assert.ok(body.includes('data: a\n\n') && body.includes('data: c\n\n'), 'all events delivered');
+	});
+
+	it('streams a non-SSE Readable body intact', async function () {
+		const res = await udsRequest(socketPath, { pathName: '/stream' });
+		assert.strictEqual(res.status, 200);
+		assert.strictEqual(res.body.toString(), 'XYZ');
+	});
+
+	it('streams a large body with backpressure, byte-for-byte', async function () {
+		const res = await udsRequest(socketPath, { pathName: '/bigstream' });
+		assert.strictEqual(res.status, 200);
+		assert.strictEqual(res.body.length, 4 * 1024 * 1024);
+		assert.ok(res.body.equals(Buffer.alloc(4 * 1024 * 1024, 0x61)), 'streamed bytes intact under backpressure');
 	});
 
 	it('returns 404 when the handler yields no response', async function () {
