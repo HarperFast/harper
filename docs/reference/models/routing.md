@@ -3,9 +3,9 @@ id: routing
 title: Routing & Fallback
 ---
 
-<!-- Source: harper resources/models/routing.ts, resources/models/Models.ts, resources/models/bootstrap.ts, resources/models/types.ts (v5.2) -->
+<!-- Source: harper resources/models/routing.ts, resources/models/Models.ts, resources/models/bootstrap.ts, resources/models/types.ts (v5.1.15) -->
 
-<VersionBadge version="v5.2.0" />
+<VersionBadge version="v5.1.15" />
 
 Every `models` call resolves through a **router** that returns an ordered list of candidate backends for the requested logical name. The facade uses the first candidate whose capabilities satisfy the call and falls through to the next on failure — capability-aware selection and fallback are the same mechanism.
 
