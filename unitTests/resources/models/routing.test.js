@@ -108,6 +108,35 @@ describe('Models routing (end-to-end)', () => {
 		assert.strictEqual(writer.records[1].backend, 'backup');
 	});
 
+	it('surfaces the primary (first) error, not the last candidate, when the whole chain fails (#1537)', async () => {
+		setGenerative(
+			'default',
+			defineBackend({
+				name: 'primary',
+				generate: async () => {
+					throw new Error('primary boom');
+				},
+			})
+		);
+		setGenerative(
+			'backup',
+			defineBackend({
+				name: 'backup',
+				generate: async () => {
+					throw new Error('backup boom');
+				},
+			})
+		);
+		setFallbackGroup('generative', 'default', ['backup']);
+		const writer = makeWriter();
+		// The primary is what the caller asked for, so its error is the most diagnostic.
+		await assert.rejects(() => new Models(writer, () => {}).generate('hi'), /primary boom/);
+		// Every candidate is still attempted and recorded — only the surfaced error changed.
+		assert.strictEqual(writer.records.length, 2);
+		assert.strictEqual(writer.records[0].backend, 'primary');
+		assert.strictEqual(writer.records[1].backend, 'backup');
+	});
+
 	it('generateStream throws synchronously for an unknown model (regression guard)', () => {
 		const models = new Models(makeWriter(), () => {});
 		assert.throws(() => models.generateStream('hi', { model: 'missing' }), { name: 'ModelBackendNotFoundError' });
