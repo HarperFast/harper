@@ -61,12 +61,23 @@ describe('agent/inspectorTool — safety envelope', () => {
 		);
 	});
 
-	it('marks evaluate and set_breakpoint destructive, others not', () => {
+	it('rejects a falsy/empty workerIndex instead of coercing it to 0', async () => {
+		const tools = toolMap(baseDeps);
+		for (const bad of ['', null, false, [], {}, 'x', 1.5]) {
+			await assert.rejects(
+				() => tools.get('inspector_attach').handler({ workerIndex: bad }, ctx),
+				/workerIndex must be an integer/,
+				`workerIndex=${JSON.stringify(bad)} should be rejected`
+			);
+		}
+	});
+
+	it('marks the code-executing tools destructive, read-only ones not', () => {
 		const tools = toolMap(baseDeps);
 		assert.equal(tools.get('inspector_evaluate').destructive, true);
 		assert.equal(tools.get('inspector_set_breakpoint').destructive, true);
+		assert.equal(tools.get('inspector_set_logpoint').destructive, true);
 		assert.ok(!tools.get('inspector_attach').destructive);
-		assert.ok(!tools.get('inspector_set_logpoint').destructive);
 		assert.ok(!tools.get('inspector_profile_cpu').destructive);
 	});
 });
@@ -97,13 +108,12 @@ describe('agent/inspectorTool — live CDP round-trip', () => {
 		inspector.open(0, '127.0.0.1', false);
 		port = Number(new URL(inspector.url()).port);
 	});
-	after(() => {
+	after(async () => {
+		// Close our CDP client. Note: we deliberately do NOT call inspector.close() here — it blocks
+		// until all inspector connections drop, which deadlocks against our own still-closing client.
+		// A brief tick lets the ws close frames flush; mocha's --exit tears down the open inspector.
 		_closeInspectorSessions();
-		try {
-			inspector.close();
-		} catch {
-			/* already closed */
-		}
+		await new Promise((r) => setTimeout(r, 50));
 	});
 
 	// startingPort + workerIndex(0) === this process's inspector port; getWorkerCount 1 keeps it in range.
