@@ -1,19 +1,19 @@
 /**
  * uWebSockets.js HTTP server adapter (SPIKE — github.com/HarperFast/harper issue #914).
  *
- * Creates a non-SSL uWS App on a Unix domain socket and bridges each request through
- * Harper's existing request pipeline: it builds a {@link UwsRequest} (the same duck-typed
- * shape as BunRequest), invokes the supplied `handler` (i.e. `httpChain[port]`), and
- * serializes the returned Harper response descriptor back onto the uWS HttpResponse.
+ * Creates a non-SSL uWS App — on a Unix domain socket (`socketPath`) or a TCP port (`port`) —
+ * and bridges each request through Harper's existing pipeline: it builds a {@link UwsRequest}
+ * (same duck-typed shape as BunRequest), invokes the supplied `handler` (i.e. `httpChain[port]`),
+ * and serializes the returned Harper response descriptor back onto the uWS HttpResponse.
+ * Streaming/SSE bodies are written incrementally with backpressure; a WebSocket `wsHandler`
+ * (when supplied) accepts upgrades via native app.ws() bridged through {@link UwsWebSocket}.
  *
- * Intended for the plaintext-UDS-behind-symphony topology: TLS/mTLS/HTTP-2 are terminated
- * by symphony upstream, the real client IP arrives via X-Forwarded-For, so this server only
- * speaks plaintext HTTP/1.1 and never touches certificates.
+ * Two topologies, both gated default-off in http.ts:
+ *  - HARPER_UWS_UDS: the plaintext-UDS-behind-symphony mirror — TLS/mTLS/HTTP-2 terminated by
+ *    symphony upstream, real client IP via X-Forwarded-For, so this server never touches certs.
+ *  - HARPER_UWS_HTTP: a direct plaintext TCP HTTP port (real peer IP from the socket).
  *
- * Wired into the UDS path in http.ts (getHTTPServer → uwsServeConfigs) and started in
- * threadServer.js when HARPER_UWS_UDS is set; `uWebSockets.js` is an optionalDependency
- * (ABI/platform-specific, built by CI). Response streaming is still collapsed to a buffer
- * upstream in makeUwsHandler — streaming bodies are a follow-up.
+ * `uWebSockets.js` is an optionalDependency (ABI/platform-specific, built by CI).
  */
 import { STATUS_CODES } from 'node:http';
 import { EventEmitter } from 'node:events';
