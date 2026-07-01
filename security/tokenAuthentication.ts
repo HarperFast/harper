@@ -25,11 +25,20 @@ env.initSync();
 type StringValue = SignOptions['expiresIn'];
 const OPERATION_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
 const REFRESH_TOKEN_TIMEOUT: StringValue = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
+// Default lifetime of a login-purpose token (see TOKEN_TYPE.LOGIN below). It only exists to be
+// exchanged for a session cookie, so it defaults far shorter than an operation token; callers can
+// still override via expires_in.
+const LOGIN_TOKEN_TIMEOUT: StringValue = '1m';
 const RSA_ALGORITHM: Algorithm = 'RS256';
 
 const TOKEN_TYPE = {
 	OPERATION: 'operation',
 	REFRESH: 'refresh',
+	// Purpose-scoped exchange token minted by createTokens({ purpose: 'login' }) and accepted only
+	// by validateLoginToken (the `login` operation). Its `sub` claim differs from
+	// TOKEN_TYPE.OPERATION, so validateOperationToken's Bearer-API path rejects it automatically —
+	// it can't be replayed as a general API credential the way a full operation token could.
+	LOGIN: 'login',
 };
 
 interface JWTRSAKeys {
@@ -45,6 +54,9 @@ interface AuthObject {
 	expires_in?: string | number;
 	bypass_auth?: boolean;
 	hdb_user?: User;
+	// 'login' mints a single short-lived, login-scoped token instead of an operation/refresh pair —
+	// see TOKEN_TYPE.LOGIN.
+	purpose?: 'login';
 }
 
 interface TokenObject {
@@ -52,8 +64,9 @@ interface TokenObject {
 }
 
 interface JWTTokens {
-	operation_token: string;
+	operation_token?: string;
 	refresh_token?: string;
+	login_token?: string;
 }
 
 /**
@@ -99,7 +112,8 @@ export function clearJWTRSAKeysCache(): void {
 }
 
 /**
- * Creates a new operation token and refresh token.
+ * Creates a new operation token and refresh token (or, with `purpose: 'login'`, a single
+ * login-scoped token — see TOKEN_TYPE.LOGIN).
  * If there is no username and password, the hdb_user making the request is used in the token.
  * An optional role can be provided which will be saved in the token payload.
  * The token expires in the time specified in the expires_in field or the default time.
@@ -113,6 +127,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			password: Joi.string().optional(),
 			role: Joi.string().optional(),
 			expires_in: Joi.alternatives(Joi.string(), Joi.number()).optional(),
+			purpose: Joi.string().valid('login').optional(),
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
@@ -147,6 +162,22 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	if (authObj.role) payload.role = authObj.role;
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
+
+	if (authObj.purpose === 'login') {
+		// Login-scoped exchange token: no refresh token, no user record update — it's a one-shot
+		// ticket for the `login` operation to trade for a session cookie, not a standing credential.
+		const loginToken = jwt.sign(
+			{ username: authObj.username },
+			{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+			{
+				expiresIn: (authObj.expires_in ?? LOGIN_TOKEN_TIMEOUT) as StringValue,
+				algorithm: RSA_ALGORITHM,
+				subject: TOKEN_TYPE.LOGIN,
+			} satisfies SignOptions
+		);
+		return { login_token: loginToken };
+	}
+
 	const operationToken = jwt.sign(
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
@@ -217,6 +248,15 @@ export async function validateOperationToken(token: string): Promise<any> {
 
 export async function validateRefreshToken(token: string): Promise<any> {
 	return validateToken(token, TOKEN_TYPE.REFRESH);
+}
+
+/**
+ * Validates a login-purpose token minted via createTokens({ purpose: 'login' }). Used solely by
+ * the `login` operation to exchange the token for an httpOnly session cookie — this is the only
+ * place a `sub: 'login'` token is accepted.
+ */
+export async function validateLoginToken(token: string): Promise<any> {
+	return validateToken(token, TOKEN_TYPE.LOGIN);
 }
 
 async function validateToken(token: string, tokenType: string): Promise<any> {

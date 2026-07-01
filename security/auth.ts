@@ -1,7 +1,7 @@
 import { getSuperUser } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.ts';
+import { validateOperationToken, validateRefreshToken, validateLoginToken } from './tokenAuthentication.ts';
 import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -315,8 +315,10 @@ export async function authentication(request, nextHandler) {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 				});
 			};
-			request.login = async function (username: string, password: string) {
-				const user: any = (request.user = await server.authenticateUser(username, password, request));
+			request.login = async function (username: string, password?: string, token?: string) {
+				const user: any = (request.user = token
+					? await validateLoginToken(token)
+					: await server.authenticateUser(username, password, request));
 				request.session.update({ user: user && (user.getId?.() ?? user.username) });
 			};
 		}
@@ -374,7 +376,7 @@ export async function login(loginObject) {
 	loginObject.baseResponse.headers.set = (name, value) => {
 		loginObject.fastifyResponse.header(name, value);
 	};
-	await loginObject.baseRequest.login(loginObject.username, loginObject.password ?? '');
+	await loginObject.baseRequest.login(loginObject.username, loginObject.password ?? '', loginObject.token);
 	return 'Login successful';
 }
 
