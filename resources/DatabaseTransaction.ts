@@ -123,9 +123,7 @@ export class DatabaseTransaction implements Transaction {
 		// committed data without pinning a consistent snapshot — so a long scan does not hold a
 		// snapshot that blocks compaction. Only applied when creating the transaction fresh; an
 		// already-open transaction keeps whatever snapshot mode it was created with.
-		this.transaction = disableSnapshot
-			? new RocksTransaction(this.db.store, { disableSnapshot: true })
-			: new RocksTransaction(this.db.store);
+		this.transaction = new RocksTransaction(this.db.store, { disableSnapshot });
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
