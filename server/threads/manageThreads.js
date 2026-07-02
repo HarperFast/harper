@@ -17,9 +17,14 @@ const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
+const { getConfigPath } = require('../../config/configUtils.ts');
 let preloadModules;
 function getPreloadModules() {
-	if (preloadModules === undefined) preloadModules = resolvePreloadModules();
+	if (preloadModules === undefined)
+		preloadModules = resolvePreloadModules(
+			envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_PRELOAD),
+			getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT)
+		);
 	return preloadModules;
 }
 const chokidar = require('chokidar');
