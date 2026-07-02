@@ -24,6 +24,9 @@ const {
 	isBlobComplete,
 	findIncompleteBlobRefs,
 	shouldDestroyIdleBlobSource,
+	registerBlobReceiveInFlight,
+	unregisterBlobReceiveInFlight,
+	isBlobReceiveInFlight,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -1049,6 +1052,54 @@ describe('Blob test', () => {
 			assert(Date.now() - started < 5000, 'read should fail promptly, not spin');
 		} finally {
 			store.unlock(lockKey);
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+		}
+	});
+	it('#481: register/unregister blob receive-in-flight is refcounted and null-safe', () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const fileId = 'testfile-481-refcount';
+		assert.equal(isBlobReceiveInFlight(fileId, store), false, 'unknown id is not in flight');
+		registerBlobReceiveInFlight(fileId, store);
+		registerBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), true, 'in flight after registration');
+		unregisterBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), true, 'still in flight while one receive remains');
+		unregisterBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), false, 'not in flight once all receives unregister');
+		// An extra unregister on an already-clean id is a no-op, not a negative count.
+		unregisterBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), false, 'unregister below zero is a no-op');
+		// Falsy fileIds and missing store must not corrupt the registry.
+		registerBlobReceiveInFlight('', store);
+		registerBlobReceiveInFlight(undefined, store);
+		registerBlobReceiveInFlight(fileId, undefined);
+		assert.equal(isBlobReceiveInFlight('', store), false, 'empty fileId is ignored');
+		assert.equal(isBlobReceiveInFlight(fileId, undefined), false, 'no store falls through to false');
+	});
+	it('#481: an ENOENT during an in-flight replication receive returns 503, not 404', async () => {
+		// A peer asks for a blob whose receive has been announced but the file hasn't landed yet.
+		// Pre-fix returned 404 (permanent); the registry flips it to 503 so the requester retries.
+		const { blob, filePath, store } = await makeDiskBackedBlob();
+		const fileId = getFileId(blob);
+		unlinkSync(filePath);
+		env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+		try {
+			registerBlobReceiveInFlight(fileId, store);
+			try {
+				await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+					assert.equal(error.statusCode, 503, 'in-flight receive maps ENOENT to 503');
+					return true;
+				});
+			} finally {
+				unregisterBlobReceiveInFlight(fileId, store);
+			}
+			// Once the receive clears, a cleanly-missing file falls back to 404.
+			await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+				assert.equal(error.statusCode, 404, 'cleanly-missing blob still 404 once receive clears');
+				assert.equal(error.code, 'ENOENT');
+				return true;
+			});
+		} finally {
 			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
 		}
 	});

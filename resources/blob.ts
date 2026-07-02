@@ -80,6 +80,53 @@ const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
 const storageInfoForBlob = new WeakMap<any, StorageInfo>();
+
+// Cross-thread receive-in-flight signal. The lock lives on the shared store (same primitive
+// writeBlobWithStream uses at :blob), so a receive registered on one worker thread is visible to
+// blob reads on any other. Per-thread refcount + hasLock so nested registers in one thread only
+// take/release the shared lock at the 0↔1 transitions. See harper-pro#481.
+const receiveInFlight = new Map<string, { count: number; hasLock: boolean }>();
+
+function receiveLockKey(fileId: string): string {
+	return fileId + ':blob:receive';
+}
+
+export function registerBlobReceiveInFlight(fileId: string | null | undefined, store: any): void {
+	if (!fileId || !store) return;
+	const key = receiveLockKey(fileId);
+	const state = receiveInFlight.get(key);
+	if (state) {
+		state.count++;
+		return;
+	}
+	const hasLock = !!store.tryLock(key);
+	receiveInFlight.set(key, { count: 1, hasLock });
+}
+
+export function unregisterBlobReceiveInFlight(fileId: string | null | undefined, store: any): void {
+	if (!fileId || !store) return;
+	const key = receiveLockKey(fileId);
+	const state = receiveInFlight.get(key);
+	if (!state) return;
+	if (state.count > 1) {
+		state.count--;
+		return;
+	}
+	if (state.hasLock) store.unlock(key);
+	receiveInFlight.delete(key);
+}
+
+export function isBlobReceiveInFlight(fileId: string | null | undefined, store: any): boolean {
+	if (!fileId) return false;
+	const key = receiveLockKey(fileId);
+	if (receiveInFlight.has(key)) return true;
+	if (!store) return false;
+	if (store.tryLock(key)) {
+		store.unlock(key);
+		return false;
+	}
+	return true;
+}
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
@@ -371,13 +418,15 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 									}, 20).unref();
 								}
 							}
-							// ENOENT: the file is gone. A writer still holding the lock means we timed out waiting
-							// for an in-progress write (503, retryable); otherwise it is cleanly absent (404).
+							// ENOENT: 503 if a local writer holds the lock or a replication receive is in
+							// flight (retryable); 404 only when the blob is cleanly absent. Without the
+							// receive-in-flight check the sender returns 404 during catch-up and the
+							// requester marks the record diverged (harper-pro#481).
 							const readError =
 								error.code === 'ENOENT'
-									? isBeingWritten
+									? isBeingWritten || isBlobReceiveInFlight(storageInfo.fileId, storageInfo.store)
 										? new BlobReadError(
-												`Blob ${storageInfo.fileId} is unavailable; its file did not appear in time`,
+												`Blob ${storageInfo.fileId} is unavailable; a write or replication receive is in flight`,
 												BLOB_UNAVAILABLE_STATUS
 											)
 										: new BlobReadError(`Blob file not found for ${filePath}`, BLOB_GONE_STATUS)
