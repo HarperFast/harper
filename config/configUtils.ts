@@ -24,6 +24,7 @@ import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
+import { applyComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -336,6 +337,20 @@ export function initConfig(force = false) {
 		}
 
 		checkForUpdatedConfig(configDoc, configFilePath);
+
+		// Config-shaping env vars delivered via component .env files (loadEnv) must be in process.env
+		// before the config is composed, or they silently no-op (#1513)
+		try {
+			const rootPath = resolveConfiguredPath(configDoc.getIn(['rootPath']) as string | undefined, undefined);
+			const componentsRoot =
+				resolveConfiguredPath(
+					(configDoc.getIn(['componentsRoot']) ?? configDoc.getIn(['customFunctions', 'root'])) as string | undefined,
+					rootPath
+				) ?? (rootPath ? path.join(rootPath, 'components') : undefined);
+			applyComponentEnvConfigVars(componentsRoot, process.env.RUN_HDB_APP);
+		} catch (error) {
+			logger.warn(`Could not apply component .env config vars: ${error.message}`);
+		}
 
 		// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables
 		applyRuntimeEnvVarConfig(configDoc, configFilePath);

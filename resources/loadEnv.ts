@@ -40,6 +40,9 @@ export function handleApplication(scope: Scope) {
 			}
 
 			if (process.env[key] !== undefined) {
+				// an identical value is not a conflict — e.g. a config-shaping var this file already
+				// delivered via the pre-config env pass (#1513)
+				if (process.env[key] === value) continue;
 				logger.warn(`Environment variable conflict: ${key} from ${entry.absolutePath} is already set on process.env`);
 				if (override) {
 					logger.debug(`override option enabled. overriding environment variable: ${key}`);

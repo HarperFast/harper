@@ -74,3 +74,35 @@ describe('loadEnv env-secret decryption hook', () => {
 		assert.equal(process.env.__ENVTEST_E, undefined);
 	});
 });
+
+describe('loadEnv conflict handling', () => {
+	const TOUCHED = ['__ENVTEST_F', '__ENVTEST_G'];
+
+	afterEach(() => {
+		for (const k of TOUCHED) delete process.env[k];
+	});
+
+	it('silently skips a key whose process.env value is identical (#1513 pre-pass)', () => {
+		process.env.__ENVTEST_F = 'same-value';
+		const scope = fakeScope();
+		handleApplication(scope);
+		scope.fire(addEntry('__ENVTEST_F=same-value'));
+		assert.equal(process.env.__ENVTEST_F, 'same-value');
+	});
+
+	it('keeps the existing value on a real conflict without override', () => {
+		process.env.__ENVTEST_G = 'original';
+		const scope = fakeScope();
+		handleApplication(scope);
+		scope.fire(addEntry('__ENVTEST_G=changed'));
+		assert.equal(process.env.__ENVTEST_G, 'original');
+	});
+
+	it('overrides on a real conflict when override is enabled', () => {
+		process.env.__ENVTEST_G = 'original';
+		const scope = fakeScope({ override: true });
+		handleApplication(scope);
+		scope.fire(addEntry('__ENVTEST_G=changed'));
+		assert.equal(process.env.__ENVTEST_G, 'changed');
+	});
+});

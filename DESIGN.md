@@ -236,3 +236,20 @@ replicability metadata is deferred to the cluster-level-config work (CORE-3018),
 schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
 in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
 operators must inspect the array for per-node outcomes.
+
+## Config is composed and memoized before any component runs (`config/configUtils.ts`)
+
+`getConfigObj()` composes the config once per thread (module-level memo) at its first call, which
+happens before the root component loads and long before any user component's plugins run. Anything a
+component does at load time — like `loadEnv` writing `process.env` — therefore cannot affect the
+composed config (#1513). `config/componentEnvPrepass.ts` closes the gap for the three config-shaping
+env vars (`HARPER_DEFAULT_CONFIG`/`HARPER_CONFIG`/`HARPER_SET_CONFIG`): it runs inside `initConfig`
+**before** the single `applyRuntimeEnvVarConfig` call — placement matters, because that function
+maintains snapshot/drift state in `harperConfigEnvVars.ts` and is not safe to run twice per boot. The
+pre-pass scans `componentsRoot` + `RUN_HDB_APP` for `loadEnv` declarations and pre-applies only those
+three vars to `process.env` (everything else still loads at component time). It deliberately mirrors
+loader behaviors that must stay in sync if the loader changes: config filename precedence
+(`harper-config.yaml` → `harperdb-config.yaml` → `config.yaml`), `files` pattern validation (`..` and
+absolute patterns rejected), and `loadEnv` `override` precedence (process env wins unless
+`override: true`). Known limitation: a `componentsRoot` override that itself arrives via env var or
+`.env` cannot redirect the scan.
