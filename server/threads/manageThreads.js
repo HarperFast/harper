@@ -100,8 +100,11 @@ function setMainIsWorker(isWorker) {
 }
 let workerCount = 1; // should be assigned when workers are created
 
-// The keys startWorker itself puts on workerData — providers may not collide with these.
-const BUILT_IN_WORKER_DATA_KEYS = [
+// Every workerData key core itself produces or consumes — providers may not collide with these.
+// Covers the keys startWorker spreads below plus keys read elsewhere: `noServerStart` is set by
+// the embedding entry point (index.ts) and read by threadServer.js to skip startServers(); a
+// provider shadowing it would wedge HTTP worker startup.
+const RESERVED_WORKER_DATA_KEYS = [
 	'addPorts',
 	'addThreadIds',
 	'workerIndex',
@@ -109,6 +112,7 @@ const BUILT_IN_WORKER_DATA_KEYS = [
 	'name',
 	'restartNumber',
 	'ticketKeys',
+	'noServerStart',
 ];
 const workerDataProviders = new Map();
 /**
@@ -120,7 +124,7 @@ const workerDataProviders = new Map();
  * Returns a function that unregisters the provider.
  */
 function registerWorkerDataProvider(name, provider) {
-	if (BUILT_IN_WORKER_DATA_KEYS.includes(name) || workerDataProviders.has(name)) {
+	if (RESERVED_WORKER_DATA_KEYS.includes(name) || workerDataProviders.has(name)) {
 		throw new Error(`workerData provider name '${name}' is already in use`);
 	}
 	if (typeof provider !== 'function') throw new Error('workerData provider must be a function');
@@ -136,8 +140,10 @@ function collectProvidedWorkerData(options) {
 		try {
 			const value = provider(options);
 			if (value === undefined) continue;
-			structuredClone(value); // pre-flight: a non-cloneable value must not break the Worker spawn
-			(provided ??= {})[name] = value;
+			// Use the clone, not the original: this both pre-flights cloneability (so a bad value
+			// can't break the Worker spawn) and detaches the payload from accessor-backed objects
+			// or later mutation that could still throw inside new Worker().
+			(provided ??= {})[name] = structuredClone(value);
 		} catch (error) {
 			harperLogger.error(`workerData provider '${name}' failed and will be skipped for this worker:`, error);
 		}

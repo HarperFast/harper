@@ -54,9 +54,13 @@ export function deferEncryptedEnvValue(entry: DeferredEncryptedEnvValue): void {
 	deferredSecrets.push(entry);
 }
 
-/** The queued entries awaiting a decryptor (exposed for tests/diagnostics). */
-export function getDeferredEncryptedEnvValues(): readonly DeferredEncryptedEnvValue[] {
-	return deferredSecrets;
+/**
+ * A redacted snapshot of the queued entries awaiting a decryptor, for tests/diagnostics: a copy,
+ * without the ciphertext (`rawValue`), so holders can neither mutate pending entries nor retain
+ * the queued values past the flush.
+ */
+export function getDeferredEncryptedEnvValues(): Omit<DeferredEncryptedEnvValue, 'rawValue'>[] {
+	return deferredSecrets.map(({ key, sourcePath, override }) => ({ key, sourcePath, override }));
 }
 
 // Replay queued encrypted env entries through a newly registered decryptor, mirroring loadEnv's
@@ -76,6 +80,7 @@ function replayDeferredSecrets(newDecryptor: SecretDecryptor): void {
 			continue;
 		}
 		if (process.env[key] !== undefined) {
+			if (process.env[key] === value) continue; // already holds the decrypted value — nothing to report
 			logger.warn(`Environment variable conflict: ${key} from ${sourcePath} is already set on process.env`);
 			if (!override) continue;
 		}

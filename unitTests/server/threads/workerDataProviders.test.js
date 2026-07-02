@@ -10,9 +10,11 @@ const FIXTURE = path.join(__dirname, 'workerData-fixture.js');
 const WORKER_NAME = 'workerData-provider-test';
 
 describe('registerWorkerDataProvider', () => {
-	it('rejects built-in workerData keys, duplicate names, and non-function providers', () => {
+	it('rejects reserved workerData keys, duplicate names, and non-function providers', () => {
 		assert.throws(() => registerWorkerDataProvider('ticketKeys', () => 1), /already in use/);
 		assert.throws(() => registerWorkerDataProvider('addPorts', () => 1), /already in use/);
+		// consumed by threadServer.js, not spread by startWorker — must be reserved all the same
+		assert.throws(() => registerWorkerDataProvider('noServerStart', () => true), /already in use/);
 		const unregister = registerWorkerDataProvider('dupNameTest', () => undefined);
 		try {
 			assert.throws(() => registerWorkerDataProvider('dupNameTest', () => undefined), /already in use/);
@@ -27,9 +29,20 @@ describe('registerWorkerDataProvider', () => {
 	it('spreads provider values into workerData; skips undefined, throwing, and non-cloneable providers', async function () {
 		this.timeout(30000);
 		const unregisters = [
-			registerWorkerDataProvider('testProvided', (options) =>
-				options.name === WORKER_NAME ? { secret: 'abc', kid: 'k1' } : undefined
-			),
+			registerWorkerDataProvider('testProvided', (options) => {
+				if (options.name !== WORKER_NAME) return undefined;
+				// accessor-backed value: the getter yields once, then throws. The spawn must use the
+				// structuredClone result (plain data) — storing the original would re-trigger the
+				// getter inside new Worker() and break the spawn.
+				let reads = 0;
+				return {
+					kid: 'k1',
+					get secret() {
+						if (reads++ > 0) throw new Error('secret may only be read once');
+						return 'abc';
+					},
+				};
+			}),
 			registerWorkerDataProvider('testSkipped', () => undefined),
 			registerWorkerDataProvider('testThrows', (options) => {
 				if (options.name === WORKER_NAME) throw new Error('provider boom');
