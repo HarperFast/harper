@@ -341,12 +341,18 @@ export function initConfig(force = false) {
 		// Config-shaping env vars delivered via component .env files (loadEnv) must be in process.env
 		// before the config is composed, or they silently no-op (#1513)
 		try {
-			const rootPath = resolveConfiguredPath(configDoc.getIn(['rootPath']) as string | undefined, undefined);
+			// the config file lives in the root directory, so its dirname is the authoritative base:
+			// it also anchors a relative or missing rootPath value in the config doc
+			const configFileDir = path.dirname(configFilePath);
+			const rootPath = path.resolve(
+				configFileDir,
+				resolveConfiguredPath(configDoc.getIn(['rootPath']) as string | undefined, configFileDir) ?? configFileDir
+			);
 			const componentsRoot =
 				resolveConfiguredPath(
 					(configDoc.getIn(['componentsRoot']) ?? configDoc.getIn(['customFunctions', 'root'])) as string | undefined,
 					rootPath
-				) ?? (rootPath ? path.join(rootPath, 'components') : undefined);
+				) ?? path.join(rootPath, 'components');
 			applyComponentEnvConfigVars(componentsRoot, process.env.RUN_HDB_APP);
 		} catch (error) {
 			logger.warn(`Could not apply component .env config vars: ${error.message}`);
