@@ -42,14 +42,19 @@ function installCustody() {
 }
 
 // Lightweight mock table: a Map of rows with the get/put/delete/search subset the ops use.
-function installMockSecretTable() {
+// `getDelay` widens the read→write window so interleaving tests can prove the per-name lock;
+// `putCount` lets no-op tests assert nothing was written.
+function installMockSecretTable({ getDelay = 0 } = {}) {
 	const rows = new Map();
 	const mock = {
 		rows,
+		putCount: 0,
 		async get(id) {
+			if (getDelay) await new Promise((resolve) => setTimeout(resolve, getDelay));
 			return rows.get(id);
 		},
 		async put(row) {
+			this.putCount++;
 			rows.set(row.name, row);
 		},
 		async delete(id) {
@@ -236,6 +241,78 @@ describe('secretOperations', () => {
 				async () => secretOps.grantSecret({ ...su('grant_secret'), name: 'NOPE', component: 'app1' }),
 				(err) => err.statusCode === 404
 			);
+		});
+
+		it('no-op grant/revoke returns changed:false without writing or bumping updated_by', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'N', value: 'x', grants: ['app1'] });
+			const putsAfterSet = installed.mock.putCount;
+			const rowBefore = installed.mock.rows.get('N');
+
+			const grantRes = await secretOps.grantSecret({
+				operation: 'grant_secret',
+				hdb_user: { username: 'other-admin', role: { permission: { super_user: true } } },
+				name: 'N',
+				component: 'app1',
+			});
+			assert.deepStrictEqual(grantRes, { name: 'N', grants: ['app1'], changed: false });
+
+			const revokeRes = await secretOps.revokeSecret({ ...su('revoke_secret'), name: 'N', component: 'ghost' });
+			assert.deepStrictEqual(revokeRes, { name: 'N', grants: ['app1'], changed: false });
+
+			assert.equal(installed.mock.putCount, putsAfterSet, 'no table.put on a no-op');
+			assert.strictEqual(installed.mock.rows.get('N'), rowBefore, 'row object untouched');
+			assert.equal(rowBefore.updated_by, 'admin', 'updated_by not bumped by the no-op');
+		});
+
+		it('reports changed:true when a mutation actually happens', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'N2', value: 'x' });
+			const res = await secretOps.grantSecret({ ...su('grant_secret'), name: 'N2', component: 'app1' });
+			assert.deepStrictEqual(res, { name: 'N2', grants: ['app1'], changed: true });
+		});
+
+		it('interleaved grant+revoke both land (per-name lock serializes read-modify-write)', async () => {
+			// Reinstall with a slow get: without the lock, both mutations read the same snapshot
+			// and the second put would silently erase the first mutation.
+			installed.restore();
+			installed = installMockSecretTable({ getDelay: 10 });
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'R', value: 'x', grants: ['a'] });
+
+			await Promise.all([
+				secretOps.grantSecret({ ...su('grant_secret'), name: 'R', component: 'b' }),
+				secretOps.revokeSecret({ ...su('revoke_secret'), name: 'R', component: 'a' }),
+			]);
+			assert.deepStrictEqual(installed.mock.rows.get('R').grants, ['b']);
+		});
+
+		it('concurrent grants of different components both land', async () => {
+			installed.restore();
+			installed = installMockSecretTable({ getDelay: 10 });
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'C2', value: 'x' });
+
+			await Promise.all([
+				secretOps.grantSecret({ ...su('grant_secret'), name: 'C2', component: 'x1' }),
+				secretOps.grantSecret({ ...su('grant_secret'), name: 'C2', component: 'x2' }),
+			]);
+			assert.deepStrictEqual([...installed.mock.rows.get('C2').grants].sort(), ['x1', 'x2']);
+		});
+
+		it('concurrent set_secret and grant_secret preserve both the new envelope and the grant', async () => {
+			installed.restore();
+			installed = installMockSecretTable({ getDelay: 10 });
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'M', value: 'v1' });
+
+			await Promise.all([
+				secretOps.setSecret({ ...su('set_secret'), name: 'M', value: 'v2' }),
+				secretOps.grantSecret({ ...su('grant_secret'), name: 'M', component: 'app1' }),
+			]);
+			const row = installed.mock.rows.get('M');
+			assert.deepStrictEqual(row.grants, ['app1'], 'grant survives the concurrent re-set');
+			assert.equal(decryptEnvelope(row.envelope.slice(PREFIX.length), privateKey, fp), 'v2', 'new value survives');
 		});
 	});
 

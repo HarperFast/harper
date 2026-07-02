@@ -56,6 +56,13 @@ describe('secret operation validators', () => {
 			assert.ok(!valid(validator.setSecretValidator({ name: 'A', envelope: 'enc:v2:Zm9v' })));
 		});
 
+		it('rejects value/envelope over the 256KiB cap, accepts at the cap', () => {
+			const cap = 256 * 1024;
+			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'a'.repeat(cap + 1) })));
+			assert.ok(!valid(validator.setSecretValidator({ name: 'A', envelope: 'enc:v1:' + 'a'.repeat(cap) })));
+			assert.ok(valid(validator.setSecretValidator({ name: 'A', value: 'a'.repeat(cap) })));
+		});
+
 		it('rejects non-object metadata and non-array grants', () => {
 			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'x', metadata: 'notes' })));
 			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'x', grants: 'my-app' })));

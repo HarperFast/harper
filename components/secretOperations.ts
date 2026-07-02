@@ -77,6 +77,29 @@ function componentIsKnown(component: string): boolean {
 	}
 }
 
+// Serialize read-modify-write mutations per secret name. The operations API dispatches these
+// handlers on the MAIN thread only, so an in-process promise chain is sufficient to make the
+// get→mutate→put of set_secret/grant_secret/revoke_secret/delete_secret atomic against local
+// concurrency (without it, overlapping grant/revoke calls can silently drop each other's
+// mutation). Cross-node concurrency remains last-write-wins on the whole row — the known
+// system-table replication semantic.
+const nameLocks = new Map<string, Promise<void>>();
+async function withSecretLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+	const prior = nameLocks.get(name) ?? Promise.resolve();
+	const run = prior.then(fn);
+	// The stored tail never rejects, so a failed mutation doesn't poison the chain.
+	const tail = run.then(
+		() => undefined,
+		() => undefined
+	);
+	nameLocks.set(name, tail);
+	try {
+		return await run;
+	} finally {
+		if (nameLocks.get(name) === tail) nameLocks.delete(name);
+	}
+}
+
 // Structured audit event for every mutation — operation, secret name, and user, never values.
 function notifyMutation(operation: string, name: string, req: any, detail?: string) {
 	logger.notify(
@@ -148,18 +171,20 @@ export async function setSecret(req: any) {
 		}
 	}
 
-	const existing = await table.get(name);
-	await table.put({
-		name,
-		envelope,
-		kid,
-		grants: req.grants ?? (Array.isArray(existing?.grants) ? [...existing.grants] : []),
-		metadata: req.metadata ?? existing?.metadata ?? {},
-		unverified,
-		updated_by: req.hdb_user?.username ?? null,
+	return withSecretLock(name, async () => {
+		const existing = await table.get(name);
+		await table.put({
+			name,
+			envelope,
+			kid,
+			grants: req.grants ?? (Array.isArray(existing?.grants) ? [...existing.grants] : []),
+			metadata: req.metadata ?? existing?.metadata ?? {},
+			unverified,
+			updated_by: req.hdb_user?.username ?? null,
+		});
+		notifyMutation(terms.OPERATIONS_ENUM.SET_SECRET, name, req, unverified ? 'unverified=true' : undefined);
+		return { name, kid, created: existing == null };
 	});
-	notifyMutation(terms.OPERATIONS_ENUM.SET_SECRET, name, req, unverified ? 'unverified=true' : undefined);
-	return { name, kid, created: existing == null };
 }
 
 async function mutateGrants(req: any, grant: boolean) {
@@ -167,27 +192,33 @@ async function mutateGrants(req: any, grant: boolean) {
 	validate(validator.grantSecretValidator(req));
 
 	const table = secretTable();
-	const row = await table.get(req.name);
-	if (!row) {
-		throw new ClientError(`No secret found with name '${req.name}'`, HTTP_STATUS_CODES.NOT_FOUND);
-	}
-	const record = toRecord(row);
-	const index = record.grants.indexOf(req.component);
-	if (grant && index < 0) record.grants.push(req.component);
-	if (!grant && index >= 0) record.grants.splice(index, 1);
-	record.updated_by = req.hdb_user?.username ?? null;
-	await table.put(record);
-	// Granting to a not-yet-deployed component is legal (grants may precede the deploy), but an
-	// unknown name is worth a breadcrumb in the audit event — it is usually a typo.
-	let detail = `component=${req.component}`;
-	if (grant && !componentIsKnown(req.component)) detail += ' component_known=false';
-	notifyMutation(
-		grant ? terms.OPERATIONS_ENUM.GRANT_SECRET : terms.OPERATIONS_ENUM.REVOKE_SECRET,
-		req.name,
-		req,
-		detail
-	);
-	return { name: req.name, grants: record.grants };
+	return withSecretLock(req.name, async () => {
+		const row = await table.get(req.name);
+		if (!row) {
+			throw new ClientError(`No secret found with name '${req.name}'`, HTTP_STATUS_CODES.NOT_FOUND);
+		}
+		const record = toRecord(row);
+		const index = record.grants.indexOf(req.component);
+		// No-op short-circuit: nothing to write, nothing to audit, no updated_by/__updatedtime__ bump.
+		if (grant ? index >= 0 : index < 0) {
+			return { name: req.name, grants: record.grants, changed: false };
+		}
+		if (grant) record.grants.push(req.component);
+		else record.grants.splice(index, 1);
+		record.updated_by = req.hdb_user?.username ?? null;
+		await table.put(record);
+		// Granting to a not-yet-deployed component is legal (grants may precede the deploy), but an
+		// unknown name is worth a breadcrumb in the audit event — it is usually a typo.
+		let detail = `component=${req.component}`;
+		if (grant && !componentIsKnown(req.component)) detail += ' component_known=false';
+		notifyMutation(
+			grant ? terms.OPERATIONS_ENUM.GRANT_SECRET : terms.OPERATIONS_ENUM.REVOKE_SECRET,
+			req.name,
+			req,
+			detail
+		);
+		return { name: req.name, grants: record.grants, changed: true };
+	});
 }
 
 /** Add a component to a secret's grants list (idempotent). */
@@ -235,13 +266,15 @@ export async function deleteSecret(req: any) {
 	validate(validator.deleteSecretValidator(req));
 
 	const table = secretTable();
-	const row = await table.get(req.name);
-	if (!row) {
-		throw new ClientError(`No secret found with name '${req.name}'`, HTTP_STATUS_CODES.NOT_FOUND);
-	}
-	await table.delete(req.name);
-	notifyMutation(terms.OPERATIONS_ENUM.DELETE_SECRET, req.name, req);
-	return { message: `Successfully deleted secret '${req.name}'` };
+	return withSecretLock(req.name, async () => {
+		const row = await table.get(req.name);
+		if (!row) {
+			throw new ClientError(`No secret found with name '${req.name}'`, HTTP_STATUS_CODES.NOT_FOUND);
+		}
+		await table.delete(req.name);
+		notifyMutation(terms.OPERATIONS_ENUM.DELETE_SECRET, req.name, req);
+		return { message: `Successfully deleted secret '${req.name}'` };
+	});
 }
 
 /** The cluster secrets public key, for client-side envelope encryption. */
