@@ -51,6 +51,85 @@
 			},
 			"required": ["files"]
 		},
+		"static": {
+			"type": "object",
+			"description": "Static file serving configuration.",
+			"additionalProperties": true,
+			"properties": {
+				"files": {
+					"description": "Glob(s) or path(s) to the files to serve.",
+					"oneOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						}
+					]
+				},
+				"urlPath": {
+					"type": "string",
+					"description": "URL path prefix the files are served under."
+				},
+				"index": {
+					"type": "boolean",
+					"description": "Serve index.html files for directory requests.",
+					"default": true
+				},
+				"extensions": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "File extensions to try appending when a requested path is not found (e.g. ['html'] serves /page.html for /page)."
+				},
+				"fallthrough": {
+					"type": "boolean",
+					"description": "Pass unmatched requests to the next handler. When false, this handler answers unmatched GETs itself — note it runs before the REST handler by default, so also set `after: 'rest'` if the application serves an API.",
+					"default": true
+				},
+				"notFound": {
+					"description": "File to serve when a path is not found (requires `fallthrough: false`). Either a path, or an object with `file` and `statusCode` (e.g. index.html with 200 for history-mode SPAs — combine with `after: 'rest'`).",
+					"oneOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"file": {
+									"type": "string"
+								},
+								"statusCode": {
+									"type": "number"
+								}
+							},
+							"required": ["file", "statusCode"]
+						}
+					]
+				},
+				"before": {
+					"description": "Run this handler before the named handler. Defaults to 'authentication' so file requests skip credential parsing; false clears the default so registration order applies.",
+					"oneOf": [
+						{
+							"type": "string"
+						},
+						{
+							"const": false
+						}
+					]
+				},
+				"after": {
+					"type": "string",
+					"description": "Run this handler after the named handler, e.g. 'rest' to let API routes match before static fallbacks. Overrides the default `before: 'authentication'` hoist."
+				}
+			},
+			"required": ["files"]
+		},
 		"package": {
 			"type": "string",
 			"description": "Package identifier for the application (npm-compatible or git URL)."
