@@ -179,6 +179,7 @@ export const SYSTEM_TABLE_NAMES = {
 	INFO_TABLE_NAME: 'hdb_info',
 	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
 	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
+	SECRET_TABLE_NAME: 'hdb_secret',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -304,6 +305,12 @@ export const OPERATIONS_ENUM = {
 	CLEAR_STATUS: 'clear_status',
 	LIST_DEPLOYMENTS: 'list_deployments',
 	GET_DEPLOYMENT: 'get_deployment',
+	SET_SECRET: 'set_secret',
+	GRANT_SECRET: 'grant_secret',
+	REVOKE_SECRET: 'revoke_secret',
+	LIST_SECRETS: 'list_secrets',
+	DELETE_SECRET: 'delete_secret',
+	GET_SECRETS_PUBLIC_KEY: 'get_secrets_public_key',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',

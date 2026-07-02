@@ -30,6 +30,9 @@ module.exports = {
 	getEnvKeysValidator,
 	setEnvValueValidator,
 	deleteEnvValueValidator,
+	setSecretValidator,
+	grantSecretValidator,
+	deleteSecretValidator,
 };
 
 /**
@@ -236,6 +239,63 @@ function deleteEnvValueValidator(req) {
 		key: Joi.string().pattern(ENV_KEY_REGEX),
 		keys: Joi.array().items(Joi.string().pattern(ENV_KEY_REGEX)).min(1),
 	}).xor('key', 'keys');
+
+	return validator.validateBySchema(req, schema);
+}
+
+// A secret name doubles as an env key when materialized, so it is held to the same character set.
+const SECRET_NAME = Joi.string()
+	.pattern(ENV_KEY_REGEX)
+	.required()
+	.messages({ 'string.pattern.base': `'name' must only contain word characters, dots and dashes` });
+
+// `enc:v1:` marker followed by a base64url envelope body (structural validation of the decoded
+// JSON happens in the handler via parseEnvelopeFields).
+const SECRET_ENVELOPE_REGEX = /^enc:v1:[A-Za-z0-9_-]+$/;
+
+/**
+ * Validate set_secret requests: `name` plus exactly one of `value` (plaintext) or `envelope`
+ * (`enc:v1:` ciphertext), with optional `metadata` and `grants`.
+ * @param req
+ * @returns {*}
+ */
+function setSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+		value: Joi.string().allow(''),
+		envelope: Joi.string()
+			.pattern(SECRET_ENVELOPE_REGEX)
+			.messages({ 'string.pattern.base': `'envelope' must be an 'enc:v1:' base64url envelope` }),
+		metadata: Joi.object(),
+		grants: Joi.array().items(Joi.string().min(1)),
+	}).xor('value', 'envelope');
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate grant_secret / revoke_secret requests (same shape: `name` + `component`).
+ * @param req
+ * @returns {*}
+ */
+function grantSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+		component: Joi.string().min(1).required(),
+	});
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate delete_secret requests.
+ * @param req
+ * @returns {*}
+ */
+function deleteSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+	});
 
 	return validator.validateBySchema(req, schema);
 }
