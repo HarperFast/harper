@@ -133,6 +133,25 @@ describe('Caching', () => {
 		assert.equal(target23.loadedFromSource, true);
 	});
 
+	it('loadedFromSource is observable on the context with a plain id', async function () {
+		// with a plain id, the static get dispatch mints an internal RequestTarget the caller
+		// never sees, so the flag must be mirrored onto the context (#1571)
+		CachingTable.setTTLExpiration(30);
+		await CachingTable.invalidate(31);
+		let context = {};
+		let result = await CachingTable.get(31, context);
+		assert.equal(result.id, 31);
+		assert.equal(context.loadedFromSource, true);
+		context = {};
+		result = await CachingTable.get(31, context);
+		assert.equal(result.id, 31);
+		assert.equal(context.loadedFromSource, false);
+		context = { onlyIfCached: true };
+		result = await CachingTable.get(31, context);
+		assert.equal(result.id, 31);
+		assert.equal(context.loadedFromSource, false);
+	});
+
 	it('Cache stampede is handled', async function () {
 		try {
 			CachingTable.setTTLExpiration(0.01);
