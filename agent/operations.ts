@@ -137,7 +137,16 @@ async function approveAgentAction(op: any, deps: OperationDeps) {
 async function setAgentConfig(op: any, deps: OperationDeps) {
 	requireSuperUser(op);
 	const patch: Partial<AgentConfig> = {};
-	for (const key of ['enabled', 'provider', 'model', 'maxTurns', 'maxCostUsd', 'autoApprove', 'allowDestructive']) {
+	for (const key of [
+		'enabled',
+		'provider',
+		'model',
+		'maxTurns',
+		'maxCostUsd',
+		'autoApprove',
+		'allowDestructive',
+		'systemPromptAppend',
+	]) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
 	}
 	return deps.setConfig(patch);
