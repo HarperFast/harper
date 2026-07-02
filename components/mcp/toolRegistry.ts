@@ -136,8 +136,41 @@ export interface ToolDef extends ToolDescriptor {
 
 const registry = new Map<string, ToolDef>();
 
+/**
+ * Dynamic, per-profile tool source. A profile may register a provider that
+ * computes its tool set *lazily* — walked on every `tools/list` / `tools/call`
+ * rather than snapshotted into the static registry at registration time. The
+ * operations profile uses this so component operations registered after MCP
+ * boot (`server.registerOperation`, e.g. the built-in agent's `agent_prompt`)
+ * still surface once allow-listed, instead of being missed by a one-time walk
+ * of `OPERATION_FUNCTION_MAP` — see components/mcp/tools/operations.ts (#1562).
+ *
+ * On a name collision, a statically-registered tool (`addTool`) for the same
+ * profile wins over a provider entry — a curated tool overrides a generic
+ * same-named provider tool.
+ */
+export interface ProfileToolProvider {
+	/** Every tool the provider currently exposes for its profile. */
+	list(): ToolDef[];
+	/** Resolve a single tool by name, or `undefined` if not currently exposed. */
+	get(name: string): ToolDef | undefined;
+}
+
+const profileProviders = new Map<McpProfile, ProfileToolProvider>();
+
 /** Per-session pagination cache. Invalidated when a fresh `tools/list` (no cursor) call recomputes. */
 const sessionListCache = new Map<string, { tools: ToolDescriptor[] }>();
+
+/**
+ * Install (or, with `undefined`, remove) the dynamic tool provider for a
+ * profile. Idempotent — re-installing swaps the provider. Drops the pagination
+ * caches so the next `tools/list` recomputes against the new provider.
+ */
+export function setProfileToolProvider(profile: McpProfile, provider: ProfileToolProvider | undefined): void {
+	if (provider) profileProviders.set(profile, provider);
+	else profileProviders.delete(profile);
+	sessionListCache.clear();
+}
 
 export function addTool(def: ToolDef): void {
 	if (!def?.name) throw new Error('addTool: name is required');
@@ -153,7 +186,15 @@ export function removeTool(name: string): boolean {
 }
 
 export function getTool(name: string): ToolDef | undefined {
-	return registry.get(name);
+	// Statically-registered tools win over provider entries on a name collision
+	// (curated tool overrides a generic same-named provider tool).
+	const statik = registry.get(name);
+	if (statik) return statik;
+	for (const provider of profileProviders.values()) {
+		const def = provider.get(name);
+		if (def) return def;
+	}
+	return undefined;
 }
 
 /**
@@ -199,6 +240,7 @@ export function clearSessionCache(sessionId: string): void {
 /** Test seam: drop all registrations. */
 export function _resetRegistryForTest(): void {
 	registry.clear();
+	profileProviders.clear();
 	sessionListCache.clear();
 }
 
@@ -258,9 +300,19 @@ export function listTools(args: ListToolsArgs): ListToolsResult {
 }
 
 function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescriptor[] {
-	const out: ToolDescriptor[] = [];
+	// Merge the profile's dynamic provider (if any) with its statically-registered
+	// tools, deduping by name. Provider entries are inserted first so a static
+	// registration of the same name overrides them (curated wins — see getTool).
+	const byName = new Map<string, ToolDef>();
+	const provider = profileProviders.get(profile);
+	if (provider) {
+		for (const def of provider.list()) byName.set(def.name, def);
+	}
 	for (const def of registry.values()) {
-		if (def.profile !== profile) continue;
+		if (def.profile === profile) byName.set(def.name, def);
+	}
+	const out: ToolDescriptor[] = [];
+	for (const def of byName.values()) {
 		if (!def.visibleTo(user)) continue;
 		out.push({
 			name: def.name,
