@@ -4562,7 +4562,8 @@ export function makeTable(options) {
 	) {
 		// mirror the flag onto the context: callers that pass a plain id get an internal
 		// RequestTarget they never see, so the context is their only way to observe cache disposition (#1571)
-		if (target) target.loadedFromSource = loadedFromSource;
+		// target may be a primitive id on instance-API calls, which can't hold the flag
+		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 		if (context) context.loadedFromSource = loadedFromSource;
 	}
 	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?, target?) {
