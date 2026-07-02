@@ -87,18 +87,19 @@ const accessorCache = new Map<string, Readonly<Record<string, string>>>();
 /**
  * Read the hdb_secret store, decrypt what this node's custody allows, materialize the global tier
  * (empty `grants`) into the real process.env, and snapshot the scoped tier for the accessor. Runs
- * at the start of each load cycle (with `resetDeclarations`, so state from removed components/env
- * blocks doesn't linger), and again per env-declaring component load so out-of-cycle loads (e.g.
- * deploy validation in a long-lived worker) gate against a fresh snapshot. Never throws — every
- * degraded mode (table missing pre-upgrade, no custody registered, undecryptable rows) logs and
- * leaves the node bootable; the unsatisfied state surfaces per-component when declarations are
- * evaluated.
+ * at the start of each load cycle, and again per env-declaring component load so out-of-cycle
+ * loads (e.g. deploy validation in a long-lived worker) gate against a fresh snapshot. Never
+ * throws — every degraded mode (table missing pre-upgrade, no custody registered, undecryptable
+ * rows) logs and leaves the node bootable; the unsatisfied state surfaces per-component when
+ * declarations are evaluated.
+ *
+ * The per-component declaration registries are deliberately NOT reset here: on the main thread
+ * `loadedPaths` is never cleared in production, so already-loaded components are not reprocessed
+ * on a reload cycle — a cycle-level wipe would permanently empty their status state. Registries
+ * are overwrite-on-reprocess instead; state for a deleted component is unreachable from
+ * `get_components` (which is keyed by the existing component directories).
  */
-export async function materializeGlobalSecrets({ resetDeclarations = false } = {}): Promise<void> {
-	if (resetDeclarations) {
-		declaredEnvNames.clear();
-		unsatisfiedEnv.clear();
-	}
+export async function materializeGlobalSecrets(): Promise<void> {
 	const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
 	if (!table) {
 		storeAvailable = false;

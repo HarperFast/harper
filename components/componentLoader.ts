@@ -68,9 +68,8 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
 	// any application loads (root components — including the Pro custody registration — have
 	// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody
-	// secrets heal; resetDeclarations drops per-component state from components/env blocks that no
-	// longer exist. Never throws.
-	await materializeGlobalSecrets({ resetDeclarations: true });
+	// secrets heal. Never throws.
+	await materializeGlobalSecrets();
 	const cfsLoaded: Promise<any>[] = [];
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });

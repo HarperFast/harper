@@ -169,12 +169,13 @@ describe('componentSecrets', () => {
 			await materializeGlobalSecrets();
 		});
 
-		it('resetDeclarations drops per-component state from removed env blocks', async () => {
+		it('reprocessing a component env block overwrites its previous declaration state', async () => {
 			await materializeGlobalSecrets();
 			processComponentEnv('app-a', { CS_OPT: { required: false } });
 			assert.equal(getUnsatisfiedEnv('app-a').length, 1);
-			// next load cycle: the component no longer declares anything
-			await materializeGlobalSecrets({ resetDeclarations: true });
+			// the component is redeployed/reprocessed with the declaration removed
+			await materializeGlobalSecrets();
+			processComponentEnv('app-a', {});
 			assert.equal(getUnsatisfiedEnv('app-a').length, 0);
 			assert.deepEqual(Object.keys(getSecretsForComponent('app-a')), []);
 		});
