@@ -171,6 +171,22 @@ describe('Caching', () => {
 		}
 	});
 
+	it('wasLoadedFromSource() reports cache disposition on resource instances (#1576)', async function () {
+		let observed;
+		class ObservingCachingTable extends CachingTable {
+			get(target) {
+				observed = this.wasLoadedFromSource();
+				return super.get(target);
+			}
+		}
+		CachingTable.setTTLExpiration(30);
+		await CachingTable.invalidate(33);
+		await ObservingCachingTable.get(33);
+		assert.equal(observed, true);
+		await ObservingCachingTable.get(33);
+		assert.equal(observed, false);
+	});
+
 	it('Cache stampede is handled', async function () {
 		try {
 			CachingTable.setTTLExpiration(0.01);

@@ -49,6 +49,8 @@ export interface ResourceInterface<Record extends object = any>
 	subscribe?(request: SubscriptionRequest): AsyncIterable<Record> | Promise<AsyncIterable<Record>>;
 
 	doesExist(): boolean;
+	/** For caching tables, whether this resource's record was loaded from the source; undefined
+	 * until a load resolves or when the table has no source get. See Context.loadedFromSource. */
 	wasLoadedFromSource(): boolean | void;
 
 	getCurrentUser(): User | undefined;
