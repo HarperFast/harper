@@ -26,6 +26,7 @@ import { buildInspectorTools } from './tools/inspectorTool.ts';
 import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
+import { registerAgentMcpTools } from './mcpTools.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool } from './types.ts';
@@ -212,6 +213,11 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		cancelRun,
 	});
 	for (const op of operations) opts.server.registerOperation(op);
+
+	// Expose the agent over MCP: register curated agent tools into the registry AFTER the ops exist.
+	// (The generic operations-profile walk ran before this, so allow-listing the agent ops wouldn't
+	// surface them — see mcpTools.ts.) They only reach clients when the MCP surface is enabled.
+	registerAgentMcpTools(operations);
 
 	log.info?.(`Agent component initialized with ${composed.tools.length} tools`);
 }
