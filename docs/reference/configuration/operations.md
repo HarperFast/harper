@@ -20,7 +20,13 @@ Modifies one or more Harper configuration parameters. **Requires a [restart](../
 
 `operation` _(required)_ — must be `set_configuration`
 
+`replicated` _(optional)_ <VersionBadge version="v5.1.0" /> — set to `true` to apply the same configuration change to all cluster nodes in a single call. The origin node applies the change first; if its local write fails, nothing is sent to peers. Requires replication to be configured.
+
 Additional properties correspond to configuration keys in underscore-separated format (e.g. `logging_level` for `logging.level`, `clustering_enabled` for `clustering.enabled`).
+
+:::warning Replicate cluster-appropriate parameters only
+A replicated call sends the exact same values to every node. Do not include node-local parameters — ports, `node.hostname`, `rootPath`, storage/log file paths, TLS certificate or key paths, or `replication.hostname`/`url`/`routes` — as they would overwrite each peer's local values.
+:::
 
 ### Body
 
@@ -37,6 +43,42 @@ Additional properties correspond to configuration keys in underscore-separated f
 ```json
 {
 	"message": "Configuration successfully set. You must restart HarperDB for new config settings to take effect."
+}
+```
+
+### Replicated body
+
+```json
+{
+	"operation": "set_configuration",
+	"http_corsAccessList": ["app.example.com"],
+	"replicated": true
+}
+```
+
+### Response: 200 (replicated)
+
+The `replicated` array reports per-node outcomes. A failed peer appears as `{ "status": "failed", "reason": "...", "node": "..." }` while `message` still reports overall success — always check the array when replicating.
+
+```json
+{
+	"message": "Configuration successfully set. You must restart Harper for new config settings to take effect.",
+	"replicated": [
+		{
+			"message": "Configuration successfully set. You must restart Harper for new config settings to take effect.",
+			"node": "node-2"
+		}
+	]
+}
+```
+
+To restart the whole cluster afterward, follow with [restart_service](../operations-api/operations.md#restart_service) using `"replicated": true` — it restarts nodes one at a time, so the cluster stays available:
+
+```json
+{
+	"operation": "restart_service",
+	"service": "http",
+	"replicated": true
 }
 ```
 

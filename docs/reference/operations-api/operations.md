@@ -795,11 +795,13 @@ Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
 Updates configuration parameters in `harper-config.yaml`. A restart (`restart` or `restart_service`) is required for changes to take effect.
 
+Supports `"replicated": true` <VersionBadge version="v5.1.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
+
 ```json
 {
 	"operation": "set_configuration",
 	"logging_level": "trace",
-	"clustering_enabled": true
+	"replicated": true
 }
 ```
 
