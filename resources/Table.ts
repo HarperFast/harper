@@ -2772,7 +2772,10 @@ export function makeTable(options) {
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
-			const readTxn = txn.useReadTxn();
+			// When the query opts out of a snapshot (`snapshot: false`, e.g. long-running analytics
+			// scans), the read transaction reads against the latest committed data without pinning a
+			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
+			const readTxn = txn.useReadTxn(target.snapshot === false);
 			const entries = executeConditions(
 				conditions,
 				operator,
