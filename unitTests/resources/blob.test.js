@@ -133,6 +133,32 @@ describe('Blob test', () => {
 		retrievedBytes = await sliced.bytes();
 		assert(retrievedBytes.equals(random.slice(300, 400)));
 	});
+	it('round-trips a compressed blob via bytes() and stream()', async () => {
+		// compressible payload, comfortably over FILE_STORAGE_THRESHOLD so it is file-backed
+		let original = Buffer.from('compressible blob payload '.repeat(2000));
+		assert(original.length > 8192);
+		let blob = await createBlob(original, { compress: true });
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(retrievedBytes.equals(original), 'bytes() must return the decompressed original content');
+		assert.equal(record.blob.size, original.length);
+		// the streaming read path must also decompress
+		let streamed = await streamToBuffer(record.blob.stream());
+		assert.equal(streamed, original.toString(), 'stream() must return the decompressed original content');
+	});
+	it('reads a ranged slice of a compressed blob over uncompressed offsets', async () => {
+		let original = Buffer.from('compressible blob payload '.repeat(2000));
+		let blob = await createBlob(original, { compress: true });
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		let sliced = record.blob.slice(300, 400);
+		assert.equal(sliced.size, 100);
+		let slicedBytes = await sliced.bytes();
+		assert(slicedBytes.equals(original.slice(300, 400)), 'ranged read must slice the uncompressed content');
+		let slicedStream = await streamToBuffer(record.blob.slice(300, 400).stream());
+		assert.equal(slicedStream, original.slice(300, 400).toString());
+	});
 	it('create a blob from a buffer and save it before committing', async () => {
 		let random = randomBytes(5000 * Math.random() + 20000);
 		let blob = createBlob(random, { saveBeforeCommit: true });
