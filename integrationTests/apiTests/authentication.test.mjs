@@ -151,14 +151,14 @@ suite('Authentication', (ctx) => {
 				purpose: 'login',
 			})
 			.expect(200);
-		assert.ok(tokenResponse.body.login_token, tokenResponse.text);
-		assert.equal(tokenResponse.body.operation_token, undefined, tokenResponse.text);
+		// Same field as a regular operation-token mint — purpose: 'login' doesn't change the response shape.
+		assert.ok(tokenResponse.body.operation_token, tokenResponse.text);
 		assert.equal(tokenResponse.body.refresh_token, undefined, tokenResponse.text);
 
 		const loginResponse = await request(client.operationsURL)
 			.post('')
 			.set('Content-Type', 'application/json')
-			.send({ operation: 'login', token: tokenResponse.body.login_token })
+			.send({ operation: 'login', token: tokenResponse.body.operation_token })
 			.expect((r) => assert.ok(r.text.includes('Login successful'), r.text))
 			.expect(200);
 
@@ -184,7 +184,7 @@ suite('Authentication', (ctx) => {
 		await request(client.operationsURL)
 			.post('')
 			.set('Content-Type', 'application/json')
-			.set('Authorization', `Bearer ${tokenResponse.body.login_token}`)
+			.set('Authorization', `Bearer ${tokenResponse.body.operation_token}`)
 			.send({ operation: 'describe_all' })
 			.expect((r) => assert.ok(r.text.includes('"error":"invalid token"'), r.text))
 			.expect(401);

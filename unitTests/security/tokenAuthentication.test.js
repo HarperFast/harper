@@ -491,11 +491,10 @@ describe('test createTokens', () => {
 		let result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass', purpose: 'login' });
 		rw_get_tokens();
 
-		assert.notDeepStrictEqual(result.login_token, undefined);
-		assert.deepStrictEqual(result.operation_token, undefined);
+		assert.notDeepStrictEqual(result.operation_token, undefined);
 		assert.deepStrictEqual(result.refresh_token, undefined);
 
-		const payload = jwt.decode(result.login_token);
+		const payload = jwt.decode(result.operation_token);
 		assert.deepStrictEqual(payload.username, 'HDB_USER');
 		assert.deepStrictEqual(payload.sub, 'login');
 		// no operation-token side effects: nothing persisted, no user-change broadcast
@@ -681,18 +680,18 @@ describe('test validateLoginToken function', () => {
 
 		const expiry_timeout = token_auth.__set__('LOGIN_TOKEN_TIMEOUT', '-1');
 		expired_login_token = (await token_auth.createTokens({ username: 'EXPIRED', password: 'cool', purpose: 'login' }))
-			.login_token;
+			.operation_token;
 		expiry_timeout();
 
 		hdb_admin_login_token = (
 			await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool', purpose: 'login' })
-		).login_token;
+		).operation_token;
 		old_user_login_token = (
 			await token_auth.createTokens({ username: 'old_user', password: 'notcool', purpose: 'login' })
-		).login_token;
+		).operation_token;
 		non_user_login_token = (
 			await token_auth.createTokens({ username: 'non_user', password: 'notcool', purpose: 'login' })
-		).login_token;
+		).operation_token;
 		hdb_admin_operation_token = (await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' }))
 			.operation_token;
 

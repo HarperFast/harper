@@ -64,9 +64,10 @@ interface TokenObject {
 }
 
 interface JWTTokens {
-	operation_token?: string;
+	// Always the mint result: an operation JWT normally, or (purpose: 'login') the login-scoped
+	// exchange JWT — same field, same response shape, callers don't need to branch on purpose.
+	operation_token: string;
 	refresh_token?: string;
-	login_token?: string;
 }
 
 /**
@@ -175,7 +176,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 				subject: TOKEN_TYPE.LOGIN,
 			} satisfies SignOptions
 		);
-		return { login_token: loginToken };
+		return { operation_token: loginToken };
 	}
 
 	const operationToken = jwt.sign(
