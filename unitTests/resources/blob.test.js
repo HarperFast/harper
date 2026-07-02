@@ -38,6 +38,7 @@ const {
 	statSync,
 	truncateSync,
 	writeFileSync,
+	readdirSync,
 } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
@@ -386,6 +387,34 @@ describe('Blob test', () => {
 		slicedStreamResults = streamToBuffer(slicedStream);
 		assert.equal(await slicedStreamResults, expectedResults.slice(1000, 11000));
 	});
+	it('slice a multi-chunk blob via stream() seeks past the read chunk size (#1457)', async () => {
+		// 0x40000 is the stream() read-buffer size. The older slice tests only cover offsets within the
+		// first chunk; exercise slices whose start and/or end land in later chunks so the seek and the
+		// content-offset accounting are covered (previously the slice would read and discard every chunk
+		// from byte 0, and the past-first-chunk trim was off by HEADER_SIZE).
+		const CHUNK = 0x40000;
+		const data = randomBytes(CHUNK * 2 + 5000);
+		const blob = await createBlob(data); // > FILE_STORAGE_THRESHOLD → file-backed
+		await BlobTest.put({ id: 50, blob });
+		const record = await BlobTest.get(50);
+		const cases = [
+			[100, 200], // within the first chunk (regression guard)
+			[0, CHUNK], // exactly the first chunk
+			[CHUNK - 100, CHUNK + 100], // straddles the first/second chunk boundary
+			[CHUNK + 1000, CHUNK + 2000], // start and end both in the second chunk (seek path)
+			[CHUNK * 2 + 100, undefined], // start in the third chunk, run to EOF
+			[5000, data.length], // start in the first chunk, run to EOF across chunks
+		];
+		for (const [start, end] of cases) {
+			const sliced = end === undefined ? record.blob.slice(start) : record.blob.slice(start, end);
+			const streamed = await streamToBytes(sliced.stream());
+			const expected = data.subarray(start, end);
+			assert(
+				streamed.equals(expected),
+				`slice(${start}, ${end}) stream mismatch: got ${streamed.length} bytes, expected ${expected.length}`
+			);
+		}
+	});
 	it('Abort reading a blob', async () => {
 		let testString = 'this is a test string for deletion'.repeat(800);
 		let blob = await createBlob(Readable.from(testString));
@@ -394,6 +423,53 @@ describe('Blob test', () => {
 			break;
 		}
 		// just make sure there is no error
+	});
+	it('cancel a blob stream mid-read does not throw or reject (#1457)', async () => {
+		// Cancelling while an fs.read may be in flight must not recurse into read(null) (sync throw) or
+		// reject the cancelled pull (unhandled rejection) — the cancel-race the cross-model review caught.
+		const data = randomBytes(0x40000 * 2 + 1000); // multi-chunk, file-backed
+		const blob = await createBlob(data);
+		await BlobTest.put({ id: 51, blob });
+		const record = await BlobTest.get(51);
+		const rejections = [];
+		const onRej = (e) => rejections.push(e);
+		process.on('unhandledRejection', onRej);
+		try {
+			// cancel before any chunk is pulled (start()'s open may still be in flight)
+			await record.blob.stream().getReader().cancel();
+			// cancel after the first chunk, with a second read likely in flight
+			const reader = record.blob.stream().getReader();
+			await reader.read();
+			const racing = reader.read();
+			await reader.cancel();
+			await racing.catch(() => {});
+			await new Promise((res) => setTimeout(res, 50)); // let any late fs.read callback fire
+		} finally {
+			process.off('unhandledRejection', onRej);
+		}
+		assert.deepEqual(rejections, [], 'cancel must not produce unhandled rejections');
+		// the blob is still readable afterwards (no wedged state)
+		assert((await (await BlobTest.get(51)).blob.bytes()).equals(data));
+	});
+	it('cancel before open() resolves does not leak fds (#1457)', async () => {
+		const fdDir = '/proc/self/fd';
+		if (!existsSync(fdDir)) return; // Linux-only fd accounting
+		const data = randomBytes(20000);
+		const blob = await createBlob(data);
+		await BlobTest.put({ id: 52, blob });
+		const record = await BlobTest.get(52);
+		const countFds = () => readdirSync(fdDir).length;
+		await record.blob.stream().getReader().cancel(); // warm up lazy config lookups
+		await new Promise((res) => setTimeout(res, 50));
+		const before = countFds();
+		for (let i = 0; i < 50; i++) {
+			// cancel immediately, while start()'s open() is still in flight: the descriptor it later
+			// acquires must be closed by the cancelled-guard, not leaked.
+			await record.blob.stream().getReader().cancel();
+		}
+		await new Promise((res) => setTimeout(res, 100)); // let in-flight opens resolve and self-close
+		const after = countFds();
+		assert(after - before < 10, `fd leak across 50 cancels: grew from ${before} to ${after}`);
 	});
 	it('Abort writing a blob', async () => {
 		let testString = 'this is a test string'.repeat(256);
@@ -1317,4 +1393,12 @@ async function streamToBuffer(stream) {
 		retrievedDataFromStream.push(chunk);
 	}
 	return Buffer.concat(retrievedDataFromStream).toString();
+}
+
+async function streamToBytes(stream) {
+	const chunks = [];
+	for await (const chunk of stream) {
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks);
 }
