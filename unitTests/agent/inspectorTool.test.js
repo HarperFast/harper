@@ -104,8 +104,11 @@ describe('agent/inspectorTool — summarizeProfile', () => {
 describe('agent/inspectorTool — live CDP round-trip', () => {
 	let port;
 	before(() => {
-		// Open a real inspector on an ephemeral port; parse the port back from the ws URL.
-		inspector.open(0, '127.0.0.1', false);
+		// The inspector may already be active — a dev-mode install sets threads.debug: true, and
+		// threadServer opens the inspector on module load (this is exactly the CI unit-test config).
+		// Opening it again throws ERR_INSPECTOR_ALREADY_ACTIVATED, so reuse the live one when present
+		// and only open our own ephemeral port when nothing has activated it yet.
+		if (!inspector.url()) inspector.open(0, '127.0.0.1', false);
 		port = Number(new URL(inspector.url()).port);
 	});
 	after(async () => {
