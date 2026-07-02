@@ -192,15 +192,15 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// drop_role: security/role.ts:126 — Delete a role; refuses if assigned.
 	drop_role:
 		'Deletes a role. Refused if any active user is still assigned to the role — drop or reassign those users first.',
-	// create_authentication_tokens: security/tokenAuthentication.ts:86 — Mint operation + refresh token pair.
+	// create_authentication_tokens: security/tokenAuthentication.ts:108 — Mint operation + refresh token pair, or (purpose: 'login') a login-exchange token.
 	create_authentication_tokens:
-		'Creates a JWT operation token and a refresh token after validating credentials. Stores the refresh token on the user record.',
+		"Creates a JWT operation token and a refresh token after validating credentials. Stores the refresh token on the user record. With purpose: 'login', instead mints a single short-lived login-exchange token (not usable as a Bearer API credential) intended for the `login` operation.",
 	// refresh_operation_token: security/tokenAuthentication.ts:171 — Mint new operation token from refresh.
 	refresh_operation_token:
 		'Issues a new operation token using a valid refresh token, without re-authenticating with username/password.',
 	// login: security/auth.ts:371 — Session-based login.
 	login:
-		'Authenticates the caller and creates a session entry. Requires sessions to be enabled in Harper configuration.',
+		'Authenticates the caller and creates a session entry. Accepts username/password, or a `token` from create_authentication_tokens with purpose: "login" to exchange it for the session cookie. Requires sessions to be enabled in Harper configuration.',
 	// logout: security/auth.ts:381 — Session-based logout.
 	logout: "Clears the caller's session. Requires sessions to be enabled.",
 
