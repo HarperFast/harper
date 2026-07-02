@@ -53,6 +53,12 @@ function secretTable() {
 	return table;
 }
 
+// Grants are a set: duplicates would let one revoke leave a residual grant behind, so every write
+// path normalizes through this (including rows that arrived dirty via replication).
+function dedupeGrants(grants: any): string[] {
+	return Array.isArray(grants) ? [...new Set(grants)] : [];
+}
+
 // Rebuild a plain record from a stored row's known attributes (never spread rows — RecordObject
 // prototype fields don't survive a spread reliably; see DESIGN.md).
 function toRecord(row: any) {
@@ -60,7 +66,7 @@ function toRecord(row: any) {
 		name: row.name,
 		envelope: row.envelope,
 		kid: row.kid ?? null,
-		grants: Array.isArray(row.grants) ? [...row.grants] : [],
+		grants: dedupeGrants(row.grants),
 		metadata: row.metadata ?? {},
 		unverified: !!row.unverified,
 		updated_by: row.updated_by ?? null,
@@ -177,7 +183,7 @@ export async function setSecret(req: any) {
 			name,
 			envelope,
 			kid,
-			grants: req.grants ?? (Array.isArray(existing?.grants) ? [...existing.grants] : []),
+			grants: dedupeGrants(req.grants ?? existing?.grants),
 			metadata: req.metadata ?? existing?.metadata ?? {},
 			unverified,
 			updated_by: req.hdb_user?.username ?? null,
@@ -197,14 +203,18 @@ async function mutateGrants(req: any, grant: boolean) {
 		if (!row) {
 			throw new ClientError(`No secret found with name '${req.name}'`, HTTP_STATUS_CODES.NOT_FOUND);
 		}
-		const record = toRecord(row);
-		const index = record.grants.indexOf(req.component);
-		// No-op short-circuit: nothing to write, nothing to audit, no updated_by/__updatedtime__ bump.
-		if (grant ? index >= 0 : index < 0) {
+		const record = toRecord(row); // record.grants comes back deduped
+		const present = record.grants.includes(req.component);
+		const storedLength = Array.isArray(row.grants) ? row.grants.length : 0;
+		// No-op short-circuit: nothing to write, nothing to audit, no updated_by/__updatedtime__
+		// bump. A stored row with duplicate grants (dirty state) is NOT a no-op — falling through
+		// persists the normalized set.
+		if ((grant ? present : !present) && record.grants.length === storedLength) {
 			return { name: req.name, grants: record.grants, changed: false };
 		}
-		if (grant) record.grants.push(req.component);
-		else record.grants.splice(index, 1);
+		if (grant && !present) record.grants.push(req.component);
+		// Remove every occurrence — with the dedupe this is belt-and-braces against dirty rows.
+		if (!grant) record.grants = record.grants.filter((component) => component !== req.component);
 		record.updated_by = req.hdb_user?.username ?? null;
 		await table.put(record);
 		// Granting to a not-yet-deployed component is legal (grants may precede the deploy), but an

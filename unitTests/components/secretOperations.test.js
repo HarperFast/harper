@@ -265,6 +265,40 @@ describe('secretOperations', () => {
 			assert.equal(rowBefore.updated_by, 'admin', 'updated_by not bumped by the no-op');
 		});
 
+		it('rejects explicit duplicate grants in set_secret input (Joi .unique())', async () => {
+			installCustody();
+			await assert.rejects(
+				async () => secretOps.setSecret({ ...su('set_secret'), name: 'DUP', value: 'x', grants: ['web', 'web'] }),
+				(err) => err.statusCode === 400
+			);
+		});
+
+		it('revoke removes ALL occurrences from a dirty duplicated row', async () => {
+			// Force dirty state directly (e.g. a row replicated from a node predating the dedupe).
+			installed.mock.rows.set('DIRTY', {
+				name: 'DIRTY',
+				envelope: PREFIX + 'xxxx',
+				kid: fp,
+				grants: ['web', 'web', 'other'],
+			});
+			const res = await secretOps.revokeSecret({ ...su('revoke_secret'), name: 'DIRTY', component: 'web' });
+			assert.deepStrictEqual(res, { name: 'DIRTY', grants: ['other'], changed: true });
+			assert.deepStrictEqual(installed.mock.rows.get('DIRTY').grants, ['other'], 'no residual duplicate grant');
+		});
+
+		it('grant on a dirty duplicated row persists the normalized (deduped) set', async () => {
+			installed.mock.rows.set('DIRTY2', {
+				name: 'DIRTY2',
+				envelope: PREFIX + 'xxxx',
+				kid: fp,
+				grants: ['web', 'web'],
+			});
+			// Component already present, but the stored row is dirty — not a no-op: it normalizes.
+			const res = await secretOps.grantSecret({ ...su('grant_secret'), name: 'DIRTY2', component: 'web' });
+			assert.deepStrictEqual(res, { name: 'DIRTY2', grants: ['web'], changed: true });
+			assert.deepStrictEqual(installed.mock.rows.get('DIRTY2').grants, ['web']);
+		});
+
 		it('reports changed:true when a mutation actually happens', async () => {
 			installCustody();
 			await secretOps.setSecret({ ...su('set_secret'), name: 'N2', value: 'x' });
@@ -353,6 +387,16 @@ describe('secretOperations', () => {
 			await assert.rejects(
 				async () => secretOps.deleteSecret({ ...su('delete_secret'), name: 'D' }),
 				(err) => err.statusCode === 404
+			);
+		});
+	});
+
+	describe('read_audit_log on system.hdb_secret', () => {
+		it('is blocked (audit rows would expose envelopes; table audit itself must stay on)', async () => {
+			const readAuditLog = require('#src/dataLayer/readAuditLog').default;
+			await assert.rejects(
+				async () => readAuditLog({ database: 'system', table: SECRET_TABLE }),
+				(err) => err.statusCode === 403
 			);
 		});
 	});

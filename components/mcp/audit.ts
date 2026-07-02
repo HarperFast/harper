@@ -25,6 +25,11 @@ export interface AuditEntry {
 }
 
 const REDACTION_PATTERN = /(secret|password|token|api[-_]?key|credentials?|auth)/i;
+// Exact field names that carry secret material without a credential-looking name: `value`/`values`
+// (set_secret plaintext, set_env_value .env secrets) and `envelope` (set_secret ciphertext). These
+// mirror the fields processLocalTransaction strips from the REST operations log — the MCP audit
+// path must not become a bypass. Exact-match so e.g. `search_value` stays auditable.
+const REDACTION_EXACT_FIELDS = /^(value|values|envelope)$/i;
 const REDACTION_PLACEHOLDER = '[redacted]';
 const MAX_REDACTION_DEPTH = 10;
 
@@ -43,7 +48,7 @@ export function redactArgs(value: unknown, depth = 0): unknown {
 	}
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(value)) {
-		if (REDACTION_PATTERN.test(k)) {
+		if (REDACTION_PATTERN.test(k) || REDACTION_EXACT_FIELDS.test(k)) {
 			out[k] = REDACTION_PLACEHOLDER;
 		} else {
 			out[k] = redactArgs(v, depth + 1);

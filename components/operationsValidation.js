@@ -273,8 +273,10 @@ function setSecretValidator(req) {
 			.max(SECRET_MAX_LENGTH)
 			.pattern(SECRET_ENVELOPE_REGEX)
 			.messages({ 'string.pattern.base': `'envelope' must be an '${ENV_ENCRYPTED_PREFIX}' base64url envelope` }),
-		metadata: Joi.object(),
-		grants: Joi.array().items(Joi.string().min(1)),
+		// Modest structural caps: metadata is a small free-form label object, not a payload store,
+		// and grants is a set (explicit duplicates rejected here; write paths also dedupe dirty state).
+		metadata: Joi.object().max(100),
+		grants: Joi.array().items(Joi.string().min(1)).max(100).unique(),
 	}).xor('value', 'envelope');
 
 	return validator.validateBySchema(req, schema);

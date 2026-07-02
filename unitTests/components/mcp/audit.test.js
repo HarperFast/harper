@@ -20,6 +20,24 @@ describe('mcp/audit', () => {
 			assert.equal(out.list[0].password, '[redacted]');
 		});
 
+		it('redacts secret-bearing exact field names (value/values/envelope) but not lookalikes', () => {
+			// set_secret / set_env_value payloads must not reach the audit log via MCP —
+			// this mirrors the REST ops-log strip in processLocalTransaction.
+			const input = {
+				name: 'API_KEY',
+				value: 'plaintext-secret',
+				values: { A: '1' },
+				envelope: 'enc:v1:abc',
+				search_value: 'find-me',
+			};
+			const out = redactArgs(input);
+			assert.equal(out.name, 'API_KEY');
+			assert.equal(out.value, '[redacted]');
+			assert.equal(out.values, '[redacted]');
+			assert.equal(out.envelope, '[redacted]');
+			assert.equal(out.search_value, 'find-me', 'exact-match only — search_value stays auditable');
+		});
+
 		it('does not mutate the input', () => {
 			const input = { password: 'p' };
 			redactArgs(input);

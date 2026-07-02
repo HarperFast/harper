@@ -68,6 +68,16 @@ describe('secret operation validators', () => {
 			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'x', grants: 'my-app' })));
 			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'x', grants: [''] })));
 		});
+
+		it('rejects duplicate grants, >100 grants, and >100 metadata keys', () => {
+			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'x', grants: ['web', 'web'] })));
+			const many = Array.from({ length: 101 }, (_, i) => `app${i}`);
+			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'x', grants: many })));
+			const bigMeta = Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`k${i}`, i]));
+			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'x', metadata: bigMeta })));
+			// ...at the caps passes.
+			assert.ok(valid(validator.setSecretValidator({ name: 'A', value: 'x', grants: many.slice(0, 100) })));
+		});
 	});
 
 	describe('grantSecretValidator (grant_secret / revoke_secret)', () => {
