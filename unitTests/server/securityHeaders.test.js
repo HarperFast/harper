@@ -32,7 +32,15 @@ function mockScope(initialOptions) {
 
 describe('http.securityHeaders', () => {
 	let sandbox;
-	const ownedBefore = () => universalHeaders.length;
+	// The FIRST handleApplication call in the process claims securityHeaders ownership (the
+	// root-config scope in production). All tests drive config through this scope's change
+	// events; this file must be the first in the mocha run to call http's handleApplication.
+	let rootScope;
+
+	before(() => {
+		rootScope = mockScope({});
+		handleApplication(rootScope);
+	});
 
 	beforeEach(() => {
 		sandbox = sinon.createSandbox();
@@ -41,24 +49,22 @@ describe('http.securityHeaders', () => {
 	afterEach(() => {
 		sandbox.restore();
 		// Reset any entries this feature may have left behind between tests.
-		handleApplication(mockScope({}));
+		rootScope._reload({});
 	});
 
 	it('does nothing when securityHeaders is absent (opt-in, no behavior change)', () => {
-		const before = ownedBefore();
-		handleApplication(mockScope({}));
+		const before = universalHeaders.length;
+		rootScope._reload({});
 		assert.strictEqual(universalHeaders.length, before);
 	});
 
 	it('appends configured securityHeaders to universalHeaders', () => {
-		handleApplication(
-			mockScope({
-				securityHeaders: {
-					'X-Frame-Options': 'SAMEORIGIN',
-					'X-Content-Type-Options': 'nosniff',
-				},
-			})
-		);
+		rootScope._reload({
+			securityHeaders: {
+				'X-Frame-Options': 'SAMEORIGIN',
+				'X-Content-Type-Options': 'nosniff',
+			},
+		});
 		assert.deepStrictEqual(
 			universalHeaders.filter(([name]) => name === 'X-Frame-Options' || name === 'X-Content-Type-Options'),
 			[
@@ -69,11 +75,9 @@ describe('http.securityHeaders', () => {
 	});
 
 	it('coerces non-string values to strings', () => {
-		handleApplication(
-			mockScope({
-				securityHeaders: { 'X-Test-Number': 42, 'X-Test-Bool': true },
-			})
-		);
+		rootScope._reload({
+			securityHeaders: { 'X-Test-Number': 42, 'X-Test-Bool': true },
+		});
 		assert.deepStrictEqual(
 			universalHeaders.filter(([name]) => name.startsWith('X-Test-')),
 			[
@@ -85,14 +89,12 @@ describe('http.securityHeaders', () => {
 
 	it('rejects invalid header names without throwing, and logs an error', () => {
 		const errorStub = sandbox.stub(harperLogger, 'error');
-		handleApplication(
-			mockScope({
-				securityHeaders: {
-					'Bad Header Name': 'value',
-					'X-Good-Header': 'ok',
-				},
-			})
-		);
+		rootScope._reload({
+			securityHeaders: {
+				'Bad Header Name': 'value',
+				'X-Good-Header': 'ok',
+			},
+		});
 		assert.ok(errorStub.calledOnce);
 		assert.ok(!universalHeaders.some(([name]) => name === 'Bad Header Name'));
 		assert.ok(universalHeaders.some(([name]) => name === 'X-Good-Header'));
@@ -100,15 +102,22 @@ describe('http.securityHeaders', () => {
 
 	it('rejects invalid header values without throwing, and logs an error', () => {
 		const errorStub = sandbox.stub(harperLogger, 'error');
-		handleApplication(
-			mockScope({
-				securityHeaders: {
-					'X-Bad-Value': 'line1\nline2',
-				},
-			})
-		);
+		rootScope._reload({
+			securityHeaders: {
+				'X-Bad-Value': 'line1\nline2',
+			},
+		});
 		assert.ok(errorStub.calledOnce);
 		assert.ok(!universalHeaders.some(([name]) => name === 'X-Bad-Value'));
+	});
+
+	it('rejects a non-object securityHeaders value without iterating it', () => {
+		// A string would otherwise for-in over its indices and digit-named "headers" would
+		// pass validateHeaderName.
+		const errorStub = sandbox.stub(harperLogger, 'error');
+		rootScope._reload({ securityHeaders: 'X-Frame-Options: SAMEORIGIN' });
+		assert.ok(errorStub.calledOnce);
+		assert.ok(!universalHeaders.some(([name]) => /^\d+$/.test(name)));
 	});
 
 	it('hot-reload replaces owned entries without clobbering entries pushed by other components', () => {
@@ -116,14 +125,13 @@ describe('http.securityHeaders', () => {
 		const foreignEntry = ['X-Foreign-Header', 'from-other-component'];
 		universalHeaders.push(foreignEntry);
 
-		const scope = mockScope({ securityHeaders: { 'X-Frame-Options': 'SAMEORIGIN' } });
-		handleApplication(scope);
+		rootScope._reload({ securityHeaders: { 'X-Frame-Options': 'SAMEORIGIN' } });
 		assert.ok(universalHeaders.some(([name]) => name === 'X-Frame-Options'));
 		assert.ok(universalHeaders.includes(foreignEntry));
 
 		// Hot-reload with a different config: old owned entry should be gone, new one present,
 		// and the foreign entry must survive untouched.
-		scope._reload({ securityHeaders: { 'X-Content-Type-Options': 'nosniff' } });
+		rootScope._reload({ securityHeaders: { 'X-Content-Type-Options': 'nosniff' } });
 		assert.ok(!universalHeaders.some(([name]) => name === 'X-Frame-Options'));
 		assert.ok(universalHeaders.some(([name]) => name === 'X-Content-Type-Options'));
 		assert.ok(universalHeaders.includes(foreignEntry));
@@ -134,11 +142,26 @@ describe('http.securityHeaders', () => {
 	});
 
 	it('hot-reload to an empty config removes all previously-owned entries', () => {
-		const scope = mockScope({ securityHeaders: { 'X-Frame-Options': 'SAMEORIGIN' } });
-		handleApplication(scope);
+		rootScope._reload({ securityHeaders: { 'X-Frame-Options': 'SAMEORIGIN' } });
 		assert.ok(universalHeaders.some(([name]) => name === 'X-Frame-Options'));
 
-		scope._reload({});
+		rootScope._reload({});
 		assert.ok(!universalHeaders.some(([name]) => name === 'X-Frame-Options'));
+	});
+
+	it('a second (application) scope with an http block cannot clobber root securityHeaders', () => {
+		rootScope._reload({ securityHeaders: { 'X-Frame-Options': 'SAMEORIGIN' } });
+
+		// An application config.yaml with an `http:` block re-invokes handleApplication;
+		// it must not take over securityHeaders ownership.
+		const appScope = mockScope({ securityHeaders: { 'X-App-Header': 'from-app' } });
+		handleApplication(appScope);
+		assert.ok(universalHeaders.some(([name]) => name === 'X-Frame-Options'));
+		assert.ok(!universalHeaders.some(([name]) => name === 'X-App-Header'));
+
+		// Nor can its change events.
+		appScope._reload({ securityHeaders: { 'X-App-Header-2': 'from-app' } });
+		assert.ok(universalHeaders.some(([name]) => name === 'X-Frame-Options'));
+		assert.ok(!universalHeaders.some(([name]) => name === 'X-App-Header-2'));
 	});
 });

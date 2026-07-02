@@ -149,6 +149,10 @@ function applySecurityHeaders(securityHeaders: HttpOptions['securityHeaders']) {
 	}
 	ownedSecurityHeaders = [];
 	if (!securityHeaders) return;
+	if (typeof securityHeaders !== 'object') {
+		harperLogger.error('Invalid http.securityHeaders value: expected a map of header names to values');
+		return;
+	}
 	for (const name in securityHeaders) {
 		const value = '' + securityHeaders[name];
 		try {
@@ -164,13 +168,20 @@ function applySecurityHeaders(securityHeaders: HttpOptions['securityHeaders']) {
 	}
 }
 
+// Only the first http scope to load (the root config) owns securityHeaders: 'http' is a
+// trusted plugin key, so an application config.yaml with an `http:` block re-invokes
+// handleApplication, and without this guard that call would wipe root-configured headers.
+let securityHeadersOwned = false;
+
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
-	applySecurityHeaders(httpOptions.securityHeaders);
+	const ownsSecurityHeaders = !securityHeadersOwned;
+	securityHeadersOwned = true;
+	if (ownsSecurityHeaders) applySecurityHeaders(httpOptions.securityHeaders);
 	scope.options.on('change', (_key) => {
 		// TODO: Check to see if the key is something we can or can't handle
 		httpOptions = scope.options.getAll() as HttpOptions;
-		applySecurityHeaders(httpOptions.securityHeaders);
+		if (ownsSecurityHeaders) applySecurityHeaders(httpOptions.securityHeaders);
 	});
 }
 export function getHttpOptions() {
@@ -489,8 +500,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				for (let [key, value] of universalHeaders) {
-					response.headers.set(key, value);
+				if (universalHeaders.length > 0) {
+					// universal headers are defaults: never override a header the app already set
+					// (has/set rather than setIfNone: response.headers may be a web Headers)
+					for (const [key, value] of universalHeaders) {
+						if (!response.headers.has(key)) response.headers.set(key, value);
+					}
 				}
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
@@ -562,6 +577,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						else nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 					}
 					if (sentBody) nodeResponse.end(body);
+				} else if (universalHeaders.length > 0 && !nodeResponse.headersSent) {
+					// handlesHeaders responses (e.g. static's send() stream) write their own headers
+					// directly to nodeResponse; pre-set universal headers as defaults — a header the
+					// stream sets itself (same name) will overwrite these
+					for (const [key, value] of universalHeaders) {
+						if (!nodeResponse.hasHeader(key)) nodeResponse.setHeader(key, value);
+					}
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
@@ -603,6 +625,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const statusCode = error.statusCode ?? error.status;
 				const status = statusCode || 500;
 				try {
+					if (universalHeaders.length > 0 && !nodeResponse.headersSent) {
+						// universal headers apply to error responses too; writeHead's explicit
+						// headers take precedence, so error-provided headers still win
+						for (const [key, value] of universalHeaders) {
+							if (!nodeResponse.hasHeader(key)) nodeResponse.setHeader(key, value);
+						}
+					}
 					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
@@ -972,8 +1001,12 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				for (let [key, value] of universalHeaders) {
-					response.headers.set(key, value);
+				if (universalHeaders.length > 0) {
+					// universal headers are defaults: never override a header the app already set
+					// (has/set rather than setIfNone: response.headers may be a web Headers)
+					for (const [key, value] of universalHeaders) {
+						if (!response.headers.has(key)) response.headers.set(key, value);
+					}
 				}
 				if (response.status === -1) {
 					const fallbackServer = fallbackServers[port];
@@ -1019,6 +1052,13 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					} else if (body instanceof Blob) {
 						if (body.size) responseHeaders.set('Content-Length', String(body.size));
 						body = body.stream();
+					}
+				} else if (universalHeaders.length > 0) {
+					// handlesHeaders responses write their own headers via the pipe shim below;
+					// pre-set universal headers as defaults — the stream's own setHeader calls
+					// (same name) overwrite these
+					for (const [key, value] of universalHeaders) {
+						responseHeaders.set(key, value);
 					}
 				}
 				// Propagate Connection: close so Bun closes the TCP connection after this response,
@@ -1097,6 +1137,12 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					if (statusCode === 500) harperLogger.warn(errorForLog(error));
 					else harperLogger.info(errorForLog(error));
 				} else harperLogger.error(errorForLog(error));
+				if (universalHeaders.length > 0) {
+					// universal headers apply to error responses too
+					const headers = new globalThis.Headers();
+					for (const [key, value] of universalHeaders) headers.set(key, value);
+					return new Response(errorToString(error), { status, headers });
+				}
 				return new Response(errorToString(error), { status });
 			}
 		};

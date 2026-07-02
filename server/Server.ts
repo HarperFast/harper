@@ -87,7 +87,11 @@ export interface HttpOptions extends ServerOptions {
 		headers?: boolean;
 	};
 	lastModified?: boolean;
-	/** Header name -> value, appended to every HTTP response (e.g. X-Frame-Options, X-Content-Type-Options). */
+	/**
+	 * Header name -> value, applied as defaults to HTTP responses on app ports (e.g.
+	 * X-Frame-Options, X-Content-Type-Options). A header the application/route already set
+	 * on a response always takes precedence over the configured value.
+	 */
 	securityHeaders?: Record<string, string | number | boolean>;
 }
 export interface ContentTypeHandler {
