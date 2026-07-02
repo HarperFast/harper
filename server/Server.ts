@@ -87,6 +87,8 @@ export interface HttpOptions extends ServerOptions {
 		headers?: boolean;
 	};
 	lastModified?: boolean;
+	/** Header name -> value, appended to every HTTP response (e.g. X-Frame-Options, X-Content-Type-Options). */
+	securityHeaders?: Record<string, string | number | boolean>;
 }
 export interface ContentTypeHandler {
 	serialize(data: any): Buffer | string;

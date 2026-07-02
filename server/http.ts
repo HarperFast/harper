@@ -15,7 +15,7 @@ import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
-import { createServer, IncomingMessage } from 'node:http';
+import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
@@ -136,11 +136,41 @@ export function cleanupSocketsDirectory() {
 	} catch {}
 }
 
+// Entries in `universalHeaders` that were pushed by `applySecurityHeaders`, so a config
+// hot-reload can remove exactly the entries it owns without clobbering entries pushed by
+// other components.
+let ownedSecurityHeaders: [string, string][] = [];
+
+/** Validate and apply `http.securityHeaders` config into `universalHeaders`, replacing any entries owned by a prior call. */
+function applySecurityHeaders(securityHeaders: HttpOptions['securityHeaders']) {
+	for (const entry of ownedSecurityHeaders) {
+		const index = universalHeaders.indexOf(entry);
+		if (index !== -1) universalHeaders.splice(index, 1);
+	}
+	ownedSecurityHeaders = [];
+	if (!securityHeaders) return;
+	for (const name in securityHeaders) {
+		const value = '' + securityHeaders[name];
+		try {
+			validateHeaderName(name);
+			validateHeaderValue(name, value);
+		} catch (error) {
+			harperLogger.error(`Invalid http.securityHeaders entry "${name}": ${errorToString(error)}`);
+			continue;
+		}
+		const entry: [string, string] = [name, value];
+		ownedSecurityHeaders.push(entry);
+		universalHeaders.push(entry);
+	}
+}
+
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
+	applySecurityHeaders(httpOptions.securityHeaders);
 	scope.options.on('change', (_key) => {
 		// TODO: Check to see if the key is something we can or can't handle
 		httpOptions = scope.options.getAll() as HttpOptions;
+		applySecurityHeaders(httpOptions.securityHeaders);
 	});
 }
 export function getHttpOptions() {

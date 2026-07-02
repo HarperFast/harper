@@ -637,6 +637,42 @@ describe('Test configValidator module', () => {
 		});
 	});
 
+	describe('http.securityHeaders config', () => {
+		it('validates clean when securityHeaders is absent (opt-in, no behavior change)', () => {
+			const result = configValidator(testUtils.deepClone(FAKE_CONFIG), true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.http.securityHeaders).to.be.undefined;
+		});
+
+		it('accepts an arbitrary map of header name -> string value', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.http.securityHeaders = {
+				'X-Frame-Options': 'SAMEORIGIN',
+				'X-Content-Type-Options': 'nosniff',
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.http.securityHeaders).to.deep.equal({
+				'X-Frame-Options': 'SAMEORIGIN',
+				'X-Content-Type-Options': 'nosniff',
+			});
+		});
+
+		it('accepts number/boolean values (coerced to strings at apply time, not validation time)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.http.securityHeaders = { 'X-Test': 42 };
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('rejects a securityHeaders entry with a non-primitive value', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.http.securityHeaders = { 'X-Bad': { nested: true } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+		});
+	});
+
 	// #629 (Phase 2 of #510): models config block.
 	describe('models config', () => {
 		function baseConfig() {

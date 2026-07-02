@@ -305,3 +305,24 @@ guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existin
 this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
+
+## `universalHeaders` ownership tracking, and why it never reaches the operations API
+
+`server/http.ts` exports `universalHeaders: [string, string][]`, appended to every response in
+both the Node and Bun request handlers. `http.securityHeaders` config populates it via
+`applySecurityHeaders()`, called from `handleApplication()` on load and on every
+`scope.options.on('change', ...)`. Since other components may also push entries onto the same
+shared array, a hot-reload can't just clear-and-rebuild it — that would drop entries it doesn't
+own. Instead `applySecurityHeaders` tracks the exact `[name, value]` tuples it previously pushed
+in a module-level `ownedSecurityHeaders` array and splices only those out (by reference, via
+`indexOf`) before re-adding the new set. Any future feature that also wants to push into
+`universalHeaders` from a hot-reloadable source should follow the same "track what I added, only
+remove what I added" pattern rather than clearing the array.
+
+**Scope limitation**: `universalHeaders` is applied inside `onRequest`, the Harper-native request
+handler built in `getHTTPServer()`. The operations API does not go through this path — Fastify's
+own `http.Server` instance is registered as a raw (non-function) listener in `httpServer()`
+(`server/http.ts`), which takes the `registerServer(listener, port, false)` branch instead of
+`getHTTPServer()`'s. So `http.securityHeaders` currently only reaches REST/app HTTP responses, not
+operations API responses. This matches the feature's intent (headers like X-Frame-Options are for
+browser-facing traffic), but is worth knowing if a future change wants parity across both.
