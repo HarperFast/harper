@@ -14,14 +14,83 @@
  *
  * Registration is per-process: the Pro component registers in each worker where secrets are
  * consumed, so registration and use share the same module instance.
+ *
+ * Registration order is NOT load-bearing for `.env` values: entries that load before a decryptor
+ * exists are queued (see `deferEncryptedEnvValue`) and replayed into `process.env` the moment one
+ * registers, so a custody provider that comes up after component `.env` loading heals the skipped
+ * values instead of leaving them missing.
  */
+import logger from '../utility/logging/harper_logger.ts';
+
 export type SecretDecryptor = (value: string) => string;
+
+/** An encrypted `.env` entry that was loaded before any decryptor was registered. */
+export interface DeferredEncryptedEnvValue {
+	key: string;
+	rawValue: string;
+	sourcePath: string;
+	override: boolean;
+}
+
+// Defensive cap: the queue only ever holds encrypted `.env` entries loaded before registration,
+// so growth beyond this indicates a bug or abuse — drop (with an error) rather than grow.
+const MAX_DEFERRED_SECRETS = 1000;
+let deferredSecrets: DeferredEncryptedEnvValue[] = [];
 
 let decryptor: SecretDecryptor | undefined;
 
-/** Install the env-secret decryptor (called by the Pro env-secrets component at startup). */
+/**
+ * Queue an encrypted `.env` entry that could not be decrypted because no decryptor is registered
+ * yet. When one registers, the queue is replayed into `process.env` with the same
+ * override/conflict semantics `loadEnv` applied to the original load.
+ */
+export function deferEncryptedEnvValue(entry: DeferredEncryptedEnvValue): void {
+	if (deferredSecrets.length >= MAX_DEFERRED_SECRETS) {
+		logger.error(
+			`Deferred encrypted env queue is full (${MAX_DEFERRED_SECRETS}); dropping ${entry.key} from ${entry.sourcePath}`
+		);
+		return;
+	}
+	deferredSecrets.push(entry);
+}
+
+/** The queued entries awaiting a decryptor (exposed for tests/diagnostics). */
+export function getDeferredEncryptedEnvValues(): readonly DeferredEncryptedEnvValue[] {
+	return deferredSecrets;
+}
+
+// Replay queued encrypted env entries through a newly registered decryptor, mirroring loadEnv's
+// conflict semantics: a failed decrypt logs and skips that entry; an already-set key is only
+// overwritten when the entry's env file was loaded with `override`.
+function replayDeferredSecrets(newDecryptor: SecretDecryptor): void {
+	const entries = deferredSecrets;
+	deferredSecrets = [];
+	for (const { key, rawValue, sourcePath, override } of entries) {
+		let value: string;
+		try {
+			value = newDecryptor(rawValue);
+		} catch (error) {
+			logger.error(
+				`Failed to decrypt deferred environment variable ${key} from ${sourcePath}: ${(error as Error).message}; skipping`
+			);
+			continue;
+		}
+		if (process.env[key] !== undefined) {
+			logger.warn(`Environment variable conflict: ${key} from ${sourcePath} is already set on process.env`);
+			if (!override) continue;
+		}
+		process.env[key] = value;
+	}
+}
+
+/**
+ * Install the env-secret decryptor (called by the Pro env-secrets component at startup). Any
+ * encrypted `.env` entries that loaded before this point are immediately decrypted into
+ * `process.env`.
+ */
 export function registerSecretDecryptor(fn: SecretDecryptor): void {
 	decryptor = fn;
+	replayDeferredSecrets(fn);
 }
 
 /** The registered decryptor, or undefined when no Pro env-secrets component is active. */
@@ -29,7 +98,8 @@ export function getSecretDecryptor(): SecretDecryptor | undefined {
 	return decryptor;
 }
 
-/** Remove the registered decryptor. Intended for tests. */
+/** Remove the registered decryptor and drop any deferred entries. Intended for tests. */
 export function clearSecretDecryptor(): void {
 	decryptor = undefined;
+	deferredSecrets = [];
 }
