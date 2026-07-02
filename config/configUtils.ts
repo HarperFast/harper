@@ -831,6 +831,20 @@ export function getConfiguration() {
 export async function setConfiguration(setConfigJson) {
 	// eslint-disable-next-line no-unused-vars
 	const { operation, hdb_user, hdbAuthHeader, replicated, ...configFields } = setConfigJson;
+	// Operation-control field, not a config param: enforce boolean (matching other
+	// `replicated` surfaces, e.g. analyticsValidator) before any local write so a
+	// malformed value like the string "false" — which is truthy — can't apply config
+	// locally or trigger an unintended fan-out.
+	if (replicated !== undefined && typeof replicated !== 'boolean') {
+		throw handleHDBError(
+			new Error(),
+			`'replicated' must be a boolean`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 	try {
 		updateConfigValue(undefined, undefined, configFields, true);
 		if (replicated) {

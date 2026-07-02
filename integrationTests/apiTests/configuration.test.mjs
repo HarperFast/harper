@@ -271,6 +271,20 @@ suite('Configuration', (ctx) => {
 		assert.match(r.body.error ?? '', /Replication not implemented/, r.text);
 	});
 
+	test('set_configuration with string "false" replicated is rejected before applying', async () => {
+		await client
+			.req()
+			.send({ operation: 'set_configuration', logging_rotation_maxSize: '16M', replicated: 'false' })
+			.expect((r) => assert.match(r.body.error ?? '', /replicated/, r.text))
+			.expect(400);
+		// The malformed request must not have applied its config change locally.
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.notEqual(r.body.logging.rotation.maxSize, '16M', r.text))
+			.expect(200);
+	});
+
 	test('replicated flag is never persisted to configuration', async () => {
 		await client
 			.req()

@@ -1159,6 +1159,26 @@ describe('Test configUtils module', () => {
 				expect(config_fields).to.not.have.property('replicated');
 			});
 
+			it('Test non-boolean replicated is rejected before any local write', async () => {
+				for (const bad of ['false', 'true', 1, 0]) {
+					let error;
+					try {
+						await config_utils_rw.setConfiguration({
+							operation: 'set_configuration',
+							http_corsAccessList: ['harper.fast'],
+							replicated: bad,
+						});
+					} catch (err) {
+						error = err;
+					}
+
+					expect(error, `expected rejection for replicated: ${JSON.stringify(bad)}`).to.not.equal(undefined);
+					expect(error.http_resp_msg ?? error.message).to.include('replicated');
+				}
+				expect(update_config_value_stub.called).to.equal(false);
+				expect(replicate_operation_stub.called).to.equal(false);
+			});
+
 			it('Test local config write failure propagates without fanning out', async () => {
 				update_config_value_stub.throws(STRING_ERROR);
 
