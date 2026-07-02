@@ -172,7 +172,11 @@
 					]
 				},
 				"maxHeapMemory": { "type": "number", "description": "Heap memory limit per thread (MB)." },
-				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." }
+				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." },
+				"preload": {
+					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+					"description": "Module(s) to preload (via --require) before any Harper or app module on each worker thread, e.g. an APM agent like 'dd-trace/init'. Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				}
 			}
 		},
 

@@ -281,6 +281,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 					})
 				),
 				maxHeapMemory: number.min(0).optional(),
+				preload: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({

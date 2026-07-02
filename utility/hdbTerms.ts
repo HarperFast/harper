@@ -471,6 +471,7 @@ export const CONFIG_PARAMS = {
 	THREADS_DEBUG_WAITFORDEBUGGER: 'threads_debug_waitForDebugger',
 	THREADS_MAXHEAPMEMORY: 'threads_maxHeapMemory',
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
+	THREADS_PRELOAD: 'threads_preload',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',

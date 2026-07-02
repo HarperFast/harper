@@ -16,6 +16,7 @@ const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
+const { resolvePreloadModules } = require('./resolvePreload.ts');
 const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
@@ -176,6 +177,12 @@ function startWorker(path, options = {}) {
 			];
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
+	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
+	// script so they can instrument all subsequent Harper and app module loads. Not supported
+	// under Bun, which does not use execArgv here.
+	if (!isBun) {
+		for (const preloadPath of resolvePreloadModules()) execArgv.push('--require', preloadPath);
+	}
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
