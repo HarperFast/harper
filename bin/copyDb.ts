@@ -10,11 +10,12 @@ import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
-import { updateConfigValue } from '../config/configUtils.js';
+import { updateConfigValue } from '../config/configUtils.ts';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
 import {
+	Blob,
 	beginPendingMigrationBlobSaves,
 	encodeBlobsWithFilePath,
 	endPendingMigrationBlobSaves,
@@ -290,14 +291,30 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 
 // Returns a skeleton of `value` that produces the same classic/named structure (key list) when
 // encoded, but stubs every leaf — strings, numbers, Buffers, Blobs, Dates, etc. — to a primitive.
-// Plain objects and arrays are recursed so nested structures (e.g. a record's `headers` object) are
-// still built. Used to build the migration's canonical structure dictionary without re-reading
-// file-backed Blob payloads (which a raw encode of the real value would pull into memory).
-function shapeForStructure(value: any): any {
+// Objects (plain AND decoded records) and arrays are recursed so nested structures (e.g. a record's
+// `headers` object) are built. The migration reads source records as RecordObject instances (the
+// encoder's structPrototype), not plain Object, so gating recursion on `constructor === Object`
+// stubbed every record to a scalar — the observer then minted no structure and the canonical seed was
+// never persisted, so v5 workers fork the dictionary from an empty durable (HarperFast/harper#1508).
+// Leaf object types (Blob, Date, Buffer/typed arrays, Map, Set) stay stubbed; a Blob especially must
+// not be walked — that would pull the file-backed payload this skeleton exists to avoid.
+export function shapeForStructure(value: any): any {
 	if (Array.isArray(value)) return value.map(shapeForStructure);
-	if (value && typeof value === 'object' && value.constructor === Object) {
+	if (
+		value &&
+		typeof value === 'object' &&
+		!(value instanceof Blob) &&
+		!(value instanceof Date) &&
+		!ArrayBuffer.isView(value) &&
+		!(value instanceof ArrayBuffer) &&
+		!(value instanceof SharedArrayBuffer) &&
+		!(value instanceof Map) &&
+		!(value instanceof Set)
+	) {
 		const out: any = {};
-		for (const k in value) out[k] = shapeForStructure(value[k]);
+		// Own enumerable keys only — match the struct fields msgpackr encodes for the real record, and
+		// don't pull enumerable prototype-chain properties into the skeleton's key set.
+		for (const k of Object.keys(value)) out[k] = shapeForStructure(value[k]);
 		return out;
 	}
 	return 1;

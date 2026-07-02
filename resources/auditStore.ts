@@ -291,6 +291,12 @@ const INVALIDATE = 4;
 const PATCH = 5;
 const RELOCATE = 6;
 const STRUCTURES = 7;
+// Whole-table "reload" marker: a control entry (no record) signalling that a table was bulk-reloaded
+// and subscribers should re-read it. Used after a copyApply base copy, whose per-row snapshot writes
+// carry no audit entry (harper-pro#489). The entry type lives in the low nibble of the action byte
+// (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, leaving 9–15 free for
+// future actions. Markers are always written LOCAL_ONLY so an unknown type never reaches a peer.
+const RELOAD = 8;
 export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
@@ -326,6 +332,8 @@ const EVENT_TYPES = {
 	[RELOCATE]: 'relocate',
 	structures: STRUCTURES,
 	[STRUCTURES]: 'structures',
+	reload: RELOAD,
+	[RELOAD]: 'reload',
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
 };
@@ -532,7 +540,10 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const usernameEnd = (decoder.position += length);
 		let value: any;
 		return {
-			type: EVENT_TYPES[action & 7],
+			// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9–15
+			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
+			// identical to the historical `& 7` for every pre-reload entry (bit 3 was always clear).
+			type: EVENT_TYPES[action & 0xf],
 			tableId,
 			nodeId,
 			get recordId() {

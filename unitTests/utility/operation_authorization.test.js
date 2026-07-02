@@ -17,7 +17,7 @@ const user = require('#src/security/user');
 const alasql = require('alasql');
 const search = require('#src/dataLayer/search');
 const restart = require('#src/bin/restart');
-const configUtils = require('#js/config/configUtils');
+const configUtils = require('#src/config/configUtils');
 const jobs = require('#src/server/jobs/jobs');
 const terms = require('#src/utility/hdbTerms');
 

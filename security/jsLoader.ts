@@ -796,7 +796,11 @@ function getHarperExports(scope: ApplicationScope) {
 		// `harper.models` — same singleton that's surfaced as the top-level
 		// `models` package export (see `resources/models/Models.ts`).  The
 		// registry it reads from is populated at boot by
-		// `resources/models/bootstrap.ts`.
+		// `resources/models/bootstrap.ts`. The backend-registration API
+		// (`registerBackend` / `defineBackend`) and custom routing
+		// (`registerRouter`) are methods on this singleton (#1534, #1326) —
+		// components reach them via `models.registerBackend(...)`, not as
+		// separate top-level exports.
 		models: harperModelsSingleton,
 		createBlob,
 		RequestTarget,

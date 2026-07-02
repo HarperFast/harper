@@ -57,8 +57,8 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		return;
 	}
 
-	// Lazily required to avoid pulling configUtils at module-eval time for tests.
-	const { getConfigPath, getConfigFilePath } = require('../config/configUtils.js');
+	// Lazily imported to avoid pulling configUtils at module-eval time for tests.
+	const { getConfigPath, getConfigFilePath } = await import('../config/configUtils.ts');
 	const scopes = resolveScopes(config, getConfigPath, getConfigFilePath);
 
 	const models = new Models();

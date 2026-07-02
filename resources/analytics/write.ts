@@ -792,6 +792,36 @@ async function storeNodeStorageMetric(analyticsTable: Table) {
 	}
 }
 
+// Upper bound on the cold-start reverse scan that seeds `lastAggregationTime`. A healthy node's
+// newest record matches at depth 1; this cap only engages in the pathological no-matching-record
+// case, keeping the one-time main-thread decode cost bounded instead of O(table size). See #1538.
+const MAX_LAST_AGGREGATION_SCAN = 1000;
+// Time of this node's last completed aggregation, tracked in O(1) across cycles within a process.
+let lastAggregationTime: number | undefined;
+
+/**
+ * Find the time of the local node's most recent aggregation record by scanning back from the
+ * newest entry. The scan is BOUNDED to `maxScan` records: if no composite-id record for this node
+ * sits near the top — e.g. legacy scalar ids carried across an upgrade, or a node that has never
+ * completed an aggregation — an unbounded reverse scan would decode the entire table with msgpackr
+ * on the main thread, starving TLS handshakes and other main-thread work. Returns `undefined` when
+ * no match is found within the bound, so the caller falls back to aggregating recent raw data
+ * rather than scanning to EOF. Exported for testing. See #1538.
+ */
+export function findLastAggregationTime(
+	primaryStore: { getRange(options: object): Iterable<{ value?: any }> },
+	localNodeId: number,
+	maxScan: number = MAX_LAST_AGGREGATION_SCAN
+): number | undefined {
+	let scanned = 0;
+	for (const entry of primaryStore.getRange({ start: Infinity, end: false, reverse: true })) {
+		if (entry.value?.time && Array.isArray(entry.value.id) && entry.value.id[1] === localNodeId)
+			return entry.value.time;
+		if (++scanned >= maxScan) break;
+	}
+	return undefined;
+}
+
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
 	const analyticsTable = getAnalyticsTable();
@@ -805,20 +835,21 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		}
 		return delay;
 	})();
-	let lastForPeriod;
 	const localNodeId = getHostNodeId(server.hostname);
-	// find the last entry for this period for the local node only
-	for (const entry of analyticsTable.primaryStore.getRange({
-		start: Infinity,
-		end: false,
-		reverse: true,
-	})) {
-		if (!entry.value?.time || entry.value?.id[1] !== localNodeId) continue;
-		lastForPeriod = entry.value.time;
-		break;
+	// Find the time of this node's last aggregation. In steady state this is tracked in O(1) via
+	// `lastAggregationTime` (set at the end of every completed run below), so cycles after the
+	// first never touch the table. On the first cycle after boot we seed it once from the table
+	// via a bounded reverse scan (see findLastAggregationTime). Caching the seeded value keeps
+	// the next cycle O(1) even when this run early-returns below as "too recent"; a bound-hit
+	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and set the
+	// marker to `now` at the end of the cycle instead (#1538).
+	let lastForPeriod = lastAggregationTime;
+	if (lastForPeriod === undefined) {
+		lastForPeriod = findLastAggregationTime(analyticsTable.primaryStore, localNodeId);
+		if (lastForPeriod !== undefined) lastAggregationTime = lastForPeriod;
 	}
 	// was the last aggregation too recent to calculate a whole period?
-	if (Date.now() - toPeriod < lastForPeriod) return;
+	if (lastForPeriod !== undefined && Date.now() - toPeriod < lastForPeriod) return;
 	let firstForPeriod;
 	const aggregateActions = new Map();
 	const distributions = new Map();
@@ -977,6 +1008,13 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	};
 	storeMetric(analyticsTable, cruMetric);
 	lastResourceUsage = resourceUsage;
+	// Advance the O(1) last-aggregation marker to this cycle's time. The resource-usage metric
+	// just written is a composite-id record stamped `time: now`, so it is exactly what the
+	// reverse-scan seed would find as the newest matching record. Updating it every completed
+	// cycle — not only when there were raw updates — keeps the `Date.now() - toPeriod` period
+	// guard enforcing the configured cadence during idle stretches, matching the prior
+	// scan-based behavior rather than letting a stale marker run aggregation on every tick (#1538).
+	lastAggregationTime = now;
 
 	// `system` is set as non-enumerable on the object returned by getDatabases() so most
 	// callers skip it; for analytics we want it included, so build a view where it's enumerable.

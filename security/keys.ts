@@ -21,7 +21,7 @@ const tls = require('node:tls');
 import { relative, join } from 'node:path';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
 const logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;

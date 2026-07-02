@@ -9,14 +9,22 @@ const validator = require('./operationsValidation.js');
 const log = require('../utility/logging/harper_logger.ts');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const env = require('../utility/environment/environmentManager.ts');
-const configUtils = require('../config/configUtils.js');
+const configUtils = require('../config/configUtils.ts');
 const hdbUtils = require('../utility/common_utils.ts');
+const {
+	isEnvFile,
+	isProtectedEnvFile,
+	parseEnvKeys,
+	renderMaskedEnv,
+	upsertEnvValues,
+	removeEnvKeys,
+} = require('../utility/envFile.ts');
 const { handleHDBError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
-const { Application, prepareApplication } = require('./Application.ts');
+const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
 const { DeploymentRecorder, awaitDeploymentRow } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
@@ -572,6 +580,20 @@ async function deployComponent(req) {
 
 		if (recorder) {
 			response.deployment_id = recorder.deploymentId;
+			// Reclaim the payload tarball for large deploys: every peer has now installed from
+			// the blob (replicateOperation resolved) and the origin no longer needs it. Dropping
+			// the reference before finish() folds the null into the single terminal write, which
+			// unlinks the file locally and replicates the null so peers drop their copies too.
+			// Metadata (size, hash, event_log) is retained for the audit trail. Two guards keep
+			// the tarball when it's still the artifact you'd debug or retry with: failed deploys
+			// don't reach this branch, and a deploy that reached here only because
+			// ignore_replication_errors masked failed peers keeps its payload for those peers.
+			const payloadSize = recorder.row.payload_size;
+			const retentionMaxSize = getPayloadRetentionMaxSize();
+			if (typeof payloadSize === 'number' && payloadSize > retentionMaxSize && recorder.getFailedPeers().length === 0) {
+				const freed = recorder.dropPayload();
+				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
+			}
 			emit('phase', { phase: 'success', status: 'done' });
 			await recorder.finish('success');
 		}
@@ -718,7 +740,7 @@ async function getComponents() {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
 				const itemName = item.name;
-				if (itemName === 'node_modules') continue;
+				if (itemName === 'node_modules' || itemName === ASIDE_STAGING_DIR) continue;
 				const itemPath = path.join(dir, itemName);
 				if (item.isDirectory() || item.isSymbolicLink()) {
 					let res = {
@@ -734,6 +756,10 @@ async function getComponents() {
 						mtime: stats.mtime,
 						size: stats.size,
 					};
+					// Flag protected .env files so editors know their contents are masked by
+					// get_component_file and only editable via set_env_value. Template files
+					// (.env.example / .sample / .template) are not secret, so they are left alone.
+					if (isProtectedEnvFile(itemName)) res.protected = true;
 					result.entries.push(res);
 				}
 			}
@@ -794,6 +820,22 @@ async function getComponents() {
  */
 const DEFAULT_COMPONENT_FILE_MAX_SIZE = 5 * 1024 * 1024; // 5 MB
 
+// Deploys whose payload exceeds this size have their payload_blob dropped after a successful
+// deploy (see deployComponent). The metadata is retained; only the tarball bytes are reclaimed.
+// Configurable via deployment_payloadRetention_maxSize; set it very high to retain all payloads.
+const DEFAULT_PAYLOAD_RETENTION_MAX_SIZE = 10 * 1024 * 1024; // 10 MiB
+
+function getPayloadRetentionMaxSize() {
+	const configured = configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE);
+	// Only a number or a numeric string is a valid threshold. Reject everything else (unset,
+	// boolean, array, blank/whitespace string) and fall back to the default — otherwise Number()
+	// coercion would turn `true`→1, `false`/``/`[]`→0 into an aggressive always-/near-always-drop.
+	if (typeof configured !== 'number' && typeof configured !== 'string') return DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
+	if (typeof configured === 'string' && configured.trim() === '') return DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
+	const parsed = Number(configured);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
+}
+
 async function getComponentFile(req) {
 	const validation = validator.getComponentFileValidator(req);
 	if (validation) {
@@ -815,6 +857,19 @@ async function getComponentFile(req) {
 				HDB_ERROR_MSGS.COMPONENT_FILE_TOO_LARGE(stats.size, maxSize),
 				HTTP_STATUS_CODES.CONTENT_TOO_LARGE
 			);
+		}
+		// Protected .env files expose the key names (and a value-free masked rendering) but never
+		// the secret values. Template files (.env.example etc.) fall through and are read verbatim.
+		if (isProtectedEnvFile(req.file)) {
+			const keys = parseEnvKeys(await fs.readFile(filePath, 'utf8'));
+			return {
+				protected: true,
+				keys,
+				message: renderMaskedEnv(keys),
+				size: stats.size,
+				birthtime: stats.birthtime,
+				mtime: stats.mtime,
+			};
 		}
 		return {
 			message: await fs.readFile(filePath, options),
@@ -851,6 +906,113 @@ async function setComponentFile(req) {
 	}
 	let response = await server.replication.replicateOperation(req);
 	response.message = `Successfully set component: ` + req.file;
+	return response;
+}
+
+/**
+ * Resolve the absolute path of a project's env file (defaulting to `.env`) and confirm it is one.
+ * @param req
+ * @returns {{file:string, filePath:string}}
+ */
+function resolveEnvFilePath(req) {
+	const file = req.file || '.env';
+	if (!isEnvFile(file)) {
+		const msg = `'${file}' is not a .env file`;
+		throw handleHDBError(new Error(msg), msg, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	const compRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	return { file, filePath: path.join(compRoot, req.project, file) };
+}
+
+/**
+ * List the key names of a project's .env file. Never returns the secret values.
+ * @param req
+ * @returns {Promise<{file:string, keys:string[], size:number, mtime:Date}>}
+ */
+async function getEnvKeys(req) {
+	const validation = validator.getEnvKeysValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	const { file, filePath } = resolveEnvFilePath(req);
+	try {
+		const [contents, stats] = await Promise.all([fs.readFile(filePath, 'utf8'), fs.stat(filePath)]);
+		return { file, keys: parseEnvKeys(contents), size: stats.size, mtime: stats.mtime };
+	} catch (err) {
+		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
+			throw new Error(`Component file not found '${path.join(req.project, file)}'`);
+		}
+		throw err;
+	}
+}
+
+/**
+ * Set one (`key` + `value`) or many (`values`) entries in a project's .env file, preserving all
+ * other keys, comments and formatting. Creates the file if it does not exist. Never echoes values.
+ * @param req
+ * @returns {Promise<{message:string, keys:string[]}>}
+ */
+async function setEnvValue(req) {
+	const validation = validator.setEnvValueValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	const { file, filePath } = resolveEnvFilePath(req);
+	const updates = req.values ?? { [req.key]: req.value };
+
+	let existing = '';
+	try {
+		existing = await fs.readFile(filePath, 'utf8');
+	} catch (err) {
+		if (err.code !== hdbTerms.NODE_ERROR_CODES.ENOENT) throw err;
+	}
+
+	let updated;
+	try {
+		updated = upsertEnvValues(existing, updates);
+	} catch (err) {
+		throw handleHDBError(err, err.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	await fs.outputFile(filePath, updated, 'utf8');
+
+	const response = await server.replication.replicateOperation(req);
+	response.message = `Successfully set env value(s) in ${file}`;
+	response.keys = parseEnvKeys(updated);
+	return response;
+}
+
+/**
+ * Remove one (`key`) or many (`keys`) entries from a project's .env file, leaving the rest intact.
+ * @param req
+ * @returns {Promise<{message:string, keys:string[]}>}
+ */
+async function deleteEnvValue(req) {
+	const validation = validator.deleteEnvValueValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	const { file, filePath } = resolveEnvFilePath(req);
+	const keysToRemove = req.keys ?? [req.key];
+
+	let existing;
+	try {
+		existing = await fs.readFile(filePath, 'utf8');
+	} catch (err) {
+		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
+			throw new Error(`Component file not found '${path.join(req.project, file)}'`);
+		}
+		throw err;
+	}
+
+	const updated = removeEnvKeys(existing, keysToRemove);
+	await fs.outputFile(filePath, updated, 'utf8');
+
+	const response = await server.replication.replicateOperation(req);
+	response.message = `Successfully deleted env value(s) from ${file}`;
+	response.keys = parseEnvKeys(updated);
 	return response;
 }
 
@@ -909,4 +1071,7 @@ exports.deployComponent = deployComponent;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;
+exports.getEnvKeys = getEnvKeys;
+exports.setEnvValue = setEnvValue;
+exports.deleteEnvValue = deleteEnvValue;
 exports.dropComponent = dropComponent;

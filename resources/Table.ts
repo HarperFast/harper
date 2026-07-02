@@ -1209,7 +1209,12 @@ export function makeTable(options) {
 				let allowed = true;
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowRead(context.user, target, context);
+					try {
+						allowed = this.allowRead(context.user, target, context);
+					} catch {
+						// allow* threw — fail closed rather than letting the request proceed
+						throw new AccessViolation(context.user);
+					}
 				}
 				return promiseNormalize(
 					when(
@@ -1300,7 +1305,10 @@ export function makeTable(options) {
 										if (!property.name) property = { name: property };
 										if (!property.checkPermission && (target as any).checkPermission)
 											property.checkPermission = (target as any).checkPermission;
-										if (!relatedTable.prototype.allowRead.call(null, user, property, context)) return false;
+										// Invoke the related table's allowRead on a properly-bound instance rather than
+										// `.call(null, ...)` so `this` is a valid resource of the related type.
+										const relatedResource = new relatedTable(undefined, context);
+										if (!relatedResource.allowRead(user, property, context)) return false;
 										if (!property.select) return property.name; // no select was applied, just return the name
 									}
 									return property;
@@ -2570,7 +2578,13 @@ export function makeTable(options) {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			if (target.checkPermission) {
 				// requesting authorization verification
-				const allowed = this.allowRead((context as any).user, target, context);
+				let allowed;
+				try {
+					allowed = this.allowRead((context as any).user, target, context);
+				} catch {
+					// allow* threw — fail closed rather than letting the request proceed
+					throw new AccessViolation((context as any).user);
+				}
 				if (!allowed) {
 					throw new AccessViolation((context as any).user);
 				}
@@ -2772,7 +2786,10 @@ export function makeTable(options) {
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
-			const readTxn = txn.useReadTxn();
+			// When the query opts out of a snapshot (`snapshot: false`, e.g. long-running analytics
+			// scans), the read transaction reads against the latest committed data without pinning a
+			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
+			const readTxn = txn.useReadTxn(target.snapshot === false);
 			const entries = executeConditions(
 				conditions,
 				operator,
@@ -3230,6 +3247,9 @@ export function makeTable(options) {
 			// snapshot:false, which catches any commits that land during yield points; dropping in the
 			// listener avoids duplicate delivery.
 			let dropDuringReplay = false;
+			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
+			let reloadResnapshotRunning = false;
+			let reloadResnapshotPending = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const subscription = addSubscription(
 				TableResource,
@@ -3243,6 +3263,14 @@ export function makeTable(options) {
 							// we only send the full message, this are individual messages that can be sent out of order
 							// TODO: Do we want to have a limit to how far out-of-order we are willing to send?
 							value = auditRecord.getValue?.(primaryStore, getFullRecord);
+						} else if (type === 'reload') {
+							// Whole-table marker with a null id and no record (harper-pro#489): a copyApply base copy
+							// back-filled rows with no per-row audit events. For a user table, re-deliver the current
+							// scope as 'put's so MQTT/SSE/WS subscribers recover the snapshotted records, and do NOT
+							// forward the bare marker (harper-pro#495). System-DB subscribers (knownNodes etc.) instead
+							// get the raw marker and run their own bespoke whole-table rescan.
+							if (databaseName !== 'system') return scheduleReloadResnapshot();
+							// system DB: fall through to forward the bare 'reload' event verbatim.
 						} else if (type !== 'end_txn') {
 							// these are events that indicate that the primary record has changed. I believe we always want to simply
 							// send the latest value. Note that it is fine to synchronously access these records, they should have just
@@ -3504,6 +3532,78 @@ export function makeTable(options) {
 				}
 				subscription.send(event);
 			}
+			// #region reload re-snapshot (harper-pro#495)
+			// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
+			// listener above never fires for them and an already-connected subscriber would miss them until
+			// the next direct write. After the copy, a whole-table 'reload' marker is delivered here (id=null).
+			// For a user table we react by re-delivering the subscription's current scope as ordinary 'put'
+			// events — so EVERY consumer that funnels through subscribe() (MQTT, SSE, WS) recovers the records
+			// uniformly, with no per-protocol handling. System-DB reloads are NOT re-snapshotted: their
+			// subscribers (knownNodes peer-discovery, hdb_certificate CA install) run a bespoke whole-table
+			// rescan off the raw marker, which a per-row re-emit cannot express (it can't drop stale rows).
+			// Yields the latest committed value (snapshot:false) and skips tombstones, mirroring the
+			// omitCurrent initial-snapshot scan.
+			async function* currentScopeRecords() {
+				const isCollection = request.isCollection ?? thisId == null;
+				if (isCollection) {
+					let sinceYield = 0;
+					for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+						start: thisId ?? false,
+						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+						versions: true,
+						snapshot: false, // no need for a snapshot, just want the latest data
+					})) {
+						if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+							sinceYield = 0;
+							await rest();
+						}
+						if (!value) continue; // skip tombstones
+						yield { id, localTime, value, version, type: 'put', size };
+					}
+				} else {
+					const entry = primaryStore.getEntry(thisId);
+					if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
+				}
+			}
+			// Drain the current scope into the subscription with the same back-pressure as the live path.
+			// Coalesced: a marker that arrives while a re-snapshot is running just re-arms it once more (so
+			// markers for several tables, or a marker landing mid-scan, are not lost), and we never run two
+			// scans concurrently. The first thing it does is `await rest()` (a setImmediate macrotask), so the
+			// scan never executes inside the synchronous broadcast listener — which on the same-thread
+			// aftercommit path holds an inter-thread lock that must not span event-loop turns.
+			async function runReloadResnapshot() {
+				reloadResnapshotRunning = true;
+				try {
+					await rest(); // defer off the broadcast listener's stack before scanning
+					while (reloadResnapshotPending) {
+						reloadResnapshotPending = false;
+						// Subscription.end() nulls `subscriptions`; bail the moment it closes — before, between,
+						// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
+						// the finally re-arm won't re-loop.
+						if (!subscription.subscriptions) return;
+						for await (const record of currentScopeRecords()) {
+							if (!subscription.subscriptions) return;
+							send(record);
+							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+								if ((await subscription.waitForDrain()) === false) return;
+							}
+						}
+					}
+				} catch (error) {
+					harperLogger.error?.('Error in reload re-snapshot:', error);
+				} finally {
+					reloadResnapshotRunning = false;
+					// A marker that landed after the last pending-check but before we cleared the flag would
+					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
+					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
+				}
+			}
+			function scheduleReloadResnapshot() {
+				if (!subscription.subscriptions) return;
+				reloadResnapshotPending = true;
+				if (!reloadResnapshotRunning) runReloadResnapshot();
+			}
+			// #endregion
 			return subscription;
 		}
 
@@ -3603,6 +3703,41 @@ export function makeTable(options) {
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
 			transaction.addWrite(write);
+		}
+		/**
+		 * Write a single table-reload marker for this table (harper-pro#489): a LOCAL_ONLY audit entry of
+		 * type 'reload' with no record, committed in its own transaction. Subscribers driven off the audit
+		 * stream — hdb_nodes peer discovery and hdb_certificate CA install — treat it as "this table was
+		 * bulk-reloaded, re-read it". It is needed after a copyApply base copy, whose per-row snapshot rows
+		 * carry no audit entry, so the per-row events those subscribers rely on never fire. The marker is
+		 * never replicated (its LOCAL_ONLY bit makes the send path skip it without decoding the
+		 * peers-may-not-know type), and a lost marker self-heals on restart because each subscriber re-scans
+		 * the table when it (re)subscribes.
+		 */
+		static writeReloadMarker(context?: any) {
+			return transaction(context ?? {}, (txn: any) => {
+				// Bind the fresh transaction to this table's database (claims db + timestamp) exactly as the
+				// instance write paths do; a bare transaction() has no db and would fault in save().
+				const tableTxn = txnForContext({ transaction: txn } as any);
+				tableTxn.addWrite({
+					key: null,
+					store: primaryStore,
+					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
+						updateRecord(
+							null, // recordId: null — a whole-table signal, not a per-row change
+							undefined, // no record to store: this writes the audit entry only
+							undefined,
+							txnTime,
+							0,
+							true, // audit: emit the marker to the transaction log
+							{ nodeId: getThisNodeId(auditStore) ?? 0, transaction, localOnly: true, tableToTrack: null },
+							'reload',
+							false,
+							undefined
+						);
+					},
+				});
+			});
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {

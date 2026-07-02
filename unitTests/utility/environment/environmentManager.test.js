@@ -3,7 +3,7 @@
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const config_utils = require('#js/config/configUtils');
+const config_utils = require('#src/config/configUtils');
 const common_utils = require('#src/utility/common_utils');
 const rewire = require('rewire');
 const fs = require('fs');

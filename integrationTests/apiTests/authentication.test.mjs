@@ -138,6 +138,58 @@ suite('Authentication', (ctx) => {
 		);
 	});
 
+	// Fabric Connect flow (harper#1544): mint a purpose-scoped login token, then trade it for a
+	// session cookie via `login` — without ever sending username/password to this instance.
+	test('login operation exchanges a login-purpose token for a session cookie', { skip: skipOnBun }, async () => {
+		const tokenResponse = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({
+				operation: 'create_authentication_tokens',
+				username: admin.username,
+				password: admin.password,
+				purpose: 'login',
+			})
+			.expect(200);
+		// Same field as a regular operation-token mint — purpose: 'login' doesn't change the response shape.
+		assert.ok(tokenResponse.body.operation_token, tokenResponse.text);
+		assert.equal(tokenResponse.body.refresh_token, undefined, tokenResponse.text);
+
+		const loginResponse = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({ operation: 'login', token: tokenResponse.body.operation_token })
+			.expect((r) => assert.ok(r.text.includes('Login successful'), r.text))
+			.expect(200);
+
+		const setCookie = loginResponse.headers['set-cookie'];
+		assert.ok(
+			Array.isArray(setCookie) && setCookie.some((c) => c.includes('hdb-session=')),
+			`expected an hdb-session cookie, got ${JSON.stringify(setCookie)}`
+		);
+	});
+
+	test('a login-purpose token is rejected as a Bearer API credential', async () => {
+		const tokenResponse = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({
+				operation: 'create_authentication_tokens',
+				username: admin.username,
+				password: admin.password,
+				purpose: 'login',
+			})
+			.expect(200);
+
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${tokenResponse.body.operation_token}`)
+			.send({ operation: 'describe_all' })
+			.expect((r) => assert.ok(r.text.includes('"error":"invalid token"'), r.text))
+			.expect(401);
+	});
+
 	test('create_authentication_tokens with valid credentials returns operation token', async () => {
 		const response = await request(client.operationsURL)
 			.post('')

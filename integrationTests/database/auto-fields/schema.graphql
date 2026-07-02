@@ -1,0 +1,42 @@
+# QA-360 — Schema default values and generated/auto fields.
+#
+# Probes:
+#   (a) @createdTime auto-population on insert (omit field → auto-set)
+#   (b) @updatedTime auto-population on every write
+#   (c) Auto-generated PK when omitted from insert body
+#   (d) @createdTime NOT overwritten on update/PATCH
+#   (e) @updatedTime re-stamped on every PATCH/PUT
+#   (f) @createdTime on @sealed table — field omitted on insert should still auto-assign
+#   (g) No @default directive — omitting a non-auto field leaves it absent (feature gap)
+#   (h) "required" (non-null !) field: omit on insert → 400 (default does not satisfy)
+#   (i) PATCH with explicit createdTime value — should be overridden to retain original
+
+# Timestamps as Float (epoch-ms), open schema
+type AutoTimestamp @table @export {
+	id: ID @primaryKey
+	payload: String
+	createdAt: Float @createdTime
+	updatedAt: Float @updatedTime
+}
+
+# Timestamps as String (ISO), sealed table — tests @sealed + auto-field parity
+type SealedTimestamp @table @sealed @export {
+	id: ID @primaryKey
+	payload: String
+	createdAt: String @createdTime
+	updatedAt: String @updatedTime
+}
+
+# Required (non-null) field — omit on insert should 400 even if a default existed
+type RequiredField @table @export {
+	id: ID @primaryKey
+	name: String!
+	optional: String
+}
+
+# Open table — no auto fields; probes the "feature gap": no @default directive
+type PlainTable @table @export {
+	id: ID @primaryKey
+	status: String
+	count: Int
+}
