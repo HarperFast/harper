@@ -253,7 +253,9 @@ const SECRET_NAME = Joi.string()
 // The encrypted-value marker followed by a base64url envelope body (structural validation of the
 // decoded JSON happens in the handler via parseEnvelopeFields). Derived from the shared prefix
 // constant so validator and handler can't drift; the prefix contains no regex metacharacters.
-const SECRET_ENVELOPE_REGEX = new RegExp(`^${ENV_ENCRYPTED_PREFIX}[A-Za-z0-9_-]+$`);
+// Trailing `=` padding is tolerated — some browser encoders emit padded base64url, and Node's
+// base64url decoder accepts either form.
+const SECRET_ENVELOPE_REGEX = new RegExp(`^${ENV_ENCRYPTED_PREFIX}[A-Za-z0-9_-]+={0,2}$`);
 
 // Size cap for secret values and envelopes: rows live forever in a replicated, audited system
 // table, so unbounded payloads are a storage/replication hazard, not a feature.

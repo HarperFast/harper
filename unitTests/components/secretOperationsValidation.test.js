@@ -56,6 +56,13 @@ describe('secret operation validators', () => {
 			assert.ok(!valid(validator.setSecretValidator({ name: 'A', envelope: 'enc:v2:Zm9v' })));
 		});
 
+		it('tolerates trailing padding on the base64url envelope body (browser encoders)', () => {
+			assert.ok(valid(validator.setSecretValidator({ name: 'A', envelope: ENVELOPE + '=' })));
+			assert.ok(valid(validator.setSecretValidator({ name: 'A', envelope: ENVELOPE + '==' })));
+			assert.ok(!valid(validator.setSecretValidator({ name: 'A', envelope: ENVELOPE + '===' })));
+			assert.ok(!valid(validator.setSecretValidator({ name: 'A', envelope: 'enc:v1:=' })), 'padding-only body');
+		});
+
 		it('rejects value/envelope over the 256KiB cap, accepts at the cap', () => {
 			const cap = 256 * 1024;
 			assert.ok(!valid(validator.setSecretValidator({ name: 'A', value: 'a'.repeat(cap + 1) })));

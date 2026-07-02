@@ -72,7 +72,7 @@ function installMockSecretTable({ getDelay = 0 } = {}) {
 	return {
 		mock,
 		restore() {
-			databases.system[SECRET_TABLE] = prior;
+			if (databases.system) databases.system[SECRET_TABLE] = prior;
 		},
 	};
 }
@@ -392,12 +392,42 @@ describe('secretOperations', () => {
 	});
 
 	describe('read_audit_log on system.hdb_secret', () => {
-		it('is blocked (audit rows would expose envelopes; table audit itself must stay on)', async () => {
-			const readAuditLog = require('#src/dataLayer/readAuditLog').default;
+		const readAuditLog = require('#src/dataLayer/readAuditLog').default;
+
+		it('is blocked with 403 (audit rows would expose envelopes; table audit itself must stay on)', async () => {
 			await assert.rejects(
 				async () => readAuditLog({ database: 'system', table: SECRET_TABLE }),
+				(err) => err.statusCode === 403 && /not supported/.test(err.http_resp_msg ?? err.message)
+			);
+		});
+
+		it('is blocked regardless of caller role — super_user and non-SU alike', async () => {
+			// The guard is role-independent by design: it fires before any config or DB access,
+			// so an operations-allowlisted non-SU role and a full SU get the same 403.
+			await assert.rejects(
+				async () => readAuditLog({ ...su('read_audit_log'), database: 'system', table: SECRET_TABLE }),
 				(err) => err.statusCode === 403
 			);
+			await assert.rejects(
+				async () => readAuditLog({ ...nonSu('read_audit_log'), database: 'system', table: SECRET_TABLE }),
+				(err) => err.statusCode === 403
+			);
+		});
+
+		it('does not affect other tables (they fail on config/schema checks, never this 403)', async () => {
+			// hdb_secret in a NON-system database is not the secrets store — not blocked either.
+			// Nonexistent tables are used so the request stops at the config/schema checks that
+			// follow the guard, rather than reaching the storage bridge from a unit-test process.
+			for (const req of [
+				{ database: 'system', table: 'not_a_real_table' },
+				{ database: 'data', table: 'hdb_secret' },
+			]) {
+				await assert.rejects(
+					async () => readAuditLog(req),
+					(err) => err.statusCode !== 403 && !/not supported/.test(err.http_resp_msg ?? err.message ?? ''),
+					`expected ${req.database}.${req.table} to fail on config/schema, not the hdb_secret guard`
+				);
+			}
 		});
 	});
 
