@@ -18,7 +18,7 @@
  * test-runner process.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, equal } from 'node:assert';
+import { ok, strictEqual as equal } from 'node:assert';
 import { readdirSync, readFileSync, statSync, openSync, writeSync, truncateSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 
