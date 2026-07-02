@@ -296,11 +296,12 @@ function makeOperationToolHandler(operationName: string) {
 }
 
 /**
- * Build the `ToolDef` for one operation. A def is a pure function of the
- * operation name — its schema, description, annotations, RBAC predicate, and
- * handler don't depend on the allow/deny config (that only decides *whether*
- * the op is exposed, checked per request in the provider). So defs are cached
- * by name and reused across `tools/list` / `tools/call` calls.
+ * Build the `ToolDef` for one operation. Cheap and stateless — a def is a pure
+ * function of the operation name (its schema, description, annotations, RBAC
+ * predicate, and handler don't depend on the allow/deny config, which only
+ * decides *whether* the op is exposed, checked per request in the provider).
+ * `tools/list` isn't a hot path, so the provider rebuilds defs per call rather
+ * than caching (no module-level state to leak or stale-cache across tests).
  */
 function buildOperationToolDef(operationName: string): ToolDef {
 	const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
@@ -319,17 +320,6 @@ function buildOperationToolDef(operationName: string): ToolDef {
 	};
 }
 
-const toolDefCache = new Map<string, ToolDef>();
-
-function getOperationToolDef(operationName: string): ToolDef {
-	let def = toolDefCache.get(operationName);
-	if (!def) {
-		def = buildOperationToolDef(operationName);
-		toolDefCache.set(operationName, def);
-	}
-	return def;
-}
-
 /**
  * Lazy operations-profile tool provider. Consulted by the registry on every
  * `tools/list` / `tools/call`, so it reflects the live `OPERATION_FUNCTION_MAP`
@@ -346,7 +336,7 @@ const operationsToolProvider: ProfileToolProvider = {
 		const defs: ToolDef[] = [];
 		for (const operationName of opMap.keys()) {
 			if (!isOperationAllowed(operationName, config)) continue;
-			defs.push(getOperationToolDef(operationName));
+			defs.push(buildOperationToolDef(operationName));
 		}
 		return defs;
 	},
@@ -354,7 +344,7 @@ const operationsToolProvider: ProfileToolProvider = {
 		const opMap = getOperationFunctionMap();
 		if (!opMap || !opMap.has(operationName)) return undefined;
 		if (!isOperationAllowed(operationName, getOperationsConfig())) return undefined;
-		return getOperationToolDef(operationName);
+		return buildOperationToolDef(operationName);
 	},
 };
 

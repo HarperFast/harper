@@ -185,10 +185,27 @@ export function removeTool(name: string): boolean {
 	return existed;
 }
 
-export function getTool(name: string): ToolDef | undefined {
-	// Statically-registered tools win over provider entries on a name collision
-	// (curated tool overrides a generic same-named provider tool).
+/**
+ * Resolve a tool by name for `tools/call`. Pass the caller's `profile` so
+ * resolution is profile-scoped: the flat name→def registry is a single
+ * namespace shared by both profiles, so without scoping a static tool in one
+ * profile shadows a same-named provider tool in another — the shadowed tool
+ * then lists but is uncallable (the transport rejects the wrong-profile def).
+ *
+ * With a profile: a static registration of that profile wins over its provider
+ * entry (curated tool overrides a generic same-named provider tool), then the
+ * profile's provider, then any static registration by name (harmless — the
+ * transport re-checks `tool.profile`). Without a profile (internal/tests):
+ * static registry first, then any provider.
+ */
+export function getTool(name: string, profile?: McpProfile): ToolDef | undefined {
 	const statik = registry.get(name);
+	if (profile !== undefined) {
+		if (statik?.profile === profile) return statik;
+		const def = profileProviders.get(profile)?.get(name);
+		if (def) return def;
+		return statik;
+	}
 	if (statik) return statik;
 	for (const provider of profileProviders.values()) {
 		const def = provider.get(name);

@@ -495,7 +495,7 @@ async function dispatchToolsCall(
 	if (!name) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'tools/call requires params.name'));
 	}
-	const tool = getTool(name);
+	const tool = getTool(name, request.profile);
 	if (!tool || tool.profile !== request.profile) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.METHOD_NOT_FOUND, `Unknown tool: ${name}`));
 	}

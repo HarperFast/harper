@@ -237,6 +237,33 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(getTool('nonexistent'), undefined);
 		});
 
+		it('getTool(name, profile) is profile-scoped so a cross-profile static tool cannot shadow a provider tool', () => {
+			// A static application tool and a dynamic operations tool share a name.
+			// The operations client must still resolve ITS tool (not the app one).
+			addTool(makeTool({ name: 'shared', profile: 'application', description: 'app tool' }));
+			setProfileToolProvider(
+				'operations',
+				provider([makeTool({ name: 'shared', profile: 'operations', description: 'op tool' })])
+			);
+
+			const opTool = getTool('shared', 'operations');
+			assert.equal(opTool.profile, 'operations');
+			assert.equal(opTool.description, 'op tool');
+
+			const appTool = getTool('shared', 'application');
+			assert.equal(appTool.profile, 'application');
+			assert.equal(appTool.description, 'app tool');
+		});
+
+		it('within a profile, a static tool still wins over a same-name provider tool under getTool(name, profile)', () => {
+			addTool(makeTool({ name: 'dup', profile: 'operations', description: 'static wins' }));
+			setProfileToolProvider(
+				'operations',
+				provider([makeTool({ name: 'dup', profile: 'operations', description: 'provider loses' })])
+			);
+			assert.equal(getTool('dup', 'operations').description, 'static wins');
+		});
+
 		it('removing the provider drops its tools', () => {
 			setProfileToolProvider('operations', provider([makeTool({ name: 'gone', profile: 'operations' })]));
 			assert.equal(getTool('gone').name, 'gone');
