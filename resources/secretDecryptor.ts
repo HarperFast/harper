@@ -45,6 +45,16 @@ let decryptor: SecretDecryptor | undefined;
  * override/conflict semantics `loadEnv` applied to the original load.
  */
 export function deferEncryptedEnvValue(entry: DeferredEncryptedEnvValue): void {
+	// A re-evaluated env file (reload, watcher re-add) defers the same key again: replace the
+	// earlier entry in place so the queue holds one entry per {key, sourcePath} with the newest
+	// ciphertext, instead of wasting the cap and replaying stale values.
+	const existingIndex = deferredSecrets.findIndex(
+		(queued) => queued.key === entry.key && queued.sourcePath === entry.sourcePath
+	);
+	if (existingIndex >= 0) {
+		deferredSecrets[existingIndex] = entry;
+		return;
+	}
 	if (deferredSecrets.length >= MAX_DEFERRED_SECRETS) {
 		logger.error(
 			`Deferred encrypted env queue is full (${MAX_DEFERRED_SECRETS}); dropping ${entry.key} from ${entry.sourcePath}`
