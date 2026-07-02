@@ -99,7 +99,19 @@ const accessorCache = new Map<string, Readonly<Record<string, string>>>();
  * are overwrite-on-reprocess instead; state for a deleted component is unreachable from
  * `get_components` (which is keyed by the existing component directories).
  */
-export async function materializeGlobalSecrets(): Promise<void> {
+export function materializeGlobalSecrets(): Promise<void> {
+	// Single-flight: concurrent callers (the load-cycle call plus per-env-component refreshes fanned
+	// out by Promise.all over component loads) join one table scan instead of issuing N scans with
+	// N×rows RSA decrypts, and two scans can never interleave — so an older, slower scan cannot
+	// overwrite newer state. A caller arriving after completion starts a fresh scan, preserving the
+	// deploy-validation freshness guarantee (set_secret → deploy is sequential).
+	return (materializeInFlight ??= doMaterializeGlobalSecrets().finally(() => {
+		materializeInFlight = undefined;
+	}));
+}
+let materializeInFlight: Promise<void> | undefined;
+
+async function doMaterializeGlobalSecrets(): Promise<void> {
 	const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
 	if (!table) {
 		storeAvailable = false;
@@ -193,7 +205,9 @@ function parseDeclaration(componentName: string, name: string, spec: unknown): E
 // Inline string literal — same semantics as a `.env` line loaded by resources/loadEnv.ts:
 // `enc:v1:` envelopes are decrypted via the registered decryptor (undecryptable → error log + skip,
 // so the app fails on a missing var rather than receiving ciphertext), and a value already present
-// on process.env wins.
+// on process.env wins. Like `.env` files today, literals mutate the SHARED process.env: another
+// component's declaration of the same name can be satisfied (or its store row shadowed) depending
+// on load order — an inherent property of the global env tier, not per-component isolation.
 function applyEnvLiteral(componentName: string, name: string, value: string): void {
 	if (isEncryptedEnvValue(value)) {
 		const decryptor = getSecretDecryptor();
@@ -242,6 +256,9 @@ function evaluateDeclaration(
 	if (row && row.grants.length > 0) {
 		if (row.grants.includes(componentName)) {
 			if (row.value !== undefined) return undefined; // satisfied via the scoped accessor
+			// The accessor serves a real env var for declared names when the row is undecryptable, so
+			// the gate must accept the same fallback — never gate out a value the runtime would have.
+			if (process.env[name] !== undefined) return undefined;
 			return unsatisfied('custody-unavailable', 'scoped', row.failure);
 		}
 		if (process.env[name] !== undefined) return undefined; // a real env var still satisfies the request
@@ -317,7 +334,9 @@ export function getUnsatisfiedEnv(componentName: string): UnsatisfiedDeclaration
 export function getSecretsForComponent(componentName: string): Readonly<Record<string, string>> {
 	let view = accessorCache.get(componentName);
 	if (view) return view;
-	const entries: Record<string, string> = {};
+	// Null prototype so inherited Object.prototype members (toString, hasOwnProperty, constructor)
+	// can never masquerade as secret values under dynamic access like `secrets[key]`.
+	const entries: Record<string, string> = Object.create(null);
 	const declared = declaredEnvNames.get(componentName);
 	if (declared) {
 		for (const name of declared) {

@@ -12,6 +12,10 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const { generateKeyPairSync } = require('node:crypto');
+const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const {
 	materializeGlobalSecrets,
 	processComponentEnv,
@@ -313,6 +317,16 @@ describe('componentSecrets', () => {
 			assert.equal(getUnsatisfiedEnv('app-a').length, 0);
 		});
 
+		it('a granted-but-undecryptable row falls back to a real env var (gate matches the accessor)', async () => {
+			process.env.CS_REQ = 'env-fallback';
+			table.mock.rows.set('CS_REQ', row('CS_REQ', 'sealed', ['app-a']));
+			clearSecretCustody();
+			await materializeGlobalSecrets();
+			processComponentEnv('app-a', { CS_REQ: { required: true } });
+			assert.equal(getUnsatisfiedEnv('app-a').length, 0);
+			assert.equal(getSecretsForComponent('app-a').CS_REQ, 'env-fallback');
+		});
+
 		it('optional unsatisfied declarations do not gate, but are recorded', async () => {
 			await materializeGlobalSecrets();
 			processComponentEnv('app-a', { CS_OPT: { required: false, description: 'nice to have' } });
@@ -372,6 +386,39 @@ describe('componentSecrets', () => {
 			processComponentEnv('app-a', { CS_COLLIDE: { required: true } });
 			assert.equal(getSecretsForComponent('app-a').CS_COLLIDE, 'scoped-value');
 		});
+
+		it('has a null prototype: Object.prototype names never masquerade as secrets', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 's-value', ['app-a']));
+			await materializeGlobalSecrets();
+			const view = getSecretsForComponent('app-a');
+			assert.equal(Object.getPrototypeOf(view), null);
+			assert.equal(view.toString, undefined);
+			assert.equal(view.hasOwnProperty, undefined);
+			assert.equal(view.constructor, undefined);
+		});
+	});
+
+	describe('materialization single-flight', () => {
+		it('concurrent callers share one table scan; sequential callers get fresh scans', async () => {
+			let scans = 0;
+			const baseSearch = table.mock.search.bind(table.mock);
+			table.mock.search = () => {
+				scans++;
+				return (async function* () {
+					await new Promise((resolve) => setImmediate(resolve)); // widen the concurrency window
+					yield* baseSearch();
+				})();
+			};
+			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v1'));
+			await Promise.all([materializeGlobalSecrets(), materializeGlobalSecrets(), materializeGlobalSecrets()]);
+			assert.equal(scans, 1);
+			assert.equal(process.env.CS_GLOBAL, 'v1');
+			// after completion a new call must re-read (freshness for set_secret → deploy)
+			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v2'));
+			await materializeGlobalSecrets();
+			assert.equal(scans, 2);
+			assert.equal(process.env.CS_GLOBAL, 'v2');
+		});
 	});
 
 	describe('process-wide secrets export (component-load binding)', () => {
@@ -421,6 +468,42 @@ describe('componentSecrets', () => {
 			assert.throws(() => {
 				secrets.CS_SCOPED = 'nope';
 			}, TypeError);
+		});
+
+		// Regression guard for the native-loader path: the binding set by runWithComponentBinding
+		// (what scopedImport does around `await import(moduleUrl)`) must survive into the ESM
+		// module's TOP-LEVEL evaluation — including the recommended `const { X } = secrets;`
+		// destructure and code after a top-level await. AsyncLocalStorage propagation into
+		// dynamic-import evaluation has version-dependent history, so this is asserted empirically
+		// on every supported Node version rather than assumed.
+		it('propagates the binding into native-loader ESM top-level evaluation', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 's-value', ['app-native']));
+			await materializeGlobalSecrets();
+			const dir = mkdtempSync(path.join(tmpdir(), 'cs-native-'));
+			const modPath = path.join(dir, 'entry.mjs');
+			// require()ing the module from the temp file hits the same CJS cache entry as this test's
+			// own require — the same `secrets` proxy instance a native-loader component would get.
+			const componentSecretsPath = require.resolve('#src/components/componentSecrets');
+			writeFileSync(
+				modPath,
+				`import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { secrets } = require(${JSON.stringify(componentSecretsPath)});
+export const topLevel = secrets.CS_SCOPED;
+const { CS_SCOPED } = secrets;
+export const destructured = CS_SCOPED;
+await new Promise((resolve) => setImmediate(resolve));
+export const afterTopLevelAwait = secrets.CS_SCOPED;
+`
+			);
+			try {
+				const mod = await runWithComponentBinding('app-native', () => import(pathToFileURL(modPath).toString()));
+				assert.equal(mod.topLevel, 's-value');
+				assert.equal(mod.destructured, 's-value');
+				assert.equal(mod.afterTopLevelAwait, 's-value');
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
 		});
 
 		it('cannot be frozen/made non-extensible (which would poison enumeration for all consumers)', async () => {
