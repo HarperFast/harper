@@ -18,7 +18,7 @@ describe('harperConfigEnvVars', function () {
 			const hash1 = hashConfig(config1);
 			const hash2 = hashConfig(config2);
 
-			assert.notEqual(hash1, hash2, 'Different configs should have different hashes');
+			assert.notStrictEqual(hash1, hash2, 'Different configs should have different hashes');
 		});
 
 		it('produces same hash for same config with different key order', function () {
@@ -38,7 +38,7 @@ describe('harperConfigEnvVars', function () {
 			const hash1 = hashConfig(config1);
 			const hash2 = hashConfig(config2);
 
-			assert.notEqual(hash1, hash2, 'Nested differences should produce different hashes');
+			assert.notStrictEqual(hash1, hash2, 'Nested differences should produce different hashes');
 		});
 
 		it('handles arrays correctly in hash', function () {
@@ -48,7 +48,7 @@ describe('harperConfigEnvVars', function () {
 			const hash1 = hashConfig(config1);
 			const hash2 = hashConfig(config2);
 
-			assert.notEqual(hash1, hash2, 'Different arrays should produce different hashes');
+			assert.notStrictEqual(hash1, hash2, 'Different arrays should produce different hashes');
 		});
 
 		it('produces same hash for deeply nested configs with different key order', function () {

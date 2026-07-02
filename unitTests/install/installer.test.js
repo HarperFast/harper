@@ -561,7 +561,7 @@ describe('applyInstallModeDefaults', () => {
 	// fallback chain (replication.hostname -> cert CN -> listening port) keeps the real identity.
 	it('does not cement a concrete node.hostname for a dev install (harper-pro#351)', () => {
 		const args = applyInstallModeDefaults({}, 'dev');
-		assert.notEqual(args.node_hostname, 'localhost');
+		assert.notStrictEqual(args.node_hostname, 'localhost');
 		// null is acceptable (matches defaultConfig.yaml node.hostname: null); a truthy concrete
 		// value is not.
 		assert.ok(args.node_hostname == null, `node_hostname should be unset/null, got ${args.node_hostname}`);

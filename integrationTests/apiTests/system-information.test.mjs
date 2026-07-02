@@ -27,7 +27,7 @@ suite('System Information', (ctx) => {
 		const response = await client.req().send({ operation: 'system_information' }).expect(200);
 		const attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
 		for (const attribute of attributes) {
-			assert.notEqual(response.body[attribute], undefined, `missing attribute "${attribute}": ${response.text}`);
+			assert.notStrictEqual(response.body[attribute], undefined, `missing attribute "${attribute}": ${response.text}`);
 		}
 	});
 

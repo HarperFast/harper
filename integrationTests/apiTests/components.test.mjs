@@ -367,9 +367,9 @@ suite('Component lifecycle', { skip: skipSuite }, (ctx) => {
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => {
 				assert.ok(r.body.hasOwnProperty('test-deploy'), r.text);
-				assert.notEqual(r.body['test-deploy']['routes'], undefined, r.text);
+				assert.notStrictEqual(r.body['test-deploy']['routes'], undefined, r.text);
 				assert.equal(r.body['test-deploy']['routes'][0], 'examples', r.text);
-				assert.notEqual(r.body['test-deploy']['helpers'], undefined, r.text);
+				assert.notStrictEqual(r.body['test-deploy']['helpers'], undefined, r.text);
 				assert.equal(r.body['test-deploy']['helpers'][0], 'example', r.text);
 			})
 			.expect(200);

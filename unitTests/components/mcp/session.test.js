@@ -50,7 +50,7 @@ describe('mcp/session', () => {
 		it('generates distinct ids', async () => {
 			const a = await createSession({ user: 'u', protocolVersion: '2025-06-18' });
 			const b = await createSession({ user: 'u', protocolVersion: '2025-06-18' });
-			assert.notEqual(a.id, b.id);
+			assert.notStrictEqual(a.id, b.id);
 		});
 	});
 

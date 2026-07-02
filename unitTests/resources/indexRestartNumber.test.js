@@ -190,7 +190,7 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 				{ name: 'tag', indexed: true },
 			],
 		});
-		assert.notEqual(
+		assert.notStrictEqual(
 			TblNewGen.indexingOperation,
 			buildOp,
 			'must re-trigger (new indexingOperation) when persisted restartNumber is older than the current generation'

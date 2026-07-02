@@ -234,7 +234,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 
 		// Verify the old process was killed and a new one spawned
 		assert(child3.pid, 'New version process should have a PID');
-		assert.notEqual(child1.pid, child3.pid, 'Higher version should have spawned a new process');
+		assert.notStrictEqual(child1.pid, child3.pid, 'Higher version should have spawned a new process');
 
 		// Clean up
 		child3.kill();

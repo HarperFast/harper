@@ -481,7 +481,7 @@ describe('mcp/transport', () => {
 					})
 				);
 				assert.equal(page2.jsonBody.result.tools.length, 2);
-				assert.notEqual(page1.jsonBody.result.tools[0].name, page2.jsonBody.result.tools[0].name);
+				assert.notStrictEqual(page1.jsonBody.result.tools[0].name, page2.jsonBody.result.tools[0].name);
 			});
 
 			it('omits nextCursor when the page completes the list', async () => {
