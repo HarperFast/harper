@@ -18,7 +18,7 @@
  * Skipped on Bun: component restarts are not reliable under Harper-on-Bun in CI.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout } from 'node:timers/promises';

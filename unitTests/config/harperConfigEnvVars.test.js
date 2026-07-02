@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const rewire = require('rewire');
 const harperConfigEnvVars = rewire('#src/config/harperConfigEnvVars');
 

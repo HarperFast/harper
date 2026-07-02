@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { tmpdir } = require('node:os');
 const { once } = require('node:events');

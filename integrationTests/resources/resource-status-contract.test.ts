@@ -26,7 +26,7 @@
  * Harper SHA: 7aaa5a152332739929786fb4a63e70f4206189b7
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';

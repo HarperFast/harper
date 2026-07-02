@@ -33,7 +33,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok, equal } from 'node:assert/strict';
+import { ok, equal } from 'node:assert';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

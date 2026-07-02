@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { bootstrapModels } = require('#src/resources/models/bootstrap');
 const {
 	clearRegistry,

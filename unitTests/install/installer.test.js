@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;

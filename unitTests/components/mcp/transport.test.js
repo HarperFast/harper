@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;

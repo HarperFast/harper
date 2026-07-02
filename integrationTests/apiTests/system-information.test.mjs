@@ -7,7 +7,7 @@
  * hermetic, and safe to run concurrently with other test files.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 

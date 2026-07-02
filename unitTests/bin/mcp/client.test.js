@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const http = require('node:http');
 const { Readable, Writable } = require('node:stream');
 const { runBridge, resolveConnection } = require('#src/bin/mcp/client');

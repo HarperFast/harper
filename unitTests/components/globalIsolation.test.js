@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const path = require('node:path');
 const { loadComponent, loadedPaths } = require('#src/components/componentLoader');
 const { PACKAGE_ROOT } = require('#src/utility/packageUtils');

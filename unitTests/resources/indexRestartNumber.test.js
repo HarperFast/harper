@@ -15,7 +15,7 @@
  * cleared on clean completion, and (c) actually drives a re-trigger.
  */
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');

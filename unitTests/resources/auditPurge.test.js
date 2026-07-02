@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 
 // Regression test for the early-recovery transaction-log purge (harper#1115).
 // scheduleAuditCleanup only runs once a worker reaches steady state, so a node that

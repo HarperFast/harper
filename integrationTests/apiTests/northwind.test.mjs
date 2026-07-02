@@ -14,7 +14,7 @@
  * Skipped on Windows: csv_file_load uses Linux-style absolute paths.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { setTimeout } from 'node:timers/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
