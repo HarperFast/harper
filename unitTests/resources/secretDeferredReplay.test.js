@@ -39,8 +39,13 @@ describe('deferred encrypted env replay', () => {
 		// plaintext loads immediately; the encrypted value is deferred, not dropped
 		assert.equal(process.env.SDR_PLAIN, 'hello');
 		assert.equal(process.env.SDR_SECRET, undefined);
+		const snapshot = getDeferredEncryptedEnvValues();
+		assert.equal(snapshot.length, 1);
+		assert.equal(snapshot[0].key, 'SDR_SECRET');
+		// the accessor is a redacted copy: no ciphertext, and mutating it can't touch the queue
+		assert.equal('rawValue' in snapshot[0], false);
+		snapshot.length = 0;
 		assert.equal(getDeferredEncryptedEnvValues().length, 1);
-		assert.equal(getDeferredEncryptedEnvValues()[0].key, 'SDR_SECRET');
 
 		registerSecretDecryptor((value) => `decrypted:${value.slice(PREFIX.length)}`);
 		assert.equal(process.env.SDR_SECRET, 'decrypted:abc');
@@ -73,6 +78,19 @@ describe('deferred encrypted env replay', () => {
 		});
 		assert.equal(process.env.SDR_BAD, undefined);
 		assert.equal(process.env.SDR_GOOD, 'ok');
+		assert.equal(getDeferredEncryptedEnvValues().length, 0);
+	});
+
+	it('replays an entry whose decrypted value already matches process.env as a silent no-op', () => {
+		process.env.SDR_TAKEN = 'decrypted:same';
+		deferEncryptedEnvValue({
+			key: 'SDR_TAKEN',
+			rawValue: `${PREFIX}same`,
+			sourcePath: '/apps/test/.env',
+			override: false,
+		});
+		registerSecretDecryptor((value) => `decrypted:${value.slice(PREFIX.length)}`);
+		assert.equal(process.env.SDR_TAKEN, 'decrypted:same');
 		assert.equal(getDeferredEncryptedEnvValues().length, 0);
 	});
 
