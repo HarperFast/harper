@@ -15,6 +15,7 @@ describe('registerWorkerDataProvider', () => {
 		assert.throws(() => registerWorkerDataProvider('addPorts', () => 1), /already in use/);
 		// consumed by threadServer.js, not spread by startWorker — must be reserved all the same
 		assert.throws(() => registerWorkerDataProvider('noServerStart', () => true), /already in use/);
+		assert.throws(() => registerWorkerDataProvider('__proto__', () => ({})), /already in use/);
 		const unregister = registerWorkerDataProvider('dupNameTest', () => undefined);
 		try {
 			assert.throws(() => registerWorkerDataProvider('dupNameTest', () => undefined), /already in use/);

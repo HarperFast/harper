@@ -113,6 +113,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'restartNumber',
 	'ticketKeys',
 	'noServerStart',
+	'__proto__', // never a legitimate payload name; spread would define it as an own property
 ];
 const workerDataProviders = new Map();
 /**
@@ -142,8 +143,9 @@ function collectProvidedWorkerData(options) {
 			if (value === undefined) continue;
 			// Use the clone, not the original: this both pre-flights cloneability (so a bad value
 			// can't break the Worker spawn) and detaches the payload from accessor-backed objects
-			// or later mutation that could still throw inside new Worker().
-			(provided ??= {})[name] = structuredClone(value);
+			// or later mutation that could still throw inside new Worker(). Null prototype so a
+			// provider name can never collide with Object.prototype members.
+			(provided ??= Object.create(null))[name] = structuredClone(value);
 		} catch (error) {
 			harperLogger.error(`workerData provider '${name}' failed and will be skipped for this worker:`, error);
 		}
