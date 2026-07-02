@@ -68,8 +68,9 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
 	// any application loads (root components — including the Pro custody registration — have
 	// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody
-	// secrets heal. Never throws.
-	await materializeGlobalSecrets();
+	// secrets heal; resetDeclarations drops per-component state from components/env blocks that no
+	// longer exist. Never throws.
+	await materializeGlobalSecrets({ resetDeclarations: true });
 	const cfsLoaded: Promise<any>[] = [];
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
@@ -375,7 +376,8 @@ export async function loadComponent(
 		// The `env:` block declares the component's environment expectations (string literal →
 		// process.env; object → declaration satisfied from the hdb_secret store / process.env).
 		// Processed before any of the component's plugins load, so literals and the load-gate apply
-		// to everything below. A failed gate contains to this component — the instance keeps running.
+		// to everything below. A failed gate contains to this component — nothing of this
+		// component's is registered (its URL space is simply absent) and the instance keeps running.
 		if (config.env !== undefined) {
 			if (isRoot) {
 				harperLogger.warn(
@@ -384,12 +386,15 @@ export async function loadComponent(
 			} else {
 				const componentStatusName = basename(componentDirectory);
 				try {
+					// Refresh the store snapshot so out-of-cycle loads (e.g. deploy validation in a
+					// long-lived worker, after a set_secret/grant_secret since boot) gate against
+					// current data. Cheap (one small system-table scan per env-declaring component).
+					await materializeGlobalSecrets();
 					processComponentEnv(componentStatusName, config.env);
 				} catch (error) {
 					error.message = `Could not load component '${componentStatusName}' due to: ${error.message}`;
 					errorReporter?.(error);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
-					resources.set('/', new ErrorResource(error), null, true);
 					componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 					return undefined;
 				}

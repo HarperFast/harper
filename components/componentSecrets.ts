@@ -87,11 +87,18 @@ const accessorCache = new Map<string, Readonly<Record<string, string>>>();
 /**
  * Read the hdb_secret store, decrypt what this node's custody allows, materialize the global tier
  * (empty `grants`) into the real process.env, and snapshot the scoped tier for the accessor. Runs
- * once per load cycle, before components load. Never throws — every degraded mode (table missing
- * pre-upgrade, no custody registered, undecryptable rows) logs and leaves the node bootable; the
- * unsatisfied state surfaces per-component when declarations are evaluated.
+ * at the start of each load cycle (with `resetDeclarations`, so state from removed components/env
+ * blocks doesn't linger), and again per env-declaring component load so out-of-cycle loads (e.g.
+ * deploy validation in a long-lived worker) gate against a fresh snapshot. Never throws — every
+ * degraded mode (table missing pre-upgrade, no custody registered, undecryptable rows) logs and
+ * leaves the node bootable; the unsatisfied state surfaces per-component when declarations are
+ * evaluated.
  */
-export async function materializeGlobalSecrets(): Promise<void> {
+export async function materializeGlobalSecrets({ resetDeclarations = false } = {}): Promise<void> {
+	if (resetDeclarations) {
+		declaredEnvNames.clear();
+		unsatisfiedEnv.clear();
+	}
 	const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
 	if (!table) {
 		storeAvailable = false;
@@ -249,10 +256,12 @@ function evaluateDeclaration(
 }
 
 /**
- * Process a component's `env:` config block: inject string literals into process.env and evaluate
- * declarations against the store snapshot + process.env. Throws (load-gate) when any
- * `required: true` declaration is unsatisfied, naming each variable and why; optional unsatisfied
- * declarations log a warning and are recorded for status exposure.
+ * Process a component's `env:` config block: evaluate declarations against the store snapshot +
+ * process.env, and inject string literals into process.env. Two passes so nothing is mutated
+ * before the whole block validates and the load-gate passes: an invalid shape or an unsatisfied
+ * `required: true` declaration throws (naming each variable and why) WITHOUT applying any of the
+ * block's literals. Optional unsatisfied declarations log a warning and are recorded for status
+ * exposure.
  */
 export function processComponentEnv(componentName: string, envConfig: unknown): void {
 	if (envConfig === null || typeof envConfig !== 'object' || Array.isArray(envConfig)) {
@@ -261,11 +270,12 @@ export function processComponentEnv(componentName: string, envConfig: unknown): 
 		);
 	}
 	const declared = new Set<string>();
+	const literals: [string, string][] = [];
 	const unsatisfied: UnsatisfiedDeclaration[] = [];
 	const requiredFailures: string[] = [];
 	for (const [name, spec] of Object.entries(envConfig)) {
 		if (typeof spec === 'string' || typeof spec === 'number' || typeof spec === 'boolean') {
-			applyEnvLiteral(componentName, name, String(spec));
+			literals.push([name, String(spec)]);
 			continue;
 		}
 		const declaration = parseDeclaration(componentName, name, spec);
@@ -288,6 +298,7 @@ export function processComponentEnv(componentName: string, envConfig: unknown): 
 	if (requiredFailures.length > 0) {
 		throw new Error(`unsatisfied required environment variables: ${requiredFailures.join('; ')}`);
 	}
+	for (const [name, value] of literals) applyEnvLiteral(componentName, name, value);
 }
 
 /** Declared-but-unsatisfied env expectations for a component — metadata only, for status surfaces. */
@@ -382,6 +393,11 @@ export const secrets: Readonly<Record<string, string>> = new Proxy(
 		set: readOnly,
 		defineProperty: readOnly,
 		deleteProperty: readOnly,
+		// Never allow the (shared, extensible) target to be made non-extensible — a successful
+		// Object.freeze/preventExtensions would pin the proxy's key-set invariants to the empty
+		// target and break enumeration for every later consumer.
+		preventExtensions: readOnly,
+		setPrototypeOf: readOnly,
 	}
 );
 _assignPackageExport('secrets', secrets);

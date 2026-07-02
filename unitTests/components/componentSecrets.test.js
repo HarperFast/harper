@@ -168,6 +168,16 @@ describe('componentSecrets', () => {
 			delete databases.system[SECRET_TABLE];
 			await materializeGlobalSecrets();
 		});
+
+		it('resetDeclarations drops per-component state from removed env blocks', async () => {
+			await materializeGlobalSecrets();
+			processComponentEnv('app-a', { CS_OPT: { required: false } });
+			assert.equal(getUnsatisfiedEnv('app-a').length, 1);
+			// next load cycle: the component no longer declares anything
+			await materializeGlobalSecrets({ resetDeclarations: true });
+			assert.equal(getUnsatisfiedEnv('app-a').length, 0);
+			assert.deepEqual(Object.keys(getSecretsForComponent('app-a')), []);
+		});
 	});
 
 	describe('env block: literals', () => {
@@ -197,6 +207,16 @@ describe('componentSecrets', () => {
 			process.env.CS_LITERAL = 'pre-existing';
 			processComponentEnv('app-a', { CS_LITERAL: 'from-config' });
 			assert.equal(process.env.CS_LITERAL, 'pre-existing');
+		});
+
+		it('a failed load-gate applies none of the block literals', () => {
+			assert.throws(() => processComponentEnv('app-a', { CS_LITERAL: 'lit', CS_REQ: { required: true } }));
+			assert.equal(process.env.CS_LITERAL, undefined);
+		});
+
+		it('an invalid declaration shape applies none of the block literals', () => {
+			assert.throws(() => processComponentEnv('app-a', { CS_LITERAL: 'lit', CS_REQ: { required: 'yes' } }));
+			assert.equal(process.env.CS_LITERAL, undefined);
 		});
 	});
 
@@ -400,6 +420,16 @@ describe('componentSecrets', () => {
 			assert.throws(() => {
 				secrets.CS_SCOPED = 'nope';
 			}, TypeError);
+		});
+
+		it('cannot be frozen/made non-extensible (which would poison enumeration for all consumers)', async () => {
+			assert.throws(() => Object.freeze(secrets), TypeError);
+			assert.throws(() => Object.preventExtensions(secrets), TypeError);
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 's-value', ['app-a']));
+			await materializeGlobalSecrets();
+			await runWithComponentBinding('app-a', async () => {
+				assert.deepEqual(Object.keys(secrets), ['CS_SCOPED']); // still enumerable afterward
+			});
 		});
 	});
 });
