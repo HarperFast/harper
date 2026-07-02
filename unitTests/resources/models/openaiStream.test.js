@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { openaiStream } = require('#src/resources/models/openaiStream');
 const { contentTypes } = require('#src/server/serverHelpers/contentTypes');
 

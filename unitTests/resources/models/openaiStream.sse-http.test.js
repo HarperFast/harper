@@ -16,7 +16,7 @@
 // — unmodified OpenAI SDK completes a chat — is #631's, per that issue's acceptance criteria.
 // Here we exercise Harper's own SSE serializer + a real client, which is openaiStream's slice.
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const http = require('node:http');
 const { openaiStream } = require('#src/resources/models/openaiStream');
 const { TestBackend } = require('#src/resources/models/TestBackend');
