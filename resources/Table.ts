@@ -776,7 +776,7 @@ export function makeTable(options) {
 					this.#record = entry.value;
 					this.#version = entry.version;
 				});
-			}
+			} else if (hasSourceGet) setLoadedFromSource(undefined, this.getContext(), false); // mark it as cached
 		}
 		// #section: lifecycle-admin
 		static getNewId(): any {
@@ -1224,6 +1224,7 @@ export function makeTable(options) {
 									// return 504 (rather than 404) if there is no content and the cache-control header
 									// dictates not to go to source
 									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+									if (hasSourceGet) setLoadedFromSource(target, context, false); // mark it as cached
 								} else if (ensureLoaded) {
 									const loadingFromSource = ensureLoadedFromSource(
 										constructor.source,
@@ -1236,7 +1237,7 @@ export function makeTable(options) {
 									if (loadingFromSource) {
 										txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 										return loadingFromSource.then((entry) => entry?.value);
-									}
+									} else if (hasSourceGet) setLoadedFromSource(target, context, false); // mark it as cached
 								}
 								return entry?.value;
 							});

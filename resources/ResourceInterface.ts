@@ -95,10 +95,11 @@ export interface Context {
 	sourceApply?: boolean;
 	originatingOperation?: OperationFunctionName;
 	previousResidency?: string[];
-	/** Cache disposition of the most recent get on a caching table in this context: true if the
-	 * request initiated a fetch from source (including when a stale cached value is returned while
-	 * revalidating in the background), false if served from cache — including after waiting on
-	 * another request's in-flight source fetch. Subsequent gets in the same context overwrite it. */
+	/** Cache disposition of the most recent get on a caching table in this context: true if the get
+	 * fetched from source — including when a source error fell back to a stale record (staleIfError);
+	 * false if served from cache — including stale-while-revalidate responses (the source fetch
+	 * continues in the background) and waits on another request's in-flight source fetch.
+	 * Subsequent gets in the same context overwrite it. */
 	loadedFromSource?: boolean;
 	nodeName?: string;
 	resourceCache?: Map<Id, any>;
