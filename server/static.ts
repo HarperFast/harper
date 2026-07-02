@@ -19,7 +19,7 @@ import send from 'send';
  *   catch-all answers GETs for exported REST resources too; an SPA with history-mode routing should set
  *   `after: 'rest'` so the API is matched first and only unmatched URLs receive the `notFound` fallback.
  *   `before: false` clears the default without adding a new constraint (registration order applies).
- *   Ordering is applied when the component loads; changing it requires a restart.
+ *   Ordering is applied when the component loads; changing `before`/`after` triggers a component restart.
  *
  * This plugin dynamically updates its behavior based on the current configuration file. Users can make updates and immediately see the changes reflect in the next request.
  *
@@ -68,6 +68,13 @@ export function handleApplication(scope: Scope) {
 		}
 		if (key[0] === 'fallthrough') {
 			warnIfBlockingRest();
+			return;
+		}
+		// `before`/`after` are consumed once at registration; the middleware chain can only pick
+		// up a new ordering by reloading the component. (Scope's own auto-restart on option
+		// changes is bypassed once a plugin registers its own 'change' listener, as we do above.)
+		if (key[0] === 'before' || key[0] === 'after') {
+			scope.requestRestart();
 		}
 	});
 

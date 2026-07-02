@@ -10,6 +10,7 @@ function fakeScope(options = {}) {
 		httpOptions: undefined,
 		warnings: [],
 		changeListeners: [],
+		restartRequests: 0,
 	};
 	const scope = {
 		directory: '/fake/app',
@@ -24,6 +25,7 @@ function fakeScope(options = {}) {
 			warn: (message) => state.warnings.push(message),
 		},
 		handleEntry() {},
+		requestRestart: () => state.restartRequests++,
 		server: {
 			http: (_listener, httpOptions) => {
 				state.httpOptions = httpOptions;
@@ -117,5 +119,25 @@ describe('static plugin fallthrough: false warning', () => {
 		options.fallthrough = false;
 		scope.fireChange('fallthrough');
 		assert.equal(state.warnings.length, 1);
+	});
+});
+
+describe('static plugin ordering live reload', () => {
+	it('requests a restart when before or after changes', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		scope.fireChange('before');
+		assert.equal(state.restartRequests, 1);
+		scope.fireChange('after');
+		assert.equal(state.restartRequests, 2);
+	});
+
+	it('does not request a restart for options read per-request', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		for (const key of ['fallthrough', 'notFound', 'index', 'extensions', 'files', 'urlPath']) {
+			scope.fireChange(key);
+		}
+		assert.equal(state.restartRequests, 0);
 	});
 });
