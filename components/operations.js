@@ -774,7 +774,12 @@ async function getComponents() {
 		name: configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
+	const { getUnsatisfiedEnv } = require('./componentSecrets.ts');
 	for (let entry of results.entries) {
+		// Declared-but-unsatisfied `env:` expectations (#1550) — metadata only (name, description,
+		// required, reason, tier), never values — so Studio/deploy output can render configure-me.
+		const unsatisfiedEnv = getUnsatisfiedEnv(entry.name);
+		if (unsatisfiedEnv.length > 0) entry.unsatisfiedEnv = unsatisfiedEnv;
 		const componentConfig = rootConfig?.[entry.name];
 		if (!componentConfig || typeof componentConfig !== 'object') continue;
 		if (componentConfig.package) entry.package = componentConfig.package;
