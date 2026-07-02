@@ -88,4 +88,22 @@ describe('resolvePreloadModules', () => {
 		const resolved = resolvePreloadModules();
 		assert.deepEqual(resolved, [path.join(componentsRoot, 'apm-component', 'node_modules', 'fake-apm', 'index.js')]);
 	});
+
+	it('rejects relative-path specifiers (non-deterministic resolution)', () => {
+		const warn = sinon.stub(logger, 'warn');
+		preloadValue = './fake-apm/index.js';
+		assert.deepEqual(resolvePreloadModules(), []);
+		assert.equal(warn.callCount, 1);
+	});
+
+	it('does not throw when the components root is missing or unreadable', () => {
+		configUtils.getConfigPath.restore();
+		sinon
+			.stub(configUtils, 'getConfigPath')
+			.callsFake((param) => (param === CONFIG_PARAMS.COMPONENTSROOT ? path.join(tmpDir, 'no-such-dir') : undefined));
+		// An absolute path still resolves via its own branch; the point is the readdir doesn't throw.
+		const absPath = path.join(componentsRoot, 'apm-component', 'node_modules', 'fake-apm', 'index.js');
+		preloadValue = absPath;
+		assert.deepEqual(resolvePreloadModules(), [absPath]);
+	});
 });

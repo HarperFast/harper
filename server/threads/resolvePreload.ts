@@ -13,7 +13,8 @@ import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 // (e.g. `dd-trace/init`) bundled in a deployed component can be preloaded via `--require`
 // before any Harper or app module in a worker thread — the only point early enough for
 // an APM agent to instrument subsequent module loads. Runs on the main thread at worker
-// spawn, where config is available synchronously.
+// spawn (where config is available synchronously); the caller memoizes the result since
+// the config and installed components are fixed for the process lifetime.
 export function resolvePreloadModules(): string[] {
 	const configured = env.get(CONFIG_PARAMS.THREADS_PRELOAD);
 	if (configured == null) return [];
@@ -33,6 +34,7 @@ export function resolvePreloadModules(): string[] {
 					`absolute path or a package installed in a deployed component.`
 			);
 	}
+	if (resolved.length > 0) harperLogger.trace(`Preloading modules on worker threads: ${resolved.join(', ')}`);
 	return resolved;
 }
 
@@ -42,12 +44,16 @@ export function resolvePreloadModules(): string[] {
 function getResolutionAnchors(): string[] {
 	const anchors: string[] = [];
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
-	if (typeof componentsRoot === 'string' && existsSync(componentsRoot)) {
-		for (const entry of readdirSync(componentsRoot, { withFileTypes: true })) {
-			if (entry.name.startsWith('.') || (!entry.isDirectory() && !entry.isSymbolicLink())) continue;
-			anchors.push(join(componentsRoot, entry.name, 'index.js'));
+	if (typeof componentsRoot === 'string') {
+		try {
+			for (const entry of readdirSync(componentsRoot, { withFileTypes: true })) {
+				if (entry.name.startsWith('.') || (!entry.isDirectory() && !entry.isSymbolicLink())) continue;
+				anchors.push(join(componentsRoot, entry.name, 'index.js'));
+			}
+			anchors.push(join(componentsRoot, 'index.js'));
+		} catch {
+			// components root missing or unreadable; fall back to the app folder and Harper install
 		}
-		anchors.push(join(componentsRoot, 'index.js'));
 	}
 	const appFolder = process.env.RUN_HDB_APP;
 	if (appFolder) anchors.push(join(appFolder, 'index.js'));
@@ -57,6 +63,10 @@ function getResolutionAnchors(): string[] {
 
 function resolveSpecifier(specifier: string, anchors: string[]): string | undefined {
 	if (isAbsolute(specifier)) return existsSync(specifier) ? specifier : undefined;
+	// Relative paths are rejected: they would resolve against whichever anchor matched
+	// first (non-deterministic). The contract is an absolute path or a package installed
+	// in a deployed component.
+	if (specifier.startsWith('.')) return undefined;
 	for (const anchor of anchors) {
 		try {
 			return createRequire(anchor).resolve(specifier);

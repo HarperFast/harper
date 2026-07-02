@@ -17,6 +17,11 @@ const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
+let preloadModules;
+function getPreloadModules() {
+	if (preloadModules === undefined) preloadModules = resolvePreloadModules();
+	return preloadModules;
+}
 const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
@@ -178,10 +183,11 @@ function startWorker(path, options = {}) {
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
 	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
-	// script so they can instrument all subsequent Harper and app module loads. Not supported
-	// under Bun, which does not use execArgv here.
+	// script so they can instrument all subsequent Harper and app module loads. Resolved once
+	// (config and installed components are fixed for the process lifetime). Not supported under
+	// Bun, which does not use execArgv here.
 	if (!isBun) {
-		for (const preloadPath of resolvePreloadModules()) execArgv.push('--require', preloadPath);
+		for (const preloadPath of getPreloadModules()) execArgv.push('--require', preloadPath);
 	}
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
