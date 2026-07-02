@@ -120,6 +120,14 @@ describe('http.securityHeaders', () => {
 		assert.ok(!universalHeaders.some(([name]) => /^\d+$/.test(name)));
 	});
 
+	it('rejects an array securityHeaders value', () => {
+		// Arrays pass typeof === 'object'; for-in over indices would produce digit-named headers.
+		const errorStub = sandbox.stub(harperLogger, 'error');
+		rootScope._reload({ securityHeaders: ['X-Frame-Options', 'SAMEORIGIN'] });
+		assert.ok(errorStub.calledOnce);
+		assert.ok(!universalHeaders.some(([name]) => /^\d+$/.test(name)));
+	});
+
 	it('hot-reload replaces owned entries without clobbering entries pushed by other components', () => {
 		// Simulate another component pushing its own universal header directly.
 		const foreignEntry = ['X-Foreign-Header', 'from-other-component'];

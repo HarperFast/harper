@@ -149,7 +149,7 @@ function applySecurityHeaders(securityHeaders: HttpOptions['securityHeaders']) {
 	}
 	ownedSecurityHeaders = [];
 	if (!securityHeaders) return;
-	if (typeof securityHeaders !== 'object') {
+	if (typeof securityHeaders !== 'object' || Array.isArray(securityHeaders)) {
 		harperLogger.error('Invalid http.securityHeaders value: expected a map of header names to values');
 		return;
 	}
@@ -578,6 +578,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					}
 					if (sentBody) nodeResponse.end(body);
 				} else if (universalHeaders.length > 0 && !nodeResponse.headersSent) {
+					// Known limitation: a handler that synchronously calls writeHead before
+					// returning { handlesHeaders: true } has already sent headers and cannot
+					// receive universal headers (no in-tree component does this).
 					// handlesHeaders responses (e.g. static's send() stream) write their own headers
 					// directly to nodeResponse; pre-set universal headers as defaults — a header the
 					// stream sets itself (same name) will overwrite these
@@ -1137,10 +1140,24 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					if (statusCode === 500) harperLogger.warn(errorForLog(error));
 					else harperLogger.info(errorForLog(error));
 				} else harperLogger.error(errorForLog(error));
-				if (universalHeaders.length > 0) {
-					// universal headers apply to error responses too
+				const errorHeaders = error.headers;
+				if (errorHeaders || universalHeaders.length > 0) {
 					const headers = new globalThis.Headers();
-					for (const [key, value] of universalHeaders) headers.set(key, value);
+					// error.headers may be an iterable Headers or a plain object, same as
+					// toWriteHeadHeaders accepts on the Node path
+					if (errorHeaders?.[Symbol.iterator]) {
+						for (const [key, value] of errorHeaders) headers.append(key, String(value));
+					} else if (errorHeaders) {
+						for (const key in errorHeaders) {
+							const value = errorHeaders[key];
+							if (Array.isArray(value)) for (const item of value) headers.append(key, String(item));
+							else headers.set(key, String(value));
+						}
+					}
+					// universal headers apply to error responses too; error-provided headers win
+					for (const [key, value] of universalHeaders) {
+						if (!headers.has(key)) headers.set(key, value);
+					}
 					return new Response(errorToString(error), { status, headers });
 				}
 				return new Response(errorToString(error), { status });
