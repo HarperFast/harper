@@ -116,6 +116,25 @@ export const DEFAULT_ALLOW: readonly string[] = [
 ];
 
 /**
+ * Operations excluded from the DEFAULT allow surface even when a glob matches
+ * (`list_*` would otherwise pull in `list_secrets`). The secrets store is key
+ * custody management, not data reads — none of it belongs on an LLM-facing
+ * surface by default, same rationale as the sensitive `get_*` exclusions
+ * above. Operators can still expose these deliberately via
+ * `mcp.operations.allow` (an explicit allow list replaces the default and is
+ * not filtered by this set), where the audit-log redaction of
+ * `value`/`values`/`envelope` applies.
+ */
+export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
+	'set_secret',
+	'grant_secret',
+	'revoke_secret',
+	'list_secrets',
+	'delete_secret',
+	'get_secrets_public_key',
+]);
+
+/**
  * Operations that carry `destructiveHint: true` when opted into the allow
  * list. The hint lets MCP clients surface a confirmation prompt before
  * calling. It is **not** an authorization check — Harper's `verifyPerms`
@@ -202,7 +221,9 @@ function matchesAny(operation: string, patterns: readonly string[] | undefined):
 }
 
 function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
-	const allowList = config.allow && config.allow.length > 0 ? config.allow : DEFAULT_ALLOW;
+	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
+	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
+	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
 	if (!matchesAny(operation, allowList)) return false;
 	if (matchesAny(operation, config.deny)) return false;
 	return true;
