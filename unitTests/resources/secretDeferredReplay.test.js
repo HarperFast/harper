@@ -108,6 +108,34 @@ describe('deferred encrypted env replay', () => {
 		assert.equal(process.env.SDR_OVERRIDE, 'decrypted:override');
 	});
 
+	it('dedupes re-deferred {key, sourcePath} entries, keeping the newest ciphertext', () => {
+		// same env file re-evaluated (reload/watcher re-add) with a rotated ciphertext
+		deferEncryptedEnvValue({
+			key: 'SDR_SECRET',
+			rawValue: `${PREFIX}stale`,
+			sourcePath: '/apps/test/.env',
+			override: false,
+		});
+		deferEncryptedEnvValue({
+			key: 'SDR_SECRET',
+			rawValue: `${PREFIX}fresh`,
+			sourcePath: '/apps/test/.env',
+			override: false,
+		});
+		// same key from a DIFFERENT file is a distinct entry
+		deferEncryptedEnvValue({
+			key: 'SDR_SECRET',
+			rawValue: `${PREFIX}other`,
+			sourcePath: '/apps/other/.env',
+			override: false,
+		});
+		assert.equal(getDeferredEncryptedEnvValues().length, 2);
+
+		registerSecretDecryptor((value) => `decrypted:${value.slice(PREFIX.length)}`);
+		// the replaced-in-place (newest) value won; the other-file entry then hit the conflict path
+		assert.equal(process.env.SDR_SECRET, 'decrypted:fresh');
+	});
+
 	it('caps the deferred queue defensively', () => {
 		for (let i = 0; i < 1005; i++) {
 			deferEncryptedEnvValue({ key: `SDR_CAP_${i}`, rawValue: `${PREFIX}v`, sourcePath: '/x/.env', override: false });
