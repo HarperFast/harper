@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783066675846,
+  "lastUpdate": 1783066677707,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -3804,6 +3804,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 56.02,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6dcfbd09b0b55722cf4b3a6a56f9a8a519590335",
+          "message": "fix(blob): decompress (inflate) on read instead of re-deflating (#1393)\n\nFileBackedBlob.bytes() called deflate() on the already-compressed on-disk\nbody for DEFLATE_TYPE blobs, double-compressing instead of decompressing,\nand inflate was never imported. The streaming read path had a\n\"TODO: Implement support for decompression\" and likewise returned the raw\ncompressed bytes. Reading any DEFLATE-compressed blob therefore returned\ncorrupt data. Latent today because blob compression (compress?: boolean) is\nexposed but unused/off by default; this makes it correct before it is enabled.\n\n- bytes(): inflate the body for DEFLATE_TYPE; inflate-then-slice so start/end\n  range over the uncompressed content. Completeness for a compressed blob\n  can't be judged from the (uncompressed) header size vs the compressed body\n  length, and the header size is finalized up front when the size is known,\n  so completeness is verified via the writer's existing fileId+\":blob\" lock\n  (new mustVerifyViaLock probe) before inflating. Uncompressed path behavior\n  is preserved (exact size-vs-body comparison).\n- stream(): on detecting DEFLATE_TYPE in the header, delegate to the buffered\n  inflate path and emit a single chunk. Correct-or-safe fallback: a true\n  streaming inflate was left out as too risky given the position-seeking /\n  watcher framing (uncompressed-offset seeking into a deflate stream isn't\n  possible).\n- Tests: compressed round-trip via bytes() and stream(), plus a ranged read.\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-07-02T16:11:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/6dcfbd09b0b55722cf4b3a6a56f9a8a519590335"
+        },
+        "date": 1783066677316,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.48,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.01,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.48,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.06,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.75,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.36,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 34.79,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.18,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.55,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 178.29,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 46.41,
             "unit": "ms"
           }
         ]
