@@ -700,6 +700,21 @@ describe('matchesRoute with slash-less urlPath', () => {
 });
 
 // ---------------------------------------------------------------------------
+// stripPrefix originalPathname passthrough (#1583)
+// ---------------------------------------------------------------------------
+
+describe('stripPrefix originalPathname', () => {
+	it('exposes the unstripped pathname so handlers can distinguish /mount from /mount/', () => {
+		const noSlash = stripPrefix(req('/assets'), '/assets');
+		assert.strictEqual(noSlash.pathname, '/');
+		assert.strictEqual(noSlash.originalPathname, '/assets');
+		const withSlash = stripPrefix(req('/assets/'), '/assets');
+		assert.strictEqual(withSlash.pathname, '/');
+		assert.strictEqual(withSlash.originalPathname, '/assets/');
+	});
+});
+
+// ---------------------------------------------------------------------------
 // matchesRoute trailing-slash tolerance
 // ---------------------------------------------------------------------------
 

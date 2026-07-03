@@ -172,6 +172,12 @@ export function stripPrefix(request: any, prefix: string): any {
 				const origPathname: string = target.pathname ?? '/';
 				return origPathname === normalizedPrefix ? '/' : origPathname.slice(normalizedPrefix.length);
 			}
+			// Runtime-agnostic access to the unstripped pathname — '/mount' and '/mount/' both
+			// strip to '/', so handlers that must distinguish them (e.g. static's mount-root
+			// redirect, #1583) read this instead of runtime internals like _nodeRequest.
+			if (prop === 'originalPathname') {
+				return target.pathname ?? '/';
+			}
 			if (prop === 'url') {
 				const origPathname: string = target.pathname ?? '/';
 				const origUrl: string = target.url ?? '';

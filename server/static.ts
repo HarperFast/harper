@@ -118,10 +118,11 @@ export function handleApplication(scope: Scope) {
 					staticFile = indexEntries.get(req.pathname);
 
 					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
-					// must be disambiguated via the unstripped request: redirect the no-slash form so
-					// relative links on the index page resolve under the mount (#1583)
+					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
+					// redirect the no-slash form so relative links on the index page resolve under
+					// the mount (#1583)
 					if (staticFile && req.pathname === '/' && baseURLPath !== '/') {
-						const originalPathname: string | undefined = (req as any)._nodeRequest?.url?.split('?')[0];
+						const originalPathname: string | undefined = (req as any).originalPathname;
 						if (originalPathname && !originalPathname.endsWith('/')) {
 							return {
 								status: 301,
