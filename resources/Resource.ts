@@ -68,10 +68,6 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		return true; // Subclasses should override if needed
 	}
 
-	wasLoadedFromSource(): boolean | void {
-		// Subclasses should override if needed
-	}
-
 	addTo(_property: keyof Record, _value: Record[keyof Record]): void {
 		throw new Error('Not implemented');
 	}
