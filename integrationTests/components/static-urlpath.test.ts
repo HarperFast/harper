@@ -9,7 +9,11 @@
  *   npm run test:integration -- "integrationTests/components/static-urlpath.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
+<<<<<<< HEAD
 import { strictEqual, ok } from 'node:assert';
+=======
+import { strictEqual, ok } from 'node:assert/strict';
+>>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -61,6 +65,7 @@ suite('static plugin with urlPath (#1583)', (ctx: ContextWithHarper) => {
 		strictEqual(res.status, 301);
 		strictEqual(res.headers.get('location'), '/assets/');
 	});
+<<<<<<< HEAD
 
 	test('preserves the query string on trailing-slash redirects', async () => {
 		const root = await fetch(new URL('/assets?foo=bar', ctx.harper.httpURL), { redirect: 'manual' });
@@ -70,4 +75,6 @@ suite('static plugin with urlPath (#1583)', (ctx: ContextWithHarper) => {
 		strictEqual(dir.status, 301);
 		strictEqual(dir.headers.get('location'), '/assets/docs/?foo=bar');
 	});
+=======
+>>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
 });

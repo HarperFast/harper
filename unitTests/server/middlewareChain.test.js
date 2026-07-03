@@ -697,6 +697,7 @@ describe('matchesRoute with slash-less urlPath', () => {
 		assert.strictEqual(matchesRoute(req('/assets'), { urlPath: 'assets' }), true);
 		assert.strictEqual(matchesRoute(req('/assets2/x'), { urlPath: 'assets' }), false);
 	});
+<<<<<<< HEAD
 });
 
 // ---------------------------------------------------------------------------
@@ -712,6 +713,8 @@ describe('stripPrefix originalPathname', () => {
 		assert.strictEqual(withSlash.pathname, '/');
 		assert.strictEqual(withSlash.originalPathname, '/assets/');
 	});
+=======
+>>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
 });
 
 // ---------------------------------------------------------------------------

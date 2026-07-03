@@ -118,6 +118,7 @@ export function handleApplication(scope: Scope) {
 					staticFile = indexEntries.get(req.pathname);
 
 					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
+<<<<<<< HEAD
 					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
 					// redirect the no-slash form so relative links on the index page resolve under
 					// the mount (#1583). Query string is preserved across both redirects; compute it
@@ -131,6 +132,17 @@ export function handleApplication(scope: Scope) {
 								status: 301,
 								headers: {
 									Location: baseURLPath + query,
+=======
+					// must be disambiguated via the unstripped request: redirect the no-slash form so
+					// relative links on the index page resolve under the mount (#1583)
+					if (staticFile && req.pathname === '/' && baseURLPath !== '/') {
+						const originalPathname: string | undefined = (req as any)._nodeRequest?.url?.split('?')[0];
+						if (originalPathname && !originalPathname.endsWith('/')) {
+							return {
+								status: 301,
+								headers: {
+									Location: baseURLPath,
+>>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
 								},
 							};
 						}
@@ -140,12 +152,19 @@ export function handleApplication(scope: Scope) {
 					// prefix stripped, so rebuild the external path for the Location header (#1583)
 					if (staticFile === null) {
 						const externalPath = baseURLPath === '/' ? req.pathname : baseURLPath.slice(0, -1) + req.pathname;
+<<<<<<< HEAD
 						const queryIndex = (req.url as string).indexOf('?');
 						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
 						return {
 							status: 301,
 							headers: {
 								Location: externalPath + '/' + query,
+=======
+						return {
+							status: 301,
+							headers: {
+								Location: externalPath + '/',
+>>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
 							},
 						};
 					}
