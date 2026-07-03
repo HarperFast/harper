@@ -248,6 +248,24 @@ Options (all optional; prefer setting these via `@table` schema directives):
 
 Harper automatically serializes concurrent requests for the same missing or stale record — all waiting requests share a single upstream fetch, preventing cache stampedes.
 
+#### Observing cache disposition
+
+Each `get` on a caching table records whether the record came from the cache or from the source, in the `loadedFromSource` property of both the request context and the `RequestTarget`:
+
+```javascript
+const context = {};
+const record = await MyCache.get(recordId, context);
+console.log(context.loadedFromSource); // true = went to the source, false = served from cache
+```
+
+Within a resource method, the same value is available on the active context via `getContext().loadedFromSource` after the `get` resolves. The flag settles as follows:
+
+- `true` — the get went to the source: either it fetched the record, or the source errored and a stale cached record was served as a fallback (`staleIfError`). `true` means a source request was made, not necessarily that the returned data is fresh.
+- `false` — the record was served from the cache: fresh hits, `onlyIfCached` requests, stale-while-revalidate responses (the source fetch continues in the background), and requests that waited on another request's in-flight fetch of the same record. This last case means a cache hit can still take as long as an upstream fetch.
+- Each get on a caching table in the same context overwrites the value, so read it after the `get` you are measuring.
+
+Note that `get()` returns a plain `RecordObject`, not a resource instance — the record itself does not carry cache disposition; read it from the context (or an explicitly passed `RequestTarget`). Prior to Harper 5.1.16, `context.loadedFromSource` was never assigned and the flag was only observable via an explicitly passed `RequestTarget`.
+
 #### Source `get` — controlling timestamp and expiration
 
 Inside a source `get()` method, the context (`this.getContext()`) exposes caching-specific properties:
@@ -410,12 +428,6 @@ class BlogSource extends Resource {
 }
 Post.sourcedFrom(BlogSource);
 ```
-
----
-
-### `wasLoadedFromSource(): boolean`
-
-For caching tables, indicates that this request was a cache miss and the data was loaded from the source resource.
 
 ---
 
@@ -641,6 +653,7 @@ Returns the current context, which includes:
 
 - `user` — User object with username, role, and authorization information
 - `transaction` — The current transaction
+- `loadedFromSource` — For caching tables (5.1.16+), cache disposition of the most recent `get` in this context: `true` if it went to the source, `false` if served from cache (see [Observing cache disposition](#observing-cache-disposition))
 
 When triggered by HTTP, the context is the `Request` object with these additional properties:
 
@@ -1146,6 +1159,7 @@ getContext is availabe as export from the `harper` module, or as a global variab
 
 - `user` — User object with username, role, and authorization information
 - `transaction` — The current transaction
+- `loadedFromSource` — For caching tables (5.1.16+), cache disposition of the most recent `get` in this context: `true` if it went to the source, `false` if served from cache (see [Observing cache disposition](#observing-cache-disposition))
 
 When triggered by HTTP, the context is the `Request` object with these additional properties:
 
