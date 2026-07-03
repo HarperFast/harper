@@ -502,15 +502,16 @@ describe('Test serverUtilities.js module ', () => {
 			assert.equal(observedStore, outerContext);
 		});
 
-		it('Should re-wrap with a fresh minimal context when the request user differs from the ambient user', async function () {
+		it('Should merge ambient context, swapping only the user, when the request user differs', async function () {
 			// An explicitly different hdb_user must never silently ride the outer user's
-			// attribution or transaction. The fresh { user } store carries no `transaction`
-			// property, which is the mechanism that detaches the handler's writes from the
-			// outer transaction (the transactional wrappers only join context.transaction).
+			// attribution, but the rest of the ambient context (open transaction, request
+			// state) is preserved so atomicity is unaffected. The outer context object
+			// itself must not be mutated.
 			op_func_caller_stub.callThrough();
 			const userX = { username: 'outer_user' };
 			const userY = { username: 'request_user' };
-			const outerContext = { user: userX, transaction: { open: true }, someRequestState: true };
+			const outerTransaction = { open: true };
+			const outerContext = { user: userX, transaction: outerTransaction, someRequestState: true };
 			let observedStore;
 			await contextStorage.run(outerContext, () =>
 				serverUtilities.processLocalTransaction(
@@ -523,8 +524,30 @@ describe('Test serverUtilities.js module ', () => {
 			);
 			assert.notEqual(observedStore, outerContext);
 			assert.equal(observedStore.user, userY);
-			assert.deepStrictEqual(Object.keys(observedStore), ['user']);
-			assert.ok(!('transaction' in observedStore), 'outer transaction must not carry into the re-wrapped context');
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(observedStore.someRequestState, true, 'other request state must be preserved');
+			assert.equal(outerContext.user, userX, 'outer context object must not be mutated');
+		});
+
+		it('Should merge the user into a userless ambient context, preserving its transaction', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'request_user' };
+			const outerTransaction = { open: true };
+			const outerContext = { transaction: outerTransaction };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, hdbUser);
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(outerContext.user, undefined, 'outer context object must not be mutated');
 		});
 
 		it('Should not establish an ambient context when hdb_user is null', async function () {

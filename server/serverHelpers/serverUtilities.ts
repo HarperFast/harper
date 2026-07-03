@@ -92,13 +92,17 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 	// (issue #1591). An explicit context passed by a handler still takes precedence (the
 	// transactional wrappers only fall back to contextStorage when no context is provided), and
 	// an existing ambient context already carrying this user (e.g. server.operation() called
-	// from within a request handler) is preserved rather than shadowed.
+	// from within a request handler) is preserved rather than shadowed. When the ambient user
+	// differs (or is absent), the ambient context is merged rather than replaced: other ambient
+	// properties (open transaction, signal, caches) are preserved so atomicity is unaffected and
+	// only the user is swapped for attribution; the outer context object itself is never mutated.
 	const hdbUser = req.body.hdb_user;
+	const currentStore = contextStorage.getStore();
 	const callOperationFunction = () =>
 		operationFunctionCaller.callOperationFunctionAsAwait(operationFunction, req.body, null);
 	let data =
-		hdbUser && contextStorage.getStore()?.user !== hdbUser
-			? await contextStorage.run({ user: hdbUser }, callOperationFunction)
+		hdbUser && currentStore?.user !== hdbUser
+			? await contextStorage.run({ ...currentStore, user: hdbUser }, callOperationFunction)
 			: await callOperationFunction();
 
 	if (typeof data !== 'object') {
