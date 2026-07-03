@@ -49,7 +49,6 @@ export interface ResourceInterface<Record extends object = any>
 	subscribe?(request: SubscriptionRequest): AsyncIterable<Record> | Promise<AsyncIterable<Record>>;
 
 	doesExist(): boolean;
-	wasLoadedFromSource(): boolean | void;
 
 	getCurrentUser(): User | undefined;
 }
