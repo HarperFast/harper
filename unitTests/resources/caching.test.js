@@ -133,39 +133,24 @@ describe('Caching', () => {
 		assert.equal(target23.loadedFromSource, true);
 	});
 
-	it('loadedFromSource is observable on the context with a plain id', async function () {
-		// with a plain id, the static get dispatch mints an internal RequestTarget the caller
-		// never sees, so the flag must be mirrored onto the context (#1571)
-		CachingTable.setTTLExpiration(30);
-		await CachingTable.invalidate(31);
-		let context = {};
-		let result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, true);
-		context = {};
-		result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, false);
-		context = { onlyIfCached: true };
-		result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, false);
-	});
-
-	it('loadedFromSource is observable on the context with loadAsInstance = false', async function () {
+	it('loadedFromSource is observable on the target with loadAsInstance = false (#1576)', async function () {
+		// disposition is recorded on the RequestTarget of the get; verify the loadAsInstance=false
+		// value path marks it on both cache miss (true) and cache hit (false)
 		const previousLoadAsInstance = CachingTable.loadAsInstance;
 		try {
 			CachingTable.loadAsInstance = false;
 			CachingTable.setTTLExpiration(30);
 			await CachingTable.invalidate(32);
-			let context = {};
-			let result = await CachingTable.get(32, context);
+			let target = new RequestTarget();
+			target.id = 32;
+			let result = await CachingTable.get(target);
 			assert.equal(result.id, 32);
-			assert.equal(context.loadedFromSource, true);
-			context = {};
-			result = await CachingTable.get(32, context);
+			assert.equal(target.loadedFromSource, true);
+			target = new RequestTarget();
+			target.id = 32;
+			result = await CachingTable.get(target);
 			assert.equal(result.id, 32);
-			assert.equal(context.loadedFromSource, false);
+			assert.equal(target.loadedFromSource, false);
 		} finally {
 			CachingTable.loadAsInstance = previousLoadAsInstance;
 		}
@@ -266,10 +251,11 @@ describe('Caching', () => {
 		events = [];
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		// should be stale but not evicted
-		const swrContext = {};
-		let result = await CachingTableStaleWhileRevalidate.get(23, swrContext);
+		const swrTarget = new RequestTarget();
+		swrTarget.id = 23;
+		let result = await CachingTableStaleWhileRevalidate.get(swrTarget);
 		assert(result); // should exist in database even though it is stale
-		assert.equal(swrContext.loadedFromSource, false); // stale value served from cache while revalidating
+		assert.equal(swrTarget.loadedFromSource, false); // stale value served from cache while revalidating
 		assert.equal(sourceRequests, 1); // the source request should be started
 		assert.equal(sourceResponses, 0); // the source request should not be completed yet
 		// the source request should be completed
