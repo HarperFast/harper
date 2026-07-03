@@ -66,6 +66,9 @@ suite('static plugin with urlPath (#1583)', (ctx: ContextWithHarper) => {
 		strictEqual(res.headers.get('location'), '/assets/');
 	});
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> aae9a110d (Preserve query strings on static trailing-slash redirects)
 
 	test('preserves the query string on trailing-slash redirects', async () => {
 		const root = await fetch(new URL('/assets?foo=bar', ctx.harper.httpURL), { redirect: 'manual' });
@@ -75,6 +78,9 @@ suite('static plugin with urlPath (#1583)', (ctx: ContextWithHarper) => {
 		strictEqual(dir.status, 301);
 		strictEqual(dir.headers.get('location'), '/assets/docs/?foo=bar');
 	});
+<<<<<<< HEAD
 =======
 >>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
+=======
+>>>>>>> aae9a110d (Preserve query strings on static trailing-slash redirects)
 });

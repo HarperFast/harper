@@ -117,6 +117,10 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
+					// Preserve any query string across the trailing-slash redirects below
+					const queryIndex = (req.url as string).indexOf('?');
+					const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
+
 					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -147,8 +151,12 @@ export function handleApplication(scope: Scope) {
 							return {
 								status: 301,
 								headers: {
+<<<<<<< HEAD
 									Location: baseURLPath,
 >>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
+=======
+									Location: baseURLPath + query,
+>>>>>>> aae9a110d (Preserve query strings on static trailing-slash redirects)
 								},
 							};
 						}
@@ -169,8 +177,12 @@ export function handleApplication(scope: Scope) {
 						return {
 							status: 301,
 							headers: {
+<<<<<<< HEAD
 								Location: externalPath + '/',
 >>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
+=======
+								Location: externalPath + '/' + query,
+>>>>>>> aae9a110d (Preserve query strings on static trailing-slash redirects)
 							},
 						};
 					}
