@@ -387,7 +387,9 @@ function readOnly(): never {
  * bundled code; under vm and compartment loaders the per-scope `harper` module carries an exactly
  * bound view instead). Resolves the current component from the component-load context; access from
  * an ambiguous context fails loudly. Symbols and `then` return undefined so awaiting/inspecting
- * the object does not throw.
+ * the object does not throw, and the enumeration traps (`has`/`ownKeys`/`getOwnPropertyDescriptor`)
+ * report an empty object outside a binding context so inspectors/serializers (`util.inspect`,
+ * spread) never crash the process — only direct property reads are loud.
  */
 export const secrets: Readonly<Record<string, string>> = new Proxy(
 	{},
@@ -398,13 +400,15 @@ export const secrets: Readonly<Record<string, string>> = new Proxy(
 		},
 		has(_target, property) {
 			if (typeof property === 'symbol') return false;
+			if (componentBinding.getStore() === undefined) return false;
 			return property in resolveBoundSecrets();
 		},
 		ownKeys() {
+			if (componentBinding.getStore() === undefined) return [];
 			return Reflect.ownKeys(resolveBoundSecrets());
 		},
 		getOwnPropertyDescriptor(_target, property) {
-			if (typeof property === 'symbol') return undefined;
+			if (typeof property === 'symbol' || componentBinding.getStore() === undefined) return undefined;
 			const descriptor = Object.getOwnPropertyDescriptor(resolveBoundSecrets(), property);
 			// The views are frozen; report configurable so the proxy invariant against its (extensible,
 			// empty) target holds.

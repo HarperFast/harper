@@ -16,6 +16,7 @@ const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { inspect } = require('node:util');
 const {
 	materializeGlobalSecrets,
 	processComponentEnv,
@@ -452,10 +453,18 @@ describe('componentSecrets', () => {
 			]);
 		});
 
-		it('fails loudly outside a component-load context', () => {
+		it('fails loudly on direct reads outside a component-load context', () => {
 			assert.throws(() => secrets.CS_SCOPED, /outside of a component-loading context/);
-			assert.throws(() => Object.keys(secrets), /outside of a component-loading context/);
-			assert.throws(() => 'CS_SCOPED' in secrets, /outside of a component-loading context/);
+		});
+
+		it('enumeration reports an empty object outside a component-load context (inspect-safe)', () => {
+			// Inspectors/serializers hit these traps (util.inspect, spread, `in`) — they must never
+			// crash the process; only direct property reads are loud.
+			assert.deepEqual(Object.keys(secrets), []);
+			assert.equal('CS_SCOPED' in secrets, false);
+			assert.equal(Object.getOwnPropertyDescriptor(secrets, 'CS_SCOPED'), undefined);
+			assert.deepEqual({ ...secrets }, {});
+			assert.doesNotThrow(() => inspect(secrets));
 		});
 
 		it('symbol and then probes do not throw (await/inspect interop)', async () => {
