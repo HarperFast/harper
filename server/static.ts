@@ -117,6 +117,10 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
+					// Preserve any query string across the trailing-slash redirects below
+					const queryIndex = (req.url as string).indexOf('?');
+					const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
+
 					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
 					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
 					// redirect the no-slash form so relative links on the index page resolve under
@@ -127,7 +131,7 @@ export function handleApplication(scope: Scope) {
 							return {
 								status: 301,
 								headers: {
-									Location: baseURLPath,
+									Location: baseURLPath + query,
 								},
 							};
 						}
@@ -140,7 +144,7 @@ export function handleApplication(scope: Scope) {
 						return {
 							status: 301,
 							headers: {
-								Location: externalPath + '/',
+								Location: externalPath + '/' + query,
 							},
 						};
 					}

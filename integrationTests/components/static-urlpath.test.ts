@@ -61,4 +61,13 @@ suite('static plugin with urlPath (#1583)', (ctx: ContextWithHarper) => {
 		strictEqual(res.status, 301);
 		strictEqual(res.headers.get('location'), '/assets/');
 	});
+
+	test('preserves the query string on trailing-slash redirects', async () => {
+		const root = await fetch(new URL('/assets?foo=bar', ctx.harper.httpURL), { redirect: 'manual' });
+		strictEqual(root.status, 301);
+		strictEqual(root.headers.get('location'), '/assets/?foo=bar');
+		const dir = await fetch(new URL('/assets/docs?foo=bar', ctx.harper.httpURL), { redirect: 'manual' });
+		strictEqual(dir.status, 301);
+		strictEqual(dir.headers.get('location'), '/assets/docs/?foo=bar');
+	});
 });
