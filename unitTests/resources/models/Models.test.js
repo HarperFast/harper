@@ -510,3 +510,64 @@ describe('Models facade', () => {
 		});
 	});
 });
+
+describe('logical model name is not forwarded as the wire model (#1593)', () => {
+	let models;
+
+	beforeEach(() => {
+		clearRegistry();
+		models = new Models(makeMockWriter(), makeMetricSpy().emitter);
+	});
+
+	afterEach(() => {
+		clearRegistry();
+	});
+
+	it('embed: the backend call receives no model option', async () => {
+		let seenOpts;
+		setEmbedding('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+			async embed(_input, opts) {
+				seenOpts = opts;
+				return { status: 'completed', output: [new Float32Array(1)] };
+			},
+		});
+		await models.embed('x', { model: 'logical-name' });
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+
+	it('generate: the backend call receives no model option', async () => {
+		let seenOpts;
+		setGenerative('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: false, generate: true, stream: false, tools: false, adapters: false }),
+			async generate(_input, opts) {
+				seenOpts = opts;
+				return { status: 'completed', output: { content: 'hi', finishReason: 'stop' } };
+			},
+		});
+		await models.generate('x', { model: 'logical-name' });
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+
+	it('generateStream: the backend call receives no model option', async () => {
+		let seenOpts;
+		setGenerative('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: false, generate: true, stream: true, tools: false, adapters: false }),
+			async *generateStream(_input, opts) {
+				seenOpts = opts;
+				yield { deltaContent: 'chunk' };
+				yield { finishReason: 'stop' };
+			},
+		});
+		for await (const _chunk of models.generateStream('x', { model: 'logical-name' })) {
+			// drain
+		}
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+});

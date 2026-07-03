@@ -284,9 +284,13 @@ export function registerBedrockBackend(args: {
 }
 
 export class BedrockBackendError extends ServerError {
-	constructor(message: string) {
+	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
+	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
+	declare upstreamStatus?: number;
+	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'BedrockBackendError';
+		if (upstreamStatus !== undefined) this.upstreamStatus = upstreamStatus;
 	}
 }
 
