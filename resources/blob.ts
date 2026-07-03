@@ -1589,8 +1589,23 @@ export function startPreCommitBlobsForRecord(
 					value.saveInRecord = true;
 				}
 				blobsNeedingSaving.push(value);
-			} else if (trackPersistedBlobs && storageInfoForBlob.get(value)?.fileId != null) {
-				blobsToTrackOnly.push(value);
+			} else if (trackPersistedBlobs) {
+				// Replication-apply path: the blob was received out-of-band and its durability
+				// is tracked separately via outstandingBlobsToFinish. Awaiting it here would
+				// deadlock a paused WS (see the block comment above).
+				if (storageInfoForBlob.get(value)?.fileId != null) {
+					blobsToTrackOnly.push(value);
+				}
+			} else {
+				// Local-write path with a fresh blob: gate the record commit on the blob's
+				// durable landing. Without this the record commits before the async save has
+				// fsync'd, and a peer that pulls the record first sees an orphan ref and marks
+				// the record permanently diverged (a variant of the harper-pro#481 pattern
+				// reachable via the write path rather than the receive path). Not a deadlock
+				// risk like the trackPersistedBlobs branch: local blob sources are the HTTP
+				// body or an in-memory buffer, not a paused WS receive stream.
+				currentStore = store;
+				blobsNeedingSaving.push(value);
 			}
 		}
 	}
