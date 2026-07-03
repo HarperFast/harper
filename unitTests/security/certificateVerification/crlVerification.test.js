@@ -197,6 +197,32 @@ describe('certificateVerification/crlVerification.ts', function () {
 				assert.ok(typeof result.cached === 'boolean');
 			}
 		});
+
+		it('reports cached:false on a fresh source fetch and cached:true on a subsequent cached read', async function () {
+			// Stub the CRL check so the source resolves deterministically without any network.
+			// The source reads performCRLCheck off the live module, so this stub is honored.
+			sinon.stub(crlModule, 'performCRLCheck').resolves({ status: 'good' });
+
+			// Unique cert bytes keep the cache key fresh regardless of test ordering.
+			const unique = `disposition-${process.pid}-${Date.now()}`;
+			const cert = Buffer.from(`cert-${unique}`);
+			const issuer = Buffer.from(`issuer-${unique}`);
+			const config = {
+				enabled: true,
+				failureMode: 'fail-open',
+				timeout: 10000,
+				cacheTtl: 86400000,
+				gracePeriod: 86400000,
+			};
+			// Provide the distribution point explicitly so the get reaches the cache/source.
+			const crlUrls = [`http://crl.example.com/${unique}.crl`];
+
+			const first = await crlModule.verifyCRL(cert, issuer, config, crlUrls);
+			assert.strictEqual(first.cached, false, 'first get should load from source');
+
+			const second = await crlModule.verifyCRL(cert, issuer, config, crlUrls);
+			assert.strictEqual(second.cached, true, 'second get should be served from cache');
+		});
 	});
 
 	describe('CRL signature verification', function () {
