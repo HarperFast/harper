@@ -865,6 +865,10 @@ export const ITC_EVENT_TYPES = {
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
 	RESOURCE_OPENAPI_RESPONSE: 'resource_openapi_response',
+	// Main thread asks an HTTP worker for its resolved middleware chains (#1573); app HTTP
+	// middleware is only registered on worker threads, so get_status must fetch it from one.
+	MIDDLEWARE_CHAINS_REQUEST: 'middleware_chains_request',
+	MIDDLEWARE_CHAINS_RESPONSE: 'middleware_chains_response',
 	// MCP §3.7: route a client's response to a server→client request back to the
 	// worker awaiting it (the response POST can land on any worker).
 	MCP_CLIENT_RESPONSE: 'mcp_client_response',

@@ -8,6 +8,8 @@ const {
 	normalizeUrlPath,
 	stripPrefix,
 	makeCallbackChain,
+	describeChains,
+	resolveRoutedChains,
 } = require('#src/server/middlewareChain');
 
 // Helpers ------------------------------------------------------------------
@@ -787,5 +789,113 @@ describe('onCycle callback', () => {
 		let called = 0;
 		makeCallbackChain(responders, 9000, UNHANDLED, () => called++);
 		assert.strictEqual(called, 1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// describeChains (#1573)
+// ---------------------------------------------------------------------------
+
+describe('describeChains', () => {
+	/** Records the order listeners are invoked in when the built chain runs `request`. */
+	function tracedResponders(names, extra = {}) {
+		const trace = [];
+		const responders = names.map((name) => {
+			const opts = Object.assign({}, extra[name]);
+			opts.listener = (request, next) => {
+				trace.push(name);
+				return next(request);
+			};
+			return entry(name, opts);
+		});
+		return { responders, trace };
+	}
+
+	it('returns a single default route reflecting topo-sorted order (flat case)', () => {
+		const responders = [entry('a'), entry('b', { before: 'a' }), entry('c')];
+		const described = describeChains(responders, 9000);
+		assert.strictEqual(described.length, 1);
+		assert.strictEqual(described[0].host, undefined);
+		assert.strictEqual(described[0].urlPath, undefined);
+		assert.deepStrictEqual(
+			described[0].order.map((e) => e.name),
+			['b', 'a', 'c']
+		);
+	});
+
+	it('filters to entries on the requested port (plus `all`)', () => {
+		const responders = [entry('a', { port: 9000 }), entry('b', { port: 9001 }), entry('c', { port: 'all' })];
+		const described = describeChains(responders, 9000);
+		assert.deepStrictEqual(
+			described[0].order.map((e) => e.name),
+			['a', 'c']
+		);
+	});
+
+	it('describes sub-routes in dispatch priority order, default last', () => {
+		const responders = [
+			entry('root'),
+			entry('api', { urlPath: '/api' }),
+			entry('apiv2', { urlPath: '/api/v2' }),
+			entry('vhost', { host: 'admin.example.com' }),
+		];
+		const described = describeChains(responders, 9000);
+		// host+path/host > longer path > shorter path > default
+		const scopes = described.map((r) => r.host ?? r.urlPath ?? '(default)');
+		assert.deepStrictEqual(scopes, ['admin.example.com', '/api/v2', '/api', '(default)']);
+		assert.strictEqual(described[described.length - 1].urlPath, undefined);
+		assert.strictEqual(described[described.length - 1].host, undefined);
+	});
+
+	it('matches the order the built chain actually executes', () => {
+		const { responders, trace } = tracedResponders(['a', 'b', 'c'], {
+			c: { before: 'a' }, // c must run first
+		});
+		const described = describeChains(responders, 9000);
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED);
+		chain(req('/'));
+		assert.deepStrictEqual(
+			described[0].order.map((e) => e.name),
+			trace,
+			'described order should equal executed order'
+		);
+		// c declares before:'a'; registration order a,b,c → b (unconstrained, index 1), then c, then a.
+		assert.deepStrictEqual(trace, ['b', 'c', 'a']);
+	});
+
+	it('folds `all` responders into a concrete port and matches makeCallbackChain selection', () => {
+		const responders = [
+			entry('rest', { port: 9000 }),
+			entry('auth', { port: 'all', before: 'rest' }),
+			entry('other', { port: 9001 }),
+		];
+		// Global 'all' middleware applies to the concrete port; entries on other ports do not. The
+		// described order must equal what the built chain serves for the same port.
+		const described = describeChains(responders, 9000);
+		const trace = [];
+		const traced = responders.map((r) => ({
+			...r,
+			listener: (request, next) => {
+				trace.push(r.name);
+				return next(request);
+			},
+		}));
+		makeCallbackChain(traced, 9000, UNHANDLED)(req('/'));
+		assert.deepStrictEqual(
+			described[0].order.map((e) => e.name),
+			['auth', 'rest']
+		);
+		assert.deepStrictEqual(trace, ['auth', 'rest']);
+	});
+
+	it('resolveRoutedChains pulls in `after` deps and orders sub-routes', () => {
+		const responders = [entry('auth'), entry('waf', { urlPath: '/secure', after: 'auth' })];
+		const resolved = resolveRoutedChains(responders);
+		const secure = resolved.find((r) => r.urlPath === '/secure');
+		// auth is pulled into the /secure route and ordered before waf
+		assert.deepStrictEqual(
+			secure.order.map((e) => e.name),
+			['auth', 'waf']
+		);
 	});
 });

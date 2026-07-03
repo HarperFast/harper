@@ -86,7 +86,7 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 		'Returns one background job by id, with status and result payload (export, backup, deploy, restart, csv loads).',
 	// get_status: server/status/index.ts:104 — Status KV entry; aggregated when id omitted.
 	get_status:
-		'Returns one entry from the in-memory status KV that components publish health and progress to. With no id, returns aggregated status across threads. Safe to poll. Use system_information for server-level health.',
+		'Returns one entry from the in-memory status KV that components publish health and progress to. With no id, returns aggregated status across threads; pass middleware:true to also include the resolved HTTP/upgrade/WebSocket middleware chain order per port. Safe to poll. Use system_information for server-level health.',
 	// get_analytics: resources/analytics/read.ts:44 — Metric series read with filtering + windowing.
 	get_analytics:
 		'Returns analytics metric values with optional attribute filtering, time windowing, and result coalescing. Pair with list_metrics to discover available metrics.',
