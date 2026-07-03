@@ -37,6 +37,7 @@ import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
+import { contextStorage } from '../../resources/transaction.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -86,7 +87,19 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 		operationLog.error(e);
 	}
 
-	let data = await operationFunctionCaller.callOperationFunctionAsAwait(operationFunction, req.body, null);
+	// Bridge the authenticated user into the ambient async context so static Resource API calls
+	// (e.g. table.put) inside operation handlers inherit user attribution for audit records
+	// (issue #1591). An explicit context passed by a handler still takes precedence (the
+	// transactional wrappers only fall back to contextStorage when no context is provided), and
+	// an existing ambient context already carrying this user (e.g. server.operation() called
+	// from within a request handler) is preserved rather than shadowed.
+	const hdbUser = req.body.hdb_user;
+	const callOperationFunction = () =>
+		operationFunctionCaller.callOperationFunctionAsAwait(operationFunction, req.body, null);
+	let data =
+		hdbUser && contextStorage.getStore()?.user !== hdbUser
+			? await contextStorage.run({ user: hdbUser }, callOperationFunction)
+			: await callOperationFunction();
 
 	if (typeof data !== 'object') {
 		data = { message: data };
