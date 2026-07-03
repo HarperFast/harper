@@ -501,5 +501,44 @@ describe('Test serverUtilities.js module ', () => {
 			);
 			assert.equal(observedStore, outerContext);
 		});
+
+		it('Should re-wrap with a fresh minimal context when the request user differs from the ambient user', async function () {
+			// An explicitly different hdb_user must never silently ride the outer user's
+			// attribution or transaction. The fresh { user } store carries no `transaction`
+			// property, which is the mechanism that detaches the handler's writes from the
+			// outer transaction (the transactional wrappers only join context.transaction).
+			op_func_caller_stub.callThrough();
+			const userX = { username: 'outer_user' };
+			const userY = { username: 'request_user' };
+			const outerContext = { user: userX, transaction: { open: true }, someRequestState: true };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: userY } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, userY);
+			assert.deepStrictEqual(Object.keys(observedStore), ['user']);
+			assert.ok(!('transaction' in observedStore), 'outer transaction must not carry into the re-wrapped context');
+		});
+
+		it('Should not establish an ambient context when hdb_user is null', async function () {
+			// serverHandlers.js sets req.body.hdb_user = null on the unauthenticated-allowed path
+			op_func_caller_stub.callThrough();
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test', hdb_user: null } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore, undefined);
+		});
 	});
 });
