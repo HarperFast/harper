@@ -56,8 +56,10 @@ export const bunServeConfigs: Record<string | number, any> = {};
 // http server; threadServer.js consumes these and calls createUwsServer(). Symphony must forward
 // client identity via X-Forwarded-For (not the PROXY protocol) on these sockets, as the Bun path does.
 export const uwsServeConfigs: Record<string, any> = {};
-// Bun-specific: stores non-function listeners (e.g. Fastify servers) per port for fallback delegation
-const bunFallbackServers: Record<string | number, any> = {};
+// Stores non-function listeners (e.g. Fastify servers) per port for fallback delegation on the
+// backends that don't register their own Node http server (Bun, and the uWS HTTP path). Keeping
+// them out of SERVERS is what prevents a competing Node server from binding the same port.
+const fallbackServers: Record<string | number, any> = {};
 const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
@@ -305,7 +307,16 @@ export function httpServer(listener, options) {
 			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
 		} else if (isBun) {
 			// On Bun, store non-function listeners (e.g. Fastify's http.Server) for fallback delegation
-			bunFallbackServers[port] = listener;
+			fallbackServers[port] = listener;
+		} else if ((httpServers[port] as any)?.uws) {
+			// uWS HTTP path (#914, HARPER_UWS_HTTP): the port is backed by uWebSockets.js, not a Node
+			// http server, so a raw non-function listener (e.g. Fastify's http.Server via
+			// server.http(fastify.server)) must NOT go through registerServer() — that would put it in
+			// SERVERS and threadServer would bind a Node http server competing with uWS on the same TCP
+			// port. Divert it to the fallback map like the Bun path. Request-time delegation to this
+			// fallback is not yet wired on the uWS handler (see makeUwsHandler), so raw-Fastify routes
+			// are unreachable under this flag — an accepted limitation of the bench/test vehicle.
+			fallbackServers[port] = listener;
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
@@ -774,7 +785,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					response.headers.set(key, value);
 				}
 				if (response.status === -1) {
-					const fallbackServer = bunFallbackServers[port];
+					const fallbackServer = fallbackServers[port];
 					if (fallbackServer) {
 						// Delegate to the fallback server (e.g. Fastify) via node:http compatibility.
 						// We create a Node-compatible IncomingMessage/ServerResponse and emit 'request'
@@ -943,8 +954,8 @@ async function bunDelegateToNodeServer(
 	bunRequest?: any
 ): Promise<Response> {
 	// Check if there's a Fastify instance registered for this port (preferred path)
-	for (const port in bunFallbackServers) {
-		if (bunFallbackServers[port] === nodeServer && bunFastifyInstances[port]) {
+	for (const port in fallbackServers) {
+		if (fallbackServers[port] === nodeServer && bunFastifyInstances[port]) {
 			const fastify = bunFastifyInstances[port];
 			const url = new URL(webRequest.url);
 			const body = webRequest.body ? Buffer.from(await webRequest.arrayBuffer()) : undefined;
