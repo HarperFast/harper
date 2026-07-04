@@ -963,7 +963,19 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	let toolsRegistered = 0;
 	let resourcesConsidered = 0;
 
-	const considerEntry = (path: string, entry: ResourceRegistryEntry | undefined, isParamRoute = false): void => {
+	// How much of a param route the GENERATED verb handlers can bind:
+	// 'id'   — single-`:id` routes: get/update/patch/delete bind `target.id = args.id`,
+	//          but makeCreateHandler forces `target.isCollection = true` (never binds id)
+	//          and makeSearchHandler is collection-scoped, so create/search are dropped.
+	// 'none' — multi-segment/named-wildcard routes: no generated handler can bind the
+	//          segments yet, so ALL generated verbs are dropped. Author-defined
+	//          mcpTools/mcpPrompts carry their own schemas and handler methods, so they
+	//          register regardless of binding mode.
+	const considerEntry = (
+		path: string,
+		entry: ResourceRegistryEntry | undefined,
+		paramBinding?: 'id' | 'none'
+	): void => {
 		if (!entry) return;
 		resourcesConsidered++;
 		if (!shouldEnumerate(entry)) return;
@@ -975,14 +987,14 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 			return;
 		}
 		const verbs = detectVerbs(ResourceClass);
-		if (isParamRoute) {
-			// A `:id`-scoped route is record-scoped, but `makeCreateHandler` forces
-			// `target.isCollection = true` (never binds `target.id`) and `makeSearchHandler`
-			// is collection-scoped by design — neither matches "the record named by :id", so
-			// don't advertise them here. get/update/patch/delete all correctly bind
-			// `target.id = args.id` and are unaffected.
+		if (paramBinding === 'id') {
 			verbs.search = false;
 			verbs.create = false;
+		} else if (paramBinding === 'none') {
+			harperLogger.trace(
+				`MCP application: '/${path}' generated verb tools skipped — multi-segment/named-wildcard binding not yet supported`
+			);
+			verbs.get = verbs.search = verbs.create = verbs.updatePut = verbs.updatePatch = verbs.delete = false;
 		}
 		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
@@ -1014,18 +1026,11 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	// stores them in `paramRoutes` and returns before the Map insert, so the loop above never sees
 	// them. Without this, a custom resource declaring `static path = '/widget/:id'` produces ZERO MCP
 	// tools — even though it appears in the OpenAPI document, which already iterates `paramRoutes`.
-	// Enumerate them so the tool surface matches the REST surface — but only the single-`:id` shape
-	// the verb handlers actually bind (see isSimpleIdRoute); richer multi-segment/named-wildcard
-	// binding is excluded here until that binding lands, rather than advertising a tool that silently
-	// drops the other segment(s).
+	// Enumerate them so the tool surface matches the REST surface; the binding mode restricts the
+	// GENERATED verb tools to what their handlers actually bind (see considerEntry), while custom
+	// mcpTools/mcpPrompts register on every route shape.
 	for (const route of resources.paramRoutes ?? []) {
-		if (!isSimpleIdRoute(route.pattern)) {
-			harperLogger.trace(
-				`MCP application: '/${route.pattern}' skipped — richer param binding (multi-segment/named-wildcard) not yet supported`
-			);
-			continue;
-		}
-		considerEntry(route.pattern, route.entry, true);
+		considerEntry(route.pattern, route.entry, isSimpleIdRoute(route.pattern) ? 'id' : 'none');
 	}
 
 	harperLogger.info(

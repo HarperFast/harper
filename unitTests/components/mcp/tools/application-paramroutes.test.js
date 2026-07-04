@@ -68,6 +68,32 @@ describe('mcp/tools/application — parameterised routes', () => {
 		);
 	});
 
+	it('keeps custom mcpTools on multi-segment/wildcard routes while suppressing generated verbs', () => {
+		// Generated verb handlers cannot bind multi-segment/wildcard params yet, but
+		// author-defined mcpTools carry their own schemas and handler methods — a
+		// `files/*rest` resource with explicit tools must not become invisible.
+		class Files {}
+		Files.prototype.get = function () {};
+		Files.get = async () => ({});
+		Files.prototype.listVersions = function () {};
+		Files.mcpTools = [
+			{
+				name: 'list_file_versions',
+				method: 'listVersions',
+				description: 'List versions of a file',
+				inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+			},
+		];
+		_setResourcesForTest(makeRegistryWithParamRoute('files/*rest', Files));
+		registerApplicationTools();
+		const names = listSuperToolNames();
+		assert.ok(names.includes('list_file_versions'), `expected the custom tool, got ${JSON.stringify(names)}`);
+		assert.ok(
+			!names.some((n) => n.startsWith('get_')),
+			`expected no generated verb tools on a wildcard route, got ${JSON.stringify(names)}`
+		);
+	});
+
 	it('does not register create_*/search_* for a param route (their handlers cannot bind the record id)', () => {
 		// makeCreateHandler forces `target.isCollection = true` and never sets `target.id`;
 		// makeSearchHandler is collection-scoped. Neither matches "the record named by :id",
