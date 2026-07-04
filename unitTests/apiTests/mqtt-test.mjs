@@ -61,36 +61,27 @@ async function connectWithMessageListener(brokerUrl, options, listener) {
 	return client;
 }
 
-// Waits for the server to actually finish processing a client's disconnect (session/subscription
-// teardown) rather than guessing with a fixed delay. `client.endAsync()` only resolves once the
-// local socket is closed and does not wait for the broker to process the disconnect, so callers
-// that immediately reconnect with the same clientId can otherwise race the broker's teardown.
-async function endDurableSession(client, clientId) {
-	const torn_down = new Promise((resolve) => {
-		function onDisconnected(session) {
+// Waits for a server-side MQTT session event (see `server/mqtt.ts` `emitEvent`) for a specific
+// clientId, rather than guessing with a fixed delay for the broker to finish some async step.
+function waitForMqttSessionEvent(eventName, clientId) {
+	return new Promise((resolve) => {
+		function onEvent(session) {
 			if (session?.sessionId === clientId) {
-				global.server.mqtt.events.off('disconnected', onDisconnected);
+				global.server.mqtt.events.off(eventName, onEvent);
 				resolve();
 			}
 		}
-		global.server.mqtt.events.on('disconnected', onDisconnected);
+		global.server.mqtt.events.on(eventName, onEvent);
 	});
-	await client.endAsync();
-	await torn_down;
 }
 
-// Waits for the client to actually send the PUBACK for a QoS 1 message it just received, rather
-// than guessing with a fixed delay before disconnecting.
-function waitForPuback(client) {
-	return new Promise((resolve) => {
-		function onPacketSend(packet) {
-			if (packet.cmd === 'puback') {
-				client.off('packetsend', onPacketSend);
-				resolve();
-			}
-		}
-		client.on('packetsend', onPacketSend);
-	});
+// `client.endAsync()` only resolves once the local socket is closed — it does not wait for the
+// broker to process the disconnect and tear down the session — so callers that immediately
+// reconnect with the same clientId can otherwise race the broker's teardown.
+async function endDurableSession(client, clientId) {
+	const torn_down = waitForMqttSessionEvent('disconnected', clientId);
+	await client.endAsync();
+	await torn_down;
 }
 
 describe('test MQTT connections and commands', function () {
@@ -885,10 +876,12 @@ describe('test MQTT connections and commands', function () {
 			protocolVersion: 4,
 		});
 		await new Promise((resolve) => {
-			const acked = waitForPuback(client);
+			// Wait for the broker to finish processing (and durably persisting) our ack of this
+			// message, not just for the client to have sent it — see `session.acknowledge()`.
+			const acknowledged = waitForMqttSessionEvent('acknowledged', 'test-client1');
 			client.on('message', (topic, payload) => {
 				JSON.parse(payload);
-				resolve(acked);
+				resolve(acknowledged);
 			});
 
 			client.publish(
