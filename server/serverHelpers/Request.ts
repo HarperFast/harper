@@ -523,6 +523,11 @@ export class UwsRequest {
 	get body() {
 		return this.#body || (this.#body = new UwsRequestBody(this.#bodyBuffer));
 	}
+	/** Raw request body buffer (undefined for bodyless requests), used as the inject() payload when
+	 * delegating to a Fastify fallback. */
+	get rawBody(): Buffer | undefined {
+		return this.#bodyBuffer;
+	}
 	get host() {
 		return this.headers.get('host') as string;
 	}

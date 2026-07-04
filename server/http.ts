@@ -661,7 +661,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
  * uWS spike (#914): builds the per-request handler for a uWS UDS server. Mirrors the Bun
  * fetchHandler's post-processing (httpChain, unhandled, universalHeaders, Server-Timing,
  * analytics, logging) but returns a plain Harper response descriptor for createUwsServer to
- * serialize onto the uWS HttpResponse. The Fastify status===-1 fallback is not wired here.
+ * serialize onto the uWS HttpResponse. When the chain doesn't handle the request (status === -1)
+ * and a Fastify fallback is registered for the port, it delegates via inject() (see injectToFastify),
+ * mirroring the Bun path — so legacy Fastify routes work behind uWS too.
  */
 function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
 	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
@@ -678,6 +680,42 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 		if (!headers?.set) headers = new Headers(headers);
 		for (const [key, value] of universalHeaders) headers.set(key, value);
 		if (response.status === -1) {
+			// The chain didn't handle it. If a Fastify fallback is registered for this port (legacy
+			// custom-function routes via server.http(fastify.server)), delegate to it via inject(),
+			// mirroring the Bun path; otherwise it's a genuine 404.
+			const fastify = fastifyInstances[port];
+			if (fastify) {
+				const injectResult = await injectToFastify(fastify, {
+					method: request.method,
+					url: request.url,
+					headers: request.headers.asObject,
+					body: request.rawBody,
+					user: request.user,
+				});
+				const respHeaders = new Headers();
+				for (const [k, v] of Object.entries(injectResult.headers)) {
+					if (v != null) respHeaders.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+				}
+				logBunRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
+				const responseStream = injectResult.stream();
+				// Event-stream (SSE) responses must reach the client incrementally — stream the body and,
+				// on client disconnect, destroy the inject response so the Fastify reply's teardown runs
+				// (matches the Bun path). Finite responses buffer so Content-Length stays set.
+				if (String(injectResult.headers['content-type'] ?? '').includes('text/event-stream')) {
+					const injectResponse = injectResult.raw?.res;
+					if (injectResponse && typeof injectResponse.destroy === 'function') {
+						responseStream.once('close', () => injectResponse.destroy());
+					}
+					return { status: injectResult.statusCode, headers: respHeaders, body: responseStream };
+				}
+				const chunks: Buffer[] = [];
+				for await (const chunk of responseStream) chunks.push(Buffer.from(chunk));
+				return {
+					status: injectResult.statusCode,
+					headers: respHeaders,
+					body: chunks.length > 0 ? Buffer.concat(chunks) : null,
+				};
+			}
 			logBunRequest(request, 404, requestId, performance.now() - startTime);
 			return { status: 404, headers: new Headers({ 'content-type': 'text/plain' }), body: 'Not found\n' };
 		}
@@ -942,11 +980,35 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
  * Bridge a Bun fetch request to a Node.js http.Server (e.g. Fastify) by using Fastify's inject()
  * method to send the request through its internal router without needing a real socket.
  */
-let bunFastifyInstances: Record<string | number, any> = {};
-export function registerBunFastifyInstance(port: string | number, instance: any) {
-	bunFastifyInstances[port] = instance;
+let fastifyInstances: Record<string | number, any> = {};
+export function registerFastifyInstance(port: string | number, instance: any) {
+	fastifyInstances[port] = instance;
 }
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
+
+/**
+ * Run a request through a Fastify instance via inject() — its internal router, no socket needed.
+ * Shared by the Bun and uWS fallback-delegation paths. Strips any forged pre-auth header from the
+ * client and, when Harper's auth middleware resolved a user without credentials (e.g. AUTHORIZE_LOCAL
+ * for loopback in dev), forwards it so Fastify can skip its own auth — only when no Authorization
+ * header was supplied, otherwise Fastify's Passport validates the credentials normally.
+ * `payloadAsStream` makes inject() resolve as soon as the response headers are written and exposes
+ * the body as a Readable, so a long-lived SSE response (the MCP server-push GET) streams instead of
+ * buffering forever.
+ */
+function injectToFastify(
+	fastify: any,
+	req: { method: string; url: string; headers: Record<string, any>; body?: Buffer; user?: any }
+) {
+	const headers: Record<string, any> = {};
+	for (const key in req.headers) {
+		if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = req.headers[key];
+	}
+	if (req.user && !headers['authorization']) {
+		headers[INTERNAL_USER_HEADER] = JSON.stringify(req.user);
+	}
+	return fastify.inject({ method: req.method, url: req.url, headers, payload: req.body, payloadAsStream: true });
+}
 
 async function bunDelegateToNodeServer(
 	nodeServer: any,
@@ -955,33 +1017,20 @@ async function bunDelegateToNodeServer(
 ): Promise<Response> {
 	// Check if there's a Fastify instance registered for this port (preferred path)
 	for (const port in fallbackServers) {
-		if (fallbackServers[port] === nodeServer && bunFastifyInstances[port]) {
-			const fastify = bunFastifyInstances[port];
+		if (fallbackServers[port] === nodeServer && fastifyInstances[port]) {
+			const fastify = fastifyInstances[port];
 			const url = new URL(webRequest.url);
 			const body = webRequest.body ? Buffer.from(await webRequest.arrayBuffer()) : undefined;
 			const headers: Record<string, string> = {};
 			webRequest.headers.forEach((value, key) => {
-				// Strip any forged pre-auth header from real clients
-				if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = value;
+				headers[key] = value;
 			});
-			// If Harper's auth middleware authenticated this request without credentials (e.g. via
-			// AUTHORIZE_LOCAL for loopback connections in dev mode), pass the user so Fastify can
-			// skip its own auth. Only applies when there is no Authorization header — if credentials
-			// were provided, let Fastify's Passport validate them normally.
-			if (bunRequest?.user && !headers['authorization']) {
-				headers[INTERNAL_USER_HEADER] = JSON.stringify(bunRequest.user);
-			}
-			// `payloadAsStream` makes inject() resolve as soon as the response headers are
-			// written and exposes the body as a Readable, instead of buffering the whole
-			// payload and resolving only on response end. Without it a long-lived SSE
-			// response (the MCP server-push GET) never ends, so `await inject()` would
-			// hang forever and the client would never receive headers.
-			const injectResult = await fastify.inject({
+			const injectResult = await injectToFastify(fastify, {
 				method: webRequest.method,
 				url: url.pathname + url.search,
 				headers,
-				payload: body,
-				payloadAsStream: true,
+				body,
+				user: bunRequest?.user,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -1042,8 +1091,9 @@ function makeCallbackChain(responders: typeof httpResponders, portNum: number | 
 }
 function unhandled(request) {
 	if (request.user && request._nodeRequest) {
-		// pass on authentication information to the next server (Node fallback delegation only;
-		// the Bun/uWS adapters have no _nodeRequest and no Node fallback server to hand off to)
+		// pass on authentication information to the next server (Node fallback delegation via the
+		// 'unhandled' event chain). The Bun/uWS adapters have no _nodeRequest; they forward the
+		// resolved user to the Fastify fallback via injectToFastify's INTERNAL_USER_HEADER instead.
 		request._nodeRequest.user = request.user;
 	}
 	return {
