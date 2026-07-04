@@ -24,7 +24,7 @@ async function putRecord(
 ): Promise<void> {
 	const r = await fetch(`${httpURL}/CacheRecord/${encodeURIComponent(id)}`, {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+		headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
 		body: JSON.stringify({ id, name, counter }),
 	});
 	if (r.status !== 200 && r.status !== 201 && r.status !== 204) {
@@ -92,62 +92,74 @@ suite('record-caching [rocksdb] 4-worker', { skip: SKIP || process.platform === 
 		strictEqual(second?.counter, 2, 'counter must reflect the update');
 	});
 
-	test('S2 write-then-read under load: 50 records × 200 reads all return correct values', { timeout: 60_000 }, async () => {
-		const COUNT = 50;
-		const READS = 200;
+	test(
+		'S2 write-then-read under load: 50 records × 200 reads all return correct values',
+		{ timeout: 60_000 },
+		async () => {
+			const COUNT = 50;
+			const READS = 200;
 
-		// Seed 50 records
-		await Promise.all(
-			Array.from({ length: COUNT }, (_, i) => putRecord(httpURL, authHeader, `s2-rec-${i}`, `name-${i}`, i))
-		);
+			// Seed 50 records
+			await Promise.all(
+				Array.from({ length: COUNT }, (_, i) => putRecord(httpURL, authHeader, `s2-rec-${i}`, `name-${i}`, i))
+			);
 
-		// 200 reads cycling through the 50 ids
-		const errors: string[] = [];
-		await Promise.all(
-			Array.from({ length: READS }, async (_, i) => {
-				const idx = i % COUNT;
-				const rec = await getRecord(httpURL, authHeader, `s2-rec-${idx}`);
-				if (rec?.name !== `name-${idx}`) {
-					errors.push(`s2-rec-${idx}: expected name-${idx}, got ${rec?.name}`);
-				}
-				if (rec?.counter !== idx) {
-					errors.push(`s2-rec-${idx}: expected counter=${idx}, got ${rec?.counter}`);
-				}
-			})
-		);
+			// 200 reads cycling through the 50 ids
+			const errors: string[] = [];
+			await Promise.all(
+				Array.from({ length: READS }, async (_, i) => {
+					const idx = i % COUNT;
+					const rec = await getRecord(httpURL, authHeader, `s2-rec-${idx}`);
+					if (rec?.name !== `name-${idx}`) {
+						errors.push(`s2-rec-${idx}: expected name-${idx}, got ${rec?.name}`);
+					}
+					if (rec?.counter !== idx) {
+						errors.push(`s2-rec-${idx}: expected counter=${idx}, got ${rec?.counter}`);
+					}
+				})
+			);
 
-		strictEqual(errors.length, 0, `Read errors:\n${errors.slice(0, 10).join('\n')}`);
-	});
+			strictEqual(errors.length, 0, `Read errors:\n${errors.slice(0, 10).join('\n')}`);
+		}
+	);
 });
 
 // ── Scenario 3: single-worker rapid write-read-write cycles ─────────────────
 
-suite('record-caching [rocksdb] single-worker', { skip: SKIP || process.platform === 'win32' }, (ctx: ContextWithHarper) => {
-	let httpURL: string;
-	let authHeader: string;
+suite(
+	'record-caching [rocksdb] single-worker',
+	{ skip: SKIP || process.platform === 'win32' },
+	(ctx: ContextWithHarper) => {
+		let httpURL: string;
+		let authHeader: string;
 
-	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: { logging: { console: true, level: 'error' } },
-			env: {},
+		before(async () => {
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+				config: { logging: { console: true, level: 'error' } },
+				env: {},
+			});
+			const client = createApiClient(ctx.harper);
+			httpURL = ctx.harper.httpURL;
+			authHeader = client.headers.Authorization;
+			await waitForTable(httpURL, authHeader);
 		});
-		const client = createApiClient(ctx.harper);
-		httpURL = ctx.harper.httpURL;
-		authHeader = client.headers.Authorization;
-		await waitForTable(httpURL, authHeader);
-	});
 
-	after(async () => {
-		await teardownHarper(ctx);
-	});
+		after(async () => {
+			await teardownHarper(ctx);
+		});
 
-	test('S3 rapid write-read-write: each PUT immediately visible via GET (30 iterations)', { timeout: 60_000 }, async () => {
-		const id = 's3-record';
-		for (let i = 0; i < 30; i++) {
-			await putRecord(httpURL, authHeader, id, `iter-${i}`, i);
-			const rec = await getRecord(httpURL, authHeader, id);
-			strictEqual(rec?.name, `iter-${i}`, `iteration ${i}: GET returned stale name`);
-			strictEqual(rec?.counter, i, `iteration ${i}: GET returned stale counter`);
-		}
-	});
-});
+		test(
+			'S3 rapid write-read-write: each PUT immediately visible via GET (30 iterations)',
+			{ timeout: 60_000 },
+			async () => {
+				const id = 's3-record';
+				for (let i = 0; i < 30; i++) {
+					await putRecord(httpURL, authHeader, id, `iter-${i}`, i);
+					const rec = await getRecord(httpURL, authHeader, id);
+					strictEqual(rec?.name, `iter-${i}`, `iteration ${i}: GET returned stale name`);
+					strictEqual(rec?.counter, i, `iteration ${i}: GET returned stale counter`);
+				}
+			}
+		);
+	}
+);

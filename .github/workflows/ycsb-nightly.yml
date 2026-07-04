@@ -32,6 +32,7 @@ on:
 
 permissions:
   contents: write # github-action-benchmark pushes trend history to the gh-pages branch
+  pull-requests: write # comment-on-alert posts a PR comment on regression alerts
 
 jobs:
   ycsb:
