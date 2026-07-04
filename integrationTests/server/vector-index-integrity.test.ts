@@ -127,6 +127,39 @@ async function vectorSearch(
 }
 
 /**
+ * Like vectorSearch, but tolerant of a *transient* INDEX_REBUILDING (503).
+ *
+ * `restart_service http_workers` can tear a worker down mid-backfill; the surviving
+ * generation re-runs the backfill via crash-recovery, during which `isIndexing` is briefly
+ * true again and searches legitimately return 503 before the index settles. A single
+ * post-gate search can therefore land in that window even though the index does converge.
+ * Retry until it is stably searchable. A 503 that never clears within the budget still
+ * surfaces — so a genuinely-stuck index (no recovery) is still caught as a failure.
+ */
+async function vectorSearchStable(
+	httpURL: string,
+	headers: Record<string, string>,
+	resourcePath: string,
+	target: number[],
+	opts: { limit?: number; select?: string[] } = {},
+	timeoutMs = 30_000
+): Promise<any[]> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			return await vectorSearch(httpURL, headers, resourcePath, target, opts);
+		} catch (err: any) {
+			const transient = /INDEX_REBUILDING|is not indexed yet/.test(err?.message ?? '');
+			if (transient && Date.now() < deadline) {
+				await sleep(250);
+				continue;
+			}
+			throw err;
+		}
+	}
+}
+
+/**
  * Issue an HTTP QUERY request via fetch — supertest/superagent has no API for
  * non-standard verbs, while undici's fetch passes custom method tokens through.
  */
@@ -502,11 +535,14 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 		// indexed". Either state makes a record look like a miss, so poll the full
 		// recall check (bounded-concurrency read-back) until it converges rather than
 		// asserting on a single burst fired the instant one worker happens to be ready.
+		// Use vectorSearchStable so a transient INDEX_REBUILDING from a recovery-reindex
+		// window (a restart-interrupted backfill resuming) doesn't get counted as a miss;
+		// a permanently-stuck index still never converges and fails below.
 		const allowed = Math.ceil(N * 0.1);
 		let misses = N;
 		await waitFor(async () => {
 			const reindexResults = await mapConcurrent(N, 10, (i) =>
-				vectorSearch(httpURL, headers, path, seedVector(i, DIMS), { limit: 5 }).catch(() => [] as any[])
+				vectorSearchStable(httpURL, headers, path, seedVector(i, DIMS), { limit: 5 }).catch(() => [] as any[])
 			);
 			misses = 0;
 			for (let i = 0; i < N; i++) {
@@ -529,7 +565,7 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 
 		// reindex-0's new vector (seed 1000) must be near the top; deleted records absent.
 		const updatedVec = seedVector(1000, DIMS);
-		const afterResults = await vectorSearch(httpURL, headers, path, updatedVec, { limit: 15 });
+		const afterResults = await vectorSearchStable(httpURL, headers, path, updatedVec, { limit: 15 });
 		const afterIds = new Set(afterResults.map((r: any) => r.id));
 
 		ok(afterIds.has('reindex-0'), 'updated reindex-0 must appear near its new vector');
