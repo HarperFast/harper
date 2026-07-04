@@ -62,6 +62,38 @@ async function connectWithMessageListener(brokerUrl, options, listener) {
 	return client;
 }
 
+// Waits for the server to actually finish processing a client's disconnect (session/subscription
+// teardown) rather than guessing with a fixed delay. `client.endAsync()` only resolves once the
+// local socket is closed and does not wait for the broker to process the disconnect, so callers
+// that immediately reconnect with the same clientId can otherwise race the broker's teardown.
+async function endDurableSession(client, clientId) {
+	const torn_down = new Promise((resolve) => {
+		function onDisconnected(session) {
+			if (session?.sessionId === clientId) {
+				global.server.mqtt.events.off('disconnected', onDisconnected);
+				resolve();
+			}
+		}
+		global.server.mqtt.events.on('disconnected', onDisconnected);
+	});
+	await client.endAsync();
+	await torn_down;
+}
+
+// Waits for the client to actually send the PUBACK for a QoS 1 message it just received, rather
+// than guessing with a fixed delay before disconnecting.
+function waitForPuback(client) {
+	return new Promise((resolve) => {
+		function onPacketSend(packet) {
+			if (packet.cmd === 'puback') {
+				client.off('packetsend', onPacketSend);
+				resolve();
+			}
+		}
+		client.on('packetsend', onPacketSend);
+	});
+}
+
 describe('test MQTT connections and commands', function () {
 	this.timeout(10000);
 	let available_records;
@@ -840,25 +872,24 @@ describe('test MQTT connections and commands', function () {
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
-		await client.endAsync();
-		await delay(10);
+		await endDurableSession(client, 'test-client1');
 		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
-		await client.endAsync();
-		await delay(10);
+		await endDurableSession(client, 'test-client1');
 		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await new Promise((resolve) => {
+			const acked = waitForPuback(client);
 			client.on('message', (topic, payload) => {
 				JSON.parse(payload);
-				resolve();
+				resolve(acked);
 			});
 
 			client.publish(
@@ -871,10 +902,8 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 		});
-		await delay(10);
-		await client.endAsync();
-		await delay(50);
-		clientV5.publish(
+		await endDurableSession(client, 'test-client1');
+		await clientV5.publishAsync(
 			'SimpleRecord/41',
 			JSON.stringify({
 				name: 'This is a test of publishing to a disconnected durable session',
@@ -901,7 +930,6 @@ describe('test MQTT connections and commands', function () {
 				qos: 1,
 			}
 		);
-		await delay(10);
 		let messages = [];
 		client = await connectWithMessageListener(
 			mqttUrl,
