@@ -10,9 +10,6 @@ name: YCSB Nightly Load Test
 on:
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC nightly
-  pull_request:
-    branches-ignore:
-      - 'v5.0'
   workflow_dispatch:
     inputs:
       scale:
@@ -32,7 +29,6 @@ on:
 
 permissions:
   contents: write # github-action-benchmark pushes trend history to the gh-pages branch
-  pull-requests: write # comment-on-alert posts a PR comment on regression alerts
 
 jobs:
   ycsb:
@@ -69,9 +65,8 @@ jobs:
       - name: Run YCSB load test
         # Pass dispatch inputs via env, not direct ${{ }} interpolation into the shell,
         # so a free-form input value can't inject shell commands on the runner.
-        # Pull requests use 'quick' scale for faster CI feedback.
         env:
-          SCALE: ${{ github.event_name == 'pull_request' && 'quick' || github.event.inputs.scale || 'standard' }}
+          SCALE: ${{ github.event.inputs.scale || 'standard' }}
           WORKLOADS: ${{ github.event.inputs.workloads || 'C,B,A,F,D,E' }}
         run: |
           node benchmarks/ycsb/run-single-node.mts --scale="$SCALE" --workloads="$WORKLOADS"
@@ -94,6 +89,11 @@ jobs:
           fail-on-alert: false
           alert-threshold: '130%'
           alert-comment-cc-users: '@kriszyp'
+
+      - name: Reset local gh-pages ref before second benchmark step
+        run: |
+          git switch --detach
+          git branch -D gh-pages 2>/dev/null || true
 
       - name: Track latency (p99) trend
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
