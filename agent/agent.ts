@@ -8,16 +8,22 @@
  * is realized lazily on first use, and the loop runs in-process.
  *
  * The component intentionally avoids `handleApplication`: it has nothing
- * worker-thread-shaped to do. Operator-only tools (FS, schedule, fetch) are
- * inline; registry-backed tools (#615/#617/#618) will fold in via toolset.ts
- * once those land.
+ * worker-thread-shaped to do. Two tool sources compose: operator-only tools
+ * (FS, schedule, fetch, and the V8 inspector) that are inline, and RBAC-filtered
+ * registry tools (#615/#617) drained for the agent's configured user via
+ * `registryTools.ts`.
  */
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import * as env from '../utility/environment/environmentManager.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { Models } from '../resources/models/Models.ts';
+import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
+import { workers } from '../server/threads/manageThreads.js';
 import { composeToolset } from './toolset.ts';
+import { buildInspectorTools } from './tools/inspectorTool.ts';
+import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
@@ -37,6 +43,8 @@ const DEFAULT_CONFIG: AgentConfig = {
 interface StartOpts {
 	server: {
 		registerOperation: (def: { name: string; execute: (op: any) => any | Promise<any> }) => void;
+		/** Resolve a Harper user (with role/permissions) by username. Password/request unused here. */
+		getUser?: (username: string, password: string | null, request: unknown) => Promise<AuthedUser> | AuthedUser;
 	};
 	// Component-level config plumbed by componentLoader (`...componentConfig`).
 	enabled?: boolean;
@@ -64,10 +72,45 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const models = new Models();
 	const abortControllers = new Map<string, AbortController>();
 	let liveConfig: AgentConfig = config;
+
+	// Populate the Operations MCP profile on the main thread. `agentIdentity` resolves the enforcement
+	// identity fresh on each call (so a live role change is honored, and an unresolvable non-default
+	// user fails closed); the startup snapshot below is only for `visibleTo` listing.
+	ensureOperationsToolsRegistered();
+	const agentIdentity = () => resolveAgentIdentity(opts.server, liveConfig.user);
+	let registryTools = await composeRegistryToolsForListing(agentIdentity);
+
+	// Operator-only V8 inspector tools. Debug config is read once here — enabling threads_debug opens the
+	// worker inspector ports at thread boot, so it can't be toggled without a restart anyway. Worker
+	// count is a live closure over the pool, so attaches range-check against the current worker set.
+	const inspectorTools = buildInspectorTools({
+		debugEnabled: env.get(CONFIG_PARAMS.THREADS_DEBUG) !== false,
+		startingPort: (env.get(CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT) as number | undefined) ?? undefined,
+		host: (env.get(CONFIG_PARAMS.THREADS_DEBUG_HOST) as string | undefined) ?? '127.0.0.1',
+		getWorkerCount: () => workers.length,
+	});
+
 	let composed = composeToolset({
 		allowDestructive: liveConfig.allowDestructive,
 		onFollowup: handleFollowup,
+		inspectorTools,
+		registryTools,
 	});
+
+	// Build the listing snapshot best-effort: if the configured user can't be resolved (and isn't the
+	// default bootstrap user), `agentIdentity` fails closed — the agent then runs with only its
+	// operator-only tools until the operator fixes `agent.user`. Never falls back to an escalated list.
+	async function composeRegistryToolsForListing(resolveIdentity: () => Promise<AuthedUser>): Promise<AgentTool[]> {
+		try {
+			const listingUser = await resolveIdentity();
+			return composeRegistryTools(listingUser, resolveIdentity);
+		} catch (err) {
+			log.error?.(
+				`Registry tools disabled — agent.user='${liveConfig.user}' could not be resolved: ${err instanceof Error ? err.message : String(err)}`
+			);
+			return [];
+		}
+	}
 
 	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
 	// every boot would flood the log without telling anyone anything actionable.
@@ -141,6 +184,8 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			composed = composeToolset({
 				allowDestructive: liveConfig.allowDestructive,
 				onFollowup: handleFollowup,
+				inspectorTools,
+				registryTools,
 			});
 		}
 		// NOTE: an already in-flight run captured its toolset (and autoApprove) at start, so flipping
@@ -181,6 +226,40 @@ function buildSystemPrompt(scopes: AgentScopes): string {
 		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via http_fetch against this server.',
 		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. Be concise and verify your work.',
 	].join('\n');
+}
+
+/**
+ * Resolve the identity the agent's tool calls run as. Registry tools are enforced
+ * (`hdb_user` at call time) against this user, so an operator who sets `agent.user`
+ * to a restricted role gets a narrowed surface — and a later role change is honored,
+ * because this runs per call rather than once at startup.
+ *
+ * Failure policy — fail closed, with one bounded exception:
+ *   - If `agent.user` resolves to a permissioned user, use it.
+ *   - If it can't be resolved AND it's the *default* `hdb_agent` bootstrap user,
+ *     fall back to a super_user identity (the system user isn't provisioned yet —
+ *     #626 defers creating it). This is the documented default-agent behavior.
+ *   - If it can't be resolved and the operator configured a *non-default* user,
+ *     throw. Silently escalating a misconfigured/transient restricted account to
+ *     super_user is the vulnerability we refuse to introduce.
+ */
+async function resolveAgentIdentity(server: StartOpts['server'], username: string): Promise<AuthedUser> {
+	let resolved: AuthedUser | undefined;
+	if (typeof server.getUser === 'function') {
+		try {
+			const user = await server.getUser(username, null, null);
+			if (user?.role?.permission) resolved = user;
+		} catch (err) {
+			log.warn?.(`Failed to resolve agent.user='${username}': ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	if (resolved) return resolved;
+
+	if (username === DEFAULT_CONFIG.user) {
+		log.warn?.(`Default agent user '${username}' is not provisioned yet; using super_user bootstrap identity`);
+		return { username, role: { permission: { super_user: true } } };
+	}
+	throw new Error(`agent.user '${username}' could not be resolved to a permissioned user; failing closed`);
 }
 
 function resolveScopes(
