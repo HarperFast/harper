@@ -1,0 +1,12 @@
+# QA-P281-TTL — blob TTL eviction: does expiry unlink the blob file on disk?
+#
+# BlobTtlTest: short TTL (5s) table carrying a real file-backed Blob.
+# The test inserts records, waits for TTL eviction (rows gone), then checks
+# whether the blob FILES were also deleted or leaked (orphaned) on disk.
+
+type BlobTtlTest @table(expiration: 5) @export {
+	id: ID! @primaryKey
+	payload: Blob
+	sha256: String
+	size: Int
+}
