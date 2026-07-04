@@ -76,6 +76,19 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.CSV_URL_LOAD,
 		OPERATIONS_ENUM.IMPORT_FROM_S3,
 	],
+	/**
+	 * Drive the built-in agent (#626): send prompts, read/list sessions, and approve/cancel
+	 * runs. Grants a scoped, non-super_user "delegation" role access to the agent without full
+	 * super_user (all agent ops are super_user by default). Deliberately EXCLUDES set_agent_config
+	 * — changing the agent's model/approval policy stays an operator (super_user) action.
+	 */
+	agent: [
+		OPERATIONS_ENUM.AGENT_PROMPT,
+		OPERATIONS_ENUM.GET_AGENT_SESSION,
+		OPERATIONS_ENUM.LIST_AGENT_SESSIONS,
+		OPERATIONS_ENUM.CANCEL_AGENT_RUN,
+		OPERATIONS_ENUM.APPROVE_AGENT_ACTION,
+	],
 } as const;
 
 const validOps: Set<string> = new Set(Object.values(OPERATIONS_ENUM));

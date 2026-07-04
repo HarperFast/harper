@@ -457,4 +457,65 @@ describe('Test serverUtilities.js module ', () => {
 			}
 		});
 	});
+
+	describe('registerOperation permission seam', function () {
+		const { server } = require('#src/server/Server');
+		const op_auth = require('#src/utility/operation_authorization');
+		const SU_OP = 'test_registered_su_op';
+		const OPEN_OP = 'test_registered_open_op';
+
+		// A non-super_user request JSON for a given op, optionally carrying an `operations` grant.
+		const nonSuRequest = (op, operations) => ({
+			operation: op,
+			hdb_user: {
+				active: true,
+				role: { permission: { super_user: false, ...(operations ? { operations } : {}) }, role: 'scoped' },
+				username: 'scoped_user',
+			},
+		});
+		const suRequest = (op) => ({
+			operation: op,
+			hdb_user: { active: true, role: { permission: { super_user: true }, role: 'admin' }, username: 'su' },
+		});
+
+		before(function () {
+			server.registerOperation({ name: SU_OP, execute: async () => ({ ok: true }), requiresSuperUser: true });
+		});
+
+		it('pins the anonymous handler name to the operation name so verifyPerms can key it', function () {
+			const def = { name: 'test_name_pinning_op', execute: async () => ({}), requiresSuperUser: true };
+			server.registerOperation(def);
+			assert.equal(def.execute.name, 'test_name_pinning_op');
+		});
+
+		it('does not touch handler name or register perms when requiresSuperUser is omitted (opt-in)', function () {
+			const def = { name: OPEN_OP, execute: async () => ({}) };
+			server.registerOperation(def);
+			// Name is left as the arrow's inferred name ("execute" from the property), not forced to OPEN_OP.
+			assert.notEqual(def.execute.name, OPEN_OP);
+			// Unchanged behavior: with no central entry, a non-SU request to this op fails closed the same
+			// way any unregistered op does — verifyPerms throws OP_NOT_FOUND (400), it does not silently allow.
+			let threw;
+			try {
+				op_auth.verifyPerms(nonSuRequest(OPEN_OP), OPEN_OP);
+			} catch (err) {
+				threw = err;
+			}
+			assert.ok(threw, 'expected verifyPerms to throw for an unregistered op');
+			assert.equal(threw.statusCode, 400);
+		});
+
+		it('allows a super_user to call a declared SU op', function () {
+			assert.equal(op_auth.verifyPerms(suRequest(SU_OP), SU_OP), null);
+		});
+
+		it('denies a non-super_user without an operations grant', function () {
+			const result = op_auth.verifyPerms(nonSuRequest(SU_OP), SU_OP);
+			assert.ok(result, 'expected a permissions failure for a non-super_user without a grant');
+		});
+
+		it('allows a non-super_user whose role grants the op via the operations allowlist (SU-bypass)', function () {
+			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
+		});
+	});
 });
