@@ -963,7 +963,7 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	let toolsRegistered = 0;
 	let resourcesConsidered = 0;
 
-	const considerEntry = (path: string, entry: ResourceRegistryEntry | undefined): void => {
+	const considerEntry = (path: string, entry: ResourceRegistryEntry | undefined, isParamRoute = false): void => {
 		if (!entry) return;
 		resourcesConsidered++;
 		if (!shouldEnumerate(entry)) return;
@@ -975,6 +975,15 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 			return;
 		}
 		const verbs = detectVerbs(ResourceClass);
+		if (isParamRoute) {
+			// A `:id`-scoped route is record-scoped, but `makeCreateHandler` forces
+			// `target.isCollection = true` (never binds `target.id`) and `makeSearchHandler`
+			// is collection-scoped by design — neither matches "the record named by :id", so
+			// don't advertise them here. get/update/patch/delete all correctly bind
+			// `target.id = args.id` and are unaffected.
+			verbs.search = false;
+			verbs.create = false;
+		}
 		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
@@ -1016,7 +1025,7 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 			);
 			continue;
 		}
-		considerEntry(route.pattern, route.entry);
+		considerEntry(route.pattern, route.entry, true);
 	}
 
 	harperLogger.info(

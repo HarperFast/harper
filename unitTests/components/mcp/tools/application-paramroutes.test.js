@@ -66,9 +66,23 @@ describe('mcp/tools/application — parameterised routes', () => {
 			names.some((n) => n.startsWith('get_')),
 			`expected a get_* tool, got ${JSON.stringify(names)}`
 		);
+	});
+
+	it('does not register create_*/search_* for a param route (their handlers cannot bind the record id)', () => {
+		// makeCreateHandler forces `target.isCollection = true` and never sets `target.id`;
+		// makeSearchHandler is collection-scoped. Neither matches "the record named by :id",
+		// so a param-route resource with `post`/`search` should still get its `get_*` tool but
+		// not `create_*`/`search_*`.
+		_setResourcesForTest(makeRegistryWithParamRoute('widget/:id', makeParamResource()));
+		registerApplicationTools();
+		const names = listSuperToolNames();
 		assert.ok(
-			names.some((n) => n.startsWith('create_')),
-			`expected a create_* tool, got ${JSON.stringify(names)}`
+			names.some((n) => n.startsWith('get_')),
+			`expected a get_* tool, got ${JSON.stringify(names)}`
+		);
+		assert.ok(
+			!names.some((n) => n.startsWith('create_') || n.startsWith('search_')),
+			`expected no create_*/search_* tool for a param route, got ${JSON.stringify(names)}`
 		);
 	});
 
