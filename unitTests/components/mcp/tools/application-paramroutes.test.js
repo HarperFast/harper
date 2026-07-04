@@ -106,4 +106,19 @@ describe('mcp/tools/application — parameterised routes', () => {
 			'expected the tool to dispatch on the live registry entry after it was swapped'
 		);
 	});
+
+	// The verb handlers only bind `target.id = args.id`. A route with a differently-named
+	// param, more than one param, or a `*wildcard` segment would advertise an `id`-only tool
+	// that silently drops the other segment(s) — so those shapes must be skipped, not exposed.
+	for (const pattern of ['widget/:id/action/:action', 'widget/:widgetId', 'files/*rest', 'files/*']) {
+		it(`skips a parameterised route the verb handlers cannot fully bind (${pattern})`, () => {
+			_setResourcesForTest(makeRegistryWithParamRoute(pattern, makeParamResource()));
+			registerApplicationTools();
+			assert.equal(
+				listSuperToolNames().length,
+				0,
+				`expected no tools for an unsupported param shape, got ${JSON.stringify(listSuperToolNames())}`
+			);
+		});
+	}
 });

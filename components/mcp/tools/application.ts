@@ -133,6 +133,24 @@ interface ToolAnnotationsLike {
 	openWorldHint?: boolean;
 }
 
+/**
+ * True when `pattern`'s only dynamic segment is a single `:id` param (e.g. `widget/:id`).
+ * That is the ONLY shape the verb handlers below bind — `target.id = args.id` — so a
+ * differently-named param (`:widgetId`), more than one param, or a `*wildcard` segment
+ * would advertise an `id` input the handler never actually threads onto the real segment(s).
+ */
+function isSimpleIdRoute(pattern: string): boolean {
+	let paramCount = 0;
+	for (const segment of pattern.split('/')) {
+		if (segment.startsWith('*')) return false;
+		if (segment.startsWith(':')) {
+			if (segment !== ':id') return false;
+			paramCount++;
+		}
+	}
+	return paramCount === 1;
+}
+
 /** A compiled parameterised route (e.g. `/widget/:id`), stored outside the base Map. */
 interface ParamRouteEntry {
 	pattern: string;
@@ -987,9 +1005,17 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	// stores them in `paramRoutes` and returns before the Map insert, so the loop above never sees
 	// them. Without this, a custom resource declaring `static path = '/widget/:id'` produces ZERO MCP
 	// tools — even though it appears in the OpenAPI document, which already iterates `paramRoutes`.
-	// Enumerate them so the tool surface matches the REST surface. The common single-`:id` case binds
-	// via `target.id` in the verb handlers; richer multi-segment/named-wildcard binding can layer on later.
+	// Enumerate them so the tool surface matches the REST surface — but only the single-`:id` shape
+	// the verb handlers actually bind (see isSimpleIdRoute); richer multi-segment/named-wildcard
+	// binding is excluded here until that binding lands, rather than advertising a tool that silently
+	// drops the other segment(s).
 	for (const route of resources.paramRoutes ?? []) {
+		if (!isSimpleIdRoute(route.pattern)) {
+			harperLogger.trace(
+				`MCP application: '/${route.pattern}' skipped — richer param binding (multi-segment/named-wildcard) not yet supported`
+			);
+			continue;
+		}
 		considerEntry(route.pattern, route.entry);
 	}
 
