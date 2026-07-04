@@ -80,9 +80,21 @@ function waitForMqttSessionEvent(eventName, clientId) {
 // broker to process the disconnect and tear down the session — so callers that immediately
 // reconnect with the same clientId can otherwise race the broker's teardown.
 async function endDurableSession(client, clientId) {
-	const torn_down = waitForMqttSessionEvent('disconnected', clientId);
-	await client.endAsync();
-	await torn_down;
+	let onDisconnected;
+	const torn_down = new Promise((resolve) => {
+		onDisconnected = (session) => {
+			if (session?.sessionId === clientId) resolve();
+		};
+		global.server.mqtt.events.on('disconnected', onDisconnected);
+	});
+	try {
+		await client.endAsync();
+		await torn_down;
+	} finally {
+		// Always clean up the listener, even if endAsync() rejects or the event never fires,
+		// so a failed disconnect doesn't leak a listener on the shared event emitter.
+		global.server.mqtt.events.off('disconnected', onDisconnected);
+	}
 }
 
 describe('test MQTT connections and commands', function () {
