@@ -6,7 +6,7 @@ export class AddToCounter extends Resource {
 
 	async post(query, body) {
 		const id = (body && body.id) || 'k';
-		const delta = (body && body.delta !== undefined) ? Number(body.delta) : 1;
+		const delta = body && body.delta !== undefined ? Number(body.delta) : 1;
 		const updatable = await tables.Expiry.update(id, {});
 		updatable.set('id', id);
 		updatable.addTo('n', delta);

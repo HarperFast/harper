@@ -86,10 +86,14 @@ suite(
 		async function fireRace(key: string, op: string, extra: Record<string, unknown> = {}): Promise<any> {
 			const res = await fetch(`${httpURL}/RaceOp/`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: auth },
+				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 				body: JSON.stringify({ key, op, ...extra }),
 			});
-			try { return await res.json(); } catch { return {}; }
+			try {
+				return await res.json();
+			} catch {
+				return {};
+			}
 		}
 
 		/** GET /Widget/K — returns body or null if 404 */
@@ -109,22 +113,11 @@ suite(
 			return [];
 		}
 
-		/** SQL COUNT(*) of Widget */
-		async function sqlCount(): Promise<number> {
-			const r = await fetch(opsURL, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: auth },
-				body: JSON.stringify({ operation: 'sql', sql: 'SELECT COUNT(*) FROM data.Widget' }),
-			});
-			const body = await r.json();
-			return body?.[0]?.['COUNT(*)'] ?? -1;
-		}
-
 		/** search_by_value on category field */
 		async function searchByCategory(category: string): Promise<any[]> {
 			const r = await fetch(opsURL, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: auth },
+				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 				body: JSON.stringify({
 					operation: 'search_by_value',
 					schema: 'data',
@@ -159,7 +152,9 @@ suite(
 				const key = `race-a-${r}-${ENGINE}`;
 				const result = await fireRace(key, 'patch', { value: `patched-${r}` });
 
-				if (result.deleteError && result.writeError) { crashedRounds++; }
+				if (result.deleteError && result.writeError) {
+					crashedRounds++;
+				}
 
 				const rec = await pointRead(key);
 				const finalState = rec === null ? 'GONE' : `ALIVE:${rec.value}`;
@@ -170,15 +165,15 @@ suite(
 				await hardDelete(key);
 			}
 
-			const goneRate  = goneFinal  / ROUNDS;
+			const goneRate = goneFinal / ROUNDS;
 			const resurRate = resurFinal / ROUNDS;
 			const deterministic = goneFinal === ROUNDS || resurFinal === ROUNDS;
 
 			console.log(
 				`${TAG}(a) DELETE-vs-PATCH SUMMARY: gone=${goneFinal}/${ROUNDS} (${(goneRate * 100).toFixed(1)}%) ` +
-				`alive(resurrect)=${resurFinal}/${ROUNDS} (${(resurRate * 100).toFixed(1)}%) ` +
-				`crashed=${crashedRounds} deterministic=${deterministic} ` +
-				`states_sample=${finalStates.slice(0, 10).join(' ')}`
+					`alive(resurrect)=${resurFinal}/${ROUNDS} (${(resurRate * 100).toFixed(1)}%) ` +
+					`crashed=${crashedRounds} deterministic=${deterministic} ` +
+					`states_sample=${finalStates.slice(0, 10).join(' ')}`
 			);
 
 			// No hard assertion on gone/alive (LWW expected to vary); crash is a defect
@@ -209,15 +204,15 @@ suite(
 				await hardDelete(key);
 			}
 
-			const goneRate  = goneFinal  / ROUNDS;
+			const goneRate = goneFinal / ROUNDS;
 			const resurRate = resurFinal / ROUNDS;
 			const deterministic = goneFinal === ROUNDS || resurFinal === ROUNDS;
 
 			console.log(
 				`${TAG}(b) DELETE-vs-PUT SUMMARY: gone=${goneFinal}/${ROUNDS} (${(goneRate * 100).toFixed(1)}%) ` +
-				`alive(resurrect)=${resurFinal}/${ROUNDS} (${(resurRate * 100).toFixed(1)}%) ` +
-				`crashed=${crashedRounds} deterministic=${deterministic} ` +
-				`states_sample=${finalStates.slice(0, 10).join(' ')}`
+					`alive(resurrect)=${resurFinal}/${ROUNDS} (${(resurRate * 100).toFixed(1)}%) ` +
+					`crashed=${crashedRounds} deterministic=${deterministic} ` +
+					`states_sample=${finalStates.slice(0, 10).join(' ')}`
 			);
 
 			strictEqual(crashedRounds, 0, `${TAG}(b) both ops crashed in ${crashedRounds} rounds`);
@@ -237,15 +232,19 @@ suite(
 
 			// Use unique category per round so search_by_value is unambiguous
 			for (let r = 0; r < CONSISTENCY_ROUNDS; r++) {
-				const key   = `race-c-${r}-${ENGINE}`;
-				const cat   = `cat-c-${r}-${ENGINE}`;
+				const key = `race-c-${r}-${ENGINE}`;
+				const cat = `cat-c-${r}-${ENGINE}`;
 
 				// Seed with a known category
-				await fetch(`${httpURL}/Widget/${encodeURIComponent(key)}`, {
+				const seedRes = await fetch(`${httpURL}/Widget/${encodeURIComponent(key)}`, {
 					method: 'PUT',
-					headers: { 'Content-Type': 'application/json', Authorization: auth },
+					headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 					body: JSON.stringify({ id: key, value: 'seed', counter: 0, category: cat }),
 				});
+				ok(
+					seedRes.status === 200 || seedRes.status === 201 || seedRes.status === 204,
+					`Seed PUT failed with status ${seedRes.status}`
+				);
 
 				// Race: DELETE vs PUT (overwrites category to 'put')
 				await fireRace(key, 'put', { value: `put-c-${r}` });
@@ -253,15 +252,14 @@ suite(
 				await sleep(50);
 
 				// --- Cross-view consistency check ---
-				const rec     = await pointRead(key);
-				const exists  = rec !== null;
+				const rec = await pointRead(key);
+				const exists = rec !== null;
 
 				const scanRecs = await scanAll();
-				const inScan   = scanRecs.some((s: any) => s.id === key);
+				const inScan = scanRecs.some((s: any) => s.id === key);
 
-				const count = await sqlCount();
 				// We'll check by searching for both possible categories
-				const sbvPut  = await searchByCategory('put');
+				const sbvPut = await searchByCategory('put');
 				const sbvSeed = await searchByCategory(cat);
 				const inSbv = sbvPut.some((s: any) => s.id === key) || sbvSeed.some((s: any) => s.id === key);
 
@@ -275,9 +273,7 @@ suite(
 					details.push(msg);
 					console.log(`${TAG}(c) INCONSISTENCY: ${msg}`);
 				} else {
-					console.log(
-						`${TAG}(c) r=${r} key=${key}: exists=${exists} inScan=${inScan} inSbv=${inSbv} — CONSISTENT`
-					);
+					console.log(`${TAG}(c) r=${r} key=${key}: exists=${exists} inScan=${inScan} inSbv=${inSbv} — CONSISTENT`);
 				}
 
 				await hardDelete(key);
@@ -285,7 +281,7 @@ suite(
 
 			console.log(
 				`${TAG}(c) CONSISTENCY SUMMARY: inconsistencies=${inconsistencies}/${CONSISTENCY_ROUNDS} ` +
-				`${inconsistencies > 0 ? '>>> INDEX/SCAN INCONSISTENCY DEFECT <<<' : 'ALL CONSISTENT'}`
+					`${inconsistencies > 0 ? '>>> INDEX/SCAN INCONSISTENCY DEFECT <<<' : 'ALL CONSISTENT'}`
 			);
 			if (details.length > 0) {
 				console.log(`${TAG}(c) Inconsistency details:\n  ${details.join('\n  ')}`);
@@ -329,9 +325,9 @@ suite(
 
 			console.log(
 				`${TAG}(d) addTo-vs-DELETE SUMMARY: gone=${goneFinal}/${ROUNDS} ` +
-				`resurrected=${resurFinal}/${ROUNDS} ` +
-				`counterAnomalies=${counterAnomalies} ` +
-				`${counterAnomalies > 0 ? '>>> COUNTER ANOMALY <<<' : 'counters sane'}`
+					`resurrected=${resurFinal}/${ROUNDS} ` +
+					`counterAnomalies=${counterAnomalies} ` +
+					`${counterAnomalies > 0 ? '>>> COUNTER ANOMALY <<<' : 'counters sane'}`
 			);
 			if (details.length) console.log(`${TAG}(d) anomalies: ${details.join(' | ')}`);
 
@@ -343,7 +339,7 @@ suite(
 		// ------------------------------------------------------------------
 		test(`(e) DELETE vs DELETE: ${ROUNDS} rounds [${ENGINE}]`, async () => {
 			let bothOk = 0;
-			let oneOk  = 0;
+			let oneOk = 0;
 			let crashes = 0;
 
 			for (let r = 0; r < ROUNDS; r++) {
@@ -351,7 +347,7 @@ suite(
 				// Seed
 				await fetch(`${httpURL}/Widget/${encodeURIComponent(key)}`, {
 					method: 'PUT',
-					headers: { 'Content-Type': 'application/json', Authorization: auth },
+					headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 					body: JSON.stringify({ id: key, value: 'seed', counter: 0, category: 'seed' }),
 				});
 
@@ -366,17 +362,14 @@ suite(
 
 				// Final state must be gone
 				const rec = await pointRead(key);
-				ok(
-					rec === null,
-					`${TAG}(e) r=${r}: key ${key} should be GONE after two DELETEs, got ${JSON.stringify(rec)}`
-				);
+				ok(rec === null, `${TAG}(e) r=${r}: key ${key} should be GONE after two DELETEs, got ${JSON.stringify(rec)}`);
 			}
 
 			console.log(
 				`${TAG}(e) DELETE-vs-DELETE SUMMARY: bothOk=${bothOk}/${ROUNDS} ` +
-				`oneOk(idempotent)=${oneOk}/${ROUNDS} ` +
-				`crashes=${crashes}/${ROUNDS} ` +
-				`${crashes > 0 ? '>>> CRASH on double-delete <<<' : 'no crashes'}`
+					`oneOk(idempotent)=${oneOk}/${ROUNDS} ` +
+					`crashes=${crashes}/${ROUNDS} ` +
+					`${crashes > 0 ? '>>> CRASH on double-delete <<<' : 'no crashes'}`
 			);
 
 			strictEqual(crashes, 0, `${TAG}(e) both deletes returned error in ${crashes} rounds`);
@@ -386,8 +379,8 @@ suite(
 		// (f) DELETE racing with immediate CREATE (recreate-after-delete)
 		// ------------------------------------------------------------------
 		test(`(f) recreate racing with DELETE: ${ROUNDS} rounds [${ENGINE}]`, async () => {
-			let goneFinal  = 0; // delete won, create swallowed / 409-ed
-			let createWon  = 0; // create landed, record visible
+			let goneFinal = 0; // delete won, create swallowed / 409-ed
+			let createWon = 0; // create landed, record visible
 			let crashedRounds = 0;
 			const finalStates: string[] = [];
 
@@ -412,9 +405,9 @@ suite(
 			const deterministic = goneFinal === ROUNDS || createWon === ROUNDS;
 			console.log(
 				`${TAG}(f) RECREATE-vs-DELETE SUMMARY: gone=${goneFinal}/${ROUNDS} ` +
-				`createLanded=${createWon}/${ROUNDS} ` +
-				`crashed=${crashedRounds} deterministic=${deterministic} ` +
-				`states_sample=${finalStates.slice(0, 10).join(' ')}`
+					`createLanded=${createWon}/${ROUNDS} ` +
+					`crashed=${crashedRounds} deterministic=${deterministic} ` +
+					`states_sample=${finalStates.slice(0, 10).join(' ')}`
 			);
 
 			strictEqual(crashedRounds, 0, `${TAG}(f) both ops crashed in ${crashedRounds} rounds`);
@@ -430,7 +423,7 @@ suite(
 			for (let i = 0; i < CLEAN_KEYS; i++) {
 				await fetch(`${httpURL}/Widget/clean-${i}-${ENGINE}`, {
 					method: 'PUT',
-					headers: { 'Content-Type': 'application/json', Authorization: auth },
+					headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 					body: JSON.stringify({ id: `clean-${i}-${ENGINE}`, value: `v${i}`, counter: i, category: 'clean-sweep' }),
 				});
 			}
@@ -438,27 +431,25 @@ suite(
 			await sleep(200); // let async index writes settle
 
 			const scanRecs = (await scanAll()).filter((s: any) => s.category === 'clean-sweep');
-			const sbv      = await searchByCategory('clean-sweep');
+			const sbv = await searchByCategory('clean-sweep');
 
 			const scanIds = new Set(scanRecs.map((s: any) => s.id));
-			const sbvIds  = new Set(sbv.map((s: any) => s.id));
+			const sbvIds = new Set(sbv.map((s: any) => s.id));
 
 			const onlyInScan = [...scanIds].filter((id) => !sbvIds.has(id));
-			const onlyInSbv  = [...sbvIds].filter((id) => !scanIds.has(id));
+			const onlyInSbv = [...sbvIds].filter((id) => !scanIds.has(id));
 
 			console.log(
 				`${TAG}(g) SWEEP: scanCount=${scanRecs.length} sbvCount=${sbv.length} ` +
-				`onlyInScan=${onlyInScan.length} onlyInSbv=${onlyInSbv.length} ` +
-				`${onlyInScan.length === 0 && onlyInSbv.length === 0 ? 'CONSISTENT' : '>>> GHOST INDEX ROWS <<<'}`
+					`onlyInScan=${onlyInScan.length} onlyInSbv=${onlyInSbv.length} ` +
+					`${onlyInScan.length === 0 && onlyInSbv.length === 0 ? 'CONSISTENT' : '>>> GHOST INDEX ROWS <<<'}`
 			);
 
-			if (onlyInScan.length > 0)
-				console.log(`${TAG}(g) in scan but not sbv: ${onlyInScan.join(', ')}`);
-			if (onlyInSbv.length > 0)
-				console.log(`${TAG}(g) in sbv but not scan: ${onlyInSbv.join(', ')}`);
+			if (onlyInScan.length > 0) console.log(`${TAG}(g) in scan but not sbv: ${onlyInScan.join(', ')}`);
+			if (onlyInSbv.length > 0) console.log(`${TAG}(g) in sbv but not scan: ${onlyInSbv.join(', ')}`);
 
 			strictEqual(onlyInScan.length, 0, `${TAG}(g) ${onlyInScan.length} rows in scan but not search_by_value`);
-			strictEqual(onlyInSbv.length,  0, `${TAG}(g) ${onlyInSbv.length} rows in search_by_value but not scan`);
+			strictEqual(onlyInSbv.length, 0, `${TAG}(g) ${onlyInSbv.length} rows in search_by_value but not scan`);
 		});
 	}
 );

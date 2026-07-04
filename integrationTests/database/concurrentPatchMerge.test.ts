@@ -25,7 +25,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
+import { ok } from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -89,7 +89,7 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 	async function putDoc(id: string, doc: Record<string, unknown>): Promise<Response> {
 		return fetch(`${httpURL}/CollabDoc/${encodeURIComponent(id)}`, {
 			method: 'PUT',
-			headers: { 'Content-Type': 'application/json', Authorization: auth },
+			headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 			body: JSON.stringify(doc),
 			signal: AbortSignal.timeout(10_000),
 		});
@@ -98,7 +98,7 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 	async function patchDoc(id: string, partial: Record<string, unknown>): Promise<Response> {
 		return fetch(`${httpURL}/CollabDoc/${encodeURIComponent(id)}`, {
 			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json', Authorization: auth },
+			headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 			body: JSON.stringify(partial),
 			signal: AbortSignal.timeout(10_000),
 		});
@@ -134,14 +134,14 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		log(`[c] after PATCH: title=${afterPatch?.title} body=${afterPatch?.body} status=${afterPatch?.status}`);
 
 		const patchMerges =
-			afterPatch?.title === 'patched-title' &&
-			afterPatch?.body === 'original-body' &&
-			afterPatch?.status === 'draft';
+			afterPatch?.title === 'patched-title' && afterPatch?.body === 'original-body' && afterPatch?.status === 'draft';
 
 		if (patchMerges) {
 			log(`[c] PATCH MERGES correctly: patched field updated, untouched fields preserved`);
 		} else {
-			log(`[c] >>> PATCH does NOT merge: body=${afterPatch?.body} status=${afterPatch?.status} (expected preserved) <<<`);
+			log(
+				`[c] >>> PATCH does NOT merge: body=${afterPatch?.body} status=${afterPatch?.status} (expected preserved) <<<`
+			);
 		}
 
 		// PUT only title — body and status should be DROPPED
@@ -174,9 +174,10 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 
 			// Unique sentinel value per field so we can distinguish field-specific writes
 			const patches = DISJOINT_FIELDS.map((field) => {
-				const value = field === 'viewCount' || field === 'priority'
-					? run * 100 + DISJOINT_FIELDS.indexOf(field) + 1
-					: `${field}-value-run${run}`;
+				const value =
+					field === 'viewCount' || field === 'priority'
+						? run * 100 + DISJOINT_FIELDS.indexOf(field) + 1
+						: `${field}-value-run${run}`;
 				return patchDoc(runId, { [field]: value });
 			});
 
@@ -195,9 +196,7 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 
 			for (let i = 0; i < DISJOINT_FIELDS.length; i++) {
 				const field = DISJOINT_FIELDS[i];
-				const expected = field === 'viewCount' || field === 'priority'
-					? run * 100 + i + 1
-					: `${field}-value-run${run}`;
+				const expected = field === 'viewCount' || field === 'priority' ? run * 100 + i + 1 : `${field}-value-run${run}`;
 				const actual = doc?.[field];
 
 				if (actual === expected || (typeof expected === 'number' && Number(actual) === expected)) {
@@ -219,7 +218,9 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		if (allSurvived) {
 			log(`[a] ALL DISJOINT-FIELD PATCHes SURVIVED in all ${RUNS} runs on ${ENGINE}. Merge is CORRECT.`);
 		} else {
-			log(`[a] >>> LOST UPDATES DETECTED [${ENGINE}]: minSurvived=${minSurvived}/${N_DISJOINT} across ${RUNS} runs; totalLost=${totalLost} <<<`);
+			log(
+				`[a] >>> LOST UPDATES DETECTED [${ENGINE}]: minSurvived=${minSurvived}/${N_DISJOINT} across ${RUNS} runs; totalLost=${totalLost} <<<`
+			);
 			for (let i = 0; i < runResults.length; i++) {
 				if (runResults[i].lost.length > 0) {
 					log(`[a] run${i} lost: ${runResults[i].lost.join(' | ')}`);
@@ -247,9 +248,7 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 			await putDoc(runId, { id: runId });
 
 			const patches = DISJOINT_FIELDS.map((field, i) => {
-				const value = field === 'viewCount' || field === 'priority'
-					? round * 1000 + i + 1
-					: `${field}-burst${round}`;
+				const value = field === 'viewCount' || field === 'priority' ? round * 1000 + i + 1 : `${field}-burst${round}`;
 				return patchDoc(runId, { [field]: value });
 			});
 
@@ -260,9 +259,8 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 			const lost: string[] = [];
 			for (let i = 0; i < DISJOINT_FIELDS.length; i++) {
 				const field = DISJOINT_FIELDS[i];
-				const expected = field === 'viewCount' || field === 'priority'
-					? round * 1000 + i + 1
-					: `${field}-burst${round}`;
+				const expected =
+					field === 'viewCount' || field === 'priority' ? round * 1000 + i + 1 : `${field}-burst${round}`;
 				const actual = doc?.[field];
 				const matches = actual === expected || (typeof expected === 'number' && Number(actual) === expected);
 				if (!matches) lost.push(field);
@@ -275,12 +273,16 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 			}
 		}
 
-		log(`[a2] burst summary [${ENGINE}]: ${lostRuns}/${totalRuns} rounds had lost fields; totalLostFields=${totalLostFields}`);
+		log(
+			`[a2] burst summary [${ENGINE}]: ${lostRuns}/${totalRuns} rounds had lost fields; totalLostFields=${totalLostFields}`
+		);
 
 		if (lostRuns === 0) {
 			log(`[a2] ALL ${BURST_ROUNDS} burst rounds: disjoint-field PATCH merge CORRECT on ${ENGINE}`);
 		} else {
-			log(`[a2] >>> LOST UPDATES: ${lostRuns}/${BURST_ROUNDS} rounds, ${totalLostFields} total field losses [${ENGINE}] <<<`);
+			log(
+				`[a2] >>> LOST UPDATES: ${lostRuns}/${BURST_ROUNDS} rounds, ${totalLostFields} total field losses [${ENGINE}] <<<`
+			);
 		}
 
 		ok(
@@ -357,7 +359,9 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 
 			const bodyPresent = doc?.body != null && (doc?.body as string).length > 0;
 
-			log(`[c2:r${round}] PUT.status=${putRes.status} PATCH.status=${patchRes.status} title="${doc?.title}" body="${doc?.body}"`);
+			log(
+				`[c2:r${round}] PUT.status=${putRes.status} PATCH.status=${patchRes.status} title="${doc?.title}" body="${doc?.body}"`
+			);
 			results.push({ round, bodyPreserved: bodyPresent, titleFinal: (doc?.title as string) ?? null });
 		}
 
@@ -389,22 +393,28 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		}
 
 		// Try PATCH with correct version (should succeed)
-		const patchGood = await fetch(`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(version)}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json', Authorization: auth },
-			body: JSON.stringify({ title: 'conditional-update' }),
-			signal: AbortSignal.timeout(10_000),
-		});
+		const patchGood = await fetch(
+			`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(version)}`,
+			{
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+				body: JSON.stringify({ title: 'conditional-update' }),
+				signal: AbortSignal.timeout(10_000),
+			}
+		);
 		log(`[e] PATCH with correct ifVersion: status=${patchGood.status}`);
 
 		// Try PATCH with stale version (should fail with 409/412)
 		const staleVersion = '1'; // guaranteed stale
-		const patchStale = await fetch(`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(staleVersion)}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json', Authorization: auth },
-			body: JSON.stringify({ title: 'stale-update-should-reject' }),
-			signal: AbortSignal.timeout(10_000),
-		});
+		const patchStale = await fetch(
+			`${httpURL}/CollabDoc/${encodeURIComponent(id)}?ifVersion=${encodeURIComponent(staleVersion)}`,
+			{
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+				body: JSON.stringify({ title: 'stale-update-should-reject' }),
+				signal: AbortSignal.timeout(10_000),
+			}
+		);
 		log(`[e] PATCH with stale ifVersion="${staleVersion}": status=${patchStale.status}`);
 
 		const doc = await getDoc(id);
@@ -435,18 +445,14 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 
 			// Double-burst to maximize overlap
 			const wave1 = DISJOINT_FIELDS.map((field, i) => {
-				const v = field === 'viewCount' || field === 'priority'
-					? round * 10000 + i + 1
-					: `${field}-stress-${round}`;
+				const v = field === 'viewCount' || field === 'priority' ? round * 10000 + i + 1 : `${field}-stress-${round}`;
 				return patchDoc(runId, { [field]: v });
 			});
 			await Promise.all(wave1);
 
 			// Immediate second wave with same values (idempotent — tests re-application)
 			const wave2 = DISJOINT_FIELDS.map((field, i) => {
-				const v = field === 'viewCount' || field === 'priority'
-					? round * 10000 + i + 1
-					: `${field}-stress-${round}`;
+				const v = field === 'viewCount' || field === 'priority' ? round * 10000 + i + 1 : `${field}-stress-${round}`;
 				return patchDoc(runId, { [field]: v });
 			});
 			await Promise.all(wave2);
@@ -457,9 +463,8 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 			const lost: string[] = [];
 			for (let i = 0; i < DISJOINT_FIELDS.length; i++) {
 				const field = DISJOINT_FIELDS[i];
-				const expected = field === 'viewCount' || field === 'priority'
-					? round * 10000 + i + 1
-					: `${field}-stress-${round}`;
+				const expected =
+					field === 'viewCount' || field === 'priority' ? round * 10000 + i + 1 : `${field}-stress-${round}`;
 				const actual = doc?.[field];
 				const ok_ = actual === expected || (typeof expected === 'number' && Number(actual) === expected);
 				if (!ok_) lost.push(`${field}(exp=${expected},got=${actual})`);
