@@ -127,14 +127,18 @@ export type OperationDefinition = {
  */
 server.registerOperation = (operationDefinition: OperationDefinition) => {
 	const { name, execute, requiresSuperUser } = operationDefinition;
+	let handler = execute;
 	if (requiresSuperUser !== undefined) {
-		// verifyPerms keys requiredPermissions by the handler's function `.name`. Registered ops are
-		// typically anonymous arrows (all named "execute"), which collide and can't be keyed — so pin
-		// the handler's name to the snake_case operation name, matching the registered permission key.
-		Object.defineProperty(execute, 'name', { value: name, configurable: true });
+		// verifyPerms keys requiredPermissions by the handler's function `.name`, but registered ops
+		// are typically anonymous arrows (all named "execute") which collide and can't be keyed. Wrap
+		// in a FRESH function named after the op so the lookup resolves the right entry. Wrap rather
+		// than rename `execute` in place: renaming would mutate a handler shared across two op names,
+		// causing the first op to be checked against the second op's permission entry.
+		handler = (operation: any) => execute(operation);
+		Object.defineProperty(handler, 'name', { value: name, configurable: true });
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
 	}
-	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(execute));
+	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
 };
 
 export function chooseOperation(json: OperationRequestBody) {

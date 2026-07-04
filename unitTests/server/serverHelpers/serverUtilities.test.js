@@ -461,6 +461,7 @@ describe('Test serverUtilities.js module ', () => {
 	describe('registerOperation permission seam', function () {
 		const { server } = require('#src/server/Server');
 		const op_auth = require('#src/utility/operation_authorization');
+		const { validateOperations } = require('#src/utility/operationPermissions');
 		const SU_OP = 'test_registered_su_op';
 		const OPEN_OP = 'test_registered_open_op';
 
@@ -482,10 +483,40 @@ describe('Test serverUtilities.js module ', () => {
 			server.registerOperation({ name: SU_OP, execute: async () => ({ ok: true }), requiresSuperUser: true });
 		});
 
-		it('pins the anonymous handler name to the operation name so verifyPerms can key it', function () {
-			const def = { name: 'test_name_pinning_op', execute: async () => ({}), requiresSuperUser: true };
+		after(function () {
+			// Keep the global op map clean — these test-only ops shouldn't leak into other suites.
+			for (const op of [SU_OP, OPEN_OP, 'test_name_pinning_op', 'shared_op_a', 'shared_op_b', 'dyn_grantable_op']) {
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+			}
+		});
+
+		it('registers the handler under the op name for verifyPerms, without mutating the caller function', function () {
+			const original = async () => ({});
+			const def = { name: 'test_name_pinning_op', execute: original, requiresSuperUser: true };
 			server.registerOperation(def);
-			assert.equal(def.execute.name, 'test_name_pinning_op');
+			// The stored handler is a fresh wrapper named after the op (the key verifyPerms looks up)...
+			assert.equal(
+				serverUtilities.OPERATION_FUNCTION_MAP.get('test_name_pinning_op').operation_function.name,
+				'test_name_pinning_op'
+			);
+			// ...and the caller's own function object is left untouched.
+			assert.equal(def.execute, original);
+			assert.notEqual(original.name, 'test_name_pinning_op');
+		});
+
+		it('does not corrupt authz when one handler function is shared across two op names', function () {
+			const shared = async () => ({});
+			server.registerOperation({ name: 'shared_op_a', execute: shared, requiresSuperUser: true });
+			server.registerOperation({ name: 'shared_op_b', execute: shared, requiresSuperUser: true });
+			// Each registration gets its own named wrapper — the second registration does not rename the first.
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_a').operation_function.name, 'shared_op_a');
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_b').operation_function.name, 'shared_op_b');
+		});
+
+		it('makes a declared op grantable in a role operations allowlist, even a non-enum name', function () {
+			assert.notEqual(validateOperations(['dyn_grantable_op']), null); // unknown name before registration
+			server.registerOperation({ name: 'dyn_grantable_op', execute: async () => ({}), requiresSuperUser: true });
+			assert.equal(validateOperations(['dyn_grantable_op']), null); // grantable after registration
 		});
 
 		it('does not touch handler name or register perms when requiresSuperUser is omitted (opt-in)', function () {

@@ -93,6 +93,19 @@ export const OPERATION_PERMISSION_GROUPS = {
 
 const validOps: Set<string> = new Set(Object.values(OPERATIONS_ENUM));
 const validGroups: Set<string> = new Set(Object.keys(OPERATION_PERMISSION_GROUPS));
+// Operations registered dynamically at runtime (server.registerOperation with a declared
+// permission) whose names may fall outside OPERATIONS_ENUM. Tracked so they're grantable in a
+// role's `operations` allowlist (add_role/alter_role/impersonation validate against this set too).
+const dynamicallyRegisteredOps: Set<string> = new Set();
+
+/**
+ * Mark a dynamically-registered operation name as a valid target for role `operations` grants.
+ * Called by registerOperationPermission so a component op declaring a permission can actually be
+ * granted (not just enforced). Enum-backed op names are already valid; this covers custom names.
+ */
+export function registerGrantableOperation(name: string): void {
+	dynamicallyRegisteredOps.add(name);
+}
 
 /**
  * Validates that every entry in an operations array is a known operation name or group name.
@@ -100,7 +113,7 @@ const validGroups: Set<string> = new Set(Object.keys(OPERATION_PERMISSION_GROUPS
  */
 export function validateOperations(operations: readonly unknown[]): string | null {
 	for (const op of operations) {
-		if (typeof op !== 'string' || (!validOps.has(op) && !validGroups.has(op))) {
+		if (typeof op !== 'string' || (!validOps.has(op) && !validGroups.has(op) && !dynamicallyRegisteredOps.has(op))) {
 			return String(op);
 		}
 	}

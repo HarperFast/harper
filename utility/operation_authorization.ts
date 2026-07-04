@@ -25,7 +25,7 @@ import readLog from '../utility/logging/readLog.ts';
 import * as commonUtils from './common_utils.ts';
 import * as restart from '../bin/restart.ts';
 import * as terms from './hdbTerms.ts';
-import { expandOperationsPerms } from './operationPermissions.ts';
+import { expandOperationsPerms, registerGrantableOperation } from './operationPermissions.ts';
 import * as permsTranslator from '../security/permissionsTranslator.js';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
@@ -120,6 +120,9 @@ export function registerOperationPermission(
 	{ requiresSu = false, perms = [] }: { requiresSu?: boolean; perms?: string[] } = {}
 ) {
 	requiredPermissions.set(apiName, new (permission as any)(requiresSu, perms, apiName));
+	// Also make the op grantable in a role's `operations` allowlist (validateOperations), so a
+	// declared permission can be both enforced AND granted — not just enforced.
+	registerGrantableOperation(apiName);
 }
 
 requiredPermissions.set(write.insert.name, new (permission as any)(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
