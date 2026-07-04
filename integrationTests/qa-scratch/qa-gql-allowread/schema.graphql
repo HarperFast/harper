@@ -1,0 +1,18 @@
+# QA-F078 — GraphQL allowRead enforcement: per-row filtering for collection + relationship expansion.
+#
+# Secret rows are owner-scoped. The allowRead override (resources.js) denies cross-owner reads.
+# Attachment rows are unprotected (default allowRead) but are linked via secretId.
+# This lets us test whether relationship expansion of Attachment rows from a denied Secret leaks.
+
+type Secret @table @export {
+  id: ID @primaryKey
+  owner: String
+  payload: String
+  attachments: [Attachment] @relationship(from: id, to: secretId)
+}
+
+type Attachment @table @export {
+  id: ID @primaryKey
+  secretId: ID @indexed
+  data: String
+}

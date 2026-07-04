@@ -1,0 +1,7 @@
+# QA-F078 — GraphQL allowRead enforcement probe: REST + GraphQL enabled, auth enforced.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
+graphql: true
