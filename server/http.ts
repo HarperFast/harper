@@ -51,7 +51,7 @@ let httpOptions: HttpOptions = {};
 export const universalHeaders: [string, string][] = [];
 // Bun-specific: stores fetch handler configs per port, used by threadServer.js to call Bun.serve()
 export const bunServeConfigs: Record<string | number, any> = {};
-// uWS spike (#914): stores { socketPath, secure, handler } configs keyed by UDS path. When
+// uWS backend (#914): stores { socketPath, secure, handler } configs keyed by UDS path. When
 // HARPER_UWS_UDS is set, the per-worker UDS mirror is served by uWebSockets.js instead of a Node
 // http server; threadServer.js consumes these and calls createUwsServer(). Symphony must forward
 // client identity via X-Forwarded-For (not the PROXY protocol) on these sockets, as the Bun path does.
@@ -335,8 +335,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		const serverPrefix = isOperationsServer ? 'operationsApi_network' : (usageType ?? 'http');
 		// uWS plaintext-HTTP path (#914, HARPER_UWS_HTTP): back a non-secure TCP HTTP port with
 		// uWebSockets.js directly instead of a Node http server. This is the flag used to run the
-		// integration suite through uWS (no symphony/UDS needed). WebSocket upgrades are not yet
-		// wired on this path, so it's opt-in and separate from HARPER_UWS_UDS.
+		// integration suite through uWS (no symphony/UDS needed). WebSocket upgrades are wired on this
+		// path via onWebSocket's uWS branch; it's opt-in and separate from HARPER_UWS_UDS.
 		const lastColon = String(port).lastIndexOf(':');
 		const uwsPort = lastColon > 0 ? +String(port).slice(lastColon + 1) : +port;
 		if (
@@ -613,7 +613,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
 			if (process.env.HARPER_UWS_UDS) {
-				// uWS spike (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
+				// uWS backend (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
 				// server. threadServer.js consumes uwsServeConfigs and calls createUwsServer(). uWS does
 				// not parse the PROXY protocol, so symphony must use sourceAddressHeader: 'xForwardedFor'
 				// for this socket (the same mode it uses for the Bun path).
@@ -658,7 +658,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 }
 
 /**
- * uWS spike (#914): builds the per-request handler for a uWS UDS server. Mirrors the Bun
+ * uWS backend (#914): builds the per-request handler for a uWS UDS server. Mirrors the Bun
  * fetchHandler's post-processing (httpChain, unhandled, universalHeaders, Server-Timing,
  * analytics, logging) but returns a plain Harper response descriptor for createUwsServer to
  * serialize onto the uWS HttpResponse. When the chain doesn't handle the request (status === -1)
@@ -689,7 +689,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 					method: request.method,
 					url: request.url,
 					headers: request.headers.asObject,
-					body: request.rawBody,
+					body: request.body, // stream; inject() consumes it as the payload
 					user: request.user,
 				});
 				const respHeaders = new Headers();
@@ -700,7 +700,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
 					else respHeaders.set(k, String(v));
 				}
-				logBunRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
+				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
 				const responseStream = injectResult.stream();
 				// Event-stream (SSE) responses must reach the client incrementally — stream the body and,
 				// on client disconnect, destroy the inject response so the Fastify reply's teardown runs
@@ -720,7 +720,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 					body: chunks.length > 0 ? Buffer.concat(chunks) : null,
 				};
 			}
-			logBunRequest(request, 404, requestId, performance.now() - startTime);
+			logHttpRequest(request, 404, requestId, performance.now() - startTime);
 			return { status: 404, headers: new Headers({ 'content-type': 'text/plain' }), body: 'Not found\n' };
 		}
 		const status = response.status || 200;
@@ -739,7 +739,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 		);
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
-		logBunRequest(request, status, requestId, executionTime);
+		logHttpRequest(request, status, requestId, executionTime);
 		// Static handlers (the only handlesHeaders producers) return a `send` SendStream that writes
 		// its own headers/body to a Node ServerResponse via .pipe(). uWS has no such object, and a
 		// SendStream doesn't start until piped, so streaming it directly hangs (headers never flush).
@@ -897,7 +897,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 						// on the fallback server, then capture the response.
 						return await bunDelegateToNodeServer(fallbackServer, webRequest, request);
 					}
-					logBunRequest(request, 404, requestId, performance.now() - startTime);
+					logHttpRequest(request, 404, requestId, performance.now() - startTime);
 					return new Response('Not found\n', { status: 404 });
 				}
 				const status = response.status || 200;
@@ -951,7 +951,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
-				logBunRequest(request, status, requestId, executionTime);
+				logHttpRequest(request, status, requestId, executionTime);
 				// Convert body to something Bun's Response can accept
 				if (body instanceof ReadableStream) {
 					return new Response(body, { status, headers: responseHeaders });
@@ -1004,7 +1004,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				return new Response(body, { status, headers: responseHeaders });
 			} catch (error) {
 				const status = error.statusCode || 500;
-				logBunRequest(null, status, requestId, performance.now() - startTime);
+				logHttpRequest(null, status, requestId, performance.now() - startTime);
 				if (error.statusCode) {
 					if (error.statusCode === 500) harperLogger.warn(error);
 					else harperLogger.info(error);
@@ -1065,7 +1065,7 @@ const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
  */
 function injectToFastify(
 	fastify: any,
-	req: { method: string; url: string; headers: Record<string, any>; body?: Buffer; user?: any }
+	req: { method: string; url: string; headers: Record<string, any>; body?: Buffer | Readable; user?: any }
 ) {
 	const headers: Record<string, any> = {};
 	for (const key in req.headers) {
@@ -1416,7 +1416,7 @@ function defaultNotFound(request, response) {
 }
 let httpLogger: any;
 
-function logBunRequest(request: any, status: number, requestId: number, executionTime?: number) {
+function logHttpRequest(request: any, status: number, requestId: number, executionTime?: number) {
 	const logging = httpOptions.logging;
 	if (logging) {
 		if (!httpLogger) {

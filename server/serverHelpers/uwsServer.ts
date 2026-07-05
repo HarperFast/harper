@@ -1,5 +1,5 @@
 /**
- * uWebSockets.js HTTP server adapter (SPIKE — github.com/HarperFast/harper issue #914).
+ * uWebSockets.js HTTP server adapter (#914, github.com/HarperFast/harper, default-off backend).
  *
  * Creates a non-SSL uWS App — on a Unix domain socket (`socketPath`) or a TCP port (`port`) —
  * and bridges each request through Harper's existing pipeline: it builds a {@link UwsRequest}
@@ -17,8 +17,10 @@
  */
 import { STATUS_CODES } from 'node:http';
 import { EventEmitter } from 'node:events';
-import { UwsRequest } from './Request.ts';
+import { UwsRequest, UwsRequestBody } from './Request.ts';
 import { Headers } from './Headers.ts';
+import { when } from '../../utility/when.ts';
+import { ClientError } from '../../utility/errors/hdbError.ts';
 
 // uWS has no npm package; it's installed from a GitHub tag and is platform/ABI-specific.
 // Imported lazily so harper builds/loads on platforms without a uWS binary.
@@ -36,7 +38,11 @@ export interface UwsServerOptions {
 	secure?: boolean;
 	/** httpChain[port]-style handler: (request) => Harper response descriptor (or undefined). */
 	handler: (request: UwsRequest) => Promise<HarperResponse | undefined> | HarperResponse | undefined;
-	/** Max bytes to buffer for a request body before rejecting (default 100 MiB, matching ws maxPayload). */
+	/**
+	 * Coarse socket-level ceiling on request-body bytes (default 100 MiB, matching ws maxPayload). The
+	 * real per-request limit is enforced downstream by streamToBuffer (HTTP_MAXREQUESTBODYSIZE); this
+	 * only guards against an unconsumed body growing unbounded, since uWS gives no inbound backpressure.
+	 */
 	maxBodyBytes?: number;
 	/** Max WebSocket frame payload; falls back to maxBodyBytes when unset. */
 	wsMaxPayload?: number;
@@ -109,14 +115,16 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		const ac = new AbortController();
 		res.onAborted(() => ac.abort());
 
-		const dispatch = (bodyBuffer?: Buffer) => {
-			const request = new UwsRequest({ method, url, headers, secure, bodyBuffer, signal: ac.signal, ip });
-			Promise.resolve(handler(request))
-				.then((response) => {
+		const dispatch = (body?: UwsRequestBody) => {
+			const request = new UwsRequest({ method, url, headers, secure, body, signal: ac.signal, ip });
+			// when() keeps a synchronously-returning handler synchronous (no extra microtask/promise).
+			when(
+				handler(request),
+				(response) => {
 					if (ac.signal.aborted) return;
 					writeResponse(res, response, ac.signal, method);
-				})
-				.catch((error) => {
+				},
+				(error) => {
 					if (ac.signal.aborted) return;
 					const status = (error && error.statusCode) || 500;
 					res.cork(() => {
@@ -124,26 +132,45 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 						res.writeHeader('content-type', 'text/plain');
 						res.end(String((error && error.message) || error));
 					});
-				});
+				}
+			);
 		};
 
 		if (hasBody) {
-			let buf: Buffer | null = null;
+			// Stream the body: dispatch immediately with a push-based Readable and feed each chunk in as it
+			// arrives, so consumers (streamToBuffer, streaming deserializers) don't wait on — or hold — the
+			// whole body. streamToBuffer owns concatenation and the configurable per-request size limit;
+			// maxBodyBytes is only the coarse ceiling below, since uWS offers no way to pause the socket.
+			const body = new UwsRequestBody();
 			let total = 0;
+			let ended = false;
+			// Only surface a teardown as a stream 'error' when a consumer is listening; destroying with an
+			// error and no 'error' listener would throw. An unconsumed body just gets its chunks released.
+			const tearDown = (error?: Error) => {
+				if (ended || body.destroyed) return;
+				ended = true;
+				body.destroy(error && body.listenerCount('error') > 0 ? error : undefined);
+			};
+			ac.signal.addEventListener('abort', () => tearDown(new Error('request aborted')), { once: true });
 			res.onData((chunk: ArrayBuffer, isLast: boolean) => {
+				if (ended || body.destroyed) return;
 				total += chunk.byteLength;
 				if (total > maxBodyBytes) {
 					if (!ac.signal.aborted) res.cork(() => res.writeStatus('413 Payload Too Large').end());
+					tearDown(new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413));
 					ac.abort();
 					return;
 				}
 				// uWS neuters/reuses the ArrayBuffer once this callback returns, and the body is read
-				// asynchronously in the handler — so copy the bytes out now. `Buffer.from(arrayBuffer)`
+				// asynchronously by the consumer — so copy the bytes out now. `Buffer.from(arrayBuffer)`
 				// would alias uWS's memory; wrapping in a Uint8Array first forces an owned copy.
-				const part = Buffer.from(new Uint8Array(chunk));
-				buf = buf ? Buffer.concat([buf, part]) : part;
-				if (isLast) dispatch(buf ?? undefined);
+				body.push(Buffer.from(new Uint8Array(chunk)));
+				if (isLast) {
+					ended = true;
+					body.push(null);
+				}
 			});
+			dispatch(body);
 		} else {
 			dispatch(undefined);
 		}

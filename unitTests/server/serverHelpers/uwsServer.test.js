@@ -67,10 +67,16 @@ function readBody(request) {
 (uwsAvailable ? describe : describe.skip)('uWS UDS adapter (createUwsServer)', function () {
 	let server;
 	let socketPath;
+	let onDispatch; // set per-test to observe when the handler is dispatched
 
 	const handler = async (request) => {
 		switch (request.pathname) {
 			case '/echo':
+				return { status: 200, body: await readBody(request) };
+			case '/early':
+				// Signal dispatch synchronously (before draining the body) so a test can prove the handler
+				// runs while the request body is still arriving — i.e. the body streams, not fully buffered.
+				onDispatch?.();
 				return { status: 200, body: await readBody(request) };
 			case '/headers':
 				return {
@@ -159,6 +165,37 @@ function readBody(request) {
 		});
 		assert.strictEqual(res.status, 200);
 		assert.strictEqual(res.body.toString(), 'hello');
+	});
+
+	it('dispatches the handler before the request body ends (streamed, not fully buffered)', async function () {
+		let resolveDispatched;
+		const dispatched = new Promise((resolve) => (resolveDispatched = resolve));
+		onDispatch = resolveDispatched;
+		try {
+			// Chunked POST (no content-length): write a first chunk but do NOT end the request yet.
+			const req = http.request({ socketPath, method: 'POST', path: '/early' });
+			const responded = new Promise((resolve, reject) => {
+				req.on('response', (res) => {
+					res.resume();
+					res.on('end', () => resolve(res.statusCode));
+				});
+				req.on('error', reject);
+			});
+			req.flushHeaders(); // put the request on the wire now so uWS routes it without waiting for end()
+			req.write('first-chunk');
+			// If the body were fully buffered before dispatch, the handler could not run until we end the
+			// request — so this resolves only because the request streamed straight through.
+			await Promise.race([
+				dispatched,
+				new Promise((_, reject) =>
+					setTimeout(() => reject(new Error('handler was not dispatched before the body ended')), 2000)
+				),
+			]);
+			req.end('-last-chunk'); // now complete the upload so readBody() resolves and the response is sent
+			assert.strictEqual(await responded, 200);
+		} finally {
+			onDispatch = undefined;
+		}
 	});
 
 	it('rejects a body over maxBodyBytes with 413', async function () {

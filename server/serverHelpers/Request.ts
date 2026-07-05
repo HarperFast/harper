@@ -447,7 +447,6 @@ export class UwsRequest {
 	#body: UwsRequestBody | undefined;
 	#isSecure: boolean;
 	#ip: string | undefined;
-	#bodyBuffer: Buffer | undefined;
 	#signal: AbortSignal | undefined;
 	public _nodeRequest: any = null;
 	public _nodeResponse: any = null;
@@ -468,7 +467,7 @@ export class UwsRequest {
 		headers: Record<string, string | string[]>;
 		ip?: string;
 		secure?: boolean;
-		bodyBuffer?: Buffer;
+		body?: UwsRequestBody;
 		signal?: AbortSignal;
 	}) {
 		this.method = source.method;
@@ -476,7 +475,7 @@ export class UwsRequest {
 		this.headers = new RequestHeaders(source.headers);
 		this.#isSecure = !!source.secure;
 		this.#ip = source.ip;
-		this.#bodyBuffer = source.bodyBuffer;
+		this.#body = source.body;
 		this.#signal = source.signal;
 		this.__harperRequestUpgraded = false;
 	}
@@ -521,12 +520,12 @@ export class UwsRequest {
 		return undefined;
 	}
 	get body() {
-		return this.#body || (this.#body = new UwsRequestBody(this.#bodyBuffer));
-	}
-	/** Raw request body buffer (undefined for bodyless requests), used as the inject() payload when
-	 * delegating to a Fastify fallback. */
-	get rawBody(): Buffer | undefined {
-		return this.#bodyBuffer;
+		// Bodyless requests get an already-ended empty stream so consumers can still read it uniformly.
+		if (!this.#body) {
+			this.#body = new UwsRequestBody();
+			this.#body.push(null);
+		}
+		return this.#body;
 	}
 	get host() {
 		return this.headers.get('host') as string;
@@ -554,19 +553,14 @@ export class UwsRequest {
 	}
 }
 
-// Extends Readable so the uWS body matches the RequestBody/BunRequestBody contract: on/pipe plus
-// `for await` async iteration and destroy() (used by abort handling), not just a duck-typed subset.
-class UwsRequestBody extends Readable {
-	#buffer: Buffer | undefined;
-	constructor(buffer?: Buffer) {
-		super();
-		this.#buffer = buffer;
-	}
-	_read() {
-		if (this.#buffer && this.#buffer.length) this.push(this.#buffer);
-		this.#buffer = undefined;
-		this.push(null);
-	}
+// A push-based Readable: the uWS server pushes each request-body chunk (and the terminating null) in
+// as it arrives off the socket, so consumers (streamToBuffer, future streaming deserializers) see a
+// real stream instead of a pre-buffered blob. Extends Readable so it matches the RequestBody/
+// BunRequestBody contract — on/pipe, `for await` async iteration, destroy() for abort handling.
+// _read() is a no-op because flow is driven by push() from the uWS onData callback; uWS has no inbound
+// backpressure, so pushed-but-unread chunks queue here (bounded by the server's maxBodyBytes ceiling).
+export class UwsRequestBody extends Readable {
+	_read() {}
 }
 
 class RequestBody {
