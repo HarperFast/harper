@@ -183,11 +183,20 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 // Write every response header except Content-Length (uWS derives that from end(body); for streaming
 // there is no fixed length and it must be omitted so uWS uses chunked transfer encoding).
 function writeHeaders(res: UwsResponse, headers: Headers): void {
+	// WHATWG Headers comma-join Set-Cookie on iteration, which merges multiple cookies into one and
+	// corrupts values containing commas (e.g. `expires=` dates). Emit them individually via
+	// getSetCookie() and skip the joined entry from the main loop. A Harper Headers has no
+	// getSetCookie(); it stores multiple cookies as an array, handled by the Array.isArray branch.
+	const setCookies =
+		typeof (headers as any).getSetCookie === 'function' ? ((headers as any).getSetCookie() as string[]) : null;
 	for (const [name, value] of headers) {
-		if ((name as string).toLowerCase() === 'content-length') continue;
+		const lower = (name as string).toLowerCase();
+		if (lower === 'content-length') continue;
+		if (setCookies && lower === 'set-cookie') continue;
 		if (Array.isArray(value)) for (const v of value) res.writeHeader(name, String(v));
 		else if (value != null) res.writeHeader(name, String(value));
 	}
+	if (setCookies) for (const cookie of setCookies) res.writeHeader('set-cookie', cookie);
 }
 
 function writeResponse(
@@ -206,8 +215,15 @@ function writeResponse(
 	const isHead = method === 'HEAD';
 	const body = isHead ? null : response.body;
 
-	// Normalize headers to a Harper Headers instance so we can iterate uniformly.
-	const headers = response.headers instanceof Headers ? response.headers : new Headers(response.headers as any);
+	// Normalize headers to something iterable with .get. Keep an existing Headers-like object
+	// (Harper or WHATWG) as-is — converting a WHATWG Headers via `new Headers()` would comma-join
+	// Set-Cookie on iteration before writeHeaders can split it back out via getSetCookie(). Only
+	// plain objects get wrapped.
+	const rawHeaders = response.headers as any;
+	const headers =
+		rawHeaders && typeof rawHeaders.get === 'function' && rawHeaders[Symbol.iterator]
+			? (rawHeaders as Headers)
+			: new Headers(rawHeaders);
 
 	// Streaming body (Node stream / normalized async-iterable): write incrementally with backpressure.
 	if (body != null && typeof (body as any).pipe === 'function') {

@@ -694,7 +694,11 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 				});
 				const respHeaders = new Headers();
 				for (const [k, v] of Object.entries(injectResult.headers)) {
-					if (v != null) respHeaders.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+					if (v == null) continue;
+					// Keep Set-Cookie multi-valued (Harper Headers + writeHeaders emit each separately);
+					// only comma-join other repeated headers.
+					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
+					else respHeaders.set(k, String(v));
 				}
 				logBunRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
 				const responseStream = injectResult.stream();
