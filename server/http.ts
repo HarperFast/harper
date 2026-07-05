@@ -736,12 +736,16 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
 		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
 		logBunRequest(request, status, requestId, executionTime);
-		return {
-			status,
-			headers,
-			handlesHeaders: response.handlesHeaders,
-			body: await normalizeUwsBody(response.body, request.signal),
-		};
+		// Static handlers (the only handlesHeaders producers) return a `send` SendStream that writes
+		// its own headers/body to a Node ServerResponse via .pipe(). uWS has no such object, and a
+		// SendStream doesn't start until piped, so streaming it directly hangs (headers never flush).
+		// Pipe it into a Writable shim that captures the headers and buffers the file, mirroring the
+		// Bun path. Non-handlesHeaders bodies keep streaming through normalizeUwsBody.
+		const body =
+			response.handlesHeaders && response.body && typeof response.body.pipe === 'function'
+				? await bufferSendStream(response.body, headers, request.signal)
+				: await normalizeUwsBody(response.body, request.signal);
+		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
 	// Shed data-modifying requests when the event queue is backed up (503), mirroring the Node UDS
 	// path — GET/OPTIONS/HEAD are cheap and always run, everything else goes through the throttle.
@@ -770,6 +774,52 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
  * stream it incrementally (buffering an SSE/event-stream body here would never return). `signal`
  * aborts the collapse of a sync iterable if the client disconnects mid-response.
  */
+/**
+ * Drive a `send` SendStream to completion against a Writable shim, capturing the headers it writes
+ * (setHeader/writeHead) onto `headers` and buffering the file body. `send` targets an
+ * http.ServerResponse (setHeader/writeHead/finished); uWS has none, so we adapt — mirrors the Bun
+ * fetchHandler's SendStream path. Buffering is fine for static assets and keeps Content-Length set.
+ */
+function bufferSendStream(body: any, headers: Headers, signal?: AbortSignal): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		const dest = new Writable({
+			write(chunk, _encoding, callback) {
+				chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				callback();
+			},
+			final(callback) {
+				callback();
+				resolve(Buffer.concat(chunks));
+			},
+		});
+		Object.assign(dest, {
+			setHeader: (n: string, v: any) => headers.set(n, v),
+			getHeader: (n: string) => headers.get(n),
+			removeHeader: (n: string) => (headers as any).delete(n.toLowerCase()),
+			writeHead: (_s: number, hdrs?: any) => {
+				if (hdrs) for (const k in hdrs) headers.set(k, hdrs[k]);
+			},
+			headersSent: false,
+			// 'on-finished' (used by 'send') treats a non-false `finished` as already-done and destroys
+			// the read stream before data flows; keep it false so it waits for the 'finish' event.
+			finished: false,
+		});
+		const onAbort = () => {
+			body.destroy?.();
+			dest.destroy?.();
+			reject(new Error('client aborted'));
+		};
+		if (signal) {
+			if (signal.aborted) return onAbort();
+			signal.addEventListener('abort', onAbort, { once: true });
+		}
+		body.on('error', reject);
+		dest.on('error', reject);
+		body.pipe(dest);
+	});
+}
+
 async function normalizeUwsBody(
 	body: any,
 	signal?: AbortSignal
