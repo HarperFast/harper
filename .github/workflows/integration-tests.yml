@@ -253,12 +253,6 @@ jobs:
     name: Integration Tests ${{matrix.shard}}/6 (uWS HTTP)
     runs-on: ubuntu-latest
     needs: [build]
-    # Informational for now: HARPER_UWS_HTTP is an opt-in spike backend (#914) with known
-    # unfinished paths — static-file serving via `send` (headers never flush on the uWS response)
-    # and multiple Set-Cookie headers (the WHATWG Headers comma-join limitation Harper-on-Bun also
-    # skips). This job surfaces the per-shard uWS signal without gating merges; drop
-    # continue-on-error once those gaps are closed.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
