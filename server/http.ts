@@ -313,9 +313,9 @@ export function httpServer(listener, options) {
 			// http server, so a raw non-function listener (e.g. Fastify's http.Server via
 			// server.http(fastify.server)) must NOT go through registerServer() — that would put it in
 			// SERVERS and threadServer would bind a Node http server competing with uWS on the same TCP
-			// port. Divert it to the fallback map like the Bun path. Request-time delegation to this
-			// fallback is not yet wired on the uWS handler (see makeUwsHandler), so raw-Fastify routes
-			// are unreachable under this flag — an accepted limitation of the bench/test vehicle.
+			// port. Divert it to the fallback map like the Bun path; makeUwsHandler delegates unhandled
+			// requests to it via inject(). The { uws: true } marker is guaranteed present here: the
+			// getServer(port) call above (same loop iteration) sets it before this branch runs.
 			fallbackServers[port] = listener;
 		} else {
 			listener.isSecure = secure;
@@ -713,7 +713,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 					return { status: injectResult.statusCode, headers: respHeaders, body: responseStream };
 				}
 				const chunks: Buffer[] = [];
-				for await (const chunk of responseStream) chunks.push(Buffer.from(chunk));
+				for await (const chunk of responseStream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 				return {
 					status: injectResult.statusCode,
 					headers: respHeaders,
@@ -745,10 +745,12 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 		// SendStream doesn't start until piped, so streaming it directly hangs (headers never flush).
 		// Pipe it into a Writable shim that captures the headers and buffers the file, mirroring the
 		// Bun path. Non-handlesHeaders bodies keep streaming through normalizeUwsBody.
-		const body =
-			response.handlesHeaders && response.body && typeof response.body.pipe === 'function'
-				? await bufferSendStream(response.body, headers, request.signal)
-				: await normalizeUwsBody(response.body, request.signal);
+		if (response.handlesHeaders && response.body && typeof response.body.pipe === 'function') {
+			// send() may return 304 (conditional GET) or 206/416 (Range) — honor the status it set.
+			const sent = await bufferSendStream(response.body, headers, status, request.signal);
+			return { status: sent.status, headers, handlesHeaders: true, body: sent.body };
+		}
+		const body = await normalizeUwsBody(response.body, request.signal);
 		return { status, headers, handlesHeaders: response.handlesHeaders, body };
 	};
 	// Shed data-modifying requests when the event queue is backed up (503), mirroring the Node UDS
@@ -780,30 +782,41 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
  */
 /**
  * Drive a `send` SendStream to completion against a Writable shim, capturing the headers it writes
- * (setHeader/writeHead) onto `headers` and buffering the file body. `send` targets an
- * http.ServerResponse (setHeader/writeHead/finished); uWS has none, so we adapt — mirrors the Bun
- * fetchHandler's SendStream path. Buffering is fine for static assets and keeps Content-Length set.
+ * (setHeader/writeHead) onto `headers` and the status it sets (statusCode/writeHead) and buffering
+ * the file body. `send` targets an http.ServerResponse (setHeader/writeHead/statusCode/finished);
+ * uWS has none, so we adapt — mirrors the Bun fetchHandler's SendStream path. The captured status
+ * carries send's conditional-GET (304) and Range (206/416) results. Buffering is fine for static
+ * assets and keeps Content-Length set. `defaultStatus` is used when send sets none.
  */
-function bufferSendStream(body: any, headers: Headers, signal?: AbortSignal): Promise<Buffer> {
+function bufferSendStream(
+	body: any,
+	headers: Headers,
+	defaultStatus: number,
+	signal?: AbortSignal
+): Promise<{ body: Buffer; status: number }> {
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
-		const dest = new Writable({
+		const dest: any = new Writable({
 			write(chunk, _encoding, callback) {
 				chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 				callback();
 			},
 			final(callback) {
 				callback();
-				resolve(Buffer.concat(chunks));
+				resolve({ body: Buffer.concat(chunks), status: dest.statusCode || defaultStatus });
 			},
 		});
 		Object.assign(dest, {
 			setHeader: (n: string, v: any) => headers.set(n, v),
 			getHeader: (n: string) => headers.get(n),
 			removeHeader: (n: string) => (headers as any).delete(n.toLowerCase()),
-			writeHead: (_s: number, hdrs?: any) => {
+			// send conveys 304/206/416 via statusCode and/or writeHead's status arg — capture both so
+			// conditional-GET and Range responses aren't flattened to the default 200.
+			writeHead: (s: number, hdrs?: any) => {
+				if (s) dest.statusCode = s;
 				if (hdrs) for (const k in hdrs) headers.set(k, hdrs[k]);
 			},
+			statusCode: defaultStatus,
 			headersSent: false,
 			// 'on-finished' (used by 'send') treats a non-false `finished` as already-done and destroys
 			// the read stream before data flows; keep it false so it waits for the 'finish' event.
@@ -1058,6 +1071,10 @@ function injectToFastify(
 	for (const key in req.headers) {
 		if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = req.headers[key];
 	}
+	// Both callers pass already-lowercased header keys (uWS lowercases at the protocol level →
+	// RequestHeaders.asObject; Bun's webRequest.headers.forEach yields lowercase), so the literal
+	// 'authorization' lookup is reliable — the pre-auth user is only forwarded when the client sent
+	// no credentials of its own.
 	if (req.user && !headers['authorization']) {
 		headers[INTERNAL_USER_HEADER] = JSON.stringify(req.user);
 	}
