@@ -265,6 +265,8 @@ describe('Test configValidator module', () => {
 			},
 		};
 		const helpers = { state: { path: ['customFunctions', 'processes'] } };
+		const original_platform = process.platform;
+		const set_platform = (value) => Object.defineProperty(process, 'platform', { value, configurable: true });
 		let os_cpus_stub;
 		let logger_info_stub;
 
@@ -276,14 +278,25 @@ describe('Test configValidator module', () => {
 		afterEach(() => {
 			os_cpus_stub.restore();
 			logger_info_stub.restore();
+			set_platform(original_platform);
 		});
 
 		it('Test happy path, correct info message is logged and correct number of processes returned', () => {
+			// CPU-based defaulting only applies where SO_REUSEPORT lets workers share the ports
+			set_platform('linux');
 			os_cpus_stub.returns([1, 2, 3, 4, 5, 6]);
 			const result = set_default_processes(parent, helpers);
 
 			expect(result).to.equal(5);
 			expect(logger_info_stub.firstCall.args[0]).to.include(`defaulting customFunctions.processes to ${result}`);
+		});
+
+		it('Defaults to a single worker on platforms without SO_REUSEPORT (macOS, Windows)', () => {
+			os_cpus_stub.returns([1, 2, 3, 4, 5, 6]);
+			for (const platform of ['darwin', 'win32']) {
+				set_platform(platform);
+				expect(set_default_processes(parent, helpers)).to.equal(1);
+			}
 		});
 	});
 

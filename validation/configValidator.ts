@@ -442,6 +442,16 @@ function validateRotationRetention(value, helpers) {
 
 function setDefaultThreads(parent, helpers) {
 	const configParam = helpers.state.path.join('.');
+	// Without SO_REUSEPORT (macOS is unreliable, Windows lacks it) worker threads cannot share the
+	// HTTP/socket ports — the main thread binds them all first and serves alone, so extra HTTP
+	// workers never receive direct TCP traffic. Default to a single worker there; an explicit
+	// threads.count still overrides.
+	if (process.platform === 'darwin' || process.platform === 'win32') {
+		hdbLogger.info(
+			`Defaulting ${configParam} to 1 on ${process.platform}: without SO_REUSEPORT, additional HTTP workers cannot share the server ports`
+		);
+		return 1;
+	}
 	let processors = os.cpus().length;
 
 	// default to one less than the number of logical CPU/processors so we can have good concurrency with the

@@ -441,10 +441,16 @@ async function restartWorkers(
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
 		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
-		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT)
-		// and Bun — the replacement can't bind until the old worker exits, so there we keep the original
-		// ordering: shut the old worker down first, then start the replacement (an unavoidable brief gap).
-		const canPreStartReplacement = process.platform !== 'win32' && !isBun;
+		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
+		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
+		// bind a port the old worker still holds: its EADDRINUSE would be swallowed and the port left
+		// unbound once the old worker exits (this silently killed worker-owned listeners like MQTT on
+		// macOS after every component-reload restart). So there we keep the original ordering: shut the
+		// old worker down first (server.close() releases its ports immediately), then start the
+		// replacement — an unavoidable brief gap, but only for worker-owned listeners, since the main
+		// thread keeps serving the HTTP ports throughout. This ordering is also what lets
+		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
+		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
