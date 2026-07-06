@@ -66,11 +66,15 @@ describe('scopedImport', () => {
 		const result = await scopedImport(join(__dirname, 'fixtures', 'uses-harperdb.cjs'), scope);
 		expect(result.Resource).to.be.a('function');
 		expect(result.tables).to.exist;
-		// #1325: the model-backend registration API must reach components through the
-		// `require('harperdb')` path (getHarperExports), the same way `models`/`tables` do.
+		// #1325/#1534: the model-backend registration API reaches components through
+		// `require('harperdb').models` (getHarperExports) — methods on the models
+		// singleton, NOT separate top-level exports (those generic globals were
+		// removed in #1534, the same way routing is `models.registerRouter`).
 		expect(result.models).to.exist;
-		expect(result.registerBackend).to.be.a('function');
-		expect(result.defineBackend).to.be.a('function');
+		expect(result.models.registerBackend).to.be.a('function');
+		expect(result.models.defineBackend).to.be.a('function');
+		expect(result.registerBackend).to.equal(undefined);
+		expect(result.defineBackend).to.equal(undefined);
 	});
 
 	it('should throw an error importing an ESM module with invalid dependency', async () => {

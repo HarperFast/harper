@@ -21,7 +21,7 @@ RUN <<-EOF
 EOF
 
 # Create entrypoint that selects runtime via HARPER_RUNTIME env var
-RUN <<-'EOF' > /usr/local/bin/docker-entrypoint.sh
+COPY <<'EOF' /usr/local/bin/docker-entrypoint.sh
 #!/bin/sh
 set -e
 if [ "$HARPER_RUNTIME" = "bun" ]; then

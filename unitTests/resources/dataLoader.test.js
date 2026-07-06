@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { mkdir, readFile, rm, stat, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
 const sinon = require('sinon');

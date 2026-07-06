@@ -34,6 +34,11 @@ export function setGenerative(logicalName: string, backend: ModelBackend): void 
 	generative.set(logicalName, backend);
 }
 
+/** Non-throwing lookup of the backend mapped to `logicalName` for `kind`, or `undefined`. Used by the router to assemble + filter candidate lists without exceptions. */
+export function getBackend(kind: ModelKind, logicalName: string): ModelBackend | undefined {
+	return (kind === 'embedding' ? embedding : generative).get(logicalName);
+}
+
 /**
  * Resolve the embedding backend mapped to `logicalName` (default: `'default'`).
  * Throws `ModelBackendNotFoundError` if no backend is mapped.

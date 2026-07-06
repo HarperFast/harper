@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 // Prime Harper's module graph in the same order the other models unit tests do
 // (see Models.test.js) so the transaction.ts ↔ blob require chain resolves.
 require('#src/resources/databases');
@@ -121,6 +121,16 @@ describe('registerBackend + defineBackend end-to-end through Models', () => {
 			defineBackend({ name: 'local:via-method', embed: embedFn })
 		);
 		const vectors = await models.embed('hi', { model: 'local:via-method' });
+		assert.ok(vectors[0] instanceof Float32Array);
+	});
+
+	it('models.defineBackend + models.registerBackend: the full flow via methods only (#1534)', async () => {
+		const models = new Models(makeMockWriter(), () => {});
+		// No free globals — both define and register go through the `models` singleton.
+		const backend = models.defineBackend({ name: 'local:methods-only', embed: embedFn });
+		assert.strictEqual(backend.name, 'local:methods-only');
+		models.registerBackend('embedding', 'local:methods-only', backend);
+		const vectors = await models.embed('hi', { model: 'local:methods-only' });
 		assert.ok(vectors[0] instanceof Float32Array);
 	});
 

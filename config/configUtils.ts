@@ -830,9 +830,33 @@ export function getConfiguration() {
  */
 export async function setConfiguration(setConfigJson) {
 	// eslint-disable-next-line no-unused-vars
-	const { operation, hdb_user, hdbAuthHeader, ...configFields } = setConfigJson;
+	const { operation, hdb_user, hdbAuthHeader, replicated, ...configFields } = setConfigJson;
+	// Operation-control field, not a config param: enforce boolean (matching other
+	// `replicated` surfaces, e.g. analyticsValidator) before any local write so a
+	// malformed value like the string "false" — which is truthy — can't apply config
+	// locally or trigger an unintended fan-out.
+	if (replicated !== undefined && typeof replicated !== 'boolean') {
+		throw handleHDBError(
+			new Error(),
+			`'replicated' must be a boolean`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 	try {
 		updateConfigValue(undefined, undefined, configFields, true);
+		if (replicated) {
+			// Opt-in fan-out to all cluster nodes (#660). replicateOperation forwards the
+			// body with `replicated: false`, so peers apply locally without re-replicating;
+			// per-node outcomes are returned on `response.replicated`. `replicated` must
+			// stay out of configFields on both origin and peers, or it would be written to
+			// the config file as a config param.
+			const response = await server.replication.replicateOperation(setConfigJson);
+			response.message = CONFIGURE_SUCCESS_RESPONSE;
+			return response;
+		}
 		return CONFIGURE_SUCCESS_RESPONSE;
 	} catch (err) {
 		if (typeof err === 'string' || err instanceof String) {

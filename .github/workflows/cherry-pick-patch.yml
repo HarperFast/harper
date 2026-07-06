@@ -63,7 +63,7 @@ jobs:
       # present in the working tree. For `pull_request` events the default
       # checkout is the PR head — if the PR branched off before this script
       # landed on main, the script is missing and the workflow fails.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}

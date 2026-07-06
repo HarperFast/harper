@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	registerSession,
 	unregisterSession,
@@ -53,7 +53,7 @@ describe('mcp/sessionRegistry', () => {
 		});
 		const second = registerSession('sid-1', 'application', SUPER);
 		assert.equal(firstClosed, true);
-		assert.notEqual(first.queue, second.queue);
+		assert.notStrictEqual(first.queue, second.queue);
 		assert.equal(getRegisteredSession('sid-1'), second);
 	});
 
@@ -124,7 +124,7 @@ describe('mcp/sessionRegistry', () => {
 			// from it. The async iterator's next() sets resolveNext.
 			const iter = rec.queue[Symbol.asyncIterator]();
 			const pending = iter.next();
-			assert.notEqual(rec.queue.resolveNext, null, 'iterator should be awaiting');
+			assert.notStrictEqual(rec.queue.resolveNext, null, 'iterator should be awaiting');
 			clock += 61 * 60 * 1000;
 			registerSession('live-2', 'application', SUPER);
 			// 'live-1' has an active iterator — even past the idle window

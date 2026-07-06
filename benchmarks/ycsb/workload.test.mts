@@ -3,7 +3,7 @@
  * key model, latency stats). Run standalone with: node --test benchmarks/ycsb/
  */
 import { test } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import {
 	WORKLOADS,
 	makeKeyChooser,

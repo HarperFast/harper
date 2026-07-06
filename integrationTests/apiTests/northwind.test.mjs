@@ -14,7 +14,7 @@
  * Skipped on Windows: csv_file_load uses Linux-style absolute paths.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { setTimeout } from 'node:timers/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2167,7 +2167,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		const job = jobResp.body[0];
 		assert.ok(job, `No job found in response: ${jobResp.text}`);
 		if (_expectedError) {
-			assert.notEqual(job.status, 'COMPLETE', jobResp.text);
+			assert.notStrictEqual(job.status, 'COMPLETE', jobResp.text);
 			const msgStr = typeof job.message === 'string' ? job.message : JSON.stringify(job.message);
 			assert.ok(msgStr.includes(_expectedError), jobResp.text);
 		} else {
@@ -2229,7 +2229,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		const job = jobResp.body[0];
 		assert.ok(job, `No job found in response: ${jobResp.text}`);
 		if (expectedErrorMsg) {
-			assert.notEqual(job.status, 'COMPLETE', jobResp.text);
+			assert.notStrictEqual(job.status, 'COMPLETE', jobResp.text);
 			const msgStr = typeof job.message === 'string' ? job.message : JSON.stringify(job.message);
 			assert.ok(msgStr.includes(expectedErrorMsg), jobResp.text);
 		} else {
@@ -2546,7 +2546,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				})
 				.expect((r) => {
 					let randomNumber = Math.floor(Math.random() * 29);
-					assert.notEqual(r.body[randomNumber], null, r.text);
+					assert.notStrictEqual(r.body[randomNumber], null, r.text);
 					assert.equal(r.body.length, 29, r.text);
 					let keys = Object.keys(r.body[randomNumber]);
 					if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
@@ -4607,7 +4607,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 			await client
 				.req()
 				.send({ operation: 'sql', sql: "SELECT __createdtime__ FROM northnwd.customers WHERE customerid = 'TEST3'" })
-				.expect((r) => assert.notEqual(r.body[0].__createdtime__, 'bad value', r.text))
+				.expect((r) => assert.notStrictEqual(r.body[0].__createdtime__, 'bad value', r.text))
 				.expect(200);
 		});
 
@@ -4960,7 +4960,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 						const keys = Object.keys(row);
 						assert.equal(keys.length, 16, r.text);
 						Object.keys(row).forEach((key) => {
-							assert.notEqual(row[key], undefined, r.text);
+							assert.notStrictEqual(row[key], undefined, r.text);
 						});
 					});
 				})
@@ -4980,7 +4980,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 						const keys = Object.keys(row);
 						assert.equal(keys.length, 11, r.text);
 						Object.keys(row).forEach((key) => {
-							assert.notEqual(row[key], undefined, r.text);
+							assert.notStrictEqual(row[key], undefined, r.text);
 						});
 					});
 				})
@@ -7526,7 +7526,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 					get_attributes: [`employeeid`, '__createdtime__'],
 				})
 				.expect((r) => assert.equal(r.body[0].employeeid, 1, r.text))
-				.expect((r) => assert.notEqual(r.body[0].__createdtime__, 'bad value', r.text))
+				.expect((r) => assert.notStrictEqual(r.body[0].__createdtime__, 'bad value', r.text))
 				.expect(200);
 		});
 

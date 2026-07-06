@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 // Importing databases first primes Harper's module graph in the order other unit tests
 // (e.g. Resource-get-context.test.js) load it; otherwise the transaction.ts ↔
 // DatabaseTransaction/blob require chain hits a cycle when loaded ESM-first by mocha.
@@ -34,9 +34,13 @@ describe('models singleton', () => {
 		assert.strictEqual(global.models, modelsSingleton);
 	});
 
-	it('_assignPackageExport wires the registerBackend / defineBackend free functions', () => {
-		assert.strictEqual(typeof global.registerBackend, 'function');
-		assert.strictEqual(typeof global.defineBackend, 'function');
+	it('exposes registerBackend / defineBackend / registerRouter as methods on the singleton, not free globals (#1534)', () => {
+		assert.strictEqual(typeof modelsSingleton.registerBackend, 'function');
+		assert.strictEqual(typeof modelsSingleton.defineBackend, 'function');
+		assert.strictEqual(typeof modelsSingleton.registerRouter, 'function');
+		// The generic free globals were removed — only `models` is exported.
+		assert.strictEqual(global.registerBackend, undefined);
+		assert.strictEqual(global.defineBackend, undefined);
 	});
 });
 
@@ -504,5 +508,66 @@ describe('Models facade', () => {
 				);
 			});
 		});
+	});
+});
+
+describe('logical model name is not forwarded as the wire model (#1593)', () => {
+	let models;
+
+	beforeEach(() => {
+		clearRegistry();
+		models = new Models(makeMockWriter(), makeMetricSpy().emitter);
+	});
+
+	afterEach(() => {
+		clearRegistry();
+	});
+
+	it('embed: the backend call receives no model option', async () => {
+		let seenOpts;
+		setEmbedding('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+			async embed(_input, opts) {
+				seenOpts = opts;
+				return { status: 'completed', output: [new Float32Array(1)] };
+			},
+		});
+		await models.embed('x', { model: 'logical-name' });
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+
+	it('generate: the backend call receives no model option', async () => {
+		let seenOpts;
+		setGenerative('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: false, generate: true, stream: false, tools: false, adapters: false }),
+			async generate(_input, opts) {
+				seenOpts = opts;
+				return { status: 'completed', output: { content: 'hi', finishReason: 'stop' } };
+			},
+		});
+		await models.generate('x', { model: 'logical-name' });
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+
+	it('generateStream: the backend call receives no model option', async () => {
+		let seenOpts;
+		setGenerative('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: false, generate: true, stream: true, tools: false, adapters: false }),
+			async *generateStream(_input, opts) {
+				seenOpts = opts;
+				yield { deltaContent: 'chunk' };
+				yield { finishReason: 'stop' };
+			},
+		});
+		for await (const _chunk of models.generateStream('x', { model: 'logical-name' })) {
+			// drain
+		}
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
 	});
 });

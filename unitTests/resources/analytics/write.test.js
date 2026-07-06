@@ -11,6 +11,7 @@ const {
 	buildRocksDBDbMetric,
 	buildRocksDBTableMetric,
 	buildRocksDBTxnLogMetric,
+	findLastAggregationTime,
 } = require('#src/resources/analytics/write');
 const { writeFile, mkdtemp, rm, mkdir } = require('node:fs/promises');
 const { join } = require('node:path');
@@ -437,5 +438,67 @@ describe('buildRocksDBTxnLogMetric', () => {
 		expect(metric.totalsTransactionsWritten).to.equal(0);
 		expect(metric.replayGapBytes).to.equal(0);
 		expect(metric.fileCount).to.equal(0);
+	});
+});
+
+describe('findLastAggregationTime (#1538)', () => {
+	const NODE = 1890011054; // a stableNodeId-shaped 32-bit int
+	const OTHER = 1120178829;
+
+	// Build a mock primaryStore whose getRange yields `entries` (already in reverse/newest-first
+	// order, matching `{ start: Infinity, reverse: true }`). Records how many entries were pulled
+	// so we can assert the scan is bounded.
+	function mockStore(entries) {
+		const store = { pulled: 0 };
+		store.getRange = function* () {
+			for (const value of entries) {
+				store.pulled++;
+				yield { value };
+			}
+		};
+		return store;
+	}
+
+	const composite = (time, nodeId = NODE) => ({ id: [time, nodeId], time, metric: 'aggregation' });
+	const legacyScalar = (time) => ({ id: time, time, metric: 'aggregation' }); // pre-upgrade scalar id
+
+	it('matches the newest record at depth 1 for a healthy node', () => {
+		const store = mockStore([composite(5000), composite(4000), composite(3000)]);
+		expect(findLastAggregationTime(store, NODE)).to.equal(5000);
+		expect(store.pulled).to.equal(1);
+	});
+
+	it('skips records belonging to other node ids', () => {
+		const store = mockStore([composite(5000, OTHER), composite(4000, OTHER), composite(3000, NODE)]);
+		expect(findLastAggregationTime(store, NODE)).to.equal(3000);
+		expect(store.pulled).to.equal(3);
+	});
+
+	it('skips legacy scalar-id records and finds a deeper composite match', () => {
+		const store = mockStore([legacyScalar(5000), legacyScalar(4000), composite(3000)]);
+		expect(findLastAggregationTime(store, NODE)).to.equal(3000);
+	});
+
+	it('skips records without a time', () => {
+		const store = mockStore([{ id: [5000, NODE], metric: 'aggregation' }, composite(4000)]);
+		expect(findLastAggregationTime(store, NODE)).to.equal(4000);
+	});
+
+	it('returns undefined and stays bounded when no record matches within maxScan', () => {
+		// Simulate the production wedge: a table whose top is all legacy scalar ids. Use a small
+		// maxScan with strictly more entries available so we prove the scan STOPS at the bound
+		// instead of decoding the whole table on the main thread — the whole point of #1538.
+		const maxScan = 100;
+		const entries = [];
+		for (let t = maxScan * 5; t > 0; t--) entries.push(legacyScalar(t));
+		const store = mockStore(entries);
+		expect(findLastAggregationTime(store, NODE, maxScan)).to.equal(undefined);
+		expect(store.pulled).to.equal(maxScan);
+	});
+
+	it('returns undefined on an empty table', () => {
+		const store = mockStore([]);
+		expect(findLastAggregationTime(store, NODE)).to.equal(undefined);
+		expect(store.pulled).to.equal(0);
 	});
 });

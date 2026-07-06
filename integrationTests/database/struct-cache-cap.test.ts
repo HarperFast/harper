@@ -52,7 +52,7 @@
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/struct-cache-cap.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert/strict';
+import { ok } from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine

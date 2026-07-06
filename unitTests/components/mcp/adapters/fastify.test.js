@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { createFastifyHandler } = require('#src/components/mcp/adapters/fastify');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
 
