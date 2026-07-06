@@ -15,7 +15,7 @@
  * cleared on clean completion, and (c) actually drives a re-trigger.
  */
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
@@ -190,7 +190,7 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 				{ name: 'tag', indexed: true },
 			],
 		});
-		assert.notEqual(
+		assert.notStrictEqual(
 			TblNewGen.indexingOperation,
 			buildOp,
 			'must re-trigger (new indexingOperation) when persisted restartNumber is older than the current generation'

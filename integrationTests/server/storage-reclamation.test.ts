@@ -17,7 +17,7 @@
  * the end-to-end behavior is working correctly.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';

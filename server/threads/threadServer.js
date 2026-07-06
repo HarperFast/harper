@@ -484,7 +484,12 @@ function onSocket(listener, options) {
 			listener
 		);
 		SNICallback.initialize(socketServer);
-		socketServer.noReusePort = true;
+		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
+		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
+		// connections for this listener (e.g. MQTT), matching how HTTP servers are bound; without
+		// it only the first worker to bind serves the port and every sibling's listen() fails with
+		// a silently-swallowed EADDRINUSE.
+		if (process.platform === 'darwin') socketServer.noReusePort = true;
 		SERVERS[options.securePort] = socketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
@@ -521,7 +526,9 @@ function onSocket(listener, options) {
 			keepAlive: true,
 			keepAliveInitialDelay: 600,
 		});
-		socketServer.noReusePort = true;
+		// See the securePort path above: opt out of reusePort only on macOS so every worker can
+		// accept connections for this listener elsewhere.
+		if (process.platform === 'darwin') socketServer.noReusePort = true;
 		SERVERS[options.port] = socketServer;
 	}
 	return socketServer;

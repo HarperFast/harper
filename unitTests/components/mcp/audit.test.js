@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { redactArgs, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
 
 describe('mcp/audit', () => {

@@ -20,7 +20,7 @@
  * configured and registering a sample Resource.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';

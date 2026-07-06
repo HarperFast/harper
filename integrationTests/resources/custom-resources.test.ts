@@ -15,7 +15,7 @@
  * Implements HarperFast/harper#1190.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from '../apiTests/utils/client.mjs';

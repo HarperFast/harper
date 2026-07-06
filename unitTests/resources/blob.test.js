@@ -260,7 +260,7 @@ describe('Blob test', () => {
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
-		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		assert.notStrictEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
 		filePath = getFilePathForBlob(blob);
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
 		await delay(50); // wait for audit log removal and deletion
@@ -276,7 +276,7 @@ describe('Blob test', () => {
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
-		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		assert.notStrictEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
 		filePath = getFilePathForBlob(blob);
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
 		await delay(50); // wait for audit log removal and deletion
@@ -1064,7 +1064,7 @@ describe('Blob test', () => {
 		await assert.rejects(Promise.resolve(saving));
 		await new Promise((resolve) => setTimeout(resolve, 50)); // let any async abort-path write land
 		await assert.rejects(blob.bytes(), (error) => {
-			assert.notEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
+			assert.notStrictEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
 			return true;
 		});
 		const filePath = getFilePathForBlob(blob);

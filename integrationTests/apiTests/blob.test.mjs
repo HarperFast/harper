@@ -21,7 +21,7 @@
  * under Harper-on-Bun in CI.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'fs-extra';

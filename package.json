@@ -143,7 +143,7 @@
 		"chai-as-promised": "^8.0.2",
 		"chai-integer": "^0.1.0",
 		"eventsource": "^4.0.0",
-		"globals": "^16.5.0",
+		"globals": "^17.0.0",
 		"intercept-stdout": "0.1.2",
 		"mkcert": "^3.2.0",
 		"mocha": "^11.7.5",
