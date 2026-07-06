@@ -47,7 +47,7 @@ export class V1ChatCompletions extends Resource {
 				// serializeStream wraps the async iterable in a Node Readable so REST.ts
 				// can return it without re-serialising. The `body` presence on the return
 				// value skips REST.ts's own serialize() call (REST.ts:165-193).
-				const body = sseHandler.serializeStream(openaiStream(tokenStream, { model }));
+				const readable = sseHandler.serializeStream(openaiStream(tokenStream, { model }));
 				return {
 					status: 200,
 					headers: {
@@ -55,7 +55,7 @@ export class V1ChatCompletions extends Resource {
 						'Cache-Control': 'no-cache',
 						'X-Accel-Buffering': 'no',
 					},
-					body,
+					body: readable,
 				};
 			}
 

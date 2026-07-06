@@ -41,7 +41,10 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx, {
 			config: {
-				modelsGateway: {},
+				// modelsGateway: {} would be silently dropped by flattenObject() in
+				// harperConfigEnvVars.ts because an empty plain object has no leaf paths
+				// to flatten. Use a non-empty sentinel so the key survives the env-var path.
+				modelsGateway: { enabled: true },
 				models: {
 					generative: {
 						default: { backend: ECHO_BACKEND_PATH },

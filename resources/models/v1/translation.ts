@@ -184,7 +184,12 @@ function toOAIToolCalls(toolCalls: ToolCall[]): OAIToolCallOut[] {
 	return toolCalls.map((tc) => ({
 		id: tc.id,
 		type: 'function',
-		function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+		// Guard against backends that return arguments as a pre-serialised JSON string;
+		// passing a string through JSON.stringify would double-encode it.
+		function: {
+			name: tc.name,
+			arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
+		},
 	}));
 }
 

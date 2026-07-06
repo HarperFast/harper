@@ -13,7 +13,8 @@ import { toEmbedOpts, toEmbedResponse } from './translation.ts';
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1Embeddings extends Resource {
 	static async post(_target: unknown, body: Record<string, unknown>, _request: unknown) {
-		if (!body || typeof body !== 'object') return badRequest('Request body must be a JSON object');
+		if (!body || typeof body !== 'object' || Array.isArray(body))
+			return badRequest('Request body must be a JSON object');
 		const raw = body as Record<string, unknown>;
 
 		const input = raw.input;
