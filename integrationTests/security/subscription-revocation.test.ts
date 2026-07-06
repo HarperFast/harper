@@ -11,7 +11,7 @@
  * per-record evaluation.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { request as httpRequest } from 'node:http';
 import { resolve } from 'node:path';
 
