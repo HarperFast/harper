@@ -178,6 +178,21 @@ export function notifyResourcesListChanged(profile: McpProfile): void {
 }
 
 /**
+ * Re-diff every session's visible tool list on a profile and push
+ * `notifications/tools/list_changed` to the sessions whose list actually
+ * changed. The schema-change handler already does this, but the lazy
+ * per-request rebuild (`ensureApplicationToolsFresh`, #1609) can add/remove
+ * custom `mcpTools` outside any schema event — without this, a session that
+ * initialized before a tableless component registered keeps a stale tool
+ * list until it happens to re-poll `tools/list`.
+ */
+export function notifyToolsListChanged(profile: McpProfile): void {
+	for (const record of snapshotSessions(profile)) {
+		maybeNotifyToolsChanged(record);
+	}
+}
+
+/**
  * Push `notifications/prompts/list_changed` to every session on a profile.
  * Prompts carry no per-user RBAC (they're generic templates, §3.5), so unlike
  * tools/resources this is a flat per-profile fan-out rather than a per-session

@@ -1057,6 +1057,8 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 			{ uri: 'a:///5', name: 'missing-fn', method: 'doesNotExist' },
 			{ uri: 'harper://schema/data/shadow', name: 'reserved-harper', description: 'd', method: 'ok' },
 			{ uriTemplate: 'https://example.com/{x}', name: 'reserved-web', description: 'd', method: 'ok' },
+			{ uriTemplate: '{scheme}://{+path}', name: 'param-scheme', description: 'd', method: 'ok' },
+			{ uriTemplate: 'har{rest}://{+path}', name: 'partial-scheme', description: 'd', method: 'ok' },
 			{ uri: 'a:///good', name: 'good', description: 'd', method: 'ok' },
 		];
 		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad }]]));

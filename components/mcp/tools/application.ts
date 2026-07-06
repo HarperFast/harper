@@ -47,7 +47,7 @@ import {
 	type CustomResourceReadResult,
 	type ResourceReadContext,
 } from '../customResourceRegistry.ts';
-import { notifyPromptsListChanged, notifyResourcesListChanged } from '../listChanged.ts';
+import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
 import {
 	type AttributePermissionEntry,
@@ -886,13 +886,15 @@ function registerCustomMcpResources(ResourceClass: ResourceClassLike, path: stri
 			);
 			continue;
 		}
-		// Reserved schemes belong to the discovered surface — a custom entry under
-		// harper:// (or the descriptor/web schemes) would shadow built-ins like
-		// harper://schema/... for every client of this instance.
+		// Custom entries match BEFORE the discovered surfaces, so the scheme must be
+		// a LITERAL, non-reserved custom scheme: a reserved scheme (or a template
+		// whose scheme position contains a parameter, e.g. `{scheme}://...`) could
+		// shadow built-ins like harper://schema/... for every client of this instance.
 		const declaredUri = (hasUri ? def.uri : def.uriTemplate) as string;
-		if (/^(harper|harper\+rest|https?):/i.test(declaredUri)) {
+		const schemeMatch = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(declaredUri);
+		if (!schemeMatch || /^(harper|harper\+rest|https?)$/i.test(schemeMatch[1])) {
 			harperLogger.warn(
-				`MCP application profile: skipping mcpResource '${def.name}' on '${path}': uri scheme is reserved (harper:, harper+rest:, http:, https:); use a custom scheme like docs:///...`
+				`MCP application profile: skipping mcpResource '${def.name}' on '${path}': the uri must start with a literal custom scheme (harper:, harper+rest:, http:, https: are reserved); use e.g. docs:///...`
 			);
 			continue;
 		}
@@ -1095,6 +1097,10 @@ export function registerApplicationTools(): void {
 	// Custom resources feed resources/list; the notifier diffs each session's
 	// visible URI set itself, so no-op rebuilds don't spam (#1609).
 	notifyResourcesListChanged('application');
+	// The lazy per-request rebuild (ensureApplicationToolsFresh) can change the
+	// tool set outside any schema event; the notifier per-session diffs, so this
+	// is silent when nothing changed.
+	notifyToolsListChanged('application');
 }
 
 function buildApplicationTools(resources: ResourcesRegistry): void {
