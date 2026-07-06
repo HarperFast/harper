@@ -49,7 +49,6 @@ export interface ResourceInterface<Record extends object = any>
 	subscribe?(request: SubscriptionRequest): AsyncIterable<Record> | Promise<AsyncIterable<Record>>;
 
 	doesExist(): boolean;
-	wasLoadedFromSource(): boolean | void;
 
 	getCurrentUser(): User | undefined;
 }
@@ -95,7 +94,6 @@ export interface Context {
 	sourceApply?: boolean;
 	originatingOperation?: OperationFunctionName;
 	previousResidency?: string[];
-	loadedFromSource?: boolean;
 	nodeName?: string;
 	resourceCache?: Map<Id, any>;
 	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
