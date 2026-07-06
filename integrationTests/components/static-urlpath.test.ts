@@ -10,10 +10,14 @@
  */
 import { suite, test, before, after } from 'node:test';
 <<<<<<< HEAD
+<<<<<<< HEAD
 import { strictEqual, ok } from 'node:assert';
 =======
 import { strictEqual, ok } from 'node:assert/strict';
 >>>>>>> 21d022b54 (Fix static plugin serving nothing when urlPath is configured (#1583))
+=======
+import { strictEqual, ok } from 'node:assert';
+>>>>>>> a2e9a63f1 (fix(lint): import from node:assert, not node:assert/strict)
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
