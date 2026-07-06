@@ -10,6 +10,7 @@ import { Models, models as modelsSingleton } from '../resources/models/Models.ts
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
+import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 
@@ -104,7 +105,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 							const scopeConfig = (scopeRef.options?.getAll() as any) ?? {};
 							return method.call(target, listener, {
 								name: pluginName,
-								urlPath: scopeConfig.urlPath || undefined,
+								// resolve to the same base the entry pipeline uses ('assets' -> '/assets/',
+								// './x' -> '/<name>/x/') so route matching sees a real pathname prefix (#1583)
+								urlPath: scopeConfig.urlPath ? resolveBaseURLPath(pluginName, scopeConfig.urlPath) : undefined,
 								host: scopeConfig.host || undefined,
 								...options,
 							});
