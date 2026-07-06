@@ -56,6 +56,45 @@ function recordCommitLatency(commitResolution: Promise<void>, submittedAt: numbe
 	}
 }
 
+// Queue-depth gauges surfaced through the analytics pipeline (write-transaction-queue-depth /
+// read-transaction-queue-depth). Per-thread state; the analytics aggregator sums across threads.
+// `writeTxnQueueDepth` counts write commits handed to the storage engine but not yet resolved —
+// this is the backlog that, when it drains too slowly, produces the "Outstanding write transactions
+// have too long of queue" overload error. Read depth is derived from the live `trackedTxns` set
+// (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
+// sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
+// instantaneous sample taken at emit time would routinely miss the spike operators need to see.
+let writeTxnQueueDepth = 0;
+let writeTxnQueueDepthHighWater = 0;
+let readTxnQueueDepthHighWater = 0;
+
+function enterWriteQueue() {
+	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+}
+function leaveWriteQueue() {
+	writeTxnQueueDepth--;
+}
+
+/**
+ * Returns the current write/read transaction queue depths for this thread along with the high-water
+ * mark observed since the previous call, then resets the high-water marks to the current depth so the
+ * next sampling window starts fresh. Consumed by the analytics writer (see analytics/write.ts).
+ */
+export function getTransactionQueueDepths() {
+	// `readTxnQueueDepthHighWater` is maintained at the single trackedTxns growth site, so it already
+	// dominates the current size here — no need to reconcile against `readDepth` before reporting.
+	const readDepth = trackedTxns.size;
+	const depths = {
+		writeDepth: writeTxnQueueDepth,
+		writeMaxDepth: writeTxnQueueDepthHighWater,
+		readDepth,
+		readMaxDepth: readTxnQueueDepthHighWater,
+	};
+	writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+	readTxnQueueDepthHighWater = readDepth;
+	return depths;
+}
+
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -190,6 +229,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 		trackedTxns.add(this);
+		if (trackedTxns.size > readTxnQueueDepthHighWater) readTxnQueueDepthHighWater = trackedTxns.size;
 		return this.transaction;
 	}
 
@@ -365,6 +405,12 @@ export class DatabaseTransaction implements Transaction {
 							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
 							// re-arms per attempt, so recording per attempt matches the overload semantics.
 							recordCommitLatency(commitResolution, performance.now());
+							// Count this commit against the write queue depth until the storage engine
+							// resolves it. A transient-conflict retry rejects this promise and issues a
+							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
+							// never throws, so the settled promise resolves and needs no rejection handling of its own.
+							enterWriteQueue();
+							commitResolution.then(leaveWriteQueue, leaveWriteQueue);
 						} else {
 							try {
 								commitResolution = transaction.abort();
