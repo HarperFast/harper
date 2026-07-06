@@ -13,6 +13,10 @@ import { toEmbedOpts, toEmbedResponse } from './translation.ts';
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1Embeddings extends Resource {
 	static async post(_target: unknown, body: Record<string, unknown>, _request: unknown) {
+		// REST.ts passes `request.data` directly, which is the (unawaited) streaming
+		// JSON deserializer's Promise — awaiting here is a no-op for callers (e.g.
+		// unit tests) that already pass a plain object.
+		body = await body;
 		if (!body || typeof body !== 'object' || Array.isArray(body))
 			return badRequest('Request body must be a JSON object');
 		const raw = body as Record<string, unknown>;
