@@ -14,7 +14,7 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
-import { setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
+import { getTransactionQueueDepths, setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
 import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;
@@ -216,6 +216,25 @@ function sendAnalytics() {
 			threadId,
 			byThread: true,
 			...memoryUsage,
+		});
+		// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
+		// the high-water mark over this sampling window (the queue can fill and drain within a single
+		// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
+		// summed across threads by the aggregator, mirroring the `memory` gauge above.
+		const queueDepths = getTransactionQueueDepths();
+		metrics.push({
+			metric: METRIC.WRITE_TRANSACTION_QUEUE_DEPTH,
+			threadId,
+			byThread: true,
+			depth: queueDepths.writeDepth,
+			maxDepth: queueDepths.writeMaxDepth,
+		});
+		metrics.push({
+			metric: METRIC.READ_TRANSACTION_QUEUE_DEPTH,
+			threadId,
+			byThread: true,
+			depth: queueDepths.readDepth,
+			maxDepth: queueDepths.readMaxDepth,
 		});
 		for (const listener of analyticsListeners) {
 			listener(metrics);
