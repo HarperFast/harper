@@ -147,10 +147,18 @@ describe('mcp/tools/application — parameterised routes', () => {
 		);
 	});
 
-	// The verb handlers only bind `target.id = args.id`. A route with a differently-named
-	// param, more than one param, or a `*wildcard` segment would advertise an `id`-only tool
-	// that silently drops the other segment(s) — so those shapes must be skipped, not exposed.
-	for (const pattern of ['widget/:id/action/:action', 'widget/:widgetId', 'files/*rest', 'files/*']) {
+	// The verb handlers only bind `target.id = args.id`, treating `:id` as the record itself.
+	// A route with a differently-named param, more than one param, a `*wildcard` segment, or an
+	// `:id` that is not the final segment (`widget/:id/action` names a sub-resource, not the
+	// widget) would advertise an `id`-only tool that silently drops the other segment(s) — so
+	// those shapes must be skipped, not exposed.
+	for (const pattern of [
+		'widget/:id/action/:action',
+		'widget/:id/action',
+		'widget/:widgetId',
+		'files/*rest',
+		'files/*',
+	]) {
 		it(`skips a parameterised route the verb handlers cannot fully bind (${pattern})`, () => {
 			_setResourcesForTest(makeRegistryWithParamRoute(pattern, makeParamResource()));
 			registerApplicationTools();
