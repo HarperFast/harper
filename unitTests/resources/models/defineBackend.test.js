@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 // Prime Harper's module graph in the same order the other models unit tests do
 // (see Models.test.js) so the transaction.ts ↔ blob require chain resolves.
 require('#src/resources/databases');

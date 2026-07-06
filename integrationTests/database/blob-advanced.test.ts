@@ -35,7 +35,7 @@
  * Skipped on Bun: component install is not reliable under Harper-on-Bun in CI.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, notStrictEqual } from 'node:assert/strict';
+import { ok, strictEqual, notStrictEqual } from 'node:assert';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

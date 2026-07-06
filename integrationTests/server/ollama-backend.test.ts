@@ -20,7 +20,7 @@
  * against the real Ollama HTTP surface.
  */
 import { suite, test, before } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 
 // NOTE: `OllamaBackend` is imported dynamically inside `before()` rather than
 // at the top of the file. Statically importing it from `components/ollama/`
