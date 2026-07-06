@@ -1,5 +1,5 @@
 const { handleApplication } = require('#src/resources/jsResource');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { spy } = require('sinon');
 const { writeFileSync } = require('node:fs');
 const { join } = require('node:path');

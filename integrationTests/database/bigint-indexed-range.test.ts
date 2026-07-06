@@ -73,7 +73,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
+import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';

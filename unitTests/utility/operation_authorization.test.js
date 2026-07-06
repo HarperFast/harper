@@ -1560,7 +1560,7 @@ describe('Test operations permissions', function () {
 		it('op NOT in operations list — insert blocked even with table perms', function () {
 			const req_json = makeOpUserRequest(['read_only'], { insert: true });
 			const result = op_auth.verifyPerms(req_json, write.insert.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 			assert.equal(result.unauthorized_access.length, 1);
 			// Error message uses the API name (terms.OPERATIONS_ENUM.INSERT = 'insert'), not the internal
 			// function name (write.insert.name = 'insertData'), because that's what users put in operations.
@@ -1578,7 +1578,7 @@ describe('Test operations permissions', function () {
 		it('SU-only op NOT in operations — restart denied', function () {
 			const req_json = makeOpUserSystemRequest(['read_only']);
 			const result = op_auth.verifyPerms(req_json, restart.restart.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 			assert.equal(result.unauthorized_access.length, 1);
 		});
 
@@ -1593,7 +1593,7 @@ describe('Test operations permissions', function () {
 			const req_json = makeOpUserRequest(['read_only'], { read: false });
 			req_json.operation = terms.OPERATIONS_ENUM.SEARCH;
 			const result = op_auth.verifyPerms(req_json, search.search.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 		});
 
 		it('no operations set — SU-only op still denied for non-SU user (no regression)', function () {
@@ -1611,7 +1611,7 @@ describe('Test operations permissions', function () {
 				},
 			};
 			const result = op_auth.verifyPerms(req_json, restart.restart.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 			assert.equal(result.unauthorized_access.length, 1);
 		});
 

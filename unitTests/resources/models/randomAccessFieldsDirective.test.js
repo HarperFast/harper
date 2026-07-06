@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { tables } = require('#src/resources/databases');

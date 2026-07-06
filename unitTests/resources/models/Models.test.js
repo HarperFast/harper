@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 // Importing databases first primes Harper's module graph in the order other unit tests
 // (e.g. Resource-get-context.test.js) load it; otherwise the transaction.ts ↔
 // DatabaseTransaction/blob require chain hits a cycle when loaded ESM-first by mocha.

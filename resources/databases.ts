@@ -1542,9 +1542,14 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					} catch (error) {
 						hadIndexingErrors = true;
 						if (!attributeErrorReported[property]) {
-							// just report an indexing error once per attribute so we don't spam the logs
+							// just report an indexing error once per attribute so we don't spam the logs.
+							// A store closed by worker shutdown surfaces here as "Database not open"; that is
+							// a benign interruption (the next generation re-runs the backfill), so don't log
+							// it as an error — the outer catch returns quietly once the iterator also throws.
 							attributeErrorReported[property] = true;
-							logger.error(`Error indexing attribute ${property}`, error);
+							if (Table.primaryStore?.rootStore?.status === 'closed')
+								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
+							else logger.error(`Error indexing attribute ${property}`, error);
 						}
 					}
 				}
@@ -1638,6 +1643,19 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 		}
 	} catch (error) {
+		// A worker shutting down closes its stores mid-backfill, so the range iterator or a
+		// put throws (e.g. "Database not open" / "Iterator not initialized"). This is an
+		// interruption, not a data error: the next worker generation re-runs the backfill via
+		// the crash-recovery trigger (indexingPID / restartNumber mismatch), and persisting
+		// indexingFailed here would fail anyway against the closed store. Treat it as a benign
+		// interruption instead of logging a misleading error and a "failed to persist" warning.
+		if (Table.primaryStore?.rootStore?.status === 'closed') {
+			logger.debug(
+				`Indexing of ${Table.tableName} interrupted by store shutdown; recovery resumes on the next worker generation`,
+				error
+			);
+			return;
+		}
 		logger.error('Error in indexing', error);
 		// Persist indexingFailed so the next restart re-triggers the rebuild from an
 		// explicitly failed state rather than silently looping. Without this,

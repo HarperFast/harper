@@ -1,6 +1,6 @@
 const { EntryHandler } = require('#src/components/EntryHandler');
 const { EventEmitter, once } = require('node:events');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');

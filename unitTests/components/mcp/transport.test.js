@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
@@ -481,7 +481,7 @@ describe('mcp/transport', () => {
 					})
 				);
 				assert.equal(page2.jsonBody.result.tools.length, 2);
-				assert.notEqual(page1.jsonBody.result.tools[0].name, page2.jsonBody.result.tools[0].name);
+				assert.notStrictEqual(page1.jsonBody.result.tools[0].name, page2.jsonBody.result.tools[0].name);
 			});
 
 			it('omits nextCursor when the page completes the list', async () => {
