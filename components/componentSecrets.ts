@@ -45,6 +45,9 @@ import { _assignPackageExport } from '../globals.js';
 
 const SECRET_TABLE = SYSTEM_TABLE_NAMES.SECRET_TABLE_NAME;
 
+/** A per-component secrets view: read-only name→value map exposed as `import { secrets } from 'harper'`. */
+export type SecretsView = Readonly<Record<string, string>>;
+
 export type UnsatisfiedReason = 'missing' | 'ungranted' | 'custody-unavailable';
 
 /** A declared-but-unsatisfied env expectation — metadata only, never values. */
@@ -82,7 +85,7 @@ const ownedEnvKeys = new Set<string>();
 // Per-component registries, rebuilt as each component's env block is processed.
 const declaredEnvNames = new Map<string, Set<string>>();
 const unsatisfiedEnv = new Map<string, UnsatisfiedDeclaration[]>();
-const accessorCache = new Map<string, Readonly<Record<string, string>>>();
+const accessorCache = new Map<string, SecretsView>();
 
 /**
  * Read the hdb_secret store, decrypt what this node's custody allows, materialize the global tier
@@ -331,7 +334,7 @@ export function getUnsatisfiedEnv(componentName: string): UnsatisfiedDeclaration
  * global to granted without breaking the app. Values are decrypted eagerly at load; the object is
  * frozen and enumerable (`Object.keys`, spread).
  */
-export function getSecretsForComponent(componentName: string): Readonly<Record<string, string>> {
+export function getSecretsForComponent(componentName: string): SecretsView {
 	let view = accessorCache.get(componentName);
 	if (view) return view;
 	// Null prototype so inherited Object.prototype members (toString, hasOwnProperty, constructor)
@@ -365,7 +368,7 @@ export function runWithComponentBinding<T>(componentName: string | undefined, fn
 	return componentName === undefined ? fn() : componentBinding.run(componentName, fn);
 }
 
-function resolveBoundSecrets(): Readonly<Record<string, string>> {
+function resolveBoundSecrets(): SecretsView {
 	const componentName = componentBinding.getStore();
 	if (componentName === undefined) {
 		throw new Error(
@@ -391,7 +394,7 @@ function readOnly(): never {
  * report an empty object outside a binding context so inspectors/serializers (`util.inspect`,
  * spread) never crash the process — only direct property reads are loud.
  */
-export const secrets: Readonly<Record<string, string>> = new Proxy(
+export const secrets: SecretsView = new Proxy(
 	{},
 	{
 		get(_target, property) {
