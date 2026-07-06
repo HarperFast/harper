@@ -256,6 +256,11 @@ export class BedrockBackend implements ModelBackend {
 	 * Send a command with caller-supplied AbortSignal + optional per-call
 	 * timeout composed via `AbortSignal.any`. The SDK accepts `abortSignal`
 	 * in the request options bag.
+	 *
+	 * SDK `ServiceException`s are re-thrown as `BedrockBackendError` carrying the
+	 * upstream HTTP status (`$metadata.httpStatusCode`) so the sanitized `@embed`
+	 * error is diagnosable, matching the openai/anthropic/ollama backends (#1593).
+	 * Aborts/timeouts are caller-driven, not upstream failures — propagated untouched.
 	 */
 	async #sendWithAbort(
 		client: { send: (cmd: object, options?: { abortSignal?: AbortSignal }) => Promise<unknown> },
@@ -263,7 +268,21 @@ export class BedrockBackend implements ModelBackend {
 		callerSignal?: AbortSignal
 	): Promise<unknown> {
 		const abortSignal = composeSignal(callerSignal, this.#requestTimeoutMs);
-		return client.send(command, abortSignal ? { abortSignal } : undefined);
+		try {
+			return await client.send(command, abortSignal ? { abortSignal } : undefined);
+		} catch (err) {
+			if ((err as any)?.name === 'AbortError' || abortSignal?.aborted) throw err;
+			const status = (err as any)?.$metadata?.httpStatusCode;
+			const sdkName = (err as any)?.name;
+			const wrapped = new BedrockBackendError(
+				`Bedrock request failed${sdkName ? ` (${sdkName})` : ''}`,
+				typeof status === 'number' ? status : undefined
+			);
+			// Keep the raw SDK error for the unsanitized server log; only class name +
+			// upstreamStatus surface to callers.
+			(wrapped as any).cause = err;
+			throw wrapped;
+		}
 	}
 }
 
