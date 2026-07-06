@@ -117,17 +117,16 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
-					// Preserve any query string across the trailing-slash redirects below
-					const queryIndex = (req.url as string).indexOf('?');
-					const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
-
 					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
 					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
 					// redirect the no-slash form so relative links on the index page resolve under
-					// the mount (#1583)
+					// the mount (#1583). Query string is preserved across both redirects; compute it
+					// lazily inside each branch so the common (non-redirect) index serve stays allocation-free.
 					if (staticFile && req.pathname === '/' && baseURLPath !== '/') {
 						const originalPathname: string | undefined = (req as any).originalPathname;
 						if (originalPathname && !originalPathname.endsWith('/')) {
+							const queryIndex = (req.url as string).indexOf('?');
+							const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
 							return {
 								status: 301,
 								headers: {
@@ -141,6 +140,8 @@ export function handleApplication(scope: Scope) {
 					// prefix stripped, so rebuild the external path for the Location header (#1583)
 					if (staticFile === null) {
 						const externalPath = baseURLPath === '/' ? req.pathname : baseURLPath.slice(0, -1) + req.pathname;
+						const queryIndex = (req.url as string).indexOf('?');
+						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
 						return {
 							status: 301,
 							headers: {
