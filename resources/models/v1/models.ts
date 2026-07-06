@@ -11,6 +11,7 @@
 
 import { Resource } from '../../Resource.ts';
 import { listBackends } from '../backendRegistry.ts';
+import { authorizeV1Request, type OpenAIErrorResponse } from './errors.ts';
 
 export interface OAIModelEntry {
 	id: string;
@@ -26,7 +27,10 @@ export interface OAIModelList {
 
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1Models extends Resource {
-	static get(_target: unknown, _request: unknown): OAIModelList {
+	static get(_target: unknown, request: unknown): OAIModelList | OpenAIErrorResponse {
+		const authError = authorizeV1Request(request as any);
+		if (authError) return authError;
+
 		const created = Math.floor(Date.now() / 1000);
 		const generative = listBackends('generative').map(
 			({ logicalName }): OAIModelEntry => ({

@@ -7,7 +7,7 @@
  */
 
 const assert = require('node:assert');
-const { toOpenAIError, badRequest } = require('#src/resources/models/v1/errors');
+const { toOpenAIError, badRequest, authorizeV1Request } = require('#src/resources/models/v1/errors');
 const { ModelBackendNotFoundError } = require('#src/resources/models/backendRegistry');
 
 function makeClientError(message, statusCode) {
@@ -81,5 +81,24 @@ describe('badRequest', () => {
 		assert.equal(resp.data.error.message, 'field missing');
 		assert.equal(resp.data.error.code, null);
 		assert.equal(resp.data.error.param, null);
+	});
+});
+
+describe('authorizeV1Request', () => {
+	it('returns a 401 authentication_error envelope when request.user is absent', () => {
+		const resp = authorizeV1Request({});
+		assert.equal(resp.status, 401);
+		assert.equal(resp.data.error.type, 'authentication_error');
+	});
+
+	it('returns a 403 permission_error envelope for a non-super_user', () => {
+		const resp = authorizeV1Request({ user: { role: { permission: { super_user: false } } } });
+		assert.equal(resp.status, 403);
+		assert.equal(resp.data.error.type, 'permission_error');
+	});
+
+	it('returns null (allow) for a super_user', () => {
+		const resp = authorizeV1Request({ user: { role: { permission: { super_user: true } } } });
+		assert.equal(resp, null);
 	});
 });

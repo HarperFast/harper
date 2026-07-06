@@ -16,7 +16,7 @@ import { contentTypes } from '../../../server/serverHelpers/contentTypes.ts';
 import { Resource } from '../../Resource.ts';
 import { models } from '../Models.ts';
 import { openaiStream } from '../openaiStream.ts';
-import { toOpenAIError, badRequest } from './errors.ts';
+import { toOpenAIError, badRequest, authorizeV1Request } from './errors.ts';
 import { translateMessages, translateTools, toGenerateInput, toGenerateOpts, toChatCompletion } from './translation.ts';
 import type { OAIChatRequest } from './translation.ts';
 
@@ -25,7 +25,10 @@ const sseHandler = contentTypes.get('text/event-stream') as SseHandler;
 
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1ChatCompletions extends Resource {
-	static async post(_target: unknown, body: unknown, _request: unknown) {
+	static async post(_target: unknown, body: unknown, request: unknown) {
+		const authError = authorizeV1Request(request as any);
+		if (authError) return authError;
+
 		// REST.ts passes `request.data` directly, which is the (unawaited) streaming
 		// JSON deserializer's Promise — awaiting here is a no-op for callers (e.g.
 		// unit tests) that already pass a plain object.

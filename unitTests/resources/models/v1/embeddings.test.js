@@ -3,8 +3,12 @@
 /**
  * Unit tests for `resources/models/v1/embeddings.ts` (#631).
  *
- * REST.ts hands the handler `request.data`, which is an unawaited Promise for
- * JSON bodies — the handler must `await` it before reading any field.
+ * Covers two adjudicated blockers on PR #1616:
+ *  - REST.ts hands the handler `request.data`, which is an unawaited Promise for
+ *    JSON bodies — the handler must `await` it before reading any field.
+ *  - Anonymous / non-super_user requests must be rejected with an OpenAI-shape
+ *    401 / 403 envelope, mirroring Resource's default `allowRead`/`allowCreate`
+ *    gate that static overrides bypass.
  */
 
 const assert = require('node:assert');
@@ -12,6 +16,9 @@ require('#src/resources/databases');
 const { setEmbedding, clearRegistry } = require('#src/resources/models/backendRegistry');
 const { TestBackend } = require('#src/resources/models/TestBackend');
 const { V1Embeddings } = require('#src/resources/models/v1/embeddings');
+
+const SUPER_USER = { role: { permission: { super_user: true } } };
+const NON_SUPER_USER = { role: { permission: { super_user: false } } };
 
 describe('V1Embeddings.post', () => {
 	beforeEach(() => {
@@ -24,15 +31,34 @@ describe('V1Embeddings.post', () => {
 
 	it('returns embeddings for a plain-object body (unit-test caller shape)', async () => {
 		const body = { input: 'hello world' };
-		const result = await V1Embeddings.post(undefined, body, {});
+		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
 		assert.equal(result.object, 'list');
 		assert.equal(result.data.length, 1);
 	});
 
 	it('awaits a Promise-wrapped body, matching REST.ts passing request.data unawaited', async () => {
 		const body = Promise.resolve({ input: ['a', 'b'] });
-		const result = await V1Embeddings.post(undefined, body, {});
+		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
 		assert.equal(result.object, 'list');
 		assert.equal(result.data.length, 2);
+	});
+
+	it('rejects an anonymous request with a 401 OpenAI-shape envelope', async () => {
+		const body = { input: 'hello' };
+		const result = await V1Embeddings.post(undefined, body, {});
+		assert.equal(result.status, 401);
+		assert.equal(result.data.error.type, 'authentication_error');
+	});
+
+	it('rejects a non-super_user request with a 403 OpenAI-shape envelope', async () => {
+		const body = { input: 'hello' };
+		const result = await V1Embeddings.post(undefined, body, { user: NON_SUPER_USER });
+		assert.equal(result.status, 403);
+		assert.equal(result.data.error.type, 'permission_error');
+	});
+
+	it('checks authorization before touching the body, even for a malformed body', async () => {
+		const result = await V1Embeddings.post(undefined, 'not an object', {});
+		assert.equal(result.status, 401, 'auth must be checked ahead of body validation');
 	});
 });

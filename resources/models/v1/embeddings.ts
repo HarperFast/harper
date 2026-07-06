@@ -7,12 +7,15 @@
 
 import { Resource } from '../../Resource.ts';
 import { models } from '../Models.ts';
-import { toOpenAIError, badRequest } from './errors.ts';
+import { toOpenAIError, badRequest, authorizeV1Request } from './errors.ts';
 import { toEmbedOpts, toEmbedResponse } from './translation.ts';
 
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1Embeddings extends Resource {
-	static async post(_target: unknown, body: Record<string, unknown>, _request: unknown) {
+	static async post(_target: unknown, body: Record<string, unknown>, request: unknown) {
+		const authError = authorizeV1Request(request as any);
+		if (authError) return authError;
+
 		// REST.ts passes `request.data` directly, which is the (unawaited) streaming
 		// JSON deserializer's Promise — awaiting here is a no-op for callers (e.g.
 		// unit tests) that already pass a plain object.

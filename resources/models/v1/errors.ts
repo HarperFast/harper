@@ -8,7 +8,12 @@
 
 import { ModelBackendNotFoundError } from '../backendRegistry.ts';
 
-type OpenAIErrorType = 'invalid_request_error' | 'server_error' | 'authentication_error' | 'api_error';
+type OpenAIErrorType =
+	| 'invalid_request_error'
+	| 'server_error'
+	| 'authentication_error'
+	| 'permission_error'
+	| 'api_error';
 
 export interface OpenAIErrorBody {
 	message: string;
@@ -64,4 +69,51 @@ export function badRequest(message: string): OpenAIErrorResponse {
 		headers: { 'Content-Type': 'application/json' },
 		data: { error: { message, type: 'invalid_request_error', code: null, param: null } },
 	};
+}
+
+/**
+ * Gate for the `/v1/*` handlers, since overriding the static `get`/`post` methods
+ * bypasses Resource's `transactional()` wrapper and its default `allowRead`/`allowCreate`
+ * checks (Resource.ts:685-733, 426-435) never run for these endpoints.
+ *
+ * Mirrors Resource's default gate (super_user-only) rather than introducing a new
+ * permission — see PR discussion for whether a dedicated `/v1/*` permission should
+ * replace this later.
+ *
+ * Returns an OpenAI-shape error response when access should be denied, or `null`
+ * when the request may proceed.
+ */
+export function authorizeV1Request(request: {
+	user?: { role?: { permission?: { super_user?: boolean } } };
+}): OpenAIErrorResponse | null {
+	const user = request?.user;
+	if (!user) {
+		return {
+			status: 401,
+			headers: { 'Content-Type': 'application/json' },
+			data: {
+				error: {
+					message: 'You must provide valid credentials to access this endpoint.',
+					type: 'authentication_error' as const,
+					code: null,
+					param: null,
+				},
+			},
+		};
+	}
+	if (!user.role?.permission?.super_user) {
+		return {
+			status: 403,
+			headers: { 'Content-Type': 'application/json' },
+			data: {
+				error: {
+					message: 'You do not have permission to access this endpoint.',
+					type: 'permission_error' as const,
+					code: null,
+					param: null,
+				},
+			},
+		};
+	}
+	return null;
 }
