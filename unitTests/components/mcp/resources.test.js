@@ -894,7 +894,7 @@ describe('harper+rest:// descriptor scheme (#1609)', () => {
 		assert.equal(viaNew.ok, true);
 		assert.equal(JSON.parse(viaNew.contents[0].text).table, 'product');
 		const viaLegacy = await readResource({
-			uri: 'harper+rest://app.test:9926/Product',
+			uri: 'https://app.test:9926/Product',
 			user: SUPER,
 			profile: 'application',
 		});

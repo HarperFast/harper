@@ -87,6 +87,10 @@ export function compileUriTemplate(template: string): { regex: RegExp; paramName
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
 			throw new Error(`invalid template parameter '{${template.slice(open + 1, close)}}' in uriTemplate: ${template}`);
 		}
+		if (paramNames.includes(name)) {
+			// a repeated name would silently overwrite the earlier captured value
+			throw new Error(`duplicate template parameter '{${name}}' in uriTemplate: ${template}`);
+		}
 		paramNames.push(name);
 		pattern += reserved ? '(.+)' : '([^/]+)';
 		index = close + 1;

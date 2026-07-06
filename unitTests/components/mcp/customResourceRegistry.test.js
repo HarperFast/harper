@@ -37,10 +37,11 @@ describe('mcp/customResourceRegistry (#1609)', () => {
 			assert.ok(!regex.test('notesXv2://aXb/42'));
 		});
 
-		it('throws on unterminated braces, invalid names, and parameterless templates', () => {
+		it('throws on unterminated braces, invalid names, parameterless templates, and duplicate params', () => {
 			assert.throws(() => compileUriTemplate('docs:///{path'));
 			assert.throws(() => compileUriTemplate('docs:///{bad-name}'));
 			assert.throws(() => compileUriTemplate('docs:///static'));
+			assert.throws(() => compileUriTemplate('docs:///{name}/{name}'), /duplicate template parameter/);
 		});
 	});
 
