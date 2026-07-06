@@ -15,7 +15,7 @@
  * nothing.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { listResources } from './resources.ts';
+import { listResources, listResourceTemplates } from './resources.ts';
 import {
 	type RegisteredSession,
 	forEachSessionByProfile,
@@ -106,7 +106,16 @@ function toolsListNames(profile: McpProfile, session: RegisteredSession): Array<
 
 function resourcesListUris(profile: McpProfile, session: RegisteredSession): Array<{ uri: string }> {
 	const result = listResources({ user: session.user, profile, limit: MAX_RESOURCES_PAGE });
-	return result.resources.map((r) => ({ uri: r.uri }));
+	const uris = result.resources.map((r) => ({ uri: r.uri }));
+	// Templates are part of the advertised resource surface too: a rebuild can
+	// add/remove a custom mcpResources uriTemplate while the fixed-URI set stays
+	// identical (#1609). Fold them into the diffed snapshot (prefixed so a
+	// template can't collide with a fixed URI of the same spelling).
+	const templates = listResourceTemplates(profile, undefined, MAX_RESOURCES_PAGE);
+	for (const t of templates.resourceTemplates) {
+		uris.push({ uri: `template:${t.uriTemplate}` });
+	}
+	return uris;
 }
 
 function sameSet(
@@ -152,6 +161,19 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 		});
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged resources/* for session ${record.sessionId}: ${(err as Error).message}`);
+	}
+}
+
+/**
+ * Re-diff every session's visible resource list on a profile and push
+ * `notifications/resources/list_changed` to the sessions whose list actually
+ * changed. Called by the application registration after a rebuild so custom
+ * `mcpResources` additions/removals propagate (#1609); the per-session diff in
+ * `maybeNotifyResourcesChanged` keeps no-op rebuilds silent.
+ */
+export function notifyResourcesListChanged(profile: McpProfile): void {
+	for (const record of snapshotSessions(profile)) {
+		maybeNotifyResourcesChanged(record);
 	}
 }
 

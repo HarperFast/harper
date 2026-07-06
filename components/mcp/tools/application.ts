@@ -39,7 +39,15 @@ import {
 	type PromptDef,
 	type PromptGetResult,
 } from '../promptRegistry.ts';
-import { notifyPromptsListChanged } from '../listChanged.ts';
+import {
+	addCustomResource,
+	clearProfileCustomResources,
+	snapshotProfileCustomResources,
+	type CustomResourceDef,
+	type CustomResourceReadResult,
+	type ResourceReadContext,
+} from '../customResourceRegistry.ts';
+import { notifyPromptsListChanged, notifyResourcesListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
 import {
 	type AttributePermissionEntry,
@@ -123,6 +131,28 @@ interface ResourceClassLike {
 			values?: ReadonlyArray<string>;
 		}>;
 		render: (args: Record<string, string>) => PromptGetResult | Promise<PromptGetResult>;
+	}>;
+	/**
+	 * Component-author opt-in: publish custom content resources (#1609). Each
+	 * entry exposes a fixed `uri` or an RFC-6570-style `uriTemplate` (`{name}`
+	 * matches one path segment, `{+name}` matches across segments — custom
+	 * schemes like `docs:///{+path}` are fine per the MCP spec). `method` names
+	 * an instance method invoked as `(params, context)` on the LIVE registry
+	 * class at read time (same dispatch as `mcpTools`); it returns a string
+	 * (text content), `{ text }`, `{ blob, mimeType }` (base64 binary), or any
+	 * other object (serialized as JSON). RBAC is delegated to the Resource.
+	 * `completions` optionally declares candidate values per template parameter
+	 * for `completion/complete`.
+	 */
+	mcpResources?: ReadonlyArray<{
+		uri?: string;
+		uriTemplate?: string;
+		name: string;
+		title?: string;
+		description?: string;
+		mimeType?: string;
+		method: string;
+		completions?: Readonly<Record<string, ReadonlyArray<string>>>;
 	}>;
 }
 
@@ -826,6 +856,110 @@ function registerCustomMcpPrompts(ResourceClass: ResourceClassLike, path: string
 	return count;
 }
 
+// Warn-once dedup for mcpResources entries missing a description (same telemetry
+// pattern as custom tools). Keyed by `${path}:${name}`; test seam resets it.
+const _warnedResourceMissingDesc = new Set<string>();
+
+export function _resetCustomResourceWarningsForTest(): void {
+	_warnedResourceMissingDesc.clear();
+}
+
+/**
+ * #1609 — Component-author opt-in. Walk `ResourceClass.mcpResources` and
+ * register each entry as a custom content resource served by `resources/read`.
+ * Reads dispatch to the named instance method on the LIVE registry class
+ * (see `liveResource` — same reasoning as custom tools: the exported
+ * `resources.js` subclass carries the author's access control). Invalid
+ * entries are skipped with a warn so one bad entry can't take down the
+ * profile rebuild.
+ */
+function registerCustomMcpResources(ResourceClass: ResourceClassLike, path: string): number {
+	const resources = ResourceClass.mcpResources;
+	if (!Array.isArray(resources) || resources.length === 0) return 0;
+	let count = 0;
+	for (const def of resources) {
+		const hasUri = typeof def?.uri === 'string' && def.uri.length > 0;
+		const hasTemplate = typeof def?.uriTemplate === 'string' && def.uriTemplate.length > 0;
+		if (!def?.name || !def?.method || hasUri === hasTemplate) {
+			harperLogger.warn(
+				`MCP application profile: skipping invalid mcpResources entry on '${path}' (needs name + method + exactly one of uri/uriTemplate): ${JSON.stringify(def)}`
+			);
+			continue;
+		}
+		// Reserved schemes belong to the discovered surface — a custom entry under
+		// harper:// (or the descriptor/web schemes) would shadow built-ins like
+		// harper://schema/... for every client of this instance.
+		const declaredUri = (hasUri ? def.uri : def.uriTemplate) as string;
+		if (/^(harper|harper\+rest|https?):/i.test(declaredUri)) {
+			harperLogger.warn(
+				`MCP application profile: skipping mcpResource '${def.name}' on '${path}': uri scheme is reserved (harper:, harper+rest:, http:, https:); use a custom scheme like docs:///...`
+			);
+			continue;
+		}
+		const methodName = def.method;
+		if (typeof (ResourceClass.prototype as Record<string, unknown>)?.[methodName] !== 'function') {
+			harperLogger.warn(
+				`MCP application profile: '${path}' declares mcpResource '${def.name}' for method '${methodName}', but no such instance method exists on the prototype`
+			);
+			continue;
+		}
+		const dedupKey = `${path}:${def.name}`;
+		if (!def.description && !_warnedResourceMissingDesc.has(dedupKey)) {
+			_warnedResourceMissingDesc.add(dedupKey);
+			harperLogger.warn(
+				`MCP application: Resource '${path}' exposes mcpResource '${def.name}' without a description. ` +
+					`Clients surface it to models/users by description; add { description: '...' } to the mcpResources entry.`
+			);
+		}
+		const registryDef: CustomResourceDef = {
+			...(hasUri ? { uri: def.uri } : {}),
+			...(hasTemplate ? { uriTemplate: def.uriTemplate } : {}),
+			name: def.name,
+			...(def.title ? { title: def.title } : {}),
+			...(def.description ? { description: def.description } : {}),
+			...(def.mimeType ? { mimeType: def.mimeType } : {}),
+			...(def.completions ? { completions: def.completions } : {}),
+			profile: 'application',
+			read: makeCustomResourceReader(path, ResourceClass, methodName),
+		};
+		try {
+			addCustomResource(registryDef);
+			count++;
+		} catch (err) {
+			// compileUriTemplate rejects malformed templates
+			harperLogger.warn(
+				`MCP application profile: skipping mcpResource '${def.name}' on '${path}': ${(err as Error).message}`
+			);
+		}
+	}
+	return count;
+}
+
+/**
+ * Build the read dispatcher for a custom resource. Mirrors
+ * `makeCustomMethodHandler`: resolve the live class, construct an instance
+ * with the caller's context, invoke `(params, context)`. Unlike tools, errors
+ * are NOT wrapped here — `resources/read` surfaces failures as JSON-RPC
+ * errors, which `readResource` handles.
+ */
+function makeCustomResourceReader(path: string, capturedClass: ResourceClassLike, methodName: string) {
+	return async function (
+		params: Record<string, string>,
+		context: ResourceReadContext
+	): Promise<CustomResourceReadResult> {
+		const ResourceClass = liveResource(path, capturedClass);
+		const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
+		const instance = new Ctor(undefined, buildContext(context.user));
+		const method = instance[methodName] as
+			| ((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceReadResult)
+			| undefined;
+		if (typeof method !== 'function') {
+			throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
+		}
+		return await method.call(instance, params ?? {}, context);
+	};
+}
+
 function makeCustomMethodHandler(toolName: string, path: string, capturedClass: ResourceClassLike, methodName: string) {
 	return async function (args: unknown, context: ToolCallContext): Promise<ToolResult> {
 		try {
@@ -871,6 +1005,30 @@ function makeCustomMethodHandler(toolName: string, path: string, capturedClass: 
 // Gates `refreshApplicationTools` so schema-change rebuilds only happen when the
 // application profile is actually enabled.
 let applicationToolsRegistered = false;
+// Resources.registrationVersion at the last walk. Component entry loading is
+// asynchronous past the boot awaits (chokidar's initial scan completes after
+// loadComponentDirectories resolves), so tableless components with custom
+// mcpTools/mcpPrompts/mcpResources can register AFTER the initial walk without
+// any schema-change event to trigger a refresh. The transport compares this on
+// each request and rebuilds lazily when the registry moved (#1609).
+let lastWalkedRegistrationVersion = -1;
+
+/**
+ * Lazy freshness gate, called per MCP request on the application profile: if
+ * the Resources registry changed since the last walk, rebuild. An integer
+ * compare in the common case.
+ */
+export function ensureApplicationToolsFresh(): void {
+	if (!applicationToolsRegistered) return;
+	const resources = loadResources();
+	if (!resources) return;
+	// Coerce a missing version to 0 on BOTH sides (here and in the walk snapshot):
+	// an undefined comparison would fail every request and turn the lazy check
+	// into a synchronous rebuild per call.
+	const currentVersion = (resources as { registrationVersion?: number }).registrationVersion ?? 0;
+	if (currentVersion === lastWalkedRegistrationVersion) return;
+	registerApplicationTools();
+}
 
 /**
  * Rebuild the application tool registry from the CURRENT schema graph. Tools are
@@ -896,6 +1054,9 @@ export function registerApplicationTools(): void {
 		return;
 	}
 	applicationToolsRegistered = true;
+	// Capture BEFORE walking: a registration landing mid-walk bumps the version
+	// past this snapshot, so the next request's freshness check re-walks.
+	lastWalkedRegistrationVersion = (resources as { registrationVersion?: number }).registrationVersion ?? 0;
 	// Atomic idempotent rebuild: drop any application tools from a prior pass so a
 	// removed/renamed table doesn't leave a stale tool behind. Snapshot the prior
 	// set first so a throw mid-loop (e.g. a malformed custom tool on a @table)
@@ -903,19 +1064,23 @@ export function registerApplicationTools(): void {
 	// change. Registration is synchronous, so no reader observes the gap.
 	const previousTools = snapshotProfileTools('application');
 	const previousPrompts = snapshotProfilePrompts('application');
+	const previousCustomResources = snapshotProfileCustomResources('application');
 	const previousPromptNames = previousPrompts
 		.map((p) => p.name)
 		.sort()
 		.join(' ');
 	clearProfileTools('application');
 	clearProfilePrompts('application');
+	clearProfileCustomResources('application');
 	try {
 		buildApplicationTools(resources);
 	} catch (err) {
 		clearProfileTools('application');
 		clearProfilePrompts('application');
+		clearProfileCustomResources('application');
 		for (const def of previousTools) addTool(def);
 		for (const def of previousPrompts) addPrompt(def);
+		for (const def of previousCustomResources) addCustomResource(def);
 		throw err;
 	}
 	// Tell connected sessions if the prompt set actually changed (added/removed),
@@ -927,6 +1092,9 @@ export function registerApplicationTools(): void {
 	if (currentPromptNames !== previousPromptNames) {
 		notifyPromptsListChanged('application');
 	}
+	// Custom resources feed resources/list; the notifier diffs each session's
+	// visible URI set itself, so no-op rebuilds don't spam (#1609).
+	notifyResourcesListChanged('application');
 }
 
 function buildApplicationTools(resources: ResourcesRegistry): void {
@@ -947,7 +1115,8 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
-		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts) continue;
+		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
+		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) continue;
 		const databaseName = ResourceClass?.databaseName;
 		const tableName = ResourceClass?.tableName;
 		const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
@@ -966,6 +1135,7 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		}
 		toolsRegistered += registerCustomMcpTools(ResourceClass, path);
 		registerCustomMcpPrompts(ResourceClass, path);
+		registerCustomMcpResources(ResourceClass, path);
 	}
 	harperLogger.info(
 		`MCP application profile: considered ${resourcesConsidered} resource(s), registered ${toolsRegistered} tool(s)`
