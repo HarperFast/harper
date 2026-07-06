@@ -228,6 +228,13 @@ describe('crdt applyForward', () => {
 	it('throws on an unsupported operation', () => {
 		assert.throws(() => applyForward({}, { x: { __op__: 'multiply', value: 2 } }), /Unsupported operation multiply/);
 	});
+
+	it('does not resolve an Object.prototype member as an operation', () => {
+		// The registry is null-prototype, so `__op__: 'toString'` (a prototype member on a plain
+		// object) resolves to undefined and is rejected like any other unsupported op, rather than
+		// invoking Object.prototype.toString.
+		assert.throws(() => applyForward({}, { x: { __op__: 'toString', value: 2 } }), /Unsupported operation toString/);
+	});
 });
 
 describe('crdt addValues', () => {
@@ -253,7 +260,15 @@ describe('crdt addValues', () => {
 		assert.strictEqual(addValues(5n, 3), 8n);
 	});
 
-	it('treats a null prior value as zero', () => {
+	it('establishes the value from a null/undefined prior, including a bigint delta', () => {
 		assert.strictEqual(addValues(null, 3), 3);
+		assert.strictEqual(addValues(undefined, 3), 3);
+		assert.strictEqual(addValues(null, 3n), 3n); // would throw `0 + 3n` without the null guard
+	});
+
+	it('keeps a number field a number when a stray bigint delta arrives', () => {
+		// number + bigint would otherwise throw a TypeError on the apply path.
+		assert.strictEqual(addValues(5, 3n), 8);
+		assert.strictEqual(typeof addValues(5, 3n), 'number');
 	});
 });

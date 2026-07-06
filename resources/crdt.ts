@@ -4,9 +4,12 @@
 // on the read path, and a bigint folded on the storage path but threw (`+bigint`) on the read path.
 export function addValues(previousValue: any, value: any) {
 	if (typeof previousValue === 'bigint') return previousValue + BigInt(value);
+	if (previousValue == null) return value; // no prior value: the add establishes it
 	const previous = +previousValue; // coerce so a numeric string adds instead of concatenating
-	if (isNaN(previous)) return value; // no prior numeric value: the add establishes it
-	return previous + value;
+	if (isNaN(previous)) return value; // non-numeric prior: the add establishes it
+	// A number-typed field stays a number even if a stray bigint delta arrives, rather than throwing
+	// a number+bigint TypeError on the apply path.
+	return previous + (typeof value === 'bigint' ? Number(value) : value);
 }
 export function add(record, property, action) {
 	record[property] = addValues(record[property], action.value);
@@ -24,9 +27,11 @@ add.reverse = function (record, property, action) {
 // crafted/corrupt `__op__` naming any exported function (addValues, getRecordAtTime, …) would
 // resolve truthy and be invoked with the wrong arguments (throwing and wedging the apply path, or
 // silently corrupting the field). applyReverse/applyForward below already resolve through this.
-export const operations = {
+// Null-prototype so a crafted `__op__` naming an Object.prototype member (toString, valueOf,
+// constructor, …) resolves to undefined rather than an inherited function.
+export const operations = Object.assign(Object.create(null), {
 	add,
-};
+});
 
 /**
  * Rebuild a record update that has a timestamp before the provided newer update
