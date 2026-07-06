@@ -134,14 +134,18 @@ interface ToolAnnotationsLike {
 }
 
 /**
- * True when `pattern`'s only dynamic segment is a single `:id` param (e.g. `widget/:id`).
- * That is the ONLY shape the verb handlers below bind — `target.id = args.id` — so a
- * differently-named param (`:widgetId`), more than one param, or a `*wildcard` segment
- * would advertise an `id` input the handler never actually threads onto the real segment(s).
+ * True when `pattern`'s only dynamic segment is a single trailing `:id` param (e.g. `widget/:id`).
+ * That is the ONLY shape the verb handlers below bind — `target.id = args.id`, treating `:id` as
+ * the record itself — so a differently-named param (`:widgetId`), more than one param, a `*wildcard`
+ * segment, or an `:id` that is NOT the final segment (`widget/:id/action`, where the route names a
+ * sub-resource, not the widget) would advertise an `id` input the handler never actually threads
+ * onto the real segment(s).
  */
 function isSimpleIdRoute(pattern: string): boolean {
+	const segments = pattern.split('/');
+	if (segments[segments.length - 1] !== ':id') return false;
 	let paramCount = 0;
-	for (const segment of pattern.split('/')) {
+	for (const segment of segments) {
 		if (segment.startsWith('*')) return false;
 		if (segment.startsWith(':')) {
 			if (segment !== ':id') return false;
