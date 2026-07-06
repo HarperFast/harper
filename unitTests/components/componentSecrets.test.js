@@ -74,8 +74,14 @@ function installMockSecretTable() {
 	};
 }
 
+// Scoped-tier row (accessor-only, restricted to `grants`).
 function row(name, plaintext, grants = []) {
 	return { name, envelope: seal(plaintext), kid: fp, grants };
+}
+
+// process.env-tier row (materialized into the real process.env for every component).
+function envRow(name, plaintext) {
+	return { name, envelope: seal(plaintext), kid: fp, grants: [], processEnv: true };
 }
 
 describe('componentSecrets', () => {
@@ -117,44 +123,50 @@ describe('componentSecrets', () => {
 	});
 
 	describe('global-tier materialization', () => {
-		it('materializes empty-grants rows into the real process.env', async () => {
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'g-value'));
+		it('materializes processEnv rows into the real process.env', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g-value'));
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_GLOBAL, 'g-value');
 		});
 
 		it('a pre-existing real environment variable wins over the store', async () => {
 			process.env.CS_PRESET = 'from-real-env';
-			table.mock.rows.set('CS_PRESET', row('CS_PRESET', 'from-store'));
+			table.mock.rows.set('CS_PRESET', envRow('CS_PRESET', 'from-store'));
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_PRESET, 'from-real-env');
 		});
 
-		it('rows with non-empty grants NEVER land in process.env', async () => {
+		it('scoped rows (grants, no processEnv) NEVER land in process.env', async () => {
 			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 's-value', ['some-app']));
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_SCOPED, undefined);
 		});
 
-		it('re-materialization updates a value this module owns (reload heals)', async () => {
+		it('an un-flagged row (no processEnv, no grants) is inert — not in process.env', async () => {
 			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v1'));
 			await materializeGlobalSecrets();
+			assert.equal(process.env.CS_GLOBAL, undefined);
+		});
+
+		it('re-materialization updates a value this module owns (reload heals)', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v1'));
+			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_GLOBAL, 'v1');
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v2'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v2'));
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_GLOBAL, 'v2');
 		});
 
 		it('retracts an owned value when the row is deleted', async () => {
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v1'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v1'));
 			await materializeGlobalSecrets();
 			table.mock.rows.delete('CS_GLOBAL');
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_GLOBAL, undefined);
 		});
 
-		it('retracts an owned value when grants are tightened to scoped', async () => {
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v1'));
+		it('retracts an owned value when the row is converted from processEnv to scoped', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v1'));
 			await materializeGlobalSecrets();
 			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v1', ['some-app']));
 			await materializeGlobalSecrets();
@@ -163,7 +175,7 @@ describe('componentSecrets', () => {
 
 		it('no custody registered: nothing materialized, no throw (degraded)', async () => {
 			clearSecretCustody();
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v1'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v1'));
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_GLOBAL, undefined);
 		});
@@ -280,7 +292,7 @@ describe('componentSecrets', () => {
 		});
 
 		it('custody-unavailable: row exists but cannot be decrypted on this node', async () => {
-			table.mock.rows.set('CS_REQ', row('CS_REQ', 'v'));
+			table.mock.rows.set('CS_REQ', envRow('CS_REQ', 'v'));
 			clearSecretCustody();
 			await materializeGlobalSecrets();
 			assert.throws(() => processComponentEnv('app-a', { CS_REQ: { required: true } }), /CS_REQ \(custody-unavailable/);
@@ -305,7 +317,7 @@ describe('componentSecrets', () => {
 		});
 
 		it('satisfied via a materialized global-tier row', async () => {
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v'));
 			await materializeGlobalSecrets();
 			processComponentEnv('app-a', { CS_GLOBAL: { required: true } });
 			assert.equal(getUnsatisfiedEnv('app-a').length, 0);
@@ -353,7 +365,7 @@ describe('componentSecrets', () => {
 		});
 
 		it('superset view includes declared global-tier names', async () => {
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'g-value'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g-value'));
 			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 's-value', ['app-a']));
 			await materializeGlobalSecrets();
 			processComponentEnv('app-a', { CS_GLOBAL: { required: true } });
@@ -363,7 +375,7 @@ describe('componentSecrets', () => {
 		});
 
 		it('undeclared global-tier names are not in the view (env is not mirrored wholesale)', async () => {
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'g-value'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g-value'));
 			await materializeGlobalSecrets();
 			assert.equal(getSecretsForComponent('app-a').CS_GLOBAL, undefined);
 			assert.equal(process.env.CS_GLOBAL, 'g-value');
@@ -410,12 +422,12 @@ describe('componentSecrets', () => {
 					yield* baseSearch();
 				})();
 			};
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v1'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v1'));
 			await Promise.all([materializeGlobalSecrets(), materializeGlobalSecrets(), materializeGlobalSecrets()]);
 			assert.equal(scans, 1);
 			assert.equal(process.env.CS_GLOBAL, 'v1');
 			// after completion a new call must re-read (freshness for set_secret → deploy)
-			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'v2'));
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'v2'));
 			await materializeGlobalSecrets();
 			assert.equal(scans, 2);
 			assert.equal(process.env.CS_GLOBAL, 'v2');

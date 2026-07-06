@@ -1,14 +1,16 @@
 /**
- * Component-facing consumption of the hdb_secret store (#1550) — two delivery tiers:
+ * Component-facing consumption of the hdb_secret store (#1550) — two explicit, mutually-exclusive
+ * delivery tiers keyed off the row itself (set_secret decides the tier; see components/secretOperations.ts):
  *
- * - Global tier: rows with EMPTY `grants` are decrypted at startup (before components load) and
- *   materialized into the REAL `process.env`, exactly like `.env` values. Precedence: a
+ * - Global tier: rows flagged `processEnv: true` are decrypted at startup (before components load)
+ *   and materialized into the REAL `process.env`, exactly like `.env` values. Precedence: a
  *   pre-existing real environment variable always wins over the store. Child processes inherit
  *   these values (same as `.env` today). There is no isolation promise on this tier.
- * - Scoped tier: rows with NON-EMPTY `grants` NEVER land in `process.env` — they are exposed only
- *   through the per-component accessor (`import { secrets } from 'harper'` / `scope.secrets`), so
- *   they are not inherited by child processes and are invisible to env dumps. The `grants` list on
- *   the row is the authority for which components see them.
+ * - Scoped tier: rows with `grants` (and no `processEnv`) NEVER land in `process.env` — they are
+ *   exposed only through the per-component accessor (`import { secrets } from 'harper'` /
+ *   `scope.secrets`), so they are not inherited by child processes and are invisible to env dumps.
+ *   The `grants` list on the row is the authority for which components see them; a row with neither
+ *   `processEnv` nor any grant is inert (visible to no component) until it is granted.
  *
  * Component configs declare their environment expectations in an `env:` block:
  *
@@ -69,6 +71,8 @@ interface EnvDeclaration {
 
 interface SecretRowState {
 	grants: string[];
+	/** Whether this row is materialized into the real process.env (the global delivery tier). */
+	processEnv: boolean;
 	/** Decrypted plaintext; undefined when this node could not decrypt the envelope. */
 	value?: string;
 	/** Why decryption failed, when it did. */
@@ -89,7 +93,7 @@ const accessorCache = new Map<string, SecretsView>();
 
 /**
  * Read the hdb_secret store, decrypt what this node's custody allows, materialize the global tier
- * (empty `grants`) into the real process.env, and snapshot the scoped tier for the accessor. Runs
+ * (`processEnv: true` rows) into the real process.env, and snapshot the scoped tier for the accessor. Runs
  * at the start of each load cycle, and again per env-declaring component load so out-of-cycle
  * loads (e.g. deploy validation in a long-lived worker) gate against a fresh snapshot. Never
  * throws — every degraded mode (table missing pre-upgrade, no custody registered, undecryptable
@@ -131,7 +135,10 @@ async function doMaterializeGlobalSecrets(): Promise<void> {
 		for await (const row of table.search([])) {
 			const name = row.name;
 			if (typeof name !== 'string' || !name) continue;
-			const state: SecretRowState = { grants: Array.isArray(row.grants) ? [...new Set(row.grants as string[])] : [] };
+			const state: SecretRowState = {
+				grants: Array.isArray(row.grants) ? [...new Set(row.grants as string[])] : [],
+				processEnv: row.processEnv === true,
+			};
 			if (typeof row.envelope === 'string') {
 				if (!decryptor) {
 					state.failure = 'no secrets custody is registered on this node';
@@ -155,9 +162,10 @@ async function doMaterializeGlobalSecrets(): Promise<void> {
 	storeAvailable = true;
 
 	for (const [name, state] of rows) {
-		if (state.grants.length > 0) {
-			// Scoped tier: never in process.env. If a previous cycle materialized this name as
-			// global-tier and its grants have since been tightened, retract our value.
+		if (!state.processEnv) {
+			// Scoped tier (or an inert un-granted row): never in process.env. If a previous cycle
+			// materialized this name as a processEnv secret and it has since been converted to scoped,
+			// retract our value.
 			if (ownedEnvKeys.has(name)) {
 				delete process.env[name];
 				ownedEnvKeys.delete(name);
@@ -256,7 +264,9 @@ function evaluateDeclaration(
 		detail,
 	});
 	const row = secretRows.get(name);
-	if (row && row.grants.length > 0) {
+	if (row && !row.processEnv) {
+		// Scoped tier: satisfied only through the accessor for a granted component. An empty-grants row
+		// is inert (granted to nobody), so it falls through to the `ungranted` branch.
 		if (row.grants.includes(componentName)) {
 			if (row.value !== undefined) return undefined; // satisfied via the scoped accessor
 			// The accessor serves a real env var for declared names when the row is undecryptable, so
@@ -267,7 +277,7 @@ function evaluateDeclaration(
 		if (process.env[name] !== undefined) return undefined; // a real env var still satisfies the request
 		return unsatisfied('ungranted', 'scoped', `the secret exists but is not granted to component '${componentName}'`);
 	}
-	if (process.env[name] !== undefined) return undefined; // global tier materialized, literal, or real env
+	if (process.env[name] !== undefined) return undefined; // processEnv tier materialized, literal, or real env
 	if (row) return unsatisfied('custody-unavailable', 'global', row.failure);
 	return unsatisfied(
 		'missing',
@@ -349,7 +359,7 @@ export function getSecretsForComponent(componentName: string): SecretsView {
 	}
 	// Scoped rows granted to this component; on a name collision the scoped value wins.
 	for (const [name, row] of secretRows) {
-		if (row.value !== undefined && row.grants.length > 0 && row.grants.includes(componentName)) {
+		if (row.value !== undefined && !row.processEnv && row.grants.includes(componentName)) {
 			entries[name] = row.value;
 		}
 	}
