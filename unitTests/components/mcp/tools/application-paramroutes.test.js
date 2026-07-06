@@ -6,7 +6,7 @@
 // paramRoutes) did expose them. buildApplicationTools now enumerates paramRoutes
 // too, so the tool surface matches the REST surface.
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	registerApplicationTools,
 	_setResourcesForTest,
