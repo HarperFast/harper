@@ -92,7 +92,7 @@ export function topoSort(entries: HttpEntry[], onCycle?: () => void): HttpEntry[
  */
 export function buildLinearChain(sorted: HttpEntry[], fallback: Function): Function {
 	let next = fallback;
-	for (let i = sorted.length; i > 0; ) {
+	for (let i = sorted.length; i > 0;) {
 		const { listener } = sorted[--i];
 		const callback = next;
 		next = (...args: any[]) => listener(...args, callback);
