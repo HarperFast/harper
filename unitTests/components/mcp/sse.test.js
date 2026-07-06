@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { serializeSseFrame, toSseStream } = require('#src/components/mcp/sse');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 

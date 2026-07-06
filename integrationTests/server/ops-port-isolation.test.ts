@@ -12,7 +12,7 @@
  * http port still completes (HTTP 101). Without the fix the upgrade never completes.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { request } from 'node:http';
 import { join } from 'node:path';
 

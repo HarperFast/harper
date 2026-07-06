@@ -10,7 +10,7 @@
  * S3 and csv_url_load tests are skipped (require external infrastructure).
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';

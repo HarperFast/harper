@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const http = require('node:http');
 const { runDoctor } = require('#src/bin/mcp/doctor');
 

@@ -1,7 +1,7 @@
 /* eslint-disable sonarjs/no-nested-functions */
 const { OptionsWatcher } = require('#src/components/OptionsWatcher');
 const { EventEmitter, once } = require('node:events');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');

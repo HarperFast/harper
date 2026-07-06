@@ -23,7 +23,7 @@
  * with a local fixture but ultimately depends on the same restart path.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 import { restartHttpWorkers } from './utils/lifecycle.mjs';

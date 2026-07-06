@@ -44,7 +44,7 @@
  *   HARPER_STORAGE_ENGINE=lmdb HARPER_WORKER_COUNT=4 npm run test:integration -- "integrationTests/database/read-snapshot-consistency.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';

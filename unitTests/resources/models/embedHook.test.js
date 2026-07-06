@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { buildEmbedBefore, createDefaultEmbedder, __setEmbedFnForTest } = require('#src/resources/models/embedHook');
 
 const VECTOR_F32 = new Float32Array([0.1, 0.2, 0.3]);
