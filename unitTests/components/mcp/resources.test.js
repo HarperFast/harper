@@ -901,3 +901,15 @@ describe('harper+rest:// descriptor scheme (#1609)', () => {
 		assert.equal(viaLegacy.ok, true, 'http(s) URIs from older listings must keep reading');
 	});
 });
+
+describe('normalizePortForUrl (#1609 descriptor authority)', () => {
+	const { normalizePortForUrl } = require('#src/components/mcp/resources');
+	it('passes bare ports through and extracts the port from host:port bind forms', () => {
+		assert.equal(normalizePortForUrl(9926), '9926');
+		assert.equal(normalizePortForUrl('9926'), '9926');
+		assert.equal(normalizePortForUrl('127.0.0.9:9926'), '9926');
+		assert.equal(normalizePortForUrl('[::1]:9926'), '9926');
+		assert.equal(normalizePortForUrl(undefined), undefined);
+		assert.equal(normalizePortForUrl(''), undefined);
+	});
+});

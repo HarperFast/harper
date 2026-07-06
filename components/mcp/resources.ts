@@ -950,11 +950,24 @@ function guessAppHttpUrlPrefix(): string | undefined {
 
 	// Standard deployment: prefer the HTTPS port. Fall back to the plain
 	// HTTP port for dev setups that don't configure TLS.
-	const securePort = env.get(CONFIG_PARAMS.HTTP_SECUREPORT);
+	const securePort = normalizePortForUrl(env.get(CONFIG_PARAMS.HTTP_SECUREPORT));
 	if (securePort) return `https://${hostname}:${securePort}`;
-	const httpPort = env.get(CONFIG_PARAMS.HTTP_PORT);
+	const httpPort = normalizePortForUrl(env.get(CONFIG_PARAMS.HTTP_PORT));
 	if (httpPort) return `http://${hostname}:${httpPort}`;
 	return undefined;
+}
+
+/**
+ * Port config accepts a bare port or a `host:port` bind-address form
+ * (e.g. `--HTTP_PORT=127.0.0.9:9926`); descriptor URLs need only the port —
+ * appending the raw value produced authorities like `host:host:port` (#1609).
+ * Exported for unit tests.
+ */
+export function normalizePortForUrl(value: unknown): string | undefined {
+	if (value == null || value === '') return undefined;
+	const str = String(value);
+	const colon = str.lastIndexOf(':');
+	return colon === -1 ? str : str.slice(colon + 1);
 }
 
 function jsonContent(uri: string, body: unknown): ReadResourceOk {
