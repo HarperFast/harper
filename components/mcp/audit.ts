@@ -30,6 +30,12 @@ const REDACTION_PATTERN = /(secret|password|token|api[-_]?key|credentials?|auth)
 // mirror the fields processLocalTransaction strips from the REST operations log — the MCP audit
 // path must not become a bypass. Exact-match so e.g. `search_value` stays auditable.
 const REDACTION_EXACT_FIELDS = /^(value|values|envelope)$/i;
+// ...but only for the operations that actually put secrets in those generically-named fields.
+// `value`/`values` are common, non-secret params on many other operations (record data, config
+// values), so blanket-redacting them would gut the audit trail for unrelated tools. The global
+// REDACTION_PATTERN still applies to every tool; this just narrows the exact-field masking to the
+// secret-bearing ops. NOTE: extend this set if a new op ever carries a secret in a plain field.
+const EXACT_FIELD_TOOLS = new Set(['set_secret', 'set_env_value']);
 const REDACTION_PLACEHOLDER = '[redacted]';
 const MAX_REDACTION_DEPTH = 10;
 
@@ -40,18 +46,18 @@ const MAX_REDACTION_DEPTH = 10;
  * a credential buried below the depth limit cannot leak. Returns a shallow
  * clone — the caller's payload is never mutated.
  */
-export function redactArgs(value: unknown, depth = 0): unknown {
+export function redactArgs(value: unknown, depth = 0, redactExactFields = false): unknown {
 	if (value === null || typeof value !== 'object') return value;
 	if (depth > MAX_REDACTION_DEPTH) return REDACTION_PLACEHOLDER;
 	if (Array.isArray(value)) {
-		return value.map((v) => redactArgs(v, depth + 1));
+		return value.map((v) => redactArgs(v, depth + 1, redactExactFields));
 	}
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(value)) {
-		if (REDACTION_PATTERN.test(k) || REDACTION_EXACT_FIELDS.test(k)) {
+		if (REDACTION_PATTERN.test(k) || (redactExactFields && REDACTION_EXACT_FIELDS.test(k))) {
 			out[k] = REDACTION_PLACEHOLDER;
 		} else {
-			out[k] = redactArgs(v, depth + 1);
+			out[k] = redactArgs(v, depth + 1, redactExactFields);
 		}
 	}
 	return out;
@@ -70,7 +76,11 @@ export function maskSessionId(id: string): string {
  */
 export function emitAuditEntry(entry: AuditEntry): void {
 	try {
-		const masked = { ...entry, sessionId: maskSessionId(entry.sessionId), args: redactArgs(entry.args) };
+		const masked = {
+			...entry,
+			sessionId: maskSessionId(entry.sessionId),
+			args: redactArgs(entry.args, 0, EXACT_FIELD_TOOLS.has(entry.tool)),
+		};
 		harperLogger.info({ category: 'mcp.audit', ...masked });
 	} catch (err) {
 		// Audit emission must never break a tool call. If logging itself fails
