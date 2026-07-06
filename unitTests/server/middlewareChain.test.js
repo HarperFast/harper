@@ -679,6 +679,39 @@ describe('normalizeUrlPath', () => {
 	it('leaves paths without trailing slash unchanged', () => {
 		assert.strictEqual(normalizeUrlPath('/api/v2'), '/api/v2');
 	});
+
+	it('adds a leading slash to slash-less paths (#1583)', () => {
+		assert.strictEqual(normalizeUrlPath('assets'), '/assets');
+		assert.strictEqual(normalizeUrlPath('assets/'), '/assets');
+		assert.strictEqual(normalizeUrlPath('a'), '/a');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// matchesRoute with slash-less urlPath (#1583)
+// ---------------------------------------------------------------------------
+
+describe('matchesRoute with slash-less urlPath', () => {
+	it('matches as if the leading slash were present', () => {
+		assert.strictEqual(matchesRoute(req('/assets/test.css'), { urlPath: 'assets' }), true);
+		assert.strictEqual(matchesRoute(req('/assets'), { urlPath: 'assets' }), true);
+		assert.strictEqual(matchesRoute(req('/assets2/x'), { urlPath: 'assets' }), false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// stripPrefix originalPathname passthrough (#1583)
+// ---------------------------------------------------------------------------
+
+describe('stripPrefix originalPathname', () => {
+	it('exposes the unstripped pathname so handlers can distinguish /mount from /mount/', () => {
+		const noSlash = stripPrefix(req('/assets'), '/assets');
+		assert.strictEqual(noSlash.pathname, '/');
+		assert.strictEqual(noSlash.originalPathname, '/assets');
+		const withSlash = stripPrefix(req('/assets/'), '/assets');
+		assert.strictEqual(withSlash.pathname, '/');
+		assert.strictEqual(withSlash.originalPathname, '/assets/');
+	});
 });
 
 // ---------------------------------------------------------------------------
