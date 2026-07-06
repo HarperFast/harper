@@ -454,6 +454,9 @@
 				"attribute": "grants"
 			},
 			{
+				"attribute": "processEnv"
+			},
+			{
 				"attribute": "metadata"
 			},
 			{

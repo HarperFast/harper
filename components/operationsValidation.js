@@ -263,7 +263,8 @@ const SECRET_MAX_LENGTH = 256 * 1024;
 
 /**
  * Validate set_secret requests: `name` plus exactly one of `value` (plaintext) or `envelope`
- * (`enc:v1:` ciphertext), with optional `metadata` and `grants`.
+ * (`enc:v1:` ciphertext), with optional `metadata`, and a tier of either `processEnv` or `grants`
+ * (the handler rejects the two together — a processEnv secret is global, so scoping it is meaningless).
  * @param req
  * @returns {*}
  */
@@ -279,6 +280,9 @@ function setSecretValidator(req) {
 		// and grants is a set (explicit duplicates rejected here; write paths also dedupe dirty state).
 		metadata: Joi.object().max(100),
 		grants: Joi.array().items(Joi.string().min(1)).max(100).unique(),
+		// process.env delivery tier; mutually exclusive with grants (enforced in the handler so the
+		// check also covers a grants add against an already-processEnv stored row).
+		processEnv: Joi.boolean(),
 	}).xor('value', 'envelope');
 
 	return validator.validateBySchema(req, schema);

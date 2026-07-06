@@ -350,6 +350,62 @@ describe('secretOperations', () => {
 		});
 	});
 
+	describe('processEnv tier', () => {
+		it('stores the processEnv flag and forces grants empty', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true });
+			const row = installed.mock.rows.get('PE');
+			assert.equal(row.processEnv, true);
+			assert.deepStrictEqual(row.grants, []);
+		});
+
+		it('rejects set_secret with both processEnv and grants', async () => {
+			installCustody();
+			await assert.rejects(
+				async () => secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true, grants: ['app1'] }),
+				/cannot be both processEnv and grant-scoped/
+			);
+		});
+
+		it('rejects granting a component to a processEnv secret', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true });
+			await assert.rejects(
+				async () => secretOps.grantSecret({ ...su('grant_secret'), name: 'PE', component: 'app1' }),
+				/is a processEnv \(global\) secret and cannot be scoped/
+			);
+		});
+
+		it('preserves the processEnv tier across a value rotation', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v1', processEnv: true });
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v2' });
+			assert.equal(installed.mock.rows.get('PE').processEnv, true);
+		});
+
+		it('converts processEnv → scoped via set_secret processEnv:false + grants', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v1', processEnv: true });
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v1', processEnv: false, grants: ['app1'] });
+			const row = installed.mock.rows.get('PE');
+			assert.equal(row.processEnv, false);
+			assert.deepStrictEqual(row.grants, ['app1']);
+			// grant now succeeds against the converted (scoped) row
+			const res = await secretOps.grantSecret({ ...su('grant_secret'), name: 'PE', component: 'app2' });
+			assert.deepStrictEqual(res.grants, ['app1', 'app2']);
+		});
+
+		it('list_secrets surfaces the processEnv flag', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true });
+			await secretOps.setSecret({ ...su('set_secret'), name: 'SC', value: 'y', grants: ['app1'] });
+			const { secrets } = await secretOps.listSecrets(su('list_secrets'));
+			const byName = Object.fromEntries(secrets.map((s) => [s.name, s]));
+			assert.equal(byName.PE.processEnv, true);
+			assert.equal(byName.SC.processEnv, false);
+		});
+	});
+
 	describe('list_secrets', () => {
 		it('returns metadata only — never envelopes or values — with custody match flags', async () => {
 			installCustody();
