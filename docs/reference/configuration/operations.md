@@ -20,7 +20,7 @@ Modifies one or more Harper configuration parameters. **Requires a [restart](../
 
 `operation` _(required)_ — must be `set_configuration`
 
-`replicated` _(optional)_ <VersionBadge version="v5.1.0" /> — set to `true` to apply the same configuration change to all cluster nodes in a single call. The origin node applies the change first; if its local write fails, nothing is sent to peers. Requires replication to be configured.
+`replicated` _(optional)_ <VersionBadge version="v5.2.0" /> — set to `true` to apply the same configuration change to all cluster nodes in a single call. The origin node applies the change first; if its local write fails, nothing is sent to peers. Requires replication to be configured.
 
 Additional properties correspond to configuration keys in underscore-separated format (e.g. `logging_level` for `logging.level`, `clustering_enabled` for `clustering.enabled`).
 
