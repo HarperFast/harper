@@ -12,8 +12,10 @@
  * or `blob` content per MCP §server/resources (rev 2025-06-18).
  *
  * Like custom tools (#622), RBAC is delegated to the Resource: entries are
- * listed to every authenticated user on the profile, and the author's method
- * enforces any access control it needs at read time.
+ * listed to every session on the profile — including anonymous/unauthenticated
+ * sessions where the deployment allows them (the public-docs case #1609 is
+ * built around) — and the author's method enforces any access control it
+ * needs at read time.
  */
 import type { McpProfile } from './transport.ts';
 import type { AuthedUser } from './toolRegistry.ts';

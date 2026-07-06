@@ -108,4 +108,42 @@ suite('MCP custom content resources (#1609)', (ctx: ContextWithHarper) => {
 		});
 		deepStrictEqual(result.completion.values.sort(), ['guides/deploy.md', 'guides/install.md']);
 	});
+
+	test('custom resources list and read without an Authorization header (#1609 public-docs case)', async () => {
+		// The custom-resource layer imposes no auth of its own: entries list per
+		// profile (no per-user filter) and reads delegate access control to the
+		// author's method — parity with mcpTools' visibleTo: () => true. This
+		// session sends NO Authorization header end-to-end (the instance's
+		// authorizeLocal maps the local connection to a user, as a public-docs
+		// deployment's anonymous mapping would).
+		let anonSession: string | undefined;
+		let anonId = 100;
+		async function anonRpc(method: string, params?: unknown): Promise<any> {
+			const res = await fetch(new URL('/mcp', ctx.harper.httpURL), {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					'accept': 'application/json, text/event-stream',
+					...(anonSession ? { 'mcp-session-id': anonSession, 'mcp-protocol-version': '2025-06-18' } : {}),
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: ++anonId, method, params: params ?? {} }),
+			});
+			anonSession = res.headers.get('mcp-session-id') ?? anonSession;
+			const text = await res.text();
+			strictEqual(res.status, 200, `${method} without auth should 200: ${text}`);
+			return JSON.parse(text);
+		}
+		await anonRpc('initialize', {
+			protocolVersion: '2025-06-18',
+			capabilities: {},
+			clientInfo: { name: 'anon-docs-client', version: '0' },
+		});
+		const list = await anonRpc('resources/list', {});
+		ok(
+			list.result.resources.some((r: any) => r.uri === 'docs:///index'),
+			'custom resource listed without auth'
+		);
+		const read = await anonRpc('resources/read', { uri: 'docs:///guides/install.md' });
+		ok(read.result.contents[0].text.startsWith('# Install'), 'custom template read served without auth');
+	});
 });
