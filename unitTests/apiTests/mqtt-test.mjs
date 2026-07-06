@@ -12,6 +12,7 @@ const { get: env_get, setProperty } = environmentManager;
 import { connect, connectAsync } from 'mqtt';
 import { readFileSync } from 'fs';
 import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
+import { SERVERS, portServer } from '#src/server/serverRegistry';
 
 // Adapter: creates a minimal scope and delegates to the new plugin API,
 // capturing socket/ws server instances so callers can call .listen() on them.
@@ -1060,6 +1061,52 @@ describe('test MQTT connections and commands', function () {
 				}
 			});
 		});
+	});
+
+	it('socket listeners only opt out of reusePort on macOS (so every worker shares the port elsewhere)', function () {
+		// server.socket() (onSocket in threadServer.js) is what the MQTT component uses to create
+		// its TCP and TLS listeners. On every platform except macOS these listeners must share the
+		// port via SO_REUSEPORT so all workers accept connections; macOS opts out because it does
+		// not reliably support SO_REUSEPORT on these socket types. Stub process.platform so both
+		// branches are exercised regardless of the host/CI OS, and cover both the TCP and TLS paths
+		// since the guard has to be applied to each.
+		const originalPlatform = process.platform;
+		// Snapshot both registries by value so cleanup restores them exactly — dropping keys these
+		// calls add (incl. any UDS-mirror entry) and undoing any array append setPortServerMap()
+		// would make on a port-key collision. SERVERS is a plain object; portServer is a Map of
+		// port -> server[], so deep-copy each array.
+		const preexistingServers = { ...SERVERS };
+		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
+		const makeListener = (platform, options) => {
+			Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+			return global.server.socket(() => {}, options);
+		};
+		try {
+			assert.equal(!!makeListener('linux', { port: 21883 }).noReusePort, false, 'TCP should share the port on Linux');
+			assert.equal(
+				makeListener('darwin', { port: 21884 }).noReusePort,
+				true,
+				'TCP should opt out of reusePort on macOS'
+			);
+			assert.equal(
+				!!makeListener('linux', { securePort: 28883 }).noReusePort,
+				false,
+				'TLS should share the port on Linux'
+			);
+			assert.equal(
+				makeListener('darwin', { securePort: 28884 }).noReusePort,
+				true,
+				'TLS should opt out of reusePort on macOS'
+			);
+		} finally {
+			Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+			// These listeners were never bound (no listen()); restore both registries to their exact
+			// pre-test state so nothing leaks into other tests.
+			for (const key of Object.keys(SERVERS)) delete SERVERS[key];
+			Object.assign(SERVERS, preexistingServers);
+			portServer.clear();
+			for (const [key, servers] of preexistingPortServer) portServer.set(key, servers);
+		}
 	});
 
 	after(() => {
