@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { filterArgsAgainstRuntimeConfig } = require('#src/config/harperConfigEnvVars');
 
 describe('filterArgsAgainstRuntimeConfig', function () {

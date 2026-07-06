@@ -17,7 +17,7 @@
  * locally. Without the env var the suite registers a single skipped test and returns fast.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, createWriteStream } from 'node:fs';
 import { once } from 'node:events';

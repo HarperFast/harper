@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
 const fs = require('fs-extra');

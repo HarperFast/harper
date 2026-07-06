@@ -2,7 +2,7 @@
 
 /** @typedef {import("mqtt/build").MqttClient} MqttClient */
 
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { once } from 'node:events';
 import { decode } from 'cbor-x';
 import { callOperation } from './utility.js';

@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { runAgent, _resetInFlightForTests } = require('#src/agent/loop');
 const session = require('#src/agent/session');
 

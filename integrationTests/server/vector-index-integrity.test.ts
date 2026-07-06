@@ -38,7 +38,7 @@
  * Related fixes: commit 251e5b73 (fix(hnsw): six data-integrity fixes)
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations on .mjs utils

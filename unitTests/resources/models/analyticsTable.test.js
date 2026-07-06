@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ModelCallAnalyticsWriter } = require('#src/resources/models/analyticsTable');
 

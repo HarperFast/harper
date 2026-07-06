@@ -1,6 +1,6 @@
 const { describe, it } = require('mocha');
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { join } = require('node:path');
 const { readFileSync } = require('node:fs');
 

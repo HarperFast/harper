@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { encodeCursor, decodeCursor } = require('#src/components/mcp/pagination');
 
 describe('components/mcp/pagination', () => {

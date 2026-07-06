@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const sinon = require('sinon');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
