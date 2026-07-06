@@ -117,10 +117,6 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
-					// Preserve any query string across the trailing-slash redirects below
-					const queryIndex = (req.url as string).indexOf('?');
-					const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
-
 					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -143,11 +139,18 @@ export function handleApplication(scope: Scope) {
 =======
 					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
 					// redirect the no-slash form so relative links on the index page resolve under
+<<<<<<< HEAD
 					// the mount (#1583)
 >>>>>>> eb6631deb (Expose originalPathname from stripPrefix for runtime-agnostic mount-root disambiguation)
+=======
+					// the mount (#1583). Query string is preserved across both redirects; compute it
+					// lazily inside each branch so the common (non-redirect) index serve stays allocation-free.
+>>>>>>> 24ef8e92d (perf(static): hoist query-string parse into redirect branches)
 					if (staticFile && req.pathname === '/' && baseURLPath !== '/') {
 						const originalPathname: string | undefined = (req as any).originalPathname;
 						if (originalPathname && !originalPathname.endsWith('/')) {
+							const queryIndex = (req.url as string).indexOf('?');
+							const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
 							return {
 								status: 301,
 								headers: {
@@ -167,6 +170,9 @@ export function handleApplication(scope: Scope) {
 					if (staticFile === null) {
 						const externalPath = baseURLPath === '/' ? req.pathname : baseURLPath.slice(0, -1) + req.pathname;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 24ef8e92d (perf(static): hoist query-string parse into redirect branches)
 						const queryIndex = (req.url as string).indexOf('?');
 						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
 						return {
