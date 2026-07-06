@@ -345,7 +345,7 @@ export async function authentication(request, nextHandler) {
 		if (l > 0) {
 			let headers = response.headers;
 			if (!headers) response.headers = headers = new Headers();
-			for (let i = 0; i < l; ) {
+			for (let i = 0; i < l;) {
 				const name = responseHeaders[i++];
 				headers.set(name, responseHeaders[i++]);
 			}
