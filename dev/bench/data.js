@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783239372006,
+  "lastUpdate": 1783327629052,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -1763,6 +1763,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1064.59,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "228eacc0fb41dd521b4d990a46533ecaccd6c3f3",
+          "message": "fix(indexing): treat shutdown-closed store during backfill as benign; de-flake reindex test (#1476)\n\n* fix(indexing): treat shutdown-closed store during backfill as benign; de-flake reindex test\n\nWhen `restart_service http_workers` tears a worker down mid-backfill, runIndexing's\nrange scan/puts throw against the closing store (\"Database not open\"). The old catch\nlogged a misleading error and then tried to persist `indexingFailed` against the\nalready-closed store, which also failed (\"Failed to persist indexing failure state\").\nTreat a store closed by shutdown (`primaryStore.rootStore.status === 'closed'`) as a\nbenign interruption: skip the doomed persist and log at debug. Recovery is unchanged —\nthe next worker generation re-runs the backfill via the existing crash-recovery trigger\n(indexingPID !== process.pid / restartNumber < current generation).\n\nAlso de-flakes the reindex integration test: a recovery-reindex window after the\nrestart-interrupted first backfill legitimately returns a transient INDEX_REBUILDING\n(503), which the test's single-success gate didn't tolerate. A new vectorSearchStable()\npolls past the transient window; a permanently-stuck index (never recovers) still fails.\n\nAdds a unit test for the shutdown-interruption path (runIndexing resolves, no indexingFailed).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(indexing): preserve interruption error in debug logs; use sleep() in test\n\nAddresses Gemini review: pass the underlying error to logger.debug on the\nshutdown-interruption paths so the root cause (e.g. \"Database not open\") is captured;\nuse the already-imported sleep() helper in vectorSearchStable.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Kris Zyp <kris@harperdb.io>\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-07-04T12:42:35Z",
+          "url": "https://github.com/HarperFast/harper/commit/228eacc0fb41dd521b4d990a46533ecaccd6c3f3"
+        },
+        "date": 1783327628698,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5821.02,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8242.36,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8516.15,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6605.18,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4733.55,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8526.87,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1075.52,
             "unit": "ops/sec"
           }
         ]
