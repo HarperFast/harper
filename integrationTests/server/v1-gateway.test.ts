@@ -1,7 +1,7 @@
 /**
  * Integration test for the OpenAI-compatible `/v1/*` REST gateway (#631).
  *
- * Starts a real Harper instance with `modelsGateway: {}` configured and a
+ * Starts a real Harper instance with `modelsGateway: { enabled: true }` and a
  * deterministic echo backend registered via the `registerFromModule` path.
  * Exercises all three endpoints:
  *   GET  /v1/models               — list registered backends
@@ -12,6 +12,12 @@
  * SSE framing (openaiStream → serializeStream → HTTP) is parseable by an
  * unmodified OpenAI client. See the SSE serving-path note in chatCompletions.ts
  * for why `stream: true` routes through `post()` rather than `connect()`.
+ *
+ * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because the
+ * gateway is off by default (`enabled: false` in defaultConfig.yaml). The test
+ * harness plumbs this via HARPER_SET_CONFIG. On CI (Linux, fast startup), the
+ * env-var config can race component loading; that race is tracked in #1618 and
+ * the fix there will make this test reliable without needing further changes here.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -41,9 +47,10 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx, {
 			config: {
-				// modelsGateway: {} would be silently dropped by flattenObject() in
-				// harperConfigEnvVars.ts because an empty plain object has no leaf paths
-				// to flatten. Use a non-empty sentinel so the key survives the env-var path.
+				// Gateway is off by default (enabled: false in defaultConfig.yaml). Pass
+				// enabled: true explicitly to activate it for these tests. A plain empty
+				// object would be silently dropped by flattenObject() in harperConfigEnvVars.ts
+				// because it has no leaf paths to flatten.
 				modelsGateway: { enabled: true },
 				models: {
 					generative: {

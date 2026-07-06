@@ -34,6 +34,8 @@ applications:
 componentsRoot: null
 localStudio:
   enabled: true
+modelsGateway:
+  enabled: false
 logging:
   auditAuthEvents:
     logFailed: false

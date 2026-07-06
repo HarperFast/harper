@@ -6,11 +6,15 @@
  *   POST /v1/chat/completions    → V1ChatCompletions
  *   GET  /v1/models              → V1Models
  *
- * Activated by adding `modelsGateway: {}` (or any truthy value) to
- * `harperdb-config.yaml`. Example:
+ * Off by default. Opt in by setting `enabled: true` in the `modelsGateway`
+ * block of `harperdb-config.yaml`. Opt out explicitly with `enabled: false`.
+ * This mirrors the `agent` component's enabled-flag pattern.
+ *
+ * Example (opt in):
  *
  * ```yaml
- * modelsGateway: {}
+ * modelsGateway:
+ *   enabled: true
  * models:
  *   generative:
  *     default:
@@ -18,9 +22,8 @@
  *       model: llama3.2
  * ```
  *
- * The gateway intentionally does NOT add authentication — Harper's REST layer
- * applies auth before dispatching to any resource. Deploy behind a network
- * boundary or configure Harper's auth as appropriate.
+ * All three endpoints require `super_user` permission. Anonymous or
+ * insufficient-privilege requests receive a well-formed OpenAI error envelope.
  */
 
 import type { Scope } from '../../../components/Scope.ts';
@@ -29,6 +32,7 @@ import { V1ChatCompletions } from './chatCompletions.ts';
 import { V1Models } from './models.ts';
 
 export function handleApplication(scope: Scope): void {
+	if (!scope.options.get(['enabled'])) return;
 	scope.resources.set('v1/models', V1Models);
 	scope.resources.set('v1/embeddings', V1Embeddings);
 	scope.resources.set('v1/chat/completions', V1ChatCompletions);
