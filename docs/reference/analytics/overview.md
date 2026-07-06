@@ -175,10 +175,40 @@ Harper automatically tracks the following metrics for all services. Applications
 | ------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------- | --------------------------------------------------------------------------------- |
 | `database-size`           | `size`, `used`, `free`, `audit`                                                                  | `database`          | bytes   | Database file size breakdown                                                      |
 | `main-thread-utilization` | `idle`, `active`, `taskQueueLatency`, `rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers` | `time`              | various | Main thread resource usage: idle/active time, queue latency, and memory breakdown |
+| `read-transaction-queue-depth`  | `depth`, `maxDepth`                                                                        |                     | count   | Open read (snapshot) transactions (see [transaction queue depth](#transaction-queue-depth-metrics)) |
 | `resource-usage`          | (see below)                                                                                      |                     | various | Node.js process resource usage (see [resource-usage](#resource-usage-metric))     |
 | `storage-volume`          | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                     |
 | `table-size`              | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                   |
 | `utilization`             |                                                                                                  |                     | %       | Percentage of time the worker thread was processing requests                      |
+| `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                        |                     | count   | In-flight write-transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics)) |
+
+#### Transaction Queue Depth Metrics
+
+`write-transaction-queue-depth` and `read-transaction-queue-depth` expose how many transactions are
+in flight against the storage engine, giving operators a leading indicator before a write-heavy
+workload hits the `Outstanding write transactions have too long of queue, please try again later`
+(HTTP 503) rejection.
+
+| Field      | Unit  | Description                                                                                         |
+| ---------- | ----- | -------------------------------------------------------------------------------------------------- |
+| `depth`    | count | Instantaneous depth sampled at emit time                                                            |
+| `maxDepth` | count | High-water mark observed over the sampling period                                                   |
+
+- **`write-transaction-queue-depth`** counts write commits handed to the storage engine but not yet
+  durably committed — the backlog that produces the overload error when it drains too slowly.
+- **`read-transaction-queue-depth`** counts open read (snapshot) transactions. Persistently high read
+  depth indicates long-lived read snapshots, which can hold back compaction.
+
+Both are gauges sampled per worker thread and summed across threads in the aggregate table (the raw
+per-thread entries in `hdb_raw_analytics` retain each thread's own depth). Note that the aggregate
+`maxDepth` is the sum of each thread's peak, which can read higher than any true simultaneous global
+peak since per-thread spikes need not coincide — treat it as an upper bound, not an exact concurrent
+queue length. Because the write queue can fill and drain within a single sampling period, always
+alert on `maxDepth` (the per-period peak) rather than `depth` alone — an instantaneous sample will
+routinely read low even while short spikes are occurring. A healthy system keeps `write-transaction-queue-depth.maxDepth`
+near zero; a sustained non-zero peak that trends upward is the signal to shed or throttle write load
+before commits start timing out. Tune the concrete alert threshold against a baseline for your
+workload, since absolute depth scales with worker-thread count and per-transaction size.
 
 #### `resource-usage` Metric
 
