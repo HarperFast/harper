@@ -38,9 +38,9 @@ async function* toolCallChunks() {
 // serializer. This mirrors Harper's actual SSE path: a request with `Accept: text/event-stream`
 // is dispatched as CONNECT (server/REST.ts:24-25,137-139) and the resulting message stream is
 // iterated and serialized per message — never the terminating `done` step. So we call the real
-// `sse.serialize` (contentTypes.ts) on each yielded message, exactly as that path does. (We do
-// NOT use `sse.serializeStream`: its `transformIterable` transforms the terminal `undefined`
-// value, which the resource-SSE path avoids by manual iteration.)
+// `sse.serialize` (contentTypes.ts) on each yielded message, exactly as that path does. (This
+// test predates #1628; `sse.serializeStream` now skips the terminal `done` step and finishes a
+// finite generator cleanly — see the serializeStream SSE coverage in contentTypes.test.js.)
 // Listens on an ephemeral loopback port so concurrent runs stay isolated.
 function serveOnce(tokens, opts) {
 	const server = http.createServer(async (_req, res) => {

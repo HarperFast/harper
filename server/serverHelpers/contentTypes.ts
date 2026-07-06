@@ -623,15 +623,10 @@ function transformIterable(iterable, transform) {
 				next() {
 					const step = iterator.next();
 					if (step.then) {
-						return step.then((step) => ({
-							value: transform(step.value),
-							done: step.done,
-						}));
+						// don't transform the terminal sentinel step, whose value is undefined
+						return step.then((result) => (result.done ? result : { value: transform(result.value), done: false }));
 					}
-					return {
-						value: transform(step.value),
-						done: step.done,
-					};
+					return step.done ? step : { value: transform(step.value), done: false };
 				},
 				return(value) {
 					return iterator.return(value);
