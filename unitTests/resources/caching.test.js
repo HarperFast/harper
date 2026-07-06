@@ -133,44 +133,6 @@ describe('Caching', () => {
 		assert.equal(target23.loadedFromSource, true);
 	});
 
-	it('loadedFromSource is observable on the context with a plain id', async function () {
-		// with a plain id, the static get dispatch mints an internal RequestTarget the caller
-		// never sees, so the flag must be mirrored onto the context (#1571)
-		CachingTable.setTTLExpiration(30);
-		await CachingTable.invalidate(31);
-		let context = {};
-		let result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, true);
-		context = {};
-		result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, false);
-		context = { onlyIfCached: true };
-		result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, false);
-	});
-
-	it('loadedFromSource is observable on the context with loadAsInstance = false', async function () {
-		const previousLoadAsInstance = CachingTable.loadAsInstance;
-		try {
-			CachingTable.loadAsInstance = false;
-			CachingTable.setTTLExpiration(30);
-			await CachingTable.invalidate(32);
-			let context = {};
-			let result = await CachingTable.get(32, context);
-			assert.equal(result.id, 32);
-			assert.equal(context.loadedFromSource, true);
-			context = {};
-			result = await CachingTable.get(32, context);
-			assert.equal(result.id, 32);
-			assert.equal(context.loadedFromSource, false);
-		} finally {
-			CachingTable.loadAsInstance = previousLoadAsInstance;
-		}
-	});
-
 	it('Cache stampede is handled', async function () {
 		try {
 			CachingTable.setTTLExpiration(0.01);
@@ -266,10 +228,8 @@ describe('Caching', () => {
 		events = [];
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		// should be stale but not evicted
-		const swrContext = {};
-		let result = await CachingTableStaleWhileRevalidate.get(23, swrContext);
+		let result = await CachingTableStaleWhileRevalidate.get(23);
 		assert(result); // should exist in database even though it is stale
-		assert.equal(swrContext.loadedFromSource, false); // stale value served from cache while revalidating
 		assert.equal(sourceRequests, 1); // the source request should be started
 		assert.equal(sourceResponses, 0); // the source request should not be completed yet
 		// the source request should be completed

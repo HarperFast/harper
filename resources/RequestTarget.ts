@@ -56,7 +56,6 @@ export class RequestTarget extends URLSearchParams {
 	declare previousResidency?: string[];
 
 	// Action tracking
-	/** Cache disposition of a get on a caching table; also mirrored onto the request Context. */
 	declare loadedFromSource?: boolean;
 	declare createdNewId?: string;
 
