@@ -284,6 +284,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 				preload: Joi.alternatives([string, array.items(string)])
 					.allow(null)
 					.optional(),
+				preloadRequire: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({

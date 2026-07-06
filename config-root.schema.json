@@ -175,7 +175,11 @@
 				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." },
 				"preload": {
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
-					"description": "Module(s) to preload (via --require) before any Harper or app module on each worker thread, e.g. an APM agent like 'dd-trace/init'. Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+					"description": "Module(s) to preload via --import (ESM/loader-hook registration) before any Harper or app module on each worker thread, e.g. an APM agent's 'dd-trace/register.js' — the entry that instruments worker threads. Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				},
+				"preloadRequire": {
+					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+					"description": "Module(s) to preload via --require (CJS) before any Harper or app module on each worker thread, for agents that document the require path (e.g. 'dd-trace/init', Dynatrace OneAgent). Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
 				}
 			}
 		},

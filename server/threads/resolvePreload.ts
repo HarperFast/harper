@@ -5,14 +5,20 @@ import { isAbsolute, join } from 'node:path';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 
-// Resolve `threads.preload` config values to absolute file paths. `configured` is the raw
-// config value (a string, an array of strings, or null) and `componentsRoot` is the resolved
-// components directory. Bare specifiers are resolved against installed components' `node_modules`
-// so an instrumentation package (e.g. `dd-trace/init`) bundled in a deployed component can be
-// preloaded via `--require` before any Harper or app module in a worker thread — the only point
-// early enough for an APM agent to instrument subsequent module loads. The caller memoizes the
-// result since the config and installed components are fixed for the process lifetime.
-export function resolvePreloadModules(configured: unknown, componentsRoot: string | undefined): string[] {
+// Resolve `threads.preload`/`threads.preloadRequire` config values to absolute file paths.
+// `configured` is the raw config value (a string, an array of strings, or null) and
+// `componentsRoot` is the resolved components directory. Bare specifiers are resolved against
+// installed components' `node_modules` so an instrumentation package (e.g. `dd-trace/register.js`
+// for `--import`, or `dd-trace/init` for `--require`) bundled in a deployed component can be
+// preloaded before any Harper or app module in a worker thread — the only point early enough for
+// an APM agent to instrument subsequent module loads. `configKey` only labels warnings. The
+// caller memoizes the result since the config and installed components are fixed for the process
+// lifetime.
+export function resolvePreloadModules(
+	configured: unknown,
+	componentsRoot: string | undefined,
+	configKey = 'threads.preload'
+): string[] {
 	if (configured == null) return [];
 	const specifiers = (Array.isArray(configured) ? configured : [configured]).filter(
 		(specifier) => typeof specifier === 'string' && specifier.length > 0
@@ -26,7 +32,7 @@ export function resolvePreloadModules(configured: unknown, componentsRoot: strin
 		if (path) resolved.push(path);
 		else
 			harperLogger.warn(
-				`Could not resolve threads.preload module "${specifier}"; it will not be preloaded. It must be an ` +
+				`Could not resolve ${configKey} module "${specifier}"; it will not be preloaded. It must be an ` +
 					`absolute path or a package installed in a deployed component.`
 			);
 	}

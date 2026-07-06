@@ -64,4 +64,8 @@ describe('resolvePreloadModules', () => {
 	it('does not throw when the components root is missing or unreadable', () => {
 		assert.deepEqual(resolvePreloadModules(pkgIndex, path.join(tmpDir, 'no-such-dir')), [pkgIndex]);
 	});
+
+	it('resolves the same regardless of the configKey label (preload vs preloadRequire)', () => {
+		assert.deepEqual(resolvePreloadModules('fake-apm', componentsRoot, 'threads.preloadRequire'), [pkgIndex]);
+	});
 });
