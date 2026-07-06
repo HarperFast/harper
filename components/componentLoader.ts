@@ -20,6 +20,7 @@ import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
 import * as roles from '../resources/roles.ts';
 import * as jsHandler from '../resources/jsResource.ts';
 import * as login from '../resources/login.ts';
+import * as modelsGateway from '../resources/models/v1/index.ts';
 import * as REST from '../server/REST.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
@@ -106,6 +107,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 		return require('../server/fastifyRoutes');
 	},
 	login,
+	modelsGateway,
 	static: staticFiles,
 	customFunctions: {},
 	http: httpComponent,
