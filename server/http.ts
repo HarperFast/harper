@@ -13,9 +13,10 @@ import * as terms from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.ts';
-import { createSecureServer } from 'node:http2';
+import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
@@ -71,9 +72,12 @@ export function cleanupUdsFiles() {
 }
 
 /** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
-export function writeUdsMetadata(yamlPath: string, port: number | string, secureServer: any) {
+export function writeUdsMetadata(yamlPath: string, port: number | string, secureServer: any, protocol?: string) {
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
+	// Which application protocol this socket speaks (absent = http/1.1, the historical
+	// default) — lets a fronting proxy route by negotiated ALPN.
+	if (protocol) yaml += `protocol: ${protocol}\n`;
 	yaml += `certificates:\n`;
 	if (contexts?.size > 0) {
 		const seen = new Set();
@@ -600,6 +604,32 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server);
 			options.SNICallback.ready.then(writeMetadata);
 			server.secureContextsListeners.push(writeMetadata);
+
+			// Optional cleartext HTTP/2 mirror (spike: HARPER_H2C_UDS=1). A separate socket
+			// (`<worker>-<port>-h2.sock`) so a fronting proxy can route by negotiated ALPN:
+			// h2 connections here, http/1.1 to the plain mirror above. The metadata yaml
+			// carries `protocol: h2` so the proxy can discover which socket speaks what.
+			if (process.env.HARPER_H2C_UDS) {
+				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
+				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
+				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
+					const method = nodeRequest.method;
+					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
+					else throttledRequestHandler(nodeRequest, nodeResponse);
+				});
+				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
+				h2Server.on('sessionError', (error: Error) => {
+					harperLogger.debug(`h2c UDS session error: ${error.message}`);
+				});
+				const h2Front = createH2CProxyFront(h2Server) as any;
+				h2Front.isPerThreadSocket = true;
+				SERVERS[udsPathH2] = h2Front;
+				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
+
+				const writeMetadataH2 = () => writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				options.SNICallback.ready.then(writeMetadataH2);
+				server.secureContextsListeners.push(writeMetadataH2);
+			}
 		}
 	}
 	return httpServers[port];
@@ -1106,6 +1136,52 @@ export function enableProxyProtocol(httpServer) {
 				if (rest.length > 0) forward(rest);
 			});
 		});
+	});
+}
+
+/**
+ * Front a cleartext HTTP/2 server with optional PROXY v1 handling on a Unix domain socket.
+ *
+ * enableProxyProtocol() can't be used here: Node's Http2Session consumes the socket's
+ * native handle directly, so data never surfaces as JS 'data' events to intercept. The
+ * PROXY header must instead be consumed *before* the socket is handed to the HTTP/2
+ * server. Bytes beyond the header (typically the coalesced h2 connection preface) are
+ * unshifted back onto the socket; the native session picks them up (verified on Node 24
+ * — covered by a unit test so a Node upgrade regressing this fails loudly).
+ */
+export function createH2CProxyFront(h2Server) {
+	return createNetServer({ noDelay: true }, (socket) => {
+		let buf: Buffer | null = null;
+		const handoff = (rest: Buffer) => {
+			socket.removeListener('readable', onReadable);
+			if (rest.length > 0) socket.unshift(rest);
+			h2Server.emit('connection', socket);
+		};
+		const onReadable = () => {
+			let chunk: Buffer;
+			while ((chunk = socket.read()) !== null) {
+				buf = buf ? Buffer.concat([buf, chunk]) : chunk;
+				// Compare against "PROXY " for as many bytes as we have so far; a non-PROXY
+				// prefix (e.g. a direct h2 client with no fronting proxy) is handed off as-is.
+				const cmpLen = Math.min(PROXY_V1_PREFIX.length, buf.length);
+				if (buf.compare(PROXY_V1_PREFIX, 0, cmpLen, 0, cmpLen) !== 0) return handoff(buf);
+				const eol = buf.indexOf('\r\n');
+				if (eol !== -1) {
+					// Complete header: "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
+					const parts = buf.toString('latin1', 0, eol).split(' ');
+					if (parts.length === 6) {
+						// Override the UDS socket's undefined remoteAddress/remotePort with the real
+						// client values; http2's compat req.socket proxies through to these.
+						Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
+						Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
+					}
+					return handoff(buf.subarray(eol + 2));
+				}
+				// No CRLF within the spec max — not a valid PROXY header after all.
+				if (buf.length >= PROXY_V1_MAX_HEADER) return handoff(buf);
+			}
+		};
+		socket.on('readable', onReadable);
 	});
 }
 

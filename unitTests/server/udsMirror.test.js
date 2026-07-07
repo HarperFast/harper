@@ -286,4 +286,152 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.doesNotThrow(() => cleanupSocketsDirectory());
 		});
 	});
+
+	// ─── writeUdsMetadata protocol marker ─────────────────────────────────────
+
+	describe('writeUdsMetadata protocol parameter', () => {
+		it('writes a protocol line when given, omits it otherwise', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926-h2.yaml');
+			writeUdsMetadata(yamlPath, 9926, makeSecureServer(), 'h2');
+			assert.match(fs.readFileSync(yamlPath, 'utf8'), /^protocol: h2$/m);
+			writeUdsMetadata(yamlPath, 9926, makeSecureServer());
+			assert.doesNotMatch(fs.readFileSync(yamlPath, 'utf8'), /^protocol:/m);
+		});
+	});
+});
+
+// ─── createH2CProxyFront ──────────────────────────────────────────────────────
+// Real sockets: an h2c server behind the PROXY-stripping front on a UDS path.
+// These also pin the Node behavior the front depends on: bytes unshifted onto a
+// net.Socket must survive Http2Session's native handle consume.
+
+describe('createH2CProxyFront (h2c UDS mirror)', () => {
+	const http2 = require('node:http2');
+	const net = require('node:net');
+	const os = require('node:os');
+	const { createH2CProxyFront } = require('#src/server/http');
+
+	// h2 connection preface + empty SETTINGS frame (type 4, flags 0, stream 0, len 0)
+	const H2_PREFACE = Buffer.concat([
+		Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'),
+		Buffer.from([0, 0, 0, 4, 0, 0, 0, 0, 0]),
+	]);
+	const PROXY_LINE = 'PROXY TCP4 203.0.113.9 127.0.0.1 45678 443\r\n';
+
+	let h2srv, front, udsPath;
+
+	beforeEach((done) => {
+		udsPath = path.join(os.tmpdir(), `hdb-h2c-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
+		h2srv = http2.createServer((req, res) => {
+			res.writeHead(200, { 'content-type': 'text/plain' });
+			res.end(`addr=${req.socket.remoteAddress ?? 'none'} port=${req.socket.remotePort ?? 0} path=${req.url}`);
+		});
+		h2srv.on('sessionError', () => {});
+		front = createH2CProxyFront(h2srv);
+		front.listen(udsPath, done);
+	});
+
+	afterEach((done) => {
+		h2srv.close();
+		front.close(() => {
+			try {
+				fs.unlinkSync(udsPath);
+			} catch {}
+			done();
+		});
+	});
+
+	function h2Request(prepare) {
+		return new Promise((resolve, reject) => {
+			const session = http2.connect('http://localhost', {
+				createConnection: () => {
+					const socket = net.connect(udsPath);
+					prepare?.(socket);
+					return socket;
+				},
+			});
+			session.on('error', reject);
+			const req = session.request({ ':path': '/who' });
+			let body = '';
+			req.setEncoding('utf8');
+			req.on('data', (d) => (body += d));
+			req.on('end', () => {
+				session.close();
+				resolve(body);
+			});
+			req.on('error', reject);
+			req.end();
+		});
+	}
+
+	// Establish a session manually (PROXY/preface framing fully under test control)
+	// and resolve on the server's SETTINGS-ACK. The server sends its own SETTINGS
+	// unprompted on session creation, so only an ACK (type 0x4, flags & 0x1) proves
+	// the CLIENT preface survived stripping/unshift and reached the native session.
+	function rawSessionEstablishes(writes) {
+		return new Promise((resolve, reject) => {
+			const socket = net.connect(udsPath, async () => {
+				for (const w of writes) {
+					if (typeof w === 'number') await new Promise((r) => setTimeout(r, w));
+					else socket.write(w);
+				}
+			});
+			const timer = setTimeout(() => {
+				socket.destroy();
+				reject(new Error('no SETTINGS-ACK from server'));
+			}, 1500);
+			let buf = Buffer.alloc(0);
+			socket.on('data', (d) => {
+				buf = Buffer.concat([buf, d]);
+				// Walk complete frames: 3-byte length, 1-byte type, 1-byte flags, 4-byte stream id
+				let off = 0;
+				while (buf.length - off >= 9) {
+					const len = buf.readUIntBE(off, 3);
+					const type = buf[off + 3];
+					const flags = buf[off + 4];
+					if (type === 4 && flags & 0x1) {
+						clearTimeout(timer);
+						socket.destroy();
+						return resolve();
+					}
+					if (buf.length - off < 9 + len) break;
+					off += 9 + len;
+				}
+				buf = buf.subarray(off);
+			});
+			socket.on('error', reject);
+		});
+	}
+
+	it('strips the PROXY header and overrides remoteAddress/remotePort', async () => {
+		const body = await h2Request((socket) => socket.write(PROXY_LINE));
+		assert.match(body, /addr=203\.0\.113\.9 port=45678/);
+	});
+
+	it('passes a direct h2 connection (no PROXY header) through unchanged', async () => {
+		const body = await h2Request();
+		assert.match(body, /path=\/who/);
+		assert.doesNotMatch(body, /203\.0\.113\.9/);
+	});
+
+	it('handles the PROXY header coalesced with the preface in a single packet', async () => {
+		await rawSessionEstablishes([Buffer.concat([Buffer.from(PROXY_LINE), H2_PREFACE])]);
+	});
+
+	it('handles a PROXY header split across packets', async () => {
+		await rawSessionEstablishes([
+			Buffer.from('PROXY TCP4 203.0.'),
+			20,
+			Buffer.from('113.9 127.0.0.1 45678 443\r\n'),
+			H2_PREFACE,
+		]);
+	});
+
+	it('hands off unparseable long first packets without stalling', async () => {
+		// Starts with "PROXY " but never terminates: after 108 bytes the front must
+		// give up and forward — the h2 server then fails the session (never ACKs),
+		// rather than the front buffering forever.
+		const junk = Buffer.from('PROXY ' + 'x'.repeat(150));
+		await assert.rejects(rawSessionEstablishes([junk]), /no SETTINGS-ACK|ECONNRESET/);
+	});
 });
