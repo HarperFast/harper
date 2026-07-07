@@ -144,12 +144,17 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 	return stream;
 }
 
-/** Write one SSE record; returns `stream.write`'s last result (false = buffer over high-water). */
+/**
+ * Write one SSE record; returns `false` if any of its writes pushed the buffer past its
+ * high-water mark (so a dense multi-line payload that tips the buffer on an early `data:`
+ * line is still detected, not just the final `\n`). `stream.write(...)` is always the left
+ * operand so every line is written regardless of the accumulated backpressure flag.
+ */
 function writeSSE(stream: PassThrough, event: ProgressEvent): boolean {
 	const data = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
-	stream.write(`event: ${event.event}\n`);
+	let canWrite = stream.write(`event: ${event.event}\n`);
 	for (const line of data.split(/\r?\n/)) {
-		stream.write(`data: ${line}\n`);
+		canWrite = stream.write(`data: ${line}\n`) && canWrite;
 	}
-	return stream.write('\n');
+	return stream.write('\n') && canWrite;
 }
