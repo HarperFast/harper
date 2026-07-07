@@ -183,6 +183,66 @@ describe('RFC 0001: canonical relationships — lazy thunks, forward reference',
 	});
 });
 
+describe('RFC 0001: relationOf/hasManyOf — mutual-pair escape hatch', () => {
+	// `relationOf`/`hasManyOf` exist to break a TYPE-level cycle (see
+	// docs/rfcs/spikes/0001/defineTable-real.check.ts); at RUNTIME they compile through the exact
+	// same code path as `relation`/`hasMany` (the type param is erased — only the value shape,
+	// `{ kind: 'relation', meta: { target, from|to } }`, drives compileTypeDef). This proves that
+	// equivalence: a Publisher<->Edition pair built with the *Of variants resolves identically to
+	// the plain-variant Book<->Author pair above.
+	let Edition, Publisher;
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Edition = defineTable(
+			'Edition',
+			{
+				id: id.primaryKey,
+				name: string,
+				publisherId: id.indexed,
+				publisher: types.relationOf(() => Publisher, { from: 'publisherId' }),
+			},
+			{ database: DB }
+		);
+		Publisher = defineTable(
+			'Publisher',
+			{
+				id: id.primaryKey,
+				name: string,
+				editions: types.hasManyOf(() => Edition, { to: 'publisherId' }),
+			},
+			{ database: DB }
+		);
+	});
+
+	it('compiles to the same attribute shape as relation/hasMany', () => {
+		const editionAttr = Edition.attributes.find((a) => a.name === 'publisher');
+		assert.strictEqual(editionAttr.type, 'Publisher');
+		assert.deepStrictEqual(editionAttr.relationship, { from: 'publisherId' });
+		assert.strictEqual(editionAttr.definition.tableClass, Publisher);
+
+		const publisherAttr = Publisher.attributes.find((a) => a.name === 'editions');
+		assert.strictEqual(publisherAttr.type, 'array');
+		assert.deepStrictEqual(publisherAttr.relationship, { to: 'publisherId' });
+		assert.strictEqual(publisherAttr.elements.definition.tableClass, Edition);
+	});
+
+	it('resolves related records in both directions', async () => {
+		await Publisher.put({ id: 'p1', name: 'O.C.' });
+		await Edition.put({ id: 'e1', name: 'First', publisherId: 'p1' });
+
+		const edition = await Edition.get('e1', {});
+		const publisher = await edition.publisher;
+		assert.strictEqual(publisher.name, 'O.C.');
+
+		const publisherRec = await Publisher.get('p1', {});
+		const editions = await publisherRec.editions;
+		assert.strictEqual(editions.length, 1);
+		assert.strictEqual(editions[0].name, 'First');
+	});
+});
+
 describe('RFC 0001: code-first ⇔ GraphQL front-end parity', () => {
 	// The two authoring front-ends must project an identical canonical `properties` Record for an
 	// equivalent schema — the guardrail against the front-ends silently diverging (RFC §4.2).

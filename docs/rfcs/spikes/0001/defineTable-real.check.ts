@@ -102,6 +102,46 @@ type _song_record = Expect<
 type _song_insert = Expect<Equal<(typeof Song)['$insert'], { title: string; albumId: string; id?: string }>>;
 type _song_query = Expect<Equal<(typeof Song)['$query'], { albumId?: string }>>;
 
+// ── Mutual pair (Book <-> Author): relationOf/hasManyOf break the const-initializer cycle ──
+//
+// Using plain `relation`/`hasMany` on BOTH sides of a mutual pair does NOT compile — TS's
+// const-initializer inference is eager, so `typeof Book` and `typeof Author` would each depend on
+// the other and both collapse to `any` (TS7022: "'Book' implicitly has type 'any' because it does
+// not have a type annotation and is referenced directly or indirectly in its own initializer").
+// Verified empirically: swap `hasManyOf<BookRecord>` below for plain `hasMany` and tsc fails with
+// exactly that error on both `Book` and `Author`.
+//
+// The fix: declare the related record shape by hand on whichever side closes the cycle, and use
+// `hasManyOf<R>`/`relationOf<R>` there — its `target` param is typed `() => any`, so no inference
+// is pulled from the argument and the cycle never forms. The OTHER side keeps plain
+// `relation`/`hasMany` with full inference (Book's `author` field below is fully inferred).
+interface BookRecord {
+	readonly id: string;
+	readonly title: string;
+	readonly authorId: string;
+}
+
+const Book = defineTable('Book', {
+	id: id.primaryKey,
+	title: string,
+	authorId: id.indexed, // declared FK, required for the to-one relation
+	author: types.relation(() => Author, { from: 'authorId' }), // plain relation — fully inferred
+});
+const Author = defineTable('Author', {
+	id: id.primaryKey,
+	name: string,
+	books: types.hasManyOf<BookRecord>(() => Book, { to: 'authorId' }), // escape hatch closes the cycle
+});
+
+declare const book: (typeof Book)['$record'];
+declare const author: (typeof Author)['$record'];
+const authorName: string = book.author.name; // Book -> Author: fully inferred, typo-checked
+const firstBookTitle: string = author.books[0].title; // Author -> Book: typed via the explicit BookRecord
+
+// The escape hatch doesn't weaken the write-side guarantees: relations stay read-only projections.
+// @ts-expect-error relations are not writable, even through the escape hatch
+const bad_author_insert: (typeof Author)['$insert'] = { name: 'x', books: [] };
+
 // Verbs are typed by the projections (await-friendly MaybePromise results).
 async function verbs() {
 	const ro = await Track.get('DtMF');
@@ -140,4 +180,4 @@ const bad_query: TrackQuery = { duration: 50 };
 // @ts-expect-error relations are not writable
 const bad_album: (typeof Album)['$insert'] = { title: 'x', tracks: [] };
 
-export { Track, Album, toInsert, toReplace, toPatch, filter, verbs };
+export { Track, Album, Book, Author, toInsert, toReplace, toPatch, filter, verbs, authorName, firstBookTitle };

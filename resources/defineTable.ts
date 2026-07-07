@@ -18,7 +18,12 @@
  * Relationships take a lazy thunk (`types.relation(() => Album, { from: 'albumId' })`); the
  * target class is resolved on first use (the same late-binding contract GraphQL's
  * `connectPropertyType` relies on — `definition` must exist at registration, `definition.tableClass`
- * only by query time), so forward references and cycles between tables just work.
+ * only by query time), so forward references and cycles between tables just work AT RUNTIME.
+ *
+ * A truly MUTUAL pair (`Book.author` -> `Author`, `Author.books` -> `Book`) is a different problem
+ * at the TYPE level: TypeScript's const-initializer inference is eager, so `typeof Book` and
+ * `typeof Author` end up depending on each other and both collapse to `any` (TS7022). `relationOf`
+ * / `hasManyOf` are the escape hatch — see their doc comments below.
  */
 
 import { table, type Table } from './databases.ts';
@@ -123,6 +128,20 @@ export const types = {
 	// one-to-many: the related table holds the foreign key named `to`.
 	hasMany: <T>(target: () => T, opts: { to: string }) =>
 		makeField('relation', { target, to: opts.to }) as RelationField<T, 'many'>,
+	/**
+	 * `relation`'s escape hatch for a MUTUAL pair (`Book.author` <-> `Author.books`): TS's
+	 * const-initializer inference is eager, so `typeof Book` and `typeof Author` would each depend
+	 * on the other and both collapse to `any` (TS7022) if both sides used `relation`/`hasMany`.
+	 * `relationOf<R>` breaks the cycle — `target` is typed `() => any` (no inference is pulled from
+	 * the argument), and the related RECORD shape is supplied explicitly via `<R>`. Declare a small
+	 * interface for the record once, on whichever side of the pair you close second; the runtime
+	 * behavior (lazy thunk, resolved on first query-time use) is identical to `relation`.
+	 */
+	relationOf: <R>(target: () => any, opts: { from: string }) =>
+		makeField('relation', { target, from: opts.from }) as RelationField<{ readonly $record: R }, 'one'>,
+	/** `hasMany`'s escape hatch for a mutual pair — see `relationOf`. */
+	hasManyOf: <R>(target: () => any, opts: { to: string }) =>
+		makeField('relation', { target, to: opts.to }) as RelationField<{ readonly $record: R }, 'many'>,
 };
 
 export type Shape = Record<string, Field<any, any>>;
