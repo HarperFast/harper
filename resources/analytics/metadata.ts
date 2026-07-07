@@ -8,6 +8,7 @@ export const METRIC = {
 	NODE_STORAGE: 'node-storage',
 	ROCKSDB_STATS: 'rocksdb-stats',
 	ROCKSDB_TXNLOG_STATS: 'rocksdb-txnlog-stats',
+	TRANSACTION_COMMIT_TIME: 'transaction-commit-time',
 } as const;
 
 export type BuiltInMetricName = (typeof METRIC)[keyof typeof METRIC];

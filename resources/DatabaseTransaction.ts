@@ -26,6 +26,31 @@ const MAX_RETRIES = 40;
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
+
+// The analytics module registers a recorder here at load (dependency inversion, mirroring
+// `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
+// modules. Unset until analytics loads, and when analytics is disabled the recorder call is cheap.
+let recordCommitLatencyMs: ((durationMs: number) => void) | undefined;
+export function setCommitLatencyRecorder(recorder: (durationMs: number) => void) {
+	recordCommitLatencyMs = recorder;
+}
+
+// Emit the submit→settle duration of a write commit as the `transaction-commit-time` distribution
+// metric. Recorded on both fulfilment and rejection since a slow-then-failed commit still consumed
+// queue time. The recorder is wrapped so it can never throw — a metrics failure must neither break the
+// commit nor surface as an unhandled rejection on this floating `.then`.
+function recordCommitLatency(commitResolution: Promise<void>, submittedAt: number) {
+	if (!recordCommitLatencyMs) return;
+	const record = () => {
+		try {
+			recordCommitLatencyMs(performance.now() - submittedAt);
+		} catch {
+			// analytics recording is best-effort and must never disturb the commit path
+		}
+	};
+	commitResolution.then(record, record);
+}
+
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -288,6 +313,13 @@ export class DatabaseTransaction implements Transaction {
 							// coordinatedRetry, so it never resolves to the sentinel here. Cast
 							// away the sentinel to keep commitResolution void.
 							commitResolution = transaction.commit() as Promise<void>;
+							// Record how long this commit stays outstanding (submit → settle) as a distribution
+							// metric. This is the same clock the overload check uses (outstandingCommitStart is
+							// stamped at submit), so a rising p99/p999 is the leading indicator for the
+							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
+							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
+							// re-arms per attempt, so recording per attempt matches the overload semantics.
+							recordCommitLatency(commitResolution, performance.now());
 						} else {
 							try {
 								commitResolution = transaction.abort();
