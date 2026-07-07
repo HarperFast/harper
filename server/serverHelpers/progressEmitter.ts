@@ -16,6 +16,13 @@ export type ProgressListener = (event: ProgressEvent) => void;
 export class ProgressEmitter {
 	private listeners: ProgressListener[] = [];
 
+	/**
+	 * Set by {@link createSSEResponseStream} to a signal that aborts when the client
+	 * disconnects. Open-ended operations (e.g. a live log tail that never returns on its own)
+	 * read this to stop producing events and resolve, instead of running until process exit.
+	 */
+	signal?: AbortSignal;
+
 	emit(event: string, data: unknown): void {
 		// Snapshot before iteration so a listener that unsubscribes itself during dispatch
 		// doesn't shift indexes underneath us.
@@ -54,6 +61,12 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 	// that consumers ignore, so it's safe filler.
 	stream.write(`: stream open\n\n`);
 
+	// Give the operation a way to observe client disconnect. `cleanup` runs when the stream
+	// closes/ends (and after the operation settles); aborting there lets an open-ended
+	// operation like a log tail stop and resolve rather than leak until the process exits.
+	const abortController = new AbortController();
+	emitter.signal = abortController.signal;
+
 	let active = true;
 	let errorEmitted = false;
 	const unsubscribe = emitter.subscribe((event) => {
@@ -67,6 +80,7 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 		if (active) {
 			active = false;
 			unsubscribe();
+			abortController.abort();
 		}
 	};
 

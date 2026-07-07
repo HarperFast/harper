@@ -33,8 +33,10 @@ async function readLog(request: any) {
 			true
 		);
 	}
-	// start pulling logs from the other nodes now so it can be done in parallel
-	let whenReplicatedResponse = server.replication.replicateOperation(request);
+	// Start pulling logs from the other nodes now so it can be done in parallel. A live SSE
+	// tail (below) is local-only and never fans out, so skip replication on that path — the
+	// buffered read still aggregates the cluster for point-in-time queries.
+	let whenReplicatedResponse = isStreamingRequest(request) ? undefined : server.replication.replicateOperation(request);
 
 	const logPath = getConfigPath(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
 	const rawLogName = request.log_name === undefined ? hdbTerms.LOG_NAMES.HDB : request.log_name;
@@ -57,6 +59,26 @@ async function readLog(request: any) {
 	const start = request.start === undefined ? 0 : request.start;
 	const max = start + limit;
 	const filter = request.filter;
+
+	// SSE mode: the server attached a ProgressEmitter as `request.progress` (see
+	// serverHandlers.js) because the client sent `Accept: text/event-stream`. Instead of a
+	// one-shot array, stream the recent backlog and then tail new lines live until the client
+	// disconnects. Scoped to this node's log file; the buffered path above is what aggregates
+	// the cluster for point-in-time reads.
+	if (isStreamingRequest(request)) {
+		return streamLogTail(request.progress, {
+			readLogPath,
+			level,
+			levelDefined,
+			from,
+			fromDefined,
+			to,
+			toDefined,
+			limit,
+			filter,
+		});
+	}
+
 	let fileStart = 0;
 	if (order === 'desc' && !from && !to) {
 		fileStart = Math.max(fs.statSync(readLogPath).size - (max + 5) * ESTIMATED_AVERAGE_ENTRY_SIZE, 0);
@@ -347,4 +369,232 @@ function insertAscending(value: any, result: any[]) {
 	}
 
 	result.splice(low, 0, value);
+}
+
+interface LogEntry {
+	timestamp: string;
+	thread: string;
+	level: string;
+	tags: string[];
+	message: string;
+}
+
+interface TailFilterParams {
+	readLogPath: string;
+	level: string | undefined;
+	levelDefined: boolean;
+	from: Date | undefined;
+	fromDefined: boolean;
+	to: Date | undefined;
+	toDefined: boolean;
+	limit: number;
+	filter: string | undefined;
+}
+
+// The marker that begins every log line — `TIMESTAMP [thread] [level]...: ` — matching the
+// buffered reader's regex so the two paths parse identically.
+const LOG_ENTRY_MARKER = /(?:^|\n)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[\d.]+Z) \[(.+?)]: /g;
+// How often a live tail polls the log file for appended bytes. fs.watchFile is stat-poll
+// based, which is far more robust across platforms and log rotation than fs.watch's rename
+// events; sub-second latency is plenty for a human watching logs.
+const TAIL_POLL_INTERVAL_MS = 250;
+// A trailing entry can't be finalized until the next marker delimits its (possibly
+// multi-line) message, so after this long without new bytes we flush it as-is.
+const TAIL_IDLE_FLUSH_MS = 1000;
+
+function isStreamingRequest(request: any): boolean {
+	return !!request.progress && typeof request.progress.emit === 'function';
+}
+
+function makeLogEntry(timestamp: string, tagsString: string, message: string): LogEntry {
+	const tags = tagsString.split('] [');
+	const thread = tags[0];
+	const level = tags[1];
+	tags.splice(0, 2);
+	return { timestamp, thread, level, tags, message };
+}
+
+function matchesLogFilters(entry: LogEntry, params: TailFilterParams): boolean {
+	const { level, levelDefined, from, fromDefined, to, toDefined, filter } = params;
+	if (filter !== undefined) {
+		const hit = (['timestamp', 'thread', 'level', 'tags', 'message'] as const).some((attr) => {
+			const value = entry[attr];
+			if (Array.isArray(value)) return value.some((v) => v.includes(filter));
+			return typeof value === 'string' && value.includes(filter);
+		});
+		if (!hit) return false;
+	}
+	if (levelDefined && entry.level !== level) return false;
+	if (fromDefined || toDefined) {
+		const when = new Date(entry.timestamp);
+		if (fromDefined && when < (from as Date)) return false;
+		if (toDefined && when > (to as Date)) return false;
+	}
+	return true;
+}
+
+// Parse a complete blob of log text into entries, finalizing the last one — used for the
+// backlog, where we hold the whole snapshot in memory.
+function parseAllLogEntries(text: string): LogEntry[] {
+	const entries: LogEntry[] = [];
+	const reader = new RegExp(LOG_ENTRY_MARKER);
+	let lastPosition = 0;
+	let pending: { timestamp: string; tagsString: string } | undefined;
+	let parsed;
+	while ((parsed = reader.exec(text))) {
+		if (pending) {
+			entries.push(makeLogEntry(pending.timestamp, pending.tagsString, text.slice(lastPosition, parsed.index)));
+		}
+		const [intro, timestamp, tagsString] = parsed;
+		pending = { timestamp, tagsString };
+		lastPosition = parsed.index + intro.length;
+	}
+	if (pending) {
+		entries.push(makeLogEntry(pending.timestamp, pending.tagsString, text.slice(lastPosition).trim()));
+	}
+	return entries;
+}
+
+// Stateful incremental parser for the live tail: fed appended chunks over time, it emits an
+// entry as soon as the next marker delimits its message; `flush()` finalizes the last pending
+// entry (called on idle so a quiet tail still surfaces its newest line).
+function createIncrementalLogParser(onEntry: (entry: LogEntry) => void) {
+	let remaining = '';
+	let pending: { timestamp: string; tagsString: string } | undefined;
+	return {
+		push(text: string) {
+			const data = remaining + text;
+			const reader = new RegExp(LOG_ENTRY_MARKER);
+			let lastPosition = 0;
+			let parsed;
+			while ((parsed = reader.exec(data))) {
+				if (pending) {
+					onEntry(makeLogEntry(pending.timestamp, pending.tagsString, data.slice(lastPosition, parsed.index)));
+				}
+				const [intro, timestamp, tagsString] = parsed;
+				pending = { timestamp, tagsString };
+				lastPosition = parsed.index + intro.length;
+			}
+			remaining = data.slice(lastPosition);
+		},
+		flush() {
+			if (pending) {
+				onEntry(makeLogEntry(pending.timestamp, pending.tagsString, remaining.trim()));
+				pending = undefined;
+				remaining = '';
+			}
+		},
+		reset() {
+			pending = undefined;
+			remaining = '';
+		},
+	};
+}
+
+/**
+ * Stream the local log over SSE: emit the recent backlog, then tail newly-appended lines
+ * until the client disconnects (the emitter's `signal` aborts). Resolves when the tail ends
+ * so the SSE wrapper can close the response.
+ */
+function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
+	const { readLogPath, limit } = params;
+	const signal: AbortSignal | undefined = progress.signal;
+	const emit = (entry: LogEntry) => progress.emit('log', entry);
+
+	return new Promise<void>((resolve) => {
+		if (signal?.aborted) return resolve();
+
+		let offset = 0;
+		let reading = false;
+		let idleTimer: ReturnType<typeof setTimeout> | undefined;
+		const parser = createIncrementalLogParser((entry) => {
+			if (matchesLogFilters(entry, params)) emit(entry);
+		});
+
+		const scheduleIdleFlush = () => {
+			if (idleTimer) clearTimeout(idleTimer);
+			idleTimer = setTimeout(() => parser.flush(), TAIL_IDLE_FLUSH_MS);
+			idleTimer.unref?.();
+		};
+
+		// Read the newly-appended bytes [offset, size) and feed them to the incremental parser.
+		// A `reading` guard serializes overlapping reads; after each read we re-check the size so
+		// a burst that landed mid-read isn't stranded until the next write.
+		const readDelta = (size: number) => {
+			if (reading) return;
+			if (size < offset) {
+				// Truncation or rotation: start over from the new file's beginning.
+				offset = 0;
+				parser.reset();
+			}
+			if (size <= offset) return;
+			reading = true;
+			const start = offset;
+			const end = size - 1;
+			offset = size;
+			let chunk = '';
+			const deltaStream = fs.createReadStream(readLogPath, { start, end, encoding: 'utf8' });
+			deltaStream.on('data', (data) => {
+				chunk += data;
+			});
+			deltaStream.on('error', () => {
+				reading = false;
+			});
+			deltaStream.on('close', () => {
+				parser.push(chunk);
+				scheduleIdleFlush();
+				reading = false;
+				fs.stat(readLogPath, (err, stats) => {
+					if (!err && stats.size > offset) readDelta(stats.size);
+				});
+			});
+		};
+
+		const onChange = (curr: fs.Stats) => readDelta(curr.size);
+
+		const startTail = () => {
+			// `offset` is already the backlog boundary, so the tail picks up strictly from there —
+			// no line dropped or double-sent across the handoff.
+			// Without a disconnect signal we can't safely tail forever; degrade to backlog-only so
+			// the client falls back to polling for subsequent changes.
+			if (!signal) return resolve();
+			fs.watchFile(readLogPath, { interval: TAIL_POLL_INTERVAL_MS }, onChange);
+			const stop = () => {
+				fs.unwatchFile(readLogPath, onChange);
+				if (idleTimer) clearTimeout(idleTimer);
+				resolve();
+			};
+			if (signal.aborted) return stop();
+			signal.addEventListener('abort', stop, { once: true });
+			// Catch anything appended between the backlog snapshot and arming the watcher; without
+			// this a burst that lands in that window waits for the next write to be noticed.
+			fs.stat(readLogPath, (err, stats) => {
+				if (!err) readDelta(stats.size);
+			});
+		};
+
+		// Emit the backlog first (newest `limit` entries, oldest-first), then begin tailing.
+		let startSize = 0;
+		try {
+			startSize = fs.statSync(readLogPath).size;
+		} catch {
+			startSize = 0;
+		}
+		offset = startSize;
+		if (startSize === 0) {
+			startTail();
+			return;
+		}
+		let backlog = '';
+		const backlogStream = fs.createReadStream(readLogPath, { start: 0, end: startSize - 1, encoding: 'utf8' });
+		backlogStream.on('data', (data) => {
+			backlog += data;
+		});
+		backlogStream.on('error', () => {});
+		backlogStream.on('close', () => {
+			const matched = parseAllLogEntries(backlog).filter((entry) => matchesLogFilters(entry, params));
+			for (const entry of matched.slice(-limit)) emit(entry);
+			startTail();
+		});
+	});
 }

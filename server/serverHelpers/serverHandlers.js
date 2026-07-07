@@ -25,11 +25,17 @@ const { applyImpersonation } = require('../../security/impersonation.ts');
 const { createGzip, constants } = require('zlib');
 const { ProgressEmitter, createSSEResponseStream } = require('./progressEmitter.ts');
 
-// Operations that support `Accept: text/event-stream` for live progress streaming. The
-// handler attaches a ProgressEmitter as req.body.progress so the operation can emit phase
-// events; the response body is the SSE-encoded emitter output. Non-SSE clients see the
-// historical single-response shape because progress is undefined on that path.
-const SSE_PROGRESS_OPERATIONS = new Set([terms.OPERATIONS_ENUM.DEPLOY_COMPONENT, terms.OPERATIONS_ENUM.GET_DEPLOYMENT]);
+// Operations that support `Accept: text/event-stream` for live streaming. The handler
+// attaches a ProgressEmitter as req.body.progress so the operation can emit events; the
+// response body is the SSE-encoded emitter output. Non-SSE clients see the historical
+// single-response shape because progress is undefined on that path. deploy_component /
+// get_deployment stream a bounded run and end; read_log tails the log and stays open until
+// the client disconnects (the emitter's abort signal), so subscribers see new lines live.
+const SSE_PROGRESS_OPERATIONS = new Set([
+	terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+	terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
+	terms.OPERATIONS_ENUM.READ_LOG,
+]);
 
 const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
