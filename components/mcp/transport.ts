@@ -35,7 +35,8 @@ import { emitAuditEntry } from './audit.ts';
 import { emitMcpLogToSession, isValidMcpLogLevel, setSessionLogLevel } from './logging.ts';
 import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
-import { tryAdmit } from './rateLimit.ts';
+import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
+import { checkDurableQuota } from './quota.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
@@ -89,6 +90,12 @@ export interface NormRequest {
 	 */
 	userObject?: AuthedUser;
 	profile: McpProfile;
+	/**
+	 * Client socket IP, for per-client rate limiting and the durable quota
+	 * hook (#1610). Adapters populate from `request.ip`; identity resolution
+	 * (socket vs trusted header) happens in `resolveClientIdentity`.
+	 */
+	clientIp?: string;
 }
 
 export interface NormResponse {
@@ -518,8 +525,11 @@ async function dispatchToolsCall(
 
 	// Rate limit check — admit-or-deny BEFORE invoking the handler. Failures
 	// surface as `isError: true` with `kind: 'rate_limited'` (NOT a JSON-RPC
-	// error) so the LLM sees and can back off / try later.
-	const decision = tryAdmit(session.id, name, request.profile);
+	// error) so the LLM sees and can back off / try later. Client identity
+	// engages the per-client bucket, the scope that survives session cycling
+	// by anonymous clients (#1610).
+	const clientIdentity = resolveClientIdentity(request.headers, request.clientIp, request.profile);
+	const decision = tryAdmit(session.id, name, request.profile, clientIdentity);
 	if (!decision.allowed) {
 		// Non-strict tsconfig doesn't narrow the discriminated union here.
 		const denied = decision as { allowed: false; reason: string };
@@ -555,6 +565,47 @@ async function dispatchToolsCall(
 			{ kind: 'rate_limited', tool: name, scope: denied.reason },
 			'mcp.rateLimit'
 		);
+		return jsonResponse(200, buildSuccess(messageId, toolResult));
+	}
+
+	// Durable quota hook (#1610): operator-implemented policy behind config
+	// (e.g. a persisted per-IP daily counter). Runs AFTER the cheap in-memory
+	// admit so a rate-limited client can't spam the (possibly table-backed)
+	// hook, and BEFORE the handler. Fail-closed; see quota.ts.
+	const quota = await checkDurableQuota({
+		identity: clientIdentity,
+		tool: name,
+		user,
+		profile: request.profile,
+		sessionId: session.id,
+	});
+	if (quota.allowed === false) {
+		decision.release();
+		const toolResult: ToolResult = {
+			isError: true,
+			content: [
+				{
+					type: 'text',
+					text: JSON.stringify({
+						kind: 'quota_exceeded',
+						tool: name,
+						message: quota.message ?? 'MCP quota exceeded',
+						...(quota.retryAfterSeconds !== undefined ? { retryAfterSeconds: quota.retryAfterSeconds } : {}),
+					}),
+				},
+			],
+		};
+		emitAuditEntry({
+			timestamp: new Date(callStartedAt).toISOString(),
+			profile: request.profile,
+			sessionId: session.id,
+			tool: name,
+			user: user.username ?? request.user,
+			args: args as object,
+			status: 'quota_exceeded',
+			durationMs: 0,
+		});
+		emitMcpLogToSession(session.id, 'notice', { kind: 'quota_exceeded', tool: name }, 'mcp.quota');
 		return jsonResponse(200, buildSuccess(messageId, toolResult));
 	}
 
