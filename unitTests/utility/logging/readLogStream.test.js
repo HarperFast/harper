@@ -1,28 +1,24 @@
 'use strict';
 
-const env_mangr = require('#src/utility/environment/environmentManager');
-env_mangr.initTestEnvironment();
-const sinon = require('sinon');
-const chai = require('chai');
-const expect = chai.expect;
-const path = require('path');
-const fs = require('fs-extra');
-const rewire = require('rewire');
-const read_log = rewire('#src/utility/logging/readLog');
-const readLogFunction = read_log.default || read_log;
-const hdb_terms = require('#src/utility/hdbTerms');
+const assert = require('node:assert');
+const path = require('node:path');
+const fs = require('node:fs');
+const env = require('#src/utility/environment/environmentManager');
+env.initTestEnvironment();
+const hdbTerms = require('#src/utility/hdbTerms');
+const readLog = require('#src/utility/logging/readLog').default;
 
-const LOG_DIR_TEST = 'testLoggerStream';
-const LOG_NAME_TEST = 'log_stream_unit_test.log';
-const TEST_LOG_DIR = path.join(__dirname, LOG_DIR_TEST);
-const FULL_LOG_PATH_TEST = path.join(TEST_LOG_DIR, LOG_NAME_TEST);
+const TEST_LOG_DIR = path.join(__dirname, 'testLoggerStream');
+const LOG_NAME = 'log_stream_unit_test.log';
+const LOG_PATH = path.join(TEST_LOG_DIR, LOG_NAME);
 
 function line(second, level, message) {
 	return `2023-03-02T21:52:1${second}.688Z [main/0] [${level}]: ${message}\n`;
 }
 
-// Fake ProgressEmitter matching what serverHandlers attaches to request.progress: an `emit`
-// that captures events, plus a `signal` that aborts on client disconnect.
+// Stand-in for the ProgressEmitter serverHandlers attaches to request.progress: an `emit`
+// that captures events plus a `signal` that aborts on client disconnect. Using a plain object
+// (rather than a mock) keeps this test on real modules per AGENTS.md.
 function fakeProgress() {
 	const controller = new AbortController();
 	const events = [];
@@ -51,139 +47,140 @@ async function waitFor(predicate, { timeout = 5000, interval = 20 } = {}) {
 }
 
 describe('Test readLog SSE tail', () => {
-	const sandbox = sinon.createSandbox();
-	const validator_stub = sandbox.stub().returns(null);
-	let validator_rw;
-	let getConfigPath_rw;
+	let originalLogPath;
 	let progress;
 	let running;
 
+	before(() => {
+		// Point read_log's configured log directory at our temp dir via the real environment
+		// manager — getConfigPath reads env.get(LOG_PATH) — so the real validator and reader
+		// operate on our file with no module stubbing.
+		originalLogPath = env.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+		env.setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
+	});
+
+	after(() => {
+		env.setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, originalLogPath);
+		fs.rmSync(TEST_LOG_DIR, { recursive: true, force: true });
+	});
+
 	beforeEach(() => {
-		fs.mkdirpSync(TEST_LOG_DIR);
-		fs.writeFileSync(FULL_LOG_PATH_TEST, '');
-		getConfigPath_rw = read_log.__set__('configUtils_ts_1', {
-			getConfigPath: (key) => (key === hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY ? TEST_LOG_DIR : undefined),
-		});
-		validator_rw = read_log.__set__('readLogValidator_ts_1', { default: validator_stub });
+		fs.mkdirSync(TEST_LOG_DIR, { recursive: true });
+		fs.writeFileSync(LOG_PATH, '');
 		progress = undefined;
 		running = undefined;
 	});
 
 	afterEach(async () => {
-		// Always disconnect so the file watcher/timers are torn down and the operation resolves,
-		// otherwise a leaked fs.watchFile would keep the process (and mocha) alive.
+		// Always disconnect so the file watcher/timers are torn down and the operation resolves;
+		// a leaked fs.watchFile would otherwise keep the process (and mocha) alive.
 		if (progress && running) {
 			progress.disconnect();
 			await running;
 		}
-		sandbox.resetHistory();
-		validator_rw();
-		getConfigPath_rw();
-		fs.removeSync(TEST_LOG_DIR);
 	});
 
 	it('emits the existing backlog as `log` events, then resolves on disconnect', async () => {
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(0, 'info', 'first'));
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(1, 'warn', 'second'));
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'first'));
+		fs.appendFileSync(LOG_PATH, line(1, 'warn', 'second'));
 
 		progress = fakeProgress();
-		running = readLogFunction({ operation: 'read_log', log_name: LOG_NAME_TEST, progress });
+		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
 
-		const got = await waitFor(() => progress.logs().length >= 2);
-		expect(got, 'backlog entries were emitted').to.be.true;
+		assert.ok(await waitFor(() => progress.logs().length >= 2), 'backlog entries were emitted');
 
 		const messages = progress.logs().map((l) => l.message);
-		expect(messages).to.include('first');
-		expect(messages).to.include('second');
-		expect(progress.events.every((e) => e.event === 'log')).to.be.true;
+		assert.ok(messages.includes('first'));
+		assert.ok(messages.includes('second'));
+		assert.ok(progress.events.every((e) => e.event === 'log'));
 
 		progress.disconnect();
 		await running; // resolves because the tail observed the abort
 	});
 
 	it('tails newly appended lines live', async () => {
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(0, 'info', 'backlog'));
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog'));
 
 		progress = fakeProgress();
-		running = readLogFunction({ operation: 'read_log', log_name: LOG_NAME_TEST, progress });
-		expect(await waitFor(() => progress.logs().length >= 1)).to.be.true;
+		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
+		assert.ok(await waitFor(() => progress.logs().length >= 1));
 
 		// Append three lines: the first two are finalized by the following markers and stream out
 		// without waiting on the idle flush.
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(2, 'info', 'live-a'));
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(3, 'error', 'live-b'));
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(4, 'warn', 'live-c'));
+		fs.appendFileSync(LOG_PATH, line(2, 'info', 'live-a'));
+		fs.appendFileSync(LOG_PATH, line(3, 'error', 'live-b'));
+		fs.appendFileSync(LOG_PATH, line(4, 'warn', 'live-c'));
 
 		const got = await waitFor(() => {
 			const m = progress.logs().map((l) => l.message);
 			return m.includes('live-a') && m.includes('live-b');
 		});
-		expect(got, 'live-appended lines were tailed').to.be.true;
+		assert.ok(got, 'live-appended lines were tailed');
 	});
 
 	it('flushes a trailing single line once the tail goes idle', async function () {
 		this.timeout(15000);
 		progress = fakeProgress();
-		running = readLogFunction({ operation: 'read_log', log_name: LOG_NAME_TEST, progress });
+		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
 		// give the watcher a moment to arm on the empty file
 		await new Promise((r) => setTimeout(r, 100));
 
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(5, 'info', 'lonely'));
+		fs.appendFileSync(LOG_PATH, line(5, 'info', 'lonely'));
 
 		// No following marker will arrive, so this only shows up after the idle flush fires.
 		const got = await waitFor(() => progress.logs().some((l) => l.message === 'lonely'), { timeout: 6000 });
-		expect(got, 'trailing line flushed on idle').to.be.true;
+		assert.ok(got, 'trailing line flushed on idle');
 	});
 
 	it('applies level and filter to both backlog and live entries', async () => {
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(0, 'info', 'keep me'));
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(0, 'error', 'drop me'));
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'keep me'));
+		fs.appendFileSync(LOG_PATH, line(0, 'error', 'drop me'));
 
 		progress = fakeProgress();
-		running = readLogFunction({
+		running = readLog({
 			operation: 'read_log',
-			log_name: LOG_NAME_TEST,
+			log_name: LOG_NAME,
 			level: 'info',
 			filter: 'keep',
 			progress,
 		});
 
-		expect(await waitFor(() => progress.logs().length >= 1)).to.be.true;
+		assert.ok(await waitFor(() => progress.logs().length >= 1));
 
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(2, 'info', 'keep this too'));
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(3, 'info', 'nope'));
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(4, 'error', 'keep but wrong level'));
+		fs.appendFileSync(LOG_PATH, line(2, 'info', 'keep this too'));
+		fs.appendFileSync(LOG_PATH, line(3, 'info', 'nope'));
+		fs.appendFileSync(LOG_PATH, line(4, 'error', 'keep but wrong level'));
 		// A trailing line whose marker finalizes 'keep this too' / 'nope'.
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(5, 'info', 'sentinel keep'));
+		fs.appendFileSync(LOG_PATH, line(5, 'info', 'sentinel keep'));
 
 		await waitFor(() => progress.logs().some((l) => l.message === 'keep this too'));
 
 		const messages = progress.logs().map((l) => l.message);
-		expect(messages).to.include('keep me');
-		expect(messages).to.include('keep this too');
-		expect(messages).to.not.include('drop me'); // filtered by `filter`
-		expect(messages).to.not.include('nope'); // filtered by `filter`
-		expect(messages).to.not.include('keep but wrong level'); // filtered by `level`
+		assert.ok(messages.includes('keep me'));
+		assert.ok(messages.includes('keep this too'));
+		assert.ok(!messages.includes('drop me'), 'filtered by `filter`');
+		assert.ok(!messages.includes('nope'), 'filtered by `filter`');
+		assert.ok(!messages.includes('keep but wrong level'), 'filtered by `level`');
 	});
 
 	it('caps the backlog at `limit`, keeping the newest', async () => {
 		for (let i = 0; i < 5; i++) {
-			fs.appendFileSync(FULL_LOG_PATH_TEST, line(i, 'info', `entry-${i}`));
+			fs.appendFileSync(LOG_PATH, line(i, 'info', `entry-${i}`));
 		}
 
 		progress = fakeProgress();
-		running = readLogFunction({ operation: 'read_log', log_name: LOG_NAME_TEST, limit: 2, progress });
+		running = readLog({ operation: 'read_log', log_name: LOG_NAME, limit: 2, progress });
 
-		expect(await waitFor(() => progress.logs().length >= 2)).to.be.true;
+		assert.ok(await waitFor(() => progress.logs().length >= 2));
 		// Give any erroneous extra backlog emits a chance to land before asserting the cap.
 		await new Promise((r) => setTimeout(r, 100));
 
 		const messages = progress.logs().map((l) => l.message);
-		expect(messages).to.eql(['entry-3', 'entry-4']);
+		assert.deepStrictEqual(messages, ['entry-3', 'entry-4']);
 	});
 
 	it('resolves immediately without a disconnect signal (degrades to backlog-only)', async () => {
-		fs.appendFileSync(FULL_LOG_PATH_TEST, line(0, 'info', 'only-backlog'));
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'only-backlog'));
 
 		const noSignal = {
 			events: [],
@@ -192,9 +189,9 @@ describe('Test readLog SSE tail', () => {
 			},
 		};
 		// No `signal` → cannot safely tail forever, so it must resolve after the backlog.
-		await readLogFunction({ operation: 'read_log', log_name: LOG_NAME_TEST, progress: noSignal });
+		await readLog({ operation: 'read_log', log_name: LOG_NAME, progress: noSignal });
 
 		const messages = noSignal.events.filter((e) => e.event === 'log').map((e) => e.data.message);
-		expect(messages).to.eql(['only-backlog']);
+		assert.deepStrictEqual(messages, ['only-backlog']);
 	});
 });
