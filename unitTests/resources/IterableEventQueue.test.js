@@ -57,5 +57,6 @@ describe('IterableEventQueue', () => {
 		q.on('data', () => {}); // attach loop drains the buffered queue synchronously, no 'drained' emit
 		const result = await Promise.race([drained, new Promise((r) => setTimeout(() => r('hung'), 1000))]);
 		assert.equal(result, true, 'waiter must observe the queue emptying through the attach path');
+		assert.equal(q.listenerCount('drained'), 0, 'poll-path settle must remove the drained listener');
 	});
 });

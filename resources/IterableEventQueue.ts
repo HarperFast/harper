@@ -42,16 +42,18 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 				// The queue can also empty through paths that never emit 'drained' (the on('data')
 				// attach loop and the resolveNext bypass), so a waiter relying on the event alone
 				// can hang forever on an already-empty queue. Poll as a fallback wakeup.
+				const settle = (drained: boolean) => {
+					clearInterval(poll);
+					this.removeListener('drained', onDrained);
+					resolve(drained);
+				};
+				const onDrained = () => settle(true);
+				this.once('drained', onDrained);
+				this.currentDrainResolver = settle;
 				const poll = setInterval(() => {
 					if (!this.queue || this.queue.length === 0) settle(true);
 				}, 100);
 				poll.unref?.();
-				const settle = (drained: boolean) => {
-					clearInterval(poll);
-					resolve(drained);
-				};
-				this.once('drained', () => settle(true));
-				this.currentDrainResolver = settle;
 				if (!this.drainCloseListener) {
 					this.drainCloseListener = true;
 					this.on('close', () => {
