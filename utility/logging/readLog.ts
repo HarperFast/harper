@@ -486,7 +486,7 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 		if (signal?.aborted) return resolve();
 
 		let offset = 0;
-		let reading = false;
+		let pumping = false;
 		let idleTimer: ReturnType<typeof setTimeout> | undefined;
 		const parser = createIncrementalLogParser((entry) => {
 			if (matchesLogFilters(entry, params)) emit(entry);
@@ -498,46 +498,69 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 			idleTimer.unref?.();
 		};
 
-		// Read the newly-appended bytes [offset, size) and feed them to the incremental parser.
-		// A `reading` guard serializes overlapping reads; after each read we re-check the size so
-		// a burst that landed mid-read isn't stranded until the next write.
-		const readDelta = (size: number) => {
-			if (reading) return;
-			if (size < offset) {
-				// Truncation or rotation: start over from the new file's beginning.
-				offset = 0;
-				parser.reset();
-			}
-			if (size <= offset) return;
-			reading = true;
-			const start = offset;
-			const end = size - 1;
-			offset = size;
-			let chunk = '';
-			const deltaStream = fs.createReadStream(readLogPath, { start, end, encoding: 'utf8' });
-			deltaStream.on('data', (data) => {
-				chunk += data;
-			});
-			deltaStream.on('error', () => {
-				reading = false;
-			});
-			deltaStream.on('close', () => {
-				parser.push(chunk);
-				scheduleIdleFlush();
-				reading = false;
-				fs.stat(readLogPath, (err, stats) => {
-					if (!err && stats.size > offset) readDelta(stats.size);
+		// Read [start, end] inclusive, resolving to the decoded text — or `null` if the read
+		// errored. On error we log and leave `offset` unadvanced so the pump retries that exact
+		// range on the next change, rather than silently skipping it forever.
+		const readRange = (start: number, end: number): Promise<string | null> =>
+			new Promise((res) => {
+				let chunk = '';
+				const rs = fs.createReadStream(readLogPath, { start, end, encoding: 'utf8' });
+				rs.on('data', (data) => {
+					chunk += data;
 				});
+				rs.on('error', (err) => {
+					hdbLogger.warn(`read_log SSE tail: failed to read ${readLogPath} [${start}, ${end}]: ${err?.message ?? err}`);
+					res(null);
+				});
+				rs.on('close', () => res(chunk));
 			});
+
+		// Single-flight pump: drain all appended bytes into the parser, pausing on backpressure so
+		// a slow client can't make buffered SSE frames grow without bound. Re-entrant calls while a
+		// pump is running are no-ops; the loop re-stats each turn and picks up newly-written bytes.
+		const pump = async () => {
+			if (pumping) return;
+			pumping = true;
+			try {
+				while (!signal?.aborted) {
+					let size: number;
+					try {
+						size = (await fs.promises.stat(readLogPath)).size;
+					} catch {
+						break;
+					}
+					if (size < offset) {
+						// Truncation or rotation: start over from the new file's beginning.
+						offset = 0;
+						parser.reset();
+					}
+					if (size <= offset) break;
+					if (progress.paused) {
+						// Client is behind — wait for the stream to drain before emitting more.
+						await progress.whenWritable();
+						continue;
+					}
+					const start = offset;
+					const chunk = await readRange(start, size - 1);
+					if (signal?.aborted) break;
+					if (chunk === null) break; // transient read error: retry same range on next change
+					offset = size;
+					parser.push(chunk);
+					scheduleIdleFlush();
+				}
+			} finally {
+				pumping = false;
+			}
 		};
 
-		const onChange = (curr: fs.Stats) => readDelta(curr.size);
+		const onChange = () => {
+			void pump();
+		};
 
 		const startTail = () => {
 			// `offset` is already the backlog boundary, so the tail picks up strictly from there —
-			// no line dropped or double-sent across the handoff.
-			// Without a disconnect signal we can't safely tail forever; degrade to backlog-only so
-			// the client falls back to polling for subsequent changes.
+			// no line dropped or double-sent across the handoff. Without a disconnect signal we
+			// can't safely tail forever; degrade to backlog-only so the client polls instead.
 			if (!signal) return resolve();
 			fs.watchFile(readLogPath, { interval: TAIL_POLL_INTERVAL_MS }, onChange);
 			const stop = () => {
@@ -547,11 +570,8 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 			};
 			if (signal.aborted) return stop();
 			signal.addEventListener('abort', stop, { once: true });
-			// Catch anything appended between the backlog snapshot and arming the watcher; without
-			// this a burst that lands in that window waits for the next write to be noticed.
-			fs.stat(readLogPath, (err, stats) => {
-				if (!err) readDelta(stats.size);
-			});
+			// Catch anything appended between the backlog snapshot and arming the watcher.
+			void pump();
 		};
 
 		// Emit the backlog first (newest `limit` matching entries, oldest-first), then begin tailing.
@@ -571,8 +591,14 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 		// little to avoid clipping, parse it incrementally, filter, and keep the newest `limit`. A
 		// partial first line the seek lands in is dropped by the parser, as in the buffered path.
 		const backlogStart = Math.max(startSize - (limit + 5) * ESTIMATED_AVERAGE_ENTRY_SIZE, 0);
+		// Keep only the newest `limit` matching entries as we parse, so even a window denser than
+		// estimated can't grow this array without bound.
 		const backlogEntries: LogEntry[] = [];
-		const backlogParser = createIncrementalLogParser((entry) => backlogEntries.push(entry));
+		const backlogParser = createIncrementalLogParser((entry) => {
+			if (!matchesLogFilters(entry, params)) return;
+			backlogEntries.push(entry);
+			if (backlogEntries.length > limit) backlogEntries.shift();
+		});
 		const backlogStream = fs.createReadStream(readLogPath, {
 			start: backlogStart,
 			end: startSize - 1,
@@ -582,8 +608,7 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 		backlogStream.on('error', () => {});
 		backlogStream.on('close', () => {
 			backlogParser.flush();
-			const matched = backlogEntries.filter((entry) => matchesLogFilters(entry, params));
-			for (const entry of matched.slice(-limit)) emit(entry);
+			for (const entry of backlogEntries) emit(entry);
 			startTail();
 		});
 	});
