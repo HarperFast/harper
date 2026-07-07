@@ -942,3 +942,148 @@ describe('mcp/tools/application — handler dispatch', () => {
 		assert.match(payload.message, /access denied/);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Custom mcpResources opt-in (#1609)
+// ---------------------------------------------------------------------------
+
+const {
+	matchCustomResource,
+	listCustomResources: listCustomResourceDefs,
+	listCustomResourceTemplates: listCustomResourceTemplateDefs,
+	clearProfileCustomResources,
+} = require('#src/components/mcp/customResourceRegistry');
+const { readResource: readResourceForCustom } = require('#src/components/mcp/resources');
+
+describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_setRequestTargetForTest(FakeRequestTarget);
+		clearProfileCustomResources('application');
+	});
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+		clearProfileCustomResources('application');
+	});
+
+	it('registers fixed and template entries from a static mcpResources declaration', () => {
+		class Docs {
+			async readPage() {
+				return 'x';
+			}
+		}
+		Docs.mcpResources = [
+			{
+				uri: 'docs:///index',
+				name: 'docs index',
+				description: 'All pages',
+				mimeType: 'text/markdown',
+				method: 'readPage',
+			},
+			{
+				uriTemplate: 'docs:///{+path}',
+				name: 'docs page',
+				description: 'One page',
+				mimeType: 'text/markdown',
+				method: 'readPage',
+				completions: { path: ['guides/install.md'] },
+			},
+		];
+		_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+		registerApplicationTools();
+		assert.equal(listCustomResourceDefs('application').length, 1);
+		assert.equal(listCustomResourceTemplateDefs('application').length, 1);
+		assert.ok(matchCustomResource('application', 'docs:///index'));
+		assert.ok(matchCustomResource('application', 'docs:///a/b/c.md'));
+	});
+
+	it('read dispatches to the named instance method with template params and read context', async () => {
+		let captured;
+		class Docs {
+			async readPage(params, context) {
+				captured = { params, profile: context.profile };
+				return { text: `page:${params.path}`, mimeType: 'text/markdown' };
+			}
+		}
+		Docs.mcpResources = [{ uriTemplate: 'docs:///{+path}', name: 'docs page', description: 'd', method: 'readPage' }];
+		_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+		registerApplicationTools();
+		const res = await readResourceForCustom({
+			uri: 'docs:///guides/install.md',
+			user: SUPER,
+			profile: 'application',
+		});
+		assert.equal(res.ok, true);
+		assert.deepEqual(captured, { params: { path: 'guides/install.md' }, profile: 'application' });
+		assert.equal(res.contents[0].text, 'page:guides/install.md');
+		assert.equal(res.contents[0].mimeType, 'text/markdown');
+	});
+
+	it('dispatches on the LIVE registry class so a later-registered subclass wins', async () => {
+		class Base {
+			async readPage() {
+				return 'base';
+			}
+		}
+		Base.mcpResources = [{ uri: 'docs:///index', name: 'docs index', description: 'd', method: 'readPage' }];
+		const registry = makeRegistry([['Docs', { Resource: Base }]]);
+		_setResourcesForTest(registry);
+		registerApplicationTools();
+		class Sub extends Base {
+			async readPage() {
+				return 'sub';
+			}
+		}
+		// component reload swaps the registry entry in place — reads must see Sub
+		registry.get('Docs').Resource = Sub;
+		const res = await readResourceForCustom({ uri: 'docs:///index', user: SUPER, profile: 'application' });
+		assert.equal(res.contents[0].text, 'sub');
+	});
+
+	it('skips invalid entries: missing method, both/neither of uri+uriTemplate, malformed template', () => {
+		class Bad {
+			async ok() {
+				return 'x';
+			}
+		}
+		Bad.mcpResources = [
+			{ uri: 'a:///1', name: 'no-method' },
+			{ uri: 'a:///2', uriTemplate: 'a:///{x}', name: 'both', method: 'ok' },
+			{ name: 'neither', method: 'ok' },
+			{ uriTemplate: 'a:///{bad', name: 'malformed', method: 'ok' },
+			{ uri: 'a:///5', name: 'missing-fn', method: 'doesNotExist' },
+			{ uri: 'harper://schema/data/shadow', name: 'reserved-harper', description: 'd', method: 'ok' },
+			{ uriTemplate: 'https://example.com/{x}', name: 'reserved-web', description: 'd', method: 'ok' },
+			{ uriTemplate: '{scheme}://{+path}', name: 'param-scheme', description: 'd', method: 'ok' },
+			{ uriTemplate: 'har{rest}://{+path}', name: 'partial-scheme', description: 'd', method: 'ok' },
+			{ uri: 'a:///good', name: 'good', description: 'd', method: 'ok' },
+		];
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad }]]));
+		registerApplicationTools();
+		const fixed = listCustomResourceDefs('application');
+		assert.deepEqual(
+			fixed.map((r) => r.uri),
+			['a:///good']
+		);
+		assert.equal(listCustomResourceTemplateDefs('application').length, 0);
+	});
+
+	it('rebuild clears stale custom resources (removed class leaves no entry behind)', () => {
+		class Docs {
+			async readPage() {
+				return 'x';
+			}
+		}
+		Docs.mcpResources = [{ uri: 'docs:///index', name: 'docs index', description: 'd', method: 'readPage' }];
+		_setResourcesForTest(makeRegistry([['Docs', { Resource: Docs }]]));
+		registerApplicationTools();
+		assert.ok(matchCustomResource('application', 'docs:///index'));
+		_setResourcesForTest(makeRegistry([]));
+		_resetApplicationToolsRegisteredForTest();
+		registerApplicationTools();
+		assert.equal(matchCustomResource('application', 'docs:///index'), undefined);
+	});
+});

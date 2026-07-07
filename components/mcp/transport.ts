@@ -38,6 +38,7 @@ import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit } from './rateLimit.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
+import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
 import {
 	addResourceSubscription,
@@ -114,6 +115,13 @@ export async function handleMcpRequest(request: NormRequest): Promise<NormRespon
 	try {
 		if (!isOriginAllowed(request)) {
 			return jsonResponse(403, { error: 'origin_not_allowed' });
+		}
+		// Component entry loading is asynchronous past the boot awaits, so Resource
+		// classes (and their custom mcpTools/mcpPrompts/mcpResources) can register
+		// after the initial walk with no schema event to trigger a refresh. Rebuild
+		// lazily when the registry moved — an integer compare otherwise (#1609).
+		if (request.profile === 'application') {
+			ensureApplicationToolsFresh();
 		}
 		if (request.method === 'POST') {
 			// POST always yields a single JSON object in v1 (no per-request SSE).
@@ -835,6 +843,9 @@ function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messa
 			context: params?.context,
 			user: effectiveUser(request),
 			profile: request.profile,
+			// custom mcpResources templates complete from author-declared values,
+			// selected by the template the client is completing against (#1609)
+			refUri: typeof params?.ref?.uri === 'string' ? params.ref.uri : undefined,
 		});
 	} else if (refType === 'ref/prompt') {
 		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;
