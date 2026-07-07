@@ -2074,8 +2074,12 @@ export function makeTable(options) {
 							// local audit time, not version, so this version-keyed lookup doesn't apply there (LMDB keeps the
 							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard.
-							if (isRocksDB && dedupVersionCouldBeRetained(txnTime)) {
+							// check above remains the read-your-writes guard. Never on a retry: the failed attempt already
+							// appended this write's own audit entry (log entries are not part of the aborted transaction),
+							// so the lookup would find it and skip the write as "already applied" when the record was never
+							// committed. A recommit of the same transaction survived that skip only because the old write
+							// batch still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							if (isRocksDB && !retry && dedupVersionCouldBeRetained(txnTime)) {
 								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -2134,7 +2138,11 @@ export function makeTable(options) {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
+							// Never a duplicate on a retry: the failed attempt already appended this write's own audit
+							// entry, so the lookup would match it while the record was never committed (see the up-front
+							// keyed dedup above).
 							const isReDeliveredDuplicate = () => {
+								if (retry) return false;
 								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								return (
