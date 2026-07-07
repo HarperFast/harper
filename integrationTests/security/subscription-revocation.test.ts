@@ -127,9 +127,17 @@ function openWs(wsBase: string, path: string, authHeader: string): Promise<WsSub
 	ws.on('close', () => (sub.closed = true));
 	ws.on('error', () => {});
 	return new Promise<WsSub>((resolveP) => {
-		ws.once('open', () => resolveP(sub));
-		ws.once('error', () => resolveP(sub));
-		setTimeout(() => resolveP(sub), 8000);
+		const timer = setTimeout(() => {
+			ws.off('open', onOpenOrError);
+			ws.off('error', onOpenOrError);
+			resolveP(sub);
+		}, 8000);
+		const onOpenOrError = () => {
+			clearTimeout(timer);
+			resolveP(sub);
+		};
+		ws.once('open', onOpenOrError);
+		ws.once('error', onOpenOrError);
 	});
 }
 
