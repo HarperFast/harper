@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783327631044,
+  "lastUpdate": 1783412427808,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -1820,6 +1820,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1075.52,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ece7da47672d8ee175a87b39b2a21340169c376a",
+          "message": "feat: re-authorize live subscriptions; revoke on permission loss or token expiry (#1414) (#1535)\n\n* feat: re-authorize live subscriptions; revoke on permission loss or token expiry (#1414)\n\nSubscribe-time authorization is point-in-time: once an SSE/WebSocket/MQTT stream is\nopen it keeps delivering even after the principal loses access (drop_user, role or\npermission change) or the bearer token it was opened with expires. This adds a\ncontinuous re-authorization registry that terminates such subscriptions.\n\n- server/liveSubscriptionAuth.ts: a registry of live subscriptions, each with a\n  table/RBAC-level recheck and a terminate handler. Swept (1) immediately on the ITC\n  user-change broadcast — serverHandlers rebuilds the user/role cache before firing\n  listeners, so the recheck sees current permissions — and (2) on a 30s interval as a\n  backstop and to catch token expiry, which is not event-signaled. Re-auth is\n  table-level (re-runs the same allowRead the subscription was granted with against a\n  freshly-fetched user); there is NO per-record evaluation. An error during recheck\n  fails closed (revokes). Normal teardown auto-unregisters.\n\n- resources/Resource.ts: at the common authorization chokepoint\n  (authorizeActionOnResource), register the resulting subscription for both the\n  'subscribe' (MQTT) and 'connect' (SSE/WebSocket) actions. Subscriptions with no user\n  principal (internal watchers, replication, local-bypass) are skipped.\n\n- security/auth.ts: capture the bearer token's JWT exp on the authenticated user so a\n  subscription opened with it can be revoked once it expires.\n\nRe-auth interval is overridable via HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS (tests).\n\nTest: integrationTests/security/subscription-revocation.test.ts opens an SSE collection\nsubscription and asserts delivery STOPS after (1) drop_user (event-driven) and (2)\nbearer-token expiry (interval-driven), while an authorized stream keeps delivering. 2/2\npass.\n\nCloses #1414.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix: address review — fresh user in recheck context, forward end() args, format\n\n- recheck advances context.user to the freshly-fetched user before re-running allowRead,\n  so a custom allowRead reading context.user / getCurrentUser() evaluates current state\n  rather than the stale subscribe-time user (Gemini critical).\n- the wrapped subscription.end() forwards all arguments to the original end() so stream\n  cleanup semantics are preserved (Gemini high).\n- prettier formatting on the new test.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* style: prettier formatting on subscription-revocation test\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(lint): use node:assert instead of restricted node:assert/strict\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kris@harperdb.io>",
+          "timestamp": "2026-07-06T23:39:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/ece7da47672d8ee175a87b39b2a21340169c376a"
+        },
+        "date": 1783412427391,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6504.95,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 9275.56,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 9685.49,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 7338.49,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 5192.37,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 9800.73,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1330.46,
             "unit": "ops/sec"
           }
         ]
