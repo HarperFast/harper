@@ -372,7 +372,7 @@ describe('Blob test', () => {
 		let packResult = encodeBlobsAsBuffers(() => {
 			return pack(record);
 		});
-		assert(packResult.then); // shouldn't be resolved yet
+		assert(!packResult.then); // put gates the commit on the blob's durable save, so pack resolves synchronously
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, expectedResults);
 		assert.equal(await streamResults, expectedResults);
@@ -409,15 +409,15 @@ describe('Blob test', () => {
 			}
 		}
 		let blob = createBlob(new BadStream());
-		await BlobTest.put({ id: 5, blob });
+		await assert.rejects(async () => {
+			await BlobTest.put({ id: 5, blob });
+		}, /test error/);
 		let eventError, thrownError;
 		blob.on('error', (err) => {
 			console.log('received error event');
 			eventError = err;
 		});
-		try {
-			await blob.written;
-		} catch {}
+		await assert.rejects(blob.written, /test error/);
 		try {
 			for await (let _entry of blob.stream()) {
 				console.log('got entry');
@@ -427,27 +427,16 @@ describe('Blob test', () => {
 		}
 		assert(thrownError);
 		assert(eventError);
-		thrownError = null;
-		eventError = null;
-		let record = await BlobTest.get(5);
-		record.blob.on('error', (err) => {
-			eventError = err;
-		});
-		try {
-			for await (let _entry of record.blob.stream()) {
-			}
-		} catch (err) {
-			thrownError = err;
-		}
-		assert(thrownError);
-		assert(eventError);
+		assert.equal(await BlobTest.get(5), undefined);
 	});
 	it('Error before streaming', async () => {
 		let pt = new PassThrough();
 		pt.on('error', () => {}); // ignore the uncaught error
 		pt.destroy(new Error('test error'));
 		let blob = createBlob(pt);
-		await BlobTest.put({ id: 6, blob });
+		await assert.rejects(async () => {
+			await BlobTest.put({ id: 6, blob });
+		}, /test error/);
 		let eventError, thrownError;
 		blob.on('error', (err) => {
 			eventError = err;
@@ -461,21 +450,7 @@ describe('Blob test', () => {
 		}
 		assert(thrownError);
 		assert(eventError);
-		thrownError = null;
-		eventError = null;
-
-		let record = await BlobTest.get(6);
-		record.blob.on('error', (err) => {
-			eventError = err;
-		});
-		try {
-			for await (let _entry of record.blob.stream()) {
-			}
-		} catch (err) {
-			thrownError = err;
-		}
-		assert(thrownError);
-		assert(eventError);
+		assert.equal(await BlobTest.get(6), undefined);
 	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
@@ -616,7 +591,7 @@ describe('Blob test', () => {
 		// the write aborts and retries.
 		const failStream = new PassThrough();
 		const failBlob = await createBlob(failStream, { saveBeforeCommit: true });
-		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, true);
+		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, false);
 		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
 		await assert.rejects(
 			rejectPc.complete(),
@@ -627,7 +602,7 @@ describe('Blob test', () => {
 		// so the record still commits with a diverged reference.
 		const goneStream = new PassThrough();
 		const goneBlob = await createBlob(goneStream, { saveBeforeCommit: true });
-		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, true);
+		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, false);
 		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
 		await assert.doesNotReject(toleratePc.complete(), 'a source-unavailable blob must not abort the commit');
 

@@ -1465,7 +1465,7 @@ export function startPreCommitBlobsForRecord(
 					value.saveInRecord = true;
 				}
 				blobsNeedingSaving.push(value);
-			} else {
+			} else if (storageInfoForBlob.get(value)?.fileId == null) {
 				// Local-write path with a fresh blob: gate the record commit on the blob's
 				// durable landing. Without this the record commits before the async save has
 				// fsync'd, and a peer that pulls the record first sees an orphan ref and marks
