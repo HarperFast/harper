@@ -58,20 +58,27 @@ interface CompiledDef {
 	def: CustomResourceDef;
 	/** Present for template entries only. */
 	regex?: RegExp;
-	paramNames?: string[];
+	params?: TemplateParam[];
+}
+
+interface TemplateParam {
+	name: string;
+	/** `{+name}` — reserved expansion, may span segments. */
+	reserved: boolean;
 }
 
 const registry = new Map<McpProfile, CompiledDef[]>();
 
 /**
  * Compile a URI template into a matcher. `{name}` matches a single path
- * segment (`[^/]+`); `{+name}` matches across segments (`.+`), mirroring
- * RFC 6570 level-2 reserved expansion, which is how MCP clients construct
- * URIs from templates. Throws on malformed templates so registration can
- * warn-and-skip the entry.
+ * segment (`[^/]+`), and an encoded separator — `%2F`/`%5C` — in the capture
+ * rejects the match, so the one-segment contract survives percent-decoding);
+ * `{+name}` matches across segments (`.+`), mirroring RFC 6570 level-2
+ * reserved expansion, which is how MCP clients construct URIs from templates.
+ * Throws on malformed templates so registration can warn-and-skip the entry.
  */
-export function compileUriTemplate(template: string): { regex: RegExp; paramNames: string[] } {
-	const paramNames: string[] = [];
+export function compileUriTemplate(template: string): { regex: RegExp; params: TemplateParam[] } {
+	const params: TemplateParam[] = [];
 	let pattern = '';
 	let index = 0;
 	while (index < template.length) {
@@ -89,17 +96,24 @@ export function compileUriTemplate(template: string): { regex: RegExp; paramName
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
 			throw new Error(`invalid template parameter '{${template.slice(open + 1, close)}}' in uriTemplate: ${template}`);
 		}
-		if (paramNames.includes(name)) {
+		if (params.some((p) => p.name === name)) {
 			// a repeated name would silently overwrite the earlier captured value
 			throw new Error(`duplicate template parameter '{${name}}' in uriTemplate: ${template}`);
 		}
-		paramNames.push(name);
+		params.push({ name, reserved });
 		pattern += reserved ? '(.+)' : '([^/]+)';
 		index = close + 1;
 	}
-	if (paramNames.length === 0) throw new Error(`uriTemplate has no parameters (use \`uri\` instead): ${template}`);
-	return { regex: new RegExp(`^${pattern}$`), paramNames };
+	if (params.length === 0) throw new Error(`uriTemplate has no parameters (use \`uri\` instead): ${template}`);
+	return { regex: new RegExp(`^${pattern}$`), params };
 }
+
+// `{name}` captures run against the still-encoded URI, so a client can smuggle
+// a separator through the `[^/]+` class as %2F (or %5C) and have it decode to
+// a real slash/backslash AFTER the segment boundary was checked — defeating
+// the one-segment contract authors rely on for path construction. Reject the
+// match instead (the URI simply doesn't fit a single-segment slot).
+const ENCODED_SEPARATOR = /%2f|%5c/i;
 
 function escapeRegex(literal: string): string {
 	return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -109,9 +123,9 @@ function escapeRegex(literal: string): string {
 export function addCustomResource(def: CustomResourceDef): void {
 	const compiled: CompiledDef = { def };
 	if (def.uriTemplate) {
-		const { regex, paramNames } = compileUriTemplate(def.uriTemplate);
+		const { regex, params } = compileUriTemplate(def.uriTemplate);
 		compiled.regex = regex;
-		compiled.paramNames = paramNames;
+		compiled.params = params;
 	}
 	let list = registry.get(def.profile);
 	if (!list) {
@@ -181,14 +195,21 @@ export function matchCustomResource(
 	for (const { def } of list) {
 		if (def.uri === uri) return { def, params: {} };
 	}
-	for (const { def, regex, paramNames } of list) {
-		if (!regex || !paramNames) continue;
+	for (const { def, regex, params: templateParams } of list) {
+		if (!regex || !templateParams) continue;
 		const match = regex.exec(uri);
 		if (!match) continue;
 		const params: Record<string, string> = {};
-		for (let i = 0; i < paramNames.length; i++) {
-			params[paramNames[i]] = decodeURIComponentSafe(match[i + 1]);
+		let separatorSmuggled = false;
+		for (let i = 0; i < templateParams.length; i++) {
+			const raw = match[i + 1];
+			if (!templateParams[i].reserved && ENCODED_SEPARATOR.test(raw)) {
+				separatorSmuggled = true;
+				break;
+			}
+			params[templateParams[i].name] = decodeURIComponentSafe(raw);
 		}
+		if (separatorSmuggled) continue;
 		return { def, params };
 	}
 	return undefined;

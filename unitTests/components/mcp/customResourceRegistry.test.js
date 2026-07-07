@@ -19,15 +19,15 @@ describe('mcp/customResourceRegistry (#1609)', () => {
 
 	describe('compileUriTemplate', () => {
 		it('matches {name} within a single segment only', () => {
-			const { regex, paramNames } = compileUriTemplate('docs:///{section}/index');
-			assert.deepEqual(paramNames, ['section']);
+			const { regex, params } = compileUriTemplate('docs:///{section}/index');
+			assert.deepEqual(params, [{ name: 'section', reserved: false }]);
 			assert.ok(regex.test('docs:///guides/index'));
 			assert.ok(!regex.test('docs:///guides/nested/index'));
 		});
 
 		it('matches {+name} across segments (reserved expansion)', () => {
-			const { regex, paramNames } = compileUriTemplate('docs:///{+path}');
-			assert.deepEqual(paramNames, ['path']);
+			const { regex, params } = compileUriTemplate('docs:///{+path}');
+			assert.deepEqual(params, [{ name: 'path', reserved: true }]);
 			assert.ok(regex.test('docs:///getting-started/install.md'));
 		});
 
@@ -59,6 +59,24 @@ describe('mcp/customResourceRegistry (#1609)', () => {
 			const match = matchCustomResource('application', 'docs:///guides/getting%20started.md');
 			assert.equal(match.def.name, 'page');
 			assert.deepEqual(match.params, { path: 'guides/getting started.md' });
+		});
+
+		it('rejects encoded separators smuggled into a {name} segment (traversal guard)', () => {
+			addCustomResource({ uriTemplate: 'docs:///{page}', name: 'one-seg', profile: 'application', read });
+			// %2F / %5C pass the [^/]+ class raw, then would decode to real
+			// separators — the one-segment contract must reject the match.
+			assert.equal(matchCustomResource('application', 'docs:///..%2F..%2Fetc%2Fpasswd'), undefined);
+			assert.equal(matchCustomResource('application', 'docs:///..%2f..%2fsecrets'), undefined);
+			assert.equal(matchCustomResource('application', 'docs:///a%5Cb'), undefined);
+			// Ordinary encoded characters still decode fine in a {name} slot.
+			const match = matchCustomResource('application', 'docs:///getting%20started');
+			assert.deepEqual(match.params, { page: 'getting started' });
+		});
+
+		it('still decodes %2F inside {+name} (reserved expansion spans segments by design)', () => {
+			addCustomResource({ uriTemplate: 'files:///{+path}', name: 'multi', profile: 'application', read });
+			const match = matchCustomResource('application', 'files:///a%2Fb/c');
+			assert.deepEqual(match.params, { path: 'a/b/c' });
 		});
 
 		it('a stray percent in the URI does not throw (URIError safety)', () => {
