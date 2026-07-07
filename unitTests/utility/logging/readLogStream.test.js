@@ -37,6 +37,50 @@ function fakeProgress() {
 	};
 }
 
+// Variant that models the real ProgressEmitter's backpressure surface: `paused` plus a
+// `whenWritable()` that resolves on `resume()` (what createSSEResponseStream calls on stream
+// 'drain'). `disconnect()` also releases waiters, mirroring the wrapper's teardown, so the
+// tail cannot hang if the client leaves while the producer is awaiting drain.
+function fakeProgressWithBackpressure() {
+	const controller = new AbortController();
+	const events = [];
+	let paused = false;
+	let waiters = [];
+	const release = () => {
+		const pending = waiters;
+		waiters = [];
+		for (const r of pending) r();
+	};
+	return {
+		events,
+		signal: controller.signal,
+		get paused() {
+			return paused;
+		},
+		emit(event, data) {
+			events.push({ event, data });
+		},
+		whenWritable() {
+			return paused ? new Promise((r) => waiters.push(r)) : Promise.resolve();
+		},
+		pause() {
+			paused = true;
+		},
+		resume() {
+			paused = false;
+			release();
+		},
+		disconnect() {
+			controller.abort();
+			paused = false;
+			release();
+		},
+		logs() {
+			return events.filter((e) => e.event === 'log').map((e) => e.data);
+		},
+	};
+}
+
 async function waitFor(predicate, { timeout = 5000, interval = 20 } = {}) {
 	const deadline = Date.now() + timeout;
 	while (Date.now() < deadline) {
@@ -116,6 +160,35 @@ describe('Test readLog SSE tail', () => {
 			return m.includes('live-a') && m.includes('live-b');
 		});
 		assert.ok(got, 'live-appended lines were tailed');
+	});
+
+	it('pauses tailing under backpressure and resumes on drain', async function () {
+		this.timeout(15000);
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog'));
+
+		progress = fakeProgressWithBackpressure();
+		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
+		assert.ok(await waitFor(() => progress.logs().length >= 1), 'backlog emitted');
+
+		// Simulate a slow client whose write buffer is full, then append new lines.
+		progress.pause();
+		fs.appendFileSync(LOG_PATH, line(2, 'info', 'live-a'));
+		fs.appendFileSync(LOG_PATH, line(3, 'info', 'live-b'));
+		fs.appendFileSync(LOG_PATH, line(4, 'info', 'live-c'));
+
+		const beforeDrain = progress.logs().length;
+		// The pump should reach the appended bytes but park on whenWritable() — emitting nothing
+		// more — rather than buffering frames for a client that cannot keep up.
+		await new Promise((r) => setTimeout(r, 700));
+		assert.strictEqual(progress.logs().length, beforeDrain, 'no entries emitted while paused');
+
+		// Client catches up; the tail resumes and delivers the withheld lines.
+		progress.resume();
+		const got = await waitFor(() => {
+			const m = progress.logs().map((l) => l.message);
+			return m.includes('live-a') && m.includes('live-b');
+		});
+		assert.ok(got, 'withheld entries flow once the stream drains');
 	});
 
 	it('flushes a trailing single line once the tail goes idle', async function () {

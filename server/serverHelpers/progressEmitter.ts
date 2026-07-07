@@ -23,6 +23,30 @@ export class ProgressEmitter {
 	 */
 	signal?: AbortSignal;
 
+	/**
+	 * Backpressure signal for open-ended producers. {@link createSSEResponseStream} sets this
+	 * `true` when the underlying SSE stream's write buffer is full and clears it on `drain`. A
+	 * producer that can outrun a slow client (e.g. a log tail on a busy file) should await
+	 * {@link whenWritable} before emitting more, so buffered frames can't grow without bound.
+	 * Bounded producers (deploy) simply never check it.
+	 */
+	paused = false;
+	private drainWaiters: Array<() => void> = [];
+
+	/** Resolves once the SSE stream can accept more writes (immediately when not paused). */
+	whenWritable(): Promise<void> {
+		if (!this.paused) return Promise.resolve();
+		return new Promise((resolve) => this.drainWaiters.push(resolve));
+	}
+
+	/** Called by the SSE wrapper on `drain` (and on teardown) to release awaiting producers. */
+	resume(): void {
+		this.paused = false;
+		const waiters = this.drainWaiters;
+		this.drainWaiters = [];
+		for (const waiter of waiters) waiter();
+	}
+
 	emit(event: string, data: unknown): void {
 		// Snapshot before iteration so a listener that unsubscribes itself during dispatch
 		// doesn't shift indexes underneath us.
@@ -71,16 +95,22 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 	let errorEmitted = false;
 	const unsubscribe = emitter.subscribe((event) => {
 		if (active) {
-			writeSSE(stream, event);
+			// A `false` return means the stream's buffer is over its high-water mark; flag it so
+			// producers that check `whenWritable()` back off until the 'drain' below clears it.
+			const canWriteMore = writeSSE(stream, event);
+			if (!canWriteMore) emitter.paused = true;
 			if (event.event === 'error') errorEmitted = true;
 		}
 	});
+	stream.on('drain', () => emitter.resume());
 
 	const cleanup = () => {
 		if (active) {
 			active = false;
 			unsubscribe();
 			abortController.abort();
+			// Release any producer awaiting drain so the operation can settle instead of hanging.
+			emitter.resume();
 		}
 	};
 
@@ -114,11 +144,12 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
 	return stream;
 }
 
-function writeSSE(stream: PassThrough, event: ProgressEvent): void {
+/** Write one SSE record; returns `stream.write`'s last result (false = buffer over high-water). */
+function writeSSE(stream: PassThrough, event: ProgressEvent): boolean {
 	const data = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
 	stream.write(`event: ${event.event}\n`);
 	for (const line of data.split(/\r?\n/)) {
 		stream.write(`data: ${line}\n`);
 	}
-	stream.write('\n');
+	return stream.write('\n');
 }
