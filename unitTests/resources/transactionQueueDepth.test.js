@@ -5,6 +5,11 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getTransactionQueueDepths } = require('#src/resources/DatabaseTransaction');
+// The queue-depth accounting lives on the base DatabaseTransaction (RocksDB path). LMDB writes/reads
+// route through the separate LMDBTransaction overrides (resources/LMDBTransaction.ts), which maintain
+// their own unrelated trackedTxns set and do not feed this accounting — matching the existing
+// RocksDB-only carve-outs in transaction.test.js.
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Transaction queue depth metrics', () => {
 	let QueueTest;
@@ -33,6 +38,7 @@ describe('Transaction queue depth metrics', () => {
 	});
 
 	it('records a committed write on the write-queue high-water mark, then drains to zero', async function () {
+		if (isLMDB) return;
 		getTransactionQueueDepths(); // reset the sampling window
 		await QueueTest.put(1, { name: 'first' });
 		const depths = getTransactionQueueDepths();
@@ -43,6 +49,7 @@ describe('Transaction queue depth metrics', () => {
 	});
 
 	it('reflects an open read transaction in the read-queue depth', async function () {
+		if (isLMDB) return;
 		getTransactionQueueDepths(); // reset the sampling window
 		await QueueTest.put(2, { name: 'second' });
 		let observedReadDepth = 0;

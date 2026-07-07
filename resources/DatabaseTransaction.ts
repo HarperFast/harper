@@ -64,6 +64,9 @@ function recordCommitLatency(commitResolution: Promise<void>, submittedAt: numbe
 // (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
 // sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
 // instantaneous sample taken at emit time would routinely miss the spike operators need to see.
+// RocksDB-write-path only: LMDB routes through the separate LMDBTransaction.commit()/getReadTxn()
+// overrides (resources/LMDBTransaction.ts), which maintain their own unrelated `trackedTxns` set and
+// do not call into this accounting.
 let writeTxnQueueDepth = 0;
 let writeTxnQueueDepthHighWater = 0;
 let readTxnQueueDepthHighWater = 0;
@@ -72,7 +75,10 @@ function enterWriteQueue() {
 	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
 }
 function leaveWriteQueue() {
-	writeTxnQueueDepth--;
+	// Floor at zero: accounting is balanced by construction (every enterWriteQueue has exactly one
+	// matching settlement), but the guard is cheap insurance against a future call-site imbalance
+	// producing a negative depth that would corrupt every subsequent sample.
+	if (writeTxnQueueDepth > 0) writeTxnQueueDepth--;
 }
 
 /**
@@ -409,8 +415,15 @@ export class DatabaseTransaction implements Transaction {
 							// resolves it. A transient-conflict retry rejects this promise and issues a
 							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
 							// never throws, so the settled promise resolves and needs no rejection handling of its own.
+							// The thenable guard protects against a future caller passing a non-Promise
+							// `commitResolution` (today it is always rocksdb-js's async Transaction.commit()
+							// result, guaranteed to be a Promise).
 							enterWriteQueue();
-							commitResolution.then(leaveWriteQueue, leaveWriteQueue);
+							if (commitResolution && typeof (commitResolution as any).then === 'function') {
+								commitResolution.then(leaveWriteQueue, leaveWriteQueue);
+							} else {
+								leaveWriteQueue();
+							}
 						} else {
 							try {
 								commitResolution = transaction.abort();
