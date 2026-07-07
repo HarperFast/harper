@@ -84,25 +84,18 @@ function makeField(kind: string, meta: Record<string, unknown> = {}): any {
 	};
 }
 function makeDateField(meta: Record<string, unknown> = {}): any {
-	return {
-		kind: 'Date',
-		meta,
-		get nullable() {
-			return makeField('Date', { ...meta, nullable: true });
+	return Object.defineProperties(makeField('Date', meta), {
+		createdTime: {
+			get: () => makeField('Date', { ...meta, assignCreatedTime: true }),
+			enumerable: true,
+			configurable: true,
 		},
-		get indexed() {
-			return makeField('Date', { ...meta, indexed: true });
+		updatedTime: {
+			get: () => makeField('Date', { ...meta, assignUpdatedTime: true }),
+			enumerable: true,
+			configurable: true,
 		},
-		get primaryKey() {
-			return makeField('Date', { ...meta, primaryKey: true });
-		},
-		get createdTime() {
-			return makeField('Date', { ...meta, assignCreatedTime: true });
-		},
-		get updatedTime() {
-			return makeField('Date', { ...meta, assignUpdatedTime: true });
-		},
-	};
+	});
 }
 
 /**
@@ -120,6 +113,9 @@ export const types = {
 	date: makeDateField() as DateField,
 	bytes: makeField('Bytes') as Field<Uint8Array>,
 	any: makeField('Any') as Field<unknown>,
+	// Narrows the TS type to the literal union; stored as a String column. The narrowing is
+	// advisory at runtime today (the shared Table.validate has no enum case — same as GraphQL);
+	// the literal set is retained on the attribute for downstream surfaces.
 	enum: <const E extends readonly string[]>(values: E) => makeField('String', { enum: values }) as Field<E[number]>,
 	// many-to-one: this table holds the foreign key named `from`. Lazy thunk — forward refs are fine.
 	relation: <T>(target: () => T, opts: { from: string }) =>
@@ -294,17 +290,37 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
 	const attributes: any[] = [];
 	const properties: Record<string, any> = {};
 	const declared = new Set(Object.keys(shape));
-	const fkColumns = new Set<string>();
 
 	for (const [attrName, f] of Object.entries(shape) as [string, any][]) {
 		const meta = f.meta ?? {};
 		if (f.kind === 'relation') {
 			const resolveClass = memoize(meta.target as () => any);
+			// The definition mirrors what GraphQL's connectPropertyType attaches (the target
+			// typeDef): `type` and `attributes` feed OpenAPI's includeDefinitionInSchema (so the
+			// emitted $ref component is always defined), `tableClass` feeds the query-time
+			// resolvers. All lazy — read only after every table is defined.
 			const definition = {};
 			Object.defineProperty(definition, 'tableClass', { get: resolveClass, enumerable: true, configurable: true });
+			Object.defineProperty(definition, 'type', {
+				get: () => resolveClass().tableName,
+				enumerable: true,
+				configurable: true,
+			});
+			Object.defineProperty(definition, 'attributes', {
+				get: () => resolveClass().attributes,
+				enumerable: true,
+				configurable: true,
+			});
 			let attr: any;
 			if (meta.from) {
-				// many-to-one: this table holds the foreign key
+				// many-to-one: this table holds the foreign key. Like GraphQL, the FK must be a
+				// declared field — that makes it typed, projected into `properties`, and writable
+				// in $insert/$upsert (the relation itself is a read-only projection).
+				if (!declared.has(meta.from)) {
+					throw new Error(
+						`Table "${name}": relation "${attrName}" references foreign key "${meta.from}", which must be declared in the shape (e.g. \`${meta.from}: id.indexed\`)`
+					);
+				}
 				attr = { name: attrName, relationship: { from: meta.from } };
 				Object.defineProperty(attr, 'type', {
 					get: () => resolveClass().tableName,
@@ -313,7 +329,6 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
 				});
 				// non-enumerable, mirroring GraphQL's connectPropertyType
 				Object.defineProperty(attr, 'definition', { value: definition, configurable: true });
-				if (!declared.has(meta.from)) fkColumns.add(meta.from);
 			} else {
 				// one-to-many: the related table holds the foreign key
 				const elements: any = {};
@@ -326,9 +341,10 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
 				attr = { name: attrName, type: 'array', relationship: { to: meta.to }, elements };
 			}
 			attributes.push(attr);
-			// fragment reads the lazy `type`, so project it lazily too
+			// fragment reads the lazy `type`, so project it lazily too (memoized — cold surface)
+			let fragment: any;
 			Object.defineProperty(properties, attrName, {
-				get: () => attributeToFragment(attr),
+				get: () => (fragment ??= attributeToFragment(attr)),
 				enumerable: true,
 				configurable: true,
 			});
@@ -344,8 +360,6 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
 		attributes.push(attr);
 		properties[attrName] = attributeToFragment(attr);
 	}
-	// auto-add foreign-key columns implied by many-to-one relations (indexed for join lookups)
-	for (const fk of fkColumns) attributes.push({ name: fk, indexed: true });
 
 	const { database, ...tableOptions } = options;
 	// `schemaDefined: true` matches @table so the existing-Table re-assert in `table()` fires on

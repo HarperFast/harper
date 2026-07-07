@@ -111,6 +111,7 @@ describe('RFC 0001: canonical relationships — lazy thunks, forward reference',
 			{
 				id: id.primaryKey,
 				title: string,
+				authorId: id.indexed, // the FK must be declared (typed + writable), like GraphQL
 				author: types.relation(() => Author, { from: 'authorId' }), // many-to-one, forward ref
 			},
 			{ database: DB }
@@ -126,14 +127,32 @@ describe('RFC 0001: canonical relationships — lazy thunks, forward reference',
 		);
 	});
 
-	it('compiles a relation into a relationship attribute + auto-added indexed FK column', () => {
+	it('compiles a relation into a relationship attribute alongside the declared FK column', () => {
 		const byName = Object.fromEntries(Book.attributes.map((a) => [a.name, a]));
 		assert.ok(byName.author, 'relationship attribute present');
 		assert.strictEqual(byName.author.type, 'Author', 'lazy type resolves to the related table name');
 		assert.deepStrictEqual(byName.author.relationship, { from: 'authorId' });
 		assert.strictEqual(byName.author.definition.tableClass, Author, 'definition links the related class');
-		assert.ok(byName.authorId, 'foreign-key column auto-added');
+		assert.strictEqual(byName.author.definition.type, 'Author', 'definition carries type for OpenAPI components');
+		assert.strictEqual(byName.author.definition.attributes, Author.attributes, 'definition carries attributes');
+		assert.strictEqual(byName.authorId.type, 'ID', 'declared FK is typed');
 		assert.strictEqual(byName.authorId.indexed, true, 'FK column indexed for join lookups');
+		assert.ok(Book.properties.authorId, 'declared FK projected into the canonical properties Record');
+	});
+
+	it('rejects a relation whose foreign key is not declared in the shape', () => {
+		assert.throws(
+			() =>
+				defineTable(
+					'Orphan',
+					{
+						id: id.primaryKey,
+						other: types.relation(() => Author, { from: 'otherId' }), // otherId not declared
+					},
+					{ database: DB }
+				),
+			/foreign key "otherId", which must be declared/
+		);
 	});
 
 	it('compiles hasMany into an array relationship with lazy element type', () => {

@@ -73,7 +73,8 @@ type _query = Expect<
 >;
 
 // Relations: to-one resolves to the related read record (readonly), to-many to an array; both
-// are dropped from every write projection, and the implied FK is NOT part of the declared shape.
+// are dropped from every write projection. A to-one relation's FK must be DECLARED in the shape
+// (like GraphQL), which makes it typed, queryable, and writable — the relation itself is not.
 const Album = defineTable('Album', {
 	id: id.primaryKey,
 	title: string,
@@ -84,6 +85,22 @@ type _album_record = Expect<
 	Equal<AlbumRecord, { readonly id: string; readonly title: string; readonly tracks: TrackRecord[] }>
 >;
 type _album_insert = Expect<Equal<(typeof Album)['$insert'], { title: string; id?: string }>>;
+
+const Song = defineTable('Song', {
+	id: id.primaryKey,
+	title: string,
+	albumId: id.indexed, // declared FK — typed and writable
+	album: types.relation(() => Album, { from: 'albumId' }),
+});
+type _song_record = Expect<
+	Equal<
+		(typeof Song)['$record'],
+		{ readonly id: string; readonly title: string; readonly albumId: string; readonly album: AlbumRecord }
+	>
+>;
+// the declared FK is insertable/patchable; the relation projection is not
+type _song_insert = Expect<Equal<(typeof Song)['$insert'], { title: string; albumId: string; id?: string }>>;
+type _song_query = Expect<Equal<(typeof Song)['$query'], { albumId?: string }>>;
 
 // Verbs are typed by the projections (await-friendly MaybePromise results).
 async function verbs() {
