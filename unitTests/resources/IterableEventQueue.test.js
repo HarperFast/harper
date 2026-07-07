@@ -49,4 +49,13 @@ describe('IterableEventQueue', () => {
 		q.off('close', close);
 		assert.equal(q.hasDataListeners, true, "removing a 'close' listener leaves data state intact");
 	});
+
+	it('waitForDrain resolves when the on(data) attach loop empties the queue without emitting drained', async () => {
+		const q = new IterableEventQueue();
+		q.send({ n: 1 });
+		const drained = q.waitForDrain();
+		q.on('data', () => {}); // attach loop drains the buffered queue synchronously, no 'drained' emit
+		const result = await Promise.race([drained, new Promise((r) => setTimeout(() => r('hung'), 1000))]);
+		assert.equal(result, true, 'waiter must observe the queue emptying through the attach path');
+	});
 });
