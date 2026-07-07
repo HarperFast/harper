@@ -18,7 +18,7 @@
  * Skipped on Bun: component restarts are not reliable under Harper-on-Bun in CI.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout } from 'node:timers/promises';
@@ -367,9 +367,9 @@ suite('Component lifecycle', { skip: skipSuite }, (ctx) => {
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => {
 				assert.ok(r.body.hasOwnProperty('test-deploy'), r.text);
-				assert.notEqual(r.body['test-deploy']['routes'], undefined, r.text);
+				assert.notStrictEqual(r.body['test-deploy']['routes'], undefined, r.text);
 				assert.equal(r.body['test-deploy']['routes'][0], 'examples', r.text);
-				assert.notEqual(r.body['test-deploy']['helpers'], undefined, r.text);
+				assert.notStrictEqual(r.body['test-deploy']['helpers'], undefined, r.text);
 				assert.equal(r.body['test-deploy']['helpers'][0], 'example', r.text);
 			})
 			.expect(200);

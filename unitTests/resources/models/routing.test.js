@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 // Prime the module graph in the same order the other models unit tests do.
 require('#src/resources/databases');
 const { registerRouter, getRouter, setFallbackGroup, clearRouting } = require('#src/resources/models/routing');

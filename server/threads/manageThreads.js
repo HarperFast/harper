@@ -79,6 +79,7 @@ module.exports = {
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
+	registerWorkerDataProvider,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -121,6 +122,59 @@ function setMainIsWorker(isWorker) {
 	module.exports.threadsHaveStarted();
 }
 let workerCount = 1; // should be assigned when workers are created
+
+// Every workerData key core itself produces or consumes — providers may not collide with these.
+// Covers the keys startWorker spreads below plus keys read elsewhere: `noServerStart` is set by
+// the embedding entry point (index.ts) and read by threadServer.js to skip startServers(); a
+// provider shadowing it would wedge HTTP worker startup.
+const RESERVED_WORKER_DATA_KEYS = [
+	'addPorts',
+	'addThreadIds',
+	'workerIndex',
+	'workerCount',
+	'name',
+	'restartNumber',
+	'ticketKeys',
+	'noServerStart',
+	'__proto__', // never a legitimate payload name; spread would define it as an own property
+];
+const workerDataProviders = new Map();
+/**
+ * Register a provider that contributes an extra `workerData` property to every worker spawned
+ * from this thread. `provider(options)` receives the startWorker options (`options.name` is the
+ * thread type, e.g. 'http' or 'job') and returns the value to place at `workerData[name]`, or
+ * undefined to skip that worker. Values must be structured-cloneable; a provider that throws or
+ * returns a non-cloneable value is logged and skipped so it can never break a spawn.
+ * Returns a function that unregisters the provider.
+ */
+function registerWorkerDataProvider(name, provider) {
+	if (RESERVED_WORKER_DATA_KEYS.includes(name) || workerDataProviders.has(name)) {
+		throw new Error(`workerData provider name '${name}' is already in use`);
+	}
+	if (typeof provider !== 'function') throw new Error('workerData provider must be a function');
+	workerDataProviders.set(name, provider);
+	return () => {
+		if (workerDataProviders.get(name) === provider) workerDataProviders.delete(name);
+	};
+}
+function collectProvidedWorkerData(options) {
+	if (workerDataProviders.size === 0) return undefined;
+	let provided;
+	for (const [name, provider] of workerDataProviders) {
+		try {
+			const value = provider(options);
+			if (value === undefined) continue;
+			// Use the clone, not the original: this both pre-flights cloneability (so a bad value
+			// can't break the Worker spawn) and detaches the payload from accessor-backed objects
+			// or later mutation that could still throw inside new Worker(). Null prototype so a
+			// provider name can never collide with Object.prototype members.
+			(provided ??= Object.create(null))[name] = structuredClone(value);
+		} catch (error) {
+			harperLogger.error(`workerData provider '${name}' failed and will be skipped for this worker:`, error);
+		}
+	}
+	return provided;
+}
 let ticketKeys;
 function getTicketKeys() {
 	if (ticketKeys) return ticketKeys;
@@ -221,6 +275,7 @@ function startWorker(path, options = {}) {
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
+			...collectProvidedWorkerData(options),
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			workerIndex: options.workerIndex,

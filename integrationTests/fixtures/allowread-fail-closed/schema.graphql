@@ -1,0 +1,23 @@
+# Fail-closed enforcement when an allow* hook throws/rejects (#1422 gap 1).
+#
+# allowRead is a *grant* hook layered over RBAC. If it throws (sync) or rejects (async),
+# the request must fail closed (deny) rather than fall through as authorized.
+
+# allowRead grants read to any authenticated user — the happy path that must keep working.
+type Allowed @table @export {
+	id: ID @primaryKey
+	value: String
+}
+
+# allowRead throws synchronously for non-super users — must fail closed (deny), not grant.
+type Throws @table @export {
+	id: ID @primaryKey
+	value: String
+}
+
+# allowRead rejects asynchronously for non-super users — exercises the async rejection
+# handler; must fail closed (deny), not grant.
+type ThrowsAsync @table @export {
+	id: ID @primaryKey
+	value: String
+}

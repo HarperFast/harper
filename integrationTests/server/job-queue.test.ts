@@ -15,7 +15,7 @@
  * Related: https://github.com/HarperFast/harper/issues/1193
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, match } from 'node:assert/strict';
+import { ok, strictEqual, match } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';

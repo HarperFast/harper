@@ -6,7 +6,7 @@
  * - Server resilience after errors
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual } from 'node:assert/strict';
+import { strictEqual } from 'node:assert';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 

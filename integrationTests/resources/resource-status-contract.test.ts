@@ -17,16 +17,17 @@
  * Findings are printed in `after()` as compact matrices; assertions only guard
  * server survival and known-contract expectations.
  *
- * This test documents working idioms + gaps (D-086) and is an F-039/#1421 regression
- * marker — assertions match CURRENT behavior so it is green now. When F-039/#1421 land,
- * update the expected statuses accordingly.
+ * This test documents working idioms + gaps (D-086). F-039/#1421 have landed: a thrown
+ * Response now short-circuits (status/headers/body honored) and `throw {status}` maps the
+ * `status` field as an alias for `statusCode`. A thrown Response still aborts the transaction
+ * like any throw, so a preceding write rolls back (4d). Assertions below guard that behavior.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/resources/resource-status-contract.test.ts"
  * Harper SHA: 7aaa5a152332739929786fb4a63e70f4206189b7
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -216,7 +217,7 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			{ case: 'bare-string', wantStatus: 500, desc: 'throw "string"' },
 			{ case: 'bare-number', wantStatus: 500, desc: 'throw 404 (bare number)' },
 			{ case: 'obj-statusCode', wantStatus: 404, desc: 'throw {statusCode:404}', isDefectIf500: true },
-			{ case: 'obj-status', wantStatus: 500, desc: 'throw {status:400} (wrong field)' },
+			{ case: 'obj-status', wantStatus: 400, desc: 'throw {status:400}', isDefectIf500: true },
 			{ case: 'throw-response', wantStatus: 422, desc: 'throw new Response(_, {status:422})' },
 			{ case: 'reject-promise', wantStatus: 500, desc: 'Promise.reject(Error)' },
 			{ case: 'null-throw', wantStatus: 500, desc: 'throw null' },
@@ -258,15 +259,13 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 				defectList.push(`[THROW LEAK] ${c.case}: error message "${c.msgToken}" leaked into response body`);
 			}
 
-			// throw-Response specific check
+			// throw-Response now short-circuits (F-039/#1421): status, Content-Type, body, and custom headers preserved
 			if (c.case === 'throw-response') {
-				if (r.status === 500) {
-					defectList.push(
-						`[THROW F-039] throw-Response->500: Harper does not short-circuit on thrown Response objects`
-					);
-				} else if (r.status === 422) {
-					throwMatrix.push(`  ^ GOOD: throw Response short-circuits correctly`);
-				}
+				strictEqual(r.status, 422, `throw Response should short-circuit to its status, got ${r.status}`);
+				ok(r.ct.includes('application/json'), `throw Response should preserve its Content-Type, got ${r.ct}`);
+				ok(leaks(r.text, 'shortCircuit'), `throw Response should preserve its body, got ${pfx(r.text)}`);
+				strictEqual(r.headers['x-qa195-thrown'], 'response', 'throw Response should preserve its custom headers');
+				throwMatrix.push(`  ^ GOOD: throw Response short-circuits (422, body + headers preserved)`);
 			}
 
 			// bare-number 404 — was it honored?
@@ -275,13 +274,10 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 				throwMatrix.push(`  ^ NOTE: bare number 404 was honored as status code (unexpected)`);
 			}
 
-			// obj-status (wrong field) — was status honored despite wrong field name?
+			// obj-status now honored (F-039/#1421): `status` is read as an alias for `statusCode`
 			if (c.case === 'obj-status') {
-				if (r.status === 400) {
-					throwMatrix.push(`  ^ NOTE: throw {status:400} was honored (unexpected — this is the wrong field name)`);
-				} else {
-					throwMatrix.push(`  ^ CONFIRMED: throw {status:400} (wrong field) not honored -> ${r.status}`);
-				}
+				strictEqual(r.status, 400, `throw {status:400} should map to 400, got ${r.status}`);
+				throwMatrix.push(`  ^ GOOD: throw {status:400} honored -> 400`);
 			}
 		}
 
@@ -298,7 +294,7 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			{ case: 'statuscode-400', wantStatus: 400, desc: 'POST Error{.statusCode=400}', isDefectIf500: true },
 			{ case: 'client-error-def', wantStatus: 400, desc: 'POST ClientError', isDefectIf500: true },
 			{ case: 'obj-statusCode', wantStatus: 409, desc: 'POST throw {statusCode:409}', isDefectIf500: true },
-			{ case: 'obj-status', wantStatus: 500, desc: 'POST throw {status:400}' },
+			{ case: 'obj-status', wantStatus: 400, desc: 'POST throw {status:400}', isDefectIf500: true },
 		];
 
 		for (const c of postCases) {
@@ -307,11 +303,8 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			const row = `${c.desc.padEnd(30)} -> ${r.status} [want ${c.wantStatus}]  title=${pfx(parsed?.title ?? r.text, 50)}`;
 			postPutMatrix.push(row);
 
-			if ((c as any).isDefectIf500 && r.status === 500) {
-				defectList.push(`[POST D-070] ${c.case}: 4xx-as-500`);
-			}
-			if ((c as any).isDefectIf500 && r.status !== c.wantStatus) {
-				postPutMatrix.push(`  ^ NOTE: expected ${c.wantStatus}, got ${r.status}`);
+			if ((c as any).isDefectIf500) {
+				strictEqual(r.status, c.wantStatus, `POST ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
 			}
 		}
 
@@ -320,7 +313,7 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			{ case: 'statuscode-400', wantStatus: 400, desc: 'PUT Error{.statusCode=400}', isDefectIf500: true },
 			{ case: 'client-error-def', wantStatus: 400, desc: 'PUT ClientError', isDefectIf500: true },
 			{ case: 'obj-statusCode', wantStatus: 422, desc: 'PUT throw {statusCode:422}', isDefectIf500: true },
-			{ case: 'obj-status', wantStatus: 500, desc: 'PUT throw {status:400}' },
+			{ case: 'obj-status', wantStatus: 400, desc: 'PUT throw {status:400}', isDefectIf500: true },
 		];
 
 		for (const c of putCases) {
@@ -329,11 +322,8 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 			const row = `${c.desc.padEnd(30)} -> ${r.status} [want ${c.wantStatus}]  title=${pfx(parsed?.title ?? r.text, 50)}`;
 			postPutMatrix.push(row);
 
-			if ((c as any).isDefectIf500 && r.status === 500) {
-				defectList.push(`[PUT D-070] ${c.case}: 4xx-as-500`);
-			}
-			if ((c as any).isDefectIf500 && r.status !== c.wantStatus) {
-				postPutMatrix.push(`  ^ NOTE: expected ${c.wantStatus}, got ${r.status}`);
+			if ((c as any).isDefectIf500) {
+				strictEqual(r.status, c.wantStatus, `PUT ${c.case}: expected ${c.wantStatus}, got ${r.status}`);
 			}
 		}
 
@@ -378,6 +368,27 @@ suite('QA-195 custom-resource AUTHOR status-code + body contract', { skip: skipS
 		}
 
 		ok(true, 'status pattern matrix recorded');
+	});
+
+	// -------------------------------------------------------------------------
+	// 4d. THROWN RESPONSE ROLLS BACK — a thrown Response surfaces its status/body,
+	//     but (like any throw) aborts the transaction, so a preceding write must
+	//     NOT persist. Guards the "throw = rollback" contract.
+	// -------------------------------------------------------------------------
+	test('thrown Response surfaces its status but rolls back the transaction', async () => {
+		const id = `twr-${Date.now()}`;
+		const r = await rawPost('/ThrowResponseAfterWrite/', { id });
+		strictEqual(r.status, 201, `thrown Response status should surface, got ${r.status}`);
+		ok(leaks(r.text, 'thrown'), `thrown Response body should surface, got ${pfx(r.text)}`);
+
+		// the write that ran before the throw must have rolled back
+		const check = await rawGet(`/Kv/${id}`);
+		statusMatrix.push(`thrown-Response-after-write id=${id} -> ${r.status}, Kv readback=${check.status} (expect 404)`);
+		strictEqual(
+			check.status,
+			404,
+			`write before a thrown Response must roll back, but Kv/${id} returned ${check.status}`
+		);
 	});
 
 	// -------------------------------------------------------------------------

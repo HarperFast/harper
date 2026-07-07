@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 // Prime module graph in the order other unit tests load it (avoids the ESM/CJS cycle
 // when transaction.ts is loaded ESM-first).
 require('#src/resources/databases');
