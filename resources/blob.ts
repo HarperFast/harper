@@ -61,6 +61,7 @@ type StorageInfo = {
 	start?: number;
 	end?: number;
 	saving?: Promise<void>;
+	saved?: boolean; // saving settled successfully; distinguishes durable from still-streaming when fileId is already assigned
 	asString?: string;
 	deleteOnFailure?: boolean;
 };
@@ -1014,6 +1015,14 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			}
 		}
 	});
+	// Mark durable on settle: fileId is assigned as soon as a save STARTS, so pre-commit gating
+	// needs this to tell a durable blob from one still streaming (review on the local-write gate)
+	storageInfo.saving.then(
+		() => {
+			storageInfo.saved = true;
+		},
+		() => {}
+	);
 	return blob;
 }
 
@@ -1465,7 +1474,10 @@ export function startPreCommitBlobsForRecord(
 					value.saveInRecord = true;
 				}
 				blobsNeedingSaving.push(value);
-			} else if (storageInfoForBlob.get(value)?.fileId == null) {
+			} else if (
+				storageInfoForBlob.get(value)?.fileId == null ||
+				(storageInfoForBlob.get(value)?.saving != null && !storageInfoForBlob.get(value)?.saved)
+			) {
 				// Local-write path with a fresh blob: gate the record commit on the blob's
 				// durable landing. Without this the record commits before the async save has
 				// fsync'd, and a peer that pulls the record first sees an orphan ref and marks
@@ -1592,11 +1604,9 @@ addExtension({
 				throw new Error('Cannot use the same blob in two different records');
 			}
 		}
-		const options = { ...blob };
 		// saveBeforeCommit/saveInRecord are origin-local write instructions, not blob data;
 		// shipping them makes the receiver's apply commit gate on an in-flight receive stream
-		delete options.saveBeforeCommit;
-		delete options.saveInRecord;
+		const { saveBeforeCommit: _sbc, saveInRecord: _sir, ...options } = blob as any;
 		if (blob.type) options.type = blob.type;
 		if (blob.size !== undefined) options.size = blob.size;
 		if (storageInfo) {

@@ -534,6 +534,25 @@ describe('Blob test', () => {
 		const existing = await BlobTest.get(250);
 		assert.equal(await existing.blob.text(), 'first');
 	});
+	it('gates a local write on a manually started, still-streaming blob save', async () => {
+		// saveBlob assigns the fileId as soon as the save STARTS, so a fileId check alone would
+		// exempt a mid-save blob from the local-write gate and reopen the orphan-reference window
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		saveBlob(blob);
+		slow.write('partial content');
+		const store = BlobTest.primaryStore.rootStore;
+		const preCommit = startPreCommitBlobsForRecord({ id: 8, blob }, store, false, false);
+		assert(preCommit && preCommit.blobs.includes(blob), 'mid-save blob must gate the commit');
+		let completed = false;
+		const completion = preCommit.complete().then(() => (completed = true));
+		await delay(20);
+		assert.equal(completed, false, 'commit must wait for the save to settle');
+		slow.end(' done');
+		await completion;
+		assert.equal(completed, true);
+		unlinkSync(getFilePathForBlob(blob)); // not referenced by any record; keep cleanupOrphans at zero
+	});
 	it('#406: startPreCommitBlobsForRecord tracks an already-saved blob only when trackPersistedBlobs is set', async () => {
 		// A replication-received blob is saved out-of-band by receiveBlobs BEFORE the apply, so at pre-commit
 		// it has a fileId but no saveBeforeCommit flag. It must be tracked (so a superseded apply's cleanup
