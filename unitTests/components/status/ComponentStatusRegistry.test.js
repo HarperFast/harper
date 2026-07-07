@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const sinon = require('sinon');
 const { ComponentStatusRegistry } = require('#src/components/status/ComponentStatusRegistry');
 const { ComponentStatus } = require('#src/components/status/ComponentStatus');

@@ -54,7 +54,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 		return this.readTxn;
 	}
 
-	useReadTxn() {
+	// `disableSnapshot` is accepted for parity with the RocksDB transaction, but LMDB has no
+	// per-transaction snapshot toggle (its only lever is `snapshot: false` on `getRange`, which
+	// throws on the dupSort secondary-index stores we use). So LMDB-backed reads always hold a
+	// snapshot for now; `snapshot: false` queries are honored on RocksDB-backed tables.
+	useReadTxn(_disableSnapshot?: boolean) {
 		this.getReadTxn();
 		if (this.readTxn) {
 			(this.readTxn as any).use();

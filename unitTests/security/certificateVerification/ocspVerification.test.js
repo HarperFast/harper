@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 
 // First set up test environment
 const testUtils = require('../../testUtils.js');

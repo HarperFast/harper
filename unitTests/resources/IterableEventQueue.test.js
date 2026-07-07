@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 
 describe('IterableEventQueue', () => {

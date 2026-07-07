@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { registerCall, unregisterCall, cancelCall, _inflightCallCount } = require('#src/components/mcp/callRegistry');
 
 describe('mcp/callRegistry', () => {

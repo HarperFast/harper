@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setTimeout: sleep } = require('node:timers/promises');
 
 /**

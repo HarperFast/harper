@@ -1,6 +1,6 @@
 /* eslint-disable sonarjs/no-nested-functions */
 const { Component, ComponentInvalidPatternError } = require('#src/components/Component');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 
 describe('Component', () => {
 	const name = 'test-component';
