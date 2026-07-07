@@ -26,6 +26,15 @@
  * itself on a bug is worse than a hard failure (#1422 set this precedent
  * for allow* hooks). The raw error goes to the server log only.
  *
+ * RACE-SAFETY: the hook can run concurrently for the SAME identity — within
+ * a worker (interleaving across the hook's own await boundaries) and across
+ * workers (separate processes sharing the database). A naive read-then-write
+ * counter (`get` → `put used+1`) can undercount under that concurrency and
+ * admit calls past the configured limit. Production implementations should
+ * make the read-modify-write atomic: run it in a transaction that serializes
+ * conflicting writers, use a compare-and-set retry loop, or maintain the
+ * counter in a store with native atomic increments.
+ *
  * Dispatch uses the LIVE registry class, same as custom tools — an exported
  * subclass replacing the entry on reload wins.
  */
