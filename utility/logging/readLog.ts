@@ -433,38 +433,19 @@ function matchesLogFilters(entry: LogEntry, params: TailFilterParams): boolean {
 	return true;
 }
 
-// Parse a complete blob of log text into entries, finalizing the last one — used for the
-// backlog, where we hold the whole snapshot in memory.
-function parseAllLogEntries(text: string): LogEntry[] {
-	const entries: LogEntry[] = [];
-	const reader = new RegExp(LOG_ENTRY_MARKER);
-	let lastPosition = 0;
-	let pending: { timestamp: string; tagsString: string } | undefined;
-	let parsed;
-	while ((parsed = reader.exec(text))) {
-		if (pending) {
-			entries.push(makeLogEntry(pending.timestamp, pending.tagsString, text.slice(lastPosition, parsed.index)));
-		}
-		const [intro, timestamp, tagsString] = parsed;
-		pending = { timestamp, tagsString };
-		lastPosition = parsed.index + intro.length;
-	}
-	if (pending) {
-		entries.push(makeLogEntry(pending.timestamp, pending.tagsString, text.slice(lastPosition).trim()));
-	}
-	return entries;
-}
-
-// Stateful incremental parser for the live tail: fed appended chunks over time, it emits an
+// Stateful incremental parser: fed appended chunks over time, it emits an
 // entry as soon as the next marker delimits its message; `flush()` finalizes the last pending
 // entry (called on idle so a quiet tail still surfaces its newest line).
 function createIncrementalLogParser(onEntry: (entry: LogEntry) => void) {
 	let remaining = '';
 	let pending: { timestamp: string; tagsString: string } | undefined;
+	// One RegExp per parser instance. Each push runs `exec` to completion (until null), which
+	// resets lastIndex to 0; we also reset it explicitly at the top of push for robustness.
+	const reader = new RegExp(LOG_ENTRY_MARKER);
 	return {
 		push(text: string) {
 			const data = remaining + text;
-			const reader = new RegExp(LOG_ENTRY_MARKER);
+			reader.lastIndex = 0;
 			let lastPosition = 0;
 			let parsed;
 			while ((parsed = reader.exec(data))) {
@@ -573,7 +554,7 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 			});
 		};
 
-		// Emit the backlog first (newest `limit` entries, oldest-first), then begin tailing.
+		// Emit the backlog first (newest `limit` matching entries, oldest-first), then begin tailing.
 		let startSize = 0;
 		try {
 			startSize = fs.statSync(readLogPath).size;
@@ -585,14 +566,23 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 			startTail();
 			return;
 		}
-		let backlog = '';
-		const backlogStream = fs.createReadStream(readLogPath, { start: 0, end: startSize - 1, encoding: 'utf8' });
-		backlogStream.on('data', (data) => {
-			backlog += data;
+		// Bound the backlog read to roughly the last `limit` entries so a large log file can't be
+		// pulled into memory all at once (mirrors the buffered path's tail-seek). We over-read a
+		// little to avoid clipping, parse it incrementally, filter, and keep the newest `limit`. A
+		// partial first line the seek lands in is dropped by the parser, as in the buffered path.
+		const backlogStart = Math.max(startSize - (limit + 5) * ESTIMATED_AVERAGE_ENTRY_SIZE, 0);
+		const backlogEntries: LogEntry[] = [];
+		const backlogParser = createIncrementalLogParser((entry) => backlogEntries.push(entry));
+		const backlogStream = fs.createReadStream(readLogPath, {
+			start: backlogStart,
+			end: startSize - 1,
+			encoding: 'utf8',
 		});
+		backlogStream.on('data', (data) => backlogParser.push(String(data)));
 		backlogStream.on('error', () => {});
 		backlogStream.on('close', () => {
-			const matched = parseAllLogEntries(backlog).filter((entry) => matchesLogFilters(entry, params));
+			backlogParser.flush();
+			const matched = backlogEntries.filter((entry) => matchesLogFilters(entry, params));
 			for (const entry of matched.slice(-limit)) emit(entry);
 			startTail();
 		});
