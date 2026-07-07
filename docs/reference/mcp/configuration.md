@@ -187,6 +187,7 @@ Semantics to know:
 - The hook runs **after** the in-memory buckets admit the call, so rate-limited clients cannot spam a table-backed hook.
 - **Fail-closed**: a hook that throws — or a configured `resource`/`method` that doesn't resolve — **denies** the call. Cost protection that silently disables itself on a bug is worse than a hard failure. The raw error is written to the server log only; the client sees a sanitized message.
 - Harper calls the hook once per attempted tool call; counting strategy (increment on check vs on success) is the hook's business.
+- **Race-safety is the hook's business too.** The hook can run concurrently for the same identity — within a worker (interleaving across `await` boundaries) and across workers. A naive read-then-write counter like the example above can undercount under concurrency and admit calls past the limit; make the read-modify-write atomic (a transaction that serializes conflicting writers, a compare-and-set retry loop, or a store with native atomic increments) for production use.
 
 ## `mcp.session.*`
 
