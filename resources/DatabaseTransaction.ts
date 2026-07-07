@@ -398,8 +398,9 @@ export class DatabaseTransaction implements Transaction {
 									(retryTransaction as any).onCommit = (transaction as any).onCommit;
 									try {
 										transaction.abort();
-									} catch {
-										// already released by the failed commit; nothing to clean up
+									} catch (abortError) {
+										// usually already released by the failed commit; log for the unexpected case
+										harperLogger.debug?.('aborting stranded transaction after failed commit', abortError);
 									}
 									transaction = retryTransaction;
 								}
