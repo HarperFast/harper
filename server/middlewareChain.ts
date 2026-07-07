@@ -125,11 +125,15 @@ export function resolveDeps(entries: HttpEntry[], nameToEntry: Map<string, HttpE
 }
 
 /**
- * Normalizes a urlPath by stripping a single trailing slash (except for the root '/').
- * '/api' and '/api/' are treated equivalently for routing/matching.
+ * Normalizes a urlPath by ensuring a leading slash and stripping a single trailing slash
+ * (except for the root '/'). '/api', 'api', and '/api/' are treated equivalently for
+ * routing/matching — pathnames always begin with '/', so a slash-less urlPath could
+ * otherwise never match anything (#1583).
  */
 export function normalizeUrlPath(urlPath: string | undefined): string | undefined {
-	if (!urlPath || urlPath.length <= 1) return urlPath;
+	if (!urlPath) return urlPath;
+	if (!urlPath.startsWith('/')) urlPath = '/' + urlPath;
+	if (urlPath.length <= 1) return urlPath;
 	return urlPath.endsWith('/') ? urlPath.slice(0, -1) : urlPath;
 }
 
@@ -167,6 +171,12 @@ export function stripPrefix(request: any, prefix: string): any {
 			if (prop === 'pathname') {
 				const origPathname: string = target.pathname ?? '/';
 				return origPathname === normalizedPrefix ? '/' : origPathname.slice(normalizedPrefix.length);
+			}
+			// Runtime-agnostic access to the unstripped pathname — '/mount' and '/mount/' both
+			// strip to '/', so handlers that must distinguish them (e.g. static's mount-root
+			// redirect, #1583) read this instead of runtime internals like _nodeRequest.
+			if (prop === 'originalPathname') {
+				return target.pathname ?? '/';
 			}
 			if (prop === 'url') {
 				const origPathname: string = target.pathname ?? '/';
