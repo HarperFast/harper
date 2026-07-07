@@ -378,6 +378,31 @@ export class DatabaseTransaction implements Transaction {
 								// for future transactions
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								if (error.code === 'ERR_TRY_AGAIN') {
+									// ERR_BUSY recovers on recommit: the save loop re-writes each key, re-tracking it at
+									// the current sequence, so validation passes once the contention clears. ERR_TRY_AGAIN
+									// never does: the memtable history validation needs is gone (flushed during a
+									// bulk-ingest burst), and recommitting re-checks the same stranded snapshot, so it
+									// fails forever even on an idle database. A source-apply transaction's uncapped retry
+									// then spins for good and wedges the replication apply loop at its commit await,
+									// freezing every leg of that database on the node. Replay onto a fresh transaction
+									// instead: the save loop reloads each entry through it and re-resolves against
+									// current state. Carry over the commit hook the transaction-log store attached
+									// (aftercommit emit / structure watermarks; it reads its state off the original
+									// transaction object, which abort() leaves intact); isRetry in save() keeps the log
+									// entries themselves from being re-added.
+									const retryTransaction: RocksTransactionWithRetry = new RocksTransaction(
+										(this.writes.find((write) => write)?.store.store ?? this.db.store) as RocksStore
+									);
+									if (this.timestamp) retryTransaction.setTimestamp(this.timestamp);
+									(retryTransaction as any).onCommit = (transaction as any).onCommit;
+									try {
+										transaction.abort();
+									} catch {
+										// already released by the failed commit; nothing to clean up
+									}
+									transaction = retryTransaction;
+								}
 								if (this.retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
 									// external caching source) must never drop a write on a transient conflict: there is no
