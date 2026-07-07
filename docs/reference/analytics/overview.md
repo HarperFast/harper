@@ -171,16 +171,16 @@ Harper automatically tracks the following metrics for all services. Applications
 
 ### Resource Usage Metrics
 
-| `metric`                  | Key attributes                                                                                   | Other               | Unit    | Description                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------- | --------------------------------------------------------------------------------- |
-| `database-size`           | `size`, `used`, `free`, `audit`                                                                  | `database`          | bytes   | Database file size breakdown                                                      |
-| `main-thread-utilization` | `idle`, `active`, `taskQueueLatency`, `rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers` | `time`              | various | Main thread resource usage: idle/active time, queue latency, and memory breakdown |
-| `read-transaction-queue-depth`  | `depth`, `maxDepth`                                                                        |                     | count   | Open read (snapshot) transactions (see [transaction queue depth](#transaction-queue-depth-metrics)) |
-| `resource-usage`          | (see below)                                                                                      |                     | various | Node.js process resource usage (see [resource-usage](#resource-usage-metric))     |
-| `storage-volume`          | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                     |
-| `table-size`              | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                   |
-| `utilization`             |                                                                                                  |                     | %       | Percentage of time the worker thread was processing requests                      |
-| `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                        |                     | count   | In-flight write-transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics)) |
+| `metric`                        | Key attributes                                                                                   | Other               | Unit    | Description                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `database-size`                 | `size`, `used`, `free`, `audit`                                                                  | `database`          | bytes   | Database file size breakdown                                                                          |
+| `main-thread-utilization`       | `idle`, `active`, `taskQueueLatency`, `rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers` | `time`              | various | Main thread resource usage: idle/active time, queue latency, and memory breakdown                     |
+| `read-transaction-queue-depth`  | `depth`, `maxDepth`                                                                              |                     | count   | Open read (snapshot) transactions (see [transaction queue depth](#transaction-queue-depth-metrics))   |
+| `resource-usage`                | (see below)                                                                                      |                     | various | Node.js process resource usage (see [resource-usage](#resource-usage-metric))                         |
+| `storage-volume`                | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                                         |
+| `table-size`                    | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                                       |
+| `utilization`                   |                                                                                                  |                     | %       | Percentage of time the worker thread was processing requests                                          |
+| `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                              |                     | count   | In-flight write-transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics)) |
 
 #### Transaction Queue Depth Metrics
 
@@ -189,10 +189,10 @@ in flight against the storage engine, giving operators a leading indicator befor
 workload hits the `Outstanding write transactions have too long of queue, please try again later`
 (HTTP 503) rejection.
 
-| Field      | Unit  | Description                                                                                         |
-| ---------- | ----- | -------------------------------------------------------------------------------------------------- |
-| `depth`    | count | Instantaneous depth sampled at emit time                                                            |
-| `maxDepth` | count | High-water mark observed over the sampling period                                                   |
+| Field      | Unit  | Description                                       |
+| ---------- | ----- | ------------------------------------------------- |
+| `depth`    | count | Instantaneous depth sampled at emit time          |
+| `maxDepth` | count | High-water mark observed over the sampling period |
 
 - **`write-transaction-queue-depth`** counts write commits handed to the storage engine but not yet
   durably committed — the backlog that produces the overload error when it drains too slowly.
