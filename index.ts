@@ -10,6 +10,9 @@ if (!workerThreads.isMainThread) {
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { flushDatabases } from './resources/databases.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
+// Code-first schema authoring (RFC 0001): declare a table as a TypeScript value; the returned
+// handle is the live, registered table class with per-verb shapes inferred from the definition.
+export { defineTable, types } from './resources/defineTable.ts';
 
 // Type only exports.
 // Anything exported here will only be available as TypeScript types, not as values.
@@ -28,6 +31,17 @@ export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
+// Code-first schema types: the table handle and field model. Per-verb record shapes are
+// discoverable on the handle itself: (typeof Track)['$record' | '$insert' | '$upsert' | '$patch' | '$query'].
+export type {
+	TableHandle,
+	Field,
+	DateField,
+	RelationField,
+	Shape,
+	Flags,
+	DefineTableOptions,
+} from './resources/defineTable.ts';
 export type { Scope } from './components/Scope.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';

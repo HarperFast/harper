@@ -1,198 +1,205 @@
-// RFC 0001 — code-first schema registration (promoted from docs/rfcs/spikes/0001).
+// RFC 0001 — code-first schema: the canonical `defineTable` + `types` model
+// (docs/rfcs/spikes/0001/canonical-track.spike.ts is the type-level proof; this is the runtime).
 //
-// Proves that a code-first schema *value* compiles into the options the existing
-// `table()` factory consumes (resources/databases.ts) — the same factory GraphQL
-// drives and dataLoader.ts already uses — yielding a working table with no GraphQL:
-// registry entry, attribute metadata, CRUD, schema evolution, and relationships.
-//
-// `t` / `defineTable` / `compileToTableOptions` below mirror the future public API
-// (the typed twin lives in docs/rfcs/spikes/0001/t-builder.spike.ts). Keeping this
-// in the suite guards that `table()` continues to accept the shape that API compiles to.
+// `defineTable` eagerly registers through the same `table()` factory GraphQL drives
+// (resources/databases.ts) and returns the live table class — the import IS the handle.
+// Covered here: registry entry, attribute metadata, canonical properties projection, CRUD,
+// schema evolution, relationships via lazy thunks (including a FORWARD reference), and the
+// front-end parity guardrail (code-first and GraphQL project identical `properties`).
 
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, databases } = require('#src/resources/databases');
+const { databases } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { defineTable, types } = require('#src/resources/defineTable');
 
-// ─── Minimal runtime builder (value shape from the t-builder spike) ──────────
-
-function field(kind, meta = {}) {
-	return {
-		kind,
-		meta,
-		nullable() {
-			return field(kind, { ...meta, nullable: true });
-		},
-		indexed() {
-			return field(kind, { ...meta, indexed: true });
-		},
-		primaryKey() {
-			return field(kind, { ...meta, primaryKey: true });
-		},
-	};
-}
-
-const t = {
-	id: () => field('ID'),
-	string: () => field('String'),
-	int: () => field('Int'),
-	boolean: () => field('Boolean'),
-	date: () => field('Date'),
-	enum: (values) => field('String', { enum: values }), // enum -> String column at runtime
-	createdTime: () => field('Date', { assignCreatedTime: true }),
-	relation: (target, opts) => field('relation', { target, ...opts }), // many-to-one (this table holds FK)
-	hasMany: (target, opts) => field('relation', { target, ...opts }), // one-to-many (related table holds FK)
-};
-
-function defineTable(name, shape) {
-	return { name, shape };
-}
-
-// The bridge: a defineTable value -> the `table()` factory's options. `registered`
-// maps an already-registered defineTable value to its Table class so relationship
-// attributes can carry `definition.tableClass` (required for resolution).
-function compileToTableOptions(def, { database = 'data', registered } = {}) {
-	const attributes = [];
-	const declared = new Set(Object.keys(def.shape));
-	const fkColumns = new Set();
-	for (const [name, f] of Object.entries(def.shape)) {
-		if (f.kind === 'relation') {
-			const targetDef = f.meta.target();
-			const targetClass = registered && registered.get(targetDef);
-			const definition = targetClass ? { tableClass: targetClass } : {};
-			if (f.meta.from) {
-				// many-to-one: this table holds the foreign key
-				attributes.push({ name, type: targetDef.name, relationship: { from: f.meta.from }, definition });
-				if (!declared.has(f.meta.from)) fkColumns.add(f.meta.from);
-			} else if (f.meta.to) {
-				// one-to-many: the related table holds the foreign key
-				attributes.push({ name, relationship: { to: f.meta.to }, elements: { type: targetDef.name, definition } });
-			}
-			continue;
-		}
-		const attr = { name, type: f.kind };
-		if (f.meta.primaryKey) attr.isPrimaryKey = true;
-		if (f.meta.indexed) attr.indexed = true;
-		if (f.meta.nullable) attr.nullable = true;
-		if (f.meta.assignCreatedTime) attr.assignCreatedTime = true;
-		attributes.push(attr);
-	}
-	// auto-add foreign-key columns implied by many-to-one relations (indexed for join lookups)
-	for (const fk of fkColumns) attributes.push({ name: fk, indexed: true });
-	return { table: def.name, database, attributes };
-}
-
+const { id, string, int, date } = types;
 const DB = 'codefirst_test';
 
-describe('RFC 0001: code-first defineTable -> table() registration', () => {
-	const Tracks = defineTable('Tracks', {
-		id: t.id().primaryKey(),
-		name: t.string().indexed(),
-		duration: t.int().nullable(),
-		status: t.enum(['draft', 'published']),
-		createdAt: t.createdTime(),
-	});
-	let TracksTable;
+describe('RFC 0001: canonical defineTable — eager registration', () => {
+	let Track;
 
 	before(function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
-		TracksTable = table(compileToTableOptions(Tracks, { database: DB }));
+		Track = defineTable(
+			'Track',
+			{
+				id: id.primaryKey,
+				name: string.indexed,
+				duration: int.nullable,
+				status: types.enum(['draft', 'published']).indexed,
+				createdAt: date.createdTime,
+			},
+			{ database: DB }
+		);
 	});
 
-	it('registers the table in the databases registry', () => {
+	it('returns the live registered class — the handle IS the registry entry', () => {
 		assert.ok(databases[DB], `database "${DB}" should exist`);
-		assert.strictEqual(databases[DB].Tracks, TracksTable);
+		assert.strictEqual(databases[DB].Track, Track);
+		assert.strictEqual(Track.tableName, 'Track');
 	});
 
 	it('carries the compiled schema as attribute metadata', () => {
-		assert.strictEqual(TracksTable.primaryKey, 'id');
-		const byName = Object.fromEntries(TracksTable.attributes.map((a) => [a.name, a]));
+		assert.strictEqual(Track.primaryKey, 'id');
+		const byName = Object.fromEntries(Track.attributes.map((a) => [a.name, a]));
 		assert.deepStrictEqual(Object.keys(byName).sort(), ['createdAt', 'duration', 'id', 'name', 'status']);
 		assert.strictEqual(byName.id.isPrimaryKey, true);
 		assert.strictEqual(byName.name.indexed, true);
+		assert.strictEqual(byName.name.nullable, false, 'plain field is required, like GraphQL `!`');
+		assert.strictEqual(byName.duration.nullable, undefined, '.nullable leaves the attr unmarked, like GraphQL plain');
 		assert.strictEqual(byName.status.type, 'String', 'enum compiles to a String column');
 		assert.strictEqual(byName.createdAt.assignCreatedTime, true);
+		assert.strictEqual(byName.createdAt.nullable, undefined, 'server-managed stays unmarked');
 	});
 
-	it('supports CRUD, with the server-managed timestamp auto-assigned', async () => {
-		await TracksTable.put({ id: 'intro', name: 'Intro', status: 'draft' });
-		const got = await TracksTable.get('intro');
+	it('co-populates the canonical properties Record (same projector as GraphQL)', () => {
+		const { properties } = Track;
+		assert.ok(properties, 'Table.properties Record exists');
+		assert.strictEqual(properties.id.type, 'string', 'ID → JSON Schema "string"');
+		assert.strictEqual(properties.id.primaryKey, true);
+		assert.strictEqual(properties.duration.type, 'integer', 'Int → JSON Schema "integer"');
+		assert.strictEqual(properties.status.type, 'string', 'enum → String → "string"');
+		assert.strictEqual(properties.createdAt.assignCreatedTime, true);
+	});
+
+	it('supports CRUD through the handle, with the server-managed timestamp auto-assigned', async () => {
+		await Track.put({ id: 'intro', name: 'Intro', status: 'draft' });
+		const got = await Track.get('intro');
 		assert.strictEqual(got.name, 'Intro');
 		assert.strictEqual(got.status, 'draft');
 		assert.ok(got.createdAt != null, 'createdAt auto-assigned');
 
-		await TracksTable.put({ id: 'intro', name: 'Intro (remastered)', status: 'published' });
-		assert.strictEqual((await TracksTable.get('intro')).name, 'Intro (remastered)');
+		await Track.put({ id: 'intro', name: 'Intro (remastered)', status: 'published' });
+		assert.strictEqual((await Track.get('intro')).name, 'Intro (remastered)');
 
-		await TracksTable.delete('intro');
-		assert.ok((await TracksTable.get('intro')) == null, 'record gone after delete');
+		await Track.delete('intro');
+		assert.ok((await Track.get('intro')) == null, 'record gone after delete');
 	});
 
-	it('applies a schema change (added attribute) on re-registration — DDL parity', () => {
-		const Tracks2 = defineTable('Tracks', {
-			id: t.id().primaryKey(),
-			name: t.string().indexed(),
-			duration: t.int().nullable(),
-			status: t.enum(['draft', 'published']),
-			createdAt: t.createdTime(),
-			isrc: t.string().indexed(), // newly added
-		});
-		const TracksTable2 = table(compileToTableOptions(Tracks2, { database: DB }));
-		assert.strictEqual(TracksTable2, TracksTable, 'same class re-asserted, not duplicated');
-		assert.ok(
-			TracksTable.attributes.map((a) => a.name).includes('isrc'),
-			'added attribute present after re-registration'
+	it('re-defining the table applies the schema change (added attribute) — DDL parity', () => {
+		const Track2 = defineTable(
+			'Track',
+			{
+				id: id.primaryKey,
+				name: string.indexed,
+				duration: int.nullable,
+				status: types.enum(['draft', 'published']).indexed,
+				createdAt: date.createdTime,
+				isrc: string.indexed, // newly added
+			},
+			{ database: DB }
 		);
+		assert.strictEqual(Track2, Track, 'same class re-asserted, not duplicated');
+		assert.ok(Track.attributes.map((a) => a.name).includes('isrc'), 'added attribute present after re-definition');
 	});
 });
 
-describe('RFC 0001: code-first @relationship end-to-end', () => {
-	const Authors = defineTable('Authors', {
-		id: t.id().primaryKey(),
-		name: t.string(),
-	});
-	const Books = defineTable('Books', {
-		id: t.id().primaryKey(),
-		title: t.string(),
-		author: t.relation(() => Authors, { from: 'authorId' }), // many-to-one
-	});
-
-	const registered = new Map();
-	let AuthorsTable, BooksTable;
+describe('RFC 0001: canonical relationships — lazy thunks, forward reference', () => {
+	let Book, Author;
 
 	before(function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
-		// Register the target first so the relationship attribute can carry definition.tableClass.
-		AuthorsTable = table(compileToTableOptions(Authors, { database: DB, registered }));
-		registered.set(Authors, AuthorsTable);
-		BooksTable = table(compileToTableOptions(Books, { database: DB, registered }));
-		registered.set(Books, BooksTable);
+		// Book references Author BEFORE Author is defined — the thunk defers resolution to first
+		// use (by which time Author exists), exactly like module-scope forward references.
+		Book = defineTable(
+			'Book',
+			{
+				id: id.primaryKey,
+				title: string,
+				author: types.relation(() => Author, { from: 'authorId' }), // many-to-one, forward ref
+			},
+			{ database: DB }
+		);
+		Author = defineTable(
+			'Author',
+			{
+				id: id.primaryKey,
+				name: string,
+				books: types.hasMany(() => Book, { to: 'authorId' }), // one-to-many, back ref
+			},
+			{ database: DB }
+		);
 	});
 
 	it('compiles a relation into a relationship attribute + auto-added indexed FK column', () => {
-		const byName = Object.fromEntries(BooksTable.attributes.map((a) => [a.name, a]));
+		const byName = Object.fromEntries(Book.attributes.map((a) => [a.name, a]));
 		assert.ok(byName.author, 'relationship attribute present');
-		assert.strictEqual(byName.author.type, 'Authors', 'relationship targets the related type');
+		assert.strictEqual(byName.author.type, 'Author', 'lazy type resolves to the related table name');
 		assert.deepStrictEqual(byName.author.relationship, { from: 'authorId' });
-		assert.strictEqual(byName.author.definition.tableClass, AuthorsTable, 'definition links the related class');
+		assert.strictEqual(byName.author.definition.tableClass, Author, 'definition links the related class');
 		assert.ok(byName.authorId, 'foreign-key column auto-added');
 		assert.strictEqual(byName.authorId.indexed, true, 'FK column indexed for join lookups');
 	});
 
-	it('resolves the related record through the relationship', async () => {
-		await AuthorsTable.put({ id: 'a1', name: 'Ada' });
-		await BooksTable.put({ id: 'b1', title: 'On Computation', authorId: 'a1' });
+	it('compiles hasMany into an array relationship with lazy element type', () => {
+		const byName = Object.fromEntries(Author.attributes.map((a) => [a.name, a]));
+		assert.ok(byName.books, 'hasMany attribute present');
+		assert.strictEqual(byName.books.type, 'array');
+		assert.deepStrictEqual(byName.books.relationship, { to: 'authorId' });
+		assert.strictEqual(byName.books.elements.type, 'Book');
+		assert.strictEqual(byName.books.elements.definition.tableClass, Book);
+	});
 
-		const context = {};
-		const book = await BooksTable.get('b1', context);
+	it('resolves related records in both directions', async () => {
+		await Author.put({ id: 'a1', name: 'Ada' });
+		await Book.put({ id: 'b1', title: 'On Computation', authorId: 'a1' });
+
+		const book = await Book.get('b1', {});
 		assert.strictEqual(book.title, 'On Computation');
 		assert.strictEqual(book.authorId, 'a1', 'foreign key round-trips');
-
-		const author = await book.author; // relationship resolves to the Author record
+		const author = await book.author; // forward-referenced relation resolves
 		assert.ok(author, 'relationship resolved');
 		assert.strictEqual(author.name, 'Ada');
+
+		const authorRec = await Author.get('a1', {});
+		const books = await authorRec.books; // hasMany resolves through the FK index
+		assert.ok(Array.isArray(books), 'hasMany resolves to an array');
+		assert.strictEqual(books.length, 1);
+		assert.strictEqual(books[0].title, 'On Computation');
+	});
+});
+
+describe('RFC 0001: code-first ⇔ GraphQL front-end parity', () => {
+	// The two authoring front-ends must project an identical canonical `properties` Record for an
+	// equivalent schema — the guardrail against the front-ends silently diverging (RFC §4.2).
+	// Nullability mapping: code-first plain field ≡ GraphQL `!`; `.nullable` ≡ GraphQL plain.
+	const FIELDS = ['id', 'name', 'duration', 'status', 'createdAt'];
+
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		defineTable('CodeParity', {
+			id: id.primaryKey,
+			name: string.indexed,
+			duration: int.nullable,
+			status: types.enum(['draft', 'published']),
+			createdAt: date.createdTime,
+		}); // default 'data' database
+		await loadGQLSchema(`
+			type GqlParity @table {
+				id: ID @primaryKey
+				name: String! @indexed
+				duration: Int
+				status: String!
+				createdAt: Date @createdTime
+			}
+		`);
+	});
+
+	it('projects the same properties fragment per field from both front-ends', () => {
+		const code = databases.data.CodeParity.properties;
+		const gql = databases.data.GqlParity.properties;
+		for (const field of FIELDS) {
+			assert.deepStrictEqual(
+				code[field],
+				gql[field],
+				`field "${field}" projects identically from code-first and GraphQL`
+			);
+		}
 	});
 });
