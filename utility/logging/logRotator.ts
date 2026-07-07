@@ -67,23 +67,23 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	let lastRotationTime = Date.now();
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
 	const setIntervalId = setInterval(async () => {
+		// A missing/relocated active log file only invalidates the rotation checks below — retention cleanup
+		// must still run. So skip the individual check on ENOENT rather than returning from the whole tick.
 		if (maxBytes) {
 			let fileStats;
 			try {
 				fileStats = await fsProm.stat(logger.path);
 			} catch (err) {
-				// If the log file doesn't exist, skip rotation check
-				if (err.code === 'ENOENT') return;
-				throw err;
+				// If the log file doesn't exist, skip the size-based rotation check
+				if (err.code !== 'ENOENT') throw err;
 			}
 
-			if (fileStats.size >= maxBytes) {
+			if (fileStats && fileStats.size >= maxBytes) {
 				try {
-					lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir);
+					lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
 				} catch (err) {
 					// If the log file doesn't exist, skip rotation
-					if (err.code === 'ENOENT') return;
-					throw err;
+					if (err.code !== 'ENOENT') throw err;
 				}
 			}
 		}
@@ -92,12 +92,11 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 			const minSinceLastRotate = Date.now() - lastRotationTime;
 			if (minSinceLastRotate >= maxInterval) {
 				try {
-					lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir);
+					lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
 					lastRotationTime = Date.now();
 				} catch (err) {
 					// If the log file doesn't exist, skip rotation
-					if (err.code === 'ENOENT') return;
-					throw err;
+					if (err.code !== 'ENOENT') throw err;
 				}
 			}
 		}
@@ -106,7 +105,14 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 			// adjust retention time if there is a reclamation priority in place
 			const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
 			reclamationPriority = 0; // reset it after use
-			const files = await fsProm.readdir(rotatedLogDir);
+			let files;
+			try {
+				files = await fsProm.readdir(rotatedLogDir);
+			} catch (err) {
+				// The rotated log dir may not exist yet (nothing rotated so far); nothing to clean up
+				if (err.code !== 'ENOENT') hdbLogger.error('Error reading rotated log directory', rotatedLogDir, err);
+				files = [];
+			}
 			for (const file of files) {
 				try {
 					const fileStats = await fsProm.stat(path.join(rotatedLogDir, file));
@@ -129,7 +135,7 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	};
 }
 
-async function moveLogFile(logPath: string, rotatedLogPath: string) {
+async function moveLogFile(logPath: string, rotatedLogPath: string, logger?: any) {
 	const compress = envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
 	let fullRotateLogPath = path.join(
 		rotatedLogPath,
@@ -138,6 +144,12 @@ async function moveLogFile(logPath: string, rotatedLogPath: string) {
 	// Move log file to rotated log path first (if we crash
 	// during compression, we don't want to restart the compression with a new file)
 	await fsProm.rename(logPath, fullRotateLogPath);
+	// Close the rotating logger's own file descriptor now that the file has moved. This must be the
+	// logger's own closeLogFile (which resets its internal logFD), not the module-global one — otherwise
+	// the descriptor stays open on the moved (and, when compressing, subsequently unlinked) inode until the
+	// logger's safety timeout fires, pinning disk space and sending any writes in that window into the
+	// rotated/deleted file. Closing it here makes the next write reopen a fresh log file immediately.
+	(logger?.closeLogFile ?? hdbLogger.closeLogFile)();
 	if (compress) {
 		logPath = fullRotateLogPath;
 		fullRotateLogPath += '.gz';
@@ -145,8 +157,6 @@ async function moveLogFile(logPath: string, rotatedLogPath: string) {
 		await fsProm.unlink(logPath);
 	}
 
-	// Close old log file.
-	hdbLogger.closeLogFile();
 	// This notify log will create a new log file after the previous one has been rotated. It's important to keep this log as notify
 	hdbLogger.notify(`hdb.log rotated, old log moved to ${fullRotateLogPath}`);
 	return fullRotateLogPath;

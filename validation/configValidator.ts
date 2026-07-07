@@ -19,6 +19,9 @@ const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
 const INVALID_INTERVAL_VALUE_MSG =
 	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
+const INVALID_RETENTION_UNIT_MSG = 'Invalid logging.rotation.retention unit. Available units are D, H or M (months)';
+const INVALID_RETENTION_VALUE_MSG =
+	"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'";
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
 const portConstraints = Joi.alternatives([number.min(0), string])
@@ -251,6 +254,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				compress: boolean.optional(),
 				interval: string.custom(validateRotationInterval).optional().empty(null),
 				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
+				retention: string.custom(validateRotationRetention).optional().empty(null),
 				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
 			root: rootConstraints,
@@ -408,6 +412,19 @@ function validateRotationInterval(value, helpers) {
 	const size = value.slice(0, -1);
 	if (isNaN(parseInt(size))) {
 		return helpers.message(INVALID_INTERVAL_VALUE_MSG);
+	}
+
+	return value;
+}
+function validateRotationRetention(value, helpers) {
+	const unit = value.slice(-1);
+	if (unit !== 'D' && unit !== 'H' && unit !== 'M') {
+		return helpers.message(INVALID_RETENTION_UNIT_MSG);
+	}
+
+	const age = value.slice(0, -1);
+	if (isNaN(parseInt(age))) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
 	}
 
 	return value;

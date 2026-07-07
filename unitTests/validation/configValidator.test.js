@@ -406,6 +406,34 @@ describe('Test configValidator module', () => {
 		);
 	});
 
+	it('Test validateRotationRetention invalid unit', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		validate_retention('30B', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			'Invalid logging.rotation.retention unit. Available units are D, H or M (months)'
+		);
+	});
+
+	it('Test validateRotationRetention invalid value', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		validate_retention('THIRTYD', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'"
+		);
+	});
+
+	it('Test validateRotationRetention valid value', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		expect(validate_retention('30D', helpers)).to.equal('30D');
+		expect(message_stub.called).to.be.false;
+	});
+
 	describe('mcp config', () => {
 		it('validates clean when the mcp block is absent (profile off)', () => {
 			const result = configValidator(testUtils.deepClone(FAKE_CONFIG), true);

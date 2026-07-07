@@ -351,6 +351,10 @@
 						"compress": { "type": "boolean", "description": "Compress rotated logs with gzip. Default: false" },
 						"interval": { "type": ["string", "null"], "description": "Time between rotations (e.g. '1D','6H','30M')." },
 						"maxSize": { "type": ["string", "null"], "description": "Max size before rotation (e.g. '100M', '1G')." },
+						"retention": {
+							"type": ["string", "null"],
+							"description": "Delete rotated logs older than this age (e.g. '30D', '12H', '1M' for one month). Units: D (days), H (hours), M (months). When unset, rotated logs are kept indefinitely."
+						},
 						"path": { "type": "string", "description": "Directory to store rotated logs. Default: <ROOTPATH>/log" }
 					}
 				},
