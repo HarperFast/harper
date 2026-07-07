@@ -4,6 +4,10 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setCommitLatencyRecorder } = require('#src/resources/DatabaseTransaction');
+// The commit-latency hook lives on the base DatabaseTransaction.commit() (RocksDB path). LMDB writes
+// route through the separate LMDBTransaction.commit() override (resources/LMDBTransaction.ts), which
+// does not call it — matching the existing RocksDB-only carve-outs in transaction.test.js.
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Transaction commit latency metric', () => {
 	let CommitLatencyTest;
@@ -19,6 +23,7 @@ describe('Transaction commit latency metric', () => {
 	});
 
 	it('records the submit->settle duration when a write commit settles', async function () {
+		if (isLMDB) return;
 		const durations = [];
 		setCommitLatencyRecorder((durationMs) => durations.push(durationMs));
 		try {

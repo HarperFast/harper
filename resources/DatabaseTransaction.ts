@@ -31,14 +31,16 @@ let outstandingCommit, outstandingCommitStart;
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
 // modules. Unset until analytics loads, and when analytics is disabled the recorder call is cheap.
 let recordCommitLatencyMs: ((durationMs: number) => void) | undefined;
-export function setCommitLatencyRecorder(recorder: (durationMs: number) => void) {
+export function setCommitLatencyRecorder(recorder: ((durationMs: number) => void) | undefined) {
 	recordCommitLatencyMs = recorder;
 }
 
 // Emit the submit→settle duration of a write commit as the `transaction-commit-time` distribution
 // metric. Recorded on both fulfilment and rejection since a slow-then-failed commit still consumed
 // queue time. The recorder is wrapped so it can never throw — a metrics failure must neither break the
-// commit nor surface as an unhandled rejection on this floating `.then`.
+// commit nor surface as an unhandled rejection on this floating `.then`. The thenable guard protects
+// against a future caller passing a non-Promise `commitResolution` (today it is always the rocksdb-js
+// async `Transaction.commit()` result, which is guaranteed to be a Promise).
 function recordCommitLatency(commitResolution: Promise<void>, submittedAt: number) {
 	if (!recordCommitLatencyMs) return;
 	const record = () => {
@@ -48,7 +50,9 @@ function recordCommitLatency(commitResolution: Promise<void>, submittedAt: numbe
 			// analytics recording is best-effort and must never disturb the commit path
 		}
 	};
-	commitResolution.then(record, record);
+	if (commitResolution && typeof (commitResolution as any).then === 'function') {
+		commitResolution.then(record, record);
+	}
 }
 
 let confirmReplication;
