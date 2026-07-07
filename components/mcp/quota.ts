@@ -81,10 +81,10 @@ function getResources(): ResourcesLike {
 	return resources as ResourcesLike;
 }
 
-/** Warn-once state for a misconfigured hook (missing resource/method). */
-let warnedMisconfigured = false;
+/** Warn-once-per-profile state for a misconfigured hook (missing resource/method). */
+const warnedMisconfigured = new Set<McpProfile>();
 export function _resetQuotaWarningsForTest(): void {
-	warnedMisconfigured = false;
+	warnedMisconfigured.clear();
 }
 
 /**
@@ -104,8 +104,8 @@ export async function checkDurableQuota(info: QuotaCheckInfo): Promise<QuotaDeci
 	const QuotaClass = entry?.Resource as Record<string, unknown> | undefined;
 	const method = QuotaClass?.[methodName as string];
 	if (typeof method !== 'function') {
-		if (!warnedMisconfigured) {
-			warnedMisconfigured = true;
+		if (!warnedMisconfigured.has(info.profile)) {
+			warnedMisconfigured.add(info.profile);
 			harperLogger.warn(
 				`MCP ${info.profile} quota hook misconfigured: no exported resource '${resourcePath}' with static method '${methodName}'; DENYING tool calls (fail-closed)`
 			);
