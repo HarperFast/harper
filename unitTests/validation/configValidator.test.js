@@ -392,8 +392,17 @@ describe('Test configValidator module', () => {
 		const helpers = { message: message_stub };
 		validate_interval('10B', helpers);
 		expect(helpers.message.args[0][0]).to.equal(
-			'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)'
+			'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)'
 		);
+	});
+
+	it('Test validateRotationInterval accepts minutes (lowercase m) and days', () => {
+		const validate_interval = config_val.__get__('validateRotationInterval');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		expect(validate_interval('30m', helpers)).to.equal('30m');
+		expect(validate_interval('1D', helpers)).to.equal('1D');
+		expect(message_stub.called).to.be.false;
 	});
 
 	it('Test validateRotationInterval invalid value', () => {
@@ -412,7 +421,7 @@ describe('Test configValidator module', () => {
 		const helpers = { message: message_stub };
 		validate_retention('30B', helpers);
 		expect(helpers.message.args[0][0]).to.equal(
-			'Invalid logging.rotation.retention unit. Available units are D, H or M (months)'
+			'Invalid logging.rotation.retention unit. Available units are D (days), H (hours), M (months) or m (minutes)'
 		);
 	});
 
