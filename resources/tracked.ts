@@ -60,13 +60,11 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					break;
 				case 'ID':
 					set = function (value) {
-						if (
-							!(
-								typeof value === 'string' ||
-								(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
-								(value == null && attribute.nullable !== false)
-							)
-						)
+						if (!(
+							typeof value === 'string' ||
+							(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
+							(value == null && attribute.nullable !== false)
+						))
 							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
 						getChanges(this)[name] = value;
 					};
@@ -100,12 +98,10 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 				case 'Long':
 					set = function (value) {
 						let scalarValue = value?.__op__ ? value.value : value;
-						if (
-							!(
-								(Math.round(scalarValue) === value && Math.abs(scalarValue) <= 9007199254740992) ||
-								(value == null && attribute.nullable !== false)
-							)
-						) {
+						if (!(
+							(Math.round(scalarValue) === value && Math.abs(scalarValue) <= 9007199254740992) ||
+							(value == null && attribute.nullable !== false)
+						)) {
 							if (typeof scalarValue === 'number' && Math.abs(scalarValue) <= 9007199254740992) {
 								// if it just needs to be rounded, do the conversion without complaining
 								scalarValue = Math.round(scalarValue);

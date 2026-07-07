@@ -112,7 +112,7 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
-				const backendOpts: BackendOpts<EmbedOpts> = { ...opts, signal, accounting };
+				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.embed!(input, backendOpts);
 				// Throw on `pending` BEFORE recording success — otherwise we'd write a
 				// success row followed by a failure row from the catch (duplicate).
@@ -166,7 +166,7 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
-				const backendOpts: BackendOpts<GenerateOpts> = { ...opts, signal, accounting };
+				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.generate!(input, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				this.#record(backend, 'generate', opts.model, accounting, opts, result, attemptStart);
@@ -210,7 +210,7 @@ export class Models implements ModelsContract {
 		}
 		// First candidate only — mid-stream fallback would mean replaying already-yielded chunks.
 		const backend = resolved.candidates[0];
-		const backendOpts: BackendOpts<GenerateOpts> = { ...opts, signal, accounting };
+		const backendOpts = toBackendOpts(opts, signal, accounting);
 		return this.#wrapStream(backend, input, backendOpts, opts, accounting, startedAt);
 	}
 
@@ -352,6 +352,22 @@ type Resolution = { candidates: ModelBackend[] } | { error: Error; backend: Mode
  * against a backend that actually supports the call (the default router never returns
  * empty for a satisfying primary; it only drops on name or capability miss).
  */
+/**
+ * Builds the options passed to a backend call. `opts.model` is the LOGICAL name — it selects
+ * the configured entry via resolveCandidates and must not reach the backend, where it would
+ * override the entry's configured wire model id (#1593: `@embed(model: "default")` sent the
+ * literal string "default" to the provider). Backends always use their own configured model.
+ */
+function toBackendOpts<TOpts extends { model?: string; signal?: AbortSignal }>(
+	opts: TOpts,
+	signal: AbortSignal | undefined,
+	accounting: AccountingContext
+): BackendOpts<TOpts> {
+	const backendOpts = { ...opts, signal, accounting };
+	delete backendOpts.model;
+	return backendOpts;
+}
+
 function resolveCandidates(kind: ResolveKind, model: string | undefined, requires: Capability[]): Resolution {
 	const logicalName = model ?? 'default';
 	const candidates = getRouter().route({ kind, logicalName, requires });
