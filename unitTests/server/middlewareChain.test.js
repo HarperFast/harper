@@ -8,6 +8,7 @@ const {
 	normalizeUrlPath,
 	stripPrefix,
 	makeCallbackChain,
+	findUnresolvedOrderingRefs,
 } = require('#src/server/middlewareChain');
 
 // Helpers ------------------------------------------------------------------
@@ -679,6 +680,39 @@ describe('normalizeUrlPath', () => {
 	it('leaves paths without trailing slash unchanged', () => {
 		assert.strictEqual(normalizeUrlPath('/api/v2'), '/api/v2');
 	});
+
+	it('adds a leading slash to slash-less paths (#1583)', () => {
+		assert.strictEqual(normalizeUrlPath('assets'), '/assets');
+		assert.strictEqual(normalizeUrlPath('assets/'), '/assets');
+		assert.strictEqual(normalizeUrlPath('a'), '/a');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// matchesRoute with slash-less urlPath (#1583)
+// ---------------------------------------------------------------------------
+
+describe('matchesRoute with slash-less urlPath', () => {
+	it('matches as if the leading slash were present', () => {
+		assert.strictEqual(matchesRoute(req('/assets/test.css'), { urlPath: 'assets' }), true);
+		assert.strictEqual(matchesRoute(req('/assets'), { urlPath: 'assets' }), true);
+		assert.strictEqual(matchesRoute(req('/assets2/x'), { urlPath: 'assets' }), false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// stripPrefix originalPathname passthrough (#1583)
+// ---------------------------------------------------------------------------
+
+describe('stripPrefix originalPathname', () => {
+	it('exposes the unstripped pathname so handlers can distinguish /mount from /mount/', () => {
+		const noSlash = stripPrefix(req('/assets'), '/assets');
+		assert.strictEqual(noSlash.pathname, '/');
+		assert.strictEqual(noSlash.originalPathname, '/assets');
+		const withSlash = stripPrefix(req('/assets/'), '/assets');
+		assert.strictEqual(withSlash.pathname, '/');
+		assert.strictEqual(withSlash.originalPathname, '/assets/');
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -787,5 +821,66 @@ describe('onCycle callback', () => {
 		let called = 0;
 		makeCallbackChain(responders, 9000, UNHANDLED, () => called++);
 		assert.strictEqual(called, 1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// onUnresolved callback
+// ---------------------------------------------------------------------------
+
+describe('onUnresolved callback', () => {
+	it('findUnresolvedOrderingRefs reports before/after names that match no entry', () => {
+		const entries = [
+			entry('static', { after: 'rest' }),
+			entry('other', { before: 'Authentication' }),
+			entry('authentication'),
+		];
+		assert.deepStrictEqual(findUnresolvedOrderingRefs(entries), [
+			{ entryName: 'static', kind: 'after', target: 'rest' },
+			{ entryName: 'other', kind: 'before', target: 'Authentication' },
+		]);
+	});
+
+	it('findUnresolvedOrderingRefs is empty when all references resolve', () => {
+		const entries = [entry('static', { after: 'rest' }), entry('rest')];
+		assert.deepStrictEqual(findUnresolvedOrderingRefs(entries), []);
+	});
+
+	it('reports unresolved references on the first dispatch only', () => {
+		const responders = [entry('static', { after: 'rest', listener: (r, next) => next(r) })];
+		const reported = [];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED, undefined, 0, (ref) => reported.push(ref));
+		assert.deepStrictEqual(reported, []); // build time: the chain may be rebuilt with more entries
+		chain(req());
+		chain(req());
+		assert.deepStrictEqual(reported, [{ entryName: 'static', kind: 'after', target: 'rest' }]);
+	});
+
+	it('still dispatches the chain normally while reporting', () => {
+		const order = [];
+		const responders = [
+			entry('static', {
+				after: 'nope',
+				listener: (r, next) => {
+					order.push('static');
+					return next(r);
+				},
+			}),
+		];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED, undefined, 0, () => {});
+		const result = chain(req());
+		assert.deepStrictEqual(order, ['static']);
+		assert.strictEqual(result.status, -1);
+	});
+
+	it('does not wrap the chain when everything resolves', () => {
+		const responders = [
+			entry('static', { after: 'rest', listener: (r, next) => next(r) }),
+			entry('rest', { listener: (r, next) => next(r) }),
+		];
+		const reported = [];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED, undefined, 0, (ref) => reported.push(ref));
+		chain(req());
+		assert.deepStrictEqual(reported, []);
 	});
 });

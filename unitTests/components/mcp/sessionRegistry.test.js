@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	registerSession,
 	unregisterSession,
@@ -8,6 +8,8 @@ const {
 	_resetSessionRegistryForTest,
 	_sessionRegistrySize,
 	_setClockForTest,
+	pushSessionFrame,
+	replaySince,
 } = require('#src/components/mcp/sessionRegistry');
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
@@ -51,7 +53,7 @@ describe('mcp/sessionRegistry', () => {
 		});
 		const second = registerSession('sid-1', 'application', SUPER);
 		assert.equal(firstClosed, true);
-		assert.notEqual(first.queue, second.queue);
+		assert.notStrictEqual(first.queue, second.queue);
 		assert.equal(getRegisteredSession('sid-1'), second);
 	});
 
@@ -122,7 +124,7 @@ describe('mcp/sessionRegistry', () => {
 			// from it. The async iterator's next() sets resolveNext.
 			const iter = rec.queue[Symbol.asyncIterator]();
 			const pending = iter.next();
-			assert.notEqual(rec.queue.resolveNext, null, 'iterator should be awaiting');
+			assert.notStrictEqual(rec.queue.resolveNext, null, 'iterator should be awaiting');
 			clock += 61 * 60 * 1000;
 			registerSession('live-2', 'application', SUPER);
 			// 'live-1' has an active iterator — even past the idle window
@@ -171,6 +173,57 @@ describe('mcp/sessionRegistry', () => {
 			clock += 1 * 60 * 1000;
 			registerSession('throttle-c', 'application', SUPER);
 			assert.ok(getRegisteredSession('throttle-b'), 'prune throttled, b survives');
+		});
+	});
+
+	describe('SSE resumability (#3.8)', () => {
+		function framesOf(record) {
+			const out = [];
+			record.queue.on('data', (f) => out.push(f));
+			return out;
+		}
+
+		it('pushSessionFrame assigns monotonic event ids and sends the frame', () => {
+			const rec = registerSession('r1', 'application', SUPER);
+			const seen = framesOf(rec);
+			pushSessionFrame(rec, { event: 'message', data: { method: 'a' } });
+			pushSessionFrame(rec, { event: 'message', data: { method: 'b' } });
+			assert.deepEqual(
+				seen.map((f) => f.id),
+				['1', '2']
+			);
+			assert.equal(seen[1].data.method, 'b');
+		});
+
+		it('replaySince returns only frames after the given id', () => {
+			const rec = registerSession('r1', 'application', SUPER);
+			framesOf(rec);
+			for (const m of ['a', 'b', 'c']) pushSessionFrame(rec, { event: 'message', data: { method: m } });
+			const after1 = replaySince(rec, '1').map((f) => f.data.method);
+			assert.deepEqual(after1, ['b', 'c']);
+			assert.deepEqual(replaySince(rec, '3'), [], 'nothing after the latest id');
+			assert.deepEqual(
+				replaySince(rec, 'not-a-number').map((f) => f.data.method),
+				['a', 'b', 'c'],
+				'unparseable id replays the whole buffer'
+			);
+		});
+
+		it('carries the event-id sequence and replay buffer across a reconnect (supersede)', () => {
+			const first = registerSession('r1', 'application', SUPER);
+			framesOf(first);
+			pushSessionFrame(first, { event: 'message', data: { method: 'a' } }); // id 1
+			pushSessionFrame(first, { event: 'message', data: { method: 'b' } }); // id 2
+			// Reconnect: a fresh GET supersedes, but ids keep going and the buffer survives.
+			const second = registerSession('r1', 'application', SUPER);
+			assert.deepEqual(
+				replaySince(second, '1').map((f) => f.id),
+				['2'],
+				'buffer carried over'
+			);
+			const seen = framesOf(second);
+			pushSessionFrame(second, { event: 'message', data: { method: 'c' } });
+			assert.equal(seen[0].id, '3', 'event ids continue monotonically after reconnect');
 		});
 	});
 });

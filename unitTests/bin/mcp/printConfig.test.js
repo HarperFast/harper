@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { renderConfig } = require('#src/bin/mcp/printConfig');
 
 const BASE = {

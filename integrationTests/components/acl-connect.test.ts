@@ -7,7 +7,7 @@
  * and $SYS monitoring events.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';

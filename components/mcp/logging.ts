@@ -14,7 +14,12 @@
  * leak and an unbounded firehose. So this module is a small, explicit emitter
  * the MCP code calls for noteworthy, session-scoped, non-sensitive events.
  */
-import { forEachSessionByProfile, getRegisteredSession, type RegisteredSession } from './sessionRegistry.ts';
+import {
+	forEachSessionByProfile,
+	getRegisteredSession,
+	pushSessionFrame,
+	type RegisteredSession,
+} from './sessionRegistry.ts';
 import type { McpProfile } from './transport.ts';
 
 // RFC 5424 severities, ordered least → most severe (index === rank).
@@ -78,7 +83,7 @@ function logFrame(params: LogMessageParams): { event: string; data: object } {
 export function emitMcpLogToSession(sessionId: string, level: McpLogLevel, data: unknown, logger?: string): void {
 	const record = getRegisteredSession(sessionId);
 	if (!record || !admits(record, level)) return;
-	record.queue.send(logFrame({ level, logger, data }));
+	pushSessionFrame(record, logFrame({ level, logger, data }));
 }
 
 /**
@@ -88,7 +93,7 @@ export function emitMcpLogToSession(sessionId: string, level: McpLogLevel, data:
 export function emitMcpLogToProfile(profile: McpProfile, level: McpLogLevel, data: unknown, logger?: string): void {
 	forEachSessionByProfile(profile, (record) => {
 		if (admits(record, level)) {
-			record.queue.send(logFrame({ level, logger, data }));
+			pushSessionFrame(record, logFrame({ level, logger, data }));
 		}
 	});
 }

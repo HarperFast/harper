@@ -87,7 +87,10 @@ export async function addRole(role: any) {
 
 	await insert.insert(insertObject);
 
-	signalling.signalUserChange(new UserEventMsg(process.pid));
+	// Await cross-worker propagation so the new role is in effect on every worker before
+	// returning success (matches alterRole and the user ops). Otherwise a request routed to a
+	// lagging worker can observe the old auth state — see #1497.
+	await signalling.signalUserChange(new UserEventMsg(process.pid));
 
 	role = scrubRoleDetails(role);
 	return role;
@@ -186,7 +189,9 @@ export async function dropRole(role: any) {
 
 	await pDeleteDelete(deleteObject);
 
-	signalling.signalUserChange(new UserEventMsg(process.pid));
+	// Await cross-worker propagation so the drop is in effect on every worker before returning
+	// success — otherwise a lagging worker keeps honoring the dropped role briefly (#1497).
+	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${roleName[0].role} successfully deleted`;
 }
 

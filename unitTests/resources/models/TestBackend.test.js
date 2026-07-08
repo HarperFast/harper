@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { TestBackend } = require('#src/resources/models/TestBackend');
 
 describe('TestBackend', () => {

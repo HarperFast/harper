@@ -10,11 +10,12 @@ import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
-import { updateConfigValue } from '../config/configUtils.js';
+import { updateConfigValue } from '../config/configUtils.ts';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { RocksIndexStore } from '../resources/RocksIndexStore.ts';
 import {
+	Blob,
 	beginPendingMigrationBlobSaves,
 	encodeBlobsWithFilePath,
 	endPendingMigrationBlobSaves,
@@ -288,6 +289,37 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 	}
 }
 
+// Returns a skeleton of `value` that produces the same classic/named structure (key list) when
+// encoded, but stubs every leaf — strings, numbers, Buffers, Blobs, Dates, etc. — to a primitive.
+// Objects (plain AND decoded records) and arrays are recursed so nested structures (e.g. a record's
+// `headers` object) are built. The migration reads source records as RecordObject instances (the
+// encoder's structPrototype), not plain Object, so gating recursion on `constructor === Object`
+// stubbed every record to a scalar — the observer then minted no structure and the canonical seed was
+// never persisted, so v5 workers fork the dictionary from an empty durable (HarperFast/harper#1508).
+// Leaf object types (Blob, Date, Buffer/typed arrays, Map, Set) stay stubbed; a Blob especially must
+// not be walked — that would pull the file-backed payload this skeleton exists to avoid.
+export function shapeForStructure(value: any): any {
+	if (Array.isArray(value)) return value.map(shapeForStructure);
+	if (
+		value &&
+		typeof value === 'object' &&
+		!(value instanceof Blob) &&
+		!(value instanceof Date) &&
+		!ArrayBuffer.isView(value) &&
+		!(value instanceof ArrayBuffer) &&
+		!(value instanceof SharedArrayBuffer) &&
+		!(value instanceof Map) &&
+		!(value instanceof Set)
+	) {
+		const out: any = {};
+		// Own enumerable keys only — match the struct fields msgpackr encodes for the real record, and
+		// don't pull enumerable prototype-chain properties into the skeleton's key set.
+		for (const k of Object.keys(value)) out[k] = shapeForStructure(value[k]);
+		return out;
+	}
+	return 1;
+}
+
 function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: boolean } = {}) {
 	options.disableWAL ??= false;
 	if (!existsSync(path)) {
@@ -444,6 +476,12 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			if (isPrimary && sourceDbi.encoder) sourceDbi.encoder.rootStore = sourceRootStore;
 
 			let targetDbi;
+			// A SEPARATE shared-mode encoder that observes each re-encoded record to build the canonical
+			// v5 classic shared-structures dictionary, captured here and persisted once after the loop.
+			// The migration's own/inline encoder (below) is left untouched so the migrated records stay
+			// self-describing; this observer only accumulates the structure shapes.
+			let observerEncoder: any;
+			let canonicalStructures: any;
 			if (!isPrimary) {
 				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
 			} else {
@@ -471,12 +509,41 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				const noopSaveStructures = () => true;
 				existingEncoder.saveStructures = noopSaveStructures;
 				tempEncoder.saveStructures = noopSaveStructures;
+
+				// Observer: shared structures on, so it accumulates one classic dictionary. We capture
+				// the full set from saveStructures (msgpackr passes it on every mint) rather than persist
+				// per-record — opening a targetRootStore transaction mid-encode would discard record
+				// writes; we persist once after the loop instead.
+				observerEncoder = new RecordEncoder({ name: key, structures: [] }) as any;
+				observerEncoder.name = key;
+				observerEncoder.isRocksDB = true;
+				observerEncoder.rootStore = targetRootStore;
+				observerEncoder.saveStructures = (structures: any) => {
+					canonicalStructures = Array.isArray(structures) ? structures.slice() : structures;
+					return true;
+				};
 			}
 
 			copyStructures(sourceDbi, key);
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
-			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction);
+			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
+
+			// Persist the canonical v5 classic structures the observer built, so every v5 runtime worker
+			// adopts one agreed dictionary on startup instead of minting its own from an empty durable and
+			// racing (the structure-id fork that silently nulls records; HarperFast/harper#1453). Written
+			// as a plain classic named array — the migrated records self-describe via inline definitions
+			// so they do not depend on this, and dropping the v4 typed structs avoids the typed-length
+			// mismatch that makes a classic encoder's saveStructures CAS reject (the reload/re-mint churn
+			// behind the fork). The runtime reads this composite key via RecordEncoder.getStructures.
+			if (isPrimary && canonicalStructures?.length) {
+				targetRootStore.transactionSync(
+					(txn) => {
+						txn.putSync([Symbol.for('structures'), key], canonicalStructures);
+					},
+					{ retryOnBusy: true }
+				);
+			}
 		}
 
 		// Note: audit store is not migrated because LMDB and RocksDB use fundamentally different
@@ -528,7 +595,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		targetRootStore.close();
 	}
 
-	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction) {
+	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder?) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
 		const MAX_RETRIES = 1000;
@@ -571,6 +638,18 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
+							// Feed only the record's SHAPE to the observer so it accumulates the canonical
+							// classic structure (key list) for this shape; the encoded output is discarded.
+							// A classic/named structure depends only on the keys, so we stub every leaf value
+							// to a primitive — critically, this avoids re-reading file-backed Blob values (the
+							// real put runs inside encodeBlobsWithFilePath which keeps blobs as file references;
+							// a second raw encode here would otherwise readFileSync the full blob into memory
+							// just to build the dictionary). Guarded: structure-building must never fail the record.
+							if (observerEncoder) {
+								try {
+									observerEncoder.encode(shapeForStructure(value));
+								} catch {}
+							}
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;
 							if (outstandingWrites++ > 5000) {

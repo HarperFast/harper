@@ -1,5 +1,5 @@
 const { requestRestart, restartNeeded } = require('#src/components/requestRestart');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 
 describe('requestRestart', () => {
 	it('should update the shared buffer', () => {

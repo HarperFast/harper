@@ -89,10 +89,39 @@ export interface AuthedUser {
 	};
 }
 
+export interface ToolProgressUpdate {
+	/** Monotonic progress value — a count, or a fraction of `total`. */
+	progress: number;
+	/** Optional known total, for a percentage. */
+	total?: number;
+	/** Optional human-readable status line. */
+	message?: string;
+}
+
 export interface ToolCallContext {
 	user: AuthedUser;
 	profile: McpProfile;
 	sessionId: string;
+	/**
+	 * Aborted when the client sends `notifications/cancelled` for this call
+	 * (#1349 §3.3). Long-running handlers should check `signal.aborted` (or pass
+	 * `signal` to abortable work) and stop promptly. Absent in contexts that
+	 * don't wire cancellation (e.g. some tests).
+	 */
+	signal?: AbortSignal;
+	/**
+	 * Emit a `notifications/progress` update for this call. A no-op unless the
+	 * client supplied a `_meta.progressToken` and accepts `text/event-stream`
+	 * (i.e. the response streams) — safe to call unconditionally.
+	 */
+	progress?: (update: ToolProgressUpdate) => void;
+	/**
+	 * Issue a server→client request (#1349 §3.7) — e.g. `sampling/createMessage`,
+	 * `elicitation/create`, `roots/list` — and await the client's response. Only
+	 * present on a streaming call (the request rides the SSE stream); rejects if
+	 * the client didn't declare the matching capability.
+	 */
+	serverRequest?: (method: string, params: unknown) => Promise<unknown>;
 }
 
 /**
@@ -107,8 +136,41 @@ export interface ToolDef extends ToolDescriptor {
 
 const registry = new Map<string, ToolDef>();
 
+/**
+ * Dynamic, per-profile tool source. A profile may register a provider that
+ * computes its tool set *lazily* — walked on every `tools/list` / `tools/call`
+ * rather than snapshotted into the static registry at registration time. The
+ * operations profile uses this so component operations registered after MCP
+ * boot (`server.registerOperation`, e.g. the built-in agent's `agent_prompt`)
+ * still surface once allow-listed, instead of being missed by a one-time walk
+ * of `OPERATION_FUNCTION_MAP` — see components/mcp/tools/operations.ts (#1562).
+ *
+ * On a name collision, a statically-registered tool (`addTool`) for the same
+ * profile wins over a provider entry — a curated tool overrides a generic
+ * same-named provider tool.
+ */
+export interface ProfileToolProvider {
+	/** Every tool the provider currently exposes for its profile. */
+	list(): ToolDef[];
+	/** Resolve a single tool by name, or `undefined` if not currently exposed. */
+	get(name: string): ToolDef | undefined;
+}
+
+const profileProviders = new Map<McpProfile, ProfileToolProvider>();
+
 /** Per-session pagination cache. Invalidated when a fresh `tools/list` (no cursor) call recomputes. */
 const sessionListCache = new Map<string, { tools: ToolDescriptor[] }>();
+
+/**
+ * Install (or, with `undefined`, remove) the dynamic tool provider for a
+ * profile. Idempotent — re-installing swaps the provider. Drops the pagination
+ * caches so the next `tools/list` recomputes against the new provider.
+ */
+export function setProfileToolProvider(profile: McpProfile, provider: ProfileToolProvider | undefined): void {
+	if (provider) profileProviders.set(profile, provider);
+	else profileProviders.delete(profile);
+	sessionListCache.clear();
+}
 
 export function addTool(def: ToolDef): void {
 	if (!def?.name) throw new Error('addTool: name is required');
@@ -123,8 +185,33 @@ export function removeTool(name: string): boolean {
 	return existed;
 }
 
-export function getTool(name: string): ToolDef | undefined {
-	return registry.get(name);
+/**
+ * Resolve a tool by name for `tools/call`. Pass the caller's `profile` so
+ * resolution is profile-scoped: the flat name→def registry is a single
+ * namespace shared by both profiles, so without scoping a static tool in one
+ * profile shadows a same-named provider tool in another — the shadowed tool
+ * then lists but is uncallable (the transport rejects the wrong-profile def).
+ *
+ * With a profile: a static registration of that profile wins over its provider
+ * entry (curated tool overrides a generic same-named provider tool), then the
+ * profile's provider, then any static registration by name (harmless — the
+ * transport re-checks `tool.profile`). Without a profile (internal/tests):
+ * static registry first, then any provider.
+ */
+export function getTool(name: string, profile?: McpProfile): ToolDef | undefined {
+	const statik = registry.get(name);
+	if (profile !== undefined) {
+		if (statik?.profile === profile) return statik;
+		const def = profileProviders.get(profile)?.get(name);
+		if (def) return def;
+		return statik;
+	}
+	if (statik) return statik;
+	for (const provider of profileProviders.values()) {
+		const def = provider.get(name);
+		if (def) return def;
+	}
+	return undefined;
 }
 
 /**
@@ -170,6 +257,7 @@ export function clearSessionCache(sessionId: string): void {
 /** Test seam: drop all registrations. */
 export function _resetRegistryForTest(): void {
 	registry.clear();
+	profileProviders.clear();
 	sessionListCache.clear();
 }
 
@@ -229,9 +317,19 @@ export function listTools(args: ListToolsArgs): ListToolsResult {
 }
 
 function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescriptor[] {
-	const out: ToolDescriptor[] = [];
+	// Merge the profile's dynamic provider (if any) with its statically-registered
+	// tools, deduping by name. Provider entries are inserted first so a static
+	// registration of the same name overrides them (curated wins — see getTool).
+	const byName = new Map<string, ToolDef>();
+	const provider = profileProviders.get(profile);
+	if (provider) {
+		for (const def of provider.list()) byName.set(def.name, def);
+	}
 	for (const def of registry.values()) {
-		if (def.profile !== profile) continue;
+		if (def.profile === profile) byName.set(def.name, def);
+	}
+	const out: ToolDescriptor[] = [];
+	for (const def of byName.values()) {
 		if (!def.visibleTo(user)) continue;
 		out.push({
 			name: def.name,

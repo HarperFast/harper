@@ -10,7 +10,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer } from 'node:http2';
@@ -256,7 +256,12 @@ function getPorts(options) {
 	if (port) ports.push({ port, secure: true });
 	port = options?.port;
 	if (port) ports.push({ port, secure: false });
-	if (ports.length === 0) {
+	// The operations API must never fall back to the app http ports: it binds on its own
+	// configured port(s)/domain socket only. Falling back here lets a port-less operations-api
+	// registration (e.g. an app config that carries an `operationsApi` block with no port)
+	// claim http.port/http.securePort on the main thread with noReusePort and no upgrade
+	// handler, which locks the http workers out of those ports and breaks all WebSockets (#1420).
+	if (ports.length === 0 && options?.usageType !== 'operations-api') {
 		// if no port is provided, default to http port
 		ports = [];
 		if (env.get(terms.CONFIG_PARAMS.HTTP_PORT) != null)
@@ -495,15 +500,17 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			}
 			function onError(error) {
 				const headers = error.headers;
-				const status = error.statusCode || 500;
+				// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
+				const statusCode = error.statusCode ?? error.status;
+				const status = statusCode || 500;
 				try {
 					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
-				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
+				if (statusCode) {
+					if (statusCode === 500) harperLogger.warn(error);
 					else harperLogger.info(error);
 				} else harperLogger.error(error);
 			}
@@ -740,10 +747,12 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				}
 				return new Response(body, { status, headers: responseHeaders });
 			} catch (error) {
-				const status = error.statusCode || 500;
+				// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
+				const statusCode = error.statusCode ?? error.status;
+				const status = statusCode || 500;
 				logBunRequest(null, status, requestId, performance.now() - startTime);
-				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
+				if (statusCode) {
+					if (statusCode === 500) harperLogger.warn(error);
 					else harperLogger.info(error);
 				} else harperLogger.error(error);
 				return new Response(errorToString(error), { status });
@@ -879,7 +888,12 @@ function makeCallbackChain(responders: typeof httpResponders, portNum: number | 
 				`Cycle detected in middleware before/after ordering on port ${portNum}; falling back to registration order.`
 			);
 		},
-		requestArgIndex
+		requestArgIndex,
+		({ entryName, kind, target }) => {
+			harperLogger.warn(
+				`Middleware ordering: ${entryName ? `'${entryName}'` : 'a handler'} requested \`${kind}: '${target}'\` but no handler named '${target}' is registered on port ${portNum}, so the constraint is ignored. Handler names are the config keys as registered (e.g. 'rest').`
+			);
+		}
 	);
 }
 function unhandled(request) {

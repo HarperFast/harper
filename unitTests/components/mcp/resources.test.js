@@ -1,8 +1,9 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	listResources,
 	listResourceTemplates,
 	readResource,
+	completeResourceArgument,
 	_setResourcesForTest,
 	_setOpenApiGeneratorForTest,
 	_setHttpUrlPrefixForTest,
@@ -165,13 +166,174 @@ describe('mcp/resources', () => {
 
 	describe('listResourceTemplates', () => {
 		it('declares the harper://schema template on the application profile', () => {
-			const templates = listResourceTemplates('application');
-			assert.ok(templates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
+			const { resourceTemplates } = listResourceTemplates('application');
+			assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
 		});
 
 		it('returns no application-only templates on the operations profile', () => {
-			const templates = listResourceTemplates('operations');
-			assert.equal(templates.length, 0);
+			const { resourceTemplates, nextCursor } = listResourceTemplates('operations');
+			assert.equal(resourceTemplates.length, 0);
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('does not emit a nextCursor when all templates fit on the first page', () => {
+			const { nextCursor } = listResourceTemplates('application');
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('paginates with an opaque cursor when limit is smaller than the template count', () => {
+			const all = listResourceTemplates('application').resourceTemplates;
+			// Only assert paging behavior when the profile actually has >1 template.
+			if (all.length < 2) return;
+			const page1 = listResourceTemplates('application', 0, 1);
+			assert.equal(page1.resourceTemplates.length, 1);
+			assert.ok(page1.nextCursor, 'first page hands back a nextCursor');
+			const offset = require('#src/components/mcp/pagination').decodeCursor(page1.nextCursor);
+			const page2 = listResourceTemplates('application', offset, 1);
+			assert.equal(page2.resourceTemplates.length, all.length - 1);
+			assert.equal(page2.nextCursor, undefined, 'last page has no nextCursor');
+			assert.notDeepStrictEqual(page1.resourceTemplates[0], page2.resourceTemplates[0]);
+		});
+	});
+
+	describe('completeResourceArgument (ref/resource)', () => {
+		afterEach(() => _setHttpUrlPrefixForTest(undefined));
+
+		it('completes {database} from RBAC-visible tables', () => {
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: SUPER, profile: 'application' })
+					.values,
+				['data']
+			);
+			// alice can read data.product → sees the data database
+			assert.deepEqual(
+				completeResourceArgument({
+					argument: { name: 'database', value: '' },
+					user: ALICE_READ_ONLY,
+					profile: 'application',
+				}).values,
+				['data']
+			);
+			// nobody has no table perms → no databases
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: NOBODY, profile: 'application' })
+					.values,
+				[]
+			);
+		});
+
+		it('completes {table} within a database, RBAC-filtered, prefix-matched', () => {
+			const superAll = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(superAll.values, ['customer', 'product']);
+			const alice = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: ALICE_READ_ONLY,
+				profile: 'application',
+			});
+			assert.deepEqual(alice.values, ['product']);
+			const prefixed = completeResourceArgument({
+				argument: { name: 'table', value: 'pro' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(prefixed.values, ['product']);
+		});
+
+		it('completes {resourcePath} from mcp-exposed resource paths when an app URL is advertised', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.ok(values.includes('Product') && values.includes('Customer'));
+		});
+
+		it('returns empty {resourcePath} when no app HTTP URL template is advertised', () => {
+			_setHttpUrlPrefixForTest(''); // '' → guessAppHttpUrlPrefix() returns undefined (no template)
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(values, [], 'no {resourcePath} template advertised → no completions');
+		});
+
+		it('returns empty on the operations profile (no resource templates there)', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			for (const name of ['database', 'table', 'resourcePath']) {
+				const { values } = completeResourceArgument({
+					argument: { name, value: '' },
+					context: { arguments: { database: 'data' } },
+					user: SUPER,
+					profile: 'operations',
+				});
+				assert.deepEqual(values, [], `operations profile must not complete ${name}`);
+			}
+		});
+
+		it('returns an empty completion for an unknown variable', () => {
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'mystery', value: '' }, user: SUPER, profile: 'application' }),
+				{ values: [], total: 0, hasMore: false }
+			);
+		});
+
+		describe('parameterised routes', () => {
+			beforeEach(() => {
+				_setHttpUrlPrefixForTest('https://app.test:9926');
+			});
+			afterEach(() => {
+				_setHttpUrlPrefixForTest(undefined);
+			});
+
+			it('lists parameterised routes as URI templates with {param} placeholders', () => {
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'widget/:id/action/:action',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+					{
+						pattern: 'files/*rest',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
+				assert.ok(uris.includes('harper+rest://app.test:9926/widget/{id}/action/{action}'));
+				assert.ok(uris.includes('harper+rest://app.test:9926/files/{rest}'));
+			});
+
+			it('honors exportTypes.mcp === false, @hidden, and verb presence', () => {
+				const Hidden = makeTableResource({ verbs: ['get'] });
+				Hidden.hidden = true;
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'mcpoff/:id',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: { mcp: false } },
+					},
+					{ pattern: 'hidden/:id', entry: { Resource: Hidden, exportTypes: undefined } },
+					{ pattern: 'noverbs/:id', entry: { Resource: makeTableResource({ verbs: [] }), exportTypes: undefined } },
+					{ pattern: 'ok/:id', entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined } },
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
+				assert.ok(uris.includes('harper+rest://app.test:9926/ok/{id}'));
+				assert.ok(!uris.some((u) => u.includes('/mcpoff/')));
+				assert.ok(!uris.some((u) => u.includes('/hidden/')));
+				assert.ok(!uris.some((u) => u.includes('/noverbs/')));
+			});
 		});
 	});
 
@@ -354,7 +516,7 @@ describe('mcp/resources', () => {
 		});
 	});
 
-	describe('listResources — https:// app Resources (verb-presence gating)', () => {
+	describe('listResources — harper+rest:// app Resources (verb-presence gating)', () => {
 		beforeEach(() => {
 			// Override the URL prefix so enumerateAppHttpResources actually
 			// emits entries (otherwise it returns [] and the verb filter is
@@ -380,22 +542,22 @@ describe('mcp/resources', () => {
 
 		it('includes Resources whose prototype defines REST verbs', () => {
 			const result = listResources({ user: SUPER, profile: 'application' });
-			const httpUris = result.resources.filter((r) => r.uri.startsWith('https://')).map((r) => r.uri);
-			assert.ok(httpUris.includes('https://app.test:9926/HasVerbs'));
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
+			assert.ok(httpUris.includes('harper+rest://app.test:9926/HasVerbs'));
 		});
 
 		it('excludes Resources with no REST verbs on the prototype', () => {
 			const result = listResources({ user: SUPER, profile: 'application' });
-			const httpUris = result.resources.filter((r) => r.uri.startsWith('https://')).map((r) => r.uri);
-			assert.ok(!httpUris.includes('https://app.test:9926/NoVerbs'));
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
+			assert.ok(!httpUris.includes('harper+rest://app.test:9926/NoVerbs'));
 		});
 
 		it('lists the same https:// surface for any caller (no list-time RBAC)', () => {
 			const sup = listResources({ user: SUPER, profile: 'application' }).resources.filter((r) =>
-				r.uri.startsWith('https://')
+				r.uri.startsWith('harper+rest://')
 			);
 			const nob = listResources({ user: NOBODY, profile: 'application' }).resources.filter((r) =>
-				r.uri.startsWith('https://')
+				r.uri.startsWith('harper+rest://')
 			);
 			assert.deepEqual(
 				sup.map((r) => r.uri),
@@ -412,7 +574,7 @@ describe('mcp/resources', () => {
 			_setHttpUrlPrefixForTest(undefined);
 		});
 
-		it('skips Resources with exportTypes.mcp === false from both harper:// schema and https:// enumeration', () => {
+		it('skips Resources with exportTypes.mcp === false from both harper:// schema and harper+rest:// enumeration', () => {
 			const Public = makeTableResource({ databaseName: 'data', tableName: 'public' });
 			const Hidden = makeTableResource({ databaseName: 'data', tableName: 'hidden' });
 			const map = new Map([
@@ -430,9 +592,9 @@ describe('mcp/resources', () => {
 			};
 			_setResourcesForTest(map);
 			const result = listResources({ user: SUPER, profile: 'application' });
-			const httpUris = result.resources.filter((r) => r.uri.startsWith('https://')).map((r) => r.uri);
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
 			const schemaUris = result.resources.filter((r) => r.uri.startsWith('harper://schema/')).map((r) => r.uri);
-			assert.ok(httpUris.includes('https://app.test:9926/Public'));
+			assert.ok(httpUris.includes('harper+rest://app.test:9926/Public'));
 			assert.ok(!httpUris.some((u) => u.endsWith('/Hidden')));
 			assert.ok(schemaUris.includes('harper://schema/data/public'));
 			assert.ok(!schemaUris.includes('harper://schema/data/hidden'));
@@ -454,9 +616,9 @@ describe('mcp/resources', () => {
 			};
 			_setResourcesForTest(map);
 			const result = listResources({ user: SUPER, profile: 'application' });
-			const httpUris = result.resources.filter((r) => r.uri.startsWith('https://')).map((r) => r.uri);
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
 			const schemaUris = result.resources.filter((r) => r.uri.startsWith('harper://schema/')).map((r) => r.uri);
-			assert.ok(httpUris.includes('https://app.test:9926/NoHttp'));
+			assert.ok(httpUris.includes('harper+rest://app.test:9926/NoHttp'));
 			assert.ok(schemaUris.includes('harper://schema/data/nohttp'));
 		});
 
@@ -476,7 +638,7 @@ describe('mcp/resources', () => {
 			};
 			_setResourcesForTest(map);
 			const res = await readResource({
-				uri: 'https://app.test:9926/Hidden',
+				uri: 'harper+rest://app.test:9926/Hidden',
 				user: SUPER,
 				profile: 'application',
 			});
@@ -506,13 +668,13 @@ describe('mcp/resources', () => {
 	});
 
 	describe('enumerate — description prefix + @hidden suppression', () => {
-		it('prepends ResourceClass.description to https://* resource entries', () => {
+		it('prepends ResourceClass.description to harper+rest://* resource entries', () => {
 			_setHttpUrlPrefixForTest('https://localhost');
 			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
 			Product.description = 'Product catalog — what shows up in the storefront listing.';
 			_setResourcesForTest(makeFakeResources([['Product', Product]]));
 			const { resources } = listResources({ user: SUPER, profile: 'application' });
-			const product = resources.find((r) => r.uri === 'https://localhost/Product');
+			const product = resources.find((r) => r.uri === 'harper+rest://localhost/Product');
 			assert.ok(product, 'Product https resource present');
 			assert.match(product.description, /Product catalog/, 'prefixed with class description');
 			assert.match(product.description, /Application resource at \/Product/, 'still has the default suffix');
@@ -536,7 +698,7 @@ describe('mcp/resources', () => {
 			_setResourcesForTest(makeFakeResources([['HiddenThing', HiddenThing]]));
 			const { resources } = listResources({ user: SUPER, profile: 'application' });
 			const uris = resources.map((r) => r.uri);
-			assert.ok(!uris.includes('https://localhost/HiddenThing'), 'https entry suppressed');
+			assert.ok(!uris.includes('harper+rest://localhost/HiddenThing'), 'https entry suppressed');
 			assert.ok(!uris.includes('harper://schema/data/hidden_thing'), 'schema entry suppressed');
 		});
 
@@ -545,7 +707,7 @@ describe('mcp/resources', () => {
 			const Plain = makeTableResource({ databaseName: 'data', tableName: 'plain' });
 			_setResourcesForTest(makeFakeResources([['Plain', Plain]]));
 			const { resources } = listResources({ user: SUPER, profile: 'application' });
-			const plain = resources.find((r) => r.uri === 'https://localhost/Plain');
+			const plain = resources.find((r) => r.uri === 'harper+rest://localhost/Plain');
 			assert.ok(plain);
 			assert.match(plain.description, /^Application resource at \/Plain/, 'no prefix when no class description');
 		});
@@ -569,5 +731,185 @@ describe('mcp/resources', () => {
 			assert.equal(res.ok, false);
 			assert.match(res.reason, /unknown harper:\/\/ resource/);
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Custom mcpResources (#1609) + harper+rest:// descriptor scheme
+// ---------------------------------------------------------------------------
+
+const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
+
+describe('custom content resources (#1609)', () => {
+	afterEach(() => {
+		clearProfileCustomResources('application');
+		_setHttpUrlPrefixForTest(undefined);
+		_setResourcesForTest(undefined);
+	});
+
+	it('fixed custom URIs appear in resources/list', () => {
+		addCustomResource({
+			uri: 'docs:///index',
+			name: 'docs index',
+			description: 'All documentation pages',
+			mimeType: 'text/markdown',
+			profile: 'application',
+			read: async () => 'x',
+		});
+		_setResourcesForTest(makeFakeResources([]));
+		const { resources } = listResources({ user: SUPER, profile: 'application' });
+		const entry = resources.find((r) => r.uri === 'docs:///index');
+		assert.ok(entry, 'custom fixed URI listed');
+		assert.equal(entry.mimeType, 'text/markdown');
+	});
+
+	it('custom templates appear in resources/templates/list', () => {
+		addCustomResource({
+			uriTemplate: 'docs:///{+path}',
+			name: 'docs page',
+			profile: 'application',
+			read: async () => 'x',
+		});
+		_setResourcesForTest(makeFakeResources([]));
+		const { resourceTemplates } = listResourceTemplates('application');
+		assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'docs:///{+path}'));
+	});
+
+	it('readResource dispatches a template read with extracted params; string result is text', async () => {
+		let seenParams, seenContext;
+		addCustomResource({
+			uriTemplate: 'docs:///{+path}',
+			name: 'docs page',
+			mimeType: 'text/markdown',
+			profile: 'application',
+			read: async (params, context) => {
+				seenParams = params;
+				seenContext = context;
+				return `# Page ${params.path}`;
+			},
+		});
+		const res = await readResource({ uri: 'docs:///guides/install.md', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, true);
+		assert.deepEqual(seenParams, { path: 'guides/install.md' });
+		assert.equal(seenContext.profile, 'application');
+		assert.equal(seenContext.user, SUPER);
+		assert.equal(res.contents[0].uri, 'docs:///guides/install.md');
+		assert.equal(res.contents[0].mimeType, 'text/markdown');
+		assert.equal(res.contents[0].text, '# Page guides/install.md');
+	});
+
+	it('blob results pass through with their mimeType', async () => {
+		addCustomResource({
+			uri: 'docs:///logo',
+			name: 'logo',
+			profile: 'application',
+			read: async () => ({ blob: 'aGVsbG8=', mimeType: 'image/png' }),
+		});
+		const res = await readResource({ uri: 'docs:///logo', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, true);
+		assert.equal(res.contents[0].blob, 'aGVsbG8=');
+		assert.equal(res.contents[0].mimeType, 'image/png');
+		assert.equal(res.contents[0].text, undefined);
+	});
+
+	it('plain-object results serialize as JSON', async () => {
+		addCustomResource({
+			uri: 'docs:///toc',
+			name: 'toc',
+			profile: 'application',
+			read: async () => ({ pages: ['a', 'b'] }),
+		});
+		const res = await readResource({ uri: 'docs:///toc', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, true);
+		assert.equal(res.contents[0].mimeType, 'application/json');
+		assert.deepEqual(JSON.parse(res.contents[0].text), { pages: ['a', 'b'] });
+	});
+
+	it('author read errors surface as a sanitized failure (raw error stays in the log)', async () => {
+		addCustomResource({
+			uri: 'docs:///boom',
+			name: 'boom',
+			profile: 'application',
+			read: async () => {
+				throw new Error('https://internal.svc key=sk-abc123 exploded');
+			},
+		});
+		const res = await readResource({ uri: 'docs:///boom', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, false);
+		assert.ok(!/sk-abc123/.test(res.reason), 'raw error must not leak');
+		assert.match(res.reason, /failed to read/);
+	});
+
+	it('completion uses author-declared values selected by refUri', () => {
+		addCustomResource({
+			uriTemplate: 'docs:///{section}/{page}',
+			name: 'page',
+			profile: 'application',
+			completions: { section: ['guides', 'reference', 'release-notes'] },
+			read: async () => 'x',
+		});
+		const result = completeResourceArgument({
+			argument: { name: 'section', value: 're' },
+			user: SUPER,
+			profile: 'application',
+			refUri: 'docs:///{section}/{page}',
+		});
+		assert.deepEqual(result.values, ['reference', 'release-notes']);
+	});
+});
+
+describe('harper+rest:// descriptor scheme (#1609)', () => {
+	afterEach(() => {
+		_setHttpUrlPrefixForTest(undefined);
+		_setResourcesForTest(undefined);
+	});
+
+	it('exported-Resource descriptors list under harper+rest://', () => {
+		_setHttpUrlPrefixForTest('https://app.test:9926');
+		_setResourcesForTest(
+			makeFakeResources([['Product', makeTableResource({ databaseName: 'data', tableName: 'product' })]])
+		);
+		const { resources } = listResources({ user: SUPER, profile: 'application' });
+		assert.ok(resources.some((r) => r.uri === 'harper+rest://app.test:9926/Product'));
+		assert.ok(!resources.some((r) => r.uri.startsWith('https://')), 'no https:// descriptors remain');
+	});
+
+	it('templates list under harper+rest://', () => {
+		_setHttpUrlPrefixForTest('https://app.test:9926');
+		_setResourcesForTest(makeFakeResources([]));
+		const { resourceTemplates } = listResourceTemplates('application');
+		assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'harper+rest://app.test:9926/{resourcePath}'));
+	});
+
+	it('reads resolve under both the new scheme and legacy http(s) URIs', async () => {
+		_setHttpUrlPrefixForTest('https://app.test:9926');
+		_setResourcesForTest(
+			makeFakeResources([['Product', makeTableResource({ databaseName: 'data', tableName: 'product' })]])
+		);
+		const viaNew = await readResource({
+			uri: 'harper+rest://app.test:9926/Product',
+			user: SUPER,
+			profile: 'application',
+		});
+		assert.equal(viaNew.ok, true);
+		assert.equal(JSON.parse(viaNew.contents[0].text).table, 'product');
+		const viaLegacy = await readResource({
+			uri: 'https://app.test:9926/Product',
+			user: SUPER,
+			profile: 'application',
+		});
+		assert.equal(viaLegacy.ok, true, 'http(s) URIs from older listings must keep reading');
+	});
+});
+
+describe('normalizePortForUrl (#1609 descriptor authority)', () => {
+	const { normalizePortForUrl } = require('#src/components/mcp/resources');
+	it('passes bare ports through and extracts the port from host:port bind forms', () => {
+		assert.equal(normalizePortForUrl(9926), '9926');
+		assert.equal(normalizePortForUrl('9926'), '9926');
+		assert.equal(normalizePortForUrl('127.0.0.9:9926'), '9926');
+		assert.equal(normalizePortForUrl('[::1]:9926'), '9926');
+		assert.equal(normalizePortForUrl(undefined), undefined);
+		assert.equal(normalizePortForUrl(''), undefined);
 	});
 });

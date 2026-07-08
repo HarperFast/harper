@@ -70,4 +70,9 @@ describe('Update Schema', () => {
 		const state_attribute = tables.SchemaChanges.attributes.find((a) => a.name === 'state');
 		assert(state_attribute.nullable !== false);
 	});
+	after(async function () {
+		// Wait for any pending indexing to finish so no LMDB read transactions
+		// remain open when the next test suite calls resetDatabases()/close().
+		await tables.SchemaChanges?.indexingOperation;
+	});
 });

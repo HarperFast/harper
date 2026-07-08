@@ -11,6 +11,12 @@ export interface Models {
 	embed(input: string | string[], opts?: EmbedOpts): Promise<Float32Array[]>;
 	generate(input: GenerateInput, opts?: GenerateOpts): Promise<GenerateResult>;
 	generateStream(input: GenerateInput, opts?: GenerateOpts): AsyncIterable<GenerateChunk>;
+	/** Register a custom backend under a logical id, selectable via `opts.model`. See #1325. */
+	registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void;
+	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
+	defineBackend(spec: DefineBackendSpec): ModelBackend;
+	/** Replace the model selection policy with a custom router. See #1326. */
+	registerRouter(router: ModelRouter): void;
 }
 
 export interface ModelBackend {
@@ -29,8 +35,55 @@ export interface ModelCapabilities {
 	adapters: boolean;
 }
 
+/** A capability a call can require of its backend (a key of `ModelCapabilities`). */
+export type Capability = keyof ModelCapabilities;
+
+/** What the router is asked to resolve for a single call. See #1326. */
+export interface RouteRequest {
+	kind: 'embedding' | 'generative';
+	/** Logical name from `opts.model` (a role or a concrete backend id); defaults to `'default'`. */
+	logicalName: string;
+	/** Capabilities the chosen backend must satisfy — explicit `opts.requires` plus any auto-derived (e.g. tools present in the input). */
+	requires: Capability[];
+	/** Free-form routing hints (tenant, app, prompt size, …) a custom router may use. */
+	hints?: Record<string, unknown>;
+}
+
+/**
+ * Pluggable selection policy (#1326). `route` returns the ordered candidate
+ * backends for a call: `Models` uses the first that satisfies `requires` and
+ * falls through to the next on backend failure. An empty list means no
+ * candidate (the facade throws `ModelBackendNotFoundError`).
+ *
+ * Synchronous by design so the facade preserves its synchronous resolution
+ * errors (notably `generateStream`'s up-front capability check). `registerRouter`
+ * replaces the default name-lookup router.
+ */
+export interface ModelRouter {
+	route(req: RouteRequest): ModelBackend[];
+}
+
+/**
+ * Spec for `defineBackend` — supply only the methods your backend implements;
+ * `capabilities()` is derived from which are present. `tools` and `adapters`
+ * can't be inferred from method presence, so declare them explicitly (both
+ * default `false`). See #1325.
+ */
+export interface DefineBackendSpec {
+	name: string;
+	embed?: ModelBackend['embed'];
+	generate?: ModelBackend['generate'];
+	generateStream?: ModelBackend['generateStream'];
+	/** Backend supports tool calls in `generate` / `generateStream`. Default `false`. */
+	tools?: boolean;
+	/** Backend supports per-call LoRA / adapter selection. Default `false`. */
+	adapters?: boolean;
+}
+
 export type EmbedOpts = {
 	model?: string;
+	/** Capabilities the chosen backend must satisfy; the router selects/filters candidates accordingly (#1326). */
+	requires?: Capability[];
 	/** For models that distinguish document-vs-query embeddings (e.g. nomic-embed-text); ignored otherwise. */
 	inputType?: 'document' | 'query';
 	signal?: AbortSignal;
@@ -38,6 +91,8 @@ export type EmbedOpts = {
 
 export type GenerateOpts = {
 	model?: string;
+	/** Capabilities the chosen backend must satisfy (e.g. `['tools']`); the router selects/filters candidates accordingly. Tools present in the input are auto-required. (#1326) */
+	requires?: Capability[];
 	adapter?: string;
 	temperature?: number;
 	maxTokens?: number;

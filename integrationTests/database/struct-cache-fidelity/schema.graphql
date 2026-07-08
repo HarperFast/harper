@@ -1,0 +1,22 @@
+# QA-181 — post-cap-saturation FIDELITY (the flip side of QA-175's MEMORY result).
+#
+# QA-175 proved the structon maxOwnStructures=256 cap BOUNDS memory under key-set-
+# heterogeneous ingest (typedStructs plateaus at exactly 256). QA-181 probes the FLIP
+# SIDE: FIDELITY. Historical defect family #1282 (maxOwnStructures-dataloss, fixed in
+# structon >= 1.0.7) silently lost / wrong-decoded records whose typed structure was
+# minted AFTER the cap saturated. The question: with the cap in place, do post-cap
+# records (shapes #257..#500) still round-trip with FULL fidelity?
+#
+# Shapes: a single wide-open table, only the primary key declared and NOT @sealed, so
+# Harper accepts ARBITRARY per-record attribute sets (dynamic/schema-less). Hundreds of
+# DISTINCT field-set shapes are bulk-loaded so the per-encoder typedStructs dictionary
+# saturates the 256 cap partway through the load; records inserted afterward hit the
+# post-cap fallback path — exactly the #1282 regression surface.
+#
+# randomAccessFields: true is REQUIRED — it puts the primary store on structon's TYPED
+# random-access struct path (the path maxOwnStructures governs). 5.1's default is false,
+# under which records fall back to msgpackr classic shared-structures (no typedStructs
+# growth, cap never bites), so we MUST set it true to exercise the cap path.
+type CapFidelity @table(randomAccessFields: true) @export {
+	id: ID @primaryKey
+}

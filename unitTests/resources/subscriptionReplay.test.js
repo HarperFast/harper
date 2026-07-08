@@ -34,16 +34,27 @@ function assertChronologicalIfStrictlyOrdered(events, msg) {
 	if (isLMDB) assertChronological(events, msg);
 }
 
-// Drain a subscription into an array, returning when no new event has arrived for `quietMs`.
-async function collect(subscription, quietMs = 50) {
+// Drain a subscription into an array. Returns once at least `minEvents` have arrived AND no new
+// event has landed for `quietMs`, or once `timeout` ms elapse.
+//
+// Waiting for `minEvents` (default 1) instead of racing a fixed quiet window from t=0 is what
+// keeps these tests stable on a loaded runner: async replay delivery can start more than
+// `quietMs` late (e.g. behind a heavy preceding test in the same suite), and the old
+// unconditional quiet timer would then expire before the first event and return nothing. Tests
+// that assert *no* events must pass `{ minEvents: 0 }` to keep the original quiet-window behavior.
+// The quiet window still bounds the tail, so exact-count assertions remain valid. See
+// unitTests/waitFor.js for the same "wait for the condition, not the clock" rationale.
+async function collect(subscription, quietMs = 50, { minEvents = 1, timeout = 5000 } = {}) {
 	const events = [];
 	let lastEventAt = Date.now();
 	subscription.on('data', (event) => {
 		events.push(event);
 		lastEventAt = Date.now();
 	});
-	while (Date.now() - lastEventAt < quietMs) {
-		await delay(quietMs);
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		if (events.length >= minEvents && Date.now() - lastEventAt >= quietMs) break;
+		await delay(Math.min(quietMs, 20));
 	}
 	return events;
 }
@@ -706,7 +717,7 @@ describe('Subscription replay', () => {
 				audit: true,
 			});
 			const subscription = await T.subscribe({ previousCount: 10, isCollection: true });
-			const events = await collect(subscription, 150);
+			const events = await collect(subscription, 150, { minEvents: 0 });
 			subscription.return?.();
 
 			assert.equal(events.length, 0, `expected 0 events on empty table, got ${events.length}`);
@@ -817,7 +828,7 @@ describe('Subscription replay', () => {
 			// startTime well in the future — gate skips everything ≤ that
 			const futureTime = Date.now() + 10_000_000_000; // far future
 			const subscription = await T.subscribe({ startTime: futureTime, isCollection: true });
-			const events = await collect(subscription, 150);
+			const events = await collect(subscription, 150, { minEvents: 0 });
 			subscription.return?.();
 
 			// nothing delivered initially (gate skips, cursor's exclusiveStart skips)
@@ -833,7 +844,7 @@ describe('Subscription replay', () => {
 			});
 			// startTime: 1 (truthy) to force the branch
 			const subscription = await T.subscribe({ startTime: 1, isCollection: true });
-			const events = await collect(subscription, 100);
+			const events = await collect(subscription, 100, { minEvents: 0 });
 			subscription.return?.();
 
 			assert.equal(events.length, 0, `expected 0 events on empty audit log, got ${events.length}`);
@@ -849,7 +860,7 @@ describe('Subscription replay', () => {
 				audit: true,
 			});
 			const subscription = await T.subscribe({ isCollection: true });
-			const events = await collect(subscription, 100);
+			const events = await collect(subscription, 100, { minEvents: 0 });
 			subscription.return?.();
 
 			assert.equal(events.length, 0, `expected 0 events on empty store, got ${events.length}`);
@@ -884,7 +895,7 @@ describe('Subscription replay', () => {
 				audit: true,
 			});
 			const subscription = await T.subscribe({ id: 999, startTime: Date.now() - 1 });
-			const events = await collect(subscription, 100);
+			const events = await collect(subscription, 100, { minEvents: 0 });
 			subscription.return?.();
 
 			assert.equal(events.length, 0, `expected 0 events for non-existent record, got ${events.length}`);

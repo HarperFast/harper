@@ -66,8 +66,16 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `threads/manageThreads.js` | Thread pool lifecycle.                                   |
 | `threads/threadServer.js`  | Worker entry point — receives sockets via IPC.           |
 | `threads/itc.js`           | Inter-thread comms primitives.                           |
+| `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.      |
 
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
+
+### Where periodic maintenance runs (main thread vs last worker)
+
+Single-instance background tasks pick their thread by what state they touch:
+
+- **Last worker** (`getWorkerIndex() === getWorkerCount() - 1`) — for tasks that operate on **worker-resident JS state**: audit cleanup (`resources/auditStore.ts`) and disk reclamation (`storageReclamation.ts`) walk per-store objects that only exist in a worker.
+- **Main thread** (`isMainThread`) — for tasks that drive a **process-global native singleton** and need no JS state. `transactionLogCooling.ts` is the example: rocksdb-js's transaction-log registry is one C++ static shared across all worker threads, so any thread cools every log. The main thread is chosen because it is the only thread that lives for the whole process — a worker-driven timer would stall whenever that worker is recycled.
 
 ---
 

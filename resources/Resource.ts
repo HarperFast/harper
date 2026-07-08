@@ -18,6 +18,7 @@ import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
+import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 
 const EXTENSION_TYPES = {
@@ -44,6 +45,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	readonly #context: Context | SourceContext;
 	#isCollection: boolean;
 	static transactions: Transaction[] & { timestamp: number };
+	/**
+	 * The URL path this resource is registered at. When set, it overrides the export-name convention used during
+	 * resource registration. A leading `/` makes the path root-relative (top-level); otherwise it is resolved relative
+	 * to the component's directory. Paths may contain `:param` and `*wildcard` segments, whose matched values are bound
+	 * onto the request target (e.g. `static path = '/widget/:id'` populates `target.id`).
+	 */
+	static path?: string;
 	static directURLMapping = false;
 	static loadAsInstance: boolean;
 	static description?: string;
@@ -59,10 +67,6 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 	doesExist(): boolean {
 		return true; // Subclasses should override if needed
-	}
-
-	wasLoadedFromSource(): boolean | void {
-		// Subclasses should override if needed
 	}
 
 	addTo(_property: keyof Record, _value: Record[keyof Record]): void {
@@ -676,6 +680,20 @@ function transactional(
 			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
+			// For subscribe, register the resulting subscription for continuous re-authorization so it is
+			// terminated if the principal later loses access or its token expires (#1414). Non-subscribe
+			// actions run unchanged.
+			// 'subscribe' is the direct MQTT path; 'connect' is the SSE/WebSocket path (REST CONNECT) —
+			// both resolve to the same subscription iterable.
+			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
+			const runAction = (data: any) => {
+				const result = action(resource, query, context, data);
+				if (!isSubscribeAction) return result;
+				return when(result, (subscription: any) => {
+					registerLiveSubscriptionForContext(subscription, resource, query, context);
+					return subscription;
+				});
+			};
 			let checkPermission = false;
 			if (query.checkPermission) {
 				checkPermission = true;
@@ -690,26 +708,38 @@ function transactional(
 			if (checkPermission) {
 				if (loadAsInstance !== false) {
 					// do permission checks, with allow methods
-					const allowed =
-						options.type === 'read'
-							? resource.allowRead(context.user, query, context)
-							: options.type === 'update'
-								? resource.doesExist?.() === false
-									? resource.allowCreate(context.user, data, context)
-									: resource.allowUpdate(context.user, data, context)
-								: options.type === 'create'
-									? resource.allowCreate(context.user, data, context)
-									: resource.allowDelete(context.user, query, context);
+					let allowed;
+					try {
+						allowed =
+							options.type === 'read'
+								? resource.allowRead(context.user, query, context)
+								: options.type === 'update'
+									? resource.doesExist?.() === false
+										? resource.allowCreate(context.user, data, context)
+										: resource.allowUpdate(context.user, data, context)
+									: options.type === 'create'
+										? resource.allowCreate(context.user, data, context)
+										: resource.allowDelete(context.user, query, context);
+					} catch {
+						// allow* threw — fail closed rather than letting the request proceed
+						throw new AccessViolation(context.user);
+					}
 					if ((allowed as any)?.then) {
-						return (allowed as any).then((allowed) => {
-							query.checkPermission = false;
-							if (!allowed) {
+						return (allowed as any).then(
+							(allowed) => {
+								query.checkPermission = false;
+								if (!allowed) {
+									throw new AccessViolation(context.user);
+								}
+								return when(data, (data) => {
+									return runAction(data);
+								});
+							},
+							() => {
+								// async allow* rejected — fail closed
 								throw new AccessViolation(context.user);
 							}
-							return when(data, (data) => {
-								return action(resource, query, context, data);
-							});
-						});
+						);
 					}
 					query.checkPermission = false;
 					if (!allowed) {
@@ -718,11 +748,46 @@ function transactional(
 				}
 			}
 			return when(data, (data) => {
-				return action(resource, query, context, data);
+				return runAction(data);
 			});
 		}
 	}
 }
+function registerLiveSubscriptionForContext(subscription: any, resource: any, query: any, context: Context) {
+	const user: any = context?.user;
+	const username = user?.username;
+	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
+	if (!username) return;
+	const capturedId = query?.id;
+	const capturedIsCollection = query?.isCollection;
+	const capturedSelect = query?.select;
+	registerLiveSubscription({
+		subscription,
+		username,
+		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
+		authExpiresAt: user.authExpiresAt,
+		recheck: async () => {
+			// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
+			// role-stripped user no longer authorizes.
+			const { findAndValidateUser } = require('../security/user');
+			const fresh: any = await findAndValidateUser(username, undefined, false);
+			if (!fresh?.role) return false;
+			// Advance the subscription's context to the fresh user so downstream checks — context.user
+			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
+			// not the stale user captured at subscribe time.
+			if (context) (context as any).user = fresh;
+			// Re-run the same table/RBAC-level allowRead the subscription was granted with, against the
+			// fresh user. No per-record evaluation — this matches how access was originally granted.
+			const reTarget: any = new RequestTarget();
+			reTarget.id = capturedId;
+			reTarget.isCollection = capturedIsCollection;
+			reTarget.select = capturedSelect;
+			reTarget.checkPermission = fresh.role?.permission;
+			return !!(await resource.allowRead(fresh, reTarget, context));
+		},
+	});
+}
+
 const KNOWN_METHODS = ['get', 'head', 'put', 'post', 'delete', 'patch', 'query', 'move', 'copy'];
 type ClientErrorWithMethods = ClientError & { allow: string[]; method: string };
 export function missingMethod(resource: any, method: string) {

@@ -15,8 +15,13 @@
  * nothing.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { listResources } from './resources.ts';
-import { type RegisteredSession, forEachSessionByProfile, getRegisteredSession } from './sessionRegistry.ts';
+import { listResources, listResourceTemplates } from './resources.ts';
+import {
+	type RegisteredSession,
+	forEachSessionByProfile,
+	getRegisteredSession,
+	pushSessionFrame,
+} from './sessionRegistry.ts';
 import { listTools, type AuthedUser } from './toolRegistry.ts';
 import { refreshApplicationTools } from './tools/application.ts';
 import type { McpProfile } from './transport.ts';
@@ -101,7 +106,16 @@ function toolsListNames(profile: McpProfile, session: RegisteredSession): Array<
 
 function resourcesListUris(profile: McpProfile, session: RegisteredSession): Array<{ uri: string }> {
 	const result = listResources({ user: session.user, profile, limit: MAX_RESOURCES_PAGE });
-	return result.resources.map((r) => ({ uri: r.uri }));
+	const uris = result.resources.map((r) => ({ uri: r.uri }));
+	// Templates are part of the advertised resource surface too: a rebuild can
+	// add/remove a custom mcpResources uriTemplate while the fixed-URI set stays
+	// identical (#1609). Fold them into the diffed snapshot (prefixed so a
+	// template can't collide with a fixed URI of the same spelling).
+	const templates = listResourceTemplates(profile, undefined, MAX_RESOURCES_PAGE);
+	for (const t of templates.resourceTemplates) {
+		uris.push({ uri: `template:${t.uriTemplate}` });
+	}
+	return uris;
 }
 
 function sameSet(
@@ -127,7 +141,7 @@ function maybeNotifyToolsChanged(record: RegisteredSession): void {
 		const current = toolsListNames(record.profile, record);
 		if (sameSet(record.lastTools, current)) return;
 		record.lastTools = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/tools/list_changed' },
 		});
@@ -141,13 +155,61 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 		const current = resourcesListUris(record.profile, record);
 		if (sameSet(record.lastResources, current)) return;
 		record.lastResources = current;
-		record.queue.send({
+		pushSessionFrame(record, {
 			event: 'message',
 			data: { jsonrpc: '2.0', method: 'notifications/resources/list_changed' },
 		});
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged resources/* for session ${record.sessionId}: ${(err as Error).message}`);
 	}
+}
+
+/**
+ * Re-diff every session's visible resource list on a profile and push
+ * `notifications/resources/list_changed` to the sessions whose list actually
+ * changed. Called by the application registration after a rebuild so custom
+ * `mcpResources` additions/removals propagate (#1609); the per-session diff in
+ * `maybeNotifyResourcesChanged` keeps no-op rebuilds silent.
+ */
+export function notifyResourcesListChanged(profile: McpProfile): void {
+	for (const record of snapshotSessions(profile)) {
+		maybeNotifyResourcesChanged(record);
+	}
+}
+
+/**
+ * Re-diff every session's visible tool list on a profile and push
+ * `notifications/tools/list_changed` to the sessions whose list actually
+ * changed. The schema-change handler already does this, but the lazy
+ * per-request rebuild (`ensureApplicationToolsFresh`, #1609) can add/remove
+ * custom `mcpTools` outside any schema event — without this, a session that
+ * initialized before a tableless component registered keeps a stale tool
+ * list until it happens to re-poll `tools/list`.
+ */
+export function notifyToolsListChanged(profile: McpProfile): void {
+	for (const record of snapshotSessions(profile)) {
+		maybeNotifyToolsChanged(record);
+	}
+}
+
+/**
+ * Push `notifications/prompts/list_changed` to every session on a profile.
+ * Prompts carry no per-user RBAC (they're generic templates, §3.5), so unlike
+ * tools/resources this is a flat per-profile fan-out rather than a per-session
+ * user-diff. Called by the application registration when the prompt set actually
+ * changes (added/removed) — not on every rebuild.
+ */
+export function notifyPromptsListChanged(profile: McpProfile): void {
+	forEachSessionByProfile(profile, (record) => {
+		try {
+			pushSessionFrame(record, {
+				event: 'message',
+				data: { jsonrpc: '2.0', method: 'notifications/prompts/list_changed' },
+			});
+		} catch (err) {
+			harperLogger.trace(`MCP listChanged prompts/* for session ${record.sessionId}: ${(err as Error).message}`);
+		}
+	});
 }
 
 /**

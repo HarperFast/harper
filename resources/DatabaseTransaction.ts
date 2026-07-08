@@ -131,7 +131,7 @@ export class DatabaseTransaction implements Transaction {
 	// so the request rolls back cleanly instead of silently committing a partial write set (issue #1407).
 	declare timedOut?: boolean;
 
-	getReadTxn(): ReadTransaction {
+	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.timeout = txnExpiration; // reset the timeout
 		if (this.transaction) {
@@ -140,7 +140,11 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 
-		this.transaction = new RocksTransaction(this.db.store);
+		// `disableSnapshot` (requested via `snapshot: false` on a query) reads against the latest
+		// committed data without pinning a consistent snapshot — so a long scan does not hold a
+		// snapshot that blocks compaction. Only applied when creating the transaction fresh; an
+		// already-open transaction keeps whatever snapshot mode it was created with.
+		this.transaction = new RocksTransaction(this.db.store, { disableSnapshot });
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
@@ -155,8 +159,8 @@ export class DatabaseTransaction implements Transaction {
 		return this.transaction;
 	}
 
-	useReadTxn() {
-		const readTxn = this.getReadTxn();
+	useReadTxn(disableSnapshot?: boolean) {
+		const readTxn = this.getReadTxn(disableSnapshot);
 		if (DEBUG_LONG_TXNS) this.stackTraces.push(new StartedTransaction());
 		this.readTxnsUsed++;
 		return readTxn;
@@ -302,7 +306,11 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
-							commitResolution = transaction.commit();
+							// rocksdb-js 2.2.0 widened commit()'s resolution to include the
+							// coordinated-retry sentinel (RETRY_NOW); we don't pass
+							// coordinatedRetry, so it never resolves to the sentinel here. Cast
+							// away the sentinel to keep commitResolution void.
+							commitResolution = transaction.commit() as Promise<void>;
 						} else {
 							try {
 								commitResolution = transaction.abort();

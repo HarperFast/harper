@@ -1,0 +1,22 @@
+# QA-196 — @relationship parent-DELETE cascade semantics.
+#
+# Probes what happens when a parent Order is deleted while children OrderItems
+# still reference it via the FK relationship.
+#
+# Relationship model:
+#   Order.items   = @relationship(to: orderId)    reverse (parent -> children list)
+#   OrderItem.order = @relationship(from: orderId) forward (child -> parent)
+
+type Order @table @export {
+	id: ID @primaryKey
+	total: Float
+	items: [OrderItem] @relationship(to: orderId)
+}
+
+type OrderItem @table @export {
+	id: ID @primaryKey
+	orderId: ID @indexed
+	name: String
+	price: Float
+	order: Order @relationship(from: orderId)
+}

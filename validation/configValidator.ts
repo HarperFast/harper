@@ -24,6 +24,37 @@ const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
+// Controlled-flow ("directional") replication fields. A route's `replicates` is either a boolean
+// (full replication on/off) or an object describing per-direction flow; `sends`/`receives` and
+// `sendsTo`/`receivesFrom` are also accepted as top-level route keys (iterateRoutes normalizes both
+// forms). Entries in sendsTo/receivesFrom are a peer name (string) or an object scoping the edge by
+// target/source + database, with an optional per-table excludeTables list. harper-pro#498 — these
+// were previously unvalidated (allowUnknown), so typos/wrong types passed silently.
+const routeEntryConstraints = Joi.alternatives([
+	string,
+	{
+		target: string,
+		source: string,
+		database: string,
+		excludeTables: array.items(string),
+	},
+]);
+const replicatesConstraints = Joi.alternatives([
+	boolean,
+	{
+		sends: boolean,
+		sendsTo: array.items(routeEntryConstraints),
+		receives: boolean,
+		receivesFrom: array.items(routeEntryConstraints),
+	},
+]);
+const directionalRouteFields = {
+	replicates: replicatesConstraints,
+	sends: boolean,
+	receives: boolean,
+	sendsTo: array.items(routeEntryConstraints),
+	receivesFrom: array.items(routeEntryConstraints),
+};
 export const routeConstraints = Joi.alternatives([
 	array
 		.items(
@@ -31,10 +62,12 @@ export const routeConstraints = Joi.alternatives([
 			{
 				host: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			},
 			{
 				hostname: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			}
 		)
 		.empty(null),
@@ -64,6 +97,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 		certificate: pemFileConstraints,
 		certificateAuthority: pemFileConstraints,
 		privateKey: pemFileConstraints,
+		// Periodic re-read interval (ms) for the cert-file watcher's polling safety net.
+		// 0 disables polling, leaving only the inotify-based chokidar watcher. Honored on the
+		// top-level tls block (a single global setting); see getCertificateWatchInterval in security/keys.ts.
+		certificateWatchInterval: number.min(0).optional().empty(null),
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
@@ -114,6 +151,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 	const commonEntryFields = {
 		model: string.optional(),
 		requestTimeoutMs: number.min(1).optional(),
+		// Ordered fallback group — other logical names tried, in order, after this one (#1326).
+		fallback: Joi.array().items(string).optional(),
 	};
 	const ollamaEntrySchema = Joi.object({
 		backend: string.valid('ollama').required(),
@@ -193,6 +232,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			copyTablesToCatchUp: boolean.optional(),
 			pingInterval: number.min(1).optional().empty(null),
 			pingTimeout: number.min(1).optional().empty(null),
+			copyTimeout: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
 		}).optional(),
 		componentsRoot: rootConstraints.optional(),
@@ -278,6 +318,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 					})
 				),
 				maxHeapMemory: number.min(0).optional(),
+				preload: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
+				preloadRequire: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({

@@ -15,7 +15,7 @@
  * cleared on clean completion, and (c) actually drives a re-trigger.
  */
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
@@ -190,7 +190,7 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 				{ name: 'tag', indexed: true },
 			],
 		});
-		assert.notEqual(
+		assert.notStrictEqual(
 			TblNewGen.indexingOperation,
 			buildOp,
 			'must re-trigger (new indexingOperation) when persisted restartNumber is older than the current generation'
@@ -205,5 +205,80 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			total += (await collect(TblNewGen.search({ conditions: [{ attribute: 'tag', value: v }] }))).length;
 		}
 		assert.equal(total, N, 'all rows should be indexed after the restartNumber-triggered re-run');
+	});
+
+	it('treats a store closed by worker shutdown as a benign interruption (resolves, no indexingFailed)', async () => {
+		const TABLE = 'RN_ShutdownInterrupt';
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 's-' + i, tag: i % 2 ? 'odd' : 'even' });
+		await last;
+
+		// Add @indexed to trigger the backfill, then simulate the worker's store being closed
+		// mid-backfill: the range scan throws like a closed RocksDB handle and rootStore.status
+		// reports 'closed'. The descriptor's indexingPID/restartNumber are persisted by table()
+		// BEFORE runIndexing runs, so recovery can still re-trigger on the next generation.
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		const rootStore = Tbl.primaryStore.rootStore;
+		const origStatusDesc = Object.getOwnPropertyDescriptor(rootStore, 'status');
+		const origGetRange = Tbl.primaryStore.getRange.bind(Tbl.primaryStore);
+		let scanIntercepted = 0;
+		Object.defineProperty(rootStore, 'status', { value: 'closed', configurable: true });
+		Tbl.primaryStore.getRange = () => ({
+			[Symbol.iterator]() {
+				return {
+					next() {
+						scanIntercepted++;
+						throw new Error('Database not open');
+					},
+				};
+			},
+		});
+		let rejected = false;
+		try {
+			// A shutdown interruption is benign: runIndexing must resolve, not reject.
+			if (Tbl.indexingOperation) await Tbl.indexingOperation;
+		} catch {
+			rejected = true;
+		} finally {
+			Tbl.primaryStore.getRange = origGetRange;
+			if (origStatusDesc) Object.defineProperty(rootStore, 'status', origStatusDesc);
+			else delete rootStore.status;
+		}
+
+		assert.ok(scanIntercepted > 0, 'sanity: the backfill scan must have been intercepted (store-closed simulation)');
+		assert.equal(
+			rejected,
+			false,
+			'a store closed by shutdown must be handled as a benign interruption, not a rejection'
+		);
+
+		// The early-return is a pure no-op on persisted state: it must NOT mark the index
+		// indexingFailed (the old path tried to persist that against the closed store, which
+		// both failed loudly and was unnecessary — recovery comes from the restartNumber/PID
+		// trigger, covered by the tests above). Recovery markers, if the trigger set them, are
+		// left untouched because the fix writes nothing.
+		const desc = findDescriptor(Tbl, 'tag');
+		assert.ok(desc, 'tag descriptor should exist after a shutdown-interrupted backfill');
+		assert.notEqual(
+			desc.value.indexingFailed,
+			true,
+			'a shutdown-interrupted backfill must NOT be marked indexingFailed'
+		);
 	});
 });

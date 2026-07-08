@@ -38,7 +38,9 @@ function getIdMappingRecord(auditStore) {
 			// we need to update the sequence id for the previous host name, and have it start from our last sequence id
 			const seqKey = [Symbol.for('seq'), lastId];
 			auditStore.rootStore.dbisDb.transactionSync(() => {
-				if (!auditStore.rootStore.dbisDb.get(seqKey))
+				// getSync (not get): a get() Promise on a RocksDB cache miss is truthy, so `!...get(seqKey)`
+				// would be false and skip initializing the seq record for the reassigned node id.
+				if (!(auditStore.rootStore.dbisDb as any).getSync(seqKey))
 					auditStore.rootStore.dbisDb.putSync(seqKey, {
 						seqId: lastTimeInAuditStore(auditStore) ?? 1,
 						nodes: [],

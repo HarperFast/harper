@@ -40,7 +40,22 @@ export interface RegisteredSession {
 	logLevel?: McpLogLevel;
 	/** Wall-clock ms of last activity. Bumped by registerSession + touchSession. */
 	lastSeen: number;
+	/**
+	 * Monotonic SSE event-id counter for this session (#1349 §3.8 resumability).
+	 * Carried across a GET reconnect so ids keep increasing.
+	 */
+	nextEventId: number;
+	/**
+	 * Bounded ring of recently-pushed GET-channel frames (with their event ids),
+	 * for `Last-Event-ID` replay on reconnect. Per-worker + best-effort: a
+	 * reconnect that lands on a different worker (no session affinity) won't have
+	 * the buffer and just resumes with live frames.
+	 */
+	replayBuffer: SseEvent[];
 }
+
+/** Max frames kept per session for `Last-Event-ID` replay. */
+const REPLAY_BUFFER_SIZE = 100;
 
 const registry: Map<string, RegisteredSession> = new Map();
 
@@ -81,7 +96,17 @@ export function registerSession(sessionId: string, profile: McpProfile, user: Au
 		existing.queue.emit('close');
 	}
 	const queue = new IterableEventQueue<SseEvent>();
-	const record: RegisteredSession = { sessionId, profile, user, queue, lastSeen: now() };
+	const record: RegisteredSession = {
+		sessionId,
+		profile,
+		user,
+		queue,
+		lastSeen: now(),
+		// Carry the event-id sequence + replay buffer across a reconnect so
+		// Last-Event-ID resumption works and ids stay monotonic.
+		nextEventId: existing?.nextEventId ?? 0,
+		replayBuffer: existing?.replayBuffer ?? [],
+	};
 	registry.set(sessionId, record);
 	// On-close hook: when the consumer's async-iterator returns/throws (or
 	// supersede emits 'close' above), drop the entry so it doesn't leak past
@@ -96,6 +121,29 @@ export function registerSession(sessionId: string, profile: McpProfile, user: Au
 		}
 	});
 	return record;
+}
+
+/**
+ * Push a frame onto a session's GET stream, assigning the next monotonic SSE
+ * event id and recording it in the replay buffer (#1349 §3.8). All GET-channel
+ * pushes (listChanged, logging, resources/updated) route through here so every
+ * frame carries an `id:` and can be replayed on a Last-Event-ID reconnect.
+ */
+export function pushSessionFrame(record: RegisteredSession, frame: SseEvent): void {
+	const withId: SseEvent = { ...frame, id: String(++record.nextEventId) };
+	record.replayBuffer.push(withId);
+	if (record.replayBuffer.length > REPLAY_BUFFER_SIZE) record.replayBuffer.shift();
+	record.queue.send(withId);
+}
+
+/**
+ * Frames buffered after `lastEventId` (exclusive), in order — for Last-Event-ID
+ * replay on reconnect. A non-numeric id replays the whole buffer (best effort).
+ */
+export function replaySince(record: RegisteredSession, lastEventId: string): SseEvent[] {
+	const after = Number(lastEventId);
+	if (!Number.isFinite(after)) return [...record.replayBuffer];
+	return record.replayBuffer.filter((f) => Number(f.id) > after);
 }
 
 export function unregisterSession(sessionId: string): void {

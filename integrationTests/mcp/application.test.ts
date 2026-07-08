@@ -18,7 +18,7 @@
  * unrecognized-cursor `-32602` frame (S2).
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -126,7 +126,12 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 
 		const got = await client.callTool({ name: 'get_WorkItem', arguments: { id: newId } });
 		ok(!got.isError, `get should succeed: ${JSON.stringify(got)}`);
-		strictEqual((got.structuredContent as { payload?: string } | undefined)?.payload, 'hello-1324');
+		// WorkItem's custom `post` stores `payload: JSON.stringify(body)`, so the
+		// round-tripped payload is the stringified create body — the same value REST
+		// returns. (MCP verb tools dispatch on the exported Resource subclass, so its
+		// custom verb methods run, in parity with REST.)
+		const gotPayload = (got.structuredContent as { payload?: string } | undefined)?.payload;
+		strictEqual(JSON.parse(gotPayload ?? '{}').payload, 'hello-1324');
 
 		const updated = await client.callTool({
 			name: 'update_WorkItem',

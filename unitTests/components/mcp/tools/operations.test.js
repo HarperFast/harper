@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	registerOperationsTools,
 	DEFAULT_ALLOW,
@@ -247,6 +247,50 @@ describe('mcp/tools/operations — registration', () => {
 		registerOperationsTools();
 		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
 		assert.equal(tools.length, 2);
+	});
+
+	it('surfaces operations registered AFTER registration (lazy walk of the live map) — #1562', () => {
+		// Components register their operations via server.registerOperation during
+		// startOnMainThread, which runs after the MCP operations profile registers.
+		// The tool list must be computed lazily so those late ops still appear.
+		const opMap = makeOpMap([['describe_all', null]]);
+		_setOperationFunctionMapForTest(opMap);
+		registerOperationsTools();
+
+		// Only the boot-time op is present at first.
+		let names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
+		assert.deepEqual(names, ['describe_all']);
+
+		// A component registers new ops after registration ran. `list_agents` is
+		// allow-listed by default via `list_*`; `agent_prompt` is opted in explicitly.
+		opMap.set('list_agents', { operation_function: async () => ({ agents: [] }) });
+		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		envOverrides.mcp_operations_allow = ['describe_*', 'list_*', 'agent_prompt'];
+
+		names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
+		assert.deepEqual(names.sort(), ['agent_prompt', 'describe_all', 'list_agents']);
+	});
+
+	it('resolves a late-registered op through getTool for tools/call dispatch — #1562', () => {
+		const opMap = makeOpMap([['describe_all', null]]);
+		_setOperationFunctionMapForTest(opMap);
+		registerOperationsTools();
+
+		// Not registered yet, and not allow-listed → not callable.
+		assert.equal(getTool('agent_prompt'), undefined);
+
+		// Component registers it and the operator opts it in.
+		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		envOverrides.mcp_operations_allow = ['describe_*', 'agent_prompt'];
+
+		const tool = getTool('agent_prompt');
+		assert.ok(tool, 'late-registered allow-listed op must resolve for tools/call');
+		assert.equal(tool.profile, 'operations');
+		assert.equal(typeof tool.handler, 'function');
+
+		// A live op that is NOT allow-listed still must not be callable.
+		opMap.set('drop_table', { operation_function: async () => ({}) });
+		assert.equal(getTool('drop_table'), undefined);
 	});
 
 	it('logs a warning and registers nothing when OPERATION_FUNCTION_MAP is unavailable', () => {

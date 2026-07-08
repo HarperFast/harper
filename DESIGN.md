@@ -29,6 +29,8 @@ In `getFromSource()` (`Table.ts`), the promise that callers await resolves with 
 
 Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
 
+The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
@@ -133,6 +135,66 @@ interrupted drop instead of resurrecting the table. Without this, surviving cata
 silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
 (with their data, if the column families were never actually removed).
 
+## MCP protocol surface (`components/mcp/`)
+
+The MCP Streamable-HTTP transport (spec `2025-06-18`) is served at `/mcp` under **two profiles**: an
+_operations_ profile (mounted on the Fastify operations server) and an _application_ profile (mounted on
+the Harper application HTTP server). Both share `transport.ts` (the JSON-RPC dispatcher) but differ in what
+they expose — operations surfaces management operations as tools; application surfaces exported
+Resources/tables. Profile gating runs throughout (`completeResourceArgument`, prompt visibility, tool
+`visibleTo`), so when adding a method, decide which profile(s) it belongs to rather than assuming both.
+
+A handful of design points are non-obvious and easy to break:
+
+- **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
+  (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
+  API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on
+  `'close'`. The streaming tool handler is therefore dispatched inside a `setImmediate` (a _detached_,
+  deferred task) so the adapter's consumer attaches **before** any frame is produced. Without the defer, a
+  fast handler emits its final frame + `close` synchronously; the queue buffers `'data'` but not `'close'`,
+  and the stream hangs. Any handler on this path must check `signal.aborted` first (cancellation can land
+  before the deferred task runs).
+
+- **Server→client requests are correlated across workers.** `serverRequests.ts` lets a streaming `tools/call`
+  call _back_ into the client (`sampling/createMessage`, `elicitation/create`, `roots/list`) and await the
+  reply. The request frame rides **the call's POST SSE stream**; the client's response is a _fresh POST_ that
+  can land on **any worker**. The pending-promise registry is per-worker, so a response with no local match
+  is fanned out over ITC (`MCP_CLIENT_RESPONSE`) and the worker holding the promise resolves it (mirrors
+  `components/status/crossThread.ts`). Request ids are `srv-${randomUUID()}` — **not** a per-worker counter,
+  which would collide on `(sessionId, id)` across workers and misroute responses. Methods are capability-gated
+  (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
+  (timeout + high-water-mark) so a non-responding client can't leak promises.
+
+- **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
+  Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as the
+  "Audit-store `'committed'` notification batching" section above). The targeting is the subtle part:
+  `getMatch` returns the matched Resource plus the remaining path on `relativeURL`, and `subscribeToResource`
+  sets **both** `request.id` (the record key, or `undefined`) **and** `request.isCollection` from it. A record
+  URI (`…/WorkItem/42`) watches that record; a collection URI (`…/WorkItem`, what `resources/list` advertises)
+  watches the whole table. `new RequestTarget(path)` parses an id out of the path on its own, so _both_ fields
+  must be overridden — otherwise a collection URI silently watches a phantom record named after the resource
+  and receives nothing. `harper://*` pseudo-resources are **list-changed-only** (not row-backed). Subscriptions
+  use `omitCurrent` (notify on change, not a retained snapshot — the notification just says "re-read this").
+
+- **Subscribe requires a live GET stream; teardown is asymmetric.** `resources/subscribe` rejects (`-32602`)
+  if no GET SSE stream has registered the session — the audit-log iterator has nowhere to deliver, and there'd
+  be no `RegisteredSession` close hook to stop it. The GET `'close'` handler drops **subscriptions only**
+  (`dropSessionSubscriptions`), _not_ pending server requests: those ride the per-call POST stream, so a normal
+  GET reconnect must not reject an in-flight `ctx.serverRequest`. A `DELETE` (explicit session teardown) drops
+  **both**, because it may arrive with no open GET stream.
+
+- **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
+  assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a
+  `Last-Event-ID` header, `replaySince` re-sends only the frames after that id. The event-id sequence **and**
+  the buffer carry across a supersede (a fresh GET replacing the old one for the same session id), so ids stay
+  monotonic and no frame is lost across a reconnect.
+
+- **Test seams avoid loading thread/audit machinery in unit tests.** `_setSubscribeImplForTest`
+  (`resources.ts`) and `_setItcForTest` (`serverRequests.ts`) inject fakes so the unit suite needn't spin up
+  the audit log or ITC. Consequence: the subscribe **targeting** logic (`id`/`isCollection` derivation) is
+  _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
+  record / N4 collection), not in unit tests.
+
 Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
 lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
 subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a
@@ -143,3 +205,46 @@ silently reuses a dangling handle and every write fails with "Invalid column fam
 in write batch", poisoning the whole database env until restart. The regression suite for all
 of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
 bindings).
+
+## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
+
+A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
+by completely separate routes, and the two must reconverge or HTTPS breaks on that worker.
+Certificates propagate through data: only the main thread watches the cert file (`isMainThread`
+guard in `loadCertificates`) and writes the new PEM into the `system.hdb_certificate` table; every
+worker is subscribed to that table and rebuilds its secure contexts (`updateTLS` inside
+`createTLSSelector`) on the notification. Private keys never touch the table — each worker watches
+its own key file (the private-key `loadAndWatch` has no `isMainThread` guard) and loads the PEM
+straight into its in-thread `privateKeys` map. `getPrivateKeyByName` reads that map first, so an
+already-built secure context has the key bytes baked in (`setCert`/`setKey` at build time); a later
+map update does not touch contexts already built.
+
+The hazard when a rotation changes **both**: the cert can win the race to a worker (table write +
+subscription) and trigger `updateTLS` before that worker has reloaded the matching key, producing a
+context that pairs the new cert with the old key — every handshake on it then fails, and nothing
+rebuilds it until the _next_ cert-table change. The fix: a private-key reload (`handlePrivateKeyReload`,
+the single sink for both the chokidar watcher and PR #1394's periodic poll) triggers a debounced
+rebuild of every live selector via the module-level `liveTLSRebuilders` set, so the worker reconverges
+on its own. Subtleties to preserve: the rotation guard (`previous !== undefined && previous !== key`)
+must skip both the initial load and identical-content reloads or watchers thrash; transient one-shot
+selectors (`getReplicationCert`) pass `liveReload=false` so they don't accumulate in the never-pruned
+set; and the cert subscription shares the same debounced `scheduleRebuild` (same 1500ms cadence), so
+its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
+`integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
+(it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
+
+## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
+
+`server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
+`req.replicated \!== false` — absence of the flag means "replicate". That default-on contract is what
+DDL ops rely on (`dropSchema`/`dropTable` call it unconditionally), so a handler that mirrors the
+drop_schema pattern without a guard silently becomes replicate-by-default. `setConfiguration` must
+stay **opt-in** (`if (replicated)` truthy guard) because config bodies routinely carry node-local
+params (ports, paths, node identity) that would clobber peers. Two invariants to preserve:
+`replicated` must remain in the handler's destructure strip-list on both origin and peers (peers
+receive `replicated: false` in the forwarded body; anything not stripped is treated as a config
+param), and there is deliberately **no** per-param node-local/cluster-wide guard here — per-field
+replicability metadata is deferred to the cluster-level-config work (CORE-3018), which will own that
+schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
+in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
+operators must inspect the array for per-node outcomes.
