@@ -84,6 +84,19 @@ describe('test REST calls with cache table', () => {
 			assert.equal(response.headers.get('cache-control'), 'max-age=10, s-maxage=20');
 			assert.equal(response.headers.get('x-custom-header'), 'custom value');
 		});
+		it('stored record headers survive the response path (#1702)', async () => {
+			// finalizeResponse must not mutate the live record queued for the deferred cache commit
+			// (it previously overwrote `headers` with a web Headers, persisting `{}` under LMDB).
+			// The second get is a cache hit served from the persisted record, so it fails if the
+			// stored headers were corrupted by the first request's response handling.
+			await axios.get(`${baseUrl}/CacheOfHttp/created-response`);
+			await delay(20); // let the background cache commit land before reading it back
+			let response = await axios.get(`${baseUrl}/CacheOfHttp/created-response`);
+			assert.equal(response.status, 200);
+			assert.equal(response.data, 'test');
+			assert.equal(response.headers.get('cache-control'), 'max-age=10, s-maxage=20');
+			assert.equal(response.headers.get('x-custom-header'), 'custom value');
+		});
 		it('get resolved with fetch body as text', async () => {
 			let response = await axios.get(`${baseUrl}/CacheOfHttp/fetch-body`);
 			assert.equal(response.status, 200);
