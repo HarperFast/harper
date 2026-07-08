@@ -1,6 +1,6 @@
 import { join, relative, sep } from 'node:path';
 import { stat, readdir } from 'node:fs/promises';
-import { Readable } from 'node:stream';
+import { Readable, pipeline } from 'node:stream';
 import tar from 'tar-fs';
 import { createGzip } from 'node:zlib';
 
@@ -129,6 +129,9 @@ export function streamPackagedDirectory(
 		: scanPackageDirectory(directory, options).then((scan) => scan.danglingSymlinks);
 	dangling
 		.then((danglingSymlinks) => {
+			// The consumer may have already aborted (destroying gzip) while the prescan was
+			// still resolving — skip starting a directory walk nothing will read.
+			if (gzip.destroyed) return;
 			const danglingSet = new Set(danglingSymlinks);
 			const packStream = tar.pack(directory, {
 				dereference,
@@ -141,12 +144,14 @@ export function streamPackagedDirectory(
 					return header;
 				},
 			});
-			// Propagate pack errors onto the gzip stream so a single consumer can listen
-			packStream.on('error', (err) => gzip.destroy(err));
 			if (onBytes) {
 				packStream.on('data', (chunk: Buffer) => onBytes(chunk.length));
 			}
-			packStream.pipe(gzip);
+			// pipeline (rather than a bare .pipe()) destroys both streams on either side
+			// erroring or the consumer aborting mid-stream, so an aborted upload doesn't leave
+			// the directory walk running in the background. The callback is a no-op: pipeline
+			// already surfaces the failure by destroying `gzip` with the error itself.
+			pipeline(packStream, gzip, () => {});
 		})
 		.catch((err) => gzip.destroy(err));
 	return gzip;
