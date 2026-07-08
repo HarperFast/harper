@@ -34,7 +34,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	}
 
 	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions & { cache?: boolean }) {
-		const enableCache = (options as any)?.cache !== false;
+		const enableCache = (options as any)?.cache === true;
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
 			this.#cache = new WeakLRUCache();
@@ -137,35 +137,28 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 
 	getSync(id: any, options?: any): any {
 		const entry = this.getEntry(id, options) as Entry;
-		const value = entry?.value;
-		if (value != null && typeof value === 'object') entryMap.set(value, entry);
-		return value;
+		return entry?.value;
 	}
 
 	get(id: any, options?: any): any {
-		return when(this.getEntry(id, { ...options, async: true }), (entry: Entry) => {
-			const value = entry?.value;
-			if (value != null && typeof value === 'object') entryMap.set(value, entry);
-			return value;
-		});
+		return when(this.getEntry(id, { ...options, async: true }), (entry: Entry) => entry?.value);
 	}
 
 	getRange(options?: any): any {
 		const iterable = super.getRange(options);
 		if (options?.valuesForKey) return iterable.map((v: any) => v?.value);
 		if (options?.values === false || options?.onlyCount) return iterable;
-		const hasRecordEncoder = !!this.#enc.isRocksDB;
+		if (!this.#enc.isRocksDB) return iterable;
+		const enc = this.#enc;
 		return iterable.map((entry: any) => {
-			if (hasRecordEncoder) {
-				if (entry.value?.[METADATA]) {
-					entry.metadataFlags = entry.value[METADATA];
-					Object.assign(entry, entry.value);
-				}
-				if (entry.value?.constructor === Object && this.#enc.structPrototype) {
-					const originalValue = entry.value;
-					entry.value = new this.#enc.structPrototype.constructor();
-					for (const key in originalValue) entry.value[key] = originalValue[key];
-				}
+			if (entry.value?.[METADATA]) {
+				entry.metadataFlags = entry.value[METADATA];
+				Object.assign(entry, entry.value);
+			}
+			if (entry.value?.constructor === Object && enc.structPrototype) {
+				const originalValue = entry.value;
+				entry.value = new enc.structPrototype.constructor();
+				for (const key in originalValue) entry.value[key] = originalValue[key];
 			}
 			return entry;
 		});
