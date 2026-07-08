@@ -53,6 +53,17 @@ describe('buildNpmrcContent', () => {
 			].join('\n')
 		);
 	});
+
+	it('rejects a token containing a newline (would inject arbitrary .npmrc lines)', () => {
+		// The ops validator guards literal tokens, but a token resolved from an hdb_secret row
+		// bypasses that; the write-boundary guard must catch a CR/LF from either source.
+		for (const bad of ['tok\nregistry=https://evil', 'tok\rfoo=bar']) {
+			assert.throws(
+				() => buildNpmrcContent([{ registry: 'https://npm.pkg.github.com', token: bad }]),
+				/illegal newline/
+			);
+		}
+	});
 });
 
 describe('Application transient .npmrc lifecycle', () => {

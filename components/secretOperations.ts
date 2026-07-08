@@ -453,6 +453,7 @@ export async function resolveRegistryAuth(
 	const table = secretTable();
 	const resolved: ResolvedRegistryAuthEntry[] = [];
 	for (const entry of registryAuth) {
+		if (!entry) continue; // parity with the fast-path guard above; validated entries are never null
 		if (entry.secret === undefined) {
 			resolved.push({ registry: entry.registry, token: entry.token, scope: entry.scope });
 			continue;
@@ -475,15 +476,21 @@ export async function resolveRegistryAuth(
 		}
 		const custody = getSecretCustody();
 		if (!custody) {
+			// Server-state condition, not a client-fixable request: the same body would resolve once
+			// custody comes up, so report it retryable (503) rather than the ClientError default 400.
 			throw new ClientError(
-				`secrets custody is not initialized on this node; cannot resolve registryAuth secret '${name}'`
+				`secrets custody is not initialized on this node; cannot resolve registryAuth secret '${name}'`,
+				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 			);
 		}
 		let token: string;
 		try {
 			token = custody.decrypt(row.envelope);
 		} catch (error) {
-			throw new ClientError(`Failed to decrypt registryAuth secret '${name}': ${(error as Error).message}`);
+			throw new ClientError(
+				`Failed to decrypt registryAuth secret '${name}': ${(error as Error).message}`,
+				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+			);
 		}
 		resolved.push({ registry: entry.registry, token, scope: entry.scope });
 	}

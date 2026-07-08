@@ -816,6 +816,14 @@ function normalizeRegistryUrl(registry: string): string {
 export function buildNpmrcContent(registryAuth: RegistryAuthEntry[]): string {
 	const lines: string[] = [];
 	for (const { registry, token, scope } of registryAuth) {
+		// Enforce the no-newline invariant at the injection point so it holds for every source. The
+		// ops validator already rejects CR/LF in a literal `token`, but a token resolved from an
+		// hdb_secret row bypasses that guard; without this a `\n` in a secret value would inject
+		// arbitrary .npmrc lines (admin-only per the threat model, but the literal path already
+		// defends this class).
+		if (/[\r\n]/.test(token)) {
+			throw new Error(`registry auth token for '${registry}' contains an illegal newline character`);
+		}
 		const registryUrl = normalizeRegistryUrl(registry);
 		const authKey = registryUrl.replace(/^https?:/i, '');
 		lines.push(`${authKey}:_authToken=${token}`);

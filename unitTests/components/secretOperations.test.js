@@ -575,7 +575,8 @@ describe('secretOperations', () => {
 			clearSecretCustody();
 			await assert.rejects(
 				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'NO_KEY' }], 'app'),
-				/secrets custody is not initialized/
+				// Server-state condition (custody down), not client-fixable → 503, not the default 400.
+				(err) => err.statusCode === 503 && /secrets custody is not initialized/.test(err.message)
 			);
 		});
 
@@ -591,7 +592,8 @@ describe('secretOperations', () => {
 			});
 			await assert.rejects(
 				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'BAD' }], 'app'),
-				/Failed to decrypt registryAuth secret 'BAD': unsupported padding/
+				// Decrypt failure is a node/key condition, not a bad request → 500, not the default 400.
+				(err) => err.statusCode === 500 && /Failed to decrypt registryAuth secret 'BAD': unsupported padding/.test(err.message)
 			);
 		});
 
