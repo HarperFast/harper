@@ -24,7 +24,7 @@ import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
-import { applyComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -338,8 +338,8 @@ export function initConfig(force = false) {
 
 		checkForUpdatedConfig(configDoc, configFilePath);
 
-		// Config-shaping env vars delivered via component .env files (loadEnv) must be in process.env
-		// before the config is composed, or they silently no-op (#1513)
+		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
+		// warn loudly instead of silently no-opping (#1513; components must not shape instance config)
 		try {
 			// the config file lives in the root directory, so its dirname is the authoritative base:
 			// it also anchors a relative or missing rootPath value in the config doc
@@ -353,9 +353,9 @@ export function initConfig(force = false) {
 					(configDoc.getIn(['componentsRoot']) ?? configDoc.getIn(['customFunctions', 'root'])) as string | undefined,
 					rootPath
 				) ?? path.join(rootPath, 'components');
-			applyComponentEnvConfigVars(componentsRoot, process.env.RUN_HDB_APP);
+			warnComponentEnvConfigVars(componentsRoot, process.env.RUN_HDB_APP);
 		} catch (error) {
-			logger.warn(`Could not apply component .env config vars: ${error.message}`);
+			logger.warn(`Could not scan component .env files for config vars: ${error.message}`);
 		}
 
 		// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables

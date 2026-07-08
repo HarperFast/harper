@@ -5,35 +5,35 @@ import { parse } from 'dotenv';
 import YAML from 'yaml';
 import logger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
-import { isEncryptedEnvValue } from '../utility/envFile.ts';
 import { deriveGlobOptions, type FilesOption } from '../components/deriveGlobOptions.ts';
 
-// Config-shaping env vars, in the same order applyRuntimeEnvVarConfig applies them
-const CONFIG_SHAPING_ENV_VARS = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'];
+/** Config-shaping env vars that only take effect from the process environment. */
+export const CONFIG_SHAPING_ENV_VARS = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'];
 
 /**
- * Applies config-shaping env vars (HARPER_DEFAULT_CONFIG / HARPER_CONFIG / HARPER_SET_CONFIG)
- * delivered via component `.env` files (the loadEnv plugin) to process.env BEFORE the root config
- * is composed, so `.env` delivery behaves like a real process env var (#1513). Without this the
- * loadEnv plugin only sets process.env during component load, which is after getConfigObj() has
- * composed and memoized the config, so these vars silently no-op.
+ * Detects config-shaping env vars (HARPER_DEFAULT_CONFIG / HARPER_CONFIG / HARPER_SET_CONFIG)
+ * delivered via component `.env` files (the loadEnv plugin) and warns loudly that they are NOT
+ * applied (#1513). The loadEnv plugin only sets process.env during component load — after
+ * getConfigObj() has composed and memoized the config — so these vars silently no-op'd there.
  *
- * Only the three config-shaping vars are applied early; every other .env key still loads at
- * component-load time via loadEnv. Precedence matches the loadEnv plugin: a real process env
- * var wins unless the component declares `override: true`. Encrypted (enc:v1:) values are
- * skipped because secret decryptors are not registered until components load.
+ * They stay unapplied by design: top-level config controls components, not the other way
+ * around, so a component must not reach up and shape instance-wide config (see the direction
+ * discussion on the fix PR). What this pass fixes is the SILENCE — the operator now gets an
+ * actionable warning at boot naming the variable, the file, and the supported channels.
  *
  * Known limitation: componentsRoot is derived from the config file (plus rootPath default), so a
- * componentsRoot override that itself arrives via env var or .env cannot redirect this scan.
+ * componentsRoot override that itself arrives via env var cannot redirect this scan.
  *
  * Never throws: config composition (including install, where none of these dirs exist) must not
  * be broken by a bad component directory.
+ *
+ * @returns the number of config-shaping vars found (and warned about)
  */
-export function applyComponentEnvConfigVars(
+export function warnComponentEnvConfigVars(
 	componentsRoot: string | undefined,
 	runAppFolder: string | undefined
-): boolean {
-	let applied = false;
+): number {
+	let found = 0;
 	for (const componentPath of candidateComponentDirs(componentsRoot, runAppFolder)) {
 		const declared = declaredEnvFiles(componentPath);
 		for (const envFilePath of declared.envFiles) {
@@ -45,24 +45,15 @@ export function applyComponentEnvConfigVars(
 				continue;
 			}
 			for (const key of CONFIG_SHAPING_ENV_VARS) {
-				const value = parsed[key];
-				if (value === undefined) continue;
-				// a real process env var wins, unless the component declares loadEnv `override: true` —
-				// the same precedence the loadEnv plugin applies at component load
-				if (process.env[key] !== undefined && !declared.override) continue;
-				if (isEncryptedEnvValue(value)) {
-					logger.error(
-						`${key} from ${envFilePath} is encrypted; encrypted values cannot shape config (secret decryptors are not registered until components load); skipping`
-					);
-					continue;
-				}
-				process.env[key] = value;
-				applied = true;
-				logger.debug(`Applied ${key} from ${envFilePath} before config composition (#1513)`);
+				if (parsed[key] === undefined) continue;
+				found += 1;
+				logger.warn(
+					`${key} found in ${envFilePath} is NOT applied: component .env files load after the instance configuration is composed, and components cannot shape instance-wide config. Set ${key} in the process environment, or put the equivalent keys in the instance's harper-config.yaml.`
+				);
 			}
 		}
 	}
-	return applied;
+	return found;
 }
 
 /** Resolves a configured path the way getConfigPath does (tilde and rootPath-relative). */
@@ -95,8 +86,8 @@ function candidateComponentDirs(componentsRoot: string | undefined, runAppFolder
 // same precedence as loadComponent's config-file resolution
 const COMPONENT_CONFIG_FILENAMES = ['harper-config.yaml', 'harperdb-config.yaml', 'config.yaml'];
 
-function declaredEnvFiles(componentPath: string): { envFiles: string[]; override: boolean } {
-	const none = { envFiles: [], override: false };
+function declaredEnvFiles(componentPath: string): { envFiles: string[] } {
+	const none = { envFiles: [] };
 	let componentConfig;
 	for (const configFileName of COMPONENT_CONFIG_FILENAMES) {
 		const configFilePath = path.join(componentPath, configFileName);
@@ -110,7 +101,6 @@ function declaredEnvFiles(componentPath: string): { envFiles: string[]; override
 	}
 	const filesOption = componentConfig?.loadEnv?.files as FilesOption | undefined;
 	if (!filesOption) return none;
-	const override = componentConfig.loadEnv.override === true;
 	try {
 		const globOptions = deriveGlobOptions(filesOption);
 		// mirror Component's pattern validation: no escaping the component dir, no absolute
@@ -132,7 +122,7 @@ function declaredEnvFiles(componentPath: string): { envFiles: string[]; override
 			dot: true, // .env is a dotfile
 			onlyFiles: true,
 		});
-		return { envFiles, override };
+		return { envFiles };
 	} catch (error) {
 		logger.warn(`Could not resolve loadEnv files for ${componentPath} while composing config: ${error.message}`);
 		return none;

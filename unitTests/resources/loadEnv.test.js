@@ -82,12 +82,23 @@ describe('loadEnv conflict handling', () => {
 		for (const k of TOUCHED) delete process.env[k];
 	});
 
-	it('silently skips a key whose process.env value is identical (#1513 pre-pass)', () => {
-		process.env.__ENVTEST_F = 'same-value';
-		const scope = fakeScope();
-		handleApplication(scope);
-		scope.fire(addEntry('__ENVTEST_F=same-value'));
-		assert.equal(process.env.__ENVTEST_F, 'same-value');
+	it('warns that config-shaping vars cannot shape instance config (#1513)', () => {
+		const logger = require('#src/utility/logging/harper_logger');
+		const warnings = [];
+		const originalWarn = logger.warn;
+		logger.warn = (msg) => warnings.push(String(msg));
+		try {
+			const scope = fakeScope();
+			handleApplication(scope);
+			scope.fire(addEntry('HARPER_SET_CONFIG=http.port=1234'));
+		} finally {
+			logger.warn = originalWarn;
+			delete process.env.HARPER_SET_CONFIG;
+		}
+		assert.ok(
+			warnings.some((w) => w.includes('HARPER_SET_CONFIG') && w.includes('cannot shape instance configuration')),
+			`warned about the config-shaping var: ${JSON.stringify(warnings)}`
+		);
 	});
 
 	it('keeps the existing value on a real conflict without override', () => {

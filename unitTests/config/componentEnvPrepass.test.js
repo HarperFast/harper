@@ -4,7 +4,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { applyComponentEnvConfigVars, resolveConfiguredPath } = require('#src/config/componentEnvPrepass');
+const { warnComponentEnvConfigVars, resolveConfiguredPath } = require('#src/config/componentEnvPrepass');
+const logger = require('#src/utility/logging/harper_logger');
 
 describe('componentEnvPrepass (#1513)', () => {
 	let tempRoot;
@@ -37,62 +38,60 @@ describe('componentEnvPrepass (#1513)', () => {
 		return dir;
 	}
 
-	it('applies config-shaping vars from a component .env under componentsRoot', () => {
+	it('warns about config-shaping vars in a component .env and does NOT apply them', () => {
 		writeComponent('app', 'loadEnv:\n  files: .env\n', {
 			'.env': 'HARPER_CONFIG={"mcp":{"application":{"mountPath":"/mcp"}}}\n__PREPASS_OTHER=ignored\n',
 		});
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, true);
-		assert.equal(process.env.HARPER_CONFIG, '{"mcp":{"application":{"mountPath":"/mcp"}}}');
-		// only the config-shaping vars are applied early; other keys wait for loadEnv at component load
+		const warnings = [];
+		const originalWarn = logger.warn;
+		logger.warn = (msg) => warnings.push(String(msg));
+		try {
+			const found = warnComponentEnvConfigVars(tempRoot, undefined);
+			assert.equal(found, 1);
+		} finally {
+			logger.warn = originalWarn;
+		}
+		// nothing is applied — components must not shape instance config
+		assert.equal(process.env.HARPER_CONFIG, undefined);
 		assert.equal(process.env.__PREPASS_OTHER, undefined);
+		assert.equal(warnings.length, 1);
+		assert.ok(warnings[0].includes('HARPER_CONFIG'), 'warning names the variable');
+		assert.ok(warnings[0].includes('.env'), 'warning names the file');
+		assert.ok(warnings[0].includes('NOT applied'), 'warning states the value is not applied');
 	});
 
-	it('applies from a directly-run app folder (harper run <dir>)', () => {
+	it('detects vars in a directly-run app folder (harper run <dir>)', () => {
 		const appDir = writeComponent('run-app', 'loadEnv:\n  files: .env\n', {
 			'.env': 'HARPER_SET_CONFIG=http.port=9999\n',
 		});
-		const applied = applyComponentEnvConfigVars(undefined, appDir);
-		assert.equal(applied, true);
-		assert.equal(process.env.HARPER_SET_CONFIG, 'http.port=9999');
+		assert.equal(warnComponentEnvConfigVars(undefined, appDir), 1);
+		assert.equal(process.env.HARPER_SET_CONFIG, undefined);
 	});
 
-	it('a real process env var wins over the .env value', () => {
-		process.env.HARPER_CONFIG = 'from-process';
-		writeComponent('app', 'loadEnv:\n  files: .env\n', { '.env': 'HARPER_CONFIG=from-dotenv\n' });
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, false);
-		assert.equal(process.env.HARPER_CONFIG, 'from-process');
-	});
-
-	it('honors loadEnv override: the .env value beats a process env var', () => {
+	it('warns even when a real process env var is also set, and never overrides it', () => {
 		process.env.HARPER_CONFIG = 'from-process';
 		writeComponent('app', 'loadEnv:\n  files: .env\n  override: true\n', { '.env': 'HARPER_CONFIG=from-dotenv\n' });
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, true);
-		assert.equal(process.env.HARPER_CONFIG, 'from-dotenv');
+		assert.equal(warnComponentEnvConfigVars(tempRoot, undefined), 1);
+		assert.equal(process.env.HARPER_CONFIG, 'from-process', 'process env untouched regardless of loadEnv override');
 	});
 
-	it('skips encrypted values', () => {
+	it('detects encrypted values too (equally not applied)', () => {
 		writeComponent('app', 'loadEnv:\n  files: .env\n', { '.env': 'HARPER_CONFIG=enc:v1:CIPHERTEXT\n' });
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, false);
+		assert.equal(warnComponentEnvConfigVars(tempRoot, undefined), 1);
 		assert.equal(process.env.HARPER_CONFIG, undefined);
 	});
 
 	it('resolves glob file patterns like the loadEnv plugin', () => {
 		writeComponent('app', 'loadEnv:\n  files: "*.env"\n', { 'settings.env': 'HARPER_CONFIG=via-glob\n' });
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, true);
-		assert.equal(process.env.HARPER_CONFIG, 'via-glob');
+		assert.equal(warnComponentEnvConfigVars(tempRoot, undefined), 1);
+		assert.equal(process.env.HARPER_CONFIG, undefined);
 	});
 
 	it('ignores components without loadEnv, without config.yaml, and hidden directories', () => {
 		writeComponent('no-load-env', 'jsResource:\n  files: res/*.js\n', { '.env': 'HARPER_CONFIG=nope\n' });
 		writeComponent('no-config', null, { '.env': 'HARPER_CONFIG=nope\n' });
 		writeComponent('.hidden', 'loadEnv:\n  files: .env\n', { '.env': 'HARPER_CONFIG=nope\n' });
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, false);
+		assert.equal(warnComponentEnvConfigVars(tempRoot, undefined), 0);
 		assert.equal(process.env.HARPER_CONFIG, undefined);
 	});
 
@@ -101,23 +100,21 @@ describe('componentEnvPrepass (#1513)', () => {
 			'.env': 'HARPER_CONFIG=from-harper-config\n',
 		});
 		fs.writeFileSync(path.join(dir, 'harper-config.yaml'), 'loadEnv:\n  files: .env\n');
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, true);
-		assert.equal(process.env.HARPER_CONFIG, 'from-harper-config');
+		assert.equal(warnComponentEnvConfigVars(tempRoot, undefined), 1, 'harper-config.yaml declaration is honored');
+		assert.equal(process.env.HARPER_CONFIG, undefined);
 	});
 
 	it('skips patterns that escape the component directory or are absolute', () => {
 		const outside = writeComponent('outside', null, { 'outside.env': 'HARPER_CONFIG=escaped\n' });
 		writeComponent('escaper', `loadEnv:\n  files:\n    - "../outside/*.env"\n    - "${outside}/outside.env"\n`);
-		const applied = applyComponentEnvConfigVars(tempRoot, undefined);
-		assert.equal(applied, false);
+		assert.equal(warnComponentEnvConfigVars(tempRoot, undefined), 0);
 		assert.equal(process.env.HARPER_CONFIG, undefined);
 	});
 
 	it('tolerates a missing components root and missing declared env files', () => {
 		writeComponent('missing-env', 'loadEnv:\n  files: .env\n'); // declares .env but none exists
-		assert.equal(applyComponentEnvConfigVars(path.join(tempRoot, 'does-not-exist'), undefined), false);
-		assert.equal(applyComponentEnvConfigVars(tempRoot, undefined), false);
+		assert.equal(warnComponentEnvConfigVars(path.join(tempRoot, 'does-not-exist'), undefined), 0);
+		assert.equal(warnComponentEnvConfigVars(tempRoot, undefined), 0);
 	});
 
 	describe('resolveConfiguredPath', () => {

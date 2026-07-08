@@ -1,10 +1,9 @@
 /**
- * #1513 — config-shaping env vars delivered via a component's loadEnv (.env) must be applied
- * before the root config is composed. The fixture component delivers
- * `HARPER_CONFIG={"mcp":{"application":{"mountPath":"/mcp"}}}` ONLY through its .env file
- * (the test passes no mcp config and no HARPER_CONFIG process env var), so /mcp mounting
- * proves the pre-config env pass picked it up. Before the fix this 404'd: the config was
- * composed and memoized before loadEnv ran.
+ * #1513 — config-shaping env vars delivered via a component's loadEnv (.env) are NOT applied
+ * (components must not shape instance-wide config); the failure mode being fixed is the
+ * SILENCE. The fixture component delivers `HARPER_CONFIG={"mcp":{"application":{"mountPath":
+ * "/mcp"}}}` ONLY through its .env file: /mcp staying unmounted proves the var was not
+ * honored, and the boot log carries the actionable warning instead of nothing.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/components/load-env-config-shaping.test.ts"
@@ -20,7 +19,7 @@ function basicAuth(username: string, password: string): string {
 	return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 }
 
-suite('loadEnv-delivered HARPER_CONFIG shapes the composed config (#1513)', (ctx: ContextWithHarper) => {
+suite('loadEnv-delivered HARPER_CONFIG warns and does not shape config (#1513)', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH);
 	});
@@ -29,7 +28,7 @@ suite('loadEnv-delivered HARPER_CONFIG shapes the composed config (#1513)', (ctx
 		await teardownHarper(ctx);
 	});
 
-	test('mcp.application delivered only via the component .env mounts /mcp', async () => {
+	test('mcp.application delivered only via the component .env does NOT mount /mcp', async () => {
 		const res = await fetch(new URL('/mcp', ctx.harper.httpURL), {
 			method: 'POST',
 			headers: {
@@ -45,6 +44,6 @@ suite('loadEnv-delivered HARPER_CONFIG shapes the composed config (#1513)', (ctx
 			}),
 		});
 		const text = await res.text();
-		strictEqual(res.status, 200, `expected /mcp mounted via .env-delivered HARPER_CONFIG: ${res.status} ${text}`);
+		strictEqual(res.status, 404, `expected /mcp NOT mounted (.env config vars are not honored): ${res.status} ${text}`);
 	});
 });
