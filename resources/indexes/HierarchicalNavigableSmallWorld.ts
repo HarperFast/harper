@@ -632,6 +632,7 @@ export class HierarchicalNavigableSmallWorld {
 				if (!current) break; // exhausted the reachable set without touching the connected component
 				for (let l = 0; l <= current.node.level; l++) {
 					for (const { id: neighborId } of current.node[l] || []) {
+						if (neighborId === undefined) continue;
 						if (knownConnected.has(neighborId)) {
 							verdict = 'connected';
 							break probe;
