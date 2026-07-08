@@ -76,7 +76,11 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			raw.metadataFlags = raw[METADATA];
 			return this.#withEntry(raw, id);
 		}
-		return { value: raw, key: id } as Entry;
+		const entry = { value: raw, key: id } as Entry;
+		// map metadata-less values too, so getEntry guarantees the value→Entry
+		// mapping for every object value it returns (getSync/get rely on this)
+		if (typeof raw === 'object') entryMap.set(raw, entry);
+		return entry;
 	}
 
 	/**
