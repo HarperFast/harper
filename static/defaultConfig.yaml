@@ -77,5 +77,6 @@ storage:
   prefetchWrites: true
 tls:
   privateKey: null
+  certificateWatchInterval: 300000
 node:
   hostname: null
