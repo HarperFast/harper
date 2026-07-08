@@ -103,5 +103,17 @@ describe('test REST calls with cache table', () => {
 			assert.equal(response.data.name, 'test-sibling-to-headers');
 			assert.equal(response.headers.get('x-custom-header'), 'custom value');
 		});
+		it('headers survive a cache-hit re-read after an interleaved, differently-shaped source write', async () => {
+			// Regression test: caching a Response (shape {headers, body}) followed by caching a
+			// differently-shaped record ({headers, data}) on the same table used to corrupt the
+			// first record's stored `headers` on its next (cache-hit) read under LMDB storage.
+			await axios.get(`${baseUrl}/CacheOfHttp/created-response`);
+			await axios.get(`${baseUrl}/CacheOfHttp/headers-in-data`);
+			let response = await axios.get(`${baseUrl}/CacheOfHttp/created-response`);
+			assert.equal(response.status, 200);
+			assert.equal(response.data, 'test');
+			assert.equal(response.headers.get('cache-control'), 'max-age=10, s-maxage=20');
+			assert.equal(response.headers.get('x-custom-header'), 'custom value');
+		});
 	});
 });

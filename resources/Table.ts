@@ -5179,7 +5179,17 @@ export function makeTable(options) {
 						TableResource.userEmbedders
 					);
 					if (embedBefore) await embedBefore();
-					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
+					// isSourceResolution: this is a cache-fill from `sourcedFrom.get()`, not a client write —
+					// see the `isSourceResolution` comment in startPreCommitBlobsForRecord for why it's exempt
+					// from the local-write durability gate.
+					sourceWrite.before = preCommitBlobsForRecordBefore(
+						sourceWrite,
+						updatedRecord,
+						undefined,
+						undefined,
+						undefined,
+						true
+					);
 					dbTxn.addWrite(sourceWrite);
 				}),
 				() => {
@@ -5518,9 +5528,16 @@ export function makeTable(options) {
 		record: any,
 		before?: () => Promise<void> | void,
 		saveInRecord?: boolean,
-		trackPersistedBlobs?: boolean
+		trackPersistedBlobs?: boolean,
+		isSourceResolution?: boolean
 	): any {
-		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord, trackPersistedBlobs);
+		const preCommit = startPreCommitBlobsForRecord(
+			record,
+			primaryStore.rootStore,
+			saveInRecord,
+			trackPersistedBlobs,
+			isSourceResolution
+		);
 		if (preCommit) {
 			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
 			write.savedBlobs = preCommit.blobs;

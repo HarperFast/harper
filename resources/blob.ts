@@ -1566,7 +1566,8 @@ export function startPreCommitBlobsForRecord(
 	record: any,
 	store: any,
 	saveInRecord?: boolean,
-	trackPersistedBlobs?: boolean
+	trackPersistedBlobs?: boolean,
+	isSourceResolution?: boolean
 ): PreCommitBlobs | undefined {
 	const blobsNeedingSaving: Blob[] = [];
 	// Already-saving blobs tracked for cleanup only — NOT awaited in complete(). Their durability is
@@ -1610,6 +1611,34 @@ export function startPreCommitBlobsForRecord(
 					value.saveInRecord = true;
 				}
 				blobsNeedingSaving.push(value);
+			} else if (isSourceResolution) {
+				// Cache-fill path (`sourcedFrom.get()`): start the save now — same as the local-write
+				// branch below — so a save failure is observable and the file still gets tracked for
+				// skip/abort cleanup. But push it to blobsToTrackOnly rather than blobsNeedingSaving:
+				// unlike the local-write path, we do NOT block THIS record's commit on the save
+				// completing. Gating it (as the local-write branch does) introduces an extra await
+				// between this cache record's commit and its neighbors' commits on the same store;
+				// that gap let two cache-fill commits for different record shapes interleave, which
+				// corrupted the per-store structon typed-structure dictionary (a sibling key's
+				// structure id got misapplied on decode, silently emptying nested object properties
+				// like `headers` — reproduced with LMDB storage under concurrent `sourcedFrom` cache
+				// fills of different shapes to the same table).
+				//
+				// Trade-off (deliberately accepted, matches this call site's pre-existing behavior
+				// before the local-write gate was introduced): if the save itself fails — e.g. the
+				// source's body stream errors mid-read — this record can still commit referencing an
+				// incomplete/missing blob file, where the local-write gate would have aborted the
+				// commit. A cache-sourced record is a per-node derived copy, not the authoritative
+				// write the local-write gate protects: it self-heals on the next fetch or invalidation
+				// (or evicts on the resulting read failure) rather than permanently diverging a
+				// replicated record, so a failed save producing a temporarily-bad cache entry is a much
+				// smaller blast radius than the structure-dictionary corruption above.
+				currentStore = store;
+				const { saving } = saveBlob(value, true);
+				saving?.catch((error) => {
+					if (!isSourceBlobUnavailable(error)) logger.warn?.('Failed to save cache-sourced blob', error);
+				});
+				blobsToTrackOnly.push(value);
 			} else if (
 				storageInfoForBlob.get(value)?.fileId == null ||
 				(storageInfoForBlob.get(value)?.saving != null && !storageInfoForBlob.get(value)?.saved)
