@@ -21,8 +21,7 @@
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
-import { resolve as resolvePath, join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -64,29 +63,6 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 			},
 			env: {},
 		});
-
-		// TEMP #1616-debug (revert before merge): dump what the child actually resolved.
-		try {
-			const cfgPath = join(ctx.harper.dataRootDir, 'harper-config.yaml');
-			const cfgText = await readFile(cfgPath, 'utf8');
-			const mgLines = cfgText
-				.split('\n')
-				.filter((l, i, a) => /modelsGateway/.test(l) || (i > 0 && /modelsGateway/.test(a[i - 1])));
-			console.error(`[1616-debug] harper-config.yaml modelsGateway block: ${JSON.stringify(mgLines)}`);
-		} catch (err) {
-			console.error(`[1616-debug] failed reading child config file: ${(err as Error).message}`);
-		}
-		try {
-			const res = await fetch(ctx.harper.operationsAPIURL, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(ctx) },
-				body: JSON.stringify({ operation: 'get_configuration' }),
-			});
-			const cfg = (await res.json()) as Record<string, unknown>;
-			console.error(`[1616-debug] get_configuration.modelsGateway=${JSON.stringify(cfg.modelsGateway)}`);
-		} catch (err) {
-			console.error(`[1616-debug] get_configuration failed: ${(err as Error).message}`);
-		}
 	});
 
 	after(async () => {
