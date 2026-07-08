@@ -502,4 +502,96 @@ describe('secretOperations', () => {
 			);
 		});
 	});
+
+	describe('resolveRegistryAuth (deploy_component secret references)', () => {
+		const gh = 'https://npm.pkg.github.com';
+
+		it('returns undefined/empty inputs untouched', async () => {
+			assert.equal(await secretOps.resolveRegistryAuth(undefined, 'app'), undefined);
+			const empty = [];
+			assert.equal(await secretOps.resolveRegistryAuth(empty, 'app'), empty);
+		});
+
+		it('passes literal-token entries through without needing custody or the store', async () => {
+			// No custody installed, mock table present but never read for the token-only fast path.
+			const input = [{ registry: gh, token: 'tok', scope: '@org' }];
+			const out = await secretOps.resolveRegistryAuth(input, 'app');
+			assert.strictEqual(out, input, 'token-only input returned as-is (identity)');
+		});
+
+		it('resolves a scoped secret granted to the deploying component', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'GH_TOKEN', value: 'ghp_scoped', grants: ['app'] });
+			const out = await secretOps.resolveRegistryAuth([{ registry: gh, secret: 'GH_TOKEN', scope: '@org' }], 'app');
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_scoped', scope: '@org' }]);
+		});
+
+		it('resolves a processEnv (global) secret for any component', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'GLOBAL_TOKEN', value: 'ghp_global', processEnv: true });
+			const out = await secretOps.resolveRegistryAuth([{ registry: gh, secret: 'GLOBAL_TOKEN' }], 'any-app');
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_global', scope: undefined }]);
+		});
+
+		it('resolves literal and secret-backed entries together', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'S', value: 'from_store', grants: ['app'] });
+			const out = await secretOps.resolveRegistryAuth(
+				[
+					{ registry: 'registry.example.com', token: 'literal' },
+					{ registry: gh, secret: 'S', scope: '@org' },
+				],
+				'app'
+			);
+			assert.deepEqual(out, [
+				{ registry: 'registry.example.com', token: 'literal', scope: undefined },
+				{ registry: gh, token: 'from_store', scope: '@org' },
+			]);
+		});
+
+		it('rejects a reference to a non-existent secret with 404', async () => {
+			installCustody();
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'MISSING' }], 'app'),
+				(err) => err.statusCode === 404 && /does not exist/.test(err.message)
+			);
+		});
+
+		it('rejects a scoped secret not granted to the deploying component with 403', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'OTHER', value: 'x', grants: ['different-app'] });
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'OTHER' }], 'app'),
+				(err) => err.statusCode === 403 && /not granted to component 'app'/.test(err.message)
+			);
+		});
+
+		it('fails loudly when a secret is referenced but custody is absent on this node', async () => {
+			// Provision the row under custody, then drop custody as a node that holds the ciphertext
+			// but not the key would see it.
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'NO_KEY', value: 'x', grants: ['app'] });
+			clearSecretCustody();
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'NO_KEY' }], 'app'),
+				/secrets custody is not initialized/
+			);
+		});
+
+		it('surfaces a decrypt failure as a precise error', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'BAD', value: 'x', grants: ['app'] });
+			// Swap in a custody whose decrypt throws, simulating a wrong/rotated key.
+			registerSecretCustody({
+				decrypt: () => {
+					throw new Error('unsupported padding');
+				},
+				getPublicKey: () => ({ publicKey, fingerprint: fp }),
+			});
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'BAD' }], 'app'),
+				/Failed to decrypt registryAuth secret 'BAD': unsupported padding/
+			);
+		});
+	});
 });

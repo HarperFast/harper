@@ -454,6 +454,14 @@ async function deployComponent(req) {
 			extractionPayload = row.payload_blob.stream();
 		}
 
+		// Resolve any registryAuth entries that reference an hdb_secret row into concrete tokens
+		// (literal `token` entries pass through unchanged). Runs on the main thread, where deploys
+		// dispatch and secrets custody is registered; a bad reference (missing/ungranted/undecryptable)
+		// fails the deploy with a precise error. The resolved tokens stay in-memory for this node's
+		// npm pack/install and are stripped from req below — same transient handling as a literal token.
+		const { resolveRegistryAuth } = require('./secretOperations.ts');
+		const resolvedRegistryAuth = await resolveRegistryAuth(req.registryAuth, req.project);
+
 		const application = new Application({
 			name: req.project,
 			payload: extractionPayload,
@@ -470,15 +478,16 @@ async function deployComponent(req) {
 				installCapture.push(manager, stream, line);
 				if (emitter) emit('install', { manager, stream, line });
 			},
-			// Transient private-registry auth, used here for this node's npm pack/install. The
-			// Application ctor captures it into application.registryAuth; we strip it from req
-			// immediately (below) so the token is never persisted or sent to peers — peers
-			// authenticate via their own fabric-injected NPM_CONFIG_USERCONFIG.
-			registryAuth: req.registryAuth,
+			// Private-registry auth (already resolved above), used here for this node's npm
+			// pack/install. The Application ctor captures it into application.registryAuth; we strip
+			// registryAuth from req immediately (below) so neither a literal token nor a secret
+			// reference is persisted or sent to peers — peers authenticate via their own
+			// fabric-injected NPM_CONFIG_USERCONFIG.
+			registryAuth: resolvedRegistryAuth,
 		});
-		// Strip the token from req immediately after the ctor captures it, so it can't survive into an
-		// error/log path if prepareApplication or loadComponent throws below (the previous strip point
-		// after loadComponent only ran on the success path, leaking the token on failure).
+		// Strip registryAuth from req immediately after the ctor captures the resolved tokens, so it
+		// can't survive into an error/log path if prepareApplication or loadComponent throws below
+		// (the previous strip point after loadComponent only ran on the success path, leaking on failure).
 		delete req.registryAuth;
 
 		emit('phase', { phase: 'prepare', status: 'start' });

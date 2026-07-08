@@ -324,3 +324,80 @@ export function getSecretsPublicKey(req: any) {
 	const { publicKey, fingerprint } = custody.getPublicKey();
 	return { public_key: publicKey, fingerprint };
 }
+
+/** A resolved registry-auth entry as consumed by the transient .npmrc writer. */
+export interface ResolvedRegistryAuthEntry {
+	registry: string;
+	token: string;
+	scope?: string;
+}
+
+/**
+ * Resolve deploy_component `registryAuth` entries that reference a stored secret
+ * (`{ registry, secret }`) into concrete token entries (`{ registry, token }`) by decrypting the
+ * named hdb_secret row on this thread. Entries that already carry a literal `token` pass through
+ * unchanged, so this is a no-op for the token-only form.
+ *
+ * This is intentionally NOT a `get_secret` operation — the store never returns plaintext across the
+ * API boundary. The resolved token is handed back to the deploy handler in-memory, fed to the
+ * transient .npmrc, and stripped from the request before replication; it is never written back to
+ * the request body, replicated, or logged.
+ *
+ * Authority mirrors the accessor model (#1550): the referenced secret must be usable by the
+ * component being deployed — either a `processEnv` (global) secret or a scoped secret granted to
+ * `component`. Without that, the deploy path would let a super_user pull an arbitrary scoped secret
+ * into an .npmrc, sidestepping the grant that is the store's authority. A missing row, missing
+ * grant, absent custody, or decrypt failure throws a ClientError naming the precise reason.
+ *
+ * Runs on the main thread, where the operations API dispatches deploys and the Pro secrets
+ * component registers custody — the same place set_secret decrypts. On a node without custody
+ * (OSS core, or a custody key not held here) a referenced secret cannot be resolved and the deploy
+ * fails loudly rather than silently installing without auth.
+ */
+export async function resolveRegistryAuth(
+	registryAuth: any[] | undefined,
+	component: string
+): Promise<ResolvedRegistryAuthEntry[] | undefined> {
+	if (!Array.isArray(registryAuth) || registryAuth.length === 0) return registryAuth;
+	// Token-only requests must not require custody or a provisioned store — keep the fast path pure.
+	if (!registryAuth.some((entry) => entry && entry.secret !== undefined)) return registryAuth;
+
+	const table = secretTable();
+	const resolved: ResolvedRegistryAuthEntry[] = [];
+	for (const entry of registryAuth) {
+		if (entry.secret === undefined) {
+			resolved.push({ registry: entry.registry, token: entry.token, scope: entry.scope });
+			continue;
+		}
+		const name: string = entry.secret;
+		const row = await table.get(name);
+		if (!row) {
+			throw new ClientError(
+				`registryAuth references secret '${name}', which does not exist`,
+				HTTP_STATUS_CODES.NOT_FOUND
+			);
+		}
+		const grants = Array.isArray(row.grants) ? row.grants : [];
+		if (!row.processEnv && !grants.includes(component)) {
+			throw new ClientError(
+				`registryAuth secret '${name}' is not granted to component '${component}' ` +
+					`(grant it with grant_secret, or set it processEnv:true)`,
+				HTTP_STATUS_CODES.FORBIDDEN
+			);
+		}
+		const custody = getSecretCustody();
+		if (!custody) {
+			throw new ClientError(
+				`secrets custody is not initialized on this node; cannot resolve registryAuth secret '${name}'`
+			);
+		}
+		let token: string;
+		try {
+			token = custody.decrypt(row.envelope);
+		} catch (error) {
+			throw new ClientError(`Failed to decrypt registryAuth secret '${name}': ${(error as Error).message}`);
+		}
+		resolved.push({ registry: entry.registry, token, scope: entry.scope });
+	}
+	return resolved;
+}

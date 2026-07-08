@@ -398,8 +398,12 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
-		// Transient private-registry auth: never persisted, never replicated. Used only for this
-		// node's npm pack/install during the deploy.
+		// Private-registry auth. Each entry supplies its credential exactly one of two ways:
+		//   - `token`: a literal token, used only for this node's npm pack/install and never
+		//     persisted or replicated (stripped from req before replicateOperation).
+		//   - `secret`: the name of an hdb_secret row (#1550); the token is resolved by decrypting
+		//     that row on this node at deploy time, so the credential lives in the secrets store
+		//     (reference, not embed) instead of travelling in the operation body.
 		registryAuth: Joi.array()
 			.items(
 				Joi.object({
@@ -410,13 +414,15 @@ function deployComponentValidator(req) {
 					registry: Joi.string()
 						.pattern(/^[^\r\n]+$/)
 						.required(),
-					token: Joi.string()
-						.pattern(/^[^\r\n]+$/)
-						.required(),
+					token: Joi.string().pattern(/^[^\r\n]+$/),
+					// A reference into the hdb_secret store; same name grammar as set_secret's `name`.
+					secret: Joi.string()
+						.pattern(ENV_KEY_REGEX)
+						.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
 					scope: Joi.string()
 						.pattern(/^@[a-z0-9-_.]+$/)
 						.optional(),
-				})
+				}).xor('token', 'secret')
 			)
 			.optional(),
 	}).with('urlPath', 'package');

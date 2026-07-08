@@ -281,6 +281,39 @@ describe('Test operationsValidation module', () => {
 			});
 			expect(result).to.equal(undefined);
 		});
+
+		it('accepts a secret-reference entry (token resolved from hdb_secret at deploy time)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', secret: 'GH_TOKEN', scope: '@myorg' }],
+			});
+			expect(result).to.equal(undefined);
+		});
+
+		it('rejects an entry that supplies both token and secret (exactly one required)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok', secret: 'GH_TOKEN' }],
+			});
+			expect(result.message).to.contain('secret');
+		});
+
+		it('rejects an entry supplying neither token nor secret', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com' }],
+			});
+			expect(result.message).to.contain('secret');
+		});
+
+		it('rejects an invalid secret name', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', secret: 'bad name/with slash' }],
+			});
+			expect(result.message).to.contain('secret');
+		});
 	});
 
 	describe('Test deployComponentValidator function', () => {
