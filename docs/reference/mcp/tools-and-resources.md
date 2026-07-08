@@ -106,7 +106,9 @@ class Orders extends Tables.orders {
 }
 ```
 
-The corresponding instance method runs through Harper's normal `transactional()` envelope, so per-record `allow*` predicates and audit logging behave the same way as regular verb dispatch. Authentication is "is the user logged in" only — finer-grained gating is the method's responsibility.
+The corresponding instance method runs through Harper's normal `transactional()` envelope, so per-record `allow*` predicates and audit logging behave the same way as regular verb dispatch.
+
+**Custom tools are exposed to any MCP session — including anonymous, unauthenticated ones.** Unlike the auto-generated verb tools (which are RBAC-filtered per user at `tools/list` time and enforce table permissions on call), the MCP layer performs no authentication or ACL check for a custom tool: it is listed to every session and its method executes even when no user is logged in (`context.user` may be empty). Access control is entirely the method's responsibility — to restrict a tool to authenticated users or specific roles, check `context.user` (or rely on the per-record `allow*` predicates its data access triggers) inside the method and throw when the caller doesn't qualify.
 
 ### `exportTypes` gating
 
