@@ -104,13 +104,20 @@ describe('agent/inspectorTool — summarizeProfile', () => {
 describe('agent/inspectorTool — live CDP round-trip', () => {
 	let port;
 	before(() => {
-		// Open a real inspector on an ephemeral port; parse the port back from the ws URL.
-		inspector.open(0, '127.0.0.1', false);
+		// node:inspector is a single process-wide agent — at most one active session per thread. In a
+		// unit-test run that boots real Harper modules (e.g. anything pulling in
+		// server/threads/threadServer.js, whose top-level bootstrap opens the main-thread inspector
+		// whenever threads_debug/DEV_MODE is on), this process's inspector may already be open before
+		// this suite runs. inspector.open() throws ERR_INSPECTOR_ALREADY_ACTIVATED in that case, so
+		// check inspector.url() first and reuse whatever is already listening instead of assuming this
+		// suite is the sole owner of the process's one debug port.
+		if (!inspector.url()) inspector.open(0, '127.0.0.1', false);
 		port = Number(new URL(inspector.url()).port);
 	});
 	after(async () => {
 		// Close our CDP client. Note: we deliberately do NOT call inspector.close() here — it blocks
-		// until all inspector connections drop, which deadlocks against our own still-closing client.
+		// until all inspector connections drop, which deadlocks against our own still-closing client
+		// (and, if we merely reused a pre-existing session above, closing it isn't ours to do anyway).
 		// A brief tick lets the ws close frames flush; mocha's --exit tears down the open inspector.
 		_closeInspectorSessions();
 		await new Promise((r) => setTimeout(r, 50));
