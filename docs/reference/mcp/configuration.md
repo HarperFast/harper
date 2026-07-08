@@ -110,6 +110,85 @@ Default: `100` (operations) / `200` (application)
 
 Sustained per-session rate across **all** tools combined. Protects a worker from a single session that spreads its calls across many distinct tools (and so would otherwise dodge `perTool*`).
 
+### `mcp.<profile>.rateLimit.perClientPerSecond`
+
+Type: `number` (minimum 0)
+
+Default: `0` (disabled)
+
+Sustained `tools/call` rate keyed on **client identity** rather than session (5.2.0+). Session-scoped buckets can be evaded by an anonymous client that cycles sessions (`initialize` → call → drop → repeat); the client bucket survives that loop. Identity is the client socket IP by default, or the value derived from [`identityHeader`](#mcpprofileratelimitidentityheader). Denials surface like other rate-limit hits: an `isError` tool result with `kind: 'rate_limited'`, `scope: 'per_client'`.
+
+Like the other buckets, state is in-memory per worker — it does not survive a restart and is not shared across workers. For durable quotas, see [`mcp.<profile>.quota.*`](#mcpprofilequota).
+
+### `mcp.<profile>.rateLimit.perClientBurst`
+
+Type: `number` (minimum 0)
+
+Default: the `perClientPerSecond` value, floored at `1`
+
+Burst capacity of the per-client bucket. Defaults to the sustained rate so enabling the limit is a one-key change — floored at 1 whole token: a fractional `perClientPerSecond` (e.g. `0.1` for "6 per minute") still yields `perClientBurst: 1` by default, since a bucket capped below one token could never admit a call.
+
+### `mcp.<profile>.rateLimit.identityHeader`
+
+Type: `string`
+
+Default: unset (client identity = socket IP)
+
+Name of a trusted header whose first (client-most) value supplies client identity — for deployments behind a reverse proxy, where every socket IP is the proxy's. Typically `x-forwarded-for`.
+
+**Only set this when the fronting proxy strips or replaces the header on untrusted traffic.** A client-controlled identity header lets callers mint fresh identities per request and bypass per-client limits entirely; Harper logs a startup warning when this key is configured.
+
+## `mcp.<profile>.quota.*`
+
+An operator-pluggable **durable** quota hook for `tools/call` (5.2.0+). The in-memory buckets above bound instantaneous rates but reset on restart and are per-worker — insufficient as a cost control for a public, unauthenticated, cost-bearing tool (an LLM-backed `answer`, say). This hook delegates the policy to your code, where it can be backed by a table:
+
+```yaml
+mcp:
+  application:
+    quota:
+      resource: McpQuota
+```
+
+```javascript
+// resources.js
+const DAILY_LIMIT = 100;
+export class McpQuota extends tables.QuotaCounter {
+	static async allowMcpCall({ identity, tool, user, profile, sessionId }) {
+		const id = identity ?? 'unknown';
+		const existing = await McpQuota.get(id);
+		const used = (existing?.used ?? 0) + 1;
+		await McpQuota.put({ id, used });
+		if (used > DAILY_LIMIT) {
+			return { allowed: false, message: 'daily quota reached', retryAfterSeconds: 3600 };
+		}
+		return true;
+	}
+}
+```
+
+### `mcp.<profile>.quota.resource`
+
+Type: `string`
+
+Default: unset (no durable quota)
+
+Path of an exported Resource whose static quota method Harper calls before each admitted `tools/call`. Dispatch uses the live registry class, so an exported subclass (and its policy) wins on reload.
+
+### `mcp.<profile>.quota.method`
+
+Type: `string`
+
+Default: `allowMcpCall`
+
+Name of the static method to call. It receives `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available) and returns `true` to allow or `{ allowed: false, message?, retryAfterSeconds? }` to deny. Denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`.
+
+Semantics to know:
+
+- The hook runs **after** the in-memory buckets admit the call, so rate-limited clients cannot spam a table-backed hook.
+- **Fail-closed**: a hook that throws — or a configured `resource`/`method` that doesn't resolve — **denies** the call. Cost protection that silently disables itself on a bug is worse than a hard failure. The raw error is written to the server log only; the client sees a sanitized message.
+- Harper calls the hook once per attempted tool call; counting strategy (increment on check vs on success) is the hook's business.
+- **Race-safety is the hook's business too.** The hook can run concurrently for the same identity — within a worker (interleaving across `await` boundaries) and across workers. A naive read-then-write counter like the example above can undercount under concurrency and admit calls past the limit; make the read-modify-write atomic (a transaction that serializes conflicting writers, a compare-and-set retry loop, or a store with native atomic increments) for production use.
+
 ## `mcp.session.*`
 
 Settings that apply to MCP session lifecycle on both profiles.
