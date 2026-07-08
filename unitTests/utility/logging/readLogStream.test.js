@@ -127,6 +127,9 @@ describe('Test readLog SSE tail', () => {
 	it('emits the existing backlog as `log` events, then resolves on disconnect', async () => {
 		fs.appendFileSync(LOG_PATH, line(0, 'info', 'first'));
 		fs.appendFileSync(LOG_PATH, line(1, 'warn', 'second'));
+		// The newest line stays pending until a following marker delimits it, so add a sentinel
+		// after the entries under test (it won't itself be emitted — it's now the pending one).
+		fs.appendFileSync(LOG_PATH, line(2, 'info', 'sentinel'));
 
 		progress = fakeProgress();
 		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
@@ -143,14 +146,15 @@ describe('Test readLog SSE tail', () => {
 	});
 
 	it('tails newly appended lines live', async () => {
-		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog'));
+		// Two backlog lines so the first is delimited (emitted) and the second is pending.
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog-a'));
+		fs.appendFileSync(LOG_PATH, line(1, 'info', 'backlog-b'));
 
 		progress = fakeProgress();
 		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
 		assert.ok(await waitFor(() => progress.logs().length >= 1));
 
-		// Append three lines: the first two are finalized by the following markers and stream out
-		// without waiting on the idle flush.
+		// Each appended line delimits the previous pending one, so live-a and live-b stream out.
 		fs.appendFileSync(LOG_PATH, line(2, 'info', 'live-a'));
 		fs.appendFileSync(LOG_PATH, line(3, 'error', 'live-b'));
 		fs.appendFileSync(LOG_PATH, line(4, 'warn', 'live-c'));
@@ -164,7 +168,8 @@ describe('Test readLog SSE tail', () => {
 
 	it('pauses tailing under backpressure and resumes on drain', async function () {
 		this.timeout(15000);
-		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog'));
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog-a'));
+		fs.appendFileSync(LOG_PATH, line(1, 'info', 'backlog-b'));
 
 		progress = fakeProgressWithBackpressure();
 		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
@@ -192,17 +197,17 @@ describe('Test readLog SSE tail', () => {
 	});
 
 	it('withholds a trailing entry until the next line delimits it (no partial flush)', async () => {
-		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog'));
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog-a'));
+		fs.appendFileSync(LOG_PATH, line(1, 'info', 'backlog-b'));
 		progress = fakeProgress();
 		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
 		assert.ok(await waitFor(() => progress.logs().length >= 1), 'backlog emitted');
 
-		const afterBacklog = progress.logs().length;
-		// A single new line has no following marker yet — it must NOT be emitted. A multi-line
-		// message could still be mid-write; flushing early would risk a truncated/split entry.
+		// This line has no following marker yet, so it must NOT be emitted — a multi-line message
+		// could still be mid-write, and force-flushing would risk a truncated/split entry.
 		fs.appendFileSync(LOG_PATH, line(2, 'info', 'pending-line'));
 		await new Promise((r) => setTimeout(r, 700));
-		assert.strictEqual(progress.logs().length, afterBacklog, 'trailing line withheld until delimited');
+		assert.ok(!progress.logs().some((l) => l.message === 'pending-line'), 'trailing line withheld until delimited');
 
 		// The next line delimits it; now the previously-pending line is emitted.
 		fs.appendFileSync(LOG_PATH, line(3, 'info', 'delimiter'));
@@ -269,6 +274,8 @@ describe('Test readLog SSE tail', () => {
 		for (let i = 0; i < 5; i++) {
 			fs.appendFileSync(LOG_PATH, line(i, 'info', `entry-${i}`));
 		}
+		// Sentinel delimits entry-4 so it's part of the backlog (and is itself the pending line).
+		fs.appendFileSync(LOG_PATH, line(5, 'info', 'sentinel'));
 
 		progress = fakeProgress();
 		running = readLog({ operation: 'read_log', log_name: LOG_NAME, limit: 2, progress });
@@ -283,6 +290,7 @@ describe('Test readLog SSE tail', () => {
 
 	it('resolves immediately without a disconnect signal (degrades to backlog-only)', async () => {
 		fs.appendFileSync(LOG_PATH, line(0, 'info', 'only-backlog'));
+		fs.appendFileSync(LOG_PATH, line(1, 'info', 'sentinel')); // delimits 'only-backlog'
 
 		const noSignal = {
 			events: [],
