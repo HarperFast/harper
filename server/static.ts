@@ -13,6 +13,15 @@ import send from 'send';
  * - `extensions`: An array of file extensions to try when serving files. If a file is not found, it will try appending each extension in order. For example, if set to `['html'], and the request is `/page`, it will try `/page.html` if `/page` is not found.
  * - `fallthrough`: If true, it will fall through to the next handler if the file is not found. If false, it will return a 404 error.
  * - `notFound`: Can be specified as a string to serve a custom 404 page, or an object with `file` and `statusCode` properties to serve a custom file with a specific status code. This is useful for hosting SPAs that use client-side routing. Make sure to set `fallthrough` to `false`!
+ * - `before` / `after`: Position this handler in the HTTP middleware chain relative to another named
+ *   handler. By default the handler runs `before: 'authentication'` — and therefore before the REST
+ *   handler — so plain file requests skip credential parsing. That default means a `fallthrough: false`
+ *   catch-all answers GETs for exported REST resources too; an SPA with history-mode routing should set
+ *   `after: 'rest'` so the API is matched first and only unmatched URLs receive the `notFound` fallback.
+ *   `before: false` clears the default without adding a new constraint (registration order applies).
+ *   Handler names are the component config keys as registered (e.g. `rest`, not the legacy `REST` alias);
+ *   a name that matches no registered handler is ignored, with a warning logged by the middleware chain.
+ *   Ordering is applied when the component loads; changing `before`/`after` triggers a component restart.
  *
  * This plugin dynamically updates its behavior based on the current configuration file. Users can make updates and immediately see the changes reflect in the next request.
  *
@@ -30,6 +39,34 @@ export function handleApplication(scope: Scope) {
 	// with the registered route (#1583).
 	const baseURLPath = resolveBaseURLPath(scope.pluginName, (scope.options.getAll() as any)?.urlPath);
 
+	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
+	// option was validated.
+	const before = scope.options.get(['before']) ?? undefined;
+	const after = scope.options.get(['after']) ?? undefined;
+	validateOrderingOption('before', before, true);
+	validateOrderingOption('after', after, false);
+	// Default to the pre-authentication hoist only when no ordering was configured at all.
+	const noOrderingConfigured = before === undefined && after === undefined;
+
+	// With the default ordering this handler answers unmatched GETs ahead of the REST handler, so a
+	// `fallthrough: false` catch-all makes any exported REST resources unreachable over GET.
+	// Reads the live option values (not the registration-time ones above): a config save can change
+	// the ordering options together with `fallthrough`, and this re-runs from the change listener.
+	const warnIfBlockingRest = () => {
+		const liveBefore = scope.options.get(['before']) ?? undefined;
+		const liveAfter = scope.options.get(['after']) ?? undefined;
+		if (
+			liveAfter === undefined &&
+			(liveBefore === undefined || liveBefore === 'authentication') &&
+			scope.options.get(['fallthrough']) === false
+		) {
+			scope.logger.warn(
+				`The static handler runs before authentication and REST by default, so \`fallthrough: false\` answers every unmatched GET itself — including GETs for any exported REST resources. If this application serves an API, add \`after: 'rest'\` to the static options so API requests are matched first, or remove \`fallthrough: false\`.`
+			);
+		}
+	};
+	warnIfBlockingRest();
+
 	scope.options.on('change', (key) => {
 		if (key[0] === 'files') {
 			// If the files option changes, clear the maps and let the entry handler regenerate them
@@ -42,6 +79,16 @@ export function handleApplication(scope: Scope) {
 			// The route mount cannot be changed on a live server registration — restart to apply
 			scope.requestRestart();
 			return;
+		}
+		if (key[0] === 'fallthrough') {
+			warnIfBlockingRest();
+			return;
+		}
+		// `before`/`after` are consumed once at registration; the middleware chain can only pick
+		// up a new ordering by reloading the component. (Scope's own auto-restart on option
+		// changes is bypassed once a plugin registers its own 'change' listener, as we do above.)
+		if (key[0] === 'before' || key[0] === 'after') {
+			scope.requestRestart();
 		}
 	});
 
@@ -206,7 +253,24 @@ export function handleApplication(scope: Scope) {
 				body: send(req, realpathSync(notFoundPath)),
 			};
 		},
-		{ before: (scope.options.get(['before']) as string) ?? 'authentication' }
+		{
+			// `after` (e.g. `after: 'rest'`) must suppress the default pre-authentication hoist —
+			// combining the two constraints would be a cycle, which falls back to registration order.
+			before: typeof before === 'string' ? before : noOrderingConfigured ? 'authentication' : undefined,
+			after: after as string | undefined,
+		}
+	);
+}
+
+function validateOrderingOption(
+	name: string,
+	value: any,
+	allowFalse: boolean
+): asserts value is undefined | string | false {
+	if (value === undefined || (typeof value === 'string' && value.length > 0)) return;
+	if (allowFalse && value === false) return;
+	throw new Error(
+		`Invalid \`${name}\` option: ${value}. Must be the name of another handler${allowFalse ? ', or false to clear the default ordering' : ''}.`
 	);
 }
 
