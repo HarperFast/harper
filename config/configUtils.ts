@@ -161,17 +161,9 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// Must be called AFTER rootPath is set in configDoc
 	// Mutates configDoc in place
 	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true });
-	// TEMP #1616-debug (revert before merge)
-	console.error(
-		`[1616-debug] createConfigFile post-env-apply modelsGateway=${JSON.stringify(configDoc.getIn(['modelsGateway']))} HARPER_SET_CONFIG=${process.env.HARPER_SET_CONFIG ? 'set' : 'UNSET'}`
-	);
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
-	// TEMP #1616-debug (revert before merge)
-	console.error(
-		`[1616-debug] createConfigFile post-validate modelsGateway=${JSON.stringify(configDoc.getIn(['modelsGateway']))}`
-	);
 
 	const configObj = configDoc.toJSON();
 	flatConfigObj = flattenConfig(configObj);
@@ -555,10 +547,6 @@ export function updateConfigValue(
 	update_config_obj = false,
 	skipParamMap = false
 ) {
-	// TEMP #1616-debug (revert before merge)
-	console.error(
-		`[1616-debug] updateConfigValue entry param=${JSON.stringify(param)} hasParsedArgs=${!!parsedArgs} update_config_obj=${update_config_obj} inMem-modelsGateway=${JSON.stringify((flatConfigObj as any)?.modelsGateway_enabled)}`
-	);
 	if (flatConfigObj === undefined) {
 		initConfig();
 	}
@@ -704,10 +692,6 @@ export function updateConfigValue(
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 		);
 	}
-	// TEMP #1616-debug (revert before merge): does this rewrite drop env-applied keys?
-	console.error(
-		`[1616-debug] updateConfigValue pre-write modelsGateway=${JSON.stringify(configDoc.getIn(['modelsGateway']))} update_config_obj=${update_config_obj}`
-	);
 	atomicWriteFile(configFileLocation, String(configDoc));
 	if (update_config_obj) {
 		flatConfigObj = flattenConfig(configDoc.toJSON());

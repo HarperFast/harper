@@ -32,8 +32,6 @@ import { V1ChatCompletions } from './chatCompletions.ts';
 import { V1Models } from './models.ts';
 
 export function handleApplication(scope: Scope): void {
-	// TEMP #1616-debug (revert before merge)
-	console.error(`[1616-debug] modelsGateway handleApplication enabled=${JSON.stringify(scope.options.get(['enabled']))}`);
 	if (!scope.options.get(['enabled'])) return;
 	scope.resources.set('v1/models', V1Models);
 	scope.resources.set('v1/embeddings', V1Embeddings);
