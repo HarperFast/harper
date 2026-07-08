@@ -115,6 +115,10 @@ function bisectInsert(arr: Candidate[], distance: number): number {
 const ENTRY_POINT = Symbol.for('entryPoint');
 const KEY_PREFIX = Symbol.for('key');
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
+// Visit budget for the post-delete connectivity probe (repairSeveredNeighbors, #1712). Severed
+// islands are small (bounded by the deleted node's neighborhood), so a probe that visits this many
+// nodes without reaching the entry point is treated as connected-but-far and repaired conservatively.
+const PROBE_VISIT_LIMIT = 256;
 type Connection = {
 	id: number;
 	distance: number;
@@ -497,6 +501,10 @@ export class HierarchicalNavigableSmallWorld {
 			this.indexStore.remove(safeKey, options);
 		}
 		const needsReindexing = new Map();
+		// On DELETE, track every neighbor that loses an edge: the empty-list check below only
+		// catches fully-orphaned nodes, but a cluster can stay internally connected while losing
+		// its only bridges to the entry point — see repairSeveredNeighbors (#1712).
+		const edgeLosingNeighborIds = vector ? undefined : new Set<number>();
 		// remove connections to this node that are no longer valid
 		if (oldNode.level !== undefined) {
 			for (let l = 0; l <= oldNode.level; l++) {
@@ -505,6 +513,7 @@ export class HierarchicalNavigableSmallWorld {
 					// get and copy the neighbor node so we can modify it
 					const neighborNode = updateNode(neighborId, this.safeGetSync(neighborId, options));
 					if (!neighborNode) continue;
+					edgeLosingNeighborIds?.add(neighborId);
 					// On an UPDATE (vector != null), only remove the reverse edge at
 					// the exact level l where the old connection existed. Sweeping 0..l would destroy reverse
 					// edges at lower levels that were just re-added by addConnection or preserved by the
@@ -580,7 +589,90 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			this.index(key, orphanVector, orphanVector, options);
 		}
+		if (edgeLosingNeighborIds?.size) this.repairSeveredNeighbors(edgeLosingNeighborIds, options);
 		this.checkSymmetry(nodeId, this.safeGetSync(nodeId, options), options);
+	}
+
+	/**
+	 * After a delete, a neighbor that lost an edge can be severed from the entry point even with
+	 * non-empty connection lists: a locally-connected cluster whose only bridges ran through the
+	 * deleted node becomes a disconnected island, unreachable by search at any ef (#1712). The
+	 * empty-list orphan check in index() can't see this, so probe each edge-losing neighbor's
+	 * connectivity and reindex the ones that are cut off.
+	 *
+	 * The probe is a level-prioritized best-first traversal (hubs first, since the entry point is
+	 * a high-level node), treating edges as undirected — the same assumption validateConnectivity
+	 * makes. Note the direction difference: the probe walks source→entry-point over stored
+	 * (outgoing) edges while search walks entry-point→outward, so an asymmetric edge could make
+	 * the probe claim connectivity that search doesn't have. Edges are bidirectional by
+	 * construction (checkSymmetry logs violations), and reverse-reachability from the entry point
+	 * would be O(N) per delete, so this is a deliberate residual. In a connected component the
+	 * probe reaches the known-connected set within a few hops; in an island it exhausts the
+	 * island quickly. If it exceeds PROBE_VISIT_LIMIT without an answer (pathologically distant
+	 * entry point — or an island larger than the budget), reinsert just the probe source: a
+	 * wasted reinsert in the connected case, and in the oversized-island case a partial repair
+	 * (the source relinks to the live graph, the rest of the island stays severed — reindexing
+	 * replaces the source's edges rather than bridging through them, and reindexing all 256+
+	 * probed nodes on what is usually just a distant entry point would be far too expensive).
+	 */
+	private repairSeveredNeighbors(neighborIds: Set<number>, options: any) {
+		const entryPointId = this.indexStore.getSync(ENTRY_POINT, options);
+		if (entryPointId === undefined) return;
+		const knownConnected = new Set<number>([entryPointId]);
+		for (const sourceId of neighborIds) {
+			if (knownConnected.has(sourceId)) continue;
+			const sourceNode = this.safeGetSync(sourceId, options);
+			if (!sourceNode || sourceNode.level === undefined) continue; // already removed or stale reference
+			const visited = new Map<number, Node>([[sourceId, sourceNode]]);
+			const frontier = new MinHeap();
+			frontier.push({ id: sourceId, distance: -sourceNode.level, node: sourceNode });
+			let verdict: 'connected' | 'island' | 'inconclusive' = 'island';
+			probe: for (;;) {
+				const current = frontier.pop();
+				if (!current) break; // exhausted the reachable set without touching the connected component
+				for (let l = 0; l <= current.node.level; l++) {
+					for (const { id: neighborId } of current.node[l] || []) {
+						if (neighborId === undefined) continue;
+						if (knownConnected.has(neighborId)) {
+							verdict = 'connected';
+							break probe;
+						}
+						if (visited.has(neighborId)) continue;
+						const node = this.safeGetSync(neighborId, options);
+						if (!node || node.level === undefined) continue; // stale reference
+						visited.set(neighborId, node);
+						frontier.push({ id: neighborId, distance: -node.level, node });
+					}
+				}
+				if (visited.size > PROBE_VISIT_LIMIT) {
+					verdict = 'inconclusive';
+					break;
+				}
+			}
+			if (verdict === 'connected') {
+				// every visited node connects to the source, which reaches the connected component
+				for (const id of visited.keys()) knownConnected.add(id);
+			} else {
+				// island: reinsert every member so the whole cluster relinks to the live graph;
+				// inconclusive: reinsert only the source (partial repair — see docstring)
+				if (verdict === 'inconclusive') {
+					logger.warn?.('connectivity probe exceeded visit budget after a delete, reinserting only', sourceId);
+				}
+				const toReindex = verdict === 'island' ? visited.values() : [sourceNode];
+				logger.debug?.('reindexing nodes severed from the entry point by a delete', sourceId);
+				for (const node of toReindex) {
+					const nodeVector =
+						node.scale !== undefined ? dequantizeInt8(node.vector as Int8Array, node.scale) : (node.vector as number[]);
+					this.index(node.primaryKey, nodeVector, nodeVector, options);
+				}
+				if (verdict === 'island') {
+					// the whole reindexed island is now relinked; skip re-probing its members
+					for (const id of visited.keys()) knownConnected.add(id);
+				} else {
+					knownConnected.add(sourceId);
+				}
+			}
+		}
 	}
 
 	private safeGetSync(key: any, options?: any): any {

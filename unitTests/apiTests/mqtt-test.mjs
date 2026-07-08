@@ -62,6 +62,41 @@ async function connectWithMessageListener(brokerUrl, options, listener) {
 	return client;
 }
 
+// Waits for a server-side MQTT session event (see `server/mqtt.ts` `emitEvent`) for a specific
+// clientId, rather than guessing with a fixed delay for the broker to finish some async step.
+function waitForMqttSessionEvent(eventName, clientId) {
+	return new Promise((resolve) => {
+		function onEvent(session) {
+			if (session?.sessionId === clientId) {
+				global.server.mqtt.events.off(eventName, onEvent);
+				resolve();
+			}
+		}
+		global.server.mqtt.events.on(eventName, onEvent);
+	});
+}
+
+// `client.endAsync()` only resolves once the local socket is closed — it does not wait for the
+// broker to process the disconnect and tear down the session — so callers that immediately
+// reconnect with the same clientId can otherwise race the broker's teardown.
+async function endDurableSession(client, clientId) {
+	let onDisconnected;
+	const torn_down = new Promise((resolve) => {
+		onDisconnected = (session) => {
+			if (session?.sessionId === clientId) resolve();
+		};
+		global.server.mqtt.events.on('disconnected', onDisconnected);
+	});
+	try {
+		await client.endAsync();
+		await torn_down;
+	} finally {
+		// Always clean up the listener, even if endAsync() rejects or the event never fires,
+		// so a failed disconnect doesn't leak a listener on the shared event emitter.
+		global.server.mqtt.events.off('disconnected', onDisconnected);
+	}
+}
+
 describe('test MQTT connections and commands', function () {
 	this.timeout(10000);
 	let available_records;
@@ -88,6 +123,11 @@ describe('test MQTT connections and commands', function () {
 	});
 
 	it('subscribe to retained/persisted record', async function () {
+		// Retained delivery is async (transaction -> persisted-record read -> serialization ->
+		// setImmediate yield -> socket write -> client message event) and on a loaded CI runner
+		// this has been observed taking well over the previous 8 s budget. Give this test more
+		// room than the suite-level 10 s, same as the QoS=1 reconnect test below.
+		this.timeout(20000);
 		let path = 'VariedProps/' + available_records[1];
 		// Register the message listener before subscribing so a retained message delivered
 		// during the subscribe round-trip can't be missed.
@@ -108,16 +148,16 @@ describe('test MQTT connections and commands', function () {
 		// Await the suback so a subscribe failure surfaces immediately rather than hanging
 		// until the retained-message timeout.
 		await clientV4.subscribeAsync(path);
-		// Retained delivery is async (transaction -> persisted-record read -> serialization ->
-		// setImmediate yield -> socket write -> client message event) and can run after the suback.
-		// On loaded CI runners this routinely exceeds 1 s, so wait up to a budget under the 10 s
-		// suite timeout before failing.
+		// Wait for the actual message, bounded by a backstop derived from this test's own mocha
+		// timeout (rather than a hardcoded value) so the two can never race each other — a fixed
+		// inner timeout close to (or exceeding) the outer mocha timeout previously meant this could
+		// fail with our own message right as it also became a hairline call against mocha's timeout.
 		let timer;
 		try {
 			await Promise.race([
 				messageReceived,
 				new Promise((_, reject) => {
-					timer = setTimeout(() => reject(new Error('Timeout waiting for retained message')), 8000);
+					timer = setTimeout(() => reject(new Error('Timeout waiting for retained message')), this.timeout() - 2000);
 				}),
 			]);
 		} finally {
@@ -840,25 +880,26 @@ describe('test MQTT connections and commands', function () {
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
-		await client.endAsync();
-		await delay(10);
+		await endDurableSession(client, 'test-client1');
 		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
-		await client.endAsync();
-		await delay(10);
+		await endDurableSession(client, 'test-client1');
 		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await new Promise((resolve) => {
+			// Wait for the broker to finish processing (and durably persisting) our ack of this
+			// message, not just for the client to have sent it — see `session.acknowledge()`.
+			const acknowledged = waitForMqttSessionEvent('acknowledged', 'test-client1');
 			client.on('message', (topic, payload) => {
 				JSON.parse(payload);
-				resolve();
+				resolve(acknowledged);
 			});
 
 			client.publish(
@@ -871,10 +912,8 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 		});
-		await delay(10);
-		await client.endAsync();
-		await delay(50);
-		clientV5.publish(
+		await endDurableSession(client, 'test-client1');
+		await clientV5.publishAsync(
 			'SimpleRecord/41',
 			JSON.stringify({
 				name: 'This is a test of publishing to a disconnected durable session',
@@ -901,7 +940,6 @@ describe('test MQTT connections and commands', function () {
 				qos: 1,
 			}
 		);
-		await delay(10);
 		let messages = [];
 		client = await connectWithMessageListener(
 			mqttUrl,

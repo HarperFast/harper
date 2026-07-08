@@ -125,11 +125,15 @@ export function resolveDeps(entries: HttpEntry[], nameToEntry: Map<string, HttpE
 }
 
 /**
- * Normalizes a urlPath by stripping a single trailing slash (except for the root '/').
- * '/api' and '/api/' are treated equivalently for routing/matching.
+ * Normalizes a urlPath by ensuring a leading slash and stripping a single trailing slash
+ * (except for the root '/'). '/api', 'api', and '/api/' are treated equivalently for
+ * routing/matching — pathnames always begin with '/', so a slash-less urlPath could
+ * otherwise never match anything (#1583).
  */
 export function normalizeUrlPath(urlPath: string | undefined): string | undefined {
-	if (!urlPath || urlPath.length <= 1) return urlPath;
+	if (!urlPath) return urlPath;
+	if (!urlPath.startsWith('/')) urlPath = '/' + urlPath;
+	if (urlPath.length <= 1) return urlPath;
 	return urlPath.endsWith('/') ? urlPath.slice(0, -1) : urlPath;
 }
 
@@ -167,6 +171,12 @@ export function stripPrefix(request: any, prefix: string): any {
 			if (prop === 'pathname') {
 				const origPathname: string = target.pathname ?? '/';
 				return origPathname === normalizedPrefix ? '/' : origPathname.slice(normalizedPrefix.length);
+			}
+			// Runtime-agnostic access to the unstripped pathname — '/mount' and '/mount/' both
+			// strip to '/', so handlers that must distinguish them (e.g. static's mount-root
+			// redirect, #1583) read this instead of runtime internals like _nodeRequest.
+			if (prop === 'originalPathname') {
+				return target.pathname ?? '/';
 			}
 			if (prop === 'url') {
 				const origPathname: string = target.pathname ?? '/';
@@ -251,20 +261,59 @@ export function buildRoutedChain(
 	};
 }
 
+export type UnresolvedOrderingRef = { entryName?: string; kind: 'before' | 'after'; target: string };
+
+/**
+ * Returns the `before`/`after` references among `entries` that name no registered entry.
+ * topoSort silently ignores these, so they deserve a diagnostic (see makeCallbackChain).
+ */
+export function findUnresolvedOrderingRefs(entries: HttpEntry[]): UnresolvedOrderingRef[] {
+	const names = new Set<string>();
+	for (const { name } of entries) {
+		if (name) names.add(name);
+	}
+	const unresolved: UnresolvedOrderingRef[] = [];
+	for (const { name, before, after } of entries) {
+		if (before && !names.has(before)) unresolved.push({ entryName: name, kind: 'before', target: before });
+		if (after && !names.has(after)) unresolved.push({ entryName: name, kind: 'after', target: after });
+	}
+	return unresolved;
+}
+
 /**
  * Builds the complete middleware chain for a given port from the full responders list.
  * Uses a flat linear chain when no sub-routes are present (fast path),
  * or a route-dispatching chain when any entry has urlPath or host.
+ *
+ * @param onUnresolved - called (once per unresolved reference) when a `before`/`after` names no
+ * registered entry, so a typo or legacy config key doesn't silently drop the ordering constraint.
+ * Reported on the chain's first dispatch, not at build time: the chain is rebuilt on every
+ * registration, so an early build may reference an entry that a later registration resolves.
  */
 export function makeCallbackChain(
 	responders: HttpEntry[],
 	portNum: number | string,
 	fallback: Function,
 	onCycle?: () => void,
-	requestArgIndex: number = 0
+	requestArgIndex: number = 0,
+	onUnresolved?: (ref: UnresolvedOrderingRef) => void
 ): Function {
 	const portEntries = responders.filter(({ port }) => port === portNum || port === 'all');
-	if (portEntries.some((e) => e.urlPath || e.host))
-		return buildRoutedChain(portEntries, fallback, onCycle, requestArgIndex);
-	return buildLinearChain(topoSort(portEntries, onCycle), fallback);
+	const chain = portEntries.some((e) => e.urlPath || e.host)
+		? buildRoutedChain(portEntries, fallback, onCycle, requestArgIndex)
+		: buildLinearChain(topoSort(portEntries, onCycle), fallback);
+	if (onUnresolved) {
+		const unresolved = findUnresolvedOrderingRefs(portEntries);
+		if (unresolved.length > 0) {
+			let reported = false;
+			return (...args: any[]) => {
+				if (!reported) {
+					reported = true;
+					for (const ref of unresolved) onUnresolved(ref);
+				}
+				return chain(...args);
+			};
+		}
+	}
+	return chain;
 }
