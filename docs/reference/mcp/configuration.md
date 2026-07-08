@@ -116,7 +116,7 @@ Type: `number` (minimum 0)
 
 Default: `0` (disabled)
 
-Sustained `tools/call` rate keyed on **client identity** rather than session (5.1.18+). Session-scoped buckets can be evaded by an anonymous client that cycles sessions (`initialize` → call → drop → repeat); the client bucket survives that loop. Identity is the client socket IP by default, or the value derived from [`identityHeader`](#mcpprofileratelimitidentityheader). Denials surface like other rate-limit hits: an `isError` tool result with `kind: 'rate_limited'`, `scope: 'per_client'`.
+Sustained `tools/call` rate keyed on **client identity** rather than session (5.2.0+). Session-scoped buckets can be evaded by an anonymous client that cycles sessions (`initialize` → call → drop → repeat); the client bucket survives that loop. Identity is the client socket IP by default, or the value derived from [`identityHeader`](#mcpprofileratelimitidentityheader). Denials surface like other rate-limit hits: an `isError` tool result with `kind: 'rate_limited'`, `scope: 'per_client'`.
 
 Like the other buckets, state is in-memory per worker — it does not survive a restart and is not shared across workers. For durable quotas, see [`mcp.<profile>.quota.*`](#mcpprofilequota).
 
@@ -124,9 +124,9 @@ Like the other buckets, state is in-memory per worker — it does not survive a 
 
 Type: `number` (minimum 0)
 
-Default: the `perClientPerSecond` value
+Default: the `perClientPerSecond` value, floored at `1`
 
-Burst capacity of the per-client bucket. Defaults to the sustained rate so enabling the limit is a one-key change.
+Burst capacity of the per-client bucket. Defaults to the sustained rate so enabling the limit is a one-key change — floored at 1 whole token: a fractional `perClientPerSecond` (e.g. `0.1` for "6 per minute") still yields `perClientBurst: 1` by default, since a bucket capped below one token could never admit a call.
 
 ### `mcp.<profile>.rateLimit.identityHeader`
 
@@ -140,7 +140,7 @@ Name of a trusted header whose first (client-most) value supplies client identit
 
 ## `mcp.<profile>.quota.*`
 
-An operator-pluggable **durable** quota hook for `tools/call` (5.1.18+). The in-memory buckets above bound instantaneous rates but reset on restart and are per-worker — insufficient as a cost control for a public, unauthenticated, cost-bearing tool (an LLM-backed `answer`, say). This hook delegates the policy to your code, where it can be backed by a table:
+An operator-pluggable **durable** quota hook for `tools/call` (5.2.0+). The in-memory buckets above bound instantaneous rates but reset on restart and are per-worker — insufficient as a cost control for a public, unauthenticated, cost-bearing tool (an LLM-backed `answer`, say). This hook delegates the policy to your code, where it can be backed by a table:
 
 ```yaml
 mcp:
