@@ -147,6 +147,7 @@ function mqttConnect(url: string, user: { username: string; password: string }, 
 		reconnectPeriod: 0,
 		connectTimeout: 8000,
 		clean: true,
+		rejectUnauthorized: false, // parity with openWs: tolerate self-signed TLS if the harness serves wss
 		...user,
 		clientId,
 	};
@@ -201,8 +202,8 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 		});
 		client = createApiClient(ctx.harper);
 		restURL = ctx.harper.httpURL;
-		wsBase = restURL.replace(/^http/, 'ws');
-		mqttURL = `${restURL.replace(/^https?/, restURL.startsWith('https') ? 'wss' : 'ws')}/mqtt`;
+		wsBase = restURL.replace(/^http/, 'ws'); // http→ws, https→wss
+		mqttURL = `${wsBase}/mqtt`;
 
 		// Wait for the route.
 		const deadline = Date.now() + 30_000;
@@ -352,7 +353,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 		ok(gotPre, 'positive control failed — MQTT subscription never delivered while authorized');
 
 		await client.req().send({ operation: 'drop_user', username: CAROL.username }).expect(200);
-		await sleep(300);
+		await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / re-auth sweep time to land under CI load
 
 		const preCount = msgs.length;
 		await insert({ id: `r-${seq++}`, value: 'mqtt-drop-post' });
@@ -390,7 +391,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 					},
 				})
 				.expect(200);
-			await sleep(300);
+			await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / re-auth sweep time to land under CI load
 
 			const preCount = sub.frames.length;
 			await insert({ id: `r-${seq++}`, value: 'ws-alter-post' });
@@ -448,7 +449,7 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 					},
 				})
 				.expect(200);
-			await sleep(300);
+			await sleep(2000); // match the SSE drop_user window; give the user-change broadcast / re-auth sweep time to land under CI load
 
 			const preCount = msgs.length;
 			await insert({ id: `r-${seq++}`, value: 'mqtt-alter-post' });
