@@ -986,8 +986,7 @@ function makeCustomResourceReader(path: string, capturedClass: ResourceClassLike
 		const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
 		const instance = new Ctor(undefined, buildContext(context.user));
 		const method = instance[methodName] as
-			| ((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceReadResult)
-			| undefined;
+			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceReadResult) | undefined;
 		if (typeof method !== 'function') {
 			throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
 		}
