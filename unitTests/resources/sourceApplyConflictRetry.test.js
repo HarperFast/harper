@@ -25,6 +25,7 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 			table: 'ConflictRetryTable',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }, { name: 'count' }],
+			audit: true,
 		});
 	});
 
@@ -109,6 +110,10 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 			const retried = attempts.find((attempt, index) => attempt.ok && index > attempts.indexOf(failed));
 			assert.ok(retried, 'a later commit attempt must succeed');
 			assert.notEqual(retried.id, failed.id, 'the retry must run on a fresh transaction');
+			assert.ok(
+				!attempts.some((attempt, index) => index > attempts.indexOf(failed) && attempt.id === failed.id),
+				'the stranded transaction must never be recommitted'
+			);
 		} finally {
 			restore();
 		}
@@ -116,15 +121,86 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 
 	it('preserves concurrent commutative increments across a stranded-snapshot retry', async function () {
 		this.timeout(15000);
-		await SpinTable.put('counter', { id: 'counter', count: 0 });
-		const outcome = await applyWithMidTransactionConflict(
-			'counter',
-			{ count: { __op__: 'add', value: 1 } },
-			{ count: { __op__: 'add', value: 1 } },
-			() => SpinTable.primaryStore.store.compact()
-		);
-		assert.equal(outcome, 'committed', 'the stranded source-apply commit must settle');
-		const record = await SpinTable.get('counter');
-		assert.equal(record.count, 2, 'both increments must survive the fresh-transaction replay');
+		const { attempts, restore } = spyOnCommits();
+		try {
+			await SpinTable.put('counter', { id: 'counter', count: 0 });
+			const outcome = await applyWithMidTransactionConflict(
+				'counter',
+				{ count: { __op__: 'add', value: 1 } },
+				{ count: { __op__: 'add', value: 1 } },
+				() => SpinTable.primaryStore.store.compact()
+			);
+			assert.equal(outcome, 'committed', 'the stranded source-apply commit must settle');
+			assert.ok(
+				attempts.some((attempt) => attempt.code === 'ERR_TRY_AGAIN'),
+				'premise: the flush must strand the snapshot (ERR_TRY_AGAIN), not just conflict (ERR_BUSY)'
+			);
+			const record = await SpinTable.get('counter');
+			assert.equal(record.count, 2, 'both increments must survive the fresh-transaction replay');
+		} finally {
+			restore();
+		}
+	});
+
+	it('still dedupes a genuine re-delivered duplicate co-batched with the conflicting write', async function () {
+		this.timeout(30000);
+		// The own-orphaned-entry suppression must be per-write, not transaction-wide: a genuine
+		// duplicate (its exact version and node already in the audit log from a committed
+		// transaction) that shares the batch with the write that caused the retry must still be
+		// deduped on the retry, or it double-applies its commutative op.
+		// natural versions throughout: an explicit past timestamp would predate every log entry's
+		// localTime and trip the #480 pre-retention guard, which disarms the keyed dedup this test is
+		// exercising (documented best-effort gap for out-of-timestamp-order logs)
+		await SpinTable.put('mixed-fresh', { id: 'mixed-fresh', count: 0 });
+		await SpinTable.patch('mixed-dup', { count: { __op__: 'add', value: 1 } });
+		// re-deliver at the exact committed version so the keyed dedup applies
+		const version = SpinTable.primaryStore.getEntry('mixed-dup').version;
+		// the keyed transaction-log lookup can lag a just-committed write (#1137); wait until the
+		// prior write's audit entry is readable so the duplicate is deduped by state, not by luck
+		let auditEntryVisible = false;
+		for (let i = 0; i < 200 && !auditEntryVisible; i++) {
+			const entry = SpinTable.auditStore.get(version, SpinTable.tableId, 'mixed-dup', undefined);
+			if (entry && entry.version === version) auditEntryVisible = true;
+			else await delay(10);
+		}
+		assert.ok(auditEntryVisible, 'premise: the committed duplicate audit entry must be readable');
+		// Bury the duplicate's entry past the out-of-order walk's depth cap so the walk cannot rescue
+		// it through its own identity-tie check; the skip must come from the guarded keyed dedup /
+		// isReDeliveredDuplicate paths, which is what makes this test discriminate a per-write guard
+		// from a transaction-wide one (the walk tie made the shallow variant pass under either).
+		for (let i = 0; i <= 1000; i++) {
+			await SpinTable.patch('mixed-dup', { writer: 'newer' + i });
+		}
+		assert.equal((await SpinTable.get('mixed-dup')).count, 1, 'premise: count intact after burying');
+		const { attempts, restore } = spyOnCommits();
+		try {
+			const context = { sourceApply: true, timestamp: version };
+			const txnDone = transaction(context, async () => {
+				await SpinTable.patch('mixed-fresh', { count: { __op__: 'add', value: 1 } }, context);
+				// exact re-delivery of the already-committed write: same key, same version, same node
+				await SpinTable.patch('mixed-dup', { count: { __op__: 'add', value: 1 } }, context);
+				const concurrentContext = {};
+				await transaction(concurrentContext, async () => {
+					await SpinTable.patch('mixed-fresh', { count: { __op__: 'add', value: 1 } }, concurrentContext);
+				});
+				await SpinTable.primaryStore.store.compact();
+			});
+			const outcome = await Promise.race([
+				Promise.resolve(txnDone).then(
+					() => 'committed',
+					(error) => 'rejected: ' + error.message
+				),
+				delay(6000).then(() => 'spinning'),
+			]);
+			assert.equal(outcome, 'committed', 'the batched source-apply commit must settle');
+			assert.ok(
+				attempts.some((attempt) => attempt.code === 'ERR_TRY_AGAIN'),
+				'premise: the flush must strand the snapshot (ERR_TRY_AGAIN), not just conflict (ERR_BUSY)'
+			);
+			assert.equal((await SpinTable.get('mixed-dup')).count, 1, 'the co-batched duplicate must not double-apply');
+			assert.equal((await SpinTable.get('mixed-fresh')).count, 2, 'both fresh increments must survive');
+		} finally {
+			restore();
+		}
 	});
 });

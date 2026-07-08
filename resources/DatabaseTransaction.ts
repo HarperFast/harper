@@ -72,6 +72,9 @@ export type TransactionWrite = {
 	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
 	// reset at the top of each commit-handler invocation so retries see a fresh state.
 	skipped?: boolean;
+	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
+	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
+	appendedAuditEntry?: boolean;
 };
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
@@ -232,6 +235,14 @@ export class DatabaseTransaction implements Transaction {
 			if (result?.then) this.completions.push(result);
 		}
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
+		// Sticky record that THIS write staged with its audit entry appended (log entries are written
+		// at staging and are not part of the transaction, so they survive an abort). isRetry stagings
+		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
+		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
+		// retries where a recommit round self-skips before a fresh-transaction replay.
+		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
+			operation.appendedAuditEntry = true;
+		}
 		if (immediateCommit) {
 			return this.commit({ transaction }); // immediately commit if the harper transaction is closed
 		}
