@@ -6,6 +6,7 @@
 import './pkijs-ed25519-patch.ts';
 import { getCertStatus } from 'easy-ocsp';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
+import { RequestTarget } from '../../resources/RequestTarget.ts';
 import {
 	bufferToPem,
 	createCacheKey,
@@ -64,14 +65,19 @@ export async function verifyOCSP(
 		const cacheKey = createCacheKey(certPemStr, issuerPemStr, 'ocsp');
 
 		// Get the cache table - Harper will automatically handle
-		// concurrent requests and cache stampede prevention
-		// Pass certificate data as context - Harper will make it available as requestContext in the source
-		const cacheEntry = await (getCertificateCacheTable() as any).get(cacheKey, {
+		// concurrent requests and cache stampede prevention.
+		// Pass a RequestTarget as the id so Harper records the cache disposition on it
+		// (target.loadedFromSource); the cert data goes in the context arg, which the source
+		// reads as requestContext. Set target.id directly to avoid URL-parsing the cache key.
+		const target = new RequestTarget();
+		target.id = cacheKey;
+		const context: CertificateVerificationContext = {
 			certPem: certPemStr,
 			issuerPem: issuerPemStr,
 			ocspUrls,
 			config: { ocsp: config ?? {} },
-		} as CertificateVerificationContext);
+		};
+		const cacheEntry = await (getCertificateCacheTable() as any).get(target, context);
 
 		if (!cacheEntry) {
 			// This should not happen if the source is configured correctly
@@ -85,13 +91,13 @@ export async function verifyOCSP(
 		}
 
 		const cached = cacheEntry as unknown as CertificateCacheEntry;
-		const wasLoadedFromSource = (cacheEntry as any).wasLoadedFromSource?.();
-		logger.trace?.(`OCSP ${wasLoadedFromSource ? 'source fetch' : 'cache hit'} for certificate`);
+		const loadedFromSource = target.loadedFromSource;
+		logger.trace?.(`OCSP ${loadedFromSource ? 'source fetch' : 'cache hit'} for certificate`);
 
 		return {
 			valid: cached.status === 'good',
 			status: cached.status,
-			cached: !wasLoadedFromSource,
+			cached: !loadedFromSource,
 			method: cached.method || 'ocsp',
 		};
 	} catch (error) {

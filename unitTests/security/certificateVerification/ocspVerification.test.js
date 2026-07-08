@@ -145,6 +145,28 @@ describe('certificateVerification/ocspVerification.ts', function () {
 			}
 		});
 
+		it('reports cached:false on a fresh source fetch and cached:true on a subsequent cached read', async function () {
+			// Use unique cert bytes so the cache key is fresh regardless of test ordering.
+			// Invalid certs resolve to status 'unknown' (ocsp-error) without any network, and the
+			// source still caches that result, so the second get is served from cache.
+			const unique = `disposition-${process.pid}-${Date.now()}`;
+			const cert = Buffer.from(`cert-${unique}`);
+			const issuer = Buffer.from(`issuer-${unique}`);
+			const config = {
+				enabled: true,
+				failureMode: 'fail-open',
+				timeout: 5000,
+				cacheTtl: 3600000,
+				errorCacheTtl: 300000,
+			};
+
+			const first = await ocspModule.verifyOCSP(cert, issuer, config);
+			assert.strictEqual(first.cached, false, 'first get should load from source');
+
+			const second = await ocspModule.verifyOCSP(cert, issuer, config);
+			assert.strictEqual(second.cached, true, 'second get should be served from cache');
+		});
+
 		it('should handle provided OCSP URLs', async function () {
 			const providedUrls = ['http://ocsp.example.com'];
 

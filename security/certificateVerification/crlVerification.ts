@@ -2,10 +2,14 @@
  * CRL (Certificate Revocation List) verification
  */
 
+// Apply the PKI.js Ed25519/Ed448 patch before using PKI.js for CRL signature verification.
+// CRL must not depend on the OCSP module being loaded to get this patch (they load independently).
+import './pkijs-ed25519-patch.ts';
 import * as pkijs from 'pkijs';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { table } from '../../resources/databases.ts';
 import { Resource } from '../../resources/Resource.ts';
+import { RequestTarget } from '../../resources/RequestTarget.ts';
 import type { SourceContext } from '../../resources/ResourceInterface.ts';
 import {
 	extractCRLDistributionPoints,
@@ -20,6 +24,7 @@ import {
 import { ERROR_CACHE_TTL, CRL_DEFAULT_VALIDITY_PERIOD, CRL_USER_AGENT } from './verificationConfig.ts';
 import type {
 	CertificateVerificationResult,
+	CertificateVerificationContext,
 	CertificateCacheEntry,
 	CRLCheckResult,
 	CRLConfig,
@@ -230,13 +235,18 @@ export async function verifyCRL(
 		// Create a cache key that includes all verification parameters
 		const cacheKey = createCacheKey(certPemStr, issuerPemStr, 'crl');
 
-		// Pass certificate data as context - Harper will make it available as requestContext in the source
-		const cacheEntry = await (getCertificateCacheTable() as any).get(cacheKey, undefined, {
+		// Pass a RequestTarget as the id so Harper records the cache disposition on it
+		// (target.loadedFromSource); the cert data goes in the context arg, which the source
+		// reads as requestContext. Set target.id directly to avoid URL-parsing the cache key.
+		const target = new RequestTarget();
+		target.id = cacheKey;
+		const context: CertificateVerificationContext = {
 			certPem: certPemStr,
 			issuerPem: issuerPemStr,
 			distributionPoint: distributionPoints[0], // Use first distribution point for CRL fetch
 			config: { crl: config ?? {} },
-		} as any);
+		};
+		const cacheEntry = await (getCertificateCacheTable() as any).get(target, context);
 
 		if (!cacheEntry) {
 			// This should not happen if the source is configured correctly but handle it gracefully
@@ -250,13 +260,13 @@ export async function verifyCRL(
 		}
 
 		const cached = cacheEntry as unknown as CertificateCacheEntry;
-		const wasLoadedFromSource = (cacheEntry as any).wasLoadedFromSource?.();
-		logger.trace?.(`CRL ${wasLoadedFromSource ? 'source fetch' : 'cache hit'} for certificate`);
+		const loadedFromSource = target.loadedFromSource;
+		logger.trace?.(`CRL ${loadedFromSource ? 'source fetch' : 'cache hit'} for certificate`);
 
 		return {
 			valid: cached.status === 'good',
 			status: cached.status,
-			cached: !wasLoadedFromSource,
+			cached: !loadedFromSource,
 			method: cached.method || 'crl',
 		};
 	} catch (error) {
