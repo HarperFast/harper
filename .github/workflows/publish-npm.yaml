@@ -38,12 +38,45 @@ jobs:
           version: ${{ github.event.release.tag_name || inputs.tag_name }}
       - name: Set package tag
         id: package-tag
+        env:
+          PACKAGE_NAME: harper
+          VERSION: ${{ steps.version-components.outputs.version }}
+          PRERELEASE: ${{ steps.version-components.outputs.prerelease }}
+          RELEASE_LINE: ${{ steps.version-components.outputs.major }}.${{ steps.version-components.outputs.minor }}
         run: |
-          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
-            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$PRERELEASE" == '' ]]; then
+            baseTag=latest
           else
-            echo "packageTag=next" >> "$GITHUB_OUTPUT"
+            baseTag=next
           fi
+          # Only move the base tag forward: a maintenance release (e.g. 5.0.x
+          # published after 5.1.x) must not steal `latest` from a newer line —
+          # it gets a line-scoped tag (e.g. `latest-5.0`) instead. See #1644.
+          # E404 means the tag doesn't exist yet (first publish); any other npm
+          # error must abort — treating it as "no tag" would steal the tag.
+          viewStatus=0
+          currentVersion=$(npm view "$PACKAGE_NAME@$baseTag" version 2>"$RUNNER_TEMP/npm-view.err") || viewStatus=$?
+          if [[ $viewStatus -ne 0 ]]; then
+            if grep -q 'code E404' "$RUNNER_TEMP/npm-view.err"; then
+              currentVersion=''
+            else
+              cat "$RUNNER_TEMP/npm-view.err" >&2
+              exit "$viewStatus"
+            fi
+          fi
+          if [[ -z "$currentVersion" ]]; then
+            packageTag=$baseTag
+          else
+            highest=$(npx --yes semver@7.8.5 "$VERSION" "$currentVersion" | tail -1)
+            if [[ "$highest" == "$VERSION" ]]; then
+              packageTag=$baseTag
+            else
+              packageTag=$baseTag-$RELEASE_LINE
+            fi
+          fi
+          echo "Publishing $PACKAGE_NAME@$VERSION with dist-tag '$packageTag' (current $baseTag: ${currentVersion:-none})"
+          echo "packageTag=$packageTag" >> "$GITHUB_OUTPUT"
       - name: Publish package to NPM registry
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -79,12 +112,45 @@ jobs:
           tar -czvf harperfast-harper-${{ steps.version-components.outputs.version }}.tgz package
       - name: Set package tag
         id: package-tag
+        env:
+          PACKAGE_NAME: '@harperfast/harper'
+          VERSION: ${{ steps.version-components.outputs.version }}
+          PRERELEASE: ${{ steps.version-components.outputs.prerelease }}
+          RELEASE_LINE: ${{ steps.version-components.outputs.major }}.${{ steps.version-components.outputs.minor }}
         run: |
-          if [[ "${{ steps.version-components.outputs.prerelease }}" == '' ]]; then
-            echo "packageTag=latest" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$PRERELEASE" == '' ]]; then
+            baseTag=latest
           else
-            echo "packageTag=next" >> "$GITHUB_OUTPUT"
+            baseTag=next
           fi
+          # Only move the base tag forward: a maintenance release (e.g. 5.0.x
+          # published after 5.1.x) must not steal `latest` from a newer line —
+          # it gets a line-scoped tag (e.g. `latest-5.0`) instead. See #1644.
+          # E404 means the tag doesn't exist yet (first publish); any other npm
+          # error must abort — treating it as "no tag" would steal the tag.
+          viewStatus=0
+          currentVersion=$(npm view "$PACKAGE_NAME@$baseTag" version 2>"$RUNNER_TEMP/npm-view.err") || viewStatus=$?
+          if [[ $viewStatus -ne 0 ]]; then
+            if grep -q 'code E404' "$RUNNER_TEMP/npm-view.err"; then
+              currentVersion=''
+            else
+              cat "$RUNNER_TEMP/npm-view.err" >&2
+              exit "$viewStatus"
+            fi
+          fi
+          if [[ -z "$currentVersion" ]]; then
+            packageTag=$baseTag
+          else
+            highest=$(npx --yes semver@7.8.5 "$VERSION" "$currentVersion" | tail -1)
+            if [[ "$highest" == "$VERSION" ]]; then
+              packageTag=$baseTag
+            else
+              packageTag=$baseTag-$RELEASE_LINE
+            fi
+          fi
+          echo "Publishing $PACKAGE_NAME@$VERSION with dist-tag '$packageTag' (current $baseTag: ${currentVersion:-none})"
+          echo "packageTag=$packageTag" >> "$GITHUB_OUTPUT"
       - name: Publish package to NPM registry
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

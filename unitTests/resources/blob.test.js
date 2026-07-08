@@ -24,6 +24,9 @@ const {
 	isBlobComplete,
 	findIncompleteBlobRefs,
 	shouldDestroyIdleBlobSource,
+	registerBlobReceiveInFlight,
+	unregisterBlobReceiveInFlight,
+	isBlobReceiveInFlight,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -35,6 +38,7 @@ const {
 	statSync,
 	truncateSync,
 	writeFileSync,
+	readdirSync,
 } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
@@ -128,6 +132,32 @@ describe('Blob test', () => {
 		assert.equal(sliced.size, 100);
 		retrievedBytes = await sliced.bytes();
 		assert(retrievedBytes.equals(random.slice(300, 400)));
+	});
+	it('round-trips a compressed blob via bytes() and stream()', async () => {
+		// compressible payload, comfortably over FILE_STORAGE_THRESHOLD so it is file-backed
+		let original = Buffer.from('compressible blob payload '.repeat(2000));
+		assert(original.length > 8192);
+		let blob = await createBlob(original, { compress: true });
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(retrievedBytes.equals(original), 'bytes() must return the decompressed original content');
+		assert.equal(record.blob.size, original.length);
+		// the streaming read path must also decompress
+		let streamed = await streamToBuffer(record.blob.stream());
+		assert.equal(streamed, original.toString(), 'stream() must return the decompressed original content');
+	});
+	it('reads a ranged slice of a compressed blob over uncompressed offsets', async () => {
+		let original = Buffer.from('compressible blob payload '.repeat(2000));
+		let blob = await createBlob(original, { compress: true });
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		let sliced = record.blob.slice(300, 400);
+		assert.equal(sliced.size, 100);
+		let slicedBytes = await sliced.bytes();
+		assert(slicedBytes.equals(original.slice(300, 400)), 'ranged read must slice the uncompressed content');
+		let slicedStream = await streamToBuffer(record.blob.slice(300, 400).stream());
+		assert.equal(slicedStream, original.slice(300, 400).toString());
 	});
 	it('create a blob from a buffer and save it before committing', async () => {
 		let random = randomBytes(5000 * Math.random() + 20000);
@@ -230,7 +260,7 @@ describe('Blob test', () => {
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
-		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		assert.notStrictEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
 		filePath = getFilePathForBlob(blob);
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
 		await delay(50); // wait for audit log removal and deletion
@@ -246,7 +276,7 @@ describe('Blob test', () => {
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
-		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		assert.notStrictEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
 		filePath = getFilePathForBlob(blob);
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
 		await delay(50); // wait for audit log removal and deletion
@@ -369,7 +399,7 @@ describe('Blob test', () => {
 		let packResult = encodeBlobsAsBuffers(() => {
 			return pack(record);
 		});
-		assert(packResult.then); // shouldn't be resolved yet
+		assert(!packResult.then); // put gates the commit on the blob's durable save, so pack resolves synchronously
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, expectedResults);
 		assert.equal(await streamResults, expectedResults);
@@ -383,6 +413,34 @@ describe('Blob test', () => {
 		slicedStreamResults = streamToBuffer(slicedStream);
 		assert.equal(await slicedStreamResults, expectedResults.slice(1000, 11000));
 	});
+	it('slice a multi-chunk blob via stream() seeks past the read chunk size (#1457)', async () => {
+		// 0x40000 is the stream() read-buffer size. The older slice tests only cover offsets within the
+		// first chunk; exercise slices whose start and/or end land in later chunks so the seek and the
+		// content-offset accounting are covered (previously the slice would read and discard every chunk
+		// from byte 0, and the past-first-chunk trim was off by HEADER_SIZE).
+		const CHUNK = 0x40000;
+		const data = randomBytes(CHUNK * 2 + 5000);
+		const blob = await createBlob(data); // > FILE_STORAGE_THRESHOLD → file-backed
+		await BlobTest.put({ id: 50, blob });
+		const record = await BlobTest.get(50);
+		const cases = [
+			[100, 200], // within the first chunk (regression guard)
+			[0, CHUNK], // exactly the first chunk
+			[CHUNK - 100, CHUNK + 100], // straddles the first/second chunk boundary
+			[CHUNK + 1000, CHUNK + 2000], // start and end both in the second chunk (seek path)
+			[CHUNK * 2 + 100, undefined], // start in the third chunk, run to EOF
+			[5000, data.length], // start in the first chunk, run to EOF across chunks
+		];
+		for (const [start, end] of cases) {
+			const sliced = end === undefined ? record.blob.slice(start) : record.blob.slice(start, end);
+			const streamed = await streamToBytes(sliced.stream());
+			const expected = data.subarray(start, end);
+			assert(
+				streamed.equals(expected),
+				`slice(${start}, ${end}) stream mismatch: got ${streamed.length} bytes, expected ${expected.length}`
+			);
+		}
+	});
 	it('Abort reading a blob', async () => {
 		let testString = 'this is a test string for deletion'.repeat(800);
 		let blob = await createBlob(Readable.from(testString));
@@ -391,6 +449,53 @@ describe('Blob test', () => {
 			break;
 		}
 		// just make sure there is no error
+	});
+	it('cancel a blob stream mid-read does not throw or reject (#1457)', async () => {
+		// Cancelling while an fs.read may be in flight must not recurse into read(null) (sync throw) or
+		// reject the cancelled pull (unhandled rejection) — the cancel-race the cross-model review caught.
+		const data = randomBytes(0x40000 * 2 + 1000); // multi-chunk, file-backed
+		const blob = await createBlob(data);
+		await BlobTest.put({ id: 51, blob });
+		const record = await BlobTest.get(51);
+		const rejections = [];
+		const onRej = (e) => rejections.push(e);
+		process.on('unhandledRejection', onRej);
+		try {
+			// cancel before any chunk is pulled (start()'s open may still be in flight)
+			await record.blob.stream().getReader().cancel();
+			// cancel after the first chunk, with a second read likely in flight
+			const reader = record.blob.stream().getReader();
+			await reader.read();
+			const racing = reader.read();
+			await reader.cancel();
+			await racing.catch(() => {});
+			await new Promise((res) => setTimeout(res, 50)); // let any late fs.read callback fire
+		} finally {
+			process.off('unhandledRejection', onRej);
+		}
+		assert.deepEqual(rejections, [], 'cancel must not produce unhandled rejections');
+		// the blob is still readable afterwards (no wedged state)
+		assert((await (await BlobTest.get(51)).blob.bytes()).equals(data));
+	});
+	it('cancel before open() resolves does not leak fds (#1457)', async () => {
+		const fdDir = '/proc/self/fd';
+		if (!existsSync(fdDir)) return; // Linux-only fd accounting
+		const data = randomBytes(20000);
+		const blob = await createBlob(data);
+		await BlobTest.put({ id: 52, blob });
+		const record = await BlobTest.get(52);
+		const countFds = () => readdirSync(fdDir).length;
+		await record.blob.stream().getReader().cancel(); // warm up lazy config lookups
+		await new Promise((res) => setTimeout(res, 50));
+		const before = countFds();
+		for (let i = 0; i < 50; i++) {
+			// cancel immediately, while start()'s open() is still in flight: the descriptor it later
+			// acquires must be closed by the cancelled-guard, not leaked.
+			await record.blob.stream().getReader().cancel();
+		}
+		await new Promise((res) => setTimeout(res, 100)); // let in-flight opens resolve and self-close
+		const after = countFds();
+		assert(after - before < 10, `fd leak across 50 cancels: grew from ${before} to ${after}`);
 	});
 	it('Abort writing a blob', async () => {
 		let testString = 'this is a test string'.repeat(256);
@@ -406,15 +511,15 @@ describe('Blob test', () => {
 			}
 		}
 		let blob = createBlob(new BadStream());
-		await BlobTest.put({ id: 5, blob });
+		await assert.rejects(async () => {
+			await BlobTest.put({ id: 5, blob });
+		}, /test error/);
 		let eventError, thrownError;
 		blob.on('error', (err) => {
 			console.log('received error event');
 			eventError = err;
 		});
-		try {
-			await blob.written;
-		} catch {}
+		await assert.rejects(blob.written, /test error/);
 		try {
 			for await (let _entry of blob.stream()) {
 				console.log('got entry');
@@ -424,27 +529,16 @@ describe('Blob test', () => {
 		}
 		assert(thrownError);
 		assert(eventError);
-		thrownError = null;
-		eventError = null;
-		let record = await BlobTest.get(5);
-		record.blob.on('error', (err) => {
-			eventError = err;
-		});
-		try {
-			for await (let _entry of record.blob.stream()) {
-			}
-		} catch (err) {
-			thrownError = err;
-		}
-		assert(thrownError);
-		assert(eventError);
+		assert.equal(await BlobTest.get(5), undefined);
 	});
 	it('Error before streaming', async () => {
 		let pt = new PassThrough();
 		pt.on('error', () => {}); // ignore the uncaught error
 		pt.destroy(new Error('test error'));
 		let blob = createBlob(pt);
-		await BlobTest.put({ id: 6, blob });
+		await assert.rejects(async () => {
+			await BlobTest.put({ id: 6, blob });
+		}, /test error/);
 		let eventError, thrownError;
 		blob.on('error', (err) => {
 			eventError = err;
@@ -458,21 +552,7 @@ describe('Blob test', () => {
 		}
 		assert(thrownError);
 		assert(eventError);
-		thrownError = null;
-		eventError = null;
-
-		let record = await BlobTest.get(6);
-		record.blob.on('error', (err) => {
-			eventError = err;
-		});
-		try {
-			for await (let _entry of record.blob.stream()) {
-			}
-		} catch (err) {
-			thrownError = err;
-		}
-		assert(thrownError);
-		assert(eventError);
+		assert.equal(await BlobTest.get(6), undefined);
 	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
@@ -556,6 +636,25 @@ describe('Blob test', () => {
 		const existing = await BlobTest.get(250);
 		assert.equal(await existing.blob.text(), 'first');
 	});
+	it('gates a local write on a manually started, still-streaming blob save', async () => {
+		// saveBlob assigns the fileId as soon as the save STARTS, so a fileId check alone would
+		// exempt a mid-save blob from the local-write gate and reopen the orphan-reference window
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		saveBlob(blob);
+		slow.write('partial content');
+		const store = BlobTest.primaryStore.rootStore;
+		const preCommit = startPreCommitBlobsForRecord({ id: 8, blob }, store, false, false);
+		assert(preCommit && preCommit.blobs.includes(blob), 'mid-save blob must gate the commit');
+		let completed = false;
+		const completion = preCommit.complete().then(() => (completed = true));
+		await delay(20);
+		assert.equal(completed, false, 'commit must wait for the save to settle');
+		slow.end(' done');
+		await completion;
+		assert.equal(completed, true);
+		unlinkSync(getFilePathForBlob(blob)); // not referenced by any record; keep cleanupOrphans at zero
+	});
 	it('#406: startPreCommitBlobsForRecord tracks an already-saved blob only when trackPersistedBlobs is set', async () => {
 		// A replication-received blob is saved out-of-band by receiveBlobs BEFORE the apply, so at pre-commit
 		// it has a fileId but no saveBeforeCommit flag. It must be tracked (so a superseded apply's cleanup
@@ -613,7 +712,7 @@ describe('Blob test', () => {
 		// the write aborts and retries.
 		const failStream = new PassThrough();
 		const failBlob = await createBlob(failStream, { saveBeforeCommit: true });
-		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, true);
+		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, false);
 		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
 		await assert.rejects(
 			rejectPc.complete(),
@@ -624,7 +723,7 @@ describe('Blob test', () => {
 		// so the record still commits with a diverged reference.
 		const goneStream = new PassThrough();
 		const goneBlob = await createBlob(goneStream, { saveBeforeCommit: true });
-		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, true);
+		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, false);
 		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
 		await assert.doesNotReject(toleratePc.complete(), 'a source-unavailable blob must not abort the commit');
 
@@ -959,7 +1058,7 @@ describe('Blob test', () => {
 		await assert.rejects(Promise.resolve(saving));
 		await new Promise((resolve) => setTimeout(resolve, 50)); // let any async abort-path write land
 		await assert.rejects(blob.bytes(), (error) => {
-			assert.notEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
+			assert.notStrictEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
 			return true;
 		});
 		const filePath = getFilePathForBlob(blob);
@@ -1049,6 +1148,54 @@ describe('Blob test', () => {
 			assert(Date.now() - started < 5000, 'read should fail promptly, not spin');
 		} finally {
 			store.unlock(lockKey);
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+		}
+	});
+	it('#481: register/unregister blob receive-in-flight is refcounted and null-safe', () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const fileId = 'testfile-481-refcount';
+		assert.equal(isBlobReceiveInFlight(fileId, store), false, 'unknown id is not in flight');
+		registerBlobReceiveInFlight(fileId, store);
+		registerBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), true, 'in flight after registration');
+		unregisterBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), true, 'still in flight while one receive remains');
+		unregisterBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), false, 'not in flight once all receives unregister');
+		// An extra unregister on an already-clean id is a no-op, not a negative count.
+		unregisterBlobReceiveInFlight(fileId, store);
+		assert.equal(isBlobReceiveInFlight(fileId, store), false, 'unregister below zero is a no-op');
+		// Falsy fileIds and missing store must not corrupt the registry.
+		registerBlobReceiveInFlight('', store);
+		registerBlobReceiveInFlight(undefined, store);
+		registerBlobReceiveInFlight(fileId, undefined);
+		assert.equal(isBlobReceiveInFlight('', store), false, 'empty fileId is ignored');
+		assert.equal(isBlobReceiveInFlight(fileId, undefined), false, 'no store falls through to false');
+	});
+	it('#481: an ENOENT during an in-flight replication receive returns 503, not 404', async () => {
+		// A peer asks for a blob whose receive has been announced but the file hasn't landed yet.
+		// Pre-fix returned 404 (permanent); the registry flips it to 503 so the requester retries.
+		const { blob, filePath, store } = await makeDiskBackedBlob();
+		const fileId = getFileId(blob);
+		unlinkSync(filePath);
+		env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+		try {
+			registerBlobReceiveInFlight(fileId, store);
+			try {
+				await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+					assert.equal(error.statusCode, 503, 'in-flight receive maps ENOENT to 503');
+					return true;
+				});
+			} finally {
+				unregisterBlobReceiveInFlight(fileId, store);
+			}
+			// Once the receive clears, a cleanly-missing file falls back to 404.
+			await assert.rejects(streamToBuffer(blob.stream()), (error) => {
+				assert.equal(error.statusCode, 404, 'cleanly-missing blob still 404 once receive clears');
+				assert.equal(error.code, 'ENOENT');
+				return true;
+			});
+		} finally {
 			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
 		}
 	});
@@ -1266,4 +1413,12 @@ async function streamToBuffer(stream) {
 		retrievedDataFromStream.push(chunk);
 	}
 	return Buffer.concat(retrievedDataFromStream).toString();
+}
+
+async function streamToBytes(stream) {
+	const chunks = [];
+	for await (const chunk of stream) {
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks);
 }

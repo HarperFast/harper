@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 
 describe('IterableEventQueue', () => {
@@ -48,5 +48,15 @@ describe('IterableEventQueue', () => {
 		q.on('close', close);
 		q.off('close', close);
 		assert.equal(q.hasDataListeners, true, "removing a 'close' listener leaves data state intact");
+	});
+
+	it('waitForDrain resolves when the on(data) attach loop empties the queue without emitting drained', async () => {
+		const q = new IterableEventQueue();
+		q.send({ n: 1 });
+		const drained = q.waitForDrain();
+		q.on('data', () => {}); // attach loop drains the buffered queue synchronously, no 'drained' emit
+		const result = await Promise.race([drained, new Promise((r) => setTimeout(() => r('hung'), 1000))]);
+		assert.equal(result, true, 'waiter must observe the queue emptying through the attach path');
+		assert.equal(q.listenerCount('drained'), 0, 'poll-path settle must remove the drained listener');
 	});
 });

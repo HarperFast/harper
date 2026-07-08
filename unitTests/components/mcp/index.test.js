@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const indexMod = require('#src/components/mcp/index');
 const {
 	registerMcpProfile,

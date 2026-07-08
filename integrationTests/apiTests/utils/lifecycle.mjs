@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { setTimeout } from 'node:timers/promises';
 
 const DEFAULT_READINESS_TIMEOUT_MS = 60000;

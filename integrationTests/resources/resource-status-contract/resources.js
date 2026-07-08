@@ -244,6 +244,24 @@ export class StatusViaObjStatus extends Resource {
 }
 
 // ---------------------------------------------------------------------------
+// THROW-RESPONSE-AFTER-WRITE — POST writes Kv(id) then throws a Response.
+// A thrown Response surfaces its status/body, but (like any throw) ABORTS the
+// transaction, so the write must NOT persist. Documents the "throw = rollback"
+// contract for thrown Responses.
+// ---------------------------------------------------------------------------
+export class ThrowResponseAfterWrite extends Resource {
+	static loadAsInstance = false;
+	async post(query, body) {
+		const id = (body && body.id) || 'twr';
+		await tables.Kv.put({ id, v: 'should-not-persist' });
+		throw new Response(JSON.stringify({ thrown: true, id }), {
+			status: 201,
+			headers: { 'Content-Type': 'application/json' },
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
 // LIVENESS
 // ---------------------------------------------------------------------------
 export class Liveness extends Resource {

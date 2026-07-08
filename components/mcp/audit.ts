@@ -19,7 +19,7 @@ export interface AuditEntry {
 	tool: string;
 	user: string;
 	args: object;
-	status: 'ok' | 'isError' | 'rate_limited' | 'protocol_error';
+	status: 'ok' | 'isError' | 'rate_limited' | 'quota_exceeded' | 'protocol_error';
 	durationMs: number;
 	errorMessage?: string;
 }

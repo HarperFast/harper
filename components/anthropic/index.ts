@@ -257,7 +257,10 @@ export class AnthropicBackend implements ModelBackend {
 			signal,
 		});
 		if (!res.ok) {
-			throw new AnthropicBackendError(`Anthropic ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`);
+			throw new AnthropicBackendError(
+				`Anthropic ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`,
+				res.status
+			);
 		}
 		return res;
 	}
@@ -283,9 +286,13 @@ export function registerAnthropicBackend(args: {
 }
 
 export class AnthropicBackendError extends ServerError {
-	constructor(message: string) {
+	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
+	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
+	declare upstreamStatus?: number;
+	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'AnthropicBackendError';
+		if (upstreamStatus !== undefined) this.upstreamStatus = upstreamStatus;
 	}
 }
 

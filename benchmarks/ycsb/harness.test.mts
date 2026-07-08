@@ -3,7 +3,7 @@
  *   node --test benchmarks/ycsb/
  */
 import { test } from 'node:test';
-import { strictEqual } from 'node:assert/strict';
+import { strictEqual } from 'node:assert';
 import { medianByThroughput, parseOptions } from './harness.mts';
 import type { PhaseResult } from './workload.mts';
 

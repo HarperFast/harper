@@ -11,7 +11,7 @@
  * invariant so a structon regression or an accidental downgrade can't silently reintroduce the loss.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, deepStrictEqual, ok } from 'node:assert/strict';
+import { strictEqual, deepStrictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
