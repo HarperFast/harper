@@ -11,7 +11,7 @@ testUtils.getMockTestPath();
 const operations = rewire('#js/components/operations');
 const env = require('#src/utility/environment/environmentManager');
 const { expect } = chai;
-const configUtils = require('#js/config/configUtils');
+const configUtils = require('#src/config/configUtils');
 
 describe('Test custom functions operations', () => {
 	let sandbox = sinon.createSandbox();

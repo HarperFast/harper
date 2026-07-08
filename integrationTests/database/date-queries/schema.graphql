@@ -1,0 +1,17 @@
+# QA-359 — Date/timestamp storage, range, sort, and edge-case probes.
+
+# Primary table: unindexed Date field for storage round-trip + REST queries
+type Event @table @export {
+	id: ID @primaryKey
+	label: String
+	createdAt: Date
+	seqNum: Int
+}
+
+# Indexed date for index-accelerated range queries
+type EventIdx @table @export {
+	id: ID @primaryKey
+	label: String
+	createdAt: Date @indexed
+	seqNum: Int
+}

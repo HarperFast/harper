@@ -15,7 +15,7 @@ const {
 	InvalidURLPathOptionError,
 } = require('#src/components/ComponentV1');
 const { Resources } = require('#src/resources/Resources');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { join } = require('node:path');
 const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = require('node:fs');
 const { fake, restore, replace } = require('sinon');

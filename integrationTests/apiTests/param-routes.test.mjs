@@ -13,7 +13,7 @@
  * Covers HarperFast/harper#602.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 import { installAppComponent } from './utils/components.mjs';

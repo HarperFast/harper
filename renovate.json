@@ -23,7 +23,8 @@
 		},
 		{
 			"matchPackageNames": ["sinon"],
-			"groupName": "sinon"
+			"groupName": "sinon",
+			"enabled": false
 		},
 		{
 			"groupName": "all non-major dependencies",

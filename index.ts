@@ -29,6 +29,31 @@ export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
 export type { Scope } from './components/Scope.ts';
+export type {
+	ModelBackend,
+	ModelCapabilities,
+	DefineBackendSpec,
+	Capability,
+	ModelRouter,
+	RouteRequest,
+	EmbedOpts,
+	GenerateOpts,
+	GenerateInput,
+	GenerateResult,
+	GenerateChunk,
+	BackendOpts,
+	AccountingContext,
+	ModelCallResult,
+	TokenUsage,
+	Message,
+	ToolDef,
+	ToolCall,
+	ToolHandler,
+	ToolHandlerContext,
+	ToolTraceEntry,
+	ConversationAppender,
+	ConversationTurn,
+} from './resources/models/types.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export type { OptionsWatcher, Config, ConfigValue } from './components/OptionsWatcher.ts';

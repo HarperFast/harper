@@ -27,7 +27,7 @@ import {
 } from './serverHelpers/serverHandlers.js';
 import { registerBunFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
-import { getConfigObj } from '../config/configUtils.js';
+import { getConfigObj } from '../config/configUtils.ts';
 import { registerMcpProfile } from '../components/mcp/index.ts';
 import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
 type ParsedSqlObject = any;

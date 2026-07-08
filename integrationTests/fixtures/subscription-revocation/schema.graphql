@@ -1,0 +1,6 @@
+# Default-RBAC table for live-subscription re-authorization tests (#1414). No allowRead override —
+# access is governed entirely by role/table permissions, which is what re-auth re-evaluates.
+type Owned @table @export {
+	id: ID @primaryKey
+	value: String
+}

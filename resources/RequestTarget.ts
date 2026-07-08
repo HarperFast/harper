@@ -56,6 +56,7 @@ export class RequestTarget extends URLSearchParams {
 	declare previousResidency?: string[];
 
 	// Action tracking
+	/** Cache disposition of a get on a caching table; also mirrored onto the request Context. */
 	declare loadedFromSource?: boolean;
 	declare createdNewId?: string;
 
@@ -64,6 +65,16 @@ export class RequestTarget extends URLSearchParams {
 
 	declare allowFullScan?: boolean;
 	declare allowConditionsOnDynamicAttributes?: boolean;
+
+	/**
+	 * When `false`, the query reads against the latest committed data without holding a consistent
+	 * read snapshot open for the duration of the iteration. This trades read consistency (rows
+	 * written after the scan starts may be observed) for not pinning a snapshot that blocks
+	 * compaction and ties up resources — useful for long-running scans such as analytics queries.
+	 * Defaults to `true` (a stable snapshot is held). Currently only honored by RocksDB-backed
+	 * tables; see `DatabaseTransaction.getReadTxn`.
+	 */
+	declare snapshot?: boolean;
 
 	constructor(target?: string) {
 		let searchIndex: number | undefined;

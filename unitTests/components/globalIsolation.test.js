@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const path = require('node:path');
 const { loadComponent, loadedPaths } = require('#src/components/componentLoader');
 const { PACKAGE_ROOT } = require('#src/utility/packageUtils');
@@ -234,7 +234,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 
 		// Verify the old process was killed and a new one spawned
 		assert(child3.pid, 'New version process should have a PID');
-		assert.notEqual(child1.pid, child3.pid, 'Higher version should have spawned a new process');
+		assert.notStrictEqual(child1.pid, child3.pid, 'Higher version should have spawned a new process');
 
 		// Clean up
 		child3.kill();

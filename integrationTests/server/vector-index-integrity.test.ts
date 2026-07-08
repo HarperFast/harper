@@ -38,7 +38,7 @@
  * Related fixes: commit 251e5b73 (fix(hnsw): six data-integrity fixes)
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations on .mjs utils
@@ -124,6 +124,39 @@ async function vectorSearch(
 	if (opts.limit !== undefined) body.limit = opts.limit;
 	if (opts.select !== undefined) body.select = opts.select;
 	return queryResource(httpURL, headers, resourcePath, body);
+}
+
+/**
+ * Like vectorSearch, but tolerant of a *transient* INDEX_REBUILDING (503).
+ *
+ * `restart_service http_workers` can tear a worker down mid-backfill; the surviving
+ * generation re-runs the backfill via crash-recovery, during which `isIndexing` is briefly
+ * true again and searches legitimately return 503 before the index settles. A single
+ * post-gate search can therefore land in that window even though the index does converge.
+ * Retry until it is stably searchable. A 503 that never clears within the budget still
+ * surfaces — so a genuinely-stuck index (no recovery) is still caught as a failure.
+ */
+async function vectorSearchStable(
+	httpURL: string,
+	headers: Record<string, string>,
+	resourcePath: string,
+	target: number[],
+	opts: { limit?: number; select?: string[] } = {},
+	timeoutMs = 30_000
+): Promise<any[]> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			return await vectorSearch(httpURL, headers, resourcePath, target, opts);
+		} catch (err: any) {
+			const transient = /INDEX_REBUILDING|is not indexed yet/.test(err?.message ?? '');
+			if (transient && Date.now() < deadline) {
+				await sleep(250);
+				continue;
+			}
+			throw err;
+		}
+	}
 }
 
 /**
@@ -219,6 +252,24 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 60_000, in
 	throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
+/**
+ * Run `fn(0..n-1)` with at most `limit` requests in flight at once, preserving
+ * result order. Faster than serializing N round-trips, but caps the fan-out so a
+ * large burst can't exhaust sockets on slow CI runners (vs. firing all N at once).
+ */
+async function mapConcurrent<T>(n: number, limit: number, fn: (i: number) => Promise<T>): Promise<T[]> {
+	const results: T[] = new Array(n);
+	let next = 0;
+	const worker = async () => {
+		while (next < n) {
+			const i = next++;
+			results[i] = await fn(i);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, n) }, worker));
+	return results;
+}
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -226,29 +277,33 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 60_000, in
 suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper) => {
 	let client: any;
 
+	// All four tables are deployed by a SINGLE component with ONE worker restart in `before`.
+	// Previously every test deployed its own component and restarted the HTTP workers (~5 restarts
+	// across the suite); on slow runners that restart is the dominant per-test cost (a test doing
+	// 3 inserts still took ~265s on Windows — almost entirely restart/setup). Consolidating to one
+	// shared restart here — plus the single restart `reindex` needs for its mid-test index-add — is
+	// the bulk of this suite's wall-time. The tables use distinct names/databases so the tests stay
+	// isolated despite sharing one component; `reindex` runs last and is the only test that mutates
+	// the schema afterward, so re-asserting the others on its redeploy is a harmless no-op.
+	const PROJECT = 'vecintegsuite';
+	// ReindexTable starts WITHOUT an index — the reindex test adds it mid-test to exercise backfill.
+	const SCHEMA_INITIAL = [
+		makeSchemaWithIndex('DelEPTable', 'vecinteg1'),
+		makeSchemaWithIndex('ChurnTable', 'vecinteg2'),
+		makeSchemaWithIndex('ThreshTable', 'vecinteg3'),
+		makeSchemaWithoutIndex('ReindexTable', 'vecinteg4'),
+	].join('\n');
+	// Same schema with ReindexTable now indexed — redeployed by the reindex test to trigger backfill.
+	const SCHEMA_REINDEX_INDEXED = [
+		makeSchemaWithIndex('DelEPTable', 'vecinteg1'),
+		makeSchemaWithIndex('ChurnTable', 'vecinteg2'),
+		makeSchemaWithIndex('ThreshTable', 'vecinteg3'),
+		makeSchemaWithIndex('ReindexTable', 'vecinteg4'),
+	].join('\n');
+
 	before(async () => {
 		await startHarper(ctx, { config: {}, env: {} });
 		client = createApiClient(ctx.harper);
-	});
-
-	after(async () => {
-		await teardownHarper(ctx);
-	});
-
-	// ── Test 1: Delete-entry-point survival ─────────────────────────────────
-	test('delete-entry-point: bulk-delete including entry point leaves survivors findable', async () => {
-		// Guards fix #2: entry-point replacement scan now passes the transaction to
-		// getRange and skips the node being deleted.
-		// Pre-fix: getRange ran outside the write-set → re-elected the deleted node
-		// as EP → dangling entry point → subsequent searches returned [].
-		const DB = 'vecinteg1';
-		const TABLE = 'DelEPTable';
-		const PROJECT = 'vecintegsuite1';
-		const DIMS = 8;
-		const N = 50;
-		const SURVIVORS = 10;
-		const deleteCount = N - SURVIVORS;
-
 		await client
 			.req()
 			.send({ operation: 'add_component', project: PROJECT })
@@ -261,19 +316,29 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 			});
 		await client
 			.req()
-			.send({
-				operation: 'set_component_file',
-				project: PROJECT,
-				file: 'schema.graphql',
-				payload: makeSchemaWithIndex(TABLE, DB),
-			})
+			.send({ operation: 'set_component_file', project: PROJECT, file: 'schema.graphql', payload: SCHEMA_INITIAL })
 			.expect(200);
+		// One restart loads all four tables; probing one ready endpoint confirms the workers are back.
+		await restartHttpWorkers(client, '/DelEPTable/');
+	});
 
-		await restartHttpWorkers(client, `/${TABLE}/`);
+	after(async () => {
+		await teardownHarper(ctx);
+	});
 
+	// ── Test 1: Delete-entry-point survival ─────────────────────────────────
+	test('delete-entry-point: bulk-delete including entry point leaves survivors findable', async () => {
+		// Guards fix #2: entry-point replacement scan now passes the transaction to
+		// getRange and skips the node being deleted.
+		// Pre-fix: getRange ran outside the write-set → re-elected the deleted node
+		// as EP → dangling entry point → subsequent searches returned [].
+		const DIMS = 8;
+		const N = 50;
+		const SURVIVORS = 10;
+		const deleteCount = N - SURVIVORS;
 		const httpURL = ctx.harper.httpURL;
 		const headers = client.headers;
-		const path = `/${TABLE}/`;
+		const path = '/DelEPTable/';
 
 		// Insert N records — the first-inserted node becomes the initial entry point.
 		for (let i = 0; i < N; i++) {
@@ -312,38 +377,12 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 		// where the old connection existed, not the full 0..l sweep (correct for DELETE).
 		// The broader sweep destroyed reverse edges that addConnection had just re-added,
 		// accumulating asymmetry with every re-embed round.
-		const DB = 'vecinteg2';
-		const TABLE = 'ChurnTable';
-		const PROJECT = 'vecintegsuite2';
 		const DIMS = 8;
 		const N = 30;
 		const ROUNDS = 5;
-
-		await client
-			.req()
-			.send({ operation: 'add_component', project: PROJECT })
-			.expect((r: any) => {
-				ok(
-					JSON.stringify(r.body).includes('Successfully added project') ||
-						JSON.stringify(r.body).includes('Project already exists'),
-					r.text
-				);
-			});
-		await client
-			.req()
-			.send({
-				operation: 'set_component_file',
-				project: PROJECT,
-				file: 'schema.graphql',
-				payload: makeSchemaWithIndex(TABLE, DB),
-			})
-			.expect(200);
-
-		await restartHttpWorkers(client, `/${TABLE}/`);
-
 		const httpURL = ctx.harper.httpURL;
 		const headers = client.headers;
-		const path = `/${TABLE}/`;
+		const path = '/ChurnTable/';
 
 		for (let i = 0; i < N; i++) {
 			await insertRecord(httpURL, headers, path, { id: `churn-${i}`, embedding: seedVector(i, DIMS) });
@@ -360,12 +399,15 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 		}
 
 		// Each record's final vector is seedVector(i*100 + ROUNDS, dims).
-		// Searching for that exact vector must return it in the top-5.
+		// Searching for that exact vector must return it in the top-5. These are
+		// independent read-only searches, so run them concurrently (bounded fan-out)
+		// rather than serializing N round-trips.
+		const churnResults = await mapConcurrent(N, 10, (i) =>
+			vectorSearch(httpURL, headers, path, seedVector(i * 100 + ROUNDS, DIMS), { limit: 5 })
+		);
 		let misses = 0;
 		for (let i = 0; i < N; i++) {
-			const finalVec = seedVector(i * 100 + ROUNDS, DIMS);
-			const results = await vectorSearch(httpURL, headers, path, finalVec, { limit: 5 });
-			if (!results.some((r: any) => r.id === `churn-${i}`)) misses++;
+			if (!churnResults[i].some((r: any) => r.id === `churn-${i}`)) misses++;
 		}
 		const allowed = Math.ceil(N * 0.1);
 		ok(misses <= allowed, `expected ≤${allowed} misses after ${ROUNDS} churn rounds; got ${misses}/${N}`);
@@ -375,35 +417,9 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 	test('threshold queries: le includes exact boundary; le(~0) returns exact-match only', async () => {
 		// Guards fix #6b: le comparator now uses <= (was <).
 		// Pre-fix: records at exactly the threshold distance were excluded by le.
-		const DB = 'vecinteg3';
-		const TABLE = 'ThreshTable';
-		const PROJECT = 'vecintegsuite3';
-
-		await client
-			.req()
-			.send({ operation: 'add_component', project: PROJECT })
-			.expect((r: any) => {
-				ok(
-					JSON.stringify(r.body).includes('Successfully added project') ||
-						JSON.stringify(r.body).includes('Project already exists'),
-					r.text
-				);
-			});
-		await client
-			.req()
-			.send({
-				operation: 'set_component_file',
-				project: PROJECT,
-				file: 'schema.graphql',
-				payload: makeSchemaWithIndex(TABLE, DB),
-			})
-			.expect(200);
-
-		await restartHttpWorkers(client, `/${TABLE}/`);
-
 		const httpURL = ctx.harper.httpURL;
 		const headers = client.headers;
-		const path = `/${TABLE}/`;
+		const path = '/ThreshTable/';
 
 		// 2-D vectors at three well-separated cosine distances from [1,0]:
 		//   [1,0]            → distance 0      (exact; representable in float32, so exactly 0)
@@ -464,41 +480,25 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 		// on structural index change so runIndexing starts clean).
 		const DB = 'vecinteg4';
 		const TABLE = 'ReindexTable';
-		const PROJECT = 'vecintegsuite4';
 		const DIMS = 8;
 		const N = 40;
+		const httpURL = ctx.harper.httpURL;
+		const headers = client.headers;
+		const path = '/ReindexTable/';
 
-		// Step 1: Deploy schema WITHOUT the HNSW index.
-		await client
-			.req()
-			.send({ operation: 'add_component', project: PROJECT })
-			.expect((r: any) => {
-				ok(
-					JSON.stringify(r.body).includes('Successfully added project') ||
-						JSON.stringify(r.body).includes('Project already exists'),
-					r.text
-				);
-			});
+		// Step 1: ReindexTable was deployed WITHOUT an HNSW index by the shared `before` setup.
+		// Step 2: Insert N records (plain [Float], no HNSW index yet). Bulk-insert in a
+		// single request — there is no index during insert, so per-record ordering is
+		// irrelevant here; the backfill (Step 3) builds the index from the stored rows.
 		await client
 			.req()
 			.send({
-				operation: 'set_component_file',
-				project: PROJECT,
-				file: 'schema.graphql',
-				payload: makeSchemaWithoutIndex(TABLE, DB),
+				operation: 'insert',
+				database: DB,
+				table: TABLE,
+				records: Array.from({ length: N }, (_, i) => ({ id: `reindex-${i}`, embedding: seedVector(i, DIMS) })),
 			})
 			.expect(200);
-
-		await restartHttpWorkers(client, `/${TABLE}/`);
-
-		const httpURL = ctx.harper.httpURL;
-		const headers = client.headers;
-		const path = `/${TABLE}/`;
-
-		// Step 2: Insert N records (plain [Float], no HNSW index yet).
-		for (let i = 0; i < N; i++) {
-			await insertRecord(httpURL, headers, path, { id: `reindex-${i}`, embedding: seedVector(i, DIMS) });
-		}
 
 		// Sanity-check: records exist.
 		const hashCheck = await client
@@ -513,38 +513,43 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 			.expect(200);
 		ok(Array.isArray(hashCheck.body) && hashCheck.body.length === 1, 'reindex-0 must exist before reindex');
 
-		// Step 3: Alter schema to ADD the HNSW index → triggers runIndexing backfill.
+		// Step 3: Alter schema to ADD the HNSW index on ReindexTable → triggers runIndexing
+		// backfill. Redeploy the full schema (the other three tables are unchanged, so this is
+		// a no-op re-assert for them); reindex runs last, so restarting them here is harmless.
 		await client
 			.req()
 			.send({
 				operation: 'set_component_file',
 				project: PROJECT,
 				file: 'schema.graphql',
-				payload: makeSchemaWithIndex(TABLE, DB),
+				payload: SCHEMA_REINDEX_INDEXED,
 			})
 			.expect(200);
 
 		await restartHttpWorkers(client, `/${TABLE}/`);
 
-		// Step 4: Poll until backfill completes (search returns results).
-		// During indexing the HNSW index has isIndexing=true and searches return 503.
-		await waitFor(async () => {
-			try {
-				const results = await vectorSearch(httpURL, headers, path, seedVector(0, DIMS), { limit: 5 });
-				return results.length > 0;
-			} catch {
-				return false;
-			}
-		}, 60_000);
-
-		// Step 5: All N pre-existing records must be reachable.
-		let misses = 0;
-		for (let i = 0; i < N; i++) {
-			const vec = seedVector(i, DIMS);
-			const results = await vectorSearch(httpURL, headers, path, vec, { limit: 5 });
-			if (!results.some((r: any) => r.id === `reindex-${i}`)) misses++;
-		}
+		// Steps 4 & 5: All N pre-existing records must be reachable after backfill.
+		// The backfill settles per HTTP worker after the restart: during indexing a
+		// worker's HNSW index has isIndexing=true (searches 503), and a worker that
+		// hasn't yet reloaded the index-adding schema reports "embedding is not
+		// indexed". Either state makes a record look like a miss, so poll the full
+		// recall check (bounded-concurrency read-back) until it converges rather than
+		// asserting on a single burst fired the instant one worker happens to be ready.
+		// Use vectorSearchStable so a transient INDEX_REBUILDING from a recovery-reindex
+		// window (a restart-interrupted backfill resuming) doesn't get counted as a miss;
+		// a permanently-stuck index still never converges and fails below.
 		const allowed = Math.ceil(N * 0.1);
+		let misses = N;
+		await waitFor(async () => {
+			const reindexResults = await mapConcurrent(N, 10, (i) =>
+				vectorSearchStable(httpURL, headers, path, seedVector(i, DIMS), { limit: 5 }).catch(() => [] as any[])
+			);
+			misses = 0;
+			for (let i = 0; i < N; i++) {
+				if (!reindexResults[i].some((r: any) => r.id === `reindex-${i}`)) misses++;
+			}
+			return misses <= allowed;
+		}, 60_000);
 		ok(misses <= allowed, `expected ≤${allowed} misses after backfill; got ${misses}/${N}`);
 
 		// Step 6: Post-backfill mutations must work correctly.
@@ -560,7 +565,7 @@ suite('HNSW vector-index data-integrity (integration)', (ctx: ContextWithHarper)
 
 		// reindex-0's new vector (seed 1000) must be near the top; deleted records absent.
 		const updatedVec = seedVector(1000, DIMS);
-		const afterResults = await vectorSearch(httpURL, headers, path, updatedVec, { limit: 15 });
+		const afterResults = await vectorSearchStable(httpURL, headers, path, updatedVec, { limit: 15 });
 		const afterIds = new Set(afterResults.map((r: any) => r.id));
 
 		ok(afterIds.has('reindex-0'), 'updated reindex-0 must appear near its new vector');

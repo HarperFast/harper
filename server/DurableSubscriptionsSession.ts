@@ -126,7 +126,11 @@ export async function getSession({
 	if (will) {
 		will.id = sessionId;
 		will.user = { username: user?.username };
-		getLastWill().put(will);
+		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
+		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
+		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
+		// reads this same record back to publish the will, finds nothing, and silently drops it.
+		await getLastWill().put(will);
 	}
 	if (keepalive) {
 		// keep alive is the interval in seconds that the client will send a ping to the server
@@ -480,8 +484,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							}
 							subscription.acks.push(update.timestamp);
 							trace('Received ack', topic, update.timestamp);
-							getDurableSession().put(this.sessionRecord, { source: true }); // add source: true context to bypass any overloaded checks, as skipping this can lead to increased load
-							return;
+							// add source: true context to bypass any overloaded checks, as skipping this can lead to increased load
+							return getDurableSession().put(this.sessionRecord, { source: true });
 						}
 					}
 				}
@@ -493,7 +497,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				subscription.startTime = update.timestamp;
 			}
 		}
-		getDurableSession().put(this.sessionRecord, { source: true });
+		return getDurableSession().put(this.sessionRecord, { source: true });
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 

@@ -7,7 +7,7 @@ const path = require('path');
 const minimist = require('minimist');
 const fs = require('fs-extra');
 const _ = require('lodash');
-const { getConfigPath } = require('../../../../config/configUtils.js');
+const { getConfigPath } = require('../../../../config/configUtils.ts');
 env.initSync();
 
 const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdbTerms;

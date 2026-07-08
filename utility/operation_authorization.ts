@@ -30,7 +30,7 @@ import * as permsTranslator from '../security/permissionsTranslator.js';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 import * as functionsOperations from '../components/operations.js';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
@@ -231,6 +231,18 @@ requiredPermissions.set(
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_COMPONENT_FILE)
 );
 requiredPermissions.set(functionsOperations.setComponentFile.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.getEnvKeys.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_ENV_KEYS)
+);
+requiredPermissions.set(
+	functionsOperations.setEnvValue.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_ENV_VALUE)
+);
+requiredPermissions.set(
+	functionsOperations.deleteEnvValue.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_ENV_VALUE)
+);
 requiredPermissions.set(functionsOperations.dropComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	functionsOperations.getCustomFunction.name,

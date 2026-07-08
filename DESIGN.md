@@ -29,6 +29,8 @@ In `getFromSource()` (`Table.ts`), the promise that callers await resolves with 
 
 Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
 
+The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
@@ -236,3 +238,19 @@ set; and the cert subscription shares the same debounced `scheduleRebuild` (same
 its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
 `integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
 (it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
+
+## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
+
+`server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
+`req.replicated \!== false` — absence of the flag means "replicate". That default-on contract is what
+DDL ops rely on (`dropSchema`/`dropTable` call it unconditionally), so a handler that mirrors the
+drop_schema pattern without a guard silently becomes replicate-by-default. `setConfiguration` must
+stay **opt-in** (`if (replicated)` truthy guard) because config bodies routinely carry node-local
+params (ports, paths, node identity) that would clobber peers. Two invariants to preserve:
+`replicated` must remain in the handler's destructure strip-list on both origin and peers (peers
+receive `replicated: false` in the forwarded body; anything not stripped is treated as a config
+param), and there is deliberately **no** per-param node-local/cluster-wide guard here — per-field
+replicability metadata is deferred to the cluster-level-config work (CORE-3018), which will own that
+schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
+in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
+operators must inspect the array for per-node outcomes.

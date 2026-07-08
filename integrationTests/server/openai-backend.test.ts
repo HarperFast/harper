@@ -17,7 +17,7 @@
  * contract check against the real OpenAI HTTP surface.
  */
 import { suite, test, before } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import type { GenerateChunk, GenerateOpts, GenerateResult, Models as ModelsApi } from '../../resources/models/types.ts';
 
 // NOTE: `OpenAIBackend` is imported dynamically inside `before()` rather than

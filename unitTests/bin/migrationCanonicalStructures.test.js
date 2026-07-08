@@ -7,7 +7,7 @@
 // prevention -- needs the runtime's multi-CF open + per-worker encoder wiring, which this single-handle
 // harness can't replicate; that is validated by the cluster repro. See the NOTE on the describe below.)
 const fs = require('fs-extra');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const path = require('path');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');

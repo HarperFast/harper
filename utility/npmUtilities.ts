@@ -11,7 +11,7 @@ import * as validator from '../validation/validationWrapper.ts';
 import harperLogger from './logging/harper_logger.ts';
 
 import { CONFIG_PARAMS } from './hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.ts';
 import { nonInteractiveSpawn } from '../components/Application.ts';
 
 /**

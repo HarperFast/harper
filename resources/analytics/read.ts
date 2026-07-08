@@ -229,7 +229,10 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		}
 	}
 
-	const request: any = { conditions, allowConditionsOnDynamicAttributes: true };
+	// `snapshot: false` lets these (potentially long-running) analytics scans read against the
+	// latest committed data without holding a consistent read snapshot open, so they stay easier
+	// on the rest of the system (a pinned snapshot would block compaction for the scan's duration).
+	const request: any = { conditions, allowConditionsOnDynamicAttributes: true, snapshot: false };
 	if (select.length > 0) {
 		request['select'] = select;
 	}

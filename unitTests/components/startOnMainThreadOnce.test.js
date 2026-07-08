@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const sinon = require('sinon');
 const path = require('node:path');
 const { isMainThread } = require('node:worker_threads');
@@ -35,7 +35,7 @@ describe('startOnMainThread once-per-component (#460)', function () {
 			return '';
 		});
 
-		const configUtils = require('#js/config/configUtils');
+		const configUtils = require('#src/config/configUtils');
 		sandbox.stub(configUtils, 'getConfigObj').returns({});
 
 		componentLoader = require('#src/components/componentLoader');

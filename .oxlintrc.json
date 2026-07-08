@@ -27,7 +27,22 @@
 		"no-dupe-keys": "off",
 		"unicorn/no-useless-spread": "off",
 		"unicorn/no-invalid-fetch-options": "off",
-		"oxc/const-comparisons": "off"
+		"oxc/const-comparisons": "off",
+		"no-restricted-imports": [
+			"error",
+			{
+				"paths": [
+					{
+						"name": "node:assert/strict",
+						"message": "Use plain node:assert; call assert.strictEqual/deepStrictEqual for strict checks (AGENTS.md test style)."
+					},
+					{
+						"name": "assert/strict",
+						"message": "Use plain node:assert; call assert.strictEqual/deepStrictEqual for strict checks (AGENTS.md test style)."
+					}
+				]
+			}
+		]
 	},
 	"settings": {
 		"jsdoc": {

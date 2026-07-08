@@ -7,7 +7,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert/strict';
+import { ok } from 'node:assert';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
