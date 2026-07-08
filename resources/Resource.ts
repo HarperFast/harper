@@ -672,8 +672,20 @@ function transactional(
 		// harper-pro's replication/subscriptionManager.ts ensureNode(), which is called twice in
 		// sequence (once for this node, once for a peer) from a single add_node/add_node_back
 		// operation handler and reproduced this exact loss in a live cluster-formation test.
-		if (context?.transaction?.open === TRANSACTION_STATE.OPEN) {
-			// we are already in a transaction, proceed
+		//
+		// A transaction that is no longer OPEN reached that state one of two ways, and they need
+		// opposite treatment:
+		//  - committed: the prior call ran to completion normally. Safe to silently start a fresh
+		//    transaction for this independent call (the case above).
+		//  - aborted due to exceeding storage.maxTransactionOpenTime (#1411, DatabaseTransaction.ts
+		//    abortDueToTimeout(), marked via the `timedOut` poison flag): the whole logical operation
+		//    must fail atomically, not have this write quietly land on a brand-new transaction while
+		//    the earlier write(s) were rolled back. Joining the poisoned transaction here (instead of
+		//    starting fresh) makes the write throw transactionOpenTooLongError via addWrite()/commit()'s
+		//    poison check, correctly propagating the abort to the caller. See
+		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
+		if (context?.transaction?.open === TRANSACTION_STATE.OPEN || context?.transaction?.timedOut) {
+			// we are already in a transaction (or it was poisoned by a timeout abort and must fail), proceed
 			const resource = this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
