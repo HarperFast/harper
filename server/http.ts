@@ -918,7 +918,11 @@ function makeCallbackChain(
 			);
 		}
 	}
-	return buildCallbackChain(responders, portNum, unhandled, onCycle, requestArgIndex);
+	return buildCallbackChain(responders, portNum, unhandled, onCycle, requestArgIndex, ({ entryName, kind: refKind, target }) => {
+		harperLogger.warn(
+			`Middleware ordering: ${entryName ? `'${entryName}'` : 'a handler'} requested \`${refKind}: '${target}'\` but no handler named '${target}' is registered on port ${portNum}, so the constraint is ignored. Handler names are the config keys as registered (e.g. 'rest').`
+		);
+	});
 }
 
 /**

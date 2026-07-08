@@ -147,7 +147,7 @@ export class OllamaBackend implements ModelBackend {
 			signal,
 		});
 		if (!res.ok) {
-			throw new OllamaBackendError(`Ollama ${path} returned HTTP ${res.status}`);
+			throw new OllamaBackendError(`Ollama ${path} returned HTTP ${res.status}`, res.status);
 		}
 		return res;
 	}
@@ -169,9 +169,13 @@ export function registerOllamaBackend(args: {
 }
 
 export class OllamaBackendError extends ServerError {
-	constructor(message: string) {
+	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
+	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
+	declare upstreamStatus?: number;
+	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'OllamaBackendError';
+		if (upstreamStatus !== undefined) this.upstreamStatus = upstreamStatus;
 	}
 }
 

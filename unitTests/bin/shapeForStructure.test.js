@@ -21,7 +21,7 @@ describe('shapeForStructure (#1508)', function () {
 		record.tags = ['x', 'y'];
 		record.nested = { level: 1, child: { k: 'v' } };
 		const shape = shapeForStructure(record);
-		assert.notEqual(shape, 1, 'a decoded record was stubbed to a scalar -> observer mints no structure (#1508)');
+		assert.notStrictEqual(shape, 1, 'a decoded record was stubbed to a scalar -> observer mints no structure (#1508)');
 		assert.deepEqual(shape, { id: 1, name: 1, tags: [1, 1], nested: { level: 1, child: { k: 1 } } });
 	});
 

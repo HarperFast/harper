@@ -27,7 +27,7 @@
  * input text so assertions can compare exact values.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';

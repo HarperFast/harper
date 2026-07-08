@@ -4,6 +4,7 @@ import { assert } from 'chai';
 import axios from 'axios';
 import { setupTestApp, baseUrl } from './setupTestApp.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { waitFor } from '../waitFor.js';
 
 describe('test REST calls with cache table', () => {
 	before(async () => {
@@ -82,6 +83,25 @@ describe('test REST calls with cache table', () => {
 			assert.equal(response.status, 200);
 			assert.equal(response.data, 'test');
 			assert.equal(response.headers.get('cache-control'), 'max-age=10, s-maxage=20');
+			assert.equal(response.headers.get('x-custom-header'), 'custom value');
+		});
+		it('stored record headers survive the response path (#1702)', async () => {
+			// finalizeResponse must not mutate the live record queued for the deferred cache commit
+			// (it previously overwrote `headers` with a web Headers, persisting `{}` under LMDB).
+			// The first get warms the cache and queues the async commit; subsequent gets are cache
+			// hits served from the persisted record, so they fail if the stored headers were
+			// corrupted by the first request's response handling. Poll rather than fixed-delay so the
+			// deferred-commit wait doesn't race a loaded runner (AGENTS.md #1138).
+			await axios.get(`${baseUrl}/CacheOfHttp/created-response`);
+			const response = await waitFor(
+				async () => {
+					const r = await axios.get(`${baseUrl}/CacheOfHttp/created-response`);
+					return r.headers.get('cache-control') === 'max-age=10, s-maxage=20' ? r : false;
+				},
+				{ timeout: 2000, interval: 20, message: 'stored cache headers did not survive the response path (#1702)' }
+			);
+			assert.equal(response.status, 200);
+			assert.equal(response.data, 'test');
 			assert.equal(response.headers.get('x-custom-header'), 'custom value');
 		});
 		it('get resolved with fetch body as text', async () => {

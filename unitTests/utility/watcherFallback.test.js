@@ -4,7 +4,7 @@ const {
 	warnWatcherFallback,
 	_resetForTests,
 } = require('#src/utility/watcherFallback');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 
 describe('watcherFallback', () => {
 	describe('isWatcherExhaustionError', () => {

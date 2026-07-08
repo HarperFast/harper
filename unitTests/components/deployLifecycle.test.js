@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { deployLifecycle, _resetForTests } = require('#src/components/deployLifecycle');
 
 describe('deployLifecycle', () => {

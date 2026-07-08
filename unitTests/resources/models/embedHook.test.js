@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { buildEmbedBefore, createDefaultEmbedder, __setEmbedFnForTest } = require('#src/resources/models/embedHook');
 
 const VECTOR_F32 = new Float32Array([0.1, 0.2, 0.3]);
@@ -236,6 +236,29 @@ describe('embedHook', () => {
 			});
 			// record.embedding should not have been written
 			assert.equal(record.embedding, undefined);
+		});
+
+		it('includes safe identifiers (error class, upstream HTTP status) in the sanitized error (#1593)', async () => {
+			const record = { content: 'hello' };
+			const backendError = new Error('https://internal-embed.svc:9000 404 key=sk-abc123 models/default is not found');
+			backendError.name = 'OpenAIBackendError';
+			backendError.upstreamStatus = 404;
+			backendError.statusCode = 500; // Harper's own response status must NOT be reported as the backend status
+			const before = buildEmbedBefore(record, {}, {}, attrs, {
+				embedding: async () => {
+					throw backendError;
+				},
+			});
+			assert.ok(before);
+			await assert.rejects(before(), (err) => {
+				assert.ok(!/sk-abc123/.test(err.message), 'API key tail leaked');
+				assert.ok(!/internal-embed\.svc/.test(err.message), 'internal hostname leaked');
+				assert.ok(/OpenAIBackendError/.test(err.message), 'error class name should be included');
+				assert.ok(/404/.test(err.message), 'upstream HTTP status should be included');
+				assert.ok(!/500/.test(err.message), "Harper's own statusCode must not be labeled as the backend status");
+				assert.ok(/server log/i.test(err.message), 'should point at the server log for details');
+				return true;
+			});
 		});
 	});
 });

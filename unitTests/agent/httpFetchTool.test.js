@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { httpFetchTool } = require('#src/agent/tools/httpFetchTool');
 
 const ctx = { sessionId: 'sess', scopes: { componentsRoot: '/tmp', logDir: '/tmp', configDir: '/tmp' } };

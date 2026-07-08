@@ -20,7 +20,7 @@
  * configured and registering a sample Resource.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -93,8 +93,7 @@ suite('MCP v1 conformance against @modelcontextprotocol/sdk (operations profile)
 		ok(Array.isArray(result.content), 'result.content is an array');
 		ok(result.content.length > 0, 'at least one content frame');
 		const text = result.content.find((c: { type: string }) => c.type === 'text') as
-			| { type: string; text: string }
-			| undefined;
+			{ type: string; text: string } | undefined;
 		ok(text, 'a text content frame is present');
 		// describe_all returns a database/table tree under the admin user.
 		// We don't assert specific contents — just that it parses as JSON

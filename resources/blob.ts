@@ -61,6 +61,7 @@ type StorageInfo = {
 	start?: number;
 	end?: number;
 	saving?: Promise<void>;
+	saved?: boolean; // saving settled successfully; distinguishes durable from still-streaming when fileId is already assigned
 	asString?: string;
 	deleteOnFailure?: boolean;
 };
@@ -1150,6 +1151,14 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			}
 		}
 	});
+	// Mark durable on settle: fileId is assigned as soon as a save STARTS, so pre-commit gating
+	// needs this to tell a durable blob from one still streaming (review on the local-write gate)
+	storageInfo.saving.then(
+		() => {
+			storageInfo.saved = true;
+		},
+		() => {}
+	);
 	return blob;
 }
 
@@ -1583,14 +1592,37 @@ export function startPreCommitBlobsForRecord(
 		// retained-fileId guard in cleanupUnusedBlobs additionally protects any blob the committed record
 		// still references.
 		if (value instanceof FileBackedBlob) {
-			if (saveInRecord || value.saveBeforeCommit) {
+			if (trackPersistedBlobs) {
+				// Replication-apply path: the blob was received out-of-band and its durability
+				// is tracked separately via outstandingBlobsToFinish. Awaiting it here would
+				// deadlock a paused WS (see the block comment above). This branch must come
+				// FIRST: `saveBeforeCommit` rides the wire (pack spreads own properties, unpack
+				// Object.assigns them back), so an origin-side flag would otherwise gate this
+				// apply's commit on an in-flight receive stream whose chunks are queued behind
+				// the paused socket - the copy-leg deadlock (record commits stall, the queue
+				// never drains, the sender's copy watchdog kills the leg every 300s).
+				if (storageInfoForBlob.get(value)?.fileId != null) {
+					blobsToTrackOnly.push(value);
+				}
+			} else if (saveInRecord || value.saveBeforeCommit) {
 				currentStore = store;
 				if (saveInRecord) {
 					value.saveInRecord = true;
 				}
 				blobsNeedingSaving.push(value);
-			} else if (trackPersistedBlobs && storageInfoForBlob.get(value)?.fileId != null) {
-				blobsToTrackOnly.push(value);
+			} else if (
+				storageInfoForBlob.get(value)?.fileId == null ||
+				(storageInfoForBlob.get(value)?.saving != null && !storageInfoForBlob.get(value)?.saved)
+			) {
+				// Local-write path with a fresh blob: gate the record commit on the blob's
+				// durable landing. Without this the record commits before the async save has
+				// fsync'd, and a peer that pulls the record first sees an orphan ref and marks
+				// the record permanently diverged (a variant of the harper-pro#481 pattern
+				// reachable via the write path rather than the receive path). Not a deadlock
+				// risk like the trackPersistedBlobs branch: local blob sources are the HTTP
+				// body or an in-memory buffer, not a paused WS receive stream.
+				currentStore = store;
+				blobsNeedingSaving.push(value);
 			}
 		}
 	}
@@ -1708,7 +1740,9 @@ addExtension({
 				throw new Error('Cannot use the same blob in two different records');
 			}
 		}
-		const options = { ...blob };
+		// saveBeforeCommit/saveInRecord are origin-local write instructions, not blob data;
+		// shipping them makes the receiver's apply commit gate on an in-flight receive stream
+		const { saveBeforeCommit: _sbc, saveInRecord: _sir, ...options } = blob as any;
 		if (blob.type) options.type = blob.type;
 		if (blob.size !== undefined) options.size = blob.size;
 		if (storageInfo) {

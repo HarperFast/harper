@@ -16,7 +16,7 @@
  * Skipped on Bun: timing-sensitive TTL tests are not reliable under Harper-on-Bun in CI.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';

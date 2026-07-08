@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { validateStatus, STATUS_SCHEMAS, STATUS_ALLOWED, STATUS_DEFAULT } = require('#src/validation/statusValidator');
 
 describe('statusValidator', function () {
