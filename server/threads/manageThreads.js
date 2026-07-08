@@ -57,8 +57,63 @@ const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
 const REMOVE_PORT = 'remove-port';
 const FORCE_EXIT = 'force-exit';
+// Worker -> main request to push out the force-terminate backstop while the worker gracefully drains
+// in-flight work (e.g. replication blob sends) before shutdown. Carries an absolute epoch deadline.
+const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
 let getThreadInfo;
+// Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
+let selfExitTimer;
+// An extended self-exit deadline requested by a drain (absolute epoch ms), honored regardless of whether
+// it is recorded before or after the SHUTDOWN handler arms the timer (the two race across listeners).
+let selfExitDrainDeadline = 0;
 _assignPackageExport('threads', connectedPorts);
+
+// Worker-side: (re)arm the self-exit backstop `delay` ms out, but never earlier than a drain deadline
+// already requested via extendShutdownDeadline (so ordering between the SHUTDOWN handler and the drain
+// extension doesn't matter).
+function armSelfExit(delay) {
+	if (selfExitDrainDeadline) {
+		// selfExitDrainDeadline is already clamped to the configured ceiling (see boundedTerminateDelay),
+		// but adding threadTerminationTimeout headroom on top can push the sum back over the max timer
+		// value at the extreme end of that ceiling, silently defeating the overflow guard.
+		const { MAX_TIMER_MS } = require('../../components/shutdownDrain.ts');
+		delay = Math.max(
+			delay,
+			Math.min(Math.max(0, selfExitDrainDeadline - Date.now()) + threadTerminationTimeout, MAX_TIMER_MS)
+		);
+	}
+	if (selfExitTimer) clearTimeout(selfExitTimer);
+	selfExitTimer = setTimeout(() => {
+		harperLogger.warn('Thread did not voluntarily terminate', threadId);
+		// Note that if this occurs, you may want to use this to debug what is currently running:
+		// require('why-is-node-running')();
+		realExit(0);
+	}, delay).unref(); // don't block the shutdown
+}
+
+// Worker-side: push both termination backstops out to `deadlineMs` (an absolute epoch timestamp) so the
+// worker can gracefully drain in-flight work before exiting. Extends the local self-exit timer and asks
+// the main thread to extend its external force-terminate timer to match. Called from the shutdown path
+// only when there is real work to drain (see threadServer / shutdownDrain), so an unrelated hang is
+// still force-killed on the normal short timeout.
+function extendShutdownDeadline(deadlineMs) {
+	selfExitDrainDeadline = Math.max(selfExitDrainDeadline, deadlineMs);
+	if (selfExitTimer) armSelfExit(0); // re-arm honoring the (now recorded) drain deadline
+	try {
+		parentPort?.postMessage({ type: EXTEND_SHUTDOWN_DEADLINE, deadlineMs });
+	} catch {}
+}
+
+// Worker-side: drop a drain extension once draining is done, restoring the normal short backstops for
+// the remaining shutdown steps (closeServers / scope disposal) so a later hang is still force-killed
+// promptly. Posting a now-deadline re-arms the main thread's terminate timer back to its normal window.
+function restoreShutdownDeadline() {
+	selfExitDrainDeadline = 0;
+	if (selfExitTimer) armSelfExit(threadTerminationTimeout);
+	try {
+		parentPort?.postMessage({ type: EXTEND_SHUTDOWN_DEADLINE, deadlineMs: Date.now() });
+	} catch {}
+}
 
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
@@ -79,6 +134,8 @@ module.exports = {
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
+	extendShutdownDeadline,
+	restoreShutdownDeadline,
 	registerWorkerDataProvider,
 	restartNumber: workerData?.restartNumber || 1,
 };
@@ -197,6 +254,9 @@ if (!parentPort) {
 	});
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
 		if (worker) recordResourceReport(worker, message);
+	});
+	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
+		worker?.extendTerminateDeadline?.(message.deadlineMs);
 	});
 }
 // postMessage type listeners that are registered in other ways or can be registered later
@@ -469,19 +529,37 @@ async function restartWorkers(
 			if (overlapping && startReplacementThreads && !canPreStartReplacement) worker.startCopy();
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
-				let timeout = setTimeout(() => {
-					harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-					if (isBun) {
-						// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
-						try {
-							worker.postMessage({ type: FORCE_EXIT });
-						} catch {}
-					} else {
-						worker.terminate();
-					}
-				}, threadTerminationTimeout * 2).unref();
+				const armTerminate = (delay) =>
+					setTimeout(() => {
+						harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+						if (isBun) {
+							// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
+							try {
+								worker.postMessage({ type: FORCE_EXIT });
+							} catch {}
+						} else {
+							worker.terminate();
+						}
+					}, delay).unref();
+				let timeout = armTerminate(threadTerminationTimeout * 2);
+				// The worker can push this backstop out while it gracefully drains in-flight work (e.g. a
+				// replication blob send) before exiting. It only asks when it actually has such work, so a
+				// worker hung for an unrelated reason is still force-killed on the normal short timeout.
+				// This timer is armed synchronously above, in the same tick as the SHUTDOWN post, so the
+				// worker's EXTEND request can only arrive after it exists.
+				worker.extendTerminateDeadline = (deadlineMs) => {
+					clearTimeout(timeout);
+					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
+					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
+					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
+					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+					timeout = armTerminate(
+						boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
+					);
+				};
 				worker.on('exit', () => {
 					clearTimeout(timeout);
+					worker.extendTerminateDeadline = undefined;
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
@@ -851,12 +929,7 @@ if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
 		module.exports.restartNumber = message.restartNumber;
 		parentPort.unref(); // remove this handle
-		setTimeout(() => {
-			harperLogger.warn('Thread did not voluntarily terminate', threadId);
-			// Note that if this occurs, you may want to use this to debug what is currently running:
-			// require('why-is-node-running')();
-			realExit(0);
-		}, threadTerminationTimeout).unref(); // don't block the shutdown
+		armSelfExit(threadTerminationTimeout);
 	});
 	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT
 	// instead, and the worker self-exits cleanly to avoid the crash.
