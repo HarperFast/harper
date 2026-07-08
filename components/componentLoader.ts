@@ -391,6 +391,12 @@ export async function loadComponent(
 
 			compName = componentName;
 			const componentConfig = config[componentName];
+			// TEMP #1616-debug (revert before merge): pin why modelsGateway 404s in CI only
+			if (componentName === 'modelsGateway') {
+				harperLogger.error(
+					`[1616-debug] componentLoader modelsGateway config=${JSON.stringify(componentConfig)} isRoot=${isRoot} HARPER_SET_CONFIG=${process.env.HARPER_SET_CONFIG ? 'set' : 'UNSET'}`
+				);
+			}
 			if (!componentConfig) continue;
 
 			// Initialize loading status for all components (applications and extensions)
