@@ -105,6 +105,31 @@ userHandler.addListener = function (listener) {
 	userListeners.push(listener);
 };
 
+const resourceListeners = [];
+/**
+ * Local-only fan-out for "JS resources just registered" (resources.js loaded via the jsResource
+ * plugin). Unlike schema/user changes this is NOT an ITC event: each worker loads and registers
+ * its own JS resources, so a listener (e.g. the MCP application-tool rebuild) only needs to run in
+ * the worker where the registration happened. Surfaces author opt-ins (`static mcpTools`/
+ * `mcpPrompts`) that land on the resource registry after the MCP component's boot scan (#1448).
+ */
+function resourceHandler() {
+	for (const listener of resourceListeners) {
+		try {
+			listener();
+		} catch (err) {
+			hdbLogger.error(err);
+		}
+	}
+}
+resourceHandler.addListener = function (listener) {
+	resourceListeners.push(listener);
+};
+// Test seam: drop registered listeners so a unit suite doesn't leak fakes into later suites.
+resourceHandler._resetListenersForTest = function () {
+	resourceListeners.length = 0;
+};
+
 /**
  * Handles incoming requests for component status from inter-thread communication (ITC).
  * Validates the event, retrieves the current thread's component statuses, and sends a response
@@ -216,3 +241,4 @@ module.exports = serverItcHandlers;
 // `userHandler.addListener(fn)` / `schemaHandler.addListener(fn)`.
 module.exports.userHandler = userHandler;
 module.exports.schemaHandler = schemaHandler;
+module.exports.resourceHandler = resourceHandler;

@@ -1,5 +1,6 @@
 import { Scope } from '../components/Scope.ts';
 import { dirname } from 'path';
+import { signalResourcesRegistered } from '../utility/signalling.ts';
 
 function isResource(value: any) {
 	return (
@@ -96,6 +97,11 @@ export async function handleApplication(scope: Scope) {
 				scope.logger.debug?.(`Registered root resource: ${path}`);
 			}
 			recurseForResources(scope, resourceModule, root);
+			// A JS resource that extends an exported @table is the one carrying author opt-ins
+			// (`static mcpTools`/`mcpPrompts`), and it registers here — after the schema-derived
+			// table class and after the MCP component's boot scan. Signal so listing surfaces
+			// (MCP application tools) rebuild against the now-settled registry (#1448).
+			signalResourcesRegistered();
 		} catch (error) {
 			// Rethrow with more context
 			throw new ResourceLoadError(entryEvent.absolutePath, error);
