@@ -191,18 +191,47 @@ describe('Test readLog SSE tail', () => {
 		assert.ok(got, 'withheld entries flow once the stream drains');
 	});
 
-	it('flushes a trailing single line once the tail goes idle', async function () {
+	it('withholds a trailing entry until the next line delimits it (no partial flush)', async () => {
+		fs.appendFileSync(LOG_PATH, line(0, 'info', 'backlog'));
+		progress = fakeProgress();
+		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
+		assert.ok(await waitFor(() => progress.logs().length >= 1), 'backlog emitted');
+
+		const afterBacklog = progress.logs().length;
+		// A single new line has no following marker yet — it must NOT be emitted. A multi-line
+		// message could still be mid-write; flushing early would risk a truncated/split entry.
+		fs.appendFileSync(LOG_PATH, line(2, 'info', 'pending-line'));
+		await new Promise((r) => setTimeout(r, 700));
+		assert.strictEqual(progress.logs().length, afterBacklog, 'trailing line withheld until delimited');
+
+		// The next line delimits it; now the previously-pending line is emitted.
+		fs.appendFileSync(LOG_PATH, line(3, 'info', 'delimiter'));
+		assert.ok(
+			await waitFor(() => progress.logs().some((l) => l.message === 'pending-line')),
+			'previously-pending line emitted once the next marker arrives'
+		);
+	});
+
+	it('preserves a multi-byte character split across poll windows', async function () {
 		this.timeout(15000);
 		progress = fakeProgress();
 		running = readLog({ operation: 'read_log', log_name: LOG_NAME, progress });
-		// give the watcher a moment to arm on the empty file
-		await new Promise((r) => setTimeout(r, 100));
+		await new Promise((r) => setTimeout(r, 100)); // arm the watcher on the empty file
 
-		fs.appendFileSync(LOG_PATH, line(5, 'info', 'lonely'));
+		// Split a 3-byte character (日) across two appends separated by a poll, so the tail's
+		// first read ends mid-character. A per-poll decoder reset would corrupt it to U+FFFD.
+		const kanji = Buffer.from('日', 'utf8'); // 3 bytes: E6 97 A5
+		const head = Buffer.concat([Buffer.from('2023-03-02T21:52:12.688Z [main/0] [info]: x'), kanji.subarray(0, 1)]);
+		const rest = Buffer.concat([kanji.subarray(1), Buffer.from('y\n')]);
+		fs.appendFileSync(LOG_PATH, head);
+		await new Promise((r) => setTimeout(r, 400)); // let a poll read the partial character
+		fs.appendFileSync(LOG_PATH, rest);
+		fs.appendFileSync(LOG_PATH, line(3, 'info', 'delimiter')); // marker finalizes the entry
 
-		// No following marker will arrive, so this only shows up after the idle flush fires.
-		const got = await waitFor(() => progress.logs().some((l) => l.message === 'lonely'), { timeout: 6000 });
-		assert.ok(got, 'trailing line flushed on idle');
+		assert.ok(
+			await waitFor(() => progress.logs().some((l) => l.message === 'x日y')),
+			'multi-byte character reassembled intact across the poll boundary'
+		);
 	});
 
 	it('applies level and filter to both backlog and live entries', async () => {
