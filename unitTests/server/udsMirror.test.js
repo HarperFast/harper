@@ -434,4 +434,36 @@ describe('createH2CProxyFront (h2c UDS mirror)', () => {
 		const junk = Buffer.from('PROXY ' + 'x'.repeat(150));
 		await assert.rejects(rawSessionEstablishes([junk]), /no SETTINGS-ACK|ECONNRESET/);
 	});
+
+	it('close() sends GOAWAY to live sessions so shutdown drains gracefully', async () => {
+		// Establish a real session, then close the front: the session must receive
+		// GOAWAY and close promptly (well inside closeServers' 5s force-exit backstop).
+		const session = http2.connect('http://localhost', {
+			createConnection: () => net.connect(udsPath),
+		});
+		session.on('error', () => {});
+		await new Promise((resolve) => session.on('connect', resolve));
+		const sessionClosed = new Promise((resolve) => session.on('close', resolve));
+		const frontClosed = new Promise((resolve) => front.close(resolve));
+		await Promise.all([sessionClosed, frontClosed]);
+	});
+
+	it('destroys a connection that stalls before completing the PROXY header', async () => {
+		// Rebuild the front with a short pre-handoff timeout: a client that sends a
+		// partial header and stalls must be destroyed, not hold the fd forever.
+		// (net.Server unlinks the UDS file itself on close.)
+		await new Promise((resolve) => front.close(resolve));
+		front = createH2CProxyFront(h2srv, 100);
+		await new Promise((resolve) => front.listen(udsPath, resolve));
+
+		const socket = net.connect(udsPath, () => socket.write('PROXY TCP4 203.0.'));
+		socket.on('error', () => {});
+		await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error('stalled connection was not destroyed')), 2000);
+			socket.on('close', () => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+	});
 });

@@ -1148,12 +1148,39 @@ export function enableProxyProtocol(httpServer) {
  * server. Bytes beyond the header (typically the coalesced h2 connection preface) are
  * unshifted back onto the socket; the native session picks them up (verified on Node 24
  * — covered by a unit test so a Node upgrade regressing this fails loudly).
+ *
+ * The returned server's close() also gracefully closes live h2 sessions (GOAWAY,
+ * in-flight streams finish) so closeServers()'s generic server.close() drains instead
+ * of riding its 5s force-exit backstop — the h1 mirror gets this via http.Server's
+ * closeIdleConnections drain, which a net.Server doesn't have.
  */
-export function createH2CProxyFront(h2Server) {
-	return createNetServer({ noDelay: true }, (socket) => {
+export function createH2CProxyFront(h2Server, prehandoffTimeout = 10_000) {
+	const sessions = new Set<any>();
+	const prehandoffSockets = new Set<any>();
+	let closing = false;
+	h2Server.on('session', (session) => {
+		// A connection can be mid-handoff (header read, session not yet created) when
+		// close() runs — its session forms after the close sweep, so close it here or
+		// it would never receive GOAWAY and would ride the 5s force-exit backstop.
+		if (closing) session.close();
+		sessions.add(session);
+		session.on('close', () => sessions.delete(session));
+	});
+	const front = createNetServer({ noDelay: true }, (socket) => {
 		let buf: Buffer | null = null;
+		// Until handoff the h2 session's own handlers aren't attached yet: swallow socket
+		// errors (a reset mid-header) and bound how long we'll wait for the header, so a
+		// stalled connection can't hold an fd forever.
+		prehandoffSockets.add(socket);
+		socket.on('close', () => prehandoffSockets.delete(socket));
+		const onPrehandoffError = () => socket.destroy();
+		socket.on('error', onPrehandoffError);
+		socket.setTimeout(prehandoffTimeout, () => socket.destroy());
 		const handoff = (rest: Buffer) => {
+			prehandoffSockets.delete(socket);
 			socket.removeListener('readable', onReadable);
+			socket.removeListener('error', onPrehandoffError);
+			socket.setTimeout(0);
 			if (rest.length > 0) socket.unshift(rest);
 			h2Server.emit('connection', socket);
 		};
@@ -1183,6 +1210,17 @@ export function createH2CProxyFront(h2Server) {
 		};
 		socket.on('readable', onReadable);
 	});
+	const netClose = front.close.bind(front);
+	front.close = (callback?: (error?: Error) => void) => {
+		closing = true;
+		for (const session of sessions) session.close();
+		// Header-waiting sockets carry no in-flight work; drop them so they can't hold
+		// the close callback open for the rest of the pre-handoff timeout.
+		for (const socket of prehandoffSockets) socket.destroy();
+		h2Server.close();
+		return netClose(callback);
+	};
+	return front;
 }
 
 function defaultNotFound(request, response) {
