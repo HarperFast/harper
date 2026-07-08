@@ -305,6 +305,17 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 /**
  * Flatten nested object to dot-notation paths
  */
+// One warning per distinct path per process — flattenObject runs on every env apply.
+const warnedEmptyObjectPaths = new Set<string>();
+function warnEmptyObjectDropped(path: string): void {
+	if (warnedEmptyObjectPaths.has(path)) return;
+	warnedEmptyObjectPaths.add(path);
+	getLogger().warn?.(
+		`[env-config] '${path}' is an empty object in env-var config and carries no settings; ` +
+			`it will not appear in the resolved config. Set an explicit value (e.g. '${path}.enabled: true').`
+	);
+}
+
 function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
 	const result: Record<string, any> = {};
 
@@ -315,7 +326,13 @@ function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
 		const newKey = prefix ? `${prefix}.${key}` : key;
 
 		if (isPlainObject(value) && !isDirectiveObject(value)) {
-			// Recurse for nested objects
+			// Recurse for nested objects. An EMPTY object contributes no leaves — that is
+			// load-bearing for removal semantics (`http: {}` in SET_CONFIG means "no
+			// overrides under http", restoring originals) — but it also means a bare
+			// `componentName: {}` carries no signal at all, which has silently confused
+			// users (#1618). Warn once per path so the drop is visible; use an explicit
+			// value (e.g. `enabled: true`) to convey presence.
+			if (Object.keys(value).length === 0) warnEmptyObjectDropped(newKey);
 			Object.assign(result, flattenObject(value, newKey));
 		} else {
 			// Store primitive, array, or directive ({ $union: [...] }) as a leaf

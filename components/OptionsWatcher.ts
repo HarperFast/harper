@@ -8,12 +8,20 @@ import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import { basename } from 'node:path';
+import { composeConfigFromEnv } from '../config/harperConfigEnvVars.ts';
+import { HARPER_CONFIG_FILE } from '../utility/hdbTerms.ts';
 
 export interface Config {
 	[key: string]: ConfigValue;
 }
 
 export type ConfigValue = undefined | null | string | number | boolean | Array<ConfigValue> | Config;
+
+/** Any of the three config-shaping env vars present in this process. */
+function hasConfigEnvVars(): boolean {
+	return Boolean(process.env.HARPER_SET_CONFIG || process.env.HARPER_CONFIG || process.env.HARPER_DEFAULT_CONFIG);
+}
 
 export type OptionsWatcherEventMap = {
 	ready: [config?: ConfigValue];
@@ -86,6 +94,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#watcher!: FSWatcher;
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
+	#isRootConfig: boolean;
 	#name: string;
 	#logger: Logger;
 	#usingPolling: boolean;
@@ -98,6 +107,10 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
+		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
+		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
+		// Application scopes watch their own config.yaml and are never overlaid.
+		this.#isRootConfig = basename(filePath) === HARPER_CONFIG_FILE;
 		this.#logger = logger || loggerWithTag(name);
 		this.#usingPolling = false;
 		this.#closed = false;
@@ -122,7 +135,16 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#handleChange() {
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
 			.then((contents) => {
-				const parsed = yaml.parse(contents);
+				let parsed = yaml.parse(contents);
+				// The on-disk root config is not guaranteed to include runtime env config
+				// (HARPER_SET_CONFIG / HARPER_CONFIG / HARPER_DEFAULT_CONFIG) at boot: the
+				// file flush races component loading, so a scope's boot-time reads (e.g. an
+				// `enabled` gate in handleApplication) could observe pre-env values that the
+				// componentLoader itself never saw. Compose the env layers over EVERY
+				// root-config read so scope.options always matches the resolved view (#1618).
+				if (this.#isRootConfig && hasConfigEnvVars()) {
+					parsed = composeConfigFromEnv(parsed && typeof parsed === 'object' ? parsed : {});
+				}
 				this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
 				// If the extension is in the config file
 				if (this.#rootConfig && this.#name in this.#rootConfig) {
@@ -150,6 +172,18 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.catch((error) => {
 				// If the config file does not exist
 				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+					// Root config missing but env config present (e.g. the install hasn't
+					// flushed the file yet): compose the env layers over an empty base so
+					// boot-time consumers still see the effective config (#1618).
+					if (this.#isRootConfig && hasConfigEnvVars()) {
+						const composed = composeConfigFromEnv({});
+						this.#rootConfig = composed as Config;
+						if (this.#name in composed && !this.#scopedConfig) {
+							this.#scopedConfig = (composed as Config)[this.#name];
+							this.emit('ready', this.#scopedConfig);
+							return;
+						}
+					}
 					// And a config already exists, reset it to the default
 					if (this.#rootConfig) {
 						this.#resetConfig();

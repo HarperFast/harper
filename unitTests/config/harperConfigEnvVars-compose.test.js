@@ -90,4 +90,15 @@ describe('composeConfigFromEnv', function () {
 
 		assert.throws(() => composeConfigFromEnv(), /HARPER_SET_CONFIG/);
 	});
+
+	it('drops an empty-object value without clobbering the base (documented no-signal semantics, #1618)', function () {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: {}, modelsGateway: {} });
+
+		const result = composeConfigFromEnv({ http: { port: 9925 } });
+		// `http: {}` must NOT wipe base values (it means "no overrides under http")...
+		assert.strictEqual(result.http.port, 9925);
+		// ...and a bare `componentName: {}` carries no signal — the key is dropped
+		// (a once-per-path warning is logged; presence needs an explicit value).
+		assert.strictEqual('modelsGateway' in result, false);
+	});
 });
