@@ -11,6 +11,7 @@ import { generateJsonApi } from '../resources/openApi.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
+import { entryMap } from '../resources/RecordEncoder.ts';
 
 const { errorToString } = harperLogger;
 const etagBytes = new Uint8Array(8);
@@ -29,6 +30,21 @@ function finalizeResponse(responseData, headers, status, request) {
 	if (Object.isFrozen(responseData)) {
 		// make a copy if it is a frozen record
 		responseData = Object.assign({}, responseData);
+	} else if (entryMap.has(responseData)) {
+		// A table/cache record handed to us for the response is also the live object that the
+		// resolving read queued for its store commit (see getFromSource in Table.ts, which shares
+		// one object so the response reflects commit-stamped timestamps). Mutating it below —
+		// reassigning `.headers` to a web `Headers` (whose entries are not own-enumerable, so it
+		// encodes as `{}`) or defaulting `.status` — writes straight through to what gets persisted,
+		// silently emptying the stored headers on the next read. On RocksDB the commit encodes before
+		// this runs so it goes unnoticed; on LMDB the commit is deferred (async txn + the blob
+		// durability gate widened in #1641) and encodes the corrupted object. Copy so response
+		// mutations never reach the stored record. Preserving the prototype keeps computed-attribute
+		// getters resolving (entryMap-backed methods like getUpdatedTime() return undefined on the
+		// copy, but nothing on this path reads them); it also means a stored field that shadows a
+		// same-named computed attribute would hit the prototype's setter here rather than becoming an
+		// own property — a schema shape that shouldn't exist. See HarperFast/harper#1702.
+		responseData = Object.assign(Object.create(Object.getPrototypeOf(responseData)), responseData);
 	}
 	// merge headers from response
 	const responseHeaders = mergeHeaders(responseData.headers, headers);

@@ -25,19 +25,16 @@ import {
 	type JsonRpcId,
 	type JsonRpcMessage,
 } from './jsonrpc.ts';
-import {
-	handleInitialize,
-	handleInitialized,
-	PROTOCOL_VERSION_BACKCOMPAT,
-	SUPPORTED_PROTOCOL_VERSIONS,
-} from './lifecycle.ts';
+import { handleInitialize, handleInitialized, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { emitAuditEntry } from './audit.ts';
 import { emitMcpLogToSession, isValidMcpLogLevel, setSessionLogLevel } from './logging.ts';
 import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
-import { tryAdmit } from './rateLimit.ts';
+import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
+import { checkDurableQuota } from './quota.ts';
 import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
+import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
 import {
 	addResourceSubscription,
@@ -88,6 +85,12 @@ export interface NormRequest {
 	 */
 	userObject?: AuthedUser;
 	profile: McpProfile;
+	/**
+	 * Client socket IP, for per-client rate limiting and the durable quota
+	 * hook (#1610). Adapters populate from `request.ip`; identity resolution
+	 * (socket vs trusted header) happens in `resolveClientIdentity`.
+	 */
+	clientIp?: string;
 }
 
 export interface NormResponse {
@@ -114,6 +117,13 @@ export async function handleMcpRequest(request: NormRequest): Promise<NormRespon
 	try {
 		if (!isOriginAllowed(request)) {
 			return jsonResponse(403, { error: 'origin_not_allowed' });
+		}
+		// Component entry loading is asynchronous past the boot awaits, so Resource
+		// classes (and their custom mcpTools/mcpPrompts/mcpResources) can register
+		// after the initial walk with no schema event to trigger a refresh. Rebuild
+		// lazily when the registry moved — an integer compare otherwise (#1609).
+		if (request.profile === 'application') {
+			ensureApplicationToolsFresh();
 		}
 		if (request.method === 'POST') {
 			// POST always yields a single JSON object in v1 (no per-request SSE).
@@ -495,7 +505,7 @@ async function dispatchToolsCall(
 	if (!name) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'tools/call requires params.name'));
 	}
-	const tool = getTool(name);
+	const tool = getTool(name, request.profile);
 	if (!tool || tool.profile !== request.profile) {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.METHOD_NOT_FOUND, `Unknown tool: ${name}`));
 	}
@@ -510,8 +520,11 @@ async function dispatchToolsCall(
 
 	// Rate limit check — admit-or-deny BEFORE invoking the handler. Failures
 	// surface as `isError: true` with `kind: 'rate_limited'` (NOT a JSON-RPC
-	// error) so the LLM sees and can back off / try later.
-	const decision = tryAdmit(session.id, name, request.profile);
+	// error) so the LLM sees and can back off / try later. Client identity
+	// engages the per-client bucket, the scope that survives session cycling
+	// by anonymous clients (#1610).
+	const clientIdentity = resolveClientIdentity(request.headers, request.clientIp, request.profile);
+	const decision = tryAdmit(session.id, name, request.profile, clientIdentity);
 	if (!decision.allowed) {
 		// Non-strict tsconfig doesn't narrow the discriminated union here.
 		const denied = decision as { allowed: false; reason: string };
@@ -547,6 +560,47 @@ async function dispatchToolsCall(
 			{ kind: 'rate_limited', tool: name, scope: denied.reason },
 			'mcp.rateLimit'
 		);
+		return jsonResponse(200, buildSuccess(messageId, toolResult));
+	}
+
+	// Durable quota hook (#1610): operator-implemented policy behind config
+	// (e.g. a persisted per-IP daily counter). Runs AFTER the cheap in-memory
+	// admit so a rate-limited client can't spam the (possibly table-backed)
+	// hook, and BEFORE the handler. Fail-closed; see quota.ts.
+	const quota = await checkDurableQuota({
+		identity: clientIdentity,
+		tool: name,
+		user,
+		profile: request.profile,
+		sessionId: session.id,
+	});
+	if (quota.allowed === false) {
+		decision.release();
+		const toolResult: ToolResult = {
+			isError: true,
+			content: [
+				{
+					type: 'text',
+					text: JSON.stringify({
+						kind: 'quota_exceeded',
+						tool: name,
+						message: quota.message ?? 'MCP quota exceeded',
+						...(quota.retryAfterSeconds !== undefined ? { retryAfterSeconds: quota.retryAfterSeconds } : {}),
+					}),
+				},
+			],
+		};
+		emitAuditEntry({
+			timestamp: new Date(callStartedAt).toISOString(),
+			profile: request.profile,
+			sessionId: session.id,
+			tool: name,
+			user: user.username ?? request.user,
+			args: args as object,
+			status: 'quota_exceeded',
+			durationMs: 0,
+		});
+		emitMcpLogToSession(session.id, 'notice', { kind: 'quota_exceeded', tool: name }, 'mcp.quota');
 		return jsonResponse(200, buildSuccess(messageId, toolResult));
 	}
 
@@ -835,6 +889,9 @@ function dispatchCompletion(request: NormRequest, message: JsonRpcMessage, messa
 			context: params?.context,
 			user: effectiveUser(request),
 			profile: request.profile,
+			// custom mcpResources templates complete from author-declared values,
+			// selected by the template the client is completing against (#1609)
+			refUri: typeof params?.ref?.uri === 'string' ? params.ref.uri : undefined,
 		});
 	} else if (refType === 'ref/prompt') {
 		const promptName = typeof params?.ref?.name === 'string' ? params.ref.name : undefined;
@@ -963,15 +1020,22 @@ function validateProtocolHeader(
 	headerValue: string | undefined,
 	sessionVersion: string
 ): { ok: true } | { ok: false; reason: string } {
-	// Per spec compatibility rule: missing header is treated as 2025-03-26.
-	const effective = headerValue ?? PROTOCOL_VERSION_BACKCOMPAT;
-	if (!SUPPORTED_PROTOCOL_VERSIONS.includes(effective as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])) {
-		return { ok: false, reason: `unsupported MCP-Protocol-Version: ${effective}` };
+	// A missing header is accepted as the session's own negotiated version
+	// (#1611). The spec's assume-2025-03-26 compatibility rule exists for
+	// clients that predate the header entirely; an established session already
+	// IS the version authority, and assuming the backcompat version here made
+	// every headerless request on a 2025-06-18 session fail the mismatch check
+	// below — needlessly rejecting common clients that only send the header on
+	// some requests. A header that IS present must still name a supported
+	// version and match the negotiated one.
+	if (headerValue === undefined) return { ok: true };
+	if (!SUPPORTED_PROTOCOL_VERSIONS.includes(headerValue as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])) {
+		return { ok: false, reason: `unsupported MCP-Protocol-Version: ${headerValue}` };
 	}
-	if (effective !== sessionVersion) {
+	if (headerValue !== sessionVersion) {
 		return {
 			ok: false,
-			reason: `MCP-Protocol-Version mismatch: session negotiated ${sessionVersion}, request sent ${effective}`,
+			reason: `MCP-Protocol-Version mismatch: session negotiated ${sessionVersion}, request sent ${headerValue}`,
 		};
 	}
 	return { ok: true };
