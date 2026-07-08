@@ -61,8 +61,8 @@ describe('Benchmark: PrimaryRocksDatabase cache:false vs cache:true', function (
 		noCacheDb.initStore(noCacheDb);
 		noCacheUpdate = recordUpdater(noCacheDb, 1, null);
 
-		// With cache: PrimaryRocksDatabase with WeakLRUCache + VT (default)
-		cachingDb = new PrimaryRocksDatabase(path.join(dbBase, 'caching'), primaryOptions).open();
+		// With cache: PrimaryRocksDatabase with WeakLRUCache + VT
+		cachingDb = new PrimaryRocksDatabase(path.join(dbBase, 'caching'), { ...primaryOptions, cache: true }).open();
 		cachingDb.initStore(cachingDb);
 		cachingUpdate = recordUpdater(cachingDb, 1, null);
 

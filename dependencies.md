@@ -173,6 +173,17 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Eventual removal: We could implement SigV4 ourselves (~300 lines) and call Bedrock's HTTP endpoint with native `fetch`, matching the pattern used by the other three backends. Worth revisiting if SDK version churn becomes a maintenance burden or if the optional-peerDep pattern proves operator-unfriendly. The dynamic-import boundary means the swap is contained to `components/bedrock/index.ts`.
 
+## weak-lru-cache
+
+- Need for usage: Powers the PrimaryRocksDatabase record cache. Stores record values under a WeakRef-based LRU so cached records are GC-reclaimable once they cycle out of the LRU stages — a strong-reference cache would be an unbounded leak, since every accessed record would be retained indefinitely. lmdb-js uses the same library for its CachingStore. Values are stored via `setValue`/`getValue` (WeakRef semantics) rather than `set`/`get` (strong semantics).
+- Size/memory cost: ~6 KB. The cache itself is bounded by the LRU capacity; each slot holds only a WeakRef to the record, so GC can reclaim entries not recently accessed.
+- Security: No reported vulnerabilities. Authored and maintained by David Beaumont / lmdb-js author (same authorship chain as lmdb-js, already a trusted dependency).
+- Environment interaction: None.
+- Overlap: lmdb-js already vendors this for its CachingStore; adding it as a direct dep aligns with the existing usage pattern and avoids importing a private lmdb-js internal.
+- Can be deferred: No — the WeakLRUCache is constructed at store-open time for tables with caching enabled.
+- Binary compilation: No.
+- Eventual removal: Could be replaced by a custom WeakRef-based LRU if the dependency ever lapses, or removed if a native VT-only freshness check (without a JS-side record cache) proves sufficient.
+
 ## busboy
 
 - Need for usage: Streaming multipart/form-data parser for the operations API. Required so `deploy_component` payloads can exceed the Node.js 2 GB Buffer cap by being piped straight into extraction (gunzip + tar-fs) instead of buffered. Used only on the operations API ingest path; outbound multipart bodies on the CLI are formatted inline in `bin/multipartBuilder.ts` and do not depend on busboy.
