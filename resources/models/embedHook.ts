@@ -118,9 +118,20 @@ export function buildEmbedBefore(
 				try {
 					vector = await embedder(record);
 				} catch (err) {
-					// Backend errors can carry URLs / key tails; log raw, rethrow sanitized.
+					// Backend errors can carry URLs / key tails; log raw, rethrow sanitized. Include
+					// only safe identifiers (error class name, upstream HTTP status) so the failure is
+					// diagnosable without hunting through server logs (#1593). upstreamStatus is the
+					// provider's status — NOT ServerError's statusCode, which is Harper's own response
+					// status and would misleadingly read 500 here.
 					getLogger().error?.(`Embedder for attribute "${attr.name}" failed:`, err);
-					throw new Error(`Failed to compute embedding for attribute "${attr.name}"`);
+					const status = (err as any)?.upstreamStatus;
+					const errName = (err as any)?.name;
+					const detail =
+						(errName && errName !== 'Error' ? ` [${errName}]` : '') +
+						(typeof status === 'number' ? ` (backend HTTP ${status})` : '');
+					throw new Error(
+						`Failed to compute embedding for attribute "${attr.name}"${detail} — see server log for details`
+					);
 				}
 				record[attr.name] = normalizeVector(vector);
 			})

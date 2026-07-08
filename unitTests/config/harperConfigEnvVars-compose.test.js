@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { composeConfigFromEnv } = require('#src/config/harperConfigEnvVars');
 
 describe('composeConfigFromEnv', function () {

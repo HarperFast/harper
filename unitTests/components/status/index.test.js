@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { statusForComponent, reset, STATUS, internal } = require('#src/components/status/index');
 const { ComponentStatus } = internal;
 

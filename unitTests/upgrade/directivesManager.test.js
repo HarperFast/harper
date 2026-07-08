@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { formatUpgradeHeader, formatMigrationLine } = require('#src/upgrade/directivesManager');
 
 // The upgrade log must describe the real data -> software transition and what each migration does,

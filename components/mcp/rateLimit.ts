@@ -172,8 +172,7 @@ export function _resetForTest(): void {
 }
 
 export type RateLimitDecision =
-	| { allowed: true; release: () => void }
-	| { allowed: false; reason: 'per_tool' | 'session_rate' | 'concurrency' };
+	{ allowed: true; release: () => void } | { allowed: false; reason: 'per_tool' | 'session_rate' | 'concurrency' };
 
 /**
  * Attempt to admit a tools/call. If allowed, returns a `release()` that
