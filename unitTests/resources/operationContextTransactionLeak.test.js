@@ -60,7 +60,10 @@ describe('Ambient operation context must not couple independent writes (transact
 
 		const first = await LeakTable.get('first-record');
 		const second = await LeakTable.get('second-record');
-		assert.ok(first, 'first-record must persist: it must not be silently dropped by a leaked/shared transaction from the ambient operation context');
+		assert.ok(
+			first,
+			'first-record must persist: it must not be silently dropped by a leaked/shared transaction from the ambient operation context'
+		);
 		assert.equal(first?.name, 'first');
 		assert.ok(second, 'second-record must persist');
 		assert.equal(second?.name, 'second');
