@@ -42,8 +42,12 @@ export function toOpenAIError(err: unknown): OpenAIErrorResponse {
 		code = 'model_not_found';
 	} else if (err instanceof Error && typeof (err as any).statusCode === 'number') {
 		status = (err as any).statusCode;
-		if (status === 401 || status === 403) {
+		if (status === 401) {
 			type = 'authentication_error';
+		} else if (status === 403) {
+			// OpenAI semantics: 401 = bad/missing credentials, 403 = valid credentials
+			// lacking permission (matches authorizeV1Request's own 403 envelope).
+			type = 'permission_error';
 		} else if (status < 500) {
 			type = 'invalid_request_error';
 		} else {

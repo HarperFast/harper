@@ -39,10 +39,10 @@ describe('toOpenAIError', () => {
 		assert.equal(resp.data.error.type, 'authentication_error');
 	});
 
-	it('maps 403 statusCode to authentication_error', () => {
+	it('maps 403 statusCode to permission_error (valid credentials, insufficient permission)', () => {
 		const resp = toOpenAIError(makeClientError('forbidden', 403));
 		assert.equal(resp.status, 403);
-		assert.equal(resp.data.error.type, 'authentication_error');
+		assert.equal(resp.data.error.type, 'permission_error');
 	});
 
 	it('maps 500 statusCode to server_error with a generic message (no internal detail leak)', () => {
