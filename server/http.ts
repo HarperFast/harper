@@ -619,7 +619,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				});
 				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
 				h2Server.on('sessionError', (error: Error) => {
-					harperLogger.debug(`h2c UDS session error: ${error.message}`);
+					harperLogger.debug('h2c UDS session error:', error);
 				});
 				const h2Front = createH2CProxyFront(h2Server) as any;
 				h2Front.isPerThreadSocket = true;
