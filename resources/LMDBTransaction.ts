@@ -1,5 +1,6 @@
 import {
 	DatabaseTransaction,
+	transactionOpenTooLongError,
 	type CommitOptions,
 	type TransactionWrite,
 	type CommitResolution,
@@ -83,6 +84,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	addWrite(operation: TransactionWrite): any {
+		if (this.timedOut) throw transactionOpenTooLongError();
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
@@ -112,6 +114,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: CommitOptions = {}): any {
+		if (this.timedOut) throw transactionOpenTooLongError();
 		options = options || {};
 		let txnTime = this.timestamp;
 		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();
@@ -347,14 +350,41 @@ function startMonitoringTxns() {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				harperLogger.error(
-					`Transaction was open too long and has been committed, from table: ${
-						(txn.db as any)?.name + (url ? ' path: ' + url : '')
-					}`
-				);
-				// reset the transaction
-				txn.commit();
-				txn.timeout = txnExpiration;
+				if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
+					// Abort and surface an error rather than force-committing a partial write set: silently
+					// committing on the application's behalf breaks atomicity and can leave orphaned
+					// secondary-index entries that only a full index rebuild repairs (issue #1407). The app
+					// owns long-running work (split into smaller transactions); core owns consistency.
+					// Canonical-source applies (replication peer / external caching source) and crash-recovery
+					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
+					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
+					// those, keep the prior force-commit behavior below.
+					harperLogger.error(
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`
+					);
+					try {
+						txn.abortDueToTimeout();
+					} catch (error) {
+						harperLogger.debug?.(`Error aborting timed out transaction: ${error.message}`);
+					}
+				} else {
+					// Read-only long transaction (no atomicity/index risk — e.g. a large scan or export), or a
+					// canonical-source apply/replay that must never drop a write: preserve the prior behavior of
+					// committing to close out the snapshot without poisoning the transaction.
+					try {
+						const result = txn.commit();
+						if ((result as any)?.then) {
+							(result as any).catch((error) => {
+								harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+							});
+						}
+					} catch (error) {
+						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+					}
+					txn.timeout = txnExpiration;
+				}
 			} else {
 				txn.timeout -= txnExpiration;
 			}
