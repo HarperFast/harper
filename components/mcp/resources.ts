@@ -393,8 +393,7 @@ export async function subscribeToResource(
 	} else {
 		const resourcesRegistry = getResources();
 		const entry = resourcesRegistry.getMatch(path, 'mcp') as
-			| { Resource: { subscribe?: (request: unknown, context: unknown) => unknown }; relativeURL?: string }
-			| undefined;
+			{ Resource: { subscribe?: (request: unknown, context: unknown) => unknown }; relativeURL?: string } | undefined;
 		const ResourceClass = entry?.Resource;
 		if (!entry || typeof ResourceClass?.subscribe !== 'function') return null;
 		// `getMatch` matched the Resource and put the remaining path (the record key,
@@ -461,8 +460,7 @@ function enumerateParamRouteTemplates(prefix: string): ResourceTemplate[] {
 	for (const route of getResources().paramRoutes ?? []) {
 		if (!isMcpExposed(route.entry)) continue;
 		const ResourceClass = route.entry.Resource as
-			| { prototype?: unknown; description?: string; hidden?: boolean }
-			| undefined;
+			{ prototype?: unknown; description?: string; hidden?: boolean } | undefined;
 		// @hidden suppresses the Resource from descriptive surfaces (MCP + OpenAPI).
 		if (ResourceClass?.hidden === true) continue;
 		if (!hasRestVerbs(ResourceClass?.prototype)) continue;

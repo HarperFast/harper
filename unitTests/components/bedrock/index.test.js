@@ -1,8 +1,9 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	BedrockBackend,
+	BedrockBackendError,
 	registerBedrockBackend,
 	_resetSdkCacheForTests,
 	_injectSdkForTests,
@@ -341,6 +342,64 @@ describe('BedrockBackend', () => {
 			await b.generate('q', { accounting: ACCOUNTING, signal: ctrl.signal });
 			assert.ok(seenSignal instanceof AbortSignal);
 			assert.notStrictEqual(seenSignal, ctrl.signal);
+		});
+	});
+
+	describe('upstream error mapping (#1596)', () => {
+		it('re-throws SDK ServiceExceptions as BedrockBackendError carrying upstreamStatus', async () => {
+			const { sdk } = fakeSdk(() => {
+				const err = new Error('The security token included in the request is invalid');
+				err.name = 'AccessDeniedException';
+				err.$metadata = { httpStatusCode: 403, requestId: 'req-123' };
+				throw err;
+			});
+			_injectSdkForTests(sdk);
+			const b = new BedrockBackend({ region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' });
+			await assert.rejects(
+				() => b.embed('hello', { accounting: ACCOUNTING }),
+				(err) => {
+					assert.ok(err instanceof BedrockBackendError);
+					assert.strictEqual(err.upstreamStatus, 403);
+					assert.match(err.message, /AccessDeniedException/);
+					// Raw SDK error preserved for the unsanitized server log.
+					assert.strictEqual(err.cause?.name, 'AccessDeniedException');
+					return true;
+				}
+			);
+		});
+
+		it('leaves upstreamStatus undefined when the SDK error carries no HTTP status', async () => {
+			const { sdk } = fakeSdk(() => {
+				throw new Error('socket hang up');
+			});
+			_injectSdkForTests(sdk);
+			const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+			await assert.rejects(
+				() => b.generate('q', { accounting: ACCOUNTING }),
+				(err) => {
+					assert.ok(err instanceof BedrockBackendError);
+					assert.strictEqual(err.upstreamStatus, undefined);
+					return true;
+				}
+			);
+		});
+
+		it('propagates aborts untouched (not wrapped as an upstream failure)', async () => {
+			const { sdk } = fakeSdk(() => {
+				const err = new Error('Request aborted');
+				err.name = 'AbortError';
+				throw err;
+			});
+			_injectSdkForTests(sdk);
+			const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+			await assert.rejects(
+				() => b.generate('q', { accounting: ACCOUNTING }),
+				(err) => {
+					assert.strictEqual(err.name, 'AbortError');
+					assert.ok(!(err instanceof BedrockBackendError));
+					return true;
+				}
+			);
 		});
 	});
 });

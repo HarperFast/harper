@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { OllamaBackend, OllamaBackendError, registerOllamaBackend } = require('#src/components/ollama/index');
 const { clearRegistry, resolveEmbedding, resolveGenerative } = require('#src/resources/models/backendRegistry');
 

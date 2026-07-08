@@ -163,7 +163,34 @@ interface ToolAnnotationsLike {
 	openWorldHint?: boolean;
 }
 
-type ResourcesRegistry = Map<string, ResourceRegistryEntry>;
+/**
+ * True when `pattern`'s only dynamic segment is a single trailing `:id` param (e.g. `widget/:id`).
+ * That is the ONLY shape the verb handlers below bind — `target.id = args.id`, treating `:id` as
+ * the record itself — so a differently-named param (`:widgetId`), more than one param, a `*wildcard`
+ * segment, or an `:id` that is NOT the final segment (`widget/:id/action`, where the route names a
+ * sub-resource, not the widget) would advertise an `id` input the handler never actually threads
+ * onto the real segment(s).
+ */
+function isSimpleIdRoute(pattern: string): boolean {
+	const segments = pattern.split('/');
+	if (segments[segments.length - 1] !== ':id') return false;
+	let paramCount = 0;
+	for (const segment of segments) {
+		if (segment.startsWith('*')) return false;
+		if (segment.startsWith(':')) {
+			if (segment !== ':id') return false;
+			paramCount++;
+		}
+	}
+	return paramCount === 1;
+}
+
+/** A compiled parameterised route (e.g. `/widget/:id`), stored outside the base Map. */
+interface ParamRouteEntry {
+	pattern: string;
+	entry: ResourceRegistryEntry;
+}
+type ResourcesRegistry = Map<string, ResourceRegistryEntry> & { paramRoutes?: ParamRouteEntry[] };
 type RequestTargetCtor = new () => Record<string, unknown> & {
 	conditions?: unknown[];
 	operator?: string;
@@ -228,9 +255,15 @@ function loadRequestTarget(): RequestTargetCtor | undefined {
  *
  * Falls back to the registration-time class only if the registry lookup fails
  * (e.g. the entry was removed), so a stale tool still dispatches *something*.
+ *
+ * Parameterised routes (e.g. `/widget/:id`) live outside the base Map in
+ * `paramRoutes`, so a plain `Map.get(path)` always misses for them — checked
+ * there too, or the live-dispatch guarantee above silently doesn't apply to
+ * param-route resources.
  */
 function liveResource(path: string, fallback: ResourceClassLike): ResourceClassLike {
-	const entry = loadResources()?.get(path);
+	const registry = loadResources();
+	const entry = registry?.get(path) ?? registry?.paramRoutes?.find((route) => route.pattern === path)?.entry;
 	return (entry?.Resource as ResourceClassLike | undefined) ?? fallback;
 }
 
@@ -1107,22 +1140,45 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	const claimedSuffixes = new Set<string>();
 	let toolsRegistered = 0;
 	let resourcesConsidered = 0;
-	for (const [path, entry] of resources) {
+
+	// How much of a param route the GENERATED verb handlers can bind:
+	// 'id'   — single-`:id` routes: get/update/patch/delete bind `target.id = args.id`,
+	//          but makeCreateHandler forces `target.isCollection = true` (never binds id)
+	//          and makeSearchHandler is collection-scoped, so create/search are dropped.
+	// 'none' — multi-segment/named-wildcard routes: no generated handler can bind the
+	//          segments yet, so ALL generated verbs are dropped. Author-defined
+	//          mcpTools/mcpPrompts carry their own schemas and handler methods, so they
+	//          register regardless of binding mode.
+	const considerEntry = (
+		path: string,
+		entry: ResourceRegistryEntry | undefined,
+		paramBinding?: 'id' | 'none'
+	): void => {
+		if (!entry) return;
 		resourcesConsidered++;
-		if (!shouldEnumerate(entry)) continue;
+		if (!shouldEnumerate(entry)) return;
 		const ResourceClass = entry.Resource;
 		// @hidden type-level: suppress the Resource from MCP tool listing entirely.
 		// Data remains accessible via direct query/RBAC; only descriptive surfaces drop it.
 		if (ResourceClass?.hidden === true) {
 			harperLogger.trace(`MCP application: '/${path}' suppressed from tool listing (@hidden)`);
-			continue;
+			return;
 		}
 		const verbs = detectVerbs(ResourceClass);
+		if (paramBinding === 'id') {
+			verbs.search = false;
+			verbs.create = false;
+		} else if (paramBinding === 'none') {
+			harperLogger.trace(
+				`MCP application: '/${path}' generated verb tools skipped — multi-segment/named-wildcard binding not yet supported`
+			);
+			verbs.get = verbs.search = verbs.create = verbs.updatePut = verbs.updatePatch = verbs.delete = false;
+		}
 		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
 		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
-		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) continue;
+		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) return;
 		const databaseName = ResourceClass?.databaseName;
 		const tableName = ResourceClass?.tableName;
 		const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
@@ -1142,7 +1198,21 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		toolsRegistered += registerCustomMcpTools(ResourceClass, path);
 		registerCustomMcpPrompts(ResourceClass, path);
 		registerCustomMcpResources(ResourceClass, path);
+	};
+
+	for (const [path, entry] of resources) considerEntry(path, entry);
+
+	// Parameterised routes (e.g. `/widget/:id`) live OUTSIDE the base Map: Resources.setParamRoute
+	// stores them in `paramRoutes` and returns before the Map insert, so the loop above never sees
+	// them. Without this, a custom resource declaring `static path = '/widget/:id'` produces ZERO MCP
+	// tools — even though it appears in the OpenAPI document, which already iterates `paramRoutes`.
+	// Enumerate them so the tool surface matches the REST surface; the binding mode restricts the
+	// GENERATED verb tools to what their handlers actually bind (see considerEntry), while custom
+	// mcpTools/mcpPrompts register on every route shape.
+	for (const route of resources.paramRoutes ?? []) {
+		considerEntry(route.pattern, route.entry, isSimpleIdRoute(route.pattern) ? 'id' : 'none');
 	}
+
 	harperLogger.info(
 		`MCP application profile: considered ${resourcesConsidered} resource(s), registered ${toolsRegistered} tool(s)`
 	);

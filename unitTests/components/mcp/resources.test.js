@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	listResources,
 	listResourceTemplates,
@@ -192,7 +192,7 @@ describe('mcp/resources', () => {
 			const page2 = listResourceTemplates('application', offset, 1);
 			assert.equal(page2.resourceTemplates.length, all.length - 1);
 			assert.equal(page2.nextCursor, undefined, 'last page has no nextCursor');
-			assert.notDeepEqual(page1.resourceTemplates[0], page2.resourceTemplates[0]);
+			assert.notDeepStrictEqual(page1.resourceTemplates[0], page2.resourceTemplates[0]);
 		});
 	});
 

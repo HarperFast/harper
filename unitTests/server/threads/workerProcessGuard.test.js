@@ -2,7 +2,7 @@
 
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 
 const FIXTURE = path.join(__dirname, 'workerProcessGuard-fixture.js');
 

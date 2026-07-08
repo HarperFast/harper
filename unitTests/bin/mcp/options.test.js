@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { parseArgs } = require('#src/bin/mcp/options');
 
 describe('bin/mcp/options.parseArgs', () => {

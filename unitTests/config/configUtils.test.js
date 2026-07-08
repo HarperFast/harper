@@ -1073,6 +1073,130 @@ describe('Test configUtils module', () => {
 
 			expect(error.name).to.equal(STRING_ERROR);
 		});
+
+		describe('replicated: true', () => {
+			// configUtils reads `server` from the shared module object, so stubbing the
+			// property (the same way harper-pro installs the real implementation) reaches it.
+			const { server } = require('#src/server/Server');
+			let replicate_operation_stub;
+			let original_replicate_operation;
+
+			beforeEach(() => {
+				original_replicate_operation = server.replication.replicateOperation;
+				replicate_operation_stub = sandbox.stub().resolves({
+					message: '',
+					replicated: [{ message: 'ok', node: 'peer-1' }],
+				});
+				server.replication.replicateOperation = replicate_operation_stub;
+			});
+
+			afterEach(() => {
+				server.replication.replicateOperation = original_replicate_operation;
+			});
+
+			it('Test replicated: true fans out and returns per-node results', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: true,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.calledOnceWith(test_set_config_json)).to.equal(true);
+				expect(result.message).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+				expect(result.replicated).to.eql([{ message: 'ok', node: 'peer-1' }]);
+			});
+
+			it('Test replicated is stripped from the config fields written to file', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: true,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				await config_utils_rw.setConfiguration(test_set_config_json);
+
+				const config_fields = update_config_value_stub.firstCall.args[2];
+				expect(config_fields).to.eql({
+					http_corsAccessList: ['harper.fast'],
+					hdb_auth_header: 'test_header',
+				});
+			});
+
+			it('Test no replicated flag does not fan out', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					operationsApi_processes: 18,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.called).to.equal(false);
+				expect(result).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+			});
+
+			it('Test replicated: false (peer receiving a fanned-out call) does not re-replicate', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: false,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.called).to.equal(false);
+				expect(result).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+				const config_fields = update_config_value_stub.firstCall.args[2];
+				expect(config_fields).to.not.have.property('replicated');
+			});
+
+			it('Test non-boolean replicated is rejected before any local write', async () => {
+				for (const bad of ['false', 'true', 1, 0]) {
+					let error;
+					try {
+						await config_utils_rw.setConfiguration({
+							operation: 'set_configuration',
+							http_corsAccessList: ['harper.fast'],
+							replicated: bad,
+						});
+					} catch (err) {
+						error = err;
+					}
+
+					expect(error, `expected rejection for replicated: ${JSON.stringify(bad)}`).to.not.equal(undefined);
+					expect(error.http_resp_msg ?? error.message).to.include('replicated');
+				}
+				expect(update_config_value_stub.called).to.equal(false);
+				expect(replicate_operation_stub.called).to.equal(false);
+			});
+
+			it('Test local config write failure propagates without fanning out', async () => {
+				update_config_value_stub.throws(STRING_ERROR);
+
+				let error;
+				try {
+					await config_utils_rw.setConfiguration({
+						operation: 'set_configuration',
+						http_corsAccessList: ['harper.fast'],
+						replicated: true,
+					});
+				} catch (err) {
+					error = err;
+				}
+
+				expect(error.name).to.equal(STRING_ERROR);
+				expect(replicate_operation_stub.called).to.equal(false);
+			});
+		});
 	});
 	describe('Test readConfigFile function', () => {
 		let properties_reader_rw;

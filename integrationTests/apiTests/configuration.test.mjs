@@ -14,7 +14,7 @@
  * its `owner_id` attribute are created inline by the tests themselves.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import request from 'supertest';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
@@ -254,6 +254,47 @@ suite('Configuration', (ctx) => {
 				assert.equal(r.body.error, "Harper config file validation error: 'http.cors' must be a boolean", r.text)
 			)
 			.expect(400);
+	});
+
+	// ── set_configuration + replicated (#660) ───────────────────────────────
+	// Real cluster fan-out lives in harper-pro; without it, the base server's
+	// replication stub rejects a truthy `replicated`. These tests pin the
+	// single-node contract: the flag routes through the operation as an option
+	// (never a config key), the local write still lands first (same origin-first
+	// ordering as drop_schema), and the rejection is explicit.
+
+	test('set_configuration with replicated: true on non-clustered instance rejects explicitly', async () => {
+		const r = await client
+			.req()
+			.send({ operation: 'set_configuration', logging_rotation_maxSize: '14M', replicated: true });
+		assert.ok(r.status >= 400, `expected error status, got ${r.status}\n${r.text}`);
+		assert.match(r.body.error ?? '', /Replication not implemented/, r.text);
+	});
+
+	test('set_configuration with string "false" replicated is rejected before applying', async () => {
+		await client
+			.req()
+			.send({ operation: 'set_configuration', logging_rotation_maxSize: '16M', replicated: 'false' })
+			.expect((r) => assert.match(r.body.error ?? '', /replicated/, r.text))
+			.expect(400);
+		// The malformed request must not have applied its config change locally.
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.notEqual(r.body.logging.rotation.maxSize, '16M', r.text))
+			.expect(200);
+	});
+
+	test('replicated flag is never persisted to configuration', async () => {
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => {
+				// Local write from the rejected replicated call above still applied (origin-first).
+				assert.equal(r.body.logging.rotation.maxSize, '14M', r.text);
+				assert.equal(r.body.replicated, undefined, r.text);
+			})
+			.expect(200);
 	});
 
 	// ── non-superuser role restrictions ─────────────────────────────────────

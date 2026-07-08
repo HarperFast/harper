@@ -463,7 +463,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					break;
 				case 'pubcomp':
 				case 'puback':
-					session.acknowledge(packet.messageId);
+					await session.acknowledge(packet.messageId);
+					emitEvent('acknowledged', session, packet);
 					break;
 				case 'pingreq':
 					sendPacket({ cmd: 'pingresp' });

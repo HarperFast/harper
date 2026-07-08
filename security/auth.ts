@@ -1,7 +1,7 @@
 import { getSuperUser } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.ts';
+import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
 import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -201,6 +201,10 @@ export async function authentication(request, nextHandler) {
 						case 'Bearer':
 							try {
 								newUser = await validateOperationToken(credentials);
+								// Capture the token's expiry so a live subscription opened with this bearer
+								// token can be revoked once it expires (#1414).
+								const decoded = decodeJWT(credentials);
+								if (newUser && decoded?.exp) newUser.authExpiresAt = decoded.exp;
 							} catch (error) {
 								if (error.message === 'invalid token') {
 									// see if they provided a refresh token; we can allow that and pass it on to operations API
@@ -315,8 +319,10 @@ export async function authentication(request, nextHandler) {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 				});
 			};
-			request.login = async function (username: string, password: string) {
-				const user: any = (request.user = await server.authenticateUser(username, password, request));
+			request.login = async function (username: string, password?: string, token?: string) {
+				const user: any = (request.user = token
+					? await validateLoginToken(token)
+					: await server.authenticateUser(username, password, request));
 				request.session.update({ user: user && (user.getId?.() ?? user.username) });
 			};
 		}
@@ -343,7 +349,7 @@ export async function authentication(request, nextHandler) {
 		if (l > 0) {
 			let headers = response.headers;
 			if (!headers) response.headers = headers = new Headers();
-			for (let i = 0; i < l; ) {
+			for (let i = 0; i < l;) {
 				const name = responseHeaders[i++];
 				headers.set(name, responseHeaders[i++]);
 			}
@@ -374,7 +380,7 @@ export async function login(loginObject) {
 	loginObject.baseResponse.headers.set = (name, value) => {
 		loginObject.fastifyResponse.header(name, value);
 	};
-	await loginObject.baseRequest.login(loginObject.username, loginObject.password ?? '');
+	await loginObject.baseRequest.login(loginObject.username, loginObject.password ?? '', loginObject.token);
 	return 'Login successful';
 }
 

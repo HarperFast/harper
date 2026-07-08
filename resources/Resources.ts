@@ -17,9 +17,7 @@ export interface ResourceEntry {
 }
 
 export type RouteSegment =
-	| { type: 'static'; value: string }
-	| { type: 'param'; value: string }
-	| { type: 'wildcard'; value: string };
+	{ type: 'static'; value: string } | { type: 'param'; value: string } | { type: 'wildcard'; value: string };
 
 export interface CompiledRoute {
 	/** Normalized pattern (leading/trailing slashes stripped) — used as the identity key for the route. */

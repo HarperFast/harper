@@ -12,7 +12,7 @@
  * a multi-GB body through CI would be impractical.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
