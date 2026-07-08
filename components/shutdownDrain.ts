@@ -23,7 +23,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 /** Absolute cap (ms) on how long a drain may hold the worker's shutdown open. */
 const DEFAULT_DRAIN_CEILING_MS = 600_000; // 10 minutes
 /** Largest delay a Node timer accepts; a larger value overflows and fires ~immediately. */
-const MAX_TIMER_MS = 2_147_483_647; // 2^31 - 1
+export const MAX_TIMER_MS = 2_147_483_647; // 2^31 - 1
 
 /**
  * The configured drain ceiling in ms. Config values can arrive as strings from YAML / HARPER_CONFIG,
@@ -45,11 +45,16 @@ export function getShutdownDrainCeilingMs(): number {
  * unboundedly) and to a finite value (a non-finite deadline falls back to `now`, i.e. no extension),
  * then adds `baseMs` of normal shutdown headroom. A shrink (e.g. the drain-done reset posting a
  * now-deadline) passes through untouched. Pure so the clamp/guard arithmetic is directly testable.
+ *
+ * The final result is clamped to `MAX_TIMER_MS` too, not just `ceilingMs` on its own — `ceilingMs` is
+ * itself capped at `MAX_TIMER_MS` (see `getShutdownDrainCeilingMs`), but adding `baseMs` headroom on
+ * top can push the sum back over the limit at the extreme end of the configured ceiling, silently
+ * defeating the overflow guard the ceiling clamp was meant to provide.
  */
 export function boundedTerminateDelay(deadlineMs: number, now: number, baseMs: number, ceilingMs: number): number {
 	const target = Number.isFinite(deadlineMs) ? deadlineMs : now;
 	const bounded = Math.min(target, now + ceilingMs);
-	return Math.max(0, bounded - now) + baseMs;
+	return Math.min(Math.max(0, bounded - now) + baseMs, MAX_TIMER_MS);
 }
 
 export interface ShutdownDrain {

@@ -98,6 +98,13 @@ describe('shutdownDrain', () => {
 			assert.equal(boundedTerminateDelay(NaN, NOW, BASE, CEILING), BASE);
 			assert.equal(boundedTerminateDelay(undefined, NOW, BASE, CEILING), BASE);
 		});
+		it('clamps the final delay to the max timer even when ceiling + base headroom would overflow it', () => {
+			// A ceiling at (or near) the max timer value plus base headroom on top would otherwise exceed
+			// MAX_TIMER_MS, which Node coerces to ~1ms — firing the backstop almost immediately instead of
+			// honoring the drain. The ceiling-only clamp isn't enough; the sum must be clamped too.
+			const MAX_TIMER_MS = 2_147_483_647;
+			assert.equal(boundedTerminateDelay(NOW + MAX_TIMER_MS, NOW, BASE, MAX_TIMER_MS), MAX_TIMER_MS);
+		});
 	});
 
 	describe('runShutdownDrains', () => {

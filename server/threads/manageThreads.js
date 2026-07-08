@@ -73,7 +73,14 @@ _assignPackageExport('threads', connectedPorts);
 // extension doesn't matter).
 function armSelfExit(delay) {
 	if (selfExitDrainDeadline) {
-		delay = Math.max(delay, Math.max(0, selfExitDrainDeadline - Date.now()) + threadTerminationTimeout);
+		// selfExitDrainDeadline is already clamped to the configured ceiling (see boundedTerminateDelay),
+		// but adding threadTerminationTimeout headroom on top can push the sum back over the max timer
+		// value at the extreme end of that ceiling, silently defeating the overflow guard.
+		const { MAX_TIMER_MS } = require('../../components/shutdownDrain.ts');
+		delay = Math.max(
+			delay,
+			Math.min(Math.max(0, selfExitDrainDeadline - Date.now()) + threadTerminationTimeout, MAX_TIMER_MS)
+		);
 	}
 	if (selfExitTimer) clearTimeout(selfExitTimer);
 	selfExitTimer = setTimeout(() => {
