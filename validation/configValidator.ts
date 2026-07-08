@@ -64,6 +64,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 		certificate: pemFileConstraints,
 		certificateAuthority: pemFileConstraints,
 		privateKey: pemFileConstraints,
+		// Periodic re-read interval (ms) for the cert-file watcher's polling safety net.
+		// 0 disables polling, leaving only the inotify-based chokidar watcher. Honored on the
+		// top-level tls block (a single global setting); see getCertificateWatchInterval in security/keys.ts.
+		certificateWatchInterval: number.min(0).optional().empty(null),
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
