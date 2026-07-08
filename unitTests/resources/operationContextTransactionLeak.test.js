@@ -126,4 +126,60 @@ describe('Ambient operation context must not couple independent writes (transact
 		assert.ok(afterSearch, 'write made after draining a search() iterator must persist');
 		assert.equal(afterSearch?.name, 'after-search');
 	});
+
+	// The three tests above assert final persistence, which a reviewer (cb1kenobi, PR #1720) found
+	// does not actually discriminate buggy vs. fixed code: reverting Resource.ts's fix back to the
+	// bare `if (context?.transaction)` truthiness check and re-running them still passes 3/3, because
+	// by the time a second write joins the stale, already-committed transaction from the first call,
+	// DatabaseTransaction's addWrite()/save() takes an immediate-commit path for a closed transaction,
+	// so the write still lands. That masks the actual bug in this isolated single-process unit setup,
+	// even though the same coalescing was proven to silently drop a write in the live 4-node cluster
+	// integration test (harper-pro's replicationTopology.test.mjs) that originally caught this.
+	//
+	// This test instead asserts the mechanism directly: each independent, no-explicit-context write
+	// must be serviced by its own DatabaseTransaction instance. Resource.ts's dispatcher only ever
+	// assigns a *new* transaction onto the shared ambient context via resources/transaction.ts's
+	// transaction() helper when it takes the "start a transaction" branch; the buggy bare-truthiness
+	// check instead takes the "we are already in a transaction, proceed" branch as soon as
+	// `context.transaction` is set at all, so it never calls transaction() again and the ambient
+	// context's `.transaction` reference never changes for the lifetime of the operation handler —
+	// every subsequent write is coalesced into the exact same instance. With the fix, once the prior
+	// transaction is no longer TRANSACTION_STATE.OPEN, the dispatcher takes the other branch and a
+	// fresh DatabaseTransaction is minted. This invariant fails on the pre-fix code and holds on the
+	// fix, regardless of whether an individual isolated unit test happens to still persist the data.
+	it('services each independent no-explicit-context write with its own DatabaseTransaction instance (mechanism-level)', async () => {
+		const transactionsSeenAfterEachWrite = [];
+		await serverUtilities.processLocalTransaction(
+			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+			async () => {
+				await LeakTable.put('mech-first', { name: 'first' });
+				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+
+				await LeakTable.put('mech-second', { name: 'second' });
+				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+
+				await LeakTable.put('mech-third', { name: 'third' });
+				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+
+				return { message: 'ok' };
+			}
+		);
+
+		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
+		assert.ok(afterFirst, 'the first write must leave a transaction attached to the ambient context');
+		assert.ok(afterSecond, 'the second write must leave a transaction attached to the ambient context');
+		assert.ok(afterThird, 'the third write must leave a transaction attached to the ambient context');
+		assert.notStrictEqual(
+			afterFirst,
+			afterSecond,
+			'the second write must not join the first write’s transaction instance: each independent, ' +
+				'no-explicit-context write must run in its own DatabaseTransaction, not a stale one left over ' +
+				'from a prior, already-completed call on the shared ambient context'
+		);
+		assert.notStrictEqual(
+			afterSecond,
+			afterThird,
+			'the third write must not join the second write’s transaction instance, for the same reason'
+		);
+	});
 });
