@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783412429698,
+  "lastUpdate": 1783497518335,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -1877,6 +1877,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1330.46,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "a0f4a51acfa917fd544c88eec4b8893b5d04512e",
+          "message": "fix(mqtt): close last-will persistence race; give retained-message test more headroom\n\nTwo independent causes behind the flaky \"test MQTT connections and commands\"\nsuite:\n\n- \"last will should be published on connection loss\": getSession() wrote the\n  Last Will record via getLastWill().put(will) without awaiting it, before\n  CONNACK is sent. A client that connected and then disconnected abruptly\n  could race ahead of that write; session.disconnect() would then find no\n  will record and silently drop it, hanging the test until mocha's timeout.\n  Reproduced deterministically with an artificial delay before the write, and\n  confirmed the fix (await the write) closes the race. Fix: await\n  getLastWill().put(will).\n\n- \"subscribe to retained/persisted record\": already raced the real message\n  event against a backstop timer, but the backstop (8000ms) left only 2s of\n  margin under the suite's 10000ms mocha timeout, and delivery is known to\n  routinely exceed 1s on loaded CI runners. Bump this test's own timeout to\n  20000ms (same precedent as the QoS=1 reconnect test) and derive the inner\n  backstop from this.timeout() - 2000 so the two can't race each other.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-07T23:40:40Z",
+          "url": "https://github.com/HarperFast/harper/commit/a0f4a51acfa917fd544c88eec4b8893b5d04512e"
+        },
+        "date": 1783497517329,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8431.95,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 12113.6,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 12272.43,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 9310.77,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 6751.34,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 12406.52,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1617.1,
             "unit": "ops/sec"
           }
         ]
