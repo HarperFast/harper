@@ -425,6 +425,13 @@ export class DatabaseTransaction implements Transaction {
 									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES) {
 										if (!neverDropOnConflict) {
+											// giving up: release the current transaction (original or the fresh replay above)
+											// so the throw does not leak its native handle
+											try {
+												transaction.abort();
+											} catch (abortError) {
+												harperLogger.debug?.('aborting conflicted transaction after exhausting retries', abortError);
+											}
 											throw new ServerError(
 												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 											);

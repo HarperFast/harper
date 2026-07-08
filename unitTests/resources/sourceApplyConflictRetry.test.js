@@ -73,6 +73,22 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		]);
 	}
 
+	// The field failure was a locally-correct record with a missing change-feed entry, and the fix
+	// relies on the first attempt's audit entry surviving the aborted transaction. Pin that by
+	// counting the record's queryable patch entries (poll: the keyed transaction-log read can lag a
+	// recent write, #1137).
+	async function patchEntryCount(id, atLeast) {
+		for (let i = 0; i < 200; i++) {
+			let count = 0;
+			for (const entry of SpinTable.auditStore.getRange({ start: 1 })) {
+				if (entry.recordId === id && entry.type === 'patch') count++;
+			}
+			if (count >= atLeast) return count;
+			await delay(10);
+		}
+		return -1;
+	}
+
 	it('commits after a conflicting write lands mid-transaction (ERR_BUSY)', async function () {
 		this.timeout(15000);
 		const { attempts, restore } = spyOnCommits();
@@ -105,6 +121,10 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 				() => SpinTable.primaryStore.store.compact()
 			);
 			assert.equal(outcome, 'committed', 'the stranded source-apply commit must settle');
+			// no change-feed assertion here: this write is fully superseded by the newer concurrent
+			// patch, and a superseded plain write takes the early-out with no dedicated audit entry by
+			// design (nothing to publish, and a redelivery re-folds to the same no-op). The entry
+			// invariant matters for commutative ops and is pinned in the increments test below.
 			const failed = attempts.find((attempt) => attempt.code === 'ERR_TRY_AGAIN');
 			assert.ok(failed, 'the flush should strand the snapshot outside the memtable window');
 			const retried = attempts.find((attempt, index) => attempt.ok && index > attempts.indexOf(failed));
@@ -131,6 +151,11 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 				() => SpinTable.primaryStore.store.compact()
 			);
 			assert.equal(outcome, 'committed', 'the stranded source-apply commit must settle');
+			assert.equal(
+				await patchEntryCount('counter', 2),
+				2,
+				'both increments must keep queryable change-feed entries (redelivery dedup depends on them)'
+			);
 			assert.ok(
 				attempts.some((attempt) => attempt.code === 'ERR_TRY_AGAIN'),
 				'premise: the flush must strand the snapshot (ERR_TRY_AGAIN), not just conflict (ERR_BUSY)'
