@@ -403,9 +403,6 @@ const TAIL_POLL_INTERVAL_MS = 250;
 // can neither seek-read a huge slice into memory nor drive an O(n·limit) eviction on connect.
 // Deeper history is the buffered read_log's job; the tail is about what happens next.
 const MAX_SSE_BACKLOG_ENTRIES = 1000;
-// Push decoded text to the parser in slices this size, yielding to backpressure between them
-// so a big burst in one poll window can't emit unbounded frames ahead of a slow client.
-const TAIL_PUSH_SLICE_BYTES = 65536;
 // A transient delta-read failure is retried this many times (with this delay) before the tail
 // gives up and emits a terminal error so the client can fall back to polling.
 const TAIL_READ_MAX_RETRIES = 3;
@@ -442,11 +439,12 @@ function matchesLogFilters(entry: LogEntry, params: TailFilterParams): boolean {
 	return true;
 }
 
-// Stateful incremental parser: fed appended chunks over time, it emits an entry as soon as
-// the next marker delimits its (possibly multi-line) message. `flush()` finalizes the last
-// pending entry and is only safe at a real end-of-input (the bounded backlog snapshot) — the
-// live tail never flushes, so a partial mid-write entry is never emitted or its continuation
-// discarded; it stays pending until the next marker delimits it.
+// Stateful incremental parser: fed appended chunks over time, it emits an entry only once the
+// next marker delimits its (possibly multi-line) message. It never force-emits a pending
+// entry — the same instance spans the backlog read and the live tail (see streamLogTail), so a
+// line torn across the snapshot boundary stays pending and is completed by the tail's next
+// read rather than emitted truncated with its continuation dropped. `reset()` clears state on
+// log rotation.
 function createIncrementalLogParser(onEntry: (entry: LogEntry) => void) {
 	let remaining = '';
 	let pending: { timestamp: string; tagsString: string } | undefined;
@@ -469,13 +467,6 @@ function createIncrementalLogParser(onEntry: (entry: LogEntry) => void) {
 			}
 			remaining = data.slice(lastPosition);
 		},
-		flush() {
-			if (pending) {
-				onEntry(makeLogEntry(pending.timestamp, pending.tagsString, remaining.trim()));
-				pending = undefined;
-				remaining = '';
-			}
-		},
 		reset() {
 			pending = undefined;
 			remaining = '';
@@ -484,10 +475,16 @@ function createIncrementalLogParser(onEntry: (entry: LogEntry) => void) {
 }
 
 /**
- * Stream the local log over SSE: emit the recent (bounded) backlog, then tail newly-appended
+ * Stream the local log over SSE: replay the recent (bounded) backlog, then tail newly-appended
  * lines until the client disconnects (the emitter's `signal` aborts) — or, if reads fail past
  * retry, emit a terminal `error` so the client falls back to polling instead of watching a
  * silently-stalled "live" stream. Resolves when the tail ends so the SSE wrapper can close.
+ *
+ * A single parser and decoder span both the backlog read and the live tail with no flush at
+ * the seam, so a line (or multi-byte character) torn across the snapshot boundary stays pending
+ * and is completed by the tail's next read — never emitted truncated with its continuation
+ * dropped. (A consequence: the newest backlog line is delivered once the following line
+ * delimits it, matching how the tail delimits every entry.)
  */
 function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 	const { readLogPath, limit } = params;
@@ -501,14 +498,26 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 
 		let offset = 0;
 		let pumping = false;
+		let pumpQueued = false;
 		let watching = false;
 		let finished = false;
 		let readFailures = 0;
-		// One decoder for the whole tail: a multi-byte char split across two poll windows is held
-		// until its continuing bytes arrive on the next read, instead of flushed as U+FFFD.
+		// While replaying the backlog, matching entries are collected here (capped) rather than
+		// emitted; once the boundary is passed `backlogPhase` flips and entries emit live.
+		let backlogPhase = true;
+		const backlogEntries: LogEntry[] = [];
+		// One decoder + one parser for the whole session (backlog + tail): a multi-byte char (or a
+		// line) split across the boundary is held/pending and finished by the next read, not
+		// flushed as U+FFFD or truncated. Reset together only on rotation.
 		let decoder = new StringDecoder('utf8');
 		const parser = createIncrementalLogParser((entry) => {
-			if (matchesLogFilters(entry, params)) emit(entry);
+			if (!matchesLogFilters(entry, params)) return;
+			if (backlogPhase) {
+				backlogEntries.push(entry);
+				if (backlogEntries.length > backlogLimit) backlogEntries.shift();
+			} else {
+				emit(entry);
+			}
 		});
 
 		function finish() {
@@ -534,77 +543,80 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 				signal?.addEventListener('abort', onAbort, { once: true });
 			});
 
-		// Push decoded text to the parser in bounded slices, yielding to backpressure between
-		// slices, so a big burst in one poll window can't emit frames faster than a slow client
-		// drains them (the pump's top-level pause only gates whole polls, not within one push).
-		const pushWithBackpressure = async (text: string) => {
-			for (let i = 0; i < text.length; i += TAIL_PUSH_SLICE_BYTES) {
-				if (signal?.aborted) return;
-				parser.push(text.slice(i, i + TAIL_PUSH_SLICE_BYTES));
-				if (progress.paused) await progress.whenWritable();
+		// Stream [offset, end] inclusive through the session decoder + shared parser, decoding and
+		// pushing each fs chunk as it arrives (never materializing the whole delta) and advancing
+		// `offset` per chunk, so peak memory is one chunk and a mid-range error simply resumes from
+		// where it stopped. Yields to backpressure between chunks. Returns false if the read errored.
+		async function drainTo(end: number): Promise<boolean> {
+			const rs = fs.createReadStream(readLogPath, { start: offset, end });
+			try {
+				for await (const chunk of rs) {
+					if (signal?.aborted) {
+						rs.destroy();
+						return true;
+					}
+					parser.push(decoder.write(chunk as Buffer));
+					offset += (chunk as Buffer).length;
+					if (progress.paused) await progress.whenWritable();
+				}
+				return true;
+			} catch (err: any) {
+				hdbLogger.warn(
+					`read_log SSE tail: failed reading ${readLogPath} near offset ${offset}: ${err?.message ?? err}`
+				);
+				return false;
 			}
-		};
+		}
 
-		// Read [start, end] inclusive as raw bytes → Buffer, or `null` if the read errored
-		// (logged). Bytes are only decoded/consumed by the caller on success, so a failed read
-		// leaves the session decoder and `offset` untouched and the range can be retried cleanly.
-		const readRange = (start: number, end: number): Promise<Buffer | null> =>
-			new Promise((res) => {
-				const buffers: Buffer[] = [];
-				const rs = fs.createReadStream(readLogPath, { start, end });
-				rs.on('data', (data) => buffers.push(data as Buffer));
-				rs.on('error', (err) => {
-					hdbLogger.warn(`read_log SSE tail: failed to read ${readLogPath} [${start}, ${end}]: ${err?.message ?? err}`);
-					res(null);
-				});
-				rs.on('close', () => res(Buffer.concat(buffers)));
-			});
-
-		// Single-flight pump: drain all appended bytes into the parser. Re-entrant calls while a
-		// pump is running are no-ops; the loop re-stats each turn and picks up newly-written bytes.
+		// Single-flight pump: drain all appended bytes into the parser. A change arriving while a
+		// pump runs sets `pumpQueued` so the loop runs once more, rather than being missed in the
+		// window between "caught up" and clearing `pumping`.
 		async function pump() {
-			if (pumping) return;
+			if (pumping) {
+				pumpQueued = true;
+				return;
+			}
 			pumping = true;
 			try {
-				while (!signal?.aborted) {
-					let size: number;
-					try {
-						size = (await fs.promises.stat(readLogPath)).size;
-					} catch {
-						break;
-					}
-					if (size < offset) {
-						// Truncation or rotation: restart from the new file and reset decode/parse state.
-						offset = 0;
-						decoder = new StringDecoder('utf8');
-						parser.reset();
-					}
-					if (size <= offset) break;
-					if (progress.paused) {
-						await progress.whenWritable();
-						continue;
-					}
-					const start = offset;
-					const buffer = await readRange(start, size - 1);
-					if (signal?.aborted) break;
-					if (buffer === null) {
-						if (++readFailures > TAIL_READ_MAX_RETRIES) {
-							// Don't leave the client staring at a silently-stalled "live" stream: a
-							// terminal error is its cue to fall back to polling.
-							progress.emit('error', {
-								message: `read_log live tail could not read ${readLogPath} after ${TAIL_READ_MAX_RETRIES} retries`,
-								code: 'READ_LOG_TAIL_READ_ERROR',
-							});
-							finish();
-							return;
+				do {
+					pumpQueued = false;
+					while (!signal?.aborted) {
+						let size: number;
+						try {
+							size = (await fs.promises.stat(readLogPath)).size;
+						} catch {
+							break;
 						}
-						await abortableDelay(TAIL_READ_RETRY_MS);
-						continue; // retry the same range; offset stays put
+						if (size < offset) {
+							// Truncation or rotation: restart from the new file and reset decode/parse state.
+							offset = 0;
+							decoder = new StringDecoder('utf8');
+							parser.reset();
+						}
+						if (size <= offset) break;
+						if (progress.paused) {
+							await progress.whenWritable();
+							continue;
+						}
+						const ok = await drainTo(size - 1);
+						if (signal?.aborted) break;
+						if (!ok) {
+							if (++readFailures > TAIL_READ_MAX_RETRIES) {
+								// Don't leave the client staring at a silently-stalled "live" stream: a
+								// terminal error is its cue to fall back to polling.
+								progress.emit('error', {
+									message: `read_log live tail could not read ${readLogPath} after ${TAIL_READ_MAX_RETRIES} retries`,
+									code: 'READ_LOG_TAIL_READ_ERROR',
+								});
+								finish();
+								return;
+							}
+							await abortableDelay(TAIL_READ_RETRY_MS);
+							continue; // resume from the advanced offset
+						}
+						readFailures = 0;
 					}
-					readFailures = 0;
-					offset = size;
-					await pushWithBackpressure(decoder.write(buffer));
-				}
+				} while (pumpQueued && !signal?.aborted);
 			} finally {
 				pumping = false;
 			}
@@ -615,9 +627,9 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 		}
 
 		const startTail = () => {
-			// `offset` is already the backlog boundary, so the tail picks up strictly from there —
-			// no line dropped or double-sent across the handoff. Without a disconnect signal we
-			// can't safely tail forever; degrade to backlog-only so the client polls instead.
+			// `offset` is already the backlog boundary, so the tail picks up strictly from there.
+			// Without a disconnect signal we can't safely tail forever; degrade to backlog-only so
+			// the client polls instead.
 			if (!signal || signal.aborted) return finish();
 			fs.watchFile(readLogPath, { interval: TAIL_POLL_INTERVAL_MS }, onChange);
 			watching = true;
@@ -626,48 +638,33 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 			void pump();
 		};
 
-		// Emit the backlog first (newest `backlogLimit` matching entries, oldest-first), then tail.
-		let startSize = 0;
-		try {
-			startSize = fs.statSync(readLogPath).size;
-		} catch {
-			startSize = 0;
-		}
-		offset = startSize;
-		if (startSize === 0) {
-			startTail();
-			return;
-		}
-		// Bound the backlog read to roughly the last `backlogLimit` entries so a large log file
-		// can't be pulled into memory all at once (mirrors the buffered path's tail-seek). A
-		// partial first line the seek lands in is dropped by the parser, as in the buffered path.
-		const backlogStart = Math.max(startSize - (backlogLimit + 5) * ESTIMATED_AVERAGE_ENTRY_SIZE, 0);
-		// Keep only the newest `backlogLimit` matching entries as we parse, so even a window denser
-		// than estimated can't grow this array without bound (and the eviction stays O(backlogLimit)).
-		const backlogEntries: LogEntry[] = [];
-		const backlogParser = createIncrementalLogParser((entry) => {
-			if (!matchesLogFilters(entry, params)) return;
-			backlogEntries.push(entry);
-			if (backlogEntries.length > backlogLimit) backlogEntries.shift();
-		});
-		const backlogStream = fs.createReadStream(readLogPath, {
-			start: backlogStart,
-			end: startSize - 1,
-			encoding: 'utf8',
-		});
-		backlogStream.on('data', (data) => backlogParser.push(String(data)));
-		backlogStream.on('error', (err) =>
-			hdbLogger.warn(`read_log SSE tail: failed to read backlog from ${readLogPath}: ${err?.message ?? err}`)
-		);
-		backlogStream.on('close', async () => {
-			backlogParser.flush();
-			// Emit the backlog under the same backpressure as the live tail: a slow client with a
-			// large (multi-line) backlog would otherwise get the whole thing buffered at once.
+		// Replay the backlog through the shared parser/decoder, then tail from the same boundary.
+		(async () => {
+			let startSize = 0;
+			try {
+				startSize = fs.statSync(readLogPath).size;
+			} catch {
+				startSize = 0;
+			}
+			if (startSize > 0) {
+				// Bound the backlog read to roughly the last `backlogLimit` entries so a large log
+				// file can't be seek-read into memory all at once (mirrors the buffered path). A
+				// partial first line the seek lands in is dropped by the parser, as in that path.
+				offset = Math.max(startSize - (backlogLimit + 5) * ESTIMATED_AVERAGE_ENTRY_SIZE, 0);
+				await drainTo(startSize - 1); // collects into backlogEntries; read errors are logged, best-effort
+			}
+			// Hand off to the live tail: flip to emit mode and deliver the collected backlog. The
+			// parser's pending entry (the newest, possibly boundary-torn line) is deliberately left
+			// pending — the tail finishes it — so nothing is emitted truncated.
+			backlogPhase = false;
 			for (const entry of backlogEntries) {
 				if (signal?.aborted) break;
 				emit(entry);
 				if (progress.paused) await progress.whenWritable();
 			}
+			startTail();
+		})().catch((err) => {
+			hdbLogger.warn(`read_log SSE tail: backlog replay failed for ${readLogPath}: ${err?.message ?? err}`);
 			startTail();
 		});
 	});
