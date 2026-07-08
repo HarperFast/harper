@@ -27,6 +27,20 @@ export default async function readAuditLog(readAuditLogObject: any) {
 		throw new Error(HDB_ERROR_MSGS.TABLE_REQUIRED_ERR);
 	}
 
+	// system.hdb_secret audit rows carry full record images — i.e. secret envelopes — and
+	// read_audit_log is delegable to non-super_user roles via the `operations` allowlist. Table
+	// audit itself must stay on (mount_hdb forces audit:true for every system table; on RocksDB it
+	// is load-bearing for data retention), so the read surface is blocked instead, regardless of
+	// config or role. Secret mutations are separately audited via value-free logger.notify events
+	// (components/secretOperations.ts).
+	if (
+		database === hdbTerms.SYSTEM_SCHEMA_NAME &&
+		readAuditLogObject.table === hdbTerms.SYSTEM_TABLE_NAMES.SECRET_TABLE_NAME
+	) {
+		const msg = `read_audit_log is not supported on ${database}.${readAuditLogObject.table}; secret mutations are audited via structured log events that never contain values`;
+		throw handleHDBError(new Error(), msg, HTTP_STATUS_CODES.FORBIDDEN, undefined, undefined, true);
+	}
+
 	if (!envMgr.get(hdbTerms.CONFIG_PARAMS.LOGGING_AUDITLOG)) {
 		throw handleHDBError(
 			new Error(),

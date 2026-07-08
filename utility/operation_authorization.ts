@@ -41,6 +41,7 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
+import * as secretOperations from '../components/secretOperations.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -261,6 +262,33 @@ requiredPermissions.set(
 requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
+);
+
+// Secrets-store operations. All SU-only; the handlers ALSO enforce super_user directly, so these
+// cannot be delegated through a role's `operations` allowlist (gate-2 bypass below).
+requiredPermissions.set(
+	secretOperations.setSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.grantSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GRANT_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.revokeSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.REVOKE_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.listSecrets.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_SECRETS)
+);
+requiredPermissions.set(
+	secretOperations.deleteSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.getSecretsPublicKey.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
 );
 
 //Below are functions that are currently open to all roles
