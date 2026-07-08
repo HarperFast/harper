@@ -7,6 +7,7 @@ const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { join, isAbsolute, extname } = require('path');
+const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
 const { totalmem } = require('os');
 const { setHeapSnapshotNearHeapLimit } = typeof globalThis.Bun !== 'undefined' ? {} : require('v8');
@@ -16,6 +17,28 @@ const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
+const { resolvePreloadModules } = require('./resolvePreload.ts');
+const { getConfigPath } = require('../../config/configUtils.ts');
+let importModules;
+function getImportModules() {
+	if (importModules === undefined)
+		importModules = resolvePreloadModules(
+			envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_PRELOAD),
+			getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
+			'threads.preload'
+		);
+	return importModules;
+}
+let requireModules;
+function getRequireModules() {
+	if (requireModules === undefined)
+		requireModules = resolvePreloadModules(
+			envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_PRELOADREQUIRE),
+			getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
+			'threads.preloadRequire'
+		);
+	return requireModules;
+}
 const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
@@ -230,6 +253,18 @@ function startWorker(path, options = {}) {
 			];
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
+	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
+	// script so they can instrument all subsequent Harper and app module loads. Resolved once
+	// (config and installed components are fixed for the process lifetime). `threads.preload`
+	// uses --import (ESM/loader-hook registration, e.g. dd-trace/register.js — the entry that
+	// instruments worker threads); `threads.preloadRequire` uses --require for CJS agents that
+	// document that path (e.g. dd-trace/init, Dynatrace OneAgent). --import is URL-based, so
+	// resolved paths are passed as file URLs. Not supported under Bun, which does not use
+	// execArgv here.
+	if (!isBun) {
+		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
+		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
+	}
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
