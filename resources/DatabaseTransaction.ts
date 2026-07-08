@@ -193,7 +193,7 @@ export class DatabaseTransaction implements Transaction {
 		return operation;
 	}
 
-	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false) {
+	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
 		let txnTime = this.timestamp;
 		transaction ??= this.transaction;
 		let immediateCommit = false;
@@ -211,11 +211,6 @@ export class DatabaseTransaction implements Transaction {
 			if (txnTime) {
 				transaction.setTimestamp(txnTime);
 			}
-		} else {
-		}
-		if (this.retries > 0) {
-			// This marks the Rocks transaction as a retry so we don't write the transaction log again
-			(transaction as any).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (reloadEntry || operation.entry === undefined) {
@@ -235,7 +230,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
 		if (immediateCommit) {
-			return this.commit({ transaction }); // immediately commit if the harper transaction is closed
+			return this.commit({ ...options, transaction }); // immediately commit if the harper transaction is closed
 		}
 	}
 
@@ -247,7 +242,7 @@ export class DatabaseTransaction implements Transaction {
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
 			if (!operation || (this.retries === 0 && operation.saved)) continue;
-			this.save(operation, transaction, i < this.validated);
+			this.save(operation, transaction, i < this.validated, options);
 		}
 		this.validated = this.writes.length;
 		const completions = this.completions;
@@ -287,10 +282,11 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
-							// rocksdb-js 2.2.0 widened commit()'s resolution to include the
-							// coordinated-retry sentinel (RETRY_NOW); we don't pass
-							// coordinatedRetry, so it never resolves to the sentinel here. Cast
-							// away the sentinel to keep commitResolution void.
+							// The transaction was created with coordinatedRetry:true (see
+							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE.
+							// That sentinel is handled in the resolve callback below and the
+							// cast to Promise<void> is safe — the sentinel never propagates
+							// past that branch.
 							commitResolution = transaction.commit() as Promise<void>;
 						} else {
 							try {
@@ -324,7 +320,24 @@ export class DatabaseTransaction implements Transaction {
 							if (commitResult === RETRY_NOW_VALUE) {
 								this.retries++;
 								harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
-								return this.commit({ transaction });
+								// Mark this specific native transaction as a retry so RocksTransactionLogStore
+								// skips re-writing its already-staged txn-log entries (#2).
+								(transaction as RocksTransactionWithRetry).isRetry = true;
+								// Mirror the ERR_BUSY cap/warn policy: non-sourceApply transactions abort
+								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
+								if (this.retries > MAX_RETRIES) {
+									if (!this.sourceApply) {
+										throw new ServerError(
+											`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+										);
+									}
+									if (this.retries % MAX_RETRIES === 0) {
+										harperLogger.warn?.(
+											`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} coordinated retries; continuing to retry`
+										);
+									}
+								}
+								return this.commit({ ...options, transaction });
 							}
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
 							// rejection — or a synchronous throw — via logging rather than failing the commit, since
@@ -364,6 +377,7 @@ export class DatabaseTransaction implements Transaction {
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
+							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.writes = [];
 							if (this.#context?.resourceCache) this.#context.resourceCache = null;
 							this.next = null;
@@ -394,6 +408,8 @@ export class DatabaseTransaction implements Transaction {
 								// for future transactions
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
+								(transaction as RocksTransactionWithRetry).isRetry = true;
 								if (this.retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
 									// external caching source) must never drop a write on a transient conflict: there is no
@@ -418,10 +434,10 @@ export class DatabaseTransaction implements Transaction {
 									}
 									// start delaying, back off to try to space out transactions and avoid excessive conflicts
 									return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
-										this.commit({ transaction })
+										this.commit({ ...options, transaction })
 									);
 								}
-								return this.commit({ transaction }); // try again
+								return this.commit({ ...options, transaction }); // try again
 							} else throw error;
 						}
 					);
