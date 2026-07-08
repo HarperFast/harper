@@ -656,10 +656,18 @@ function streamLogTail(progress: any, params: TailFilterParams): Promise<void> {
 			encoding: 'utf8',
 		});
 		backlogStream.on('data', (data) => backlogParser.push(String(data)));
-		backlogStream.on('error', () => {});
-		backlogStream.on('close', () => {
+		backlogStream.on('error', (err) =>
+			hdbLogger.warn(`read_log SSE tail: failed to read backlog from ${readLogPath}: ${err?.message ?? err}`)
+		);
+		backlogStream.on('close', async () => {
 			backlogParser.flush();
-			for (const entry of backlogEntries) emit(entry);
+			// Emit the backlog under the same backpressure as the live tail: a slow client with a
+			// large (multi-line) backlog would otherwise get the whole thing buffered at once.
+			for (const entry of backlogEntries) {
+				if (signal?.aborted) break;
+				emit(entry);
+				if (progress.paused) await progress.whenWritable();
+			}
 			startTail();
 		});
 	});
