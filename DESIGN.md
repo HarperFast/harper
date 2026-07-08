@@ -220,3 +220,45 @@ set; and the cert subscription shares the same debounced `scheduleRebuild` (same
 its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
 `integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
 (it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
+<<<<<<< HEAD
+=======
+
+## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
+
+`server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
+`req.replicated \!== false` — absence of the flag means "replicate". That default-on contract is what
+DDL ops rely on (`dropSchema`/`dropTable` call it unconditionally), so a handler that mirrors the
+drop_schema pattern without a guard silently becomes replicate-by-default. `setConfiguration` must
+stay **opt-in** (`if (replicated)` truthy guard) because config bodies routinely carry node-local
+params (ports, paths, node identity) that would clobber peers. Two invariants to preserve:
+`replicated` must remain in the handler's destructure strip-list on both origin and peers (peers
+receive `replicated: false` in the forwarded body; anything not stripped is treated as a config
+param), and there is deliberately **no** per-param node-local/cluster-wide guard here — per-field
+replicability metadata is deferred to the cluster-level-config work (CORE-3018), which will own that
+schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
+in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
+operators must inspect the array for per-node outcomes.
+
+## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
+
+Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
+tar-fs's own walker calls `fs.stat` (not `lstat`) on every discovered entry when dereferencing; a
+dangling symlink's target throws `ENOENT`, and tar-fs's `statAll` loop treats _any_ `ENOENT` from
+a walk-discovered (not explicitly-requested) entry as end-of-stream — it calls `pack.finalize()`
+immediately, silently dropping every entry still queued (BFS order) after the link. No error is
+ever emitted, so `packStream.on('error', ...)` never fires and `deploy_component` reports success
+on a truncated archive. `scanPackageDirectory()` now pre-walks the tree once (async) to build a
+skip-set of dangling symlinks, which `streamPackagedDirectory`'s `tar.pack({ ignore })` consults via
+a synchronous `Set.has()` — **`ignore` is called synchronously by tar-fs with no Promise support**,
+so any fix here has to resolve the dangling set _before_ constructing `tar.pack`, not from inside
+the callback (an earlier draft used `lstatSync`/`statSync` per entry there, which would have added
+blocking I/O to a path that also runs inline on the Harper server's event loop via the
+`package_component` operation). The scan recurses into _valid_ symlinked directories the same way
+tar-fs's dereferenced walk does (readdir through the link), since a dangling symlink nested inside
+one is just as capable of tripping the same early-finalize — skipping recursion into symlinked
+dirs there would silently reintroduce the bug for that case. Circular directory symlinks are not
+guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existing tar-fs limitation
+this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
+declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
+other future cause would still report success silently; that's a deferred, separate fix.
+>>>>>>> 8b784ce24 (Merge pull request #1718 from HarperFast/kris/deploy-dangling-symlink)
