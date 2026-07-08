@@ -14,6 +14,8 @@ http:
 threads:
   count: null
   debug: false
+  preload: null
+  preloadRequire: null
 authentication:
   authorizeLocal: false
   cacheTTL: 30000
