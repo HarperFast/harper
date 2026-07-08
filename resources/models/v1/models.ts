@@ -32,22 +32,18 @@ export class V1Models extends Resource {
 		if (authError) return authError;
 
 		const created = Math.floor(Date.now() / 1000);
-		const generative = listBackends('generative').map(
-			({ logicalName }): OAIModelEntry => ({
-				id: logicalName,
-				object: 'model',
-				created,
-				owned_by: 'harper',
-			})
-		);
-		const embedding = listBackends('embedding').map(
-			({ logicalName }): OAIModelEntry => ({
-				id: logicalName,
-				object: 'model',
-				created,
-				owned_by: 'harper',
-			})
-		);
+		const generative = listBackends('generative').map(({ logicalName }): OAIModelEntry => ({
+			id: logicalName,
+			object: 'model',
+			created,
+			owned_by: 'harper',
+		}));
+		const embedding = listBackends('embedding').map(({ logicalName }): OAIModelEntry => ({
+			id: logicalName,
+			object: 'model',
+			created,
+			owned_by: 'harper',
+		}));
 		return { object: 'list', data: [...generative, ...embedding] };
 	}
 }

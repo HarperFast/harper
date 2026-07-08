@@ -93,13 +93,11 @@ export function translateMessages(oaiMessages: OAIMessageIn[]): Message[] {
 
 /** Map OpenAI `tools[]` to Harper `ToolDef[]`. */
 export function translateTools(oaiTools: OAIToolIn[]): ToolDef[] {
-	return oaiTools.map(
-		(t): ToolDef => ({
-			name: t.function.name,
-			description: t.function.description ?? '',
-			parameters: t.function.parameters ?? {},
-		})
-	);
+	return oaiTools.map((t): ToolDef => ({
+		name: t.function.name,
+		description: t.function.description ?? '',
+		parameters: t.function.parameters ?? {},
+	}));
 }
 
 /**

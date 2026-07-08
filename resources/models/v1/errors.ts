@@ -9,11 +9,7 @@
 import { ModelBackendNotFoundError } from '../backendRegistry.ts';
 
 type OpenAIErrorType =
-	| 'invalid_request_error'
-	| 'server_error'
-	| 'authentication_error'
-	| 'permission_error'
-	| 'api_error';
+	'invalid_request_error' | 'server_error' | 'authentication_error' | 'permission_error' | 'api_error';
 
 export interface OpenAIErrorBody {
 	message: string;
