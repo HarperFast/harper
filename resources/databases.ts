@@ -615,7 +615,7 @@ function initStores(
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key } as any),
+					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
 					rootStore
 				);
 			} else {
@@ -972,7 +972,11 @@ function resolveIndexFormat(
 	if (format == null) {
 		format = 'legacy';
 		let isEmpty = true;
-		for (const _key of dbi.getKeys({ start: 0, end: Infinity, limit: 1 })) {
+		// Probe with no start/end so any key type is counted — numeric, string-pk
+		// safeKeys, and Symbol/array keys (e.g. entryPoint, KEY_PREFIX) are all
+		// included. The old { start: 0, end: Infinity } range missed symbol-array and
+		// string keys, misclassifying non-empty stores as empty after a delete-all.
+		for (const _key of dbi.getKeys({ limit: 1 })) {
 			isEmpty = false;
 			break;
 		}
@@ -1014,7 +1018,10 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		  });
 	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	if (rootStore instanceof RocksDatabase) {
-		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey } as any) as any;
+		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
+		// available before resolveIndexFormat decides the format. Versioned stores need the VT
+		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
+		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey, cache: isCustomObjectIndex } as any) as any;
 		(dbi as any).rootStore = rootStore;
 		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
 		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
@@ -1186,7 +1193,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
