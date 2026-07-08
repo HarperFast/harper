@@ -54,7 +54,7 @@
 		"static": {
 			"type": "object",
 			"description": "Static file serving configuration.",
-			"additionalProperties": true,
+			"additionalProperties": false,
 			"properties": {
 				"files": {
 					"description": "Glob(s) or path(s) to the files to serve.",
@@ -113,10 +113,11 @@
 					]
 				},
 				"before": {
-					"description": "Run this handler before the named handler. Defaults to 'authentication' so file requests skip credential parsing; false clears the default so registration order applies.",
+					"description": "Run this handler before the named handler (the config key as registered, e.g. 'rest'). Defaults to 'authentication' so file requests skip credential parsing; false clears the default so registration order applies.",
 					"oneOf": [
 						{
-							"type": "string"
+							"type": "string",
+							"minLength": 1
 						},
 						{
 							"const": false
@@ -125,7 +126,8 @@
 				},
 				"after": {
 					"type": "string",
-					"description": "Run this handler after the named handler, e.g. 'rest' to let API routes match before static fallbacks. Overrides the default `before: 'authentication'` hoist."
+					"minLength": 1,
+					"description": "Run this handler after the named handler (the config key as registered, e.g. 'rest' to let API routes match before static fallbacks). Overrides the default `before: 'authentication'` hoist."
 				}
 			},
 			"required": ["files"]

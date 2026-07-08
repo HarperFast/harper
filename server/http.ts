@@ -888,7 +888,12 @@ function makeCallbackChain(responders: typeof httpResponders, portNum: number | 
 				`Cycle detected in middleware before/after ordering on port ${portNum}; falling back to registration order.`
 			);
 		},
-		requestArgIndex
+		requestArgIndex,
+		({ entryName, kind, target }) => {
+			harperLogger.warn(
+				`Middleware ordering: ${entryName ? `'${entryName}'` : 'a handler'} requested \`${kind}: '${target}'\` but no handler named '${target}' is registered on port ${portNum}, so the constraint is ignored. Handler names are the config keys as registered (e.g. 'rest').`
+			);
+		}
 	);
 }
 function unhandled(request) {

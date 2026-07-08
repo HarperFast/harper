@@ -14,8 +14,10 @@ function fakeScope(options = {}) {
 	};
 	const scope = {
 		directory: '/fake/app',
+		pluginName: 'static',
 		options: {
 			get: (key) => options[key[0]],
+			getAll: () => options,
 			on: (event, listener) => {
 				if (event === 'change') state.changeListeners.push(listener);
 			},
@@ -31,9 +33,10 @@ function fakeScope(options = {}) {
 				state.httpOptions = httpOptions;
 			},
 		},
-		// Simulate a live config reload for the given key.
+		// Simulate a live config reload for the given key, matching the real OptionsWatcher's
+		// change-event signature of (key: string[], value, config).
 		fireChange(key) {
-			for (const listener of state.changeListeners) listener([key]);
+			for (const listener of state.changeListeners) listener([key], options[key], options);
 		},
 	};
 	return { scope, state };
@@ -74,9 +77,40 @@ describe('static plugin middleware ordering', () => {
 		assert.equal(state.httpOptions.after, 'rest');
 	});
 
+	it('before: false combined with after keeps the after constraint', () => {
+		const { scope, state } = fakeScope({ before: false, after: 'rest' });
+		handleApplication(scope);
+		assert.equal(state.httpOptions.before, undefined);
+		assert.equal(state.httpOptions.after, 'rest');
+	});
+
+	it('treats a bare `before:` key (null) as unset, preserving the default hoist', () => {
+		const { scope, state } = fakeScope({ before: null });
+		handleApplication(scope);
+		assert.equal(state.httpOptions.before, 'authentication');
+		assert.equal(state.httpOptions.after, undefined);
+	});
+
+	it('treats a bare `after:` key (null) as unset', () => {
+		const { scope, state } = fakeScope({ after: null });
+		handleApplication(scope);
+		assert.equal(state.httpOptions.before, 'authentication');
+		assert.equal(state.httpOptions.after, undefined);
+	});
+
 	it('rejects a non-string before', () => {
 		const { scope } = fakeScope({ before: 42 });
 		assert.throws(() => handleApplication(scope), /Invalid `before` option/);
+	});
+
+	it('rejects an empty-string before', () => {
+		const { scope } = fakeScope({ before: '' });
+		assert.throws(() => handleApplication(scope), /Invalid `before` option/);
+	});
+
+	it('rejects an empty-string after', () => {
+		const { scope } = fakeScope({ after: '' });
+		assert.throws(() => handleApplication(scope), /Invalid `after` option/);
 	});
 
 	it('rejects after: false (only before supports clearing)', () => {
@@ -111,6 +145,13 @@ describe('static plugin fallthrough: false warning', () => {
 		assert.equal(state.warnings.length, 0);
 	});
 
+	it('warns for an explicit before: authentication (same position as the default)', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, before: 'authentication' });
+		handleApplication(scope);
+		assert.equal(state.warnings.length, 1);
+		assert.match(state.warnings[0], /after: 'rest'/);
+	});
+
 	it('warns when a live reload turns fallthrough off', () => {
 		const options = {};
 		const { scope, state } = fakeScope(options);
@@ -119,6 +160,18 @@ describe('static plugin fallthrough: false warning', () => {
 		options.fallthrough = false;
 		scope.fireChange('fallthrough');
 		assert.equal(state.warnings.length, 1);
+	});
+
+	it('does not warn when a config save adds after: rest together with fallthrough: false', () => {
+		const options = {};
+		const { scope, state } = fakeScope(options);
+		handleApplication(scope);
+		// A single config save can change several options; the fallthrough change event must see
+		// the live `after` value, not the one captured at registration.
+		options.after = 'rest';
+		options.fallthrough = false;
+		scope.fireChange('fallthrough');
+		assert.equal(state.warnings.length, 0);
 	});
 });
 
@@ -132,10 +185,17 @@ describe('static plugin ordering live reload', () => {
 		assert.equal(state.restartRequests, 2);
 	});
 
+	it('requests a restart when urlPath changes (route mount is fixed at load, #1583)', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		scope.fireChange('urlPath');
+		assert.equal(state.restartRequests, 1);
+	});
+
 	it('does not request a restart for options read per-request', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
-		for (const key of ['fallthrough', 'notFound', 'index', 'extensions', 'files', 'urlPath']) {
+		for (const key of ['fallthrough', 'notFound', 'index', 'extensions', 'files']) {
 			scope.fireChange(key);
 		}
 		assert.equal(state.restartRequests, 0);
