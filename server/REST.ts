@@ -11,6 +11,7 @@ import { generateJsonApi } from '../resources/openApi.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
+import { entryMap } from '../resources/RecordEncoder.ts';
 
 const { errorToString } = harperLogger;
 const etagBytes = new Uint8Array(8);
@@ -19,6 +20,60 @@ let httpOptions = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
+<<<<<<< HEAD
+=======
+/**
+ * Finalize a Response (or a response-like envelope carrying a `headers` field) into the response object
+ * handed to the HTTP layer: merge in the accumulated headers, serialize a body from `data` or the object
+ * itself when one isn't already present, and default the status. Shared by the normal return path and the
+ * thrown-Response short-circuit so both honor status, headers, and body identically.
+ */
+function finalizeResponse(responseData, headers, status, request) {
+	if (Object.isFrozen(responseData)) {
+		// make a copy if it is a frozen record
+		responseData = Object.assign({}, responseData);
+	} else if (entryMap.has(responseData)) {
+		// A table/cache record handed to us for the response is also the live object that the
+		// resolving read queued for its store commit (see getFromSource in Table.ts, which shares
+		// one object so the response reflects commit-stamped timestamps). Mutating it below —
+		// reassigning `.headers` to a web `Headers` (whose entries are not own-enumerable, so it
+		// encodes as `{}`) or defaulting `.status` — writes straight through to what gets persisted,
+		// silently emptying the stored headers on the next read. On RocksDB the commit encodes before
+		// this runs so it goes unnoticed; on LMDB the commit is deferred (async txn + the blob
+		// durability gate widened in #1641) and encodes the corrupted object. Copy so response
+		// mutations never reach the stored record. Preserving the prototype keeps computed-attribute
+		// getters resolving (entryMap-backed methods like getUpdatedTime() return undefined on the
+		// copy, but nothing on this path reads them); it also means a stored field that shadows a
+		// same-named computed attribute would hit the prototype's setter here rather than becoming an
+		// own property — a schema shape that shouldn't exist. See HarperFast/harper#1702.
+		responseData = Object.assign(Object.create(Object.getPrototypeOf(responseData)), responseData);
+	}
+	// merge headers from response
+	const responseHeaders = mergeHeaders(responseData.headers, headers);
+	if (responseData.headers !== responseHeaders)
+		// if we rebuilt the headers, reassign it, but we don't want to assign to a Response object (which should already
+		// have a valid Headers object) or it will throw an error
+		responseData.headers = responseHeaders;
+	// if no body, look for provided data to serialize
+	if (!responseData.body) {
+		let body: any;
+		if ('data' in responseData) {
+			// a standard Response object does not have a setter for body, so we force it
+			body = serialize(responseData.data, request, responseData);
+		} else if (responseData.body === undefined) {
+			// if there is really no body, serialize this object into the body. Note that `new Response()` creates a response
+			// with a null body, and will not fall into this branch
+			body = serialize(responseData, request, responseData);
+		}
+		if (body) {
+			responseData = { status: responseData.status, headers: responseData.headers, body };
+		}
+	}
+	responseData.status ??= status ?? 200;
+	return responseData;
+}
+
+>>>>>>> 4734b5c67 (fix(rest): copy live cache records in finalizeResponse before mutating headers/status)
 async function http(request: Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
