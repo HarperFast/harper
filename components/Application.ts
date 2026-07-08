@@ -38,6 +38,10 @@ interface ApplicationConfig {
 		timeout?: number;
 		allowInstallScripts?: boolean;
 	};
+	// Private-registry auth in reference form only — each entry names an hdb_secret row, never a
+	// token. Recorded by deploy_component so every (cold) install — reboot, new peer, rollback —
+	// re-resolves the credential from the store rather than needing it re-supplied.
+	registryAuth?: { registry: string; secret: string; scope?: string }[];
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -109,6 +113,28 @@ export function assertApplicationConfig(
 			throw new (class InvalidInstallAllowScriptsError extends TypeError {})(
 				`Invalid 'install.allowInstallScripts' property for application ${applicationName}: expected boolean, got ${typeof applicationConfig.install.allowInstallScripts}`
 			);
+		}
+	}
+	if ('registryAuth' in applicationConfig && applicationConfig.registryAuth !== undefined) {
+		const entries = applicationConfig.registryAuth;
+		if (!Array.isArray(entries)) {
+			throw new (class InvalidRegistryAuthError extends TypeError {})(
+				`Invalid 'registryAuth' property for application ${applicationName}: expected array, got ${typeof entries}`
+			);
+		}
+		for (const entry of entries) {
+			// Config carries references only — a literal `token` here would mean a plaintext credential
+			// was persisted to disk, which the deploy path is designed to prevent.
+			if (
+				typeof entry !== 'object' ||
+				entry === null ||
+				typeof (entry as any).registry !== 'string' ||
+				typeof (entry as any).secret !== 'string'
+			) {
+				throw new (class InvalidRegistryAuthError extends TypeError {})(
+					`Invalid 'registryAuth' entry for application ${applicationName}: expected { registry, secret, scope? } reference`
+				);
+			}
 		}
 	}
 }
@@ -699,10 +725,30 @@ export async function installApplications() {
 			// This will throw if the config is invalid
 			assertApplicationConfig(name, applicationConfig);
 
+			// Resolve any private-registry auth references from the store so a cold install (fresh
+			// node, wiped components dir, new peer that never installed) can authenticate without the
+			// token being re-supplied. Best-effort: if custody isn't available yet or a referenced
+			// secret is missing, log and install without it (a truly private package then fails in
+			// npm with its own error) rather than blocking boot.
+			let resolvedRegistryAuth: RegistryAuthEntry[] | undefined;
+			if (applicationConfig.registryAuth?.length) {
+				try {
+					const { resolveRegistryAuth } = await import('./secretOperations.ts');
+					resolvedRegistryAuth = (await resolveRegistryAuth(applicationConfig.registryAuth, name)) as
+						| RegistryAuthEntry[]
+						| undefined;
+				} catch (error) {
+					logger.warn?.(
+						`Could not resolve registryAuth for application ${name} at install time: ${(error as Error).message}`
+					);
+				}
+			}
+
 			const application = new Application({
 				name,
 				packageIdentifier: applicationConfig.package,
 				install: applicationConfig.install,
+				registryAuth: resolvedRegistryAuth,
 			});
 
 			// Lock check: only install if not already installed with matching configuration

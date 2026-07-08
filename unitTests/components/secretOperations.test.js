@@ -593,5 +593,98 @@ describe('secretOperations', () => {
 				/Failed to decrypt registryAuth secret 'BAD': unsupported padding/
 			);
 		});
+
+		it('waits out the grace period, then 404s when a referenced secret never replicates in', async () => {
+			installCustody();
+			const start = Date.now();
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'NEVER' }], 'app', { waitMs: 120 }),
+				(err) => err.statusCode === 404
+			);
+			assert.ok(Date.now() - start >= 100, 'should have waited out the grace period before 404');
+		});
+
+		it('resolves once a referenced secret replicates in during the grace period', async () => {
+			installCustody();
+			// Seed the encrypted row, then hide it until ~60ms in to simulate replication lag.
+			await secretOps.setSecret({ ...su('set_secret'), name: 'LATE', value: 'ghp_late', grants: ['app'] });
+			const realRow = installed.mock.rows.get('LATE');
+			installed.mock.rows.delete('LATE');
+			setTimeout(() => installed.mock.rows.set('LATE', realRow), 60);
+			const out = await secretOps.resolveRegistryAuth([{ registry: gh, secret: 'LATE' }], 'app', { waitMs: 2000 });
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_late', scope: undefined }]);
+		});
+	});
+
+	describe('deriveRegistrySecretName', () => {
+		it('derives a stable name keyed by component and registry, sanitized to the name grammar', () => {
+			assert.equal(
+				secretOps.deriveRegistrySecretName('my-app', 'https://npm.pkg.github.com'),
+				'deploy.my-app.npm.pkg.github.com'
+			);
+		});
+
+		it('strips scheme/slashes and replaces disallowed characters (port, path)', () => {
+			assert.equal(
+				secretOps.deriveRegistrySecretName('app', 'https://registry.example.com:4873/path/'),
+				'deploy.app.registry.example.com_4873_path'
+			);
+		});
+
+		it('is identical for the bare-host and scheme forms of the same registry', () => {
+			assert.equal(
+				secretOps.deriveRegistrySecretName('app', 'npm.pkg.github.com'),
+				secretOps.deriveRegistrySecretName('app', 'https://npm.pkg.github.com/')
+			);
+		});
+	});
+
+	describe('ingestRegistryAuth', () => {
+		const gh = 'https://npm.pkg.github.com';
+		const deploy = (op = 'deploy_component') => su(op);
+
+		it('seals a literal token into the store and returns a reference; round-trips via resolve', async () => {
+			installCustody();
+			const refs = await secretOps.ingestRegistryAuth(
+				deploy(),
+				[{ registry: gh, token: 'ghp_secret', scope: '@org' }],
+				'app'
+			);
+			assert.deepEqual(refs, [{ registry: gh, secret: 'deploy.app.npm.pkg.github.com', scope: '@org' }]);
+			// The stored row is scoped (granted to the component), not processEnv.
+			const row = installed.mock.rows.get('deploy.app.npm.pkg.github.com');
+			assert.deepEqual(row.grants, ['app']);
+			assert.equal(row.processEnv, false);
+			// Resolving the reference yields the original token back.
+			const resolved = await secretOps.resolveRegistryAuth(refs, 'app');
+			assert.deepEqual(resolved, [{ registry: gh, token: 'ghp_secret', scope: '@org' }]);
+		});
+
+		it('passes already-reference entries through without minting a derived row', async () => {
+			installCustody();
+			const input = [{ registry: gh, secret: 'PREEXISTING' }];
+			const out = await secretOps.ingestRegistryAuth(deploy(), input, 'app');
+			assert.deepEqual(out, [{ registry: gh, secret: 'PREEXISTING' }]);
+			assert.ok(!installed.mock.rows.has('deploy.app.npm.pkg.github.com'), 'no derived row minted');
+		});
+
+		it('without custody, leaves a literal token untouched (transient fallback) and stores nothing', async () => {
+			const input = [{ registry: gh, token: 'ghp_secret' }];
+			const out = await secretOps.ingestRegistryAuth(deploy(), input, 'app');
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_secret' }]);
+			assert.equal(installed.mock.putCount, 0, 'no secret written without custody');
+		});
+
+		it('is idempotent on token rotation — same derived row, latest value', async () => {
+			installCustody();
+			await secretOps.ingestRegistryAuth(deploy(), [{ registry: gh, token: 'v1' }], 'app');
+			await secretOps.ingestRegistryAuth(deploy(), [{ registry: gh, token: 'v2' }], 'app');
+			assert.equal(installed.mock.rows.size, 1, 'one derived row, overwritten');
+			const [resolved] = await secretOps.resolveRegistryAuth(
+				[{ registry: gh, secret: 'deploy.app.npm.pkg.github.com' }],
+				'app'
+			);
+			assert.equal(resolved.token, 'v2');
+		});
 	});
 });
