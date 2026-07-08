@@ -126,11 +126,11 @@ async function http(request: Request, nextHandler) {
 		if (replicateFrom === 'none') {
 			request.replicateFrom = false;
 		}
-		let responseData = await transaction(request, () => {
+		let responseData = await transaction(request, async () => {
 			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
 				try {
-					request.data = (getDeserializer(headersObject['content-type'] as any, true) as any)(
+					request.data = await (getDeserializer(headersObject['content-type'] as any, true) as any)(
 						request.body,
 						request.headers
 					);
