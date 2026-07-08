@@ -33,9 +33,12 @@ export function fingerprintOf(publicKeyPem: string): string {
 	return createHash('sha256').update(der).digest('hex');
 }
 
-// Strict base64 (the field encoding inside the envelope JSON). Buffer.from(s, 'base64') silently
-// ignores invalid characters, so decodability has to be checked by pattern.
-const BASE64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+// Base64 with OPTIONAL padding (the field encoding inside the envelope JSON). Buffer.from(s,
+// 'base64') silently ignores invalid characters, so decodability has to be checked by pattern —
+// but it decodes unpadded input fine, and browser/WebCrypto clients commonly emit unpadded
+// base64, so padding is accepted rather than required. Charset stays strict; a trailing group of
+// one character (never valid base64) is still rejected.
+const BASE64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/;
 
 /**
  * Parse and shape-validate a base64url envelope body without decrypting it. Throws on a

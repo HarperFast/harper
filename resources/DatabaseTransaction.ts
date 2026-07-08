@@ -34,6 +34,23 @@ let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ??
 
 class StartedTransaction extends Error {}
 
+/**
+ * Built when the long-transaction monitor aborts a write-bearing transaction that stayed open past the
+ * limit (STORAGE_MAXTRANSACTIONOPENTIME). Surfacing this instead of silently force-committing a partial
+ * write set preserves atomicity and avoids the index corruption described in issue #1407: the
+ * application gets an actionable error and owns how it splits long-running work into smaller
+ * transactions, while core keeps the consistency guarantee.
+ */
+export function transactionOpenTooLongError(): ServerError {
+	// 422 rather than 503: the condition is deterministic for a given transaction shape, so a retryable
+	// status (503/408) would invite clients and gateways to auto-retry the same doomed long transaction.
+	// 422 signals the request itself must change (split the work), which is the actionable response.
+	return new ServerError(
+		'Transaction was aborted after exceeding the open-transaction limit; split long-running work into smaller transactions',
+		422
+	);
+}
+
 type MaybePromise<T> = T | Promise<T>;
 
 export type CommitOptions = {
@@ -109,6 +126,10 @@ export class DatabaseTransaction implements Transaction {
 	// An explicit marker rather than overloading `retries`, which is also bumped by transient
 	// conflict retries and never reset, so it cannot reliably signal "this is a replay".
 	declare isReplay?: boolean;
+	// Set by the long-transaction monitor when it aborts a write-bearing transaction that exceeded the
+	// open-transaction limit. Once poisoned, any further addWrite/commit throws transactionOpenTooLongError
+	// so the request rolls back cleanly instead of silently committing a partial write set (issue #1407).
+	declare timedOut?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -177,6 +198,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	addWrite(operation: TransactionWrite) {
+		if (this.timedOut) throw transactionOpenTooLongError();
 		this.writes.push(operation);
 		if (!operation.deferSave) {
 			// Setting saved to false means to defer saving
@@ -241,6 +263,7 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
+		if (this.timedOut) throw transactionOpenTooLongError();
 		let transaction = options.transaction ?? this.transaction; // we need to preserve this transaction as we might to resurrect it if we have to retry
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
@@ -449,6 +472,45 @@ export class DatabaseTransaction implements Transaction {
 		this.writes = [];
 		if (this.#context?.resourceCache) this.#context.resourceCache = null;
 	}
+	/**
+	 * True if this transaction — or any database in its multi-store `next` chain — has writes accumulated
+	 * that have not yet been committed. Writes to a second database live on `next` (see txnForContext), so a
+	 * transaction that reads database A (head, tracked via its read snapshot, empty `writes`) and writes
+	 * database B (`next`) must still count as write-bearing, or the monitor would misclassify it as read-only
+	 * and force-commit B's writes via the commit cascade (issue #1407, multi-store path).
+	 */
+	hasPendingWrites(): boolean {
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			if (txn.writes.some((write) => write)) return true;
+		}
+		return false;
+	}
+	/**
+	 * Abort and poison this transaction because it exceeded the open-transaction limit. The next write or
+	 * commit throws transactionOpenTooLongError so the request fails cleanly and rolls back, rather than the
+	 * monitor force-committing a partial write set on the application's behalf (issue #1407). The whole
+	 * multi-store `next` chain is poisoned and aborted: writes to a second database live on `next`, so
+	 * leaving it un-poisoned would let the head's commit cascade force-commit them (or orphan its resources
+	 * until it self-times-out).
+	 */
+	abortDueToTimeout(): void {
+		// Poison every link first, then abort each, so a throw from one link's abort() can't leave later links
+		// in the chain un-poisoned (and thus eligible to be force-committed by a later commit cascade).
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.timedOut = true;
+			// Force the CLOSED path when releasing the read snapshot: doneReadTxn() flushes lingering writes via
+			// commit() while open === LINGERING, and commit() now throws transactionOpenTooLongError once poisoned.
+			// Closing first makes the release discard (abort) the uncommitted writes instead, which is the intent.
+			txn.open = TRANSACTION_STATE.CLOSED;
+		}
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			try {
+				txn.abort();
+			} catch (error) {
+				harperLogger.debug?.(`Error aborting timed-out transaction in chain: ${error.message}`);
+			}
+		}
+	}
 	directCommitSync(): void {
 		trackedTxns.delete(this);
 		this.transaction?.commitSync();
@@ -508,25 +570,43 @@ function startMonitoringTxns() {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				harperLogger.error(
-					`Transaction was open too long and has been committed, from table: ${
-						(txn.db as any)?.name + (url ? ' path: ' + url : '')
-					}`,
-					...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
-					...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
-				);
-				// reset the transaction
-				try {
-					const result = txn.commit();
-					if ((result as any)?.then) {
-						(result as any).catch((error) => {
-							harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
-						});
+				if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
+					// Abort and surface an error rather than force-committing a partial write set: silently
+					// committing on the application's behalf breaks atomicity and can leave orphaned
+					// secondary-index entries that only a full index rebuild repairs (issue #1407). The app
+					// owns long-running work (split into smaller transactions); core owns consistency.
+					// Canonical-source applies (replication peer / external caching source) and crash-recovery
+					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
+					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
+					// those, keep the prior force-commit behavior below.
+					harperLogger.error(
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
+						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
+					);
+					try {
+						txn.abortDueToTimeout();
+					} catch (error) {
+						harperLogger.debug?.(`Error aborting timed out transaction: ${error.message}`);
 					}
-				} catch (error) {
-					harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+				} else {
+					// Read-only long transaction (no atomicity/index risk — e.g. a large scan or export), or a
+					// canonical-source apply/replay that must never drop a write: preserve the prior behavior of
+					// committing to close out the snapshot without poisoning the transaction.
+					try {
+						const result = txn.commit();
+						if ((result as any)?.then) {
+							(result as any).catch((error) => {
+								harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+							});
+						}
+					} catch (error) {
+						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+					}
+					txn.timeout = txnExpiration;
 				}
-				txn.timeout = txnExpiration;
 			} else {
 				txn.timeout -= txnExpiration;
 			}

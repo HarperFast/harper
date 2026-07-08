@@ -50,6 +50,16 @@ describe('secretEnvelope codec', () => {
 		assert.equal(typeof fields.ct, 'string');
 	});
 
+	it('round-trips an envelope with UNPADDED base64 fields (browser/WebCrypto encoders)', () => {
+		// Client-built envelopes are a first-class path; many browser encoders omit `=` padding
+		// and Buffer.from(..., 'base64') decodes unpadded input identically.
+		const unpadded = reencode(encryptEnvelope('unpadded-secret', publicKey, fp), (o) => {
+			for (const f of ['k', 'iv', 'ct', 'tag']) o[f] = o[f].replace(/=+$/, '');
+		});
+		assert.doesNotThrow(() => parseEnvelopeFields(unpadded));
+		assert.equal(decryptEnvelope(unpadded, privateKey, fp), 'unpadded-secret');
+	});
+
 	describe('deny paths', () => {
 		it('rejects an envelope encrypted for a different key (wrong kid)', () => {
 			const body = encryptEnvelope('x', publicKey, 'deadbeef');
@@ -86,6 +96,9 @@ describe('secretEnvelope codec', () => {
 			assert.throws(() => parseEnvelopeFields(nonBase64), /malformed secret envelope/);
 			const emptyIv = reencode(encryptEnvelope('x', publicKey, fp), (o) => (o.iv = ''));
 			assert.throws(() => parseEnvelopeFields(emptyIv), /malformed secret envelope/);
+			// Padding is optional, but a trailing group of ONE char is never valid base64.
+			const oneCharGroup = reencode(encryptEnvelope('x', publicKey, fp), (o) => (o.iv = 'aWl2A'));
+			assert.throws(() => parseEnvelopeFields(oneCharGroup), /malformed secret envelope/);
 		});
 	});
 });

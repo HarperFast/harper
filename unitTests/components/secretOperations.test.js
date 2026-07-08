@@ -72,7 +72,7 @@ function installMockSecretTable({ getDelay = 0 } = {}) {
 	return {
 		mock,
 		restore() {
-			databases.system[SECRET_TABLE] = prior;
+			if (databases.system) databases.system[SECRET_TABLE] = prior;
 		},
 	};
 }
@@ -350,6 +350,63 @@ describe('secretOperations', () => {
 		});
 	});
 
+	describe('processEnv tier', () => {
+		it('stores the processEnv flag and forces grants empty', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true });
+			const row = installed.mock.rows.get('PE');
+			assert.equal(row.processEnv, true);
+			assert.deepStrictEqual(row.grants, []);
+		});
+
+		it('rejects set_secret with both processEnv and grants', async () => {
+			installCustody();
+			await assert.rejects(
+				async () =>
+					secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true, grants: ['app1'] }),
+				/cannot be both processEnv and grant-scoped/
+			);
+		});
+
+		it('rejects granting a component to a processEnv secret', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true });
+			await assert.rejects(
+				async () => secretOps.grantSecret({ ...su('grant_secret'), name: 'PE', component: 'app1' }),
+				/is a processEnv \(global\) secret and cannot be scoped/
+			);
+		});
+
+		it('preserves the processEnv tier across a value rotation', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v1', processEnv: true });
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v2' });
+			assert.equal(installed.mock.rows.get('PE').processEnv, true);
+		});
+
+		it('converts processEnv → scoped via set_secret processEnv:false + grants', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v1', processEnv: true });
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'v1', processEnv: false, grants: ['app1'] });
+			const row = installed.mock.rows.get('PE');
+			assert.equal(row.processEnv, false);
+			assert.deepStrictEqual(row.grants, ['app1']);
+			// grant now succeeds against the converted (scoped) row
+			const res = await secretOps.grantSecret({ ...su('grant_secret'), name: 'PE', component: 'app2' });
+			assert.deepStrictEqual(res.grants, ['app1', 'app2']);
+		});
+
+		it('list_secrets surfaces the processEnv flag', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true });
+			await secretOps.setSecret({ ...su('set_secret'), name: 'SC', value: 'y', grants: ['app1'] });
+			const { secrets } = await secretOps.listSecrets(su('list_secrets'));
+			const byName = Object.fromEntries(secrets.map((s) => [s.name, s]));
+			assert.equal(byName.PE.processEnv, true);
+			assert.equal(byName.SC.processEnv, false);
+		});
+	});
+
 	describe('list_secrets', () => {
 		it('returns metadata only — never envelopes or values — with custody match flags', async () => {
 			installCustody();
@@ -392,12 +449,42 @@ describe('secretOperations', () => {
 	});
 
 	describe('read_audit_log on system.hdb_secret', () => {
-		it('is blocked (audit rows would expose envelopes; table audit itself must stay on)', async () => {
-			const readAuditLog = require('#src/dataLayer/readAuditLog').default;
+		const readAuditLog = require('#src/dataLayer/readAuditLog').default;
+
+		it('is blocked with 403 (audit rows would expose envelopes; table audit itself must stay on)', async () => {
 			await assert.rejects(
 				async () => readAuditLog({ database: 'system', table: SECRET_TABLE }),
+				(err) => err.statusCode === 403 && /not supported/.test(err.http_resp_msg ?? err.message)
+			);
+		});
+
+		it('is blocked regardless of caller role — super_user and non-SU alike', async () => {
+			// The guard is role-independent by design: it fires before any config or DB access,
+			// so an operations-allowlisted non-SU role and a full SU get the same 403.
+			await assert.rejects(
+				async () => readAuditLog({ ...su('read_audit_log'), database: 'system', table: SECRET_TABLE }),
 				(err) => err.statusCode === 403
 			);
+			await assert.rejects(
+				async () => readAuditLog({ ...nonSu('read_audit_log'), database: 'system', table: SECRET_TABLE }),
+				(err) => err.statusCode === 403
+			);
+		});
+
+		it('does not affect other tables (they fail on config/schema checks, never this 403)', async () => {
+			// hdb_secret in a NON-system database is not the secrets store — not blocked either.
+			// Nonexistent tables are used so the request stops at the config/schema checks that
+			// follow the guard, rather than reaching the storage bridge from a unit-test process.
+			for (const req of [
+				{ database: 'system', table: 'not_a_real_table' },
+				{ database: 'data', table: 'hdb_secret' },
+			]) {
+				await assert.rejects(
+					async () => readAuditLog(req),
+					(err) => err.statusCode !== 403 && !/not supported/.test(err.http_resp_msg ?? err.message ?? ''),
+					`expected ${req.database}.${req.table} to fail on config/schema, not the hdb_secret guard`
+				);
+			}
 		});
 	});
 

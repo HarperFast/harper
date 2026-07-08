@@ -10,6 +10,7 @@ const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
 const logger = require('#src/utility/logging/harper_logger');
+const { contextStorage } = require('#src/resources/transaction');
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';
@@ -455,6 +456,112 @@ describe('Test serverUtilities.js module ', () => {
 				assert.equal(loggedBody.operation, 'create_schema', 'operation should be preserved');
 				assert.equal(loggedBody.schema, 'test', 'schema should be preserved');
 			}
+		});
+
+		it('Should run the operation function with an ambient context carrying hdb_user', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'ambient_user' };
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore?.user, hdbUser);
+		});
+
+		it('Should not establish an ambient context when hdb_user is absent', async function () {
+			op_func_caller_stub.callThrough();
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test' } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore, undefined);
+		});
+
+		it('Should preserve an existing ambient context for the same user', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'ambient_user' };
+			const outerContext = { user: hdbUser, someRequestState: true };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.equal(observedStore, outerContext);
+		});
+
+		it('Should merge ambient context, swapping only the user, when the request user differs', async function () {
+			// An explicitly different hdb_user must never silently ride the outer user's
+			// attribution, but the rest of the ambient context (open transaction, request
+			// state) is preserved so atomicity is unaffected. The outer context object
+			// itself must not be mutated.
+			op_func_caller_stub.callThrough();
+			const userX = { username: 'outer_user' };
+			const userY = { username: 'request_user' };
+			const outerTransaction = { open: true };
+			const outerContext = { user: userX, transaction: outerTransaction, someRequestState: true };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: userY } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, userY);
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(observedStore.someRequestState, true, 'other request state must be preserved');
+			assert.equal(outerContext.user, userX, 'outer context object must not be mutated');
+		});
+
+		it('Should merge the user into a userless ambient context, preserving its transaction', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'request_user' };
+			const outerTransaction = { open: true };
+			const outerContext = { transaction: outerTransaction };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, hdbUser);
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(outerContext.user, undefined, 'outer context object must not be mutated');
+		});
+
+		it('Should not establish an ambient context when hdb_user is null', async function () {
+			// serverHandlers.js sets req.body.hdb_user = null on the unauthenticated-allowed path
+			op_func_caller_stub.callThrough();
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test', hdb_user: null } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore, undefined);
 		});
 	});
 });

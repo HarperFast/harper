@@ -20,9 +20,10 @@ describe('mcp/audit', () => {
 			assert.equal(out.list[0].password, '[redacted]');
 		});
 
-		it('redacts secret-bearing exact field names (value/values/envelope) but not lookalikes', () => {
+		it('redacts secret-bearing exact field names (value/values/envelope) for secret-bearing tools', () => {
 			// set_secret / set_env_value payloads must not reach the audit log via MCP —
-			// this mirrors the REST ops-log strip in processLocalTransaction.
+			// this mirrors the REST ops-log strip in processLocalTransaction. The exact-field
+			// masking is opt-in per tool (third arg), so it fires only for those operations.
 			const input = {
 				name: 'API_KEY',
 				value: 'plaintext-secret',
@@ -30,12 +31,22 @@ describe('mcp/audit', () => {
 				envelope: 'enc:v1:abc',
 				search_value: 'find-me',
 			};
-			const out = redactArgs(input);
+			const out = redactArgs(input, 0, true);
 			assert.equal(out.name, 'API_KEY');
 			assert.equal(out.value, '[redacted]');
 			assert.equal(out.values, '[redacted]');
 			assert.equal(out.envelope, '[redacted]');
 			assert.equal(out.search_value, 'find-me', 'exact-match only — search_value stays auditable');
+		});
+
+		it('leaves generic value/values fields auditable for non-secret tools', () => {
+			// `value`/`values` are non-secret params on many operations; without the per-tool opt-in
+			// they must stay visible so unrelated tools keep a useful audit trail.
+			const input = { value: 'a-search-term', values: [1, 2, 3], password: 'p' };
+			const out = redactArgs(input, 0, false);
+			assert.equal(out.value, 'a-search-term');
+			assert.deepEqual(out.values, [1, 2, 3]);
+			assert.equal(out.password, '[redacted]', 'credential-named fields are still redacted globally');
 		});
 
 		it('does not mutate the input', () => {

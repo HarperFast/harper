@@ -27,7 +27,7 @@ import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, Upgr
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
-import { makeCallbackChain as buildCallbackChain } from './middlewareChain.ts';
+import { makeCallbackChain as buildCallbackChain, describeChains } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
 
 const { errorToString } = harperLogger;
@@ -878,23 +878,81 @@ async function bunDelegateToNodeServer(
 	return new Response('Not found\n', { status: 404 });
 }
 
-function makeCallbackChain(responders: typeof httpResponders, portNum: number | string, requestArgIndex: number = 0) {
+type SerializedRoute = { host?: string; urlPath?: string; order: string[] };
+// Resolved order captured at chain-build time, keyed identically to httpChain/upgradeChains/
+// websocketChains (kind → port → routes). Reporting the stored build-time order rather than
+// recomputing from current responders guarantees get_status matches the callback chain actually
+// serving that port — including cases where a late `port: 'all'` registration rebuilds only the
+// 'all' chain and leaves a concrete port's chain (and this description) unchanged (#1573).
+const resolvedChainDescriptions: Record<string, Record<string, SerializedRoute[]>> = {
+	http: {},
+	upgrade: {},
+	websocket: {},
+};
+
+function makeCallbackChain(
+	responders: typeof httpResponders,
+	portNum: number | string,
+	requestArgIndex: number = 0,
+	kind: string = 'http'
+) {
+	const onCycle = () => {
+		harperLogger.warn(
+			`Cycle detected in ${kind} middleware before/after ordering on port ${portNum}; falling back to registration order.`
+		);
+	};
+	// describeChains reuses the same resolvers as buildCallbackChain, so this is the served order.
+	// onCycle is omitted: the build call owns the single cycle warning, and on a cycle describeChains
+	// falls back to registration order exactly as the built chain does.
+	const routes: SerializedRoute[] = describeChains(responders, portNum).map((route) => ({
+		host: route.host,
+		urlPath: route.urlPath,
+		order: route.order.map((entry) => entry.name ?? '(anonymous)'),
+	}));
+	resolvedChainDescriptions[kind][portNum] = routes;
+	if (harperLogger.debug) {
+		for (const route of routes) {
+			const scope = route.host || route.urlPath ? ` [${route.host ?? '*'}${route.urlPath ?? ''}]` : '';
+			harperLogger.debug(
+				`Resolved ${kind} middleware chain on port ${portNum}${scope}: ${route.order.join(' → ') || '(empty)'}`
+			);
+		}
+	}
 	return buildCallbackChain(
 		responders,
 		portNum,
 		unhandled,
-		() => {
-			harperLogger.warn(
-				`Cycle detected in middleware before/after ordering on port ${portNum}; falling back to registration order.`
-			);
-		},
+		onCycle,
 		requestArgIndex,
-		({ entryName, kind, target }) => {
+		({ entryName, kind: refKind, target }) => {
 			harperLogger.warn(
-				`Middleware ordering: ${entryName ? `'${entryName}'` : 'a handler'} requested \`${kind}: '${target}'\` but no handler named '${target}' is registered on port ${portNum}, so the constraint is ignored. Handler names are the config keys as registered (e.g. 'rest').`
+				`Middleware ordering: ${entryName ? `'${entryName}'` : 'a handler'} requested \`${refKind}: '${target}'\` but no handler named '${target}' is registered on port ${portNum}, so the constraint is ignored. Handler names are the config keys as registered (e.g. 'rest').`
 			);
 		}
 	);
+}
+
+/**
+ * Returns the resolved middleware order for every built HTTP, upgrade, and WebSocket chain on the
+ * current thread, as plain serializable data (listeners omitted). Surfaced via the `get_status`
+ * operation so chain placement can be verified on a running instance (#1573). The 'all' pseudo-port
+ * is excluded: makeCallbackChain builds a chain for it, but it is not a bound listener (its
+ * responders already fold into every concrete port's chain).
+ *
+ * Note: this reflects the calling thread's built chains. All HTTP worker threads register
+ * identically, so any worker's view is representative.
+ */
+export function describeMiddlewareChains() {
+	const concretePorts = (byPort: Record<string, SerializedRoute[]>) => {
+		const out: Record<string, SerializedRoute[]> = {};
+		for (const port of Object.keys(byPort)) if (port !== 'all') out[port] = byPort[port];
+		return out;
+	};
+	return {
+		http: concretePorts(resolvedChainDescriptions.http),
+		upgrade: concretePorts(resolvedChainDescriptions.upgrade),
+		websocket: concretePorts(resolvedChainDescriptions.websocket),
+	};
 }
 function unhandled(request) {
 	if (request.user) {
@@ -938,7 +996,7 @@ function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 			host: options?.host || undefined,
 		};
 		upgradeListeners[options?.runFirst ? 'unshift' : 'push'](entry);
-		upgradeChains[port] = makeCallbackChain(upgradeListeners, port);
+		upgradeChains[port] = makeCallbackChain(upgradeListeners, port, 0, 'upgrade');
 	}
 }
 
@@ -1032,7 +1090,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			host: options?.host || undefined,
 		};
 		websocketListeners[options?.runFirst ? 'unshift' : 'push'](wsEntry);
-		websocketChains[port] = makeCallbackChain(websocketListeners, port, 1);
+		websocketChains[port] = makeCallbackChain(websocketListeners, port, 1, 'websocket');
 
 		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
 		httpChain[port] = makeCallbackChain(httpResponders, port);

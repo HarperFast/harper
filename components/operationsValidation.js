@@ -253,7 +253,9 @@ const SECRET_NAME = Joi.string()
 // The encrypted-value marker followed by a base64url envelope body (structural validation of the
 // decoded JSON happens in the handler via parseEnvelopeFields). Derived from the shared prefix
 // constant so validator and handler can't drift; the prefix contains no regex metacharacters.
-const SECRET_ENVELOPE_REGEX = new RegExp(`^${ENV_ENCRYPTED_PREFIX}[A-Za-z0-9_-]+$`);
+// Trailing `=` padding is tolerated — some browser encoders emit padded base64url, and Node's
+// base64url decoder accepts either form.
+const SECRET_ENVELOPE_REGEX = new RegExp(`^${ENV_ENCRYPTED_PREFIX}[A-Za-z0-9_-]+={0,2}$`);
 
 // Size cap for secret values and envelopes: rows live forever in a replicated, audited system
 // table, so unbounded payloads are a storage/replication hazard, not a feature.
@@ -261,7 +263,8 @@ const SECRET_MAX_LENGTH = 256 * 1024;
 
 /**
  * Validate set_secret requests: `name` plus exactly one of `value` (plaintext) or `envelope`
- * (`enc:v1:` ciphertext), with optional `metadata` and `grants`.
+ * (`enc:v1:` ciphertext), with optional `metadata`, and a tier of either `processEnv` or `grants`
+ * (the handler rejects the two together — a processEnv secret is global, so scoping it is meaningless).
  * @param req
  * @returns {*}
  */
@@ -277,6 +280,9 @@ function setSecretValidator(req) {
 		// and grants is a set (explicit duplicates rejected here; write paths also dedupe dirty state).
 		metadata: Joi.object().max(100),
 		grants: Joi.array().items(Joi.string().min(1)).max(100).unique(),
+		// process.env delivery tier; mutually exclusive with grants (enforced in the handler so the
+		// check also covers a grants add against an already-processEnv stored row).
+		processEnv: Joi.boolean(),
 	}).xor('value', 'envelope');
 
 	return validator.validateBySchema(req, schema);

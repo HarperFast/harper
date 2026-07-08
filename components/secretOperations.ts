@@ -67,6 +67,7 @@ function toRecord(row: any) {
 		envelope: row.envelope,
 		kid: row.kid ?? null,
 		grants: dedupeGrants(row.grants),
+		processEnv: !!row.processEnv,
 		metadata: row.metadata ?? {},
 		unverified: !!row.unverified,
 		updated_by: row.updated_by ?? null,
@@ -118,6 +119,14 @@ function notifyMutation(operation: string, name: string, req: any, detail?: stri
  * or `envelope` (`enc:v1:...` ciphertext, encrypted client-side against get_secrets_public_key).
  * `kid` is derived from the envelope server-side; a client-supplied kid field is never trusted.
  * Never returns or logs plaintext.
+ *
+ * The delivery tier is explicit and mutually exclusive (a process-env secret is already global, so
+ * scoping it is meaningless):
+ *   - `processEnv: true` — materialized into the real `process.env` at component load, inherited by
+ *     child processes (`.env` semantics). No isolation promise.
+ *   - `grants: [...]` — scoped: never in `process.env`, exposed only to the listed components via the
+ *     `secrets` accessor.
+ * Both default to the stored row so a value rotation preserves the tier without re-specifying it.
  */
 export async function setSecret(req: any) {
 	requireSuperUser(req);
@@ -179,11 +188,20 @@ export async function setSecret(req: any) {
 
 	return withSecretLock(name, async () => {
 		const existing = await table.get(name);
+		const processEnv = req.processEnv ?? existing?.processEnv ?? false;
+		const grants = dedupeGrants(req.grants ?? existing?.grants);
+		if (processEnv && grants.length > 0) {
+			throw new ClientError(
+				`Secret '${name}' cannot be both processEnv and grant-scoped — a processEnv secret is global. ` +
+					`Set processEnv:false to scope it with grants, or omit grants.`
+			);
+		}
 		await table.put({
 			name,
 			envelope,
 			kid,
-			grants: dedupeGrants(req.grants ?? existing?.grants),
+			grants: processEnv ? [] : grants,
+			processEnv,
 			metadata: req.metadata ?? existing?.metadata ?? {},
 			unverified,
 			updated_by: req.hdb_user?.username ?? null,
@@ -204,6 +222,14 @@ async function mutateGrants(req: any, grant: boolean) {
 			throw new ClientError(`No secret found with name '${req.name}'`, HTTP_STATUS_CODES.NOT_FOUND);
 		}
 		const record = toRecord(row); // record.grants comes back deduped
+		// A processEnv secret is global; granting/revoking a component scope is contradictory. Revoke
+		// is a no-op on an already-empty grants list, so only the grant path needs to reject loudly.
+		if (grant && record.processEnv) {
+			throw new ClientError(
+				`Secret '${req.name}' is a processEnv (global) secret and cannot be scoped to a component. ` +
+					`Re-run set_secret with processEnv:false to convert it to a scoped secret first.`
+			);
+		}
 		const present = record.grants.includes(req.component);
 		const storedLength = Array.isArray(row.grants) ? row.grants.length : 0;
 		// No-op short-circuit: nothing to write, nothing to audit, no updated_by/__updatedtime__
@@ -258,6 +284,7 @@ export async function listSecrets(req: any) {
 			name: row.name,
 			kid: row.kid ?? null,
 			grants: Array.isArray(row.grants) ? [...row.grants] : [],
+			processEnv: !!row.processEnv,
 			metadata: row.metadata ?? {},
 			unverified: !!row.unverified,
 			updated_by: row.updated_by ?? null,
