@@ -45,16 +45,23 @@ describe('toOpenAIError', () => {
 		assert.equal(resp.data.error.type, 'authentication_error');
 	});
 
-	it('maps 500 statusCode to server_error', () => {
-		const resp = toOpenAIError(makeClientError('boom', 500));
+	it('maps 500 statusCode to server_error with a generic message (no internal detail leak)', () => {
+		const resp = toOpenAIError(makeClientError('boom: /internal/path secrets', 500));
 		assert.equal(resp.status, 500);
 		assert.equal(resp.data.error.type, 'server_error');
+		assert.equal(resp.data.error.message, 'Internal server error');
 	});
 
-	it('defaults to 500 server_error for unknown errors', () => {
-		const resp = toOpenAIError(new Error('surprise'));
+	it('defaults to 500 server_error with a generic message for unknown errors', () => {
+		const resp = toOpenAIError(new Error('surprise with stack details'));
 		assert.equal(resp.status, 500);
 		assert.equal(resp.data.error.type, 'server_error');
+		assert.equal(resp.data.error.message, 'Internal server error');
+	});
+
+	it('passes 4xx messages through (client-actionable)', () => {
+		const resp = toOpenAIError(makeClientError('bad input: missing field', 400));
+		assert.equal(resp.data.error.message, 'bad input: missing field');
 	});
 
 	it('uses a fallback message for non-Error throws', () => {

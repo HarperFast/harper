@@ -7,6 +7,7 @@
  */
 
 import { ModelBackendNotFoundError } from '../backendRegistry.ts';
+import harperLogger from '../../../utility/logging/harper_logger.ts';
 
 type OpenAIErrorType =
 	'invalid_request_error' | 'server_error' | 'authentication_error' | 'permission_error' | 'api_error';
@@ -31,7 +32,6 @@ export interface OpenAIErrorResponse {
  * `500 server_error`. `ModelBackendNotFoundError` maps to `404 model_not_found`.
  */
 export function toOpenAIError(err: unknown): OpenAIErrorResponse {
-	const message = err instanceof Error ? err.message : 'Internal server error';
 	let status = 500;
 	let type: OpenAIErrorType = 'server_error';
 	let code: string | null = null;
@@ -49,6 +49,17 @@ export function toOpenAIError(err: unknown): OpenAIErrorResponse {
 		} else {
 			type = 'server_error';
 		}
+	}
+
+	// 5xx messages stay generic: internal error strings (backend stack details, file
+	// paths) don't belong in a wire response. The real error goes to the log. 4xx
+	// messages are client-actionable and pass through.
+	let message: string;
+	if (status >= 500) {
+		harperLogger.error('v1 gateway error', err);
+		message = 'Internal server error';
+	} else {
+		message = err instanceof Error ? err.message : 'Bad request';
 	}
 
 	return {
