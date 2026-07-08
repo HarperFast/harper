@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783497518335,
+  "lastUpdate": 1783497521993,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -4474,6 +4474,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 56.43,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "a0f4a51acfa917fd544c88eec4b8893b5d04512e",
+          "message": "fix(mqtt): close last-will persistence race; give retained-message test more headroom\n\nTwo independent causes behind the flaky \"test MQTT connections and commands\"\nsuite:\n\n- \"last will should be published on connection loss\": getSession() wrote the\n  Last Will record via getLastWill().put(will) without awaiting it, before\n  CONNACK is sent. A client that connected and then disconnected abruptly\n  could race ahead of that write; session.disconnect() would then find no\n  will record and silently drop it, hanging the test until mocha's timeout.\n  Reproduced deterministically with an artificial delay before the write, and\n  confirmed the fix (await the write) closes the race. Fix: await\n  getLastWill().put(will).\n\n- \"subscribe to retained/persisted record\": already raced the real message\n  event against a backstop timer, but the backstop (8000ms) left only 2s of\n  margin under the suite's 10000ms mocha timeout, and delivery is known to\n  routinely exceed 1s on loaded CI runners. Bump this test's own timeout to\n  20000ms (same precedent as the QoS=1 reconnect test) and derive the inner\n  backstop from this.timeout() - 2000 so the two can't race each other.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-07T23:40:40Z",
+          "url": "https://github.com/HarperFast/harper/commit/a0f4a51acfa917fd544c88eec4b8893b5d04512e"
+        },
+        "date": 1783497521143,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 11.56,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 11.12,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 16.16,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 13.11,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 20.84,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 12.62,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 26.87,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 11.61,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 14.53,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 49.99,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 125.38,
             "unit": "ms"
           }
         ]
