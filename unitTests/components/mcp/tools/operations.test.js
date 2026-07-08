@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const {
 	registerOperationsTools,
 	DEFAULT_ALLOW,
+	DEFAULT_EXCLUDED,
 	_setOperationFunctionMapForTest,
 	_setChooseOperationForTest,
 	_setProcessLocalTransactionForTest,
@@ -122,6 +123,49 @@ describe('mcp/tools/operations — registration', () => {
 		for (const safe of ['get_job', 'get_status', 'get_analytics', 'get_metrics']) {
 			assert.ok(names.has(safe), `${safe} should be default-allowed`);
 		}
+	});
+
+	it('excludes ALL secret-store operations from the default-allow surface', () => {
+		// list_secrets matches the `list_*` glob and get_secrets_public_key looks like a safe
+		// getter, but the secrets store is key custody management — never default-exposed to an
+		// LLM surface. DEFAULT_EXCLUDED pins every secret op, present and future-glob-matching.
+		const secretOps = [
+			'set_secret',
+			'grant_secret',
+			'revoke_secret',
+			'list_secrets',
+			'delete_secret',
+			'get_secrets_public_key',
+		];
+		assert.deepEqual([...DEFAULT_EXCLUDED].sort(), [...secretOps].sort());
+
+		_setOperationFunctionMapForTest(
+			makeOpMap([...secretOps.map((name) => [name, async () => ({})]), ['list_users', async () => ({})]])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		for (const op of secretOps) {
+			assert.ok(!names.has(op), `${op} must not be on the default MCP surface`);
+		}
+		assert.ok(names.has('list_users'), 'list_* glob still works for non-excluded ops');
+	});
+
+	it('an operator can still opt secret operations in via mcp.operations.allow (explicit only)', () => {
+		envOverrides.mcp_operations_allow = ['list_secrets', 'get_secrets_public_key'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['list_secrets', async () => ({ secrets: [] })],
+				['get_secrets_public_key', async () => ({})],
+				['set_secret', async () => ({})], // not on the explicit allow → excluded
+			])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		assert.ok(names.has('list_secrets'));
+		assert.ok(names.has('get_secrets_public_key'));
+		assert.ok(!names.has('set_secret'));
 	});
 
 	it('an operator can still opt sensitive getters into the surface via mcp.operations.allow', () => {
@@ -274,7 +318,11 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 		return new RegExp(`^${escaped}$`);
 	}
 
-	const expandedAllow = allOpNames.filter((name) => DEFAULT_ALLOW.some((p) => globToRegex(p).test(name)));
+	// Mirrors production isOperationAllowed: glob expansion minus the DEFAULT_EXCLUDED set
+	// (secret-store ops match `list_*` etc. but are never on the default surface).
+	const expandedAllow = allOpNames.filter(
+		(name) => !DEFAULT_EXCLUDED.has(name) && DEFAULT_ALLOW.some((p) => globToRegex(p).test(name))
+	);
 
 	it('expansion covers a non-trivial set of operations (sanity check)', () => {
 		// Catches the case where OPERATIONS_ENUM goes missing in a build refactor.
