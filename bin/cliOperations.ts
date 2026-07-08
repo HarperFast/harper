@@ -9,12 +9,7 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
-import {
-	streamPackagedDirectory,
-	getPackagedDirectorySize,
-	packageDirectory,
-	findDanglingSymlinks,
-} from '../components/packageComponent.ts';
+import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
@@ -118,16 +113,18 @@ const PREPARE_OPERATION: any = {
 		// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
 		req._projectPath = projectPath;
 		req._packageOptions = packageOptions;
-		// Pre-walk the directory for an uncompressed-size estimate. Both the progress counter
-		// and this total are in uncompressed units so the bar tracks to 100% naturally.
-		req._uploadSizeEstimate = await getPackagedDirectorySize(projectPath, packageOptions);
-		// A dangling symlink would otherwise silently truncate the tarball (tar-fs finalizes
-		// early on the broken target). Packaging now skips them; warn so the omission is visible.
-		const danglingSymlinks = await findDanglingSymlinks(projectPath, packageOptions);
-		if (danglingSymlinks.length) {
+		// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
+		// total) and the dangling-symlink list — a dangling symlink would otherwise silently
+		// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
+		// them; the list is reused below (no second walk) and warns the user which links were
+		// skipped so the omission is visible.
+		const scan = await scanPackageDirectory(projectPath, packageOptions);
+		req._uploadSizeEstimate = scan.totalSize;
+		req._danglingSymlinks = scan.danglingSymlinks;
+		if (scan.danglingSymlinks.length) {
 			process.stderr.write(
-				`warning: skipping ${danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
-					danglingSymlinks.map((p) => `  ${p}\n`).join('')
+				`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
+					scan.danglingSymlinks.map((p) => `  ${p}\n`).join('')
 			);
 		}
 		req._multipart = true;
@@ -320,7 +317,8 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			const packageStream = streamPackagedDirectory(
 				req._projectPath,
 				req._packageOptions,
-				renderer ? (n) => renderer.countUploadBytes(n) : undefined
+				renderer ? (n) => renderer.countUploadBytes(n) : undefined,
+				req._danglingSymlinks
 			);
 			const fields = operationFields(req);
 			const multipart = buildMultipartBody(fields, {

@@ -184,11 +184,49 @@ describe('streamPackagedDirectory round-trip', () => {
 		await fs.symlink('./gone', path.join(sourceDir, 'node_modules', 'broken-dep'));
 		try {
 			const dangling = (await findDanglingSymlinks(sourceDir, { skip_node_modules: true })).sort();
-			assert.deepStrictEqual(dangling, ['broken-root', path.join('src', 'broken-nested')]);
+			// 'src/broken-nested' is reported twice — once directly, once via the 'good' alias
+			// symlink (which points at 'src') — since tar-fs's dereferenced walk would try to
+			// pack (and fail on) both as distinct archive entries.
+			assert.deepStrictEqual(dangling, [
+				'broken-root',
+				path.join('good', 'broken-nested'),
+				path.join('src', 'broken-nested'),
+			]);
 			// With skip_symlinks the archive packs links literally (no dereference), so nothing to warn.
 			assert.deepStrictEqual(await findDanglingSymlinks(sourceDir, { skip_symlinks: true }), []);
 		} finally {
 			await fs.rm(sourceDir, { recursive: true, force: true });
+		}
+	});
+
+	it('finds a dangling symlink nested inside a validly-linked directory, and packs the rest (regression)', async function () {
+		this.timeout(15000);
+		// tar-fs's dereferenced walk readdirs *through* a valid symlinked directory just like a
+		// real one, so a dangling link nested inside it is just as capable of truncating the
+		// archive as one at the top level. The scan must recurse into valid symlinked
+		// directories to catch this, or packaging will still hit the original bug.
+		const sourceDir = await makeFixture({ 'real/nested/deep.txt': 'deep\n', 'real/sibling.txt': 'sib\n' });
+		await fs.symlink('./gone', path.join(sourceDir, 'real', 'nested', 'broken'));
+		await fs.symlink(path.join(sourceDir, 'real'), path.join(sourceDir, 'link-to-real'));
+		const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-nested-dangling-out-'));
+		try {
+			const dangling = (await findDanglingSymlinks(sourceDir)).sort();
+			// Reachable — and reported — via both the real path and the symlink alias, matching
+			// the two distinct archive entries tar-fs would otherwise try (and fail) to stat.
+			assert.deepStrictEqual(dangling, [
+				path.join('link-to-real', 'nested', 'broken'),
+				path.join('real', 'nested', 'broken'),
+			]);
+
+			await pipeline(streamPackagedDirectory(sourceDir), gunzip(), tar.extract(extractDir));
+			const extracted = await readDirTree(extractDir);
+			assert.strictEqual(extracted['real/nested/deep.txt'], 'deep\n');
+			assert.strictEqual(extracted['real/sibling.txt'], 'sib\n');
+			assert.strictEqual(extracted['link-to-real/nested/deep.txt'], 'deep\n');
+			assert.strictEqual(extracted['link-to-real/sibling.txt'], 'sib\n');
+		} finally {
+			await fs.rm(sourceDir, { recursive: true, force: true });
+			await fs.rm(extractDir, { recursive: true, force: true });
 		}
 	});
 });

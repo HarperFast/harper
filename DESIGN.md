@@ -264,3 +264,26 @@ replicability metadata is deferred to the cluster-level-config work (CORE-3018),
 schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
 in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
 operators must inspect the array for per-node outcomes.
+
+## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
+
+Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
+tar-fs's own walker calls `fs.stat` (not `lstat`) on every discovered entry when dereferencing; a
+dangling symlink's target throws `ENOENT`, and tar-fs's `statAll` loop treats _any_ `ENOENT` from
+a walk-discovered (not explicitly-requested) entry as end-of-stream — it calls `pack.finalize()`
+immediately, silently dropping every entry still queued (BFS order) after the link. No error is
+ever emitted, so `packStream.on('error', ...)` never fires and `deploy_component` reports success
+on a truncated archive. `scanPackageDirectory()` now pre-walks the tree once (async) to build a
+skip-set of dangling symlinks, which `streamPackagedDirectory`'s `tar.pack({ ignore })` consults via
+a synchronous `Set.has()` — **`ignore` is called synchronously by tar-fs with no Promise support**,
+so any fix here has to resolve the dangling set _before_ constructing `tar.pack`, not from inside
+the callback (an earlier draft used `lstatSync`/`statSync` per entry there, which would have added
+blocking I/O to a path that also runs inline on the Harper server's event loop via the
+`package_component` operation). The scan recurses into _valid_ symlinked directories the same way
+tar-fs's dereferenced walk does (readdir through the link), since a dangling symlink nested inside
+one is just as capable of tripping the same early-finalize — skipping recursion into symlinked
+dirs there would silently reintroduce the bug for that case. Circular directory symlinks are not
+guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existing tar-fs limitation
+this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
+declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
+other future cause would still report success silently; that's a deferred, separate fix.
