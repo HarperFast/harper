@@ -29,7 +29,7 @@
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/deleteUpdateRace.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
