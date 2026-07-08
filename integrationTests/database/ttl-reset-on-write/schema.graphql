@@ -1,0 +1,18 @@
+# QA-269 — TTL expiration clock reset across write surfaces
+#
+# Expiry: 2s TTL, string+integer fields.
+#   - PUT (full replace), PATCH (partial), ops update, SQL UPDATE, and addTo
+#     are each exercised; we check whether every surface resets the TTL clock.
+#
+# expiration: 2 → expirationMs = 2000. Every write should call
+#   setTTLExpiration(record, ...) which resets expiresAt = now() + 2000.
+#
+# Field naming: avoid AlaSQL reserved words.
+#   - "count" is reserved (SQL aggregate); use "n" instead.
+#   - "value" is reserved for string literals in SET; use numeric "n".
+
+type Expiry @table(expiration: 2) @export {
+	id: ID @primaryKey
+	tag: String
+	n: Int
+}
