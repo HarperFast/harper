@@ -10,7 +10,7 @@ const { Readable } = require('node:stream');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { streamPackagedDirectory, packageDirectory } = require('#src/components/packageComponent');
+const { streamPackagedDirectory, packageDirectory, findDanglingSymlinks } = require('#src/components/packageComponent');
 const { buildMultipartBody } = require('#src/bin/multipartBuilder');
 const { parseMultipartRequest } = require('#src/server/serverHelpers/multipartParser');
 const gunzip = require('gunzip-maybe');
@@ -131,6 +131,64 @@ describe('streamPackagedDirectory round-trip', () => {
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 			await fs.rm(extractDir, { recursive: true, force: true });
+		}
+	});
+
+	it('does not truncate the archive when a dangling symlink is present (regression)', async function () {
+		this.timeout(15000);
+		// A dangling symlink used to silently truncate the tarball: under dereference tar-fs
+		// stat()s the missing target, gets ENOENT, and finalizes the archive early — dropping
+		// every entry queued after the link, with no error. The packager must now skip the
+		// broken link and ship the full tree.
+		const sourceFiles = {
+			'package.json': '{"name":"demo","version":"1.0.0"}\n',
+			'src/resources/index.js': 'exports.x = 1;\n',
+			'tests/a.test.js': 'test();\n',
+			'.github/workflows/ci.yml': 'name: ci\n',
+		};
+		const sourceDir = await makeFixture(sourceFiles);
+		// Broken link + a valid link (to real content) that must still be dereferenced.
+		await fs.mkdir(path.join(sourceDir, '.claude'), { recursive: true });
+		await fs.symlink('../../.agents/skills/nope', path.join(sourceDir, '.claude', 'broken'));
+		await fs.symlink(path.join(sourceDir, 'src'), path.join(sourceDir, 'linked-src'));
+		const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-dangling-out-'));
+		try {
+			await pipeline(
+				streamPackagedDirectory(sourceDir, { skip_node_modules: true }),
+				gunzip(),
+				tar.extract(extractDir)
+			);
+			const extracted = await readDirTree(extractDir);
+			// Every real file survives (nothing dropped after the broken link)...
+			for (const [rel, content] of Object.entries(sourceFiles)) {
+				assert.strictEqual(extracted[rel], content, `missing/altered ${rel}`);
+			}
+			// ...the valid symlink's target content is dereferenced in...
+			assert.strictEqual(extracted['linked-src/resources/index.js'], sourceFiles['src/resources/index.js']);
+			// ...and the dangling link itself is not packed as a broken entry.
+			assert.ok(!Object.keys(extracted).some((k) => k.includes('broken')), 'dangling link should be skipped');
+		} finally {
+			await fs.rm(sourceDir, { recursive: true, force: true });
+			await fs.rm(extractDir, { recursive: true, force: true });
+		}
+	});
+
+	it('findDanglingSymlinks reports broken links and ignores valid ones and node_modules', async function () {
+		this.timeout(15000);
+		const sourceDir = await makeFixture({ 'index.js': 'x\n', 'src/a.js': 'a\n' });
+		await fs.symlink('./does-not-exist', path.join(sourceDir, 'broken-root'));
+		await fs.symlink('../nope', path.join(sourceDir, 'src', 'broken-nested'));
+		await fs.symlink(path.join(sourceDir, 'src'), path.join(sourceDir, 'good'));
+		// A dangling link inside node_modules must be ignored when skipping node_modules.
+		await fs.mkdir(path.join(sourceDir, 'node_modules'), { recursive: true });
+		await fs.symlink('./gone', path.join(sourceDir, 'node_modules', 'broken-dep'));
+		try {
+			const dangling = (await findDanglingSymlinks(sourceDir, { skip_node_modules: true })).sort();
+			assert.deepStrictEqual(dangling, ['broken-root', path.join('src', 'broken-nested')]);
+			// With skip_symlinks the archive packs links literally (no dereference), so nothing to warn.
+			assert.deepStrictEqual(await findDanglingSymlinks(sourceDir, { skip_symlinks: true }), []);
+		} finally {
+			await fs.rm(sourceDir, { recursive: true, force: true });
 		}
 	});
 });

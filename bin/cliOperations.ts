@@ -9,7 +9,12 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
-import { streamPackagedDirectory, getPackagedDirectorySize, packageDirectory } from '../components/packageComponent.ts';
+import {
+	streamPackagedDirectory,
+	getPackagedDirectorySize,
+	packageDirectory,
+	findDanglingSymlinks,
+} from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
@@ -116,6 +121,15 @@ const PREPARE_OPERATION: any = {
 		// Pre-walk the directory for an uncompressed-size estimate. Both the progress counter
 		// and this total are in uncompressed units so the bar tracks to 100% naturally.
 		req._uploadSizeEstimate = await getPackagedDirectorySize(projectPath, packageOptions);
+		// A dangling symlink would otherwise silently truncate the tarball (tar-fs finalizes
+		// early on the broken target). Packaging now skips them; warn so the omission is visible.
+		const danglingSymlinks = await findDanglingSymlinks(projectPath, packageOptions);
+		if (danglingSymlinks.length) {
+			process.stderr.write(
+				`warning: skipping ${danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
+					danglingSymlinks.map((p) => `  ${p}\n`).join('')
+			);
+		}
 		req._multipart = true;
 	},
 };

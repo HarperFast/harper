@@ -1,5 +1,6 @@
 import { join, relative, sep } from 'node:path';
 import { stat, readdir } from 'node:fs/promises';
+import { lstatSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import tar from 'tar-fs';
 import { createGzip } from 'node:zlib';
@@ -27,6 +28,27 @@ function isExcluded(directory: string, fullPath: string, options: PackageOptions
 }
 
 /**
+ * A dangling symlink is one whose target does not exist. Under tar-fs's `dereference: true`
+ * mode (our default), such a link makes the walker's `fs.stat` throw ENOENT, which tar-fs
+ * treats as end-of-stream: it *finalizes the archive early*, silently dropping every entry
+ * queued after the link — with no error emitted. Detecting and skipping these links keeps the
+ * package complete. Returns `false` for non-symlinks and for symlinks whose target resolves.
+ */
+function isDanglingSymlink(fullPath: string): boolean {
+	try {
+		if (!lstatSync(fullPath).isSymbolicLink()) return false;
+	} catch {
+		return false; // unreadable — leave it for the packer's own stat handling
+	}
+	try {
+		statSync(fullPath); // follows the link; throws if the target is missing
+		return false;
+	} catch {
+		return true;
+	}
+}
+
+/**
  * Package a directory into a tar+gzip stream. The returned Readable can be
  * piped directly into an HTTP request body, avoiding the Node.js 2GB Buffer
  * cap that the buffered variant runs into for large components.
@@ -40,9 +62,16 @@ export function streamPackagedDirectory(
 	options: PackageOptions = DEFAULT_OPTIONS,
 	onBytes?: (n: number) => void
 ): Readable {
+	const dereference = !options.skip_symlinks;
 	const packStream = tar.pack(directory, {
-		dereference: !options.skip_symlinks,
-		ignore: (name: string) => isExcluded(directory, name, options),
+		dereference,
+		ignore: (name: string) => {
+			if (isExcluded(directory, name, options)) return true;
+			// Under dereference a dangling symlink silently truncates the archive (tar-fs
+			// finalizes early on the target's ENOENT), so skip it. When not dereferencing,
+			// tar-fs packs the link literally and never stats the target — nothing to guard.
+			return dereference && isDanglingSymlink(name);
+		},
 		map: (header) => {
 			if (header.type === 'directory') {
 				header.mode = 0o755;
@@ -100,6 +129,40 @@ export async function getPackagedDirectorySize(
 	};
 	await walk(directory);
 	return total;
+}
+
+/**
+ * Walk `directory` and return the relative paths of dangling symlinks that
+ * `streamPackagedDirectory` would skip. The CLI uses this to warn the user before deploy,
+ * since a dangling link means its intended content is absent from the package (and, before
+ * the skip guard, would have silently truncated the whole tarball). Returns `[]` when
+ * `skip_symlinks` is set, because links are then packed literally with no dereference.
+ */
+export async function findDanglingSymlinks(
+	directory: string,
+	options: PackageOptions = DEFAULT_OPTIONS
+): Promise<string[]> {
+	if (options.skip_symlinks) return [];
+	const found: string[] = [];
+	const walk = async (dir: string): Promise<void> => {
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return; // unreadable directory — skip
+		}
+		for (const entry of entries) {
+			const fullPath = join(dir, entry.name);
+			if (isExcluded(directory, fullPath, options)) continue;
+			if (entry.isSymbolicLink()) {
+				if (isDanglingSymlink(fullPath)) found.push(relative(directory, fullPath));
+			} else if (entry.isDirectory()) {
+				await walk(fullPath);
+			}
+		}
+	};
+	await walk(directory);
+	return found;
 }
 
 /**
