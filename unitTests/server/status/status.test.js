@@ -277,6 +277,17 @@ describe('server.status', function () {
 			assert.equal(result.restartRequired, true);
 		});
 
+		it('includes middlewareChains only when middleware:true is requested (#1573)', async function () {
+			const withoutFlag = await status.get({});
+			assert.ok(!('middlewareChains' in withoutFlag), 'middlewareChains should be absent by default');
+
+			const withFlag = await status.get({ middleware: true });
+			assert.ok('middlewareChains' in withFlag, 'middlewareChains should be present when opted in');
+			// No HTTP workers in the unit-test thread, so it reports the local (empty) chains.
+			assert.ok(withFlag.middlewareChains && typeof withFlag.middlewareChains === 'object');
+			assert.deepStrictEqual(Object.keys(withFlag.middlewareChains).sort(), ['http', 'upgrade', 'websocket']);
+		});
+
 		it('should handle empty component status gracefully', async function () {
 			// Set some system status
 			await status.set({ id: 'primary', status: 'running' });

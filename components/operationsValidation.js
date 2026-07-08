@@ -9,6 +9,7 @@ const hdbLogger = require('../utility/logging/harper_logger.ts');
 const configUtils = require('../config/configUtils.ts');
 const { hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS } = hdbErrors;
+const { ENV_ENCRYPTED_PREFIX } = require('../utility/envFile.ts');
 
 // File name can only be alphanumeric, dash and underscores
 const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
@@ -30,6 +31,9 @@ module.exports = {
 	getEnvKeysValidator,
 	setEnvValueValidator,
 	deleteEnvValueValidator,
+	setSecretValidator,
+	grantSecretValidator,
+	deleteSecretValidator,
 };
 
 /**
@@ -236,6 +240,77 @@ function deleteEnvValueValidator(req) {
 		key: Joi.string().pattern(ENV_KEY_REGEX),
 		keys: Joi.array().items(Joi.string().pattern(ENV_KEY_REGEX)).min(1),
 	}).xor('key', 'keys');
+
+	return validator.validateBySchema(req, schema);
+}
+
+// A secret name doubles as an env key when materialized, so it is held to the same character set.
+const SECRET_NAME = Joi.string()
+	.pattern(ENV_KEY_REGEX)
+	.required()
+	.messages({ 'string.pattern.base': `'name' must only contain word characters, dots and dashes` });
+
+// The encrypted-value marker followed by a base64url envelope body (structural validation of the
+// decoded JSON happens in the handler via parseEnvelopeFields). Derived from the shared prefix
+// constant so validator and handler can't drift; the prefix contains no regex metacharacters.
+// Trailing `=` padding is tolerated — some browser encoders emit padded base64url, and Node's
+// base64url decoder accepts either form.
+const SECRET_ENVELOPE_REGEX = new RegExp(`^${ENV_ENCRYPTED_PREFIX}[A-Za-z0-9_-]+={0,2}$`);
+
+// Size cap for secret values and envelopes: rows live forever in a replicated, audited system
+// table, so unbounded payloads are a storage/replication hazard, not a feature.
+const SECRET_MAX_LENGTH = 256 * 1024;
+
+/**
+ * Validate set_secret requests: `name` plus exactly one of `value` (plaintext) or `envelope`
+ * (`enc:v1:` ciphertext), with optional `metadata`, and a tier of either `processEnv` or `grants`
+ * (the handler rejects the two together — a processEnv secret is global, so scoping it is meaningless).
+ * @param req
+ * @returns {*}
+ */
+function setSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+		value: Joi.string().allow('').max(SECRET_MAX_LENGTH),
+		envelope: Joi.string()
+			.max(SECRET_MAX_LENGTH)
+			.pattern(SECRET_ENVELOPE_REGEX)
+			.messages({ 'string.pattern.base': `'envelope' must be an '${ENV_ENCRYPTED_PREFIX}' base64url envelope` }),
+		// Modest structural caps: metadata is a small free-form label object, not a payload store,
+		// and grants is a set (explicit duplicates rejected here; write paths also dedupe dirty state).
+		metadata: Joi.object().max(100),
+		grants: Joi.array().items(Joi.string().min(1)).max(100).unique(),
+		// process.env delivery tier; mutually exclusive with grants (enforced in the handler so the
+		// check also covers a grants add against an already-processEnv stored row).
+		processEnv: Joi.boolean(),
+	}).xor('value', 'envelope');
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate grant_secret / revoke_secret requests (same shape: `name` + `component`).
+ * @param req
+ * @returns {*}
+ */
+function grantSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+		component: Joi.string().min(1).required(),
+	});
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate delete_secret requests.
+ * @param req
+ * @returns {*}
+ */
+function deleteSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+	});
 
 	return validator.validateBySchema(req, schema);
 }

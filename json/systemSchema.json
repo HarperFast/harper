@@ -434,5 +434,43 @@
 				"attribute": "__updatedtime__"
 			}
 		]
+	},
+	"hdb_secret": {
+		"hash_attribute": "name",
+		"name": "hdb_secret",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "name"
+			},
+			{
+				"attribute": "envelope"
+			},
+			{
+				"attribute": "kid"
+			},
+			{
+				"attribute": "grants"
+			},
+			{
+				"attribute": "processEnv"
+			},
+			{
+				"attribute": "metadata"
+			},
+			{
+				"attribute": "unverified"
+			},
+			{
+				"attribute": "updated_by"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
 	}
 }

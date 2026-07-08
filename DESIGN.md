@@ -29,6 +29,8 @@ In `getFromSource()` (`Table.ts`), the promise that callers await resolves with 
 
 Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
 
+The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
@@ -43,6 +45,16 @@ The mitigations live in three places:
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
 
 **Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
+
+## Over-time transactions are aborted, not force-committed (`DatabaseTransaction`/`LMDBTransaction`)
+
+`startMonitoringTxns()` (a `setInterval` per engine) watches `trackedTxns` and acts when a transaction's `timeout` reaches 0 (after ~2 ticks of `STORAGE_MAXTRANSACTIONOPENTIME`, default 30s). A transaction is tracked once it acquires a read snapshot (`getReadTxn`).
+
+- **Write-bearing request transactions are aborted and poisoned** (issue #1407). The monitor calls `abortDueToTimeout()`, which sets `timedOut`, forces `open = CLOSED` (so `doneReadTxn` takes the discard path instead of re-entering `commit()` via the `LINGERING` branch — which would now throw), then `abort()`s. `addWrite`/`commit` both guard on `timedOut` and throw `transactionOpenTooLongError` (503), so the in-flight request rolls back cleanly rather than the monitor silently force-committing a partial write set (atomicity violation + orphaned secondary-index entries that only a full rebuild repairs). The old behavior `commit()`d and reused the still-open transaction.
+- **`hasPendingWrites()` walks the `next` chain.** Writes to a second database live on `transaction.next` (see `txnForContext`), so a transaction that reads database A (head, tracked via its read snapshot, empty `writes`) and writes database B (`next`) is still write-bearing. Without the walk the head looks read-only and the monitor's force-commit path would cascade-commit B. `abortDueToTimeout()` poisons + aborts the whole chain.
+- **Read-only, `sourceApply`, and `isReplay` transactions keep the prior force-commit behavior.** Read-only long transactions (large scans/exports) have no atomicity/index risk and must not have their ongoing reads poisoned. Canonical-source applies (replication peer / external caching source) and crash-recovery replay have no resubscribe/resume path: aborting a write would drop it while the resume cursor advances past it — a permanent divergence (harper-pro#348). `sourceApply` is propagated down the `next` chain in `txnForContext`, so gating on the head suffices. (Replay is additionally synchronous, so the async monitor can't fire mid-replay anyway.)
+
+Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
@@ -152,6 +164,22 @@ A handful of design points are non-obvious and easy to break:
   which would collide on `(sessionId, id)` across workers and misroute responses. Methods are capability-gated
   (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
   (timeout + high-water-mark) so a non-responding client can't leak promises.
+
+- **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
+  application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change
+  ITC events — both of which fire while the `@table` classes register, **before** the `jsResource` plugin
+  registers the component's exported `class X extends tables.X` subclass. That subclass is the object the
+  registry ends up holding (REST routes to it) and the only place author opt-ins (`static mcpTools`/
+  `mcpPrompts`) live, so a scan that ran earlier sees only the base table class and misses them (#1448). The
+  fix: `jsResource` fires `signalResourcesRegistered()` (a deliberately **local-only**, non-ITC signal in
+  `utility/signalling.ts`, backed by `resourceHandler` in `server/itc/serverHandlers.js` — each worker
+  registers its own JS resources, so the rebuild belongs in that worker) after registration; `listChanged`
+  subscribes and re-runs the scan. Consequence: the verb tools (`create_*` etc.) now bind to the subclass and
+  honor its `post`/`patch` overrides, matching REST — previously they bound to the base table class and
+  silently bypassed those overrides. Advertised CRUD output schemas are still table-derived, so an overridden
+  write verb whose return diverges from `{ id }`/`{ ok }`/`{ deleted }` advertises a subset shape (the in-use
+  SDK tolerates supersets; tightening per-override envelopes is sibling-issue work — see the `derive.ts`
+  envelope note).
 
 - **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
   Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as the
