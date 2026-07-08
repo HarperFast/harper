@@ -25,12 +25,7 @@ import {
 	type JsonRpcId,
 	type JsonRpcMessage,
 } from './jsonrpc.ts';
-import {
-	handleInitialize,
-	handleInitialized,
-	PROTOCOL_VERSION_BACKCOMPAT,
-	SUPPORTED_PROTOCOL_VERSIONS,
-} from './lifecycle.ts';
+import { handleInitialize, handleInitialized, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { emitAuditEntry } from './audit.ts';
 import { emitMcpLogToSession, isValidMcpLogLevel, setSessionLogLevel } from './logging.ts';
 import { decodeCursor } from './pagination.ts';
@@ -974,15 +969,22 @@ function validateProtocolHeader(
 	headerValue: string | undefined,
 	sessionVersion: string
 ): { ok: true } | { ok: false; reason: string } {
-	// Per spec compatibility rule: missing header is treated as 2025-03-26.
-	const effective = headerValue ?? PROTOCOL_VERSION_BACKCOMPAT;
-	if (!SUPPORTED_PROTOCOL_VERSIONS.includes(effective as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])) {
-		return { ok: false, reason: `unsupported MCP-Protocol-Version: ${effective}` };
+	// A missing header is accepted as the session's own negotiated version
+	// (#1611). The spec's assume-2025-03-26 compatibility rule exists for
+	// clients that predate the header entirely; an established session already
+	// IS the version authority, and assuming the backcompat version here made
+	// every headerless request on a 2025-06-18 session fail the mismatch check
+	// below — needlessly rejecting common clients that only send the header on
+	// some requests. A header that IS present must still name a supported
+	// version and match the negotiated one.
+	if (headerValue === undefined) return { ok: true };
+	if (!SUPPORTED_PROTOCOL_VERSIONS.includes(headerValue as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])) {
+		return { ok: false, reason: `unsupported MCP-Protocol-Version: ${headerValue}` };
 	}
-	if (effective !== sessionVersion) {
+	if (headerValue !== sessionVersion) {
 		return {
 			ok: false,
-			reason: `MCP-Protocol-Version mismatch: session negotiated ${sessionVersion}, request sent ${effective}`,
+			reason: `MCP-Protocol-Version mismatch: session negotiated ${sessionVersion}, request sent ${headerValue}`,
 		};
 	}
 	return { ok: true };
