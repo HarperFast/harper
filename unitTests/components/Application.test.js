@@ -95,9 +95,6 @@ describe('assertApplicationConfig registryAuth', () => {
 	});
 
 	it('rejects a registryAuth entry missing registry/secret', () => {
-		assert.throws(
-			() => assertApplicationConfig('app', { package: 'p', registryAuth: [{ secret: 's' }] }),
-			/reference/
-		);
+		assert.throws(() => assertApplicationConfig('app', { package: 'p', registryAuth: [{ secret: 's' }] }), /reference/);
 	});
 });

@@ -26,11 +26,7 @@ const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
-const {
-	DeploymentRecorder,
-	awaitDeploymentRow,
-	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
-} = require('./deploymentRecorder.ts');
+const { DeploymentRecorder, awaitDeploymentRow, DEFAULT_AWAIT_ROW_TIMEOUT_MS } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 /**

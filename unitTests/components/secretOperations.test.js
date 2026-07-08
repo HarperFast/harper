@@ -362,7 +362,8 @@ describe('secretOperations', () => {
 		it('rejects set_secret with both processEnv and grants', async () => {
 			installCustody();
 			await assert.rejects(
-				async () => secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true, grants: ['app1'] }),
+				async () =>
+					secretOps.setSecret({ ...su('set_secret'), name: 'PE', value: 'x', processEnv: true, grants: ['app1'] }),
 				/cannot be both processEnv and grant-scoped/
 			);
 		});

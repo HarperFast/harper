@@ -394,7 +394,11 @@ export async function ingestRegistryAuth(req: any, registryAuth: any[] | undefin
 			grants: [component],
 			processEnv: false,
 		});
-		out.push(entry.scope === undefined ? { registry: entry.registry, secret: name } : { registry: entry.registry, secret: name, scope: entry.scope });
+		out.push(
+			entry.scope === undefined
+				? { registry: entry.registry, secret: name }
+				: { registry: entry.registry, secret: name, scope: entry.scope }
+		);
 	}
 	return out;
 }
