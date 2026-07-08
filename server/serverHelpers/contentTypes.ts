@@ -579,6 +579,18 @@ export function getDeserializer(
 	const deserialize =
 		(contentType.type && mediaTypes.get(contentType.type)?.deserialize) || deserializerUnknownType(contentType);
 
+	// For application/json with non-UTF-8 charset, create a wrapper that handles decoding
+	if (contentType.type === 'application/json' && contentType.parameters?.charset) {
+		const charset = contentType.parameters.charset.toLowerCase();
+		if (charset !== 'utf-8' && isBufferEncoding(charset)) {
+			const wrappedDeserialize: Deserialize = (data) => {
+				const decoded = data.toString(charset as NodeJS.BufferEncoding);
+				return JSONParse(decoded);
+			};
+			return streaming ? (stream: Readable) => streamToBuffer(stream).then(wrappedDeserialize) : wrappedDeserialize;
+		}
+	}
+
 	return streaming ? (stream: Readable) => streamToBuffer(stream).then(deserialize) : deserialize;
 }
 
