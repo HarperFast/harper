@@ -471,6 +471,8 @@ export const CONFIG_PARAMS = {
 	THREADS_DEBUG_WAITFORDEBUGGER: 'threads_debug_waitForDebugger',
 	THREADS_MAXHEAPMEMORY: 'threads_maxHeapMemory',
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
+	THREADS_PRELOAD: 'threads_preload',
+	THREADS_PRELOADREQUIRE: 'threads_preloadRequire',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',
@@ -667,6 +669,7 @@ export const CONFIG_PARAMS = {
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
 	TLS_CIPHERS: 'tls_ciphers',
 	TLS_UNIXDOMAINSOCKETS: 'tls_unixDomainSockets',
+	TLS_CERTIFICATEWATCHINTERVAL: 'tls_certificateWatchInterval',
 	TLS: 'tls',
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',
@@ -875,6 +878,10 @@ export const ITC_EVENT_TYPES = {
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
 	RESOURCE_OPENAPI_RESPONSE: 'resource_openapi_response',
+	// Main thread asks an HTTP worker for its resolved middleware chains (#1573); app HTTP
+	// middleware is only registered on worker threads, so get_status must fetch it from one.
+	MIDDLEWARE_CHAINS_REQUEST: 'middleware_chains_request',
+	MIDDLEWARE_CHAINS_RESPONSE: 'middleware_chains_response',
 	// MCP §3.7: route a client's response to a server→client request back to the
 	// worker awaiting it (the response POST can land on any worker).
 	MCP_CLIENT_RESPONSE: 'mcp_client_response',

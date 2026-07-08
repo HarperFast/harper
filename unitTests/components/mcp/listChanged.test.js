@@ -18,14 +18,19 @@ const ALICE = {
 function makeFakeItcHandlers() {
 	const userListeners = [];
 	const schemaListeners = [];
+	const resourceListeners = [];
 	return {
 		userHandler: { addListener: (fn) => userListeners.push(fn) },
 		schemaHandler: { addListener: (fn) => schemaListeners.push(fn) },
+		resourceHandler: { addListener: (fn) => resourceListeners.push(fn) },
 		_fireUser: () => {
 			for (const fn of userListeners) fn();
 		},
 		_fireSchema: () => {
 			for (const fn of schemaListeners) fn();
+		},
+		_fireResources: () => {
+			for (const fn of resourceListeners) fn();
 		},
 	};
 }
@@ -208,6 +213,40 @@ describe('mcp/listChanged', () => {
 			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
 		});
 		fakeItc._fireSchema();
+		const evt = await readNextEvent(rec.queue);
+		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+	});
+
+	it('subscribes to the resourceHandler channel when present', () => {
+		assert.equal(initListChanged(), true);
+		// The fake exposes all three channels; a resource fire must not throw even with no sessions.
+		assert.doesNotThrow(() => fakeItc._fireResources());
+	});
+
+	it('resource-registration events fan out application tool changes (#1448)', async () => {
+		initListChanged();
+		addTool({
+			name: 'get_thing',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		const rec = registerSession('app-res-sid', 'application', SUPER);
+		seedSessionSnapshot('app-res-sid');
+
+		// A component's resources.js just registered a new custom tool — simulate by adding it,
+		// then firing the resource channel (the signal jsResource emits after registration).
+		addTool({
+			name: 'wi_progress',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		fakeItc._fireResources();
 		const evt = await readNextEvent(rec.queue);
 		assert.equal(evt.data.method, 'notifications/tools/list_changed');
 	});

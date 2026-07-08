@@ -11,6 +11,7 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
+const { isMainThread, workerData } = require('worker_threads');
 const { resetDatabases } = require('../../resources/databases.ts');
 
 /**
@@ -22,6 +23,7 @@ const serverItcHandlers = {
 	[hdbTerms.ITC_EVENT_TYPES.USER]: userHandler,
 	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
+	[hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST]: middlewareChainsRequestHandler,
 };
 
 /**
@@ -103,6 +105,31 @@ async function userHandler(event) {
 
 userHandler.addListener = function (listener) {
 	userListeners.push(listener);
+};
+
+const resourceListeners = [];
+/**
+ * Local-only fan-out for "JS resources just registered" (resources.js loaded via the jsResource
+ * plugin). Unlike schema/user changes this is NOT an ITC event: each worker loads and registers
+ * its own JS resources, so a listener (e.g. the MCP application-tool rebuild) only needs to run in
+ * the worker where the registration happened. Surfaces author opt-ins (`static mcpTools`/
+ * `mcpPrompts`) that land on the resource registry after the MCP component's boot scan (#1448).
+ */
+function resourceHandler() {
+	for (const listener of resourceListeners) {
+		try {
+			listener();
+		} catch (err) {
+			hdbLogger.error(err);
+		}
+	}
+}
+resourceHandler.addListener = function (listener) {
+	resourceListeners.push(listener);
+};
+// Test seam: drop registered listeners so a unit suite doesn't leak fakes into later suites.
+resourceHandler._resetListenersForTest = function () {
+	resourceListeners.length = 0;
 };
 
 /**
@@ -211,8 +238,45 @@ async function resourceOpenApiRequestHandler(event) {
 	}
 }
 
+/**
+ * Handles the main thread's request for the resolved HTTP/upgrade/WebSocket middleware chains (#1573).
+ * Only HTTP workers reply: the main thread carries just the operations-API middleware (so it stays
+ * silent even though it has responders), and job workers have none. HTTP workers answer even when
+ * they have no middleware (empty chains) so get_status doesn't wait out the request timeout. First
+ * worker to answer wins — all HTTP workers register identically, so any one is representative.
+ */
+async function middlewareChainsRequestHandler(event) {
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdbLogger.error(validate);
+			return;
+		}
+
+		if (isMainThread || workerData?.name !== hdbTerms.THREAD_TYPES.HTTP) return;
+		const { describeMiddlewareChains } = require('../http.ts');
+
+		const responseMessage = {
+			type: hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE,
+			message: {
+				requestId: event.message.requestId,
+				chains: describeMiddlewareChains(),
+			},
+		};
+
+		if (!threads.sendToThread(event.message.originator, responseMessage)) {
+			hdbLogger.trace(
+				`Dropping middleware chains response for request ${event.message.requestId}: originator thread ${event.message.originator} is unreachable`
+			);
+		}
+	} catch (error) {
+		hdbLogger.error('Error handling middleware chains request:', error);
+	}
+}
+
 module.exports = serverItcHandlers;
 // Named exports so consumers (e.g., MCP listChanged) can subscribe via
 // `userHandler.addListener(fn)` / `schemaHandler.addListener(fn)`.
 module.exports.userHandler = userHandler;
 module.exports.schemaHandler = schemaHandler;
+module.exports.resourceHandler = resourceHandler;
