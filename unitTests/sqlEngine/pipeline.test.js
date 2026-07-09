@@ -316,6 +316,17 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		assert.strictEqual(mockTable._lastTarget.offset, 1);
 	});
 
+	it('does NOT push LIMIT into the scan when a residual filter remains', async () => {
+		// `id > 0` is index-served, but `UPPER(city) = 'AUSTIN'` is a residual applied
+		// after the scan. Pushing the limit into Table.search would cap rows *before*
+		// the residual runs — silent under-fetch (here 0 rows instead of 1). The limit
+		// must stay above the residual filter.
+		const data = await runSql("SELECT name FROM dev.user WHERE id > 0 AND UPPER(city) = 'AUSTIN' LIMIT 1");
+		assert.strictEqual(data.length, 1);
+		assert.strictEqual(data[0].name, 'bob');
+		assert.strictEqual(mockTable._lastTarget.limit, undefined);
+	});
+
 	it('rejects a no-WHERE ORDER BY (full ordered scan) without allowFullScan', async () => {
 		// A pushed sort with no index-driving condition is a full table scan; the
 		// engine must reject (→ legacy fallback), not emit an empty `and` group that
@@ -337,5 +348,26 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 			data.map((r) => r.name),
 			['bob']
 		);
+	});
+
+	it('NOT IN excludes NULL rows (IS NOT NULL guard, legacy 3VL parity)', async () => {
+		const table = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'age', indexed: true },
+			],
+			rows: [
+				{ id: 1, age: 30 },
+				{ id: 2, age: 25 },
+				{ id: 3, age: null }, // NULL: excluded by NOT IN under SQL 3VL
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
+		// `age NOT IN (25)` ANDed with an indexed conjunct runs on the new engine (no
+		// fallback). A NULL age yields UNKNOWN → excluded, matching legacy AlaSQL —
+		// without the guard the new engine would return id 3 (silent divergence).
+		const data = await runSql('SELECT id FROM dev.user WHERE id > 0 AND age NOT IN (25)');
+		assert.deepStrictEqual(data.map((r) => r.id).sort(), [1]);
 	});
 });

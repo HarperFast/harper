@@ -123,6 +123,14 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 				comparator: expr.negated ? 'ne' : 'equals',
 				value: v,
 			}));
+			if (expr.negated) {
+				// `col NOT IN (a, b)` is `col != a AND col != b AND col IS NOT NULL`:
+				// a NULL col yields UNKNOWN (excluded), matching legacy AlaSQL 3VL.
+				// Mirror the `!=` path's explicit not-null guard (without it, a NULL
+				// row is returned by the new engine but dropped by legacy — a silent
+				// divergence when the NOT IN is ANDed with another indexed conjunct).
+				conditions.push({ attribute, comparator: 'ne', value: null });
+			}
 			return { conditions, operator: expr.negated ? 'and' : 'or' };
 		}
 		case 'between': {

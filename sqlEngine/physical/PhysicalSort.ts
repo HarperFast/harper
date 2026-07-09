@@ -3,15 +3,16 @@
  *
  * Used only when the optimizer's sort-from-index rule could not push the
  * sort into Table.search. Buffers up to maxSortRows rows; throws
- * EngineRuntimeError if the input exceeds that cap so callers fall back to
- * legacy or an explicit allowFullScan workflow.
+ * EngineUnsupportedError if the input exceeds that cap so the router falls
+ * back to legacy in 'auto' mode (runSelect fully materializes before
+ * returning, so nothing has been emitted to the client when the cap trips).
  */
 
 import type { SortNode } from '../parser/ast.ts';
 import type { PhysicalOp } from './op.ts';
 import type { Row, SqlEngineContext } from '../types.ts';
 import { compileExpr } from '../expressions/compile.ts';
-import { EngineRuntimeError } from '../errors.ts';
+import { EngineUnsupportedError } from '../errors.ts';
 import { getSqlEngineConfig } from '../config.ts';
 
 export function physicalSort(child: PhysicalOp, keys: SortNode[], qualified = false): PhysicalOp {
@@ -23,7 +24,7 @@ export function physicalSort(child: PhysicalOp, keys: SortNode[], qualified = fa
 			const buf: Row[] = [];
 			for await (const row of child.execute(ctx)) {
 				if (buf.length >= cap) {
-					throw new EngineRuntimeError(`sort buffer exceeded ${cap} rows`);
+					throw new EngineUnsupportedError(`in-memory sort exceeded maxSortRows (${cap})`);
 				}
 				buf.push(row);
 			}

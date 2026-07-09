@@ -17,8 +17,8 @@
  * request it can plan and silently falls back to legacy on anything it can't, so
  * no query changes behavior unless the new engine produces an identical result.
  * The gate for this flip was full parity of the new engine (run in 'auto') against
- * the existing SQL suite: the cutover-readiness differential (42/42 identical) plus
- * the existing behavioral suites under 'auto' — northwind (573 SQL ops) and
+ * the existing SQL suite: the cutover-readiness differential (46/46 identical) plus
+ * the existing behavioral suites under 'auto' — northwind (575 SQL ops) and
  * delete.test.mjs (76) — at 0 failures. Both trial-flip blockers (IN literal
  * coercion, LIKE-predicate DELETE 403) and the northwind gaps (attribute-name
  * validation, quoted-boolean coercion, != / NULL three-valued logic) are fixed.

@@ -4,7 +4,9 @@
  * group.
  *
  * Memory is bounded by maxHashRows (total input rows consumed), after which an
- * EngineRuntimeError is thrown.
+ * EngineUnsupportedError is thrown so the router falls back to legacy in 'auto'
+ * mode (runSelect fully materializes before returning, so nothing has been
+ * emitted when the cap trips).
  *
  * Special cases:
  *  - No GROUP BY + no rows  → emit one row with default aggregate values
@@ -19,7 +21,7 @@ import type { PhysicalOp } from './op.ts';
 import type { AggFn, Accumulator } from '../functions/registry.ts';
 import { compileExpr } from '../expressions/compile.ts';
 import { functionRegistry } from '../functions/registry.ts';
-import { EngineUnsupportedError, EngineRuntimeError } from '../errors.ts';
+import { EngineUnsupportedError } from '../errors.ts';
 
 export interface AggOpSpec {
 	name: string;
@@ -98,7 +100,7 @@ async function* runAggregate(
 
 	for await (const row of input.execute(ctx)) {
 		if (++rowCount > maxHashRows) {
-			throw new EngineRuntimeError(`aggregate exceeded maxHashRows limit (${maxHashRows})`);
+			throw new EngineUnsupportedError(`aggregate exceeded maxHashRows (${maxHashRows})`);
 		}
 		const keyVals = groupKeyEvals.map((fn) => fn(row));
 		const groupKey = JSON.stringify(keyVals);

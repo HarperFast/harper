@@ -20,7 +20,7 @@ import type { ExprNode } from '../parser/ast.ts';
 import type { PhysicalOp } from './op.ts';
 import type { Row, SqlEngineContext } from '../types.ts';
 import { compileExpr } from '../expressions/compile.ts';
-import { EngineRuntimeError } from '../errors.ts';
+import { EngineUnsupportedError } from '../errors.ts';
 
 export interface HashJoinOptions {
 	leftKeys: ExprNode[];
@@ -45,7 +45,7 @@ export function physicalHashJoin(left: PhysicalOp, right: PhysicalOp, opts: Hash
 			let built = 0;
 			for await (const rrow of right.execute(ctx)) {
 				if (++built > opts.maxHashRows) {
-					throw new EngineRuntimeError(`hash join build side exceeded maxHashRows (${opts.maxHashRows})`);
+					throw new EngineUnsupportedError(`hash join build side exceeded maxHashRows (${opts.maxHashRows})`);
 				}
 				const key = keyTuple(rightKeyEvals, rrow);
 				if (key === undefined) continue; // NULL join key never matches

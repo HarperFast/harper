@@ -14,7 +14,7 @@ import type { ExprNode } from '../parser/ast.ts';
 import type { PhysicalOp } from './op.ts';
 import type { Row, SqlEngineContext } from '../types.ts';
 import { compileExpr } from '../expressions/compile.ts';
-import { EngineRuntimeError } from '../errors.ts';
+import { EngineUnsupportedError } from '../errors.ts';
 
 export interface NestedLoopJoinOptions {
 	on?: ExprNode;
@@ -32,7 +32,7 @@ export function physicalNestedLoopJoin(left: PhysicalOp, right: PhysicalOp, opts
 			const inner: Row[] = [];
 			for await (const rrow of right.execute(ctx)) {
 				if (inner.length >= opts.maxHashRows) {
-					throw new EngineRuntimeError(`nested-loop join inner side exceeded maxHashRows (${opts.maxHashRows})`);
+					throw new EngineUnsupportedError(`nested-loop join inner side exceeded maxHashRows (${opts.maxHashRows})`);
 				}
 				inner.push(rrow);
 			}

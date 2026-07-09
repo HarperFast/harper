@@ -341,6 +341,79 @@ describe('sqlEngine phase 3: joins', () => {
 		assert.deepStrictEqual(data, []);
 	});
 
+	it('hash join emits matched rows when both sides share a non-indexed equi key', async () => {
+		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		const left = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'k', indexed: false }, // non-indexed equi key -> hash join
+			],
+			rows: [
+				{ id: 1, k: 10 },
+				{ id: 2, k: 20 },
+				{ id: 3, k: 99 }, // no match on the right side
+			],
+		});
+		const right = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'k', indexed: false },
+				{ name: 'label', indexed: false },
+			],
+			rows: [
+				{ id: 10, k: 10, label: 'ten' },
+				{ id: 20, k: 20, label: 'twenty' },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { lefty: left, righty: right } }));
+		// Exercises the hash-join probe/merge path (build buckets on the right,
+		// probe from the left, yield merged rows) — the NaN test above only hits
+		// the no-match path.
+		const data = await runSql('SELECT l.id, r.label FROM dev.lefty l JOIN dev.righty r ON l.k = r.k');
+		assert.deepStrictEqual(
+			sortByJson(data),
+			sortByJson([
+				{ id: 1, label: 'ten' },
+				{ id: 2, label: 'twenty' },
+			])
+		);
+	});
+
+	it('hash join LEFT null-fills a non-indexed-key row with no match', async () => {
+		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		const left = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'k', indexed: false },
+			],
+			rows: [
+				{ id: 1, k: 10 },
+				{ id: 2, k: 99 }, // no right match -> null-filled by the LEFT join
+			],
+		});
+		const right = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'k', indexed: false },
+				{ name: 'label', indexed: false },
+			],
+			rows: [{ id: 10, k: 10, label: 'ten' }],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { lefty: left, righty: right } }));
+		const data = await runSql('SELECT l.id, r.label FROM dev.lefty l LEFT JOIN dev.righty r ON l.k = r.k');
+		assert.deepStrictEqual(
+			sortByJson(data),
+			sortByJson([
+				{ id: 1, label: 'ten' },
+				{ id: 2, label: null },
+			])
+		);
+	});
+
 	it('indexNL join passes with allowFullScan off when the outer has an indexed filter', async () => {
 		globalThis.harperConfig = { sql: { allowFullScan: false } };
 		const data = await runSql(

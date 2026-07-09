@@ -1,12 +1,15 @@
 /**
  * Engine-specific error types for the new SQL engine.
  *
- * EngineUnsupportedError is thrown by the planner when a query shape cannot be
- * mapped to the Resource API efficiently. The router catches this in 'auto'
- * mode and falls back to the legacy AlaSQL engine.
+ * EngineUnsupportedError is thrown when a query cannot be handled by the new
+ * engine — either at plan time (a shape that can't map to the Resource API) or
+ * at execution time (an in-memory operator exceeding its row cap, before any
+ * result is emitted). The router catches this in 'auto' mode and falls back to
+ * the legacy AlaSQL engine.
  *
- * EngineRuntimeError is thrown during execution for runtime conditions
- * (e.g., exceeding the in-memory sort/hash row caps).
+ * EngineRuntimeError is thrown for genuine runtime failures that are NOT
+ * recoverable by falling back (e.g., a mutation target with no primary key).
+ * The router does not fall back on it — it surfaces to the caller.
  */
 
 import { ClientError } from '../utility/errors/hdbError.js';
