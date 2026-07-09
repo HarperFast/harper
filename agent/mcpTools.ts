@@ -125,7 +125,9 @@ export function registerAgentMcpTools(operations: OperationDefinition[]): void {
 						content: [
 							{
 								type: 'text',
-								text: JSON.stringify({ error: e?.http_resp_msg ?? e?.message ?? `agent op '${name}' failed` }),
+								text: JSON.stringify({
+									error: e?.http_resp_msg ?? e?.message ?? (err ? String(err) : `agent op '${name}' failed`),
+								}),
 							},
 						],
 					};
