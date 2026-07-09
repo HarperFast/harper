@@ -903,7 +903,7 @@ export function errorToString(error: any) {
  * what leaks secrets in #1734 (see `errorForLog`).
  */
 function errorToLogString(error: any) {
-	let output = typeof error?.stack === 'string' ? error.stack : errorToString(error);
+	let output = typeof error?.stack === 'string' ? error.stack : error == null ? String(error) : errorToString(error);
 	const seen = new Set([error]);
 	let cause = error?.cause;
 	while (cause != null && !seen.has(cause)) {

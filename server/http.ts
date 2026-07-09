@@ -30,7 +30,7 @@ import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
 
-const { errorToString } = harperLogger;
+const { errorToString, errorForLog } = harperLogger;
 server.http = httpServer;
 server.request = onRequest;
 server.ws = onWebSocket;
@@ -510,9 +510,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
 				if (statusCode) {
-					if (statusCode === 500) harperLogger.warn(error);
-					else harperLogger.info(error);
-				} else harperLogger.error(error);
+					if (statusCode === 500) harperLogger.warn(errorForLog(error));
+					else harperLogger.info(errorForLog(error));
+				} else harperLogger.error(errorForLog(error));
 			}
 		};
 		// create a throttled version of the request handler, so we can throttle POST requests
@@ -752,9 +752,9 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				const status = statusCode || 500;
 				logBunRequest(null, status, requestId, performance.now() - startTime);
 				if (statusCode) {
-					if (statusCode === 500) harperLogger.warn(error);
-					else harperLogger.info(error);
-				} else harperLogger.error(error);
+					if (statusCode === 500) harperLogger.warn(errorForLog(error));
+					else harperLogger.info(errorForLog(error));
+				} else harperLogger.error(errorForLog(error));
 				return new Response(errorToString(error), { status });
 			}
 		};

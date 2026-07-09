@@ -929,5 +929,12 @@ describe('Test harper_logger module', () => {
 		it('handles a thrown string', () => {
 			expect(render('just a string')).to.equal('just a string');
 		});
+
+		it('handles null and undefined without throwing', () => {
+			expect(() => render(null)).to.not.throw();
+			expect(render(null)).to.equal('null');
+			expect(() => render(undefined)).to.not.throw();
+			expect(render(undefined)).to.equal('undefined');
+		});
 	});
 });
