@@ -17,7 +17,7 @@ import * as DataLayerObjects from './DataLayerObjects.ts';
 import { UpgradeObject } from '../upgrade/UpgradeObjects.ts';
 import { forceDowngradePrompt } from '../upgrade/upgradePrompt.ts';
 import { packageJson } from '../utility/packageUtils.js';
-import log, { errorForLog } from '../utility/logging/harper_logger.ts';
+import log from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 import * as tableLoader from '../resources/databases.ts';
@@ -116,7 +116,7 @@ async function getAllHdbInfoRecords() {
 	} catch (err) {
 		// search may fail during a new install as the table doesn't exist yet or initial upgrade for 3.0.  This is ok,
 		// we will assume an id of 0 below.
-		console.error(errorForLog(err));
+		console.error(err);
 	}
 
 	return versionData;

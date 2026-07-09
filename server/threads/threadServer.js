@@ -227,7 +227,7 @@ function startServers() {
 					try {
 						startupLog(portServer);
 					} catch (err) {
-						console.error('Error displaying start-up log', harperLogger.errorForLog(err));
+						console.error('Error displaying start-up log', err);
 					}
 				}
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });

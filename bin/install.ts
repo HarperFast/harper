@@ -8,7 +8,7 @@ async function install() {
 		await installer.install();
 	} catch (err) {
 		console.error('There was an error during the install.');
-		console.error(hdbLogger.errorForLog(err));
+		console.error(err);
 		hdbLogger.error(err);
 		process.exit(1);
 	}

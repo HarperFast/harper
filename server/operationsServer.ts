@@ -108,7 +108,7 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 			throw err;
 		}
 	} catch (err) {
-		console.error(`Failed to build server on ${process.pid}`, harperLogger.errorForLog(err));
+		console.error(`Failed to build server on ${process.pid}`, err);
 		harperLogger.fatal(err);
 		// Use realExit so this fatal worker bootstrap failure still terminates
 		// the worker even with the worker process guard installed.

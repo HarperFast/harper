@@ -55,7 +55,7 @@ export async function compactOnStart() {
 				console.log('Database', databaseName, 'before compact has a total record count of', recordCount);
 			} catch (error) {
 				hdbLogger.error('Error getting record count for database', databaseName, error);
-				console.error('Error getting record count for database', databaseName, hdbLogger.errorForLog(error));
+				console.error('Error getting record count for database', databaseName, error);
 			}
 			compactedDb.set(databaseName, {
 				dbPath,
@@ -70,7 +70,7 @@ export async function compactOnStart() {
 			try {
 				await move(dbPath, backupDest, { overwrite: true });
 			} catch (error) {
-				console.log('Error moving database', dbPath, 'to', backupDest, hdbLogger.errorForLog(error));
+				console.log('Error moving database', dbPath, 'to', backupDest, error);
 			}
 			// Move compacted DB to back to original DB path
 			console.log('Moving copy compacted', databaseName, 'to', dbPath);
@@ -81,19 +81,19 @@ export async function compactOnStart() {
 			resetDatabases();
 		} catch (err) {
 			hdbLogger.error('Error resetting databases after backup', err);
-			console.error('Error resetting databases after backup', hdbLogger.errorForLog(err));
+			console.error('Error resetting databases after backup', err);
 		}
 
 		try {
 			resetDatabases();
 		} catch (err) {
 			hdbLogger.error('Error resetting databases after backup', err);
-			console.error('Error resetting databases after backup', hdbLogger.errorForLog(err));
+			console.error('Error resetting databases after backup', err);
 			process.exit(0); // just let the process restart
 		}
 	} catch (err) {
 		hdbLogger.error('Error compacting database, rolling back operation', err);
-		console.error('Error compacting database, rolling back operation', hdbLogger.errorForLog(err));
+		console.error('Error compacting database, rolling back operation', err);
 
 		updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
 
@@ -102,7 +102,7 @@ export async function compactOnStart() {
 			try {
 				await move(backupDest, dbPath, { overwrite: true });
 			} catch (err) {
-				console.error(hdbLogger.errorForLog(err));
+				console.error(err);
 			}
 		}
 		resetDatabases();
@@ -254,7 +254,7 @@ export async function copyDb(sourceDatabase: string, targetDatabasePath: string)
 								sourceDatabase,
 								'to',
 								targetDatabasePath,
-								hdbLogger.errorForLog(error)
+								error
 							);
 						}
 					}
@@ -386,7 +386,7 @@ export async function migrateOnStart() {
 			try {
 				await move(lmdbPath, backupDest, { overwrite: true });
 			} catch (error) {
-				console.log('Error moving database', lmdbPath, 'to', backupDest, hdbLogger.errorForLog(error));
+				console.log('Error moving database', lmdbPath, 'to', backupDest, error);
 			}
 			// Remove the lock file
 			try {
@@ -403,11 +403,11 @@ export async function migrateOnStart() {
 			resetDatabases();
 		} catch (err) {
 			hdbLogger.error('Error resetting databases after migration', err);
-			console.error('Error resetting databases after migration', hdbLogger.errorForLog(err));
+			console.error('Error resetting databases after migration', err);
 		}
 	} catch (err) {
 		hdbLogger.error('Error migrating database', err);
-		console.error('Error migrating database', hdbLogger.errorForLog(err));
+		console.error('Error migrating database', err);
 		throw err;
 	}
 }
@@ -663,7 +663,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								typeof key === 'symbol' ? 'symbol' : key,
 								'from',
 								sourceDatabase,
-								hdbLogger.errorForLog(error)
+								error
 							);
 						}
 					}
@@ -688,7 +688,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								typeof key === 'symbol' ? 'symbol' : key,
 								'from',
 								sourceDatabase,
-								hdbLogger.errorForLog(error)
+								error
 							);
 						}
 					}
@@ -698,7 +698,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			} catch (err) {
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
-					hdbLogger.errorForLog(err)
+					err
 				);
 				if (typeof start === 'string') {
 					if (start === 'z') {

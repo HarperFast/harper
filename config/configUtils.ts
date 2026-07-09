@@ -1,6 +1,6 @@
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
-import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
+import logger from '../utility/logging/harper_logger.ts';
 import { configValidator } from '../validation/configValidator.ts';
 import fs from 'fs-extra';
 import YAML from 'yaml';
@@ -55,7 +55,7 @@ export function resolvePath(relativePath: string) {
 	try {
 		return path.resolve(env.getHdbBasePath(), relativePath);
 	} catch (error) {
-		console.error('Unable to resolve path', relativePath, errorForLog(error));
+		console.error('Unable to resolve path', relativePath, error);
 		return relativePath;
 	}
 }

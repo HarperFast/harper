@@ -4,7 +4,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as os from 'os';
 import PropertiesReader from 'properties-reader';
-import log, { errorForLog } from '../logging/harper_logger.ts';
+import log from '../logging/harper_logger.ts';
 import * as commonUtils from '../common_utils.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 import * as configUtils from '../../config/configUtils.ts';
@@ -117,7 +117,7 @@ export function initSync(force: boolean = false) {
 	} catch (err) {
 		log.error(INIT_ERR);
 		log.error(err);
-		console.error(errorForLog(err));
+		console.error(err);
 		// Use _realExit so this fatal startup error still terminates the worker
 		// even with the worker process guard installed. Inline fallback (rather
 		// than importing the helper) avoids a utility -> server layer

@@ -3,7 +3,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
+import logger from '../utility/logging/harper_logger.ts';
 import * as cliOperations from './cliOperations.ts';
 import { packageJson } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
@@ -48,7 +48,7 @@ async function harper() {
 
 	if (nodeResults) {
 		if (nodeResults.error) {
-			console.error(errorForLog(nodeResults.error));
+			console.error(nodeResults.error);
 			logger.error(nodeResults.error);
 			return;
 		} else if (nodeResults.warn) {
@@ -172,7 +172,7 @@ if (require.main === module) {
 		})
 		.catch((error) => {
 			if (error) {
-				console.error(errorForLog(error));
+				console.error(error);
 				logger.error(error);
 			}
 			process.exit(1);
