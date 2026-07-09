@@ -378,13 +378,19 @@ function validateRotationInterval(value, helpers) {
 	return value;
 }
 function validateRotationRetention(value, helpers) {
+	if (typeof value !== 'string' || !value.trim()) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
 	const unit = value.slice(-1);
 	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
 		return helpers.message(INVALID_RETENTION_UNIT_MSG);
 	}
 
-	const age = value.slice(0, -1);
-	if (isNaN(parseInt(age))) {
+	// parseFloat + strictly-positive check: convertToMS accepts fractional intervals, and a zero or
+	// negative retention makes every rotated log older than the (<=0) window, deleting them immediately.
+	const age = parseFloat(value.slice(0, -1));
+	if (isNaN(age) || age <= 0) {
 		return helpers.message(INVALID_RETENTION_VALUE_MSG);
 	}
 
