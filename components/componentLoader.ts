@@ -607,7 +607,7 @@ export async function loadComponent(
 					error.message
 				}`;
 				errorReporter?.(error);
-				(getWorkerIndex() === 0 ? console : harperLogger).error(error);
+				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}

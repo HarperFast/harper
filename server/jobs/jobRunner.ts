@@ -163,7 +163,7 @@ if (isMainThread) {
 					end_datetime: moment().valueOf(),
 				});
 			} catch (updateErr) {
-				log.error(`Unable to mark job ${message.jobId} as failed:`, updateErr);
+				log.error(`Unable to mark job ${message.jobId} as failed:`, errorForLog(updateErr));
 			}
 		}
 	});

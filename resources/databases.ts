@@ -1673,7 +1673,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			}
 			await Promise.all(puts);
 		} catch (persistError) {
-			logger.warn('Failed to persist indexing failure state', persistError);
+			logger.warn('Failed to persist indexing failure state', errorForLog(persistError));
 		}
 	}
 }
