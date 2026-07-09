@@ -536,7 +536,10 @@ async function deployComponent(req) {
 						collectScopes: validationScopes,
 					});
 				} finally {
-					await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
+					const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
+					for (const result of closeResults) {
+						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
+					}
 				}
 			})();
 			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
