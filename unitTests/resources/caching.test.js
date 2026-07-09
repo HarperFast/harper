@@ -124,6 +124,10 @@ describe('Caching', () => {
 		SwrQueryTable.prototype.allowStaleWhileRevalidate = function () {
 			// Record the identity the hook sees so a test can assert it matches the current row (harper#1578).
 			observedSwrIds.push(this.getId());
+			// The stale record must be loaded on the query-path instance, matching the single-record get path:
+			// a hook consulting this.getRecord()/this.<field> should see the stale row, not undefined (harper#1578).
+			assert.ok(this.getRecord(), 'SWR hook should see the loaded stale record, not undefined');
+			assert.equal(this.getRecord().id, this.getId());
 			return swrEnabled;
 		};
 	});
