@@ -28,10 +28,22 @@ const PermissionAttributeResponseObject =
 	require('#src/security/data_objects/PermissionAttributeResponseObject').default;
 const { TEST_SCHEMA_OP_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
 
+// rewire() bypasses the require cache and re-executes serverUtilities' module body in an isolated
+// instance so we can reach its private initializeOperationFunctionMap(). But that module body also
+// assigns `server.registerOperation`/`server.operation` onto the shared `server` singleton (imported
+// from Server.ts) as a side effect - each rewire() call clobbers those with a closure bound to its OWN
+// (orphaned) OPERATION_FUNCTION_MAP, permanently hijacking the real registration path for the rest of
+// this mocha process. Snapshot and restore the real bindings so this stays scoped to this file instead
+// of leaking into other test files that run later (e.g. serverUtilities.test.js's registerOperation tests).
+const { server } = require('#src/server/Server');
+require('#src/server/serverHelpers/serverUtilities'); // ensure the real (cached) bindings are set first
+const realRegisterOperation = server.registerOperation;
+const realOperation = server.operation;
 const serverUtilities_rw = rewire('#src/server/serverHelpers/serverUtilities');
 const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
 const OPERATION_MAP = initializeOperationFunctionMap_rw();
-rewire('#src/server/serverHelpers/serverUtilities');
+server.registerOperation = realRegisterOperation;
+server.operation = realOperation;
 
 const test_terms = testUtils.COMMON_TEST_TERMS;
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;

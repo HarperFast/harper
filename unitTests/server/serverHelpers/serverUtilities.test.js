@@ -564,4 +564,99 @@ describe('Test serverUtilities.js module ', () => {
 			assert.equal(observedStore, undefined);
 		});
 	});
+
+	describe('registerOperation permission seam', function () {
+		const { server } = require('#src/server/Server');
+		const op_auth = require('#src/utility/operation_authorization');
+		const { validateOperations } = require('#src/utility/operationPermissions');
+		const SU_OP = 'test_registered_su_op';
+		const OPEN_OP = 'test_registered_open_op';
+
+		// A non-super_user request JSON for a given op, optionally carrying an `operations` grant.
+		const nonSuRequest = (op, operations) => ({
+			operation: op,
+			hdb_user: {
+				active: true,
+				role: { permission: { super_user: false, ...(operations ? { operations } : {}) }, role: 'scoped' },
+				username: 'scoped_user',
+			},
+		});
+		const suRequest = (op) => ({
+			operation: op,
+			hdb_user: { active: true, role: { permission: { super_user: true }, role: 'admin' }, username: 'su' },
+		});
+
+		before(function () {
+			server.registerOperation({ name: SU_OP, execute: async () => ({ ok: true }), requiresSuperUser: true });
+		});
+
+		after(function () {
+			// Keep the process-global registries clean — these test-only ops shouldn't leak into other
+			// suites. registerOperation touches three globals (the op-function map plus verifyPerms'
+			// requiredPermissions and the grantable-ops set), so undo all three, not just the map.
+			for (const op of [SU_OP, OPEN_OP, 'test_name_pinning_op', 'shared_op_a', 'shared_op_b', 'dyn_grantable_op']) {
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+				op_auth.unregisterOperationPermission(op);
+			}
+		});
+
+		it('registers the handler under the op name for verifyPerms, without mutating the caller function', function () {
+			const original = async () => ({});
+			const def = { name: 'test_name_pinning_op', execute: original, requiresSuperUser: true };
+			server.registerOperation(def);
+			// The stored handler is a fresh wrapper named after the op (the key verifyPerms looks up)...
+			assert.equal(
+				serverUtilities.OPERATION_FUNCTION_MAP.get('test_name_pinning_op').operation_function.name,
+				'test_name_pinning_op'
+			);
+			// ...and the caller's own function object is left untouched.
+			assert.equal(def.execute, original);
+			assert.notEqual(original.name, 'test_name_pinning_op');
+		});
+
+		it('does not corrupt authz when one handler function is shared across two op names', function () {
+			const shared = async () => ({});
+			server.registerOperation({ name: 'shared_op_a', execute: shared, requiresSuperUser: true });
+			server.registerOperation({ name: 'shared_op_b', execute: shared, requiresSuperUser: true });
+			// Each registration gets its own named wrapper — the second registration does not rename the first.
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_a').operation_function.name, 'shared_op_a');
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_b').operation_function.name, 'shared_op_b');
+		});
+
+		it('makes a declared op grantable in a role operations allowlist, even a non-enum name', function () {
+			assert.notEqual(validateOperations(['dyn_grantable_op']), null); // unknown name before registration
+			server.registerOperation({ name: 'dyn_grantable_op', execute: async () => ({}), requiresSuperUser: true });
+			assert.equal(validateOperations(['dyn_grantable_op']), null); // grantable after registration
+		});
+
+		it('does not touch handler name or register perms when requiresSuperUser is omitted (opt-in)', function () {
+			const def = { name: OPEN_OP, execute: async () => ({}) };
+			server.registerOperation(def);
+			// Name is left as the arrow's inferred name ("execute" from the property), not forced to OPEN_OP.
+			assert.notEqual(def.execute.name, OPEN_OP);
+			// Unchanged behavior: with no central entry, a non-SU request to this op fails closed the same
+			// way any unregistered op does — verifyPerms throws OP_NOT_FOUND (400), it does not silently allow.
+			let threw;
+			try {
+				op_auth.verifyPerms(nonSuRequest(OPEN_OP), OPEN_OP);
+			} catch (err) {
+				threw = err;
+			}
+			assert.ok(threw, 'expected verifyPerms to throw for an unregistered op');
+			assert.equal(threw.statusCode, 400);
+		});
+
+		it('allows a super_user to call a declared SU op', function () {
+			assert.equal(op_auth.verifyPerms(suRequest(SU_OP), SU_OP), null);
+		});
+
+		it('denies a non-super_user without an operations grant', function () {
+			const result = op_auth.verifyPerms(nonSuRequest(SU_OP), SU_OP);
+			assert.ok(result, 'expected a permissions failure for a non-super_user without a grant');
+		});
+
+		it('allows a non-super_user whose role grants the op via the operations allowlist (SU-bypass)', function () {
+			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
+		});
+	});
 });
