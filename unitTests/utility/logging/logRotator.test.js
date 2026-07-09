@@ -125,7 +125,7 @@ describe('Test logRotator module', () => {
 		fs.writeFileSync(oldLog, 'old rotated log contents');
 		fs.writeFileSync(newLog, 'fresh rotated log contents');
 		// Age the old log well beyond the retention window (the fresh log stays comfortably inside it).
-		const past = new Date(Date.now() - 120000);
+		const past = new Date(Date.now() - 7200000);
 		fs.utimesSync(oldLog, past, past);
 
 		// Large maxSize so the active log is not rotated; retention is what we are exercising.
@@ -135,7 +135,7 @@ describe('Test logRotator module', () => {
 			enabled: true,
 			auditInterval: 100,
 			maxSize: '1G',
-			retention: '30s',
+			retention: '1H',
 		});
 		await hdb_utils.asyncSetTimeout(300);
 		rotator.end();

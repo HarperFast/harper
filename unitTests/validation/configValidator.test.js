@@ -433,6 +433,14 @@ describe('Test configValidator module', () => {
 		expect(helpers.message.args[0][0]).to.equal(
 			"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'"
 		);
+
+		for (const invalid of ['-5D', '0D', '', null]) {
+			message_stub.resetHistory();
+			validate_retention(invalid, helpers);
+			expect(helpers.message.args[0][0]).to.equal(
+				"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'"
+			);
+		}
 	});
 
 	it('Test validateRotationRetention valid value', () => {
