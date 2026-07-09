@@ -376,7 +376,7 @@ export async function authentication(request, nextHandler) {
 			let headers = response.headers;
 			// normalize plain-object headers so get/set below work uniformly
 			if (!headers || typeof headers.set !== 'function') response.headers = headers = new Headers(headers);
-			for (let i = 0; i < l; ) {
+			for (let i = 0; i < l;) {
 				const name = responseHeaders[i++];
 				headers.set(name, responseHeaders[i++]);
 			}
