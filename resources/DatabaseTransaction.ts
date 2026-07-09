@@ -89,6 +89,9 @@ export type TransactionWrite = {
 	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
 	// reset at the top of each commit-handler invocation so retries see a fresh state.
 	skipped?: boolean;
+	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
+	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
+	appendedAuditEntry?: boolean;
 };
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
@@ -250,6 +253,14 @@ export class DatabaseTransaction implements Transaction {
 			if (result?.then) this.completions.push(result);
 		}
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
+		// Sticky record that THIS write staged with its audit entry appended (log entries are written
+		// at staging and are not part of the transaction, so they survive an abort). isRetry stagings
+		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
+		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
+		// retries where a recommit round self-skips before a fresh-transaction replay.
+		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
+			operation.appendedAuditEntry = true;
+		}
 		if (immediateCommit) {
 			return this.commit({ transaction }); // immediately commit if the harper transaction is closed
 		}
@@ -397,6 +408,32 @@ export class DatabaseTransaction implements Transaction {
 								// for future transactions
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								if (error.code === 'ERR_TRY_AGAIN') {
+									// ERR_BUSY recovers on recommit: the save loop re-writes each key, re-tracking it at
+									// the current sequence, so validation passes once the contention clears. ERR_TRY_AGAIN
+									// never does: the memtable history validation needs is gone (flushed during a
+									// bulk-ingest burst), and recommitting re-checks the same stranded snapshot, so it
+									// fails forever even on an idle database. A source-apply transaction's uncapped retry
+									// then spins for good and wedges the replication apply loop at its commit await,
+									// freezing every leg of that database on the node. Replay onto a fresh transaction
+									// instead: the save loop reloads each entry through it and re-resolves against
+									// current state. Carry over the commit hook the transaction-log store attached
+									// (aftercommit emit / structure watermarks; it reads its state off the original
+									// transaction object, which abort() leaves intact); isRetry in save() keeps the log
+									// entries themselves from being re-added.
+									const retryTransaction: RocksTransactionWithRetry = new RocksTransaction(
+										(this.writes.find((write) => write)?.store.store ?? this.db.store) as RocksStore
+									);
+									if (this.timestamp) retryTransaction.setTimestamp(this.timestamp);
+									(retryTransaction as any).onCommit = (transaction as any).onCommit;
+									try {
+										transaction.abort();
+									} catch (abortError) {
+										// usually already released by the failed commit; log for the unexpected case
+										harperLogger.debug?.('aborting stranded transaction after failed commit', abortError);
+									}
+									transaction = retryTransaction;
+								}
 								if (this.retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
 									// external caching source) must never drop a write on a transient conflict: there is no
@@ -407,6 +444,13 @@ export class DatabaseTransaction implements Transaction {
 									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES) {
 										if (!neverDropOnConflict) {
+											// giving up: release the current transaction (original or the fresh replay above)
+											// so the throw does not leak its native handle
+											try {
+												transaction.abort();
+											} catch (abortError) {
+												harperLogger.debug?.('aborting conflicted transaction after exhausting retries', abortError);
+											}
 											throw new ServerError(
 												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 											);
