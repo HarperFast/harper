@@ -13,21 +13,14 @@ import { composeConfigFromEnv } from '../config/harperConfigEnvVars.ts';
 import { HARPER_CONFIG_FILE, HDB_CONFIG_FILE } from '../utility/hdbTerms.ts';
 
 /**
- * True when `filePath` is THE root config file. Prefers an exact match against the
- * resolved root-config path (covers the legacy `harperdb-config.yaml` name and rules
- * out a component that happens to ship a root-named file); falls back to a filename
- * match when configUtils isn't initialized (unit tests, early boot).
+ * Filename heuristic for "is this THE root config file" — matches the current and
+ * legacy root config names. Known limitation: a component that ships its own
+ * `harper-config.yaml` (a supported loader preference) is misclassified as root and
+ * gets the env overlay; harmless unless config env vars are set AND the component's
+ * keys collide with them. Callers that know root-ness authoritatively should pass
+ * the explicit `isRootConfig` constructor argument instead.
  */
-function isRootConfigPath(filePath: string): boolean {
-	try {
-		// Lazy require: configUtils' static import graph reaches server modules and must
-		// not be pulled in at OptionsWatcher module-load time (cycle risk on node 22+).
-		const { getConfigFilePath } = require('../config/configUtils');
-		const rootPath = getConfigFilePath();
-		if (typeof rootPath === 'string' && rootPath.length > 0) return filePath === rootPath;
-	} catch {
-		// fall through to the filename heuristic
-	}
+function looksLikeRootConfigPath(filePath: string): boolean {
 	const name = basename(filePath);
 	return name === HARPER_CONFIG_FILE || name === HDB_CONFIG_FILE;
 }
@@ -123,14 +116,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#pendingReads: Set<Promise<void>> = new Set();
 	ready: Promise<any[]>;
 
-	constructor(name: string, filePath: string, logger?: Logger) {
+	constructor(name: string, filePath: string, logger?: Logger, isRootConfig?: boolean) {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
-		this.#isRootConfig = isRootConfigPath(filePath);
+		this.#isRootConfig = isRootConfig ?? looksLikeRootConfigPath(filePath);
 		this.#logger = logger || loggerWithTag(name);
 		this.#usingPolling = false;
 		this.#closed = false;
