@@ -117,7 +117,7 @@ export function initSync(force: boolean = false) {
 	} catch (err) {
 		log.error(INIT_ERR);
 		log.error(errorForLog(err));
-		console.error(err);
+		console.error(errorForLog(err));
 		// Use _realExit so this fatal startup error still terminates the worker
 		// even with the worker process guard installed. Inline fallback (rather
 		// than importing the helper) avoids a utility -> server layer

@@ -2,6 +2,7 @@
 
 const pm2Utils = require('../processManagement/processManagement.js');
 const hdbTerms = require('../hdbTerms.ts');
+const { errorForLog } = require('../logging/harper_logger.ts');
 
 /**
  * Gets a list of all the running Harper processes and calls reload on each one.
@@ -18,7 +19,7 @@ const hdbTerms = require('../hdbTerms.ts');
 		await pm2Utils.deleteProcess(hdbTerms.PROCESS_DESCRIPTORS.RESTART_HDB);
 		// Once this script has finished reloading all the Harper processes, delete this process from processManagement.
 	} catch (err) {
-		console.error(err);
+		console.error(errorForLog(err));
 		throw err;
 	}
 })();

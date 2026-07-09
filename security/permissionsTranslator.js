@@ -107,7 +107,7 @@ function getRolePermissions(role) {
 		) {
 			const logMsg = `Role permissions for role '${roleName}' must be updated to align with new structure from the 2.2.0 release.`;
 			logger.error(logMsg);
-			logger.debug(e);
+			logger.debug(logger.errorForLog(e));
 			throw handleHDBError(new Error(), HDB_ERROR_MSGS.OUTDATED_PERMS_TRANSLATION_ERROR, HTTP_STATUS_CODES.BAD_REQUEST);
 		} else {
 			const logMsg = `There was an error while translating role permissions for role: ${roleName}.\n ${e.stack}`;

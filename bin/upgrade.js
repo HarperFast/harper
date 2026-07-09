@@ -114,7 +114,7 @@ async function runUpgrade(upgradeObj) {
 		await hdbInfoController.insertHdbUpgradeInfo(upgradeObj[UPGRADE_VERSION]);
 	} catch (err) {
 		hdbLogger.error("Error updating the 'hdb_info' system table.");
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 	}
 }
 

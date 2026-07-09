@@ -116,7 +116,7 @@ async function getAllHdbInfoRecords() {
 	} catch (err) {
 		// search may fail during a new install as the table doesn't exist yet or initial upgrade for 3.0.  This is ok,
 		// we will assume an id of 0 below.
-		console.error(err);
+		console.error(errorForLog(err));
 	}
 
 	return versionData;

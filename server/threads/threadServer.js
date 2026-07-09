@@ -47,7 +47,7 @@ if (!isBun) {
 				try {
 					require('inspector').close();
 				} catch (error) {
-					harperLogger.info('Could not close debugger', error);
+					harperLogger.info('Could not close debugger', harperLogger.errorForLog(error));
 				}
 			};
 			for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit']) {
@@ -82,7 +82,7 @@ process.on('uncaughtException', (error) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
-	harperLogger.error('uncaughtException', error);
+	harperLogger.error('uncaughtException', harperLogger.errorForLog(error));
 });
 // In both Node.js 15+ and Bun, an unhandled promise rejection exits the worker unless a
 // handler is registered. Without this, any async path that rejects without being caught
@@ -90,7 +90,7 @@ process.on('uncaughtException', (error) => {
 // worker thread. Mirror the uncaughtException behavior: log and continue.
 process.on('unhandledRejection', (reason) => {
 	if (reason?.isHandled) return;
-	harperLogger.error('unhandledRejection', reason);
+	harperLogger.error('unhandledRejection', harperLogger.errorForLog(reason));
 });
 env.initSync();
 exports.globals = globals;
@@ -213,7 +213,7 @@ function startServers() {
 							try {
 								require('inspector').close();
 							} catch (error) {
-								harperLogger.info('Could not close debugger', error);
+								harperLogger.info('Could not close debugger', harperLogger.errorForLog(error));
 							}
 						}
 					}
@@ -227,7 +227,7 @@ function startServers() {
 					try {
 						startupLog(portServer);
 					} catch (err) {
-						console.error('Error displaying start-up log', err);
+						console.error('Error displaying start-up log', harperLogger.errorForLog(err));
 					}
 				}
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });

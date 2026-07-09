@@ -417,7 +417,7 @@ async function restartWorkers(
 			// some reason, so we need to reset it to the correct path.
 			process.chdir(process.cwd());
 		} catch (e) {
-			harperLogger.error('Unable to reestablish current working directory', e);
+			harperLogger.error('Unable to reestablish current working directory', harperLogger.errorForLog(e));
 		}
 		// problematic cyclic dependency, bind late
 		const { resetRestartNeeded } = require('../../components/requestRestart.ts');
@@ -885,7 +885,7 @@ function notifyMessageListeners(message, port) {
 				try {
 					listener(message, port);
 				} catch (error) {
-					harperLogger.error(error);
+					harperLogger.error(harperLogger.errorForLog(error));
 				}
 			}
 		} else if (listeners !== null) {

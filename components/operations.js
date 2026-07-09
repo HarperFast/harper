@@ -638,7 +638,7 @@ async function deployComponent(req) {
 			try {
 				await recorder.finish('failed', err);
 			} catch (finishErr) {
-				log.warn('Failed to record deployment failure row', finishErr);
+				log.warn('Failed to record deployment failure row', log.errorForLog(finishErr));
 			}
 		}
 		throw outErr;
@@ -765,7 +765,7 @@ async function getComponents() {
 			}
 			return result;
 		} catch (error) {
-			log.warn('Error loading package', error);
+			log.warn('Error loading package', log.errorForLog(error));
 			return { error: error.toString(), entries: [] };
 		}
 	};

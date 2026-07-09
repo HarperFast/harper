@@ -197,7 +197,7 @@ function batchSearchTransactions(env, ids) {
 					results.push(txnRecord);
 				}
 			} catch (e) {
-				log.warn(e);
+				log.warn(log.errorForLog(e));
 			}
 		}
 		return results;

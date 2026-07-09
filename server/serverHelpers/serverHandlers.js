@@ -109,7 +109,7 @@ function authHandler(req, resp, done) {
 			})
 			.catch((err) => {
 				err.statusCode = 401;
-				harperLogger.debug('Login failed', err);
+				harperLogger.debug('Login failed', harperLogger.errorForLog(err));
 				done(err, null);
 			});
 	} else {
@@ -128,7 +128,7 @@ function authAndEnsureUserOnRequest(req, resp, done) {
 			done();
 		})
 		.catch((err) => {
-			harperLogger.warn(err);
+			harperLogger.warn(harperLogger.errorForLog(err));
 			harperLogger.warn(`{"ip":"${req.socket?.remoteAddress}", "error":"${err.stack}"`);
 			let errMsg = typeof err === 'string' ? { error: err } : { error: err.message };
 			done(handleHDBError(err, errMsg, hdbErrors.HTTP_STATUS_CODES.UNAUTHORIZED), null);
@@ -176,7 +176,7 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 		}
 		return result;
 	} catch (error) {
-		harperLogger.error(error);
+		harperLogger.error(harperLogger.errorForLog(error));
 		throw error;
 	}
 }

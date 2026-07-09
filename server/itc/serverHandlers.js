@@ -46,7 +46,7 @@ async function schemaHandler(event) {
 		try {
 			listener(event?.message);
 		} catch (err) {
-			hdbLogger.error(err);
+			hdbLogger.error(hdbLogger.errorForLog(err));
 		}
 	}
 }
@@ -70,7 +70,7 @@ async function syncSchemaMetadata(msg) {
 			// wait for a write to finish to ensure all writes have been written
 			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
 	} catch (e) {
-		hdbLogger.error(e);
+		hdbLogger.error(hdbLogger.errorForLog(e));
 	}
 }
 
@@ -87,7 +87,7 @@ async function userHandler(event) {
 			harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
 		} catch (error) {
 			// this can happen during tests, best to ignore
-			hdbLogger.warn(error);
+			hdbLogger.warn(hdbLogger.errorForLog(error));
 		}
 		const validate = validateEvent(event);
 		if (validate) {
@@ -99,7 +99,7 @@ async function userHandler(event) {
 		await userSchema.setUsersWithRolesCache();
 		for (let listener of userListeners) listener();
 	} catch (err) {
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 	}
 }
 
@@ -120,7 +120,7 @@ function resourceHandler() {
 		try {
 			listener();
 		} catch (err) {
-			hdbLogger.error(err);
+			hdbLogger.error(hdbLogger.errorForLog(err));
 		}
 	}
 }
@@ -191,7 +191,7 @@ async function componentStatusRequestHandler(event) {
 			);
 		}
 	} catch (error) {
-		hdbLogger.error('Error handling component status request:', error);
+		hdbLogger.error('Error handling component status request:', hdbLogger.errorForLog(error));
 	}
 }
 
@@ -234,7 +234,7 @@ async function resourceOpenApiRequestHandler(event) {
 			);
 		}
 	} catch (error) {
-		hdbLogger.error('Error handling resource OpenAPI request:', error);
+		hdbLogger.error('Error handling resource OpenAPI request:', hdbLogger.errorForLog(error));
 	}
 }
 
@@ -270,7 +270,7 @@ async function middlewareChainsRequestHandler(event) {
 			);
 		}
 	} catch (error) {
-		hdbLogger.error('Error handling middleware chains request:', error);
+		hdbLogger.error('Error handling middleware chains request:', hdbLogger.errorForLog(error));
 	}
 }
 

@@ -96,7 +96,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		try {
 			await install();
 		} catch (err) {
-			console.error(INSTALL_ERR, err);
+			console.error(INSTALL_ERR, hdbLogger.errorForLog(err));
 			hdbLogger.error(hdbLogger.errorForLog(err));
 			process.exit(1);
 		}
@@ -169,11 +169,11 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		if (upgradeVers) {
 			console.error(
 				`Got an error while trying to upgrade your Harper instance to version ${upgradeVers}. Exiting Harper.`,
-				err
+				hdbLogger.errorForLog(err)
 			);
 			hdbLogger.error(hdbLogger.errorForLog(err));
 		} else {
-			console.error(UPGRADE_ERR, err);
+			console.error(UPGRADE_ERR, hdbLogger.errorForLog(err));
 			hdbLogger.error(hdbLogger.errorForLog(err));
 		}
 		process.exit(1);
@@ -216,7 +216,7 @@ async function main(calledByInstall = false) {
 
 		if (!isScripted) started();
 	} catch (err) {
-		console.error(err);
+		console.error(hdbLogger.errorForLog(err));
 		hdbLogger.error(hdbLogger.errorForLog(err));
 		process.exit(1);
 	}
@@ -246,7 +246,7 @@ async function launch(exit = true) {
 		started();
 		if (exit) process.exit(0);
 	} catch (err) {
-		console.error(err);
+		console.error(hdbLogger.errorForLog(err));
 		hdbLogger.error(hdbLogger.errorForLog(err));
 		process.exit(1);
 	}

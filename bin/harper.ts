@@ -48,7 +48,7 @@ async function harper() {
 
 	if (nodeResults) {
 		if (nodeResults.error) {
-			console.error(nodeResults.error);
+			console.error(errorForLog(nodeResults.error));
 			logger.error(errorForLog(nodeResults.error));
 			return;
 		} else if (nodeResults.warn) {
@@ -172,7 +172,7 @@ if (require.main === module) {
 		})
 		.catch((error) => {
 			if (error) {
-				console.error(error);
+				console.error(errorForLog(error));
 				logger.error(errorForLog(error));
 			}
 			process.exit(1);

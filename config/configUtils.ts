@@ -55,7 +55,7 @@ export function resolvePath(relativePath: string) {
 	try {
 		return path.resolve(env.getHdbBasePath(), relativePath);
 	} catch (error) {
-		console.error('Unable to resolve path', relativePath, error);
+		console.error('Unable to resolve path', relativePath, errorForLog(error));
 		return relativePath;
 	}
 }
