@@ -624,6 +624,31 @@ describe('Test serverUtilities.js module ', () => {
 				);
 			});
 
+			it('strips an inherited ambient user when a topology op runs inside an existing context (nested server.operation)', async function () {
+				// A topology op invoked via server.operation() from within an authenticated request would
+				// otherwise fall through and run under the enclosing context's user, re-leaking it into the
+				// background work it spawns. The exclusion must strip that inherited user too, while
+				// preserving other ambient state and not mutating the outer context object.
+				op_func_caller_stub.callThrough();
+				const outerUser = { username: 'outer_user' };
+				const outerTransaction = { open: true };
+				const outerContext = { user: outerUser, transaction: outerTransaction, someRequestState: true };
+				let observedStore;
+				await contextStorage.run(outerContext, () =>
+					serverUtilities.processLocalTransaction(
+						{ body: { operation: 'add_node', hdb_user: outerUser } },
+						async () => {
+							observedStore = contextStorage.getStore();
+							return test_func_data;
+						}
+					)
+				);
+				assert.equal(observedStore.user, undefined, 'inherited ambient user must be stripped for topology ops');
+				assert.equal(observedStore.transaction, outerTransaction, 'other ambient state must be preserved');
+				assert.equal(observedStore.someRequestState, true, 'other ambient state must be preserved');
+				assert.equal(outerContext.user, outerUser, 'outer context object must not be mutated');
+			});
+
 			it('still establishes the ambient user for a non-topology operation (does not over-exclude)', async function () {
 				op_func_caller_stub.callThrough();
 				const hdbUser = { username: 'data_user' };

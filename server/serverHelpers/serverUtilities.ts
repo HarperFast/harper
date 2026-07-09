@@ -132,10 +132,22 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 	const currentStore = contextStorage.getStore();
 	const callOperationFunction = () =>
 		operationFunctionCaller.callOperationFunctionAsAwait(operationFunction, req.body, null);
-	let data =
-		hdbUser && currentStore?.user !== hdbUser && !OPERATIONS_EXCLUDED_FROM_AMBIENT_USER.has(req.body.operation)
-			? await contextStorage.run({ ...currentStore, user: hdbUser }, callOperationFunction)
+	let data;
+	if (OPERATIONS_EXCLUDED_FROM_AMBIENT_USER.has(req.body.operation)) {
+		// Excluded operations must run with no ambient user principal. Strip any ambient user —
+		// whether it would come from this request's hdb_user or from an enclosing ambient context
+		// (e.g. a nested server.operation() call from within an authenticated handler) — so the
+		// long-lived background work they spawn never inherits a user. Other ambient state is
+		// preserved, and the outer context object is never mutated.
+		data = currentStore
+			? await contextStorage.run({ ...currentStore, user: undefined }, callOperationFunction)
 			: await callOperationFunction();
+	} else {
+		data =
+			hdbUser && currentStore?.user !== hdbUser
+				? await contextStorage.run({ ...currentStore, user: hdbUser }, callOperationFunction)
+				: await callOperationFunction();
+	}
 
 	if (typeof data !== 'object') {
 		data = { message: data };
