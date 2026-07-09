@@ -593,7 +593,8 @@ describe('secretOperations', () => {
 			await assert.rejects(
 				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'BAD' }], 'app'),
 				// Decrypt failure is a node/key condition, not a bad request → 500, not the default 400.
-				(err) => err.statusCode === 500 && /Failed to decrypt registryAuth secret 'BAD': unsupported padding/.test(err.message)
+				(err) =>
+					err.statusCode === 500 && /Failed to decrypt registryAuth secret 'BAD': unsupported padding/.test(err.message)
 			);
 		});
 

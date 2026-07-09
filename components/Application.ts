@@ -78,6 +78,22 @@ export class InvalidInstallTimeoutError extends TypeError {
 	}
 }
 
+export class InvalidRegistryAuthPropertyError extends TypeError {
+	constructor(applicationName: string, registryAuth: unknown) {
+		super(
+			`Invalid 'registryAuth' property for application ${applicationName}: expected array, got ${typeof registryAuth}`
+		);
+	}
+}
+
+export class InvalidRegistryAuthEntryError extends TypeError {
+	constructor(applicationName: string) {
+		super(
+			`Invalid 'registryAuth' entry for application ${applicationName}: expected { registry, secret, scope? } reference`
+		);
+	}
+}
+
 export function assertApplicationConfig(
 	applicationName: string,
 	applicationConfig: Record<'package', unknown> & Record<string, unknown>
@@ -118,9 +134,7 @@ export function assertApplicationConfig(
 	if ('registryAuth' in applicationConfig && applicationConfig.registryAuth !== undefined) {
 		const entries = applicationConfig.registryAuth;
 		if (!Array.isArray(entries)) {
-			throw new (class InvalidRegistryAuthError extends TypeError {})(
-				`Invalid 'registryAuth' property for application ${applicationName}: expected array, got ${typeof entries}`
-			);
+			throw new InvalidRegistryAuthPropertyError(applicationName, entries);
 		}
 		for (const entry of entries) {
 			// Config carries references only — a literal `token` here would mean a plaintext credential
@@ -131,9 +145,7 @@ export function assertApplicationConfig(
 				typeof (entry as any).registry !== 'string' ||
 				typeof (entry as any).secret !== 'string'
 			) {
-				throw new (class InvalidRegistryAuthError extends TypeError {})(
-					`Invalid 'registryAuth' entry for application ${applicationName}: expected { registry, secret, scope? } reference`
-				);
+				throw new InvalidRegistryAuthEntryError(applicationName);
 			}
 		}
 	}
