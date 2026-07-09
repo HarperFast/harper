@@ -108,7 +108,7 @@ export function writeUdsMetadata(yamlPath: string, port: number | string, secure
 	try {
 		writeFileSync(yamlPath, yaml);
 	} catch (error) {
-		harperLogger.error('Error writing UDS metadata to ' + yamlPath, errorForLog(error));
+		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
 	}
 }
 
@@ -1047,7 +1047,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 					harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
 					websocketChains[port](ws, request, chainCompletion);
 				} catch (error) {
-					harperLogger.warn('Error in handling WS connection', errorForLog(error));
+					harperLogger.warn('Error in handling WS connection', error);
 				}
 			});
 

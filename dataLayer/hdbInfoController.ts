@@ -221,7 +221,7 @@ export async function getVersionUpdateInfo() {
 		}
 	} catch (err) {
 		log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
-		log.fatal(errorForLog(err));
+		log.fatal(err);
 		throw err;
 	}
 }

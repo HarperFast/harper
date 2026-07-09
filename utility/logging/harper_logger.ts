@@ -12,7 +12,9 @@ import * as os from 'os';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
 import { Console } from 'console';
-import { inspect } from 'util';
+import { inspect, types } from 'util';
+
+const { isNativeError } = types;
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)
 let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
@@ -181,6 +183,28 @@ async function updateLogSettings() {
 	}
 }
 
+/**
+ * Replaces every Error argument with its log-safe errorForLog wrapper before the args reach
+ * Console's util.inspect formatting, which would otherwise dump the error's own-enumerable
+ * properties — where libraries and app code stash credentials (axios config headers, an
+ * hdb_secret for an outbound Authorization header) — into hdb.log (see #1734 and errorForLog).
+ * Called inside each level gate so filtered-out log calls pay nothing beyond the arg scan,
+ * and only allocates when an Error is actually present.
+ */
+function sanitizeErrorArgs(args: any[]) {
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] instanceof Error || isNativeError(args[i])) {
+			const sanitized = args.slice(0, i);
+			for (let j = i; j < args.length; j++) {
+				const arg = args[j];
+				sanitized[j] = arg instanceof Error || isNativeError(arg) ? errorForLog(arg) : arg;
+			}
+			return sanitized;
+		}
+	}
+	return args;
+}
+
 class HarperLogger extends Console {
 	[key: string]: any;
 	constructor(streams, level) {
@@ -194,35 +218,35 @@ class HarperLogger extends Console {
 	trace(...args) {
 		currentLevel = 'trace';
 		if (this.level <= LOG_LEVEL_HIERARCHY.trace) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	debug(...args) {
 		currentLevel = 'debug';
 		if (this.level <= LOG_LEVEL_HIERARCHY.debug) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	info(...args) {
 		currentLevel = 'info';
 		if (this.level <= LOG_LEVEL_HIERARCHY.info) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	warn(...args) {
 		currentLevel = 'warn';
 		if (this.level <= LOG_LEVEL_HIERARCHY.warn) {
-			super.warn(...args);
+			super.warn(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	error(...args) {
 		currentLevel = 'error';
 		if (this.level <= LOG_LEVEL_HIERARCHY.error) {
-			super.error(...args);
+			super.error(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
@@ -231,7 +255,7 @@ class HarperLogger extends Console {
 		try {
 			currentLevel = 'fatal';
 			if (this.level <= LOG_LEVEL_HIERARCHY.fatal) {
-				super.error(...args);
+				super.error(...sanitizeErrorArgs(args));
 			}
 			currentLevel = 'info';
 		} finally {
@@ -243,7 +267,7 @@ class HarperLogger extends Console {
 		try {
 			currentLevel = 'notify';
 			if (this.level <= LOG_LEVEL_HIERARCHY.notify) {
-				super.info(...args);
+				super.info(...sanitizeErrorArgs(args));
 			}
 			currentLevel = 'info';
 		} finally {

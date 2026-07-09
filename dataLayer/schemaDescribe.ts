@@ -1,7 +1,7 @@
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 ('use strict');
 
-import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
+import logger from '../utility/logging/harper_logger.ts';
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import Joi from 'joi';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -53,7 +53,7 @@ export async function describeAll(opObj: any = {}) {
 						tResults.push(desc);
 					}
 				} catch (e) {
-					logger.error(errorForLog(e));
+					logger.error(e);
 				}
 			}
 		}
@@ -91,7 +91,7 @@ export async function describeAll(opObj: any = {}) {
 		return hdbDescription;
 	} catch (e) {
 		logger.error('Got an error in describeAll');
-		logger.error(errorForLog(e));
+		logger.error(e);
 		return handleHDBError(new Error(), HDB_ERROR_MSGS.DESCRIBE_ALL_ERR);
 	}
 }
@@ -190,7 +190,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			db_size = (await fs.stat(tableObj.primaryStore.path)).size;
 		}
 	} catch (error) {
-		logger.warn(`unable to get database size`, errorForLog(error));
+		logger.warn(`unable to get database size`, error);
 	}
 	let tableResult: any = {
 		schema,

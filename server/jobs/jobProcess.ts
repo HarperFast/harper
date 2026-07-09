@@ -5,7 +5,7 @@
 import { realExit } from '../threads/workerProcessGuard.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as hdbUtils from '../../utility/common_utils.ts';
-import harperLogger, { errorForLog } from '../../utility/logging/harper_logger.ts';
+import harperLogger from '../../utility/logging/harper_logger.ts';
 import * as globalSchema from '../../utility/globalSchema.ts';
 import * as user from '../../security/user.ts';
 import * as serverUtils from '../serverHelpers/serverUtilities.ts';
@@ -72,7 +72,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		harperLogger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
 		exitCode = 1;
-		harperLogger.error(errorForLog(err));
+		harperLogger.error(err);
 		jobObj.status = hdbTerms.JOB_STATUS_ENUM.ERROR;
 		jobObj.message = err.message ? err.message : err;
 		jobObj.end_datetime = moment().valueOf();

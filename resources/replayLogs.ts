@@ -61,7 +61,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		} catch (error) {
 			logger.warn(
 				`Failed to purge aged transaction logs before replay in ${(rootStore as any).databaseName} database`,
-				logger.errorForLog(error)
+				error
 			);
 		}
 		if (purgedLogs.length > 0) {
@@ -171,7 +171,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 						// commit the last transaction since we are starting a new one
 						transaction?.directCommitSync();
 					} catch (error) {
-						logger.error('Error committing replay transaction', logger.errorForLog(error));
+						logger.error('Error committing replay transaction', error);
 					}
 					// Abort if replay has exceeded the total wall-clock budget even while making progress
 					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
@@ -277,7 +277,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				// bound so a continuous stream of throwing writes can't grind the boot thread
 				// indefinitely (and the per-entry error log below can't spam unboundedly). harper#1266
 				noProgressRun++;
-				logger.error(`Error writing from replay of log`, logger.errorForLog(err), {
+				logger.error(`Error writing from replay of log`, err, {
 					version,
 				});
 			}
@@ -285,7 +285,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		try {
 			transaction?.directCommitSync();
 		} catch (error) {
-			logger.error('Error committing replay transaction', logger.errorForLog(error));
+			logger.error('Error committing replay transaction', error);
 		}
 		if (writes > 0) logger.warn(`Replayed ${writes} records in ${(rootStore as any).databaseName} database`);
 		if (skipped > 0)

@@ -1,7 +1,7 @@
 'use strict';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import log, { errorForLog } from './logging/harper_logger.ts';
+import log from './logging/harper_logger.ts';
 import * as fsExtra from 'fs-extra';
 import * as os from 'os';
 import * as net from 'net';
@@ -612,7 +612,7 @@ export function backtickASTSchemaItems(statement: any) {
 		}
 	} catch (err) {
 		log.error(`Got an error back ticking items.`);
-		log.error(errorForLog(err));
+		log.error(err);
 	}
 }
 

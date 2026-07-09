@@ -9,7 +9,7 @@ async function install() {
 	} catch (err) {
 		console.error('There was an error during the install.');
 		console.error(hdbLogger.errorForLog(err));
-		hdbLogger.error(hdbLogger.errorForLog(err));
+		hdbLogger.error(err);
 		process.exit(1);
 	}
 }

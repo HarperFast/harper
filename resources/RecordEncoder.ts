@@ -440,13 +440,13 @@ export class RecordEncoder extends StructonEncoder {
 				recordAction(true, MISSING_STRUCTURE_METRIC, storeName);
 				harperLogger.warn(
 					'Record references a shared structure missing on this node; decoded as null (see HarperFast/harper#1163)',
-					harperLogger.errorForLog(error),
+					error,
 					'store: ' + storeName,
 					'data: ' + hexPreview
 				);
 				return null;
 			}
-			harperLogger.error('Error decoding record', harperLogger.errorForLog(error), 'data: ' + hexPreview);
+			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
 	}
@@ -630,10 +630,7 @@ export function checkReadTxnTimeouts() {
 						try {
 							txn.done();
 						} catch (error) {
-							harperLogger.warn(
-								'Unexpected error force-closing stale LMDB read transaction',
-								harperLogger.errorForLog(error)
-							);
+							harperLogger.warn('Unexpected error force-closing stale LMDB read transaction', error);
 						}
 					} else
 						harperLogger.error(

@@ -62,7 +62,7 @@ function checkProjectExists(checkExists, project, helpers) {
 
 		return helpers.message(HDB_ERROR_MSGS.PROJECT_EXISTS);
 	} catch (err) {
-		hdbLogger.error(hdbLogger.errorForLog(err));
+		hdbLogger.error(err);
 		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
 	}
 }
@@ -90,7 +90,7 @@ function checkFileExists(project, type, file, helpers) {
 
 		return file;
 	} catch (err) {
-		hdbLogger.error(hdbLogger.errorForLog(err));
+		hdbLogger.error(err);
 		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
 	}
 }

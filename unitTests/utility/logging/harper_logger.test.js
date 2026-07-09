@@ -963,4 +963,84 @@ describe('Test harper_logger module', () => {
 			expect(rendered).to.not.include('authorization');
 		});
 	});
+
+	describe('Test logger auto-wrap of Error args (#1734)', () => {
+		// The HarperLogger level methods route every Error argument through errorForLog before
+		// Console formatting, so raw `logger.error(error)` calls anywhere in the codebase (or in
+		// component/app code) cannot leak own-enumerable props into the log.
+		function createCapturingLogger(level = 'trace') {
+			const lines = [];
+			const logger = harperLoggerModule.createLogger({ level, writeToLog: (line) => lines.push(line) });
+			return { logger, lines };
+		}
+
+		it('wraps a raw Error passed as the sole argument', () => {
+			const { logger, lines } = createCapturingLogger();
+			const error = new Error('origin fetch failed');
+			error.hdb_secret = 'Bearer super-secret-token';
+			error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			logger.error(error);
+			const output = lines.join('\n');
+			expect(output).to.include('Error: origin fetch failed');
+			expect(output).to.not.include('super-secret-token');
+			expect(output).to.not.include('hdb_secret');
+		});
+
+		it('wraps a raw Error in any argument position, leaving other args intact', () => {
+			const { logger, lines } = createCapturingLogger();
+			const error = new Error('WS connection failed');
+			error.authorization = 'Bearer super-secret-token';
+			logger.warn('Error in handling WS connection', error, 'port: 9926');
+			const output = lines.join('\n');
+			expect(output).to.include('Error in handling WS connection');
+			expect(output).to.include('Error: WS connection failed');
+			expect(output).to.include('port: 9926');
+			expect(output).to.not.include('super-secret-token');
+		});
+
+		it('preserves the cause chain of an auto-wrapped Error', () => {
+			const { logger, lines } = createCapturingLogger();
+			const root = new Error('connection refused');
+			root.secret = 'Bearer super-secret-token';
+			logger.error(new Error('origin fetch failed', { cause: root }));
+			const output = lines.join('\n');
+			expect(output).to.include('caused by:');
+			expect(output).to.include('Error: connection refused');
+			expect(output).to.not.include('super-secret-token');
+		});
+
+		it('does not alter non-Error object arguments', () => {
+			const { logger, lines } = createCapturingLogger();
+			logger.info('operation summary', { operation: 'insert', records: 3 });
+			const output = lines.join('\n');
+			expect(output).to.include('operation summary');
+			expect(output).to.include('insert');
+			expect(output).to.include('records');
+		});
+
+		it('applies on every level method, including below-gate no-ops', () => {
+			const { logger, lines } = createCapturingLogger('error');
+			const error = new Error('quiet');
+			error.secret = 'Bearer super-secret-token';
+			logger.trace(error); // gated out - must not write at all
+			expect(lines).to.have.length(0);
+			for (const level of ['error', 'fatal', 'notify']) {
+				logger[level](error);
+			}
+			const output = lines.join('\n');
+			expect(output).to.include('Error: quiet');
+			expect(output).to.not.include('super-secret-token');
+		});
+
+		it('covers loggerWithTag-derived loggers', () => {
+			const { logger, lines } = createCapturingLogger();
+			const tagged = harperLoggerModule.loggerWithTag('operation', false, logger);
+			const error = new Error('op failed');
+			error.hdb_secret = 'Bearer super-secret-token';
+			tagged.error(error);
+			const output = lines.join('\n');
+			expect(output).to.include('Error: op failed');
+			expect(output).to.not.include('super-secret-token');
+		});
+	});
 });

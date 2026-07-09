@@ -1,6 +1,6 @@
 'use strict';
 
-import log, { errorForLog } from './logging/harper_logger.ts';
+import log from './logging/harper_logger.ts';
 import * as terms from './hdbTerms.ts';
 
 /**
@@ -57,7 +57,7 @@ export async function callOperationFunctionAsAwait(
 			throw err;
 		}
 		log.error(`Error calling operation: ${promisifiedFunction.name}`);
-		log.error(errorForLog(err));
+		log.error(err);
 		throw err;
 	}
 }

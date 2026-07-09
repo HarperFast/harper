@@ -10,7 +10,7 @@ import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
 const cbDeleteTranslator = util.callbackify(deleteTranslator);
 import * as alasql from 'alasql';
 import * as opAuth from '../utility/operation_authorization.ts';
-import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
+import logger from '../utility/logging/harper_logger.ts';
 import alasqlFunctionImporter from './alasqlFunctionImporter.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
@@ -233,7 +233,7 @@ function createDataObjects(columns, values) {
 			return record;
 		});
 	} catch (err) {
-		logger.error(errorForLog(err));
+		logger.error(err);
 		throw new Error(SQL_INSERT_ERROR_MSG);
 	}
 }

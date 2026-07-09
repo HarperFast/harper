@@ -149,7 +149,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 
 				configDoc.setIn([...splitParam], value);
 			} catch (err) {
-				logger.error(errorForLog(err));
+				logger.error(err);
 			}
 		}
 	}
@@ -222,7 +222,7 @@ function setSchemasConfig(configDoc, schemaConfJson) {
 			}
 		}
 	} catch (err) {
-		logger.error('Error parsing schemas CLI/env config arguments', errorForLog(err));
+		logger.error('Error parsing schemas CLI/env config arguments', err);
 	}
 }
 
@@ -294,7 +294,7 @@ export function initConfig(force = false) {
 			try {
 				fs.accessSync(bootPropsFilePath, fs.constants.F_OK | fs.constants.R_OK);
 			} catch (err) {
-				logger.error(errorForLog(err));
+				logger.error(err);
 				throw handleHDBError(
 					new Error(),
 					`Harper properties file at path ${bootPropsFilePath} does not exist`,
@@ -326,7 +326,7 @@ export function initConfig(force = false) {
 				This can occur during early stages of install where the config file has not yet been created`);
 				return;
 			} else {
-				logger.error(errorForLog(err));
+				logger.error(err);
 				throw handleHDBError(
 					new Error(),
 					`Error reading Harper config file at ${configFilePath}`,
@@ -664,7 +664,7 @@ export function updateConfigValue(
 					}
 					configDoc.setIn([...splitParam], newValue);
 				} catch (err) {
-					logger.error(errorForLog(err));
+					logger.error(err);
 				}
 			}
 		}
@@ -709,7 +709,7 @@ function backupConfigFile(configPath, hdbRoot) {
 		logger.trace(`Config file: ${configPath} backed up to: ${backupFolderPath}`);
 	} catch (err) {
 		logger.error(BACKUP_ERR);
-		logger.error(errorForLog(err));
+		logger.error(err);
 	}
 }
 
@@ -872,7 +872,7 @@ export function readConfigFile() {
 		fs.accessSync(bootPropsFilePath, fs.constants.F_OK | fs.constants.R_OK);
 	} catch (err) {
 		if (!hdbUtils.noBootFile()) {
-			logger.error(errorForLog(err));
+			logger.error(err);
 			throw handleHDBError(
 				new Error(),
 				`Harper properties file at path ${bootPropsFilePath} does not exist`,

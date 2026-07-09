@@ -116,7 +116,7 @@ export function initSync(force: boolean = false) {
 		}
 	} catch (err) {
 		log.error(INIT_ERR);
-		log.error(errorForLog(err));
+		log.error(err);
 		console.error(errorForLog(err));
 		// Use _realExit so this fatal startup error still terminates the worker
 		// even with the worker process guard installed. Inline fallback (rather
@@ -204,6 +204,6 @@ export function initTestEnvironment(testConfigObj: any = {}) {
 	} catch (err) {
 		let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
 		log.fatal(msg);
-		log.error(errorForLog(err));
+		log.error(err);
 	}
 }

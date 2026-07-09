@@ -370,7 +370,7 @@ export async function loadComponent(
 			try {
 				await symlinkHarperModule(componentDirectory);
 			} catch (error) {
-				harperLogger.error('Error symlinking harperdb module', errorForLog(error));
+				harperLogger.error('Error symlinking harperdb module', error);
 				if (error.code == 'EPERM' && process.platform === 'win32') {
 					harperLogger.error(
 						'You may need to enable developer mode in "Settings" / "System" (or "Update & Security") / "For developers", in order to enable symlinks so components can use `import from "harperdb"`'
@@ -640,7 +640,7 @@ export async function loadComponent(
 							await loadComponentDirectories();
 							await restartWorkers();
 						} catch (error) {
-							harperLogger.error('Error during component reload', errorForLog(error));
+							harperLogger.error('Error during component reload', error);
 						}
 					} while (pending); // a request landed mid-cycle → run once more, coalescing the rest
 				} finally {

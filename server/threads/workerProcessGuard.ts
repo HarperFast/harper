@@ -88,6 +88,6 @@ if (!isMainThread) {
 	// the process on an unhandled rejection. Register a logging listener so the
 	// worker survives even when no component handler is loaded.
 	process.on('unhandledRejection', (reason) => {
-		harperLogger.error(`unhandledRejection in worker thread ${threadId}:`, harperLogger.errorForLog(reason));
+		harperLogger.error(`unhandledRejection in worker thread ${threadId}:`, reason);
 	});
 }

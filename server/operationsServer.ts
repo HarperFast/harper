@@ -4,7 +4,7 @@ import zlib from 'node:zlib';
 import * as env from '../utility/environment/environmentManager.ts';
 env.initSync();
 import * as terms from '../utility/hdbTerms.ts';
-import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
@@ -103,13 +103,13 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 			}
 		} catch (err) {
 			server.close();
-			harperLogger.error(errorForLog(err));
+			harperLogger.error(err);
 			harperLogger.error(`Error configuring operations server`);
 			throw err;
 		}
 	} catch (err) {
 		console.error(`Failed to build server on ${process.pid}`, err);
-		harperLogger.fatal(errorForLog(err));
+		harperLogger.fatal(err);
 		// Use realExit so this fatal worker bootstrap failure still terminates
 		// the worker even with the worker process guard installed.
 		realExit(1);

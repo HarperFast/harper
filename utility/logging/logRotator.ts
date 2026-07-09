@@ -114,7 +114,7 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 						await fsProm.unlink(path.join(rotatedLogDir, file));
 					}
 				} catch (err) {
-					hdbLogger.error('Error trying to remove log', file, hdbLogger.errorForLog(err));
+					hdbLogger.error('Error trying to remove log', file, err);
 				}
 			}
 		}

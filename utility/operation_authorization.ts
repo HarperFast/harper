@@ -20,7 +20,7 @@ import readAuditLog from '../dataLayer/readAuditLog.ts';
 import getBackup from '../dataLayer/getBackup.ts';
 import * as user from '../security/user.ts';
 import * as role from '../security/role.ts';
-import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import readLog from '../utility/logging/readLog.ts';
 import * as commonUtils from './common_utils.ts';
 import * as restart from '../bin/restart.ts';
@@ -713,7 +713,7 @@ export function hasPermissions(userObject, op, schemaTableMap, permsResponse, ac
 					//if we hit an error here, we need to block operation and return error
 					const errMsg = HDB_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, schemaTable, table);
 					harperLogger.error(errMsg);
-					harperLogger.error(errorForLog(e));
+					harperLogger.error(e);
 					throw handleHDBError(hdbErrors.CHECK_LOGS_WRAPPER(errMsg));
 				}
 			}
@@ -869,7 +869,7 @@ function getRecordAttributes(json) {
 			}
 		}
 	} catch (err) {
-		harperLogger.info(errorForLog(err));
+		harperLogger.info(err);
 	}
 	return affectedAttributes;
 }

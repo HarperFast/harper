@@ -3,7 +3,7 @@
 import * as environmentUtil from './environmentUtility.ts';
 import * as common from './commonUtility.ts';
 import { LMDB_ERRORS_ENUM as LMDB_ERRORS } from '../errors/commonErrors.ts';
-import log, { errorForLog } from '../logging/harper_logger.ts';
+import log from '../logging/harper_logger.ts';
 // eslint-disable-next-line no-unused-vars
 import * as lmdb from 'lmdb';
 import DeleteRecordsResponseObject from './DeleteRecordsResponseObject.ts';
@@ -91,7 +91,7 @@ export async function deleteRecords(this: any, env, hash_attribute, ids, whenDel
 				keys.push(hashValue);
 				deleted.original_records.push(record);
 			} catch (e) {
-				log.warn(errorForLog(e));
+				log.warn(e);
 				deleted.skipped.push(hashValue);
 			}
 		}

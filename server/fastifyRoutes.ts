@@ -106,7 +106,7 @@ export async function customFunctionsServer() {
 		server.server.cantCleanupProperly = true;
 	} catch (err) {
 		harperLogger.error(`Custom Functions ${process.pid} Error: ${err}`);
-		harperLogger.error(harperLogger.errorForLog(err));
+		harperLogger.error(err);
 		// Use realExit so this fatal worker bootstrap failure still terminates
 		// the worker even with the worker process guard installed.
 		realExit(1);
@@ -123,7 +123,7 @@ async function setUp() {
 		await userSchema.setUsersWithRolesCache();
 		harperLogger.info('Custom Functions completed configuration.');
 	} catch (e) {
-		harperLogger.error(harperLogger.errorForLog(e));
+		harperLogger.error(e);
 	}
 }
 
@@ -152,7 +152,7 @@ function buildRouteFolder(routesFolder, projectName) {
 						if (err?.message) {
 							harperLogger.error(err.message);
 						} else if (err) {
-							harperLogger.error(harperLogger.errorForLog(err));
+							harperLogger.error(err);
 						}
 						next();
 					});

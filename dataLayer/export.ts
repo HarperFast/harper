@@ -226,7 +226,7 @@ export async function export_to_s3(exportObject: any) {
 	try {
 		data = await getRecords(exportObject);
 	} catch (err) {
-		hdbLogger.error(hdbLogger.errorForLog(err));
+		hdbLogger.error(err);
 		throw err;
 	}
 
