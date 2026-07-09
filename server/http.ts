@@ -1238,12 +1238,14 @@ export function createH2CProxyFront(h2Server, prehandoffTimeout = 10_000) {
 		socket.on('close', () => prehandoffSockets.delete(socket));
 		const onPrehandoffError = () => socket.destroy();
 		socket.on('error', onPrehandoffError);
-		socket.setTimeout(prehandoffTimeout, () => socket.destroy());
+		const onPrehandoffTimeout = () => socket.destroy();
+		socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
 		const handoff = (rest: Buffer) => {
 			prehandoffSockets.delete(socket);
 			socket.removeListener('readable', onReadable);
 			socket.removeListener('error', onPrehandoffError);
 			socket.setTimeout(0);
+			socket.removeListener('timeout', onPrehandoffTimeout);
 			if (rest.length > 0) socket.unshift(rest);
 			h2Server.emit('connection', socket);
 		};
