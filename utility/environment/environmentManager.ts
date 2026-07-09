@@ -4,7 +4,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as os from 'os';
 import PropertiesReader from 'properties-reader';
-import log from '../logging/harper_logger.ts';
+import log, { errorForLog } from '../logging/harper_logger.ts';
 import * as commonUtils from '../common_utils.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 import * as configUtils from '../../config/configUtils.ts';
@@ -116,7 +116,7 @@ export function initSync(force: boolean = false) {
 		}
 	} catch (err) {
 		log.error(INIT_ERR);
-		log.error(err);
+		log.error(errorForLog(err));
 		console.error(err);
 		// Use _realExit so this fatal startup error still terminates the worker
 		// even with the worker process guard installed. Inline fallback (rather
@@ -204,6 +204,6 @@ export function initTestEnvironment(testConfigObj: any = {}) {
 	} catch (err) {
 		let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
 		log.fatal(msg);
-		log.error(err);
+		log.error(errorForLog(err));
 	}
 }

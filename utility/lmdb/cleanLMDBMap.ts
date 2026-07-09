@@ -1,7 +1,7 @@
 'use strict';
 
 import * as environmentUtility from './environmentUtility.ts';
-import harperLogger from '../logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../logging/harper_logger.ts';
 import { LMDB_ERRORS_ENUM as LMDB_ERRORS } from '../errors/commonErrors.ts';
 
 export default cleanLMDBMap;
@@ -60,6 +60,6 @@ async function cleanLMDBMap(msg: any) {
 			}
 		}
 	} catch (e) {
-		harperLogger.error(e);
+		harperLogger.error(errorForLog(e));
 	}
 }
