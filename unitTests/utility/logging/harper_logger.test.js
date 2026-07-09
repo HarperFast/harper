@@ -877,11 +877,15 @@ describe('Test harper_logger module', () => {
 	});
 
 	describe('Test errorForLog function (#1734)', () => {
+		const util = require('util');
 		const { errorForLog } = harperLoggerModule;
+		// errorForLog returns a lazy wrapper; the logger renders it via util.inspect. Render it the
+		// same way (or via String()) to assert on what actually lands in the log.
+		const render = (error) => util.inspect(errorForLog(error));
 
-		it('returns the stack (which includes class name and message)', () => {
+		it('renders the stack (which includes class name and message)', () => {
 			const error = new Error('boom');
-			const result = errorForLog(error);
+			const result = render(error);
 			expect(result).to.equal(error.stack);
 			expect(result).to.include('Error: boom');
 		});
@@ -891,19 +895,39 @@ describe('Test harper_logger module', () => {
 			const error = new Error('origin fetch failed');
 			error.authorization = 'Bearer super-secret-token';
 			error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
-			const result = errorForLog(error);
+			const result = render(error);
 			expect(result).to.not.include('super-secret-token');
 			expect(result).to.not.include('authorization');
+		});
+
+		it('appends the cause chain without leaking the cause’s own properties', () => {
+			const root = new Error('connection refused');
+			root.secret = 'Bearer super-secret-token';
+			const error = new Error('origin fetch failed', { cause: root });
+			const result = render(error);
+			expect(result).to.include('Error: origin fetch failed');
+			expect(result).to.include('caused by:');
+			expect(result).to.include('Error: connection refused');
+			expect(result).to.not.include('super-secret-token');
+		});
+
+		it('does not infinitely loop on a cyclic cause chain', () => {
+			const a = new Error('a');
+			const b = new Error('b', { cause: a });
+			a.cause = b; // cycle
+			const result = render(a);
+			expect(result).to.include('Error: a');
+			expect(result).to.include('Error: b');
 		});
 
 		it('falls back to "ClassName: message" when there is no stack', () => {
 			// A thrown plain object carrying an HTTP status but no stack.
 			const thrown = { message: 'not found', status: 404 };
-			expect(errorForLog(thrown)).to.equal('Object: not found');
+			expect(render(thrown)).to.equal('Object: not found');
 		});
 
 		it('handles a thrown string', () => {
-			expect(errorForLog('just a string')).to.equal('just a string');
+			expect(render('just a string')).to.equal('just a string');
 		});
 	});
 });

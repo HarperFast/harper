@@ -12,6 +12,7 @@ import * as os from 'os';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
 import { Console } from 'console';
+import { inspect } from 'util';
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)
 let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
@@ -897,17 +898,40 @@ export function errorToString(error: any) {
 }
 
 /**
- * Returns a log-safe representation of an error for passing to the logger. Prefers the stack (which
- * includes the error class name and message), falling back to the "ClassName: message" string.
+ * Renders an error to its stack (class name + message + frames), then appends the stack of each
+ * error in its `cause` chain. Deliberately excludes own-enumerable properties — those are exactly
+ * what leaks secrets in #1734 (see `errorForLog`).
+ */
+function errorToLogString(error: any) {
+	let output = typeof error?.stack === 'string' ? error.stack : errorToString(error);
+	const seen = new Set([error]);
+	let cause = error?.cause;
+	while (cause != null && !seen.has(cause)) {
+		seen.add(cause);
+		output += `\ncaused by: ${typeof cause.stack === 'string' ? cause.stack : errorToString(cause)}`;
+		cause = cause.cause;
+	}
+	return output;
+}
+
+/**
+ * Returns a log-safe representation of an error for passing to the logger. It renders the stack
+ * (class name + message + frames) plus any `cause` chain, but NOT the error's own-enumerable
+ * properties.
+ *
  * This deliberately avoids logging the raw Error object: Node's Console formats a logged Error with
  * util.inspect, which dumps every own-enumerable property. Anything an app or an HTTP client library
  * stashes on a thrown Error — a credential used for an outbound Authorization header, an axios
  * `config`/`request` with headers — would otherwise land verbatim in hdb.log (see #1734). Those
- * custom properties are not part of `error.stack`, so logging the stack preserves debuggability
- * without leaking them.
+ * custom properties are not part of the stack, so this preserves debuggability without leaking them.
+ *
+ * A wrapper carrying the rendering on `util.inspect.custom` is returned rather than a pre-built
+ * string so the (potentially expensive) stack materialization only happens if the logger's level
+ * gate actually writes the entry — passing a raw string would force it eagerly on the discarded path.
  */
 export function errorForLog(error: any) {
-	return typeof error?.stack === 'string' ? error.stack : errorToString(error);
+	const render = () => errorToLogString(error);
+	return { [inspect.custom]: render, toString: render };
 }
 
 export function setMainLogger(logger: any) {
