@@ -134,12 +134,8 @@ module.exports = {
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
-<<<<<<< HEAD
-=======
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
-	registerWorkerDataProvider,
->>>>>>> 9018760e4 (Merge pull request #1621 from HarperFast/kris/blob-send-drain-core)
 	restartNumber: workerData?.restartNumber || 1,
 };
 
