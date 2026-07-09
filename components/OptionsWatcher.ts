@@ -10,7 +10,27 @@ import { cloneDeep } from 'lodash';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
 import { basename } from 'node:path';
 import { composeConfigFromEnv } from '../config/harperConfigEnvVars.ts';
-import { HARPER_CONFIG_FILE } from '../utility/hdbTerms.ts';
+import { HARPER_CONFIG_FILE, HDB_CONFIG_FILE } from '../utility/hdbTerms.ts';
+
+/**
+ * True when `filePath` is THE root config file. Prefers an exact match against the
+ * resolved root-config path (covers the legacy `harperdb-config.yaml` name and rules
+ * out a component that happens to ship a root-named file); falls back to a filename
+ * match when configUtils isn't initialized (unit tests, early boot).
+ */
+function isRootConfigPath(filePath: string): boolean {
+	try {
+		// Lazy require: configUtils' static import graph reaches server modules and must
+		// not be pulled in at OptionsWatcher module-load time (cycle risk on node 22+).
+		const { getConfigFilePath } = require('../config/configUtils');
+		const rootPath = getConfigFilePath();
+		if (typeof rootPath === 'string' && rootPath.length > 0) return filePath === rootPath;
+	} catch {
+		// fall through to the filename heuristic
+	}
+	const name = basename(filePath);
+	return name === HARPER_CONFIG_FILE || name === HDB_CONFIG_FILE;
+}
 
 export interface Config {
 	[key: string]: ConfigValue;
@@ -110,7 +130,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
-		this.#isRootConfig = basename(filePath) === HARPER_CONFIG_FILE;
+		this.#isRootConfig = isRootConfigPath(filePath);
 		this.#logger = logger || loggerWithTag(name);
 		this.#usingPolling = false;
 		this.#closed = false;
@@ -174,13 +194,24 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
 					// Root config missing but env config present (e.g. the install hasn't
 					// flushed the file yet): compose the env layers over an empty base so
-					// boot-time consumers still see the effective config (#1618).
+					// boot-time consumers still see the effective config (#1618). The
+					// composed object becomes our state ONLY when this scope's name is in
+					// it — otherwise fall through to the original ENOENT handling with
+					// #rootConfig untouched (a first read must emit `ready`, not `remove`;
+					// nothing consumes `remove` at boot and `ready` would hang forever).
+					// composeConfigFromEnv throws on malformed env JSON; route that to
+					// `error` like the file-read path does, not an unhandled rejection.
 					if (this.#isRootConfig && hasConfigEnvVars()) {
-						const composed = composeConfigFromEnv({});
-						this.#rootConfig = composed as Config;
-						if (this.#name in composed && !this.#scopedConfig) {
-							this.#scopedConfig = (composed as Config)[this.#name];
-							this.emit('ready', this.#scopedConfig);
+						try {
+							const composed = composeConfigFromEnv({}) as Config;
+							if (this.#name in composed && !this.#scopedConfig) {
+								this.#rootConfig = composed;
+								this.#scopedConfig = composed[this.#name];
+								this.emit('ready', this.#scopedConfig);
+								return;
+							}
+						} catch (composeError) {
+							this.emit('error', composeError);
 							return;
 						}
 					}

@@ -90,4 +90,23 @@ describe('OptionsWatcher env-config overlay (#1618)', () => {
 		await watcher.ready;
 		assert.strictEqual(watcher.get(['enabled']), false);
 	});
+
+	it('still emits ready when the file is absent and env config lacks this scope (no remove/hang)', async () => {
+		const filePath = join(dir, 'harper-config.yaml'); // never written
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: { port: 12345 } }); // some OTHER scope
+
+		watcher = new OptionsWatcher(NAME, filePath);
+		const [config] = await watcher.ready; // regression guard: must resolve, not hang on 'remove'
+		assert.strictEqual(config, undefined);
+	});
+
+	it('overlays env config onto the legacy root config filename (harperdb-config.yaml)', async () => {
+		const filePath = join(dir, 'harperdb-config.yaml');
+		writeFileSync(filePath, stringify({ [NAME]: { enabled: false } }));
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ [NAME]: { enabled: true } });
+
+		watcher = new OptionsWatcher(NAME, filePath);
+		await watcher.ready;
+		assert.strictEqual(watcher.get(['enabled']), true);
+	});
 });
