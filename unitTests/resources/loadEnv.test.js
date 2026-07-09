@@ -101,6 +101,17 @@ describe('loadEnv conflict handling', () => {
 		);
 	});
 
+	it('never lets a config-shaping var reach process.env from a component .env (#1513)', () => {
+		// Enforced at the injection point: downstream consumers that (re)compose
+		// config from process.env must be able to rely on the trio arriving only
+		// via sanctioned channels (heskew review, cross-PR with #1726).
+		delete process.env.HARPER_SET_CONFIG;
+		const scope = fakeScope({ override: true }); // even override must not inject
+		handleApplication(scope);
+		scope.fire(addEntry('HARPER_SET_CONFIG=http.port=1234'));
+		assert.equal(process.env.HARPER_SET_CONFIG, undefined, 'trio var must not land in process.env');
+	});
+
 	it('keeps the existing value on a real conflict without override', () => {
 		process.env.__ENVTEST_G = 'original';
 		const scope = fakeScope();

@@ -46,6 +46,11 @@ export function handleApplication(scope: Scope) {
 				logger.warn(
 					`${key} from ${entry.absolutePath} cannot shape instance configuration (the config is composed before component .env files load, and components must not alter instance-wide config); set it in the process environment or harper-config.yaml`
 				);
+				// Enforce at the injection point: the trio must never reach process.env
+				// from a component .env — anything downstream that (re)composes config
+				// from process.env (e.g. #1618/#1726's OptionsWatcher) would otherwise
+				// silently honor it, re-inverting the top-down config relationship.
+				continue;
 			}
 			if (process.env[key] !== undefined) {
 				logger.warn(`Environment variable conflict: ${key} from ${entry.absolutePath} is already set on process.env`);
