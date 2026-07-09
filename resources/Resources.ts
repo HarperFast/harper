@@ -1,5 +1,5 @@
 import { transaction } from './transaction.ts';
-import logger from '../utility/logging/harper_logger.ts';
+import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { server } from '../server/Server.ts';
 
@@ -152,7 +152,7 @@ export class Resources extends Map<string, ResourceEntry> {
 			// it was be a 500 error; clearly a server error (not client error), unfortunate that the 5xx errors
 			// don't provide anything more descriptive.
 			const error = new ServerError(`Conflicting paths for ${path}`);
-			logger.error(error);
+			logger.error(errorForLog(error));
 			const { ErrorResource } = require('./ErrorResource');
 			entry.Resource = new ErrorResource(error);
 		}
@@ -213,7 +213,7 @@ export class Resources extends Map<string, ResourceEntry> {
 			) {
 				// conflicting registrations for the same parameterised path; surface it like the static-path conflict
 				const error = new ServerError(`Conflicting paths for ${path}`);
-				logger.error(error);
+				logger.error(errorForLog(error));
 				const { ErrorResource } = require('./ErrorResource');
 				compiled.entry.Resource = new ErrorResource(error);
 			}

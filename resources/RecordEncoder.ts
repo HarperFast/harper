@@ -446,7 +446,7 @@ export class RecordEncoder extends StructonEncoder {
 				);
 				return null;
 			}
-			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
+			harperLogger.error('Error decoding record', harperLogger.errorForLog(error), 'data: ' + hexPreview);
 			return null;
 		}
 	}
@@ -630,7 +630,7 @@ export function checkReadTxnTimeouts() {
 						try {
 							txn.done();
 						} catch (error) {
-							harperLogger.warn('Unexpected error force-closing stale LMDB read transaction', error);
+							harperLogger.warn('Unexpected error force-closing stale LMDB read transaction', harperLogger.errorForLog(error));
 						}
 					} else
 						harperLogger.error(

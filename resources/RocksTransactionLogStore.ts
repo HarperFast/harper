@@ -27,7 +27,7 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 // endIteratorOnCorruptFrame in replayLogsGuards.ts for why this is end-of-log, not a crash.
 function warnCorruptFrame(logName: string) {
 	return (error: RangeError) =>
-		harperLogger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, error);
+		harperLogger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, harperLogger.errorForLog(error));
 }
 
 /**
@@ -274,7 +274,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					return iterator.next();
 				} catch (error) {
 					failedIterators.add(iterator);
-					harperLogger.error('Transaction log iterator failed; terminating this log', error, {
+					harperLogger.error('Transaction log iterator failed; terminating this log', harperLogger.errorForLog(error), {
 						log: log?.name,
 					});
 					return { value: undefined, done: true };
@@ -421,7 +421,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				auditRecord.structureVersion = structureVersion & 0x00ffffff;
 				return auditRecord;
 			} catch (error) {
-				harperLogger.error('Failed to decode rocks transaction log entry; skipping', error, {
+				harperLogger.error('Failed to decode rocks transaction log entry; skipping', harperLogger.errorForLog(error), {
 					timestamp,
 					byteLength: data?.byteLength,
 				});

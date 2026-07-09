@@ -191,7 +191,7 @@ export function openAuditStore(rootStore) {
 						try {
 							committed = removeAuditEntry(auditStore, auditRecord);
 						} catch (error) {
-							harperLogger.warn('Error removing audit entry', error);
+							harperLogger.warn('Error removing audit entry', harperLogger.errorForLog(error));
 						}
 						lastKey = auditRecord.key;
 						await new Promise(setImmediate);
@@ -555,7 +555,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 					// use a subarray to protect against the underlying buffer being modified
 					return readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd);
 				} catch (error) {
-					harperLogger.warn('Failed to decode audit recordId; treating as corrupt', error);
+					harperLogger.warn('Failed to decode audit recordId; treating as corrupt', harperLogger.errorForLog(error));
 					return undefined;
 				}
 			},
@@ -570,7 +570,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 						? readKey(buffer.subarray(0, usernameEnd), usernameStart, usernameEnd)
 						: undefined;
 				} catch (error) {
-					harperLogger.warn('Failed to decode audit username; treating as corrupt', error);
+					harperLogger.warn('Failed to decode audit username; treating as corrupt', harperLogger.errorForLog(error));
 					return undefined;
 				}
 			},
@@ -609,7 +609,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			previousAdditionalAuditRefs,
 		} as any;
 	} catch (error) {
-		harperLogger.error('Reading audit entry error', error, buffer);
+		harperLogger.error('Reading audit entry error', harperLogger.errorForLog(error), buffer);
 		return createCorruptAuditSentinel(buffer, start, end);
 	}
 }

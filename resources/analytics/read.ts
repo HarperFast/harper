@@ -1,5 +1,5 @@
 import type { Metric } from './write.ts';
-import harperLogger from '../../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import { getAnalyticsHostnameTable, stableNodeId } from './hostnames.ts';
 import type { Condition, Conditions } from '../ResourceInterface.ts';
@@ -138,7 +138,7 @@ async function* mergeAnalyticsFromPeers(
 				(response): Metric[] =>
 					Array.isArray(response) ? response : Array.isArray(response?.results) ? response.results : [],
 				(error: Error): Metric[] => {
-					logger.warn(`get_analytics replication to node '${node.name}' failed; omitting its results`, error);
+					logger.warn(`get_analytics replication to node '${node.name}' failed; omitting its results`, errorForLog(error));
 					return [];
 				}
 			)

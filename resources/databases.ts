@@ -18,7 +18,7 @@ import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
@@ -659,7 +659,7 @@ function initStores(
 					}
 				}
 			} catch (error) {
-				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
+				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, errorForLog(error));
 			}
 		}
 		// Collect removals first; splicing while iterating `existingAttributes` skips adjacent
@@ -1548,8 +1548,8 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 							// it as an error — the outer catch returns quietly once the iterator also throws.
 							attributeErrorReported[property] = true;
 							if (Table.primaryStore?.rootStore?.status === 'closed')
-								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
-							else logger.error(`Error indexing attribute ${property}`, error);
+								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, errorForLog(error));
+							else logger.error(`Error indexing attribute ${property}`, errorForLog(error));
 						}
 					}
 				}
@@ -1559,7 +1559,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					(error) => {
 						outstanding--;
 						hadIndexingErrors = true;
-						logger.error(error);
+						logger.error(errorForLog(error));
 					}
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
@@ -1590,7 +1590,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			await lastResolution;
 		} catch (error) {
 			hadIndexingErrors = true;
-			logger.error(error);
+			logger.error(errorForLog(error));
 		}
 		// Yield one more event turn so any queued when() error callbacks (which fire as
 		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
@@ -1656,7 +1656,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			);
 			return;
 		}
-		logger.error('Error in indexing', error);
+		logger.error('Error in indexing', errorForLog(error));
 		// Persist indexingFailed so the next restart re-triggers the rebuild from an
 		// explicitly failed state rather than silently looping. Without this,
 		// indexingPID (written before runIndexing was called) stays in the descriptor
@@ -1697,7 +1697,7 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 					columnStore.dropSync();
 					columnStore.close();
 				} catch (error) {
-					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, error);
+					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, errorForLog(error));
 				}
 			}
 		}
@@ -1713,7 +1713,7 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 				// lmdb drop commits with the env's next transaction
 				store.drop?.();
 			} catch (error) {
-				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
+				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, errorForLog(error));
 			}
 		}
 	}
