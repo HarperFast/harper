@@ -133,8 +133,12 @@ export type OperationDefinition = {
 	parametersSchema?: any[];
 	// When set, the operation declares its authorization requirement to the central verifyPerms
 	// system so it participates in the role `operations` allowlist (grantable to a scoped role)
-	// instead of a hand-rolled inline check. `true` = super_user by default. Omit to keep the
-	// pre-existing behavior (no central entry; the caller enforces its own auth, if any).
+	// instead of a hand-rolled inline check. Tri-state:
+	//   `true`  = super_user by default (grantable to a scoped role via the `operations` allowlist);
+	//   `false` = grantable AND open to ANY authenticated user with a valid role — it registers an
+	//             empty-perms entry, which verifyPerms treats as "no specific permission required"
+	//             and allows; use deliberately, it is NOT a "still locked down" default;
+	//   omit    = pre-existing behavior (no central entry; the caller enforces its own auth, if any).
 	requiresSuperUser?: boolean;
 };
 
@@ -150,8 +154,9 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		// are typically anonymous arrows (all named "execute") which collide and can't be keyed. Wrap
 		// in a FRESH function named after the op so the lookup resolves the right entry. Wrap rather
 		// than rename `execute` in place: renaming would mutate a handler shared across two op names,
-		// causing the first op to be checked against the second op's permission entry.
-		handler = (operation: any) => execute(operation);
+		// causing the first op to be checked against the second op's permission entry. Forward all
+		// args (transparent pass-through) so the wrapper never changes the handler's call contract.
+		handler = (...args: any[]) => (execute as any)(...args);
 		Object.defineProperty(handler, 'name', { value: name, configurable: true });
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
 	}

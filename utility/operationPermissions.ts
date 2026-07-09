@@ -108,6 +108,14 @@ export function registerGrantableOperation(name: string): void {
 }
 
 /**
+ * Remove a dynamically-registered grantable operation name. Mirrors registerGrantableOperation;
+ * primarily for tests that register throwaway ops and must not leak them into the global set.
+ */
+export function unregisterGrantableOperation(name: string): void {
+	dynamicallyRegisteredOps.delete(name);
+}
+
+/**
  * Validates that every entry in an operations array is a known operation name or group name.
  * Returns the first invalid entry, or null if all entries are valid.
  */

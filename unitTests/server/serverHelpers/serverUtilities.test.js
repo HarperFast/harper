@@ -591,9 +591,12 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		after(function () {
-			// Keep the global op map clean — these test-only ops shouldn't leak into other suites.
+			// Keep the process-global registries clean — these test-only ops shouldn't leak into other
+			// suites. registerOperation touches three globals (the op-function map plus verifyPerms'
+			// requiredPermissions and the grantable-ops set), so undo all three, not just the map.
 			for (const op of [SU_OP, OPEN_OP, 'test_name_pinning_op', 'shared_op_a', 'shared_op_b', 'dyn_grantable_op']) {
 				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+				op_auth.unregisterOperationPermission(op);
 			}
 		});
 
