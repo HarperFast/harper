@@ -399,7 +399,9 @@ export async function authentication(request, nextHandler) {
 				if (!optedIn) {
 					addVaryHeader(headers, 'Authorization');
 					if (ENABLE_SESSIONS) addVaryHeader(headers, 'Cookie');
-					if (!cacheControlString || (rejectedAuth && SHARED_CACHE_OPTIN.test(cacheControlString)))
+					// a 401 never opts into shared caching: any non-private Cache-Control it carries is
+					// replaced outright (an existing private/no-store is already at least as strict)
+					if (!cacheControlString || (rejectedAuth && !PRIVATE_SCOPE.test(cacheControlString)))
 						headers.set('Cache-Control', 'private, no-cache');
 					else if (!PRIVATE_SCOPE.test(cacheControlString))
 						headers.set('Cache-Control', cacheControlString + ', private');

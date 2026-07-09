@@ -65,7 +65,10 @@ export class Headers extends Map<string, [string, string | string[]]> {
  * existing value rather than overwriting it. Used to declare cache-partitioning dimensions (Origin,
  * Authorization, Cookie) so a shared cache/CDN keys the response correctly (#1518, #1565).
  */
-export function addVaryHeader(headers, token: string) {
+export function addVaryHeader(
+	headers: { get(name: string): any; set(name: string, value: string): any },
+	token: string
+) {
 	const existing = headers.get('Vary');
 	if (!existing) {
 		headers.set('Vary', token);

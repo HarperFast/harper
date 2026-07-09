@@ -268,6 +268,7 @@ async function http(request: Request, nextHandler) {
 					const expirationMs = (resource as any).expirationMS;
 					if (expirationMs > 0) cacheControl = `public, s-maxage=${Math.floor(expirationMs / 1000)}`;
 				}
+				// setIfNone: a resource-set Cache-Control (including a full no-store opt-out) always wins
 				if (cacheControl) headers.setIfNone('Cache-Control', cacheControl);
 			}
 		}

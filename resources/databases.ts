@@ -1071,9 +1071,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		if (expiration) primaryKeyAttribute.expiration = expiration;
 		if (eviction) primaryKeyAttribute.eviction = eviction;
 		// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
-		// a descriptor value carried by cluster schema events; '' persists the explicit opt-out
+		// a descriptor value carried by cluster schema events; '' persists the explicit opt-out;
+		// null (schema has no directive) clears a stale value the carried descriptor may hold
 		if (cacheControl === undefined) cacheControl = primaryKeyAttribute.cacheControl;
-		else if (cacheControl !== null) primaryKeyAttribute.cacheControl = cacheControl;
+		else if (cacheControl === null) delete primaryKeyAttribute.cacheControl;
+		else primaryKeyAttribute.cacheControl = cacheControl;
 		splitSegments ??= false;
 		primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
 		if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
