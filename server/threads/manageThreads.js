@@ -829,25 +829,34 @@ module.exports.getThreadInfo = getThreadInfo;
 
 // Listeners notified when a connected thread's port closes (worker exit/restart), so
 // modules holding per-thread state (e.g. registeredOperations' registry and in-flight
-// forwards) can clean up. Guarded by removePort's indexOf check, so at most once per port.
+// forwards) can clean up.
 const threadExitListeners = [];
 function onThreadExit(listener) {
 	threadExitListeners.push(listener);
+}
+
+// Thread ids already reported to threadExitListeners, so a dead worker is only reported once
+// regardless of which of the two removal paths below observes it first. Node worker_threads
+// ids are monotonically increasing and never reused within a process, so this never needs
+// pruning (unbounded growth is one entry per worker restart over the process lifetime).
+const notifiedDeadThreadIds = new Set();
+function notifyThreadExit(deadThreadId) {
+	if (deadThreadId == null || notifiedDeadThreadIds.has(deadThreadId)) return;
+	notifiedDeadThreadIds.add(deadThreadId);
+	for (const listener of threadExitListeners) {
+		try {
+			listener(deadThreadId);
+		} catch (error) {
+			harperLogger.error(error);
+		}
+	}
 }
 
 function removePort(port, deadThreadId) {
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
-	if (deadThreadId != null) {
-		for (const listener of threadExitListeners) {
-			try {
-				listener(deadThreadId);
-			} catch (error) {
-				harperLogger.error(error);
-			}
-		}
-	}
+	if (deadThreadId != null) notifyThreadExit(deadThreadId);
 	// Notify remaining peers to remove this dead sibling port. In Bun, sibling
 	// MessagePorts don't emit 'close' when a peer worker exits, so we broadcast
 	// a REMOVE_PORT message from here (which fires reliably on Worker 'exit')
@@ -882,6 +891,11 @@ function addPort(port, keepRef, isJobWorker) {
 			} else if (message.type === REMOVE_PORT) {
 				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);
 				if (idx !== -1) connectedPorts.splice(idx, 1);
+				// A sibling's port-to-the-dead-worker can close (and broadcast this) before this
+				// thread's OWN port to that worker fires its 'close'/'exit' — at which point
+				// removePort() would no-op (already spliced) and threadExitListeners would never
+				// fire. Notify here too; notifyThreadExit dedupes so it isn't reported twice.
+				notifyThreadExit(message.threadId);
 			} else {
 				notifyMessageListeners(message, port);
 			}

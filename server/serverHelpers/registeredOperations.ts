@@ -154,32 +154,33 @@ function executeRemoteOperation(name: string, body: any): Promise<any> {
 				message: { requestId, body: forwardBody, originator: threadId },
 			});
 		} catch (error) {
-			// Structured-clone failure (e.g. a function or native handle on the request body) —
-			// no other worker will fare better with the same body.
+			// Structured-clone failure (e.g. a function or native handle on the request body) is a
+			// server-side limitation, not a malformed client request — 500, not 400. No other worker
+			// will fare better with the same body.
 			operationLog.error(`Failed to forward operation '${name}' to worker thread ${targetThreadId}`, error);
 			return Promise.reject(
-				new ServerError(`Operation '${name}' request could not be forwarded to a worker thread: ${error.message}`, 400)
+				new ServerError(`Operation '${name}' request could not be forwarded to a worker thread: ${error.message}`, 500)
 			);
 		}
 		if (!sent) {
 			workerIds.delete(targetThreadId);
 			continue;
 		}
-		return new Promise((resolve, reject) => {
+		return new Promise((promiseResolve, promiseReject) => {
 			const timer = setTimeout(() => {
 				pendingExecutions.delete(requestId);
-				reject(new ServerError(`Timed out waiting for worker thread to execute operation '${name}'`, 503));
+				promiseReject(new ServerError(`Timed out waiting for worker thread to execute operation '${name}'`, 503));
 			}, EXECUTE_TIMEOUT_MS);
 			timer.unref?.();
 			pendingExecutions.set(requestId, {
 				targetThreadId,
 				resolve(result) {
 					clearTimeout(timer);
-					resolve(result);
+					promiseResolve(result);
 				},
 				reject(error) {
 					clearTimeout(timer);
-					reject(error);
+					promiseReject(error);
 				},
 			});
 		});
@@ -201,14 +202,20 @@ export async function operationExecuteRequestHandler(event: {
 	let response;
 	try {
 		if (!localDispatch) throw new ServerError('This worker thread cannot execute operations', 503);
-		// The main thread already stripped bypass_auth from external requests; re-assert here so a
-		// forged ITC-level message can't skip the worker-side permission check.
-		delete body.bypass_auth;
+		// bypass_auth is trusted as forwarded: the main thread already strips it from external
+		// HTTP requests (handlePostRequest, before any dispatch decision), and an internal caller
+		// legitimately setting it (server.operation(op, context, false)) must see the same
+		// authorize:false behavior whether the operation happens to run locally or via this bridge.
+		// ITC is an internal, same-process trust boundary — a worker able to forge this message
+		// already has direct DB access and gains nothing by spoofing bypass_auth.
 		const operationFunction = localDispatch.chooseOperation(body);
 		const result = await localDispatch.processLocalTransaction({ body }, operationFunction);
 		if (result instanceof Readable || typeof result?.pipe === 'function') {
 			// Streaming results would need MessagePort transfer plumbing — explicitly unsupported
 			// for worker-registered operations for now (#1736), rather than failing opaquely.
+			// The handler already ran and the stream may hold an open fd/cursor/socket; destroy it
+			// rather than abandoning it to GC finalization.
+			result.destroy?.();
 			throw new ServerError(
 				`Operation '${body.operation}' returned a stream; streaming results are not supported for operations registered from a component`,
 				501
