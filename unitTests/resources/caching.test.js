@@ -156,6 +156,45 @@ describe('Caching', () => {
 		}
 	});
 
+	it('onlyIfCached cache hit marks loadedFromSource=false with loadAsInstance=false (#1576)', async function () {
+		// exercises the value path onlyIfCached cache-hit marking (Table.ts, loadAsInstance=false branch),
+		// the twin of the loadAsInstance=true instance path — previously untested.
+		const previousLoadAsInstance = CachingTable.loadAsInstance;
+		try {
+			CachingTable.setTTLExpiration(30);
+			await CachingTable.invalidate(42);
+			// prime the cache from source and wait until the record is durably cached, so the
+			// onlyIfCached read below is a deterministic cache hit rather than racing the write
+			assert.equal((await CachingTable.get(42)).id, 42);
+			await CachingTable.primaryStore.committed;
+			await waitFor(() => CachingTable.primaryStore.getEntry(42)?.value);
+			// onlyIfCached hit on the loadAsInstance=false value path: served from cache, so the
+			// per-get disposition must be recorded as false on the RequestTarget
+			CachingTable.loadAsInstance = false;
+			const target = new RequestTarget();
+			target.id = 42;
+			const result = await CachingTable.get(target, { onlyIfCached: true });
+			assert.equal(result.id, 42);
+			assert.equal(target.loadedFromSource, false);
+		} finally {
+			CachingTable.loadAsInstance = previousLoadAsInstance;
+		}
+	});
+
+	it('primitive-id instance-API get does not throw setting cache disposition (#1576)', async function () {
+		// getResource() (the instance API) can be called with a primitive id as the target — this is
+		// how source-apply/replication loads a record (see Table.ts Table.getResource(id, ...)). A
+		// primitive can't hold the loadedFromSource flag; without the `typeof target === 'object'`
+		// guard, setLoadedFromSource does `(41).loadedFromSource = ...`, which throws in strict mode
+		// ("Cannot create property 'loadedFromSource' on number '41'"). ensureLoaded routes through
+		// setLoadedFromSource on both the cache-hit and source-load branches, so this covers the guard
+		// regardless of current cache state.
+		CachingTable.setTTLExpiration(30);
+		await CachingTable.invalidate(41);
+		const resource = await CachingTable.getResource(41, {}, { ensureLoaded: true });
+		assert(resource); // resolved without throwing → guard held on the primitive-id target
+	});
+
 	it('Cache stampede is handled', async function () {
 		try {
 			CachingTable.setTTLExpiration(0.01);
