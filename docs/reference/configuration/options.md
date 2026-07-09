@@ -204,6 +204,7 @@ replication:
 - `securePort` — Secure replication port; _Default_: `9933` (changed from `9925` in v4.5.0)
 - `enableRootCAs` — Verify against Node.js Mozilla CA store; _Default_: `true`
 - `blobTimeout` — Blob transfer timeout (ms); _Default_: `120000`
+- `blobSendDrainTimeout` — Maximum time (ms) a worker waits for in-flight replication blob **sends** to finish before shutting down during a restart, so a rolling restart (e.g., a component deploy reload) doesn't interrupt a transfer in progress. Only sends that are still making progress are waited on; `0` disables draining; _Default_: `600000`
 - `failOver` — Failover to alternate node if peer unreachable; _Default_: `true`
 - `shard` — Shard ID for traffic routing; see [Sharding](../replication/sharding.md)
 - `mtls.certificateVerification` — Certificate revocation checking (CRL/OCSP) for replication connections; see [Certificate Verification](../security/certificate-verification.md)
