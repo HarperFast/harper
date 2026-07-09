@@ -98,7 +98,8 @@ This is called for HTTP PUT requests, and can be overridden to implement a custo
 ```javascript
 class MyResource extends Resource {
 	static async put(target, data) {
-		return super.put(target, { ...(await data), status: data.status ?? 'active' });
+		const record = await data;
+		return super.put(target, { ...record, status: record.status ?? 'active' });
 	}
 }
 ```
@@ -118,7 +119,8 @@ This is called for HTTP PATCH requests, and can be overridden to implement a cus
 ```javascript
 class MyResource extends Resource {
 	static async patch(target, data) {
-		return super.patch(target, { ...(await data), status: data.status ?? 'active' });
+		const record = await data;
+		return super.patch(target, { ...record, status: record.status ?? 'active' });
 	}
 }
 ```
@@ -131,10 +133,12 @@ class MyResource extends Resource {
 
 Called for HTTP POST requests. The default behavior creates a new record, but it can be overridden to implement custom actions. Prefer more explicit methods like `create()` or `update()` over calling `post` directly.
 
+`data` is a promise that resolves to the deserialized request body — the body is read and decoded lazily, so you must `await` `data` before reading its fields. Once awaited, an `application/json` body resolves to the parsed JSON value (typically an object):
+
 ```javascript
 class MyResource extends Resource {
-	static async post(target, promisedData) {
-		let data = await promisedData;
+	static async post(target, data) {
+		data = await data;
 		if (data.action === 'create') {
 			return this.create(target, data.content);
 		} else if (data.action === 'update') {
@@ -145,6 +149,17 @@ class MyResource extends Resource {
 	}
 }
 ```
+
+The shape of the resolved value depends on the request's `Content-Type`. The built-in deserializers produce:
+
+| `Content-Type`                               | resolved `data`       |
+| -------------------------------------------- | --------------------- |
+| `application/json`                           | parsed JSON value     |
+| `application/cbor`, `application/x-msgpack`  | decoded value         |
+| `application/x-ndjson`, `application/ndjson` | array of parsed lines |
+| `text/plain`                                 | string                |
+
+Custom content types registered through `contentTypes.set(...)` receive whatever value the deserializer returns.
 
 ---
 
@@ -1014,6 +1029,28 @@ Sort order object:
 | `attribute`  | Property name (or array for chained relationship property) |
 | `descending` | Sort descending if `true` (default: `false`)               |
 | `next`       | Secondary sort to resolve ties (same structure)            |
+
+Harper uses an index to provide sort order, so a `sort` needs one of:
+
+- An `@indexed` sort `attribute`. Harper aligns the scan with the index automatically — **no condition is required**, and the condition (if any) does not have to be on the sort attribute.
+- At least one `conditions` entry (on **any** attribute) when the sort `attribute` is not indexed. Harper filters by the condition and then orders the result set in memory.
+
+Only the combination of a non-indexed sort `attribute` **and** zero conditions is rejected:
+
+> `HdbError: <attribute> is not indexed and not combined with any other conditions`
+
+Note the bare `@primaryKey` is treated as not indexed for this purpose (it has its own primary store rather than a secondary index), so sorting by the primary key alone — with no conditions — hits this error.
+
+To iterate a whole table in primary-key order, add an open-ended range condition (which can be on the primary key or any other attribute):
+
+```javascript
+Product.search({
+	conditions: [{ attribute: 'id', comparator: 'greater_than', value: '' }],
+	sort: { attribute: 'id' },
+});
+```
+
+Alternatively, pass `allowFullScan: true` to permit an unconditional ordered scan, or — if order doesn't matter — omit `sort` entirely and `search({})` will iterate without an index requirement.
 
 ### `explain`
 
