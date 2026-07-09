@@ -8,7 +8,12 @@ type LabeledDoc @table(cacheControl: "public, max-age=45") @export {
 	value: String
 }
 
-type CachedDoc @table(expiration: 120) @export {
+type CachedDoc @table(expiration: 120, cacheControl: "public, s-maxage=120") @export {
+	id: ID @primaryKey
+	value: String
+}
+
+type PlainCachedDoc @table(expiration: 120) @export {
 	id: ID @primaryKey
 	value: String
 }

@@ -8,9 +8,9 @@
  *   2. The identity floor: authenticated (and 401) responses get `Cache-Control: private,
  *      no-cache` + `Vary: Authorization` (+ `Cookie` with sessions) unless the app explicitly
  *      opted into shared caching with `public`/`s-maxage` (#1565).
- *   3. Default shared-cache headers for anonymous reads: `@table(cacheControl: "...")` and the
- *      TTL-derived `public, s-maxage=<expiration>` fallback for caching tables, so CDNs like
- *      Akamai can cache public responses.
+ *   3. Declared shared-cache headers for anonymous reads: `@table(cacheControl: "...")` (or a
+ *      resource `static cacheControl`), so CDNs like Akamai can cache public responses. The
+ *      declaration is required — anonymous readability alone never emits shared-cache headers.
  *
  * The fixture app is installed before boot (so every thread, including main, processes the
  * schema), and `AUTHENTICATION_AUTHORIZELOCAL=false` keeps unauthenticated loopback requests
@@ -145,9 +145,15 @@ suite('HTTP cache headers (#1518, #1565)', (ctx: any) => {
 		ok(!varyTokens(res).includes('authorization'), `anonymous response should not vary on Authorization`);
 	});
 
-	test('anonymous read of a caching table falls back to TTL-derived s-maxage', async () => {
+	test('anonymous read of a caching table with a declared cacheControl emits it', async () => {
 		const res = await request(restURL).get('/PublicCached/c1').expect(200);
 		strictEqual(res.headers['cache-control'], 'public, s-maxage=120');
+	});
+
+	test('anonymous read of a caching table WITHOUT a declaration emits no Cache-Control', async () => {
+		// shared-cache headers require the explicit declaration — a TTL alone is not an opt-in
+		const res = await request(restURL).get('/PublicPlainCached/c1').expect(200);
+		strictEqual(res.headers['cache-control'], undefined);
 	});
 
 	test('anonymous read with app-set Cache-Control keeps the app value', async () => {

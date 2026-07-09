@@ -124,7 +124,7 @@ The default WebSocket upgrade handler is registered automatically inside `onWebS
 
 Three tiers, applied in two places:
 
-1. **App/resource explicit** — a `Cache-Control` set by the resource (or `@table(cacheControl: "...")` for anonymous reads, emitted in `REST.ts → http()`) always wins. Caching tables without a declaration fall back to `public, s-maxage=<expiration>` for anonymous reads; an explicit empty string opts out of that fallback.
+1. **App/resource explicit** — a `Cache-Control` set by the resource (or `@table(cacheControl: "...")` for anonymous reads, emitted in `REST.ts → http()`) always wins. The declaration is required: anonymous readability alone never emits shared-cache headers, because a request-attribute-gated `allowRead` (IP, headers) would make inferred `public` unsound.
 2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved or credentials were rejected (401), _unless_ the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
 3. **CORS partitioning** — when CORS is enabled, every response gets `Vary: Origin` (the ACAO header is reflected per-origin, and its absence on no-Origin requests is origin-dependent too).
 

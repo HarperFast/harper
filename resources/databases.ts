@@ -1071,8 +1071,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		if (expiration) primaryKeyAttribute.expiration = expiration;
 		if (eviction) primaryKeyAttribute.eviction = eviction;
 		// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
-		// a descriptor value carried by cluster schema events; '' persists the explicit opt-out;
-		// null (schema has no directive) clears a stale value the carried descriptor may hold
+		// a descriptor value carried by cluster schema events; null (schema has no directive)
+		// clears a stale value the carried descriptor may hold
 		if (cacheControl === undefined) cacheControl = primaryKeyAttribute.cacheControl;
 		else if (cacheControl === null) delete primaryKeyAttribute.cacheControl;
 		else primaryKeyAttribute.cacheControl = cacheControl;

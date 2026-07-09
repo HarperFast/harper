@@ -1,4 +1,4 @@
-const { LabeledDoc, CachedDoc } = tables;
+const { LabeledDoc, CachedDoc, PlainCachedDoc } = tables;
 
 export class CachedSource extends Resource {
 	async get() {
@@ -7,6 +7,7 @@ export class CachedSource extends Resource {
 	}
 }
 CachedDoc.sourcedFrom(CachedSource);
+PlainCachedDoc.sourcedFrom(CachedSource);
 
 // anonymous-readable exports of the tables above
 export class PublicLabeled extends LabeledDoc {
@@ -15,6 +16,11 @@ export class PublicLabeled extends LabeledDoc {
 	}
 }
 export class PublicCached extends CachedDoc {
+	allowRead() {
+		return true;
+	}
+}
+export class PublicPlainCached extends PlainCachedDoc {
 	allowRead() {
 		return true;
 	}
