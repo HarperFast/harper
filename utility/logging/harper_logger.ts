@@ -184,20 +184,35 @@ async function updateLogSettings() {
 }
 
 /**
+ * True when the argument is an Error (same-realm or native cross-realm). The try/catch guards
+ * exotic objects whose prototype is unreachable (e.g. a revoked Proxy, where `instanceof`
+ * throws) — the logger must never throw on any input, and util.format renders those fine raw.
+ */
+function isErrorLike(arg: any): boolean {
+	try {
+		return arg instanceof Error || isNativeError(arg);
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Replaces every Error argument with its log-safe errorForLog wrapper before the args reach
  * Console's util.inspect formatting, which would otherwise dump the error's own-enumerable
  * properties — where libraries and app code stash credentials (axios config headers, an
  * hdb_secret for an outbound Authorization header) — into hdb.log (see #1734 and errorForLog).
  * Called inside each level gate so filtered-out log calls pay nothing beyond the arg scan,
- * and only allocates when an Error is actually present.
+ * and only allocates when an Error is actually present. Deliberately shallow: an Error nested
+ * inside a logged object/array is not rewritten (deep-walking every logged structure is not
+ * worth the per-call cost, and the #1734 threat is raw thrown errors).
  */
 function sanitizeErrorArgs(args: any[]) {
 	for (let i = 0; i < args.length; i++) {
-		if (args[i] instanceof Error || isNativeError(args[i])) {
+		if (isErrorLike(args[i])) {
 			const sanitized = args.slice(0, i);
 			for (let j = i; j < args.length; j++) {
 				const arg = args[j];
-				sanitized[j] = arg instanceof Error || isNativeError(arg) ? errorForLog(arg) : arg;
+				sanitized[j] = isErrorLike(arg) ? errorForLog(arg) : arg;
 			}
 			return sanitized;
 		}
@@ -273,6 +288,18 @@ class HarperLogger extends Console {
 		} finally {
 			logImmediately = false;
 		}
+	}
+	// Inherited Console methods that format arbitrary values would bypass sanitizeErrorArgs —
+	// guard them too so logger.log(error) / dir / table can't leak either (#1734). Their
+	// existing semantics (no level gate) are preserved; only the Error args are wrapped.
+	log(...args) {
+		super.log(...sanitizeErrorArgs(args));
+	}
+	dir(item, options?) {
+		super.dir(isErrorLike(item) ? errorForLog(item) : item, options);
+	}
+	table(data, columns?) {
+		super.table(Array.isArray(data) ? sanitizeErrorArgs(data) : isErrorLike(data) ? errorForLog(data) : data, columns);
 	}
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);

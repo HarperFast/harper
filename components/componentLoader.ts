@@ -683,7 +683,7 @@ export async function loadComponent(
 				);
 		}
 	} catch (error) {
-		console.error(`Could not load application directory ${componentDirectory}`, error);
+		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(error));
 		error.message = `Could not load application due to ${error.message}`;
 		errorReporter?.(error);
 		resources.set('', new ErrorResource(error));

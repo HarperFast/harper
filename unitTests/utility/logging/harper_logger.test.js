@@ -1042,5 +1042,25 @@ describe('Test harper_logger module', () => {
 			expect(output).to.include('Error: op failed');
 			expect(output).to.not.include('super-secret-token');
 		});
+
+		it('covers the inherited Console methods (log/dir/table)', () => {
+			const { logger, lines } = createCapturingLogger();
+			const error = new Error('bypass attempt');
+			error.hdb_secret = 'Bearer super-secret-token';
+			logger.log(error);
+			logger.dir(error);
+			logger.table([error]);
+			const output = lines.join('\n');
+			expect(output).to.include('Error: bypass attempt');
+			expect(output).to.not.include('super-secret-token');
+		});
+
+		it('does not throw on a revoked Proxy argument', () => {
+			const { logger, lines } = createCapturingLogger();
+			const { proxy, revoke } = Proxy.revocable(new Error('gone'), {});
+			revoke();
+			expect(() => logger.error('operation failed', proxy)).to.not.throw();
+			expect(lines.join('\n')).to.include('operation failed');
+		});
 	});
 });
