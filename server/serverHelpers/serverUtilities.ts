@@ -39,6 +39,12 @@ import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
+import { isMainThread } from 'node:worker_threads';
+import {
+	announceRegisteredOperation,
+	getRemoteOperationFunction,
+	setLocalOperationDispatch,
+} from './registeredOperations.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -165,6 +171,10 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
 	}
 	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
+	// Components load per-worker, so a registration made there is invisible to the main-thread
+	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
+	// so the main thread can forward calls to this worker (#1736).
+	if (!isMainThread) announceRegisteredOperation(name);
 };
 
 export function chooseOperation(json: OperationRequestBody) {
@@ -172,6 +182,15 @@ export function chooseOperation(json: OperationRequestBody) {
 	try {
 		getOpResult = getOperationFunction(json);
 	} catch (err) {
+		// Not in this thread's map — a component may have registered it on a worker thread
+		// (components load per-worker). Forward there for execution; the worker runs the
+		// full permission check (with the forwarded hdb_user) where the operation function
+		// and its metadata actually exist, so no perm check is skipped by returning early
+		// here (#1736). Workers never re-forward, so an unknown op can't loop.
+		if (isMainThread) {
+			const remoteOperationFunction = getRemoteOperationFunction(json.operation);
+			if (remoteOperationFunction) return remoteOperationFunction;
+		}
 		operationLog.error(`Error when selecting operation function - ${err}`);
 		throw err;
 	}
@@ -253,6 +272,11 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 		true
 	);
 }
+
+// Give the cross-thread bridge (#1736) the worker-side dispatch path for forwarded operations.
+// Injected (rather than imported there) because registeredOperations is imported above — a
+// static import back into this module would be a cycle.
+setLocalOperationDispatch({ chooseOperation, processLocalTransaction });
 
 _assignPackageExport('operation', operation);
 /**

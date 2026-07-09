@@ -24,6 +24,12 @@ const serverItcHandlers = {
 	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST]: middlewareChainsRequestHandler,
+	// #1736 cross-thread registered-operation bridge. Lazy require: this module loads on every
+	// thread via itc.js, and registeredOperations pulls in the serverUtilities module graph.
+	[hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED]: (event) =>
+		require('../serverHelpers/registeredOperations.ts').operationRegisteredHandler(event),
+	[hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST]: (event) =>
+		require('../serverHelpers/registeredOperations.ts').operationExecuteRequestHandler(event),
 };
 
 /**

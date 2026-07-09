@@ -137,6 +137,7 @@ module.exports = {
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
 	registerWorkerDataProvider,
+	onThreadExit,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -268,6 +269,9 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 
 function startWorker(path, options = {}) {
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
@@ -823,10 +827,27 @@ if (parentPort && workerData?.addPorts) {
 }
 module.exports.getThreadInfo = getThreadInfo;
 
+// Listeners notified when a connected thread's port closes (worker exit/restart), so
+// modules holding per-thread state (e.g. registeredOperations' registry and in-flight
+// forwards) can clean up. Guarded by removePort's indexOf check, so at most once per port.
+const threadExitListeners = [];
+function onThreadExit(listener) {
+	threadExitListeners.push(listener);
+}
+
 function removePort(port, deadThreadId) {
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
+	if (deadThreadId != null) {
+		for (const listener of threadExitListeners) {
+			try {
+				listener(deadThreadId);
+			} catch (error) {
+				harperLogger.error(error);
+			}
+		}
+	}
 	// Notify remaining peers to remove this dead sibling port. In Bun, sibling
 	// MessagePorts don't emit 'close' when a peer worker exits, so we broadcast
 	// a REMOVE_PORT message from here (which fires reliably on Worker 'exit')
