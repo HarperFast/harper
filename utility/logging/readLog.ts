@@ -63,7 +63,7 @@ async function readLog(request: any) {
 	}
 	const readLogInputStream = fs.createReadStream(readLogPath, { start: fileStart });
 	readLogInputStream.on('error', (err) => {
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 	});
 
 	let count = 0;

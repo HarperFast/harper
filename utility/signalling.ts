@@ -19,7 +19,7 @@ export async function signalSchemaChange(message: any) {
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
 	} catch (err) {
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 	}
 }
 
@@ -34,7 +34,7 @@ export function signalResourcesRegistered() {
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		serverItcHandlers.resourceHandler();
 	} catch (err) {
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 	}
 }
 
@@ -45,6 +45,6 @@ export async function signalUserChange(message: any) {
 		const itcEventUser = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.USER, message);
 		await Promise.all([serverItcHandlers.user(itcEventUser), sendItcEvent(itcEventUser)]);
 	} catch (err) {
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 	}
 }

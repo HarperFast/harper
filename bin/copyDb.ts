@@ -54,7 +54,7 @@ export async function compactOnStart() {
 				recordCount = await getTotalDBRecordCount(databaseName);
 				console.log('Database', databaseName, 'before compact has a total record count of', recordCount);
 			} catch (error) {
-				hdbLogger.error('Error getting record count for database', databaseName, error);
+				hdbLogger.error('Error getting record count for database', databaseName, hdbLogger.errorForLog(error));
 				console.error('Error getting record count for database', databaseName, error);
 			}
 			compactedDb.set(databaseName, {
@@ -80,19 +80,19 @@ export async function compactOnStart() {
 		try {
 			resetDatabases();
 		} catch (err) {
-			hdbLogger.error('Error resetting databases after backup', err);
+			hdbLogger.error('Error resetting databases after backup', hdbLogger.errorForLog(err));
 			console.error('Error resetting databases after backup', err);
 		}
 
 		try {
 			resetDatabases();
 		} catch (err) {
-			hdbLogger.error('Error resetting databases after backup', err);
+			hdbLogger.error('Error resetting databases after backup', hdbLogger.errorForLog(err));
 			console.error('Error resetting databases after backup', err);
 			process.exit(0); // just let the process restart
 		}
 	} catch (err) {
-		hdbLogger.error('Error compacting database, rolling back operation', err);
+		hdbLogger.error('Error compacting database, rolling back operation', hdbLogger.errorForLog(err));
 		console.error('Error compacting database, rolling back operation', err);
 
 		updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
@@ -402,11 +402,11 @@ export async function migrateOnStart() {
 		try {
 			resetDatabases();
 		} catch (err) {
-			hdbLogger.error('Error resetting databases after migration', err);
+			hdbLogger.error('Error resetting databases after migration', hdbLogger.errorForLog(err));
 			console.error('Error resetting databases after migration', err);
 		}
 	} catch (err) {
-		hdbLogger.error('Error migrating database', err);
+		hdbLogger.error('Error migrating database', hdbLogger.errorForLog(err));
 		console.error('Error migrating database', err);
 		throw err;
 	}

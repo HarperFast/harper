@@ -44,7 +44,7 @@ const SAFE_MODE_MSG =
 
 function addUnhandleRejectionListener() {
 	process.on('unhandledRejection', (reason, promise) => {
-		hdbLogger.error('Unhandled promise rejection: Promise', promise, 'reason:', reason);
+		hdbLogger.error('Unhandled promise rejection: Promise', promise, 'reason:', hdbLogger.errorForLog(reason));
 	});
 }
 
@@ -97,7 +97,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 			await install();
 		} catch (err) {
 			console.error(INSTALL_ERR, err);
-			hdbLogger.error(err);
+			hdbLogger.error(hdbLogger.errorForLog(err));
 			process.exit(1);
 		}
 	}
@@ -171,10 +171,10 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 				`Got an error while trying to upgrade your Harper instance to version ${upgradeVers}. Exiting Harper.`,
 				err
 			);
-			hdbLogger.error(err);
+			hdbLogger.error(hdbLogger.errorForLog(err));
 		} else {
 			console.error(UPGRADE_ERR, err);
-			hdbLogger.error(err);
+			hdbLogger.error(hdbLogger.errorForLog(err));
 		}
 		process.exit(1);
 	}
@@ -217,7 +217,7 @@ async function main(calledByInstall = false) {
 		if (!isScripted) started();
 	} catch (err) {
 		console.error(err);
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 		process.exit(1);
 	}
 }
@@ -247,7 +247,7 @@ async function launch(exit = true) {
 		if (exit) process.exit(0);
 	} catch (err) {
 		console.error(err);
-		hdbLogger.error(err);
+		hdbLogger.error(hdbLogger.errorForLog(err));
 		process.exit(1);
 	}
 }

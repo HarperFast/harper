@@ -85,7 +85,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 			operationLog.info(cleanBody);
 		}
 	} catch (e) {
-		operationLog.error(e);
+		operationLog.error(harperLogger.errorForLog(e));
 	}
 
 	// Bridge the authenticated user into the ambient async context so static Resource API calls
@@ -115,7 +115,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 	if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
 		globalSchema.setSchemaDataToGlobal((err: Error) => {
 			if (err) {
-				operationLog.error(err);
+				operationLog.error(harperLogger.errorForLog(err));
 			}
 		});
 	}
@@ -285,7 +285,7 @@ async function catchup(req: CatchupOperationRequest) {
 			}
 		} catch (e) {
 			operationLog.info('Invalid operation in transaction');
-			operationLog.error(e);
+			operationLog.error(harperLogger.errorForLog(e));
 		}
 	}
 }
