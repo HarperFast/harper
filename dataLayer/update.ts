@@ -2,7 +2,7 @@
 
 import * as search from './search.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
-import logger from '../utility/logging/harper_logger.ts';
+import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as write from './insert.ts';
 import clone from 'clone';
 import * as alasql from 'alasql';
@@ -69,7 +69,7 @@ function createUpdateRecord(columns: any[]) {
 
 		return record;
 	} catch (err) {
-		logger.error(err);
+		logger.error(errorForLog(err));
 		throw new Error(SQL_UPDATE_ERROR_MSG);
 	}
 }

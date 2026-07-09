@@ -17,7 +17,7 @@ import * as DataLayerObjects from './DataLayerObjects.ts';
 import { UpgradeObject } from '../upgrade/UpgradeObjects.ts';
 import { forceDowngradePrompt } from '../upgrade/upgradePrompt.ts';
 import { packageJson } from '../utility/packageUtils.js';
-import log from '../utility/logging/harper_logger.ts';
+import log, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 import * as tableLoader from '../resources/databases.ts';
@@ -221,7 +221,7 @@ export async function getVersionUpdateInfo() {
 		}
 	} catch (err) {
 		log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
-		log.fatal(err);
+		log.fatal(errorForLog(err));
 		throw err;
 	}
 }

@@ -12,7 +12,7 @@ alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
 import clone from 'clone';
 import RecursiveIterator from 'recursive-iterator';
-import log from '../utility/logging/harper_logger.ts';
+import log, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 const harperBridge = require('./harperBridge/harperBridge').default;
 import * as hdbTerms from '../utility/hdbTerms.ts';
@@ -121,7 +121,7 @@ class SQLSearch {
 			}
 		} catch (err) {
 			log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
-			log.error(err);
+			log.error(errorForLog(err));
 			throw new Error(SEARCH_ERROR_MSG);
 		}
 
@@ -133,7 +133,7 @@ class SQLSearch {
 			}
 		} catch (err) {
 			log.error('Error thrown from getFetchAttributeValues in SQLSearch class method search.');
-			log.error(err);
+			log.error(errorForLog(err));
 			throw new Error(SEARCH_ERROR_MSG);
 		}
 
@@ -149,7 +149,7 @@ class SQLSearch {
 			joinResults = await this._processJoins();
 		} catch (err) {
 			log.error('Error thrown from processJoins in SQLSearch class method search.');
-			log.error(err);
+			log.error(errorForLog(err));
 			throw new Error(SEARCH_ERROR_MSG);
 		}
 
@@ -158,7 +158,7 @@ class SQLSearch {
 			await this._getFinalAttributeData(joinResults.existing_attributes, joinResults.joined_length);
 		} catch (err) {
 			log.error('Error thrown from getFinalAttributeData in SQLSearch class method search.');
-			log.error(err);
+			log.error(errorForLog(err));
 			throw new Error(SEARCH_ERROR_MSG);
 		}
 
@@ -167,7 +167,7 @@ class SQLSearch {
 			return searchResults;
 		} catch (err) {
 			log.error('Error thrown from finalSQL in SQLSearch class method search.');
-			log.error(err);
+			log.error(errorForLog(err));
 			throw new Error(SEARCH_ERROR_MSG);
 		}
 	}
@@ -480,7 +480,7 @@ class SQLSearch {
 				results = await alasql.promise(sql);
 			} catch (e) {
 				log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
-				log.error(e);
+				log.error(errorForLog(e));
 				throw new Error('There was a problem with the SQL statement');
 			}
 		}
@@ -666,7 +666,7 @@ class SQLSearch {
 						log.error(
 							'Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
-						log.error(err);
+						log.error(errorForLog(err));
 						throw new Error(SEARCH_ERROR_MSG);
 					}
 				} else {
@@ -693,7 +693,7 @@ class SQLSearch {
 						log.error(
 							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
-						log.error(err);
+						log.error(errorForLog(err));
 						throw new Error(SEARCH_ERROR_MSG);
 					}
 				}
@@ -733,7 +733,7 @@ class SQLSearch {
 					log.error(
 						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.'
 					);
-					log.error(err);
+					log.error(errorForLog(err));
 					throw new Error(SEARCH_ERROR_MSG);
 				}
 			} else {
@@ -764,7 +764,7 @@ class SQLSearch {
 					log.error(
 						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.'
 					);
-					log.error(err);
+					log.error(errorForLog(err));
 					throw new Error(SEARCH_ERROR_MSG);
 				}
 			}
@@ -1004,7 +1004,7 @@ class SQLSearch {
 			tableData = null;
 		} catch (err) {
 			log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
-			log.error(err);
+			log.error(errorForLog(err));
 			throw new Error('There was a problem processing the data.');
 		}
 
@@ -1075,7 +1075,7 @@ class SQLSearch {
 			await this._getData(allColumns);
 		} catch (e) {
 			log.error('Error thrown from getData in SQLSearch class method getFinalAttributeData.');
-			log.error(e);
+			log.error(errorForLog(e));
 			throw new Error(SEARCH_ERROR_MSG);
 		}
 	}
@@ -1135,7 +1135,7 @@ class SQLSearch {
 			}
 		} catch (e) {
 			log.error('Error thrown from getDataByHash function in SQLSearch class method getData.');
-			log.error(e);
+			log.error(errorForLog(e));
 			throw e;
 		}
 	}
@@ -1227,7 +1227,7 @@ class SQLSearch {
 			log.trace(`Final AlaSQL results data included ${finalResults.length} rows`);
 		} catch (err) {
 			log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
-			log.error(err);
+			log.error(errorForLog(err));
 			throw new Error('There was a problem running the generated sql.');
 		}
 
@@ -1378,7 +1378,7 @@ class SQLSearch {
 				}
 			} catch (err) {
 				log.error('There was an error when processing this SQL operation.  Check your logs');
-				log.error(err);
+				log.error(errorForLog(err));
 				throw new Error(SEARCH_ERROR_MSG);
 			}
 		}
