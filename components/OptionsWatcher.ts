@@ -8,33 +8,13 @@ import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
-import { basename } from 'node:path';
-import { composeConfigFromEnv } from '../config/harperConfigEnvVars.ts';
-import { HARPER_CONFIG_FILE, HDB_CONFIG_FILE } from '../utility/hdbTerms.ts';
-
-/**
- * Filename heuristic for "is this THE root config file" — matches the current and
- * legacy root config names. Known limitation: a component that ships its own
- * `harper-config.yaml` (a supported loader preference) is misclassified as root and
- * gets the env overlay; harmless unless config env vars are set AND the component's
- * keys collide with them. Callers that know root-ness authoritatively should pass
- * the explicit `isRootConfig` constructor argument instead.
- */
-function looksLikeRootConfigPath(filePath: string): boolean {
-	const name = basename(filePath);
-	return name === HARPER_CONFIG_FILE || name === HDB_CONFIG_FILE;
-}
+import { overlayRootEnvConfig, isRootConfigFilename } from '../config/harperConfigEnvVars.ts';
 
 export interface Config {
 	[key: string]: ConfigValue;
 }
 
 export type ConfigValue = undefined | null | string | number | boolean | Array<ConfigValue> | Config;
-
-/** Any of the three config-shaping env vars present in this process. */
-function hasConfigEnvVars(): boolean {
-	return Boolean(process.env.HARPER_SET_CONFIG || process.env.HARPER_CONFIG || process.env.HARPER_DEFAULT_CONFIG);
-}
 
 export type OptionsWatcherEventMap = {
 	ready: [config?: ConfigValue];
@@ -123,7 +103,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
-		this.#isRootConfig = isRootConfig ?? looksLikeRootConfigPath(filePath);
+		this.#isRootConfig = isRootConfig ?? isRootConfigFilename(filePath);
 		this.#logger = logger || loggerWithTag(name);
 		this.#usingPolling = false;
 		this.#closed = false;
@@ -149,15 +129,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
 			.then((contents) => {
 				let parsed = yaml.parse(contents);
-				// The on-disk root config is not guaranteed to include runtime env config
-				// (HARPER_SET_CONFIG / HARPER_CONFIG / HARPER_DEFAULT_CONFIG) at boot: the
-				// file flush races component loading, so a scope's boot-time reads (e.g. an
-				// `enabled` gate in handleApplication) could observe pre-env values that the
-				// componentLoader itself never saw. Compose the env layers over EVERY
-				// root-config read so scope.options always matches the resolved view (#1618).
-				if (this.#isRootConfig && hasConfigEnvVars()) {
-					parsed = composeConfigFromEnv(parsed && typeof parsed === 'object' ? parsed : {});
-				}
+				// The on-disk root config is not guaranteed to include runtime env config at
+				// boot: the file flush races component loading, so a scope's boot-time reads
+				// (e.g. an `enabled` gate in handleApplication) could observe pre-env values
+				// the componentLoader itself never saw. Ask the config layer to overlay env
+				// config onto EVERY root-config read so scope.options matches the resolved
+				// view (#1618). Non-root scopes and the no-env-vars case are untouched
+				// (overlayRootEnvConfig is a no-op there).
+				if (this.#isRootConfig) parsed = overlayRootEnvConfig(parsed);
 				this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
 				// If the extension is in the config file
 				if (this.#rootConfig && this.#name in this.#rootConfig) {
@@ -185,26 +164,26 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.catch((error) => {
 				// If the config file does not exist
 				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-					// Root config missing but env config present (e.g. the install hasn't
-					// flushed the file yet): compose the env layers over an empty base so
-					// boot-time consumers still see the effective config (#1618). The
-					// composed object becomes our state ONLY when this scope's name is in
-					// it — otherwise fall through to the original ENOENT handling with
-					// #rootConfig untouched (a first read must emit `ready`, not `remove`;
-					// nothing consumes `remove` at boot and `ready` would hang forever).
-					// composeConfigFromEnv throws on malformed env JSON; route that to
-					// `error` like the file-read path does, not an unhandled rejection.
-					if (this.#isRootConfig && hasConfigEnvVars()) {
+					// Root config file missing (e.g. the install hasn't flushed it yet): ask the
+					// config layer for the env-only overlay so boot-time consumers still see the
+					// effective config (#1618). It becomes our state ONLY when this scope's name
+					// is present — otherwise fall through to the original ENOENT handling with
+					// #rootConfig untouched (a first read must emit `ready`, not `remove`; nothing
+					// consumes `remove` at boot and `ready` would hang forever). overlayRootEnvConfig
+					// returns undefined when no env vars are set, and throws on malformed env JSON —
+					// route that to `error` like the file-read path, not an unhandled rejection.
+					if (this.#isRootConfig) {
+						let composed: Config | undefined;
 						try {
-							const composed = composeConfigFromEnv({}) as Config;
-							if (this.#name in composed && !this.#scopedConfig) {
-								this.#rootConfig = composed;
-								this.#scopedConfig = composed[this.#name];
-								this.emit('ready', this.#scopedConfig);
-								return;
-							}
+							composed = overlayRootEnvConfig(undefined) as Config | undefined;
 						} catch (composeError) {
 							this.emit('error', composeError);
+							return;
+						}
+						if (composed && this.#name in composed && !this.#scopedConfig) {
+							this.#rootConfig = composed;
+							this.#scopedConfig = composed[this.#name];
+							this.emit('ready', this.#scopedConfig);
 							return;
 						}
 					}

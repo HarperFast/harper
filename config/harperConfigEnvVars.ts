@@ -28,6 +28,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
+import * as hdbTerms from '../utility/hdbTerms.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 
@@ -771,6 +772,37 @@ export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 	}
 
 	return result;
+}
+
+/** True when any config-shaping env var (HARPER_DEFAULT_CONFIG / HARPER_CONFIG / HARPER_SET_CONFIG) is set. */
+export function hasConfigEnvVars(): boolean {
+	return Boolean(process.env.HARPER_DEFAULT_CONFIG || process.env.HARPER_CONFIG || process.env.HARPER_SET_CONFIG);
+}
+
+/**
+ * Overlay runtime env config onto a base root-config object, hiding the env-var names and
+ * the composition rules from callers. Returns `base` unchanged when no config env vars are
+ * set (a true no-op — callers can invoke it on every root-config read without branching).
+ * A missing/non-object `base` (e.g. the install window before the config file is written)
+ * is treated as an empty base. Throws (via composeConfigFromEnv) on malformed env-var JSON.
+ */
+export function overlayRootEnvConfig(base: ConfigObject | undefined): ConfigObject | undefined {
+	if (!hasConfigEnvVars()) return base;
+	return composeConfigFromEnv(isPlainObject(base) ? base : {});
+}
+
+/**
+ * True when `filePath` names THE root Harper config file (current or legacy name), as
+ * opposed to a component/application `config.yaml`. Filename-only by design: an exact
+ * path comparison against the resolved root-config path misclassifies watchers in any
+ * environment where a real config instance is resolved (including the unit harness).
+ * Callers that know root-ness authoritatively should pass it explicitly rather than rely
+ * on this heuristic; a component that ships its own root-named file is a known false
+ * positive (harmless unless env config is set and its keys collide).
+ */
+export function isRootConfigFilename(filePath: string): boolean {
+	const name = path.basename(filePath);
+	return name === hdbTerms.HARPER_CONFIG_FILE || name === hdbTerms.HDB_CONFIG_FILE;
 }
 
 /**
