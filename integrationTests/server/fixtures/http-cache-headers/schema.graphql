@@ -1,0 +1,14 @@
+type SecretDoc @table @export {
+	id: ID @primaryKey
+	value: String
+}
+
+type LabeledDoc @table(cacheControl: "public, max-age=45") @export {
+	id: ID @primaryKey
+	value: String
+}
+
+type CachedDoc @table(expiration: 120) @export {
+	id: ID @primaryKey
+	value: String
+}

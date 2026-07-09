@@ -254,6 +254,23 @@ async function http(request: Request, nextHandler) {
 			headers,
 			body: undefined,
 		};
+		// #1565 converse: default Cache-Control for anonymous reads so a shared cache/CDN can store
+		// public responses. An explicit `@table(cacheControl: "...")`/static cacheControl wins; caching
+		// tables fall back to their source-cache TTL. Authenticated responses are excluded here — the
+		// auth layer applies a `private` floor to them instead.
+		if (!request.user && (method === 'GET' || method === 'HEAD')) {
+			const responseStatus = responseObject.status;
+			if (responseStatus === 200 || responseStatus === 304) {
+				let cacheControl = (resource as any)?.cacheControl;
+				// == null covers both no declaration and a schema without the directive; an explicit
+				// empty string opts a caching table out of the TTL-derived fallback
+				if (cacheControl == null && (resource as any)?.isCaching) {
+					const expirationMs = (resource as any).expirationMS;
+					if (expirationMs > 0) cacheControl = `public, s-maxage=${Math.floor(expirationMs / 1000)}`;
+				}
+				if (cacheControl) headers.setIfNone('Cache-Control', cacheControl);
+			}
+		}
 		const loadedFromSource = target.loadedFromSource;
 		if (loadedFromSource !== undefined) {
 			// this appears to be a caching table with a source

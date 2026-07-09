@@ -582,6 +582,7 @@ function initStores(
 		const expiration = primaryAttribute.expiration;
 		const eviction = primaryAttribute.eviction;
 		const sealed = primaryAttribute.sealed;
+		const cacheControl = primaryAttribute.cacheControl;
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
 		if (table && !recreateForEngineChange) {
@@ -720,6 +721,7 @@ function initStores(
 					replicate,
 					expirationMS: expiration && expiration * 1000,
 					evictionMS: eviction && eviction * 1000,
+					cacheControl,
 					trackDeletes,
 					tableName,
 					tableId,
@@ -773,6 +775,9 @@ interface TableDefinition {
 	description?: string;
 	properties?: Record<string, any>;
 	hidden?: boolean;
+	// default Cache-Control for anonymous REST reads; null = schema explicitly has none (clears a
+	// prior value on reload), undefined = caller is not schema-defining (leave the current value)
+	cacheControl?: string | null;
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -1003,6 +1008,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		description,
 		properties,
 		hidden,
+		cacheControl,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	const rootStore = database({ database: databaseName, table: tableName });
@@ -1049,6 +1055,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		Table.description = description;
 		Table.properties = properties;
 		Table.hidden = hidden;
+		// undefined means a non-schema caller (add_attribute, cluster schema events) — don't clobber
+		if (cacheControl !== undefined) Table.cacheControl = cacheControl;
 	} else {
 		const auditStore = rootStore.auditStore;
 		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
@@ -1062,6 +1070,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primaryKeyAttribute.expiration = expiration;
 		if (eviction) primaryKeyAttribute.eviction = eviction;
+		// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
+		// a descriptor value carried by cluster schema events; '' persists the explicit opt-out
+		if (cacheControl === undefined) cacheControl = primaryKeyAttribute.cacheControl;
+		else if (cacheControl !== null) primaryKeyAttribute.cacheControl = cacheControl;
 		splitSegments ??= false;
 		primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
 		if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
@@ -1153,6 +1165,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					description,
 					properties,
 					hidden,
+					cacheControl,
 				})
 			);
 			Table.schemaVersion = 1;

@@ -60,6 +60,27 @@ export class Headers extends Map<string, [string, string | string[]]> {
 	}
 }
 
+/**
+ * Add a field-name token to the `Vary` response header, appending to (and de-duplicating against) any
+ * existing value rather than overwriting it. Used to declare cache-partitioning dimensions (Origin,
+ * Authorization, Cookie) so a shared cache/CDN keys the response correctly (#1518, #1565).
+ */
+export function addVaryHeader(headers, token: string) {
+	const existing = headers.get('Vary');
+	if (!existing) {
+		headers.set('Vary', token);
+		return;
+	}
+	const existingString = Array.isArray(existing) ? existing.join(', ') : existing;
+	const lowerToken = token.toLowerCase();
+	for (const part of existingString.split(',')) {
+		const trimmed = part.trim().toLowerCase();
+		// a `Vary: *` already covers every dimension, and an exact token match is a no-op
+		if (trimmed === lowerToken || trimmed === '*') return;
+	}
+	headers.set('Vary', existingString + ', ' + token);
+}
+
 export function appendHeader(headers, name, value, commaDelimited) {
 	if (headers.append) {
 		headers.append(name, value, commaDelimited);

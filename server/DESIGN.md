@@ -120,6 +120,16 @@ The default WebSocket upgrade handler is registered automatically inside `onWebS
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
 
+### Response Cache-Control / Vary policy (#1518, #1565)
+
+Three tiers, applied in two places:
+
+1. **App/resource explicit** — a `Cache-Control` set by the resource (or `@table(cacheControl: "...")` for anonymous reads, emitted in `REST.ts → http()`) always wins. Caching tables without a declaration fall back to `public, s-maxage=<expiration>` for anonymous reads; an explicit empty string opts out of that fallback.
+2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved or credentials were rejected (401), *unless* the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
+3. **CORS partitioning** — when CORS is enabled, every response gets `Vary: Origin` (the ACAO header is reflected per-origin, and its absence on no-Origin requests is origin-dependent too).
+
+The `@table(cacheControl:)` value is persisted on the primary-key attribute (like `expiration`), so all threads and future boots see it; `resources/databases.ts → table()` treats `null` as "schema explicitly has none" (clears on reload) and `undefined` as "caller is not schema-defining" (no clobber from `add_attribute`/cluster schema events).
+
 ---
 
 ## "Where is X" cheat sheet
