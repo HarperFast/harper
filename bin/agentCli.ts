@@ -150,12 +150,14 @@ function resolveConnection(opts: CliOptions): Connection {
 		try {
 			url = new URL(resolved);
 		} catch {
-			url = new URL(`https://${rawTarget}:9925`);
+			// Bare host[:port] with no protocol — only append the default port when one isn't already present.
+			const withPort = rawTarget.includes(':') ? rawTarget : `${rawTarget}:9925`;
+			url = new URL(`https://${withPort}`);
 		}
 		const username =
-			opts.username || url.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME;
+			opts.username || url.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME || '';
 		const password =
-			opts.password || url.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD;
+			opts.password || url.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD || '';
 		const options: any = {
 			protocol: url.protocol,
 			hostname: url.hostname,
@@ -225,7 +227,23 @@ class AgentClient {
 	async repl(): Promise<void> {
 		console.error(`Connected to ${this.connection.label}. Type a message, /new to reset, /exit to quit.`);
 		const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-		const ask = (q: string) => new Promise<string>((res) => rl.question(q, res));
+		// Ctrl-D / EOF closes the interface without ever invoking a pending question() callback; resolve
+		// the outstanding prompt with /exit so the loop unwinds cleanly instead of hanging.
+		let resolvePending: ((value: string) => void) | null = null;
+		rl.on('close', () => {
+			if (resolvePending) {
+				resolvePending('/exit');
+				resolvePending = null;
+			}
+		});
+		const ask = (q: string) =>
+			new Promise<string>((res) => {
+				resolvePending = res;
+				rl.question(q, (answer) => {
+					resolvePending = null;
+					res(answer);
+				});
+			});
 		try {
 			for (;;) {
 				const line = (await ask('\nyou › ')).trim();
@@ -268,18 +286,20 @@ class AgentClient {
 	private async pollUntilIdle(rl?: readline.Interface): Promise<void> {
 		for (;;) {
 			const session = await this.send('get_agent_session', { session_id: this.sessionId });
-			if (this.opts.json) {
-				console.log(JSON.stringify(session, null, 2));
-			} else {
-				this.renderDelta(session);
-			}
+			if (!session) throw new Error('Failed to retrieve agent session.');
+			if (!this.opts.json) this.renderDelta(session);
 			const status = session.status;
 			if (status === 'awaiting_approval') {
+				// Only emit the raw session once we actually pause, not on every poll interval.
+				if (this.opts.json) console.log(JSON.stringify(session, null, 2));
 				const resolvedAny = await this.resolveApprovals(session, rl);
 				if (!resolvedAny) return; // nothing actionable / operator declined to act
 				continue; // resuming — poll again
 			}
-			if (TERMINAL_STATUSES.has(status)) return;
+			if (TERMINAL_STATUSES.has(status)) {
+				if (this.opts.json) console.log(JSON.stringify(session, null, 2));
+				return;
+			}
 			await sleep(POLL_INTERVAL_MS);
 		}
 	}
@@ -288,6 +308,7 @@ class AgentClient {
 		const items: any[] = session.messages || [];
 		for (let i = this.printed; i < items.length; i++) {
 			const m = items[i];
+			if (!m) continue;
 			if (m.role === 'assistant') {
 				if (m.content) console.log(`\nagent › ${m.content}`);
 				for (const tc of m.toolCalls || []) {
@@ -302,8 +323,15 @@ class AgentClient {
 
 	/** Prompt the operator for each unresolved approval and submit the decisions. Returns true if any were resolved. */
 	private async resolveApprovals(session: any, rl?: readline.Interface): Promise<boolean> {
-		const pending = (session.pendingApprovals || []).filter((a: any) => !a.resolved);
+		const pending = (session.pendingApprovals || []).filter((a: any) => a && !a.resolved);
 		if (!pending.length) return false;
+		// One-shot/piped paths have already read stdin to EOF (or there is no TTY), so a fresh readline
+		// on process.stdin would never resolve `question()` and the turn would hang forever. Fail loudly.
+		if (!rl && !process.stdin.isTTY) {
+			throw new Error(
+				'Tool approval required, but no interactive terminal is available; re-run interactively to approve.'
+			);
+		}
 		const ownRl = rl ?? readline.createInterface({ input: process.stdin, output: process.stdout });
 		const ask = (q: string) => new Promise<string>((res) => ownRl.question(q, res));
 		try {
