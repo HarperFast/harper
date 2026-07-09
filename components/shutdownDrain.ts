@@ -16,7 +16,7 @@
  *
  * State is module-local, so it is naturally per-worker (each worker is a fresh module realm).
  */
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
@@ -82,7 +82,7 @@ export function shutdownDrainsHaveWork(): boolean {
 		try {
 			if (drain.hasWork()) return true;
 		} catch (error) {
-			harperLogger.error('Error checking shutdown drain for work', error);
+			harperLogger.error('Error checking shutdown drain for work', errorForLog(error));
 		}
 	}
 	return false;
@@ -99,7 +99,7 @@ export async function runShutdownDrains(deadlineMs: number): Promise<void> {
 	const settled = [...drains].map((drain) =>
 		Promise.resolve()
 			.then(() => drain.drain(deadlineMs))
-			.catch((error) => harperLogger.error('Error draining before shutdown', error))
+			.catch((error) => harperLogger.error('Error draining before shutdown', errorForLog(error)))
 	);
 	const remaining = Math.max(0, deadlineMs - Date.now());
 	let timer: NodeJS.Timeout | undefined;
@@ -110,7 +110,7 @@ export async function runShutdownDrains(deadlineMs: number): Promise<void> {
 			timer.unref();
 		}),
 	])
-		.catch((error) => harperLogger.error('Error running shutdown drains', error))
+		.catch((error) => harperLogger.error('Error running shutdown drains', errorForLog(error)))
 		.finally(() => {
 			if (timer) clearTimeout(timer);
 		});

@@ -23,7 +23,7 @@ import * as login from '../resources/login.ts';
 import * as REST from '../server/REST.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
@@ -370,7 +370,7 @@ export async function loadComponent(
 			try {
 				await symlinkHarperModule(componentDirectory);
 			} catch (error) {
-				harperLogger.error('Error symlinking harperdb module', error);
+				harperLogger.error('Error symlinking harperdb module', errorForLog(error));
 				if (error.code == 'EPERM' && process.platform === 'win32') {
 					harperLogger.error(
 						'You may need to enable developer mode in "Settings" / "System" (or "Update & Security") / "For developers", in order to enable symlinks so components can use `import from "harperdb"`'
@@ -640,7 +640,7 @@ export async function loadComponent(
 							await loadComponentDirectories();
 							await restartWorkers();
 						} catch (error) {
-							harperLogger.error('Error during component reload', error);
+							harperLogger.error('Error during component reload', errorForLog(error));
 						}
 					} while (pending); // a request landed mid-cycle → run once more, coalescing the rest
 				} finally {

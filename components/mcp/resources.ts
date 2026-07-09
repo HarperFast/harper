@@ -34,7 +34,7 @@
  */
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../../utility/hdbTerms.ts';
-import harperLogger from '../../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../../utility/logging/harper_logger.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { encodeCursor } from './pagination.ts';
 import {
@@ -586,7 +586,7 @@ async function readCustomResource(
 		// Author read errors surface as read failures (JSON-RPC error at the
 		// transport), with the raw error only in the server log — same
 		// sanitization posture as custom tools.
-		harperLogger.error(`MCP custom resource '${def.name}' read failed for ${uri}:`, err);
+		harperLogger.error(`MCP custom resource '${def.name}' read failed for ${uri}:`, errorForLog(err));
 		return { ok: false, reason: `custom resource '${def.name}' failed to read: ${uri}` };
 	}
 }

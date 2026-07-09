@@ -6,7 +6,7 @@ import * as hdbUtil from '../../utility/common_utils.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import moment from 'moment';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
-import log from '../../utility/logging/harper_logger.ts';
+import log, { errorForLog } from '../../utility/logging/harper_logger.ts';
 import * as jobs from './jobs.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
@@ -154,7 +154,7 @@ if (isMainThread) {
 				env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },
 			});
 		} catch (e) {
-			log.error(`Failed to start worker for job ${message.jobId}:`, e);
+			log.error(`Failed to start worker for job ${message.jobId}:`, errorForLog(e));
 			try {
 				await jobs.updateJob({
 					id: message.jobId,

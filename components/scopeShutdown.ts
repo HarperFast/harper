@@ -11,7 +11,7 @@
  * State is module-local, so it is naturally per-worker (each worker is a fresh module realm) and resets
  * with the worker — scopes are created once at load and closed once at shutdown, so nothing accumulates.
  */
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 
 const closing = new Set<Promise<unknown>>();
 
@@ -23,7 +23,7 @@ const closing = new Set<Promise<unknown>>();
  */
 export function trackScopeClose(closePromise: Promise<unknown>): void {
 	const settled = Promise.resolve(closePromise).catch((error) => {
-		harperLogger.error('Error closing application scope during shutdown', error);
+		harperLogger.error('Error closing application scope during shutdown', errorForLog(error));
 	});
 	closing.add(settled);
 	void settled.finally(() => closing.delete(settled));
