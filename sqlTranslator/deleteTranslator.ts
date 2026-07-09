@@ -1,6 +1,6 @@
 import * as alasql from 'alasql';
 import * as search from '../dataLayer/search.ts';
-import log from '../utility/logging/harper_logger.ts';
+import log, { errorForLog } from '../utility/logging/harper_logger.ts';
 import harperBridge from '../dataLayer/harperBridge/harperBridge.ts';
 import * as util from 'util';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -53,7 +53,7 @@ export async function convertDelete({ statement, hdb_user }) {
 
 		return result;
 	} catch (err) {
-		log.error(err);
+		log.error(errorForLog(err));
 		if (err.hdb_code) {
 			throw err.message;
 		}

@@ -445,7 +445,7 @@ let invalidateCallbacks = [];
 		try {
 			callback(user);
 		} catch (error) {
-			harperLogger.error('Error invalidating user', error);
+			harperLogger.error('Error invalidating user', harperLogger.errorForLog(error));
 		}
 	}
 };

@@ -12,7 +12,7 @@ import {
 } from '../utility/hdbTerms.ts';
 import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
-import logger from '../utility/logging/harper_logger.ts';
+import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
 import { findAndValidateUser, type User } from './user.ts';
 import { update } from '../dataLayer/insert.ts';
@@ -94,7 +94,7 @@ export async function getJWTRSAKeys(): Promise<JWTRSAKeys> {
 		if (generation === rsaKeysGeneration) rsaKeys = keys;
 		return keys;
 	} catch (err) {
-		logger.error(err);
+		logger.error(errorForLog(err));
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_ENCRYPTION_KEYS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 	}
 }
@@ -145,7 +145,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		}
 		user = await findAndValidateUser(authObj.username, authObj.password, validatePassword);
 	} catch (err) {
-		logger.error(err);
+		logger.error(errorForLog(err));
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 	if (!user) throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
@@ -281,7 +281,7 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 
 		return user;
 	} catch (err) {
-		logger.warn(err);
+		logger.warn(errorForLog(err));
 		if (err?.name === 'TokenExpiredError') {
 			throw new ClientError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
 		}

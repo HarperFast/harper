@@ -261,7 +261,8 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 	} catch (err) {
 		// If parsing fails, log warning and return args unchanged
 		const logger = getLogger();
-		logger.warn('Failed to parse HARPER_SET_CONFIG for arg filtering', err);
+		const { errorForLog } = require('../utility/logging/harper_logger');
+		logger.warn('Failed to parse HARPER_SET_CONFIG for arg filtering', errorForLog(err));
 		return args;
 	}
 

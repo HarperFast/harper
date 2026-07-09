@@ -3,7 +3,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import logger from '../utility/logging/harper_logger.ts';
+import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as cliOperations from './cliOperations.ts';
 import { packageJson } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
@@ -173,7 +173,7 @@ if (require.main === module) {
 		.catch((error) => {
 			if (error) {
 				console.error(error);
-				logger.error(error);
+				logger.error(errorForLog(error));
 			}
 			process.exit(1);
 		});
