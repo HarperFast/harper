@@ -10,7 +10,7 @@ import {
 	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, type Transaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, TRANSACTION_STATE, type Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -658,8 +658,34 @@ function transactional(
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
 		const loadAsInstance = this.loadAsInstance;
-		if (context?.transaction) {
-			// we are already in a transaction, proceed
+		// Only join an existing transaction if it is still genuinely OPEN (mirrors the reuse check
+		// resources/transaction.ts's transaction() helper already applies to itself). A `context`
+		// object can carry a *stale* `.transaction` left over from an earlier, unrelated call that
+		// already ran to completion: ambient contexts obtained via contextStorage.getStore() are
+		// no longer guaranteed to be fresh, one-shot objects now that processLocalTransaction (#1591/
+		// #1592) installs one shared, long-lived context for the lifetime of an entire operation
+		// handler. Without this check, a second, logically-independent static Resource API call made
+		// later in the same handler (no explicit context of its own) would see that leftover
+		// `.transaction` reference and wrongly treat it as "still open," silently folding its write
+		// into a transaction whose commit lifecycle was already driven to completion by the first
+		// call — coalescing two unrelated writes and risking the first one being dropped. See
+		// harper-pro's replication/subscriptionManager.ts ensureNode(), which is called twice in
+		// sequence (once for this node, once for a peer) from a single add_node/add_node_back
+		// operation handler and reproduced this exact loss in a live cluster-formation test.
+		//
+		// A transaction that is no longer OPEN reached that state one of two ways, and they need
+		// opposite treatment:
+		//  - committed: the prior call ran to completion normally. Safe to silently start a fresh
+		//    transaction for this independent call (the case above).
+		//  - aborted due to exceeding storage.maxTransactionOpenTime (#1411, DatabaseTransaction.ts
+		//    abortDueToTimeout(), marked via the `timedOut` poison flag): the whole logical operation
+		//    must fail atomically, not have this write quietly land on a brand-new transaction while
+		//    the earlier write(s) were rolled back. Joining the poisoned transaction here (instead of
+		//    starting fresh) makes the write throw transactionOpenTooLongError via addWrite()/commit()'s
+		//    poison check, correctly propagating the abort to the caller. See
+		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
+		if (context?.transaction?.open === TRANSACTION_STATE.OPEN || context?.transaction?.timedOut) {
+			// we are already in a transaction (or it was poisoned by a timeout abort and must fail), proceed
 			const resource = this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
