@@ -7,7 +7,7 @@
  * lists rules, and rejects traversal / unknown names.
  */
 
-const assert = require('node:assert/strict');
+const assert = require('assert');
 const { loadBestPracticesOverview, buildBestPracticeTool } = require('#src/agent/bestPractices');
 
 describe('agent/bestPractices', () => {

@@ -173,6 +173,17 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Eventual removal: We could implement SigV4 ourselves (~300 lines) and call Bedrock's HTTP endpoint with native `fetch`, matching the pattern used by the other three backends. Worth revisiting if SDK version churn becomes a maintenance burden or if the optional-peerDep pattern proves operator-unfriendly. The dynamic-import boundary means the swap is contained to `components/bedrock/index.ts`.
 
+## @harperfast/skills
+
+- Need for usage: Ships the `harper-best-practices` skill content (rule index + per-rule guidance for schema design, relationships, auth, caching, vector indexing, TypeScript type-stripping, deployment, etc.) that the built-in agent uses to ground itself (#626). Sourcing it from the published package versions the guidance with the Harper release instead of drifting from a separately-updated copy.
+- Size/memory cost: ~412KB on disk, no transitive dependencies. Only the `SKILL.md` overview (~1.2K tokens) is loaded eagerly, into the agent's system prompt; individual rule bodies are read from disk on demand via the `harper_best_practice` tool.
+- Security: No reported vulnerabilities; a first-party Harper package.
+- Environment interaction: None. Files are read directly from the installed package directory (the package's `exports` only expose `.`, so the skill assets alongside `dist/` aren't `require`d, just read as static files).
+- Overlap: None.
+- Can be deferred: Yes — resolution happens lazily and degrades gracefully; if the package isn't resolvable, the overview is omitted and the `harper_best_practice` tool isn't registered, so the agent still runs.
+- Binary compilation: No.
+- Eventual removal: The best-practices content could be vendored directly into `harper` if the separate package ever became a maintenance burden, at the cost of losing independent versioning/updates.
+
 ## busboy
 
 - Need for usage: Streaming multipart/form-data parser for the operations API. Required so `deploy_component` payloads can exceed the Node.js 2 GB Buffer cap by being piped straight into extraction (gunzip + tar-fs) instead of buffered. Used only on the operations API ingest path; outbound multipart bodies on the CLI are formatted inline in `bin/multipartBuilder.ts` and do not depend on busboy.
