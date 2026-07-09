@@ -53,6 +53,7 @@
 	"scripts": {
 		"build": "tsc --project tsconfig.build.json",
 		"build:watch": "npm run build -- --watch --incremental",
+		"typecheck:fast": "tsgo --noEmit --project tsconfig.json",
 		"package": "./build-tools/build.sh",
 		"lint": "oxlint --format stylish --deny-warnings .",
 		"lint:required": "oxlint --format stylish --quiet .",
@@ -138,6 +139,7 @@
 		"@types/sinon": "^21.0.0",
 		"@types/tar-fs": "^2.0.4",
 		"@typescript-eslint/parser": "^8.48.1",
+		"@typescript/native-preview": "7.0.0-dev.20260707.2",
 		"axios": "1.18.1",
 		"chai": "^6.2.0",
 		"chai-as-promised": "^8.0.2",

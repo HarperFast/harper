@@ -184,3 +184,14 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Can be deferred: The require happens only when `server/serverHelpers/multipartParser.ts` is imported, which is loaded by `registerContentHandlers` at operations-server boot. Realistically always loaded.
 - Eventual removal: Could be replaced by writing our own streaming multipart parser (a few hundred lines plus tests for edge cases) if maintenance ever lapses, or by Node.js's `request.formData()` once that API supports streaming file parts without buffering (currently it doesn't on the standard Node http server interface used by Fastify).
+
+## @typescript/native-preview (devDependency)
+
+- Need for usage: Ships `tsgo`, the native (Go-ported) TypeScript compiler preview that will become TypeScript 7's `tsc`. Wired as an opt-in `npm run typecheck:fast` script — a faster local/CI type-check loop alongside the existing `tsc`-based `build`, not a replacement for either.
+- Size/memory cost: Dev-only; not shipped in `files`, never loads in production.
+- Security: Microsoft-maintained preview of the upcoming TypeScript 7 toolchain.
+- Overlap: Complements, does not replace, the `typescript` devDependency — `tsgo` currently has no declaration-emit parity for one file (`resources/Table.ts`'s anonymous `#private`-field class) and TS 7.0 ships no compiler API, so `@typescript-eslint/parser` still needs `typescript` 5.x.
+- Can be deferred: Yes, opt-in script only.
+- Binary compilation: No local compilation, but it installs one of several platform-gated `optionalDependencies` that ships a prebuilt native (Go-compiled) `tsgo` binary.
+- Eventual removal: Once TypeScript 7 stabilizes as the primary `typescript` devDependency (post-7.1's compiler API), this becomes redundant and `typecheck:fast` can be dropped.
+- Note: pinned to an exact nightly `-dev` build rather than a caret range; nightly tags on the npm registry aren't guaranteed to persist indefinitely, so a future bump (or removal if the tarball is ever pruned) may be needed.
