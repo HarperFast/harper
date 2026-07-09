@@ -3061,6 +3061,7 @@ export function makeTable(options) {
 			}
 			let transformCache;
 			const source = this.source;
+			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
@@ -3098,7 +3099,23 @@ export function makeTable(options) {
 								message: 'This entry has expired',
 							};
 						}
-						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context);
+						// Stale-while-revalidate is an instance method, but a query has no per-row resource
+						// instance to consult (the single-record `get` path passes `this`). Construct one for this
+						// row — via the same `new constructor(id, context)` the framework's getResource uses — so
+						// the hook sees the current row's identity (this.getId()) and record state, matching the
+						// single-record path. It must be a real instance, not the bare class prototype: every
+						// resource prototype chain ends in a tracked-property Proxy, so reading an absent property
+						// (probing for an undefined `allowStaleWhileRevalidate`, or a hook touching `this.x`) on a
+						// non-instance invokes getChanges() with no backing state and throws (harper#1578). We also
+						// load the stale entry into it (as the single-record path does via _updateResource) so a
+						// hook consulting this.getRecord()/this.<field> sees the stale row, not undefined. `entry`
+						// here may be lazy (its `.value` is a GC-able deref, undefined once collected), so we set the
+						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
+						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
+						const swrResource = new resourceClass(entry.key ?? entry, context);
+						resourceClass._updateResource(swrResource, entry);
+						swrResource.setRecord(record);
+						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform);
 						}
