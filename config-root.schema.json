@@ -172,7 +172,15 @@
 					]
 				},
 				"maxHeapMemory": { "type": "number", "description": "Heap memory limit per thread (MB)." },
-				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." }
+				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." },
+				"preload": {
+					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+					"description": "Module(s) to preload via --import (ESM/loader-hook registration) before any Harper or app module on each worker thread, e.g. an APM agent's 'dd-trace/register.js' — the entry that instruments worker threads. Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				},
+				"preloadRequire": {
+					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+					"description": "Module(s) to preload via --require (CJS) before any Harper or app module on each worker thread, for agents that document the require path (e.g. 'dd-trace/init', Dynatrace OneAgent). Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				}
 			}
 		},
 
@@ -697,7 +705,12 @@
 					"description": "Path to private key file. Default: <ROOTPATH>/keys/privateKey.pem"
 				},
 				"ciphers": { "type": "string", "description": "Optional explicit cipher list." },
-				"host": { "type": "string", "description": "Optional SNI host this certificate applies to." }
+				"host": { "type": "string", "description": "Optional SNI host this certificate applies to." },
+				"certificateWatchInterval": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Interval in ms for the periodic re-read safety net that re-checks watched cert/key files in case an inotify change event was missed (e.g. on overlayfs/containers/network mounts). Honored on the top-level tls block. Default: 300000 (5 min). 0 disables polling, leaving only the inotify watcher."
+				}
 			}
 		}
 	},

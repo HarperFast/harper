@@ -268,6 +268,11 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 				type: 'string',
 				description: 'Status entry id. When omitted, returns aggregated status across threads.',
 			},
+			middleware: {
+				type: 'boolean',
+				description:
+					'When true (and no id), include the resolved HTTP/upgrade/WebSocket middleware chain order per port.',
+			},
 		},
 	},
 	get_analytics: {

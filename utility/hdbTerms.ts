@@ -179,6 +179,7 @@ export const SYSTEM_TABLE_NAMES = {
 	INFO_TABLE_NAME: 'hdb_info',
 	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
 	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
+	SECRET_TABLE_NAME: 'hdb_secret',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -304,6 +305,12 @@ export const OPERATIONS_ENUM = {
 	CLEAR_STATUS: 'clear_status',
 	LIST_DEPLOYMENTS: 'list_deployments',
 	GET_DEPLOYMENT: 'get_deployment',
+	SET_SECRET: 'set_secret',
+	GRANT_SECRET: 'grant_secret',
+	REVOKE_SECRET: 'revoke_secret',
+	LIST_SECRETS: 'list_secrets',
+	DELETE_SECRET: 'delete_secret',
+	GET_SECRETS_PUBLIC_KEY: 'get_secrets_public_key',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',
@@ -471,6 +478,8 @@ export const CONFIG_PARAMS = {
 	THREADS_DEBUG_WAITFORDEBUGGER: 'threads_debug_waitForDebugger',
 	THREADS_MAXHEAPMEMORY: 'threads_maxHeapMemory',
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
+	THREADS_PRELOAD: 'threads_preload',
+	THREADS_PRELOADREQUIRE: 'threads_preloadRequire',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',
@@ -605,6 +614,7 @@ export const CONFIG_PARAMS = {
 		'replication_mtls_certificateVerification_ocsp_failureMode',
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
+	REPLICATION_BLOBSENDDRAINTIMEOUT: 'replication_blobSendDrainTimeout',
 	REPLICATION_FAILOVER: 'replication_failover',
 	REPLICATION_BLOBCONCURRENCY: 'replication_blobConcurrency',
 	REPLICATION_MAXPAYLOAD: 'replication_maxPayload',
@@ -667,6 +677,7 @@ export const CONFIG_PARAMS = {
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
 	TLS_CIPHERS: 'tls_ciphers',
 	TLS_UNIXDOMAINSOCKETS: 'tls_unixDomainSockets',
+	TLS_CERTIFICATEWATCHINTERVAL: 'tls_certificateWatchInterval',
 	TLS: 'tls',
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',
@@ -875,6 +886,10 @@ export const ITC_EVENT_TYPES = {
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
 	RESOURCE_OPENAPI_RESPONSE: 'resource_openapi_response',
+	// Main thread asks an HTTP worker for its resolved middleware chains (#1573); app HTTP
+	// middleware is only registered on worker threads, so get_status must fetch it from one.
+	MIDDLEWARE_CHAINS_REQUEST: 'middleware_chains_request',
+	MIDDLEWARE_CHAINS_RESPONSE: 'middleware_chains_response',
 	// MCP §3.7: route a client's response to a server→client request back to the
 	// worker awaiting it (the response POST can land on any worker).
 	MCP_CLIENT_RESPONSE: 'mcp_client_response',

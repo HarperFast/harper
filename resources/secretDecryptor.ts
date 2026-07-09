@@ -118,3 +118,42 @@ export function clearSecretDecryptor(): void {
 	decryptor = undefined;
 	deferredSecrets = [];
 }
+
+/** The public half of the cluster secrets keypair, with its stable SHA-256 fingerprint (`kid`). */
+export interface SecretCustodyPublicKey {
+	publicKey: string;
+	fingerprint: string;
+}
+
+/**
+ * Full key custody: decrypt plus access to the public key, so the node can encrypt on ingest
+ * (`set_secret` with a plaintext value) and serve `get_secrets_public_key`. Core ships no custody;
+ * the Pro secrets component registers one per process where secrets are used — including the MAIN
+ * thread, where the operations API dispatches the secret operations.
+ */
+export interface SecretCustody {
+	decrypt: SecretDecryptor;
+	getPublicKey(): SecretCustodyPublicKey;
+}
+
+let custody: SecretCustody | undefined;
+
+/**
+ * Install key custody. Also installs `custody.decrypt` via the decryptor slot above, so consumers
+ * like `loadEnv` that only need decryption keep working through the existing hook.
+ */
+export function registerSecretCustody(newCustody: SecretCustody): void {
+	custody = newCustody;
+	registerSecretDecryptor(newCustody.decrypt);
+}
+
+/** The registered custody, or undefined when no secrets key is held by this process. */
+export function getSecretCustody(): SecretCustody | undefined {
+	return custody;
+}
+
+/** Remove the registered custody (and the decryptor it installed). Intended for tests. */
+export function clearSecretCustody(): void {
+	custody = undefined;
+	decryptor = undefined;
+}

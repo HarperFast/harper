@@ -36,6 +36,13 @@ import { isMainThread } from 'worker_threads';
 import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
+// Default interval (ms) for the periodic cert-file re-read safety net. The chokidar (inotify)
+// watcher is the fast path; this poll catches changes on filesystems where inotify is unreliable
+// (overlayfs, many container setups, network mounts). Overridable via tls.certificateWatchInterval; 0 disables.
+const DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS = 300_000;
+// Lower bound (ms) for a configured poll interval; a misconfigured sub-second value is clamped up
+// to keep the safety-net poll from becoming a tight stat() loop. 0 still disables polling entirely.
+const MIN_CERTIFICATE_WATCH_INTERVAL_MS = 1000;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
 export const CERT_ATTRIBUTES = [
 	{ name: 'countryName', value: 'USA' },
@@ -292,7 +299,39 @@ export function loadCertificates() {
 }
 
 /**
- * Load the certificate file and watch for changes and reload with any changes
+ * Resolve the periodic cert-watch poll interval (ms) from config, falling back to the default.
+ * Returns 0 (polling disabled) only when explicitly configured to 0.
+ *
+ * This is a single global watcher-behavior knob, read from the top-level `tls.certificateWatchInterval`
+ * (mirrors how `tls.unixDomainSockets`/`tls.ciphers` are read globally via env.get). It is not honored
+ * per-cert inside an SNI `tls` array or under `operationsApi.tls`; those configs use the default.
+ */
+function getCertificateWatchInterval(): number {
+	const configured = envManager.get(CONFIG_PARAMS.TLS_CERTIFICATEWATCHINTERVAL);
+	if (configured == null) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
+	const interval = Number(configured);
+	if (!Number.isFinite(interval) || interval < 0) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
+	// 0 explicitly disables the poll; otherwise floor at MIN to keep a typo (e.g. 1ms) from
+	// spinning a stat() loop. This is a safety net, not a hot-poll path, so sub-second is never wanted.
+	if (interval === 0) return 0;
+	return Math.max(interval, MIN_CERTIFICATE_WATCH_INTERVAL_MS);
+}
+
+// Active poll timers, keyed by watched path (exposed for test cleanup).
+const certificateWatchTimers = new Map<string, NodeJS.Timeout>();
+// The poll callback for each watched path, keyed by path. Exposed so tests can drive a single
+// re-read deterministically (simulating a missed inotify event) without waiting for the interval.
+const certificateWatchPollers = new Map<string, () => void>();
+
+/**
+ * Load the certificate file and watch for changes and reload with any changes.
+ *
+ * Two detection mechanisms feed the same reload path (and share the `lastModified` fingerprint,
+ * so they never double-reload for the same change):
+ *   1. chokidar inotify watcher — the fast path, reacts immediately to fs events.
+ *   2. A periodic re-read (main thread only) — a safety net for filesystems where inotify is
+ *      unreliable (overlayfs/containers/network mounts), where a real renewal can otherwise be
+ *      silently missed. Interval is tls.certificateWatchInterval (default 5m); 0 disables it.
  * @param path
  * @param loadCert
  * @param type
@@ -301,7 +340,10 @@ function loadAndWatch(path, loadCert, type) {
 	let lastModified;
 	const loadFile = (path, stats) => {
 		try {
-			let modified = stats.mtimeMs;
+			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
+			// stat the file here when it's missing — otherwise the inotify fast path would throw and
+			// silently never reload, leaving only the periodic poll to catch the change.
+			let modified = (stats ?? statSync(path)).mtimeMs;
 			if (modified && modified !== lastModified) {
 				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
@@ -314,6 +356,39 @@ function loadAndWatch(path, loadCert, type) {
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
 	watch(path, { persistent: false }).on('change', loadFile);
+
+	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers
+	// receive cert updates via the hdb_certificate table subscription, so polling the cert file on
+	// every worker would be wasteful. Private keys are different: each worker loads its own key
+	// directly from disk into its privateKeys map (no table propagation), so a renewal missed by
+	// inotify on a worker would strand the stale key — therefore the key poll must run on all
+	// threads. mtime is checked first against the last-loaded fingerprint, so an unchanged file does
+	// no PEM read and no reload (and shares the fingerprint with the chokidar watcher, so the two
+	// detection paths never double-reload the same change).
+	const pollsOnThisThread = isMainThread || type === 'private key';
+	if (pollsOnThisThread) {
+		const poll = () => {
+			let stats;
+			try {
+				stats = statSync(path);
+			} catch (error) {
+				// File may be transiently absent (e.g. atomic-rename renewal in flight); the chokidar
+				// watcher and the next poll will pick up the replacement.
+				logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
+				return;
+			}
+			loadFile(path, stats);
+		};
+		certificateWatchPollers.set(path, poll);
+		const interval = getCertificateWatchInterval();
+		if (interval > 0) {
+			const existingTimer = certificateWatchTimers.get(path);
+			if (existingTimer) clearInterval(existingTimer);
+			const timer = setInterval(poll, interval);
+			timer.unref();
+			certificateWatchTimers.set(path, timer);
+		}
+	}
 }
 
 function getHost() {

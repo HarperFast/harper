@@ -37,6 +37,8 @@ import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
+import * as secretOperations from '../../components/secretOperations.ts';
+import { contextStorage } from '../../resources/transaction.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -76,17 +78,33 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
 			// Need to remove auth variables and secret-bearing fields (value/values carry .env
-			// secrets from set_env_value), but we don't want to create an object unless the logging
-			// is actually going to happen.
+			// secrets from set_env_value; value/envelope carry secrets from set_secret), but we
+			// don't want to create an object unless the logging is actually going to happen.
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			const { hdb_user, hdbAuthHeader, password, payload, value, values, ...cleanBody } = req.body;
+			const { hdb_user, hdbAuthHeader, password, payload, value, values, envelope, ...cleanBody } = req.body;
 			operationLog.info(cleanBody);
 		}
 	} catch (e) {
 		operationLog.error(e);
 	}
 
-	let data = await operationFunctionCaller.callOperationFunctionAsAwait(operationFunction, req.body, null);
+	// Bridge the authenticated user into the ambient async context so static Resource API calls
+	// (e.g. table.put) inside operation handlers inherit user attribution for audit records
+	// (issue #1591). An explicit context passed by a handler still takes precedence (the
+	// transactional wrappers only fall back to contextStorage when no context is provided), and
+	// an existing ambient context already carrying this user (e.g. server.operation() called
+	// from within a request handler) is preserved rather than shadowed. When the ambient user
+	// differs (or is absent), the ambient context is merged rather than replaced: other ambient
+	// properties (open transaction, signal, caches) are preserved so atomicity is unaffected and
+	// only the user is swapped for attribution; the outer context object itself is never mutated.
+	const hdbUser = req.body.hdb_user;
+	const currentStore = contextStorage.getStore();
+	const callOperationFunction = () =>
+		operationFunctionCaller.callOperationFunctionAsAwait(operationFunction, req.body, null);
+	let data =
+		hdbUser && currentStore?.user !== hdbUser
+			? await contextStorage.run({ ...currentStore, user: hdbUser }, callOperationFunction)
+			: await callOperationFunction();
 
 	if (typeof data !== 'object') {
 		data = { message: data };
@@ -461,6 +479,15 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.SET_SECRET, new OperationFunctionObject(secretOperations.setSecret));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GRANT_SECRET, new OperationFunctionObject(secretOperations.grantSecret));
+	opFuncMap.set(terms.OPERATIONS_ENUM.REVOKE_SECRET, new OperationFunctionObject(secretOperations.revokeSecret));
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_SECRETS, new OperationFunctionObject(secretOperations.listSecrets));
+	opFuncMap.set(terms.OPERATIONS_ENUM.DELETE_SECRET, new OperationFunctionObject(secretOperations.deleteSecret));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY,
+		new OperationFunctionObject(secretOperations.getSecretsPublicKey)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,

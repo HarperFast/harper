@@ -322,4 +322,32 @@ describe('Test hdbChildIpcHandler module', () => {
 			sendToThreadStub.restore();
 		});
 	});
+
+	describe('Test resource-registration handler function (#1448)', () => {
+		const resource_handler = server_itc_handlers.resourceHandler;
+
+		// Listeners live on a module-global array; clear between cases so fakes don't leak forward.
+		afterEach(() => resource_handler._resetListenersForTest());
+
+		it('invokes every registered listener when fired', () => {
+			const a = sinon.fake();
+			const b = sinon.fake();
+			resource_handler.addListener(a);
+			resource_handler.addListener(b);
+			resource_handler();
+			expect(a).to.have.been.calledOnce;
+			expect(b).to.have.been.calledOnce;
+		});
+
+		it('isolates a throwing listener so siblings still run, and logs the error', () => {
+			sandbox.resetHistory();
+			const boom = sinon.fake.throws(new Error(TEST_ERR));
+			const after = sinon.fake();
+			resource_handler.addListener(boom);
+			resource_handler.addListener(after);
+			expect(() => resource_handler()).to.not.throw();
+			expect(after).to.have.been.calledOnce;
+			expect(log_error_stub).to.have.been.called;
+		});
+	});
 });
