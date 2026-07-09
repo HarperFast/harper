@@ -59,6 +59,34 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 	[terms.OPERATIONS_ENUM.DROP_SCHEMA]: true,
 };
 
+// Cluster/replication topology operations must NOT run under the request's ambient user context
+// (the #1591 attribution wrap below). Two reasons:
+//
+//   1. Their writes are internal node-registry bookkeeping (hdb_nodes, certificates), not
+//      user-authored data — they should not be stamped with a user principal.
+//   2. Critically, they start long-lived, non-awaited replication subscription work (a peer
+//      connection's connect/handshake/reconnect lifecycle) that outlives the handler. Because that
+//      work is constructed while this handler's AsyncLocalStorage scope is active, it keeps
+//      observing the ambient { user } for its ENTIRE life, not just the request — which corrupts
+//      the subscription's identity and produces a WebSocket 1006 reconnect storm that never meshes
+//      (regression from #1591/#1592; the pre-#1591 world gave this background work no ambient user).
+//
+// The durable fix is to detach that background work from the ambient context where it is spawned
+// (harper-pro's replication component); this core-side exclusion resolves the regression for the
+// operations that trigger it without that background work ever inheriting a user. The names span
+// core and harper-pro's replication component (registered via server.registerOperation), so this
+// set must be kept in sync if new topology-management operations are added.
+const OPERATIONS_EXCLUDED_FROM_AMBIENT_USER = new Set<string>([
+	terms.OPERATIONS_ENUM.ADD_NODE, // 'add_node'
+	terms.OPERATIONS_ENUM.UPDATE_NODE, // 'update_node'
+	terms.OPERATIONS_ENUM.SET_NODE_REPLICATION, // 'set_node_replication'
+	'add_node_back',
+	'set_node',
+	'remove_node',
+	'remove_node_back',
+	'configure_cluster',
+]);
+
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
 
 type ValueOf<T> = T[keyof T];
@@ -97,12 +125,15 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 	// differs (or is absent), the ambient context is merged rather than replaced: other ambient
 	// properties (open transaction, signal, caches) are preserved so atomicity is unaffected and
 	// only the user is swapped for attribution; the outer context object itself is never mutated.
+	// Cluster/replication topology operations are excluded (see OPERATIONS_EXCLUDED_FROM_AMBIENT_USER):
+	// they spawn long-lived background work that would otherwise inherit this ambient user for its
+	// whole life.
 	const hdbUser = req.body.hdb_user;
 	const currentStore = contextStorage.getStore();
 	const callOperationFunction = () =>
 		operationFunctionCaller.callOperationFunctionAsAwait(operationFunction, req.body, null);
 	let data =
-		hdbUser && currentStore?.user !== hdbUser
+		hdbUser && currentStore?.user !== hdbUser && !OPERATIONS_EXCLUDED_FROM_AMBIENT_USER.has(req.body.operation)
 			? await contextStorage.run({ ...currentStore, user: hdbUser }, callOperationFunction)
 			: await callOperationFunction();
 

@@ -563,5 +563,80 @@ describe('Test serverUtilities.js module ', () => {
 			);
 			assert.equal(observedStore, undefined);
 		});
+
+		// Regression for the #1591/#1592 follow-up: cluster/replication topology operations must not run
+		// under the ambient user context, because they spawn long-lived, non-awaited background work (a
+		// replication subscription connection's connect/handshake/reconnect lifecycle) that outlives the
+		// handler. Under AsyncLocalStorage that background work would otherwise keep observing the ambient
+		// { user } for its entire life — corrupting the subscription's identity and producing a WebSocket
+		// 1006 reconnect storm that never meshes.
+		describe('cluster/replication topology operations are excluded from the ambient user context', function () {
+			const TOPOLOGY_OPERATIONS = [
+				'add_node',
+				'add_node_back',
+				'update_node',
+				'set_node',
+				'set_node_replication',
+				'remove_node',
+				'remove_node_back',
+				'configure_cluster',
+			];
+
+			for (const operation of TOPOLOGY_OPERATIONS) {
+				it(`does not establish an ambient user context for '${operation}'`, async function () {
+					op_func_caller_stub.callThrough();
+					let observedStore;
+					await serverUtilities.processLocalTransaction(
+						{ body: { operation, hdb_user: { username: 'admin' } } },
+						async () => {
+							observedStore = contextStorage.getStore();
+							return test_func_data;
+						}
+					);
+					assert.equal(observedStore, undefined, `${operation} handler must run with no ambient user`);
+				});
+			}
+
+			it('background work spawned by a topology handler does not observe the request user after the handler returns', async function () {
+				op_func_caller_stub.callThrough();
+				let backgroundStore = 'unset';
+				let resolveBackground;
+				const backgroundRead = new Promise((resolve) => {
+					resolveBackground = resolve;
+				});
+				await serverUtilities.processLocalTransaction(
+					{ body: { operation: 'add_node', hdb_user: { username: 'admin' } } },
+					async () => {
+						// simulate the handler kicking off non-awaited long-lived work (e.g. a subscription
+						// connection) that reads the ambient context after the handler has returned
+						setTimeout(() => {
+							backgroundStore = contextStorage.getStore();
+							resolveBackground();
+						}, 5);
+						return test_func_data;
+					}
+				);
+				await backgroundRead;
+				assert.equal(
+					backgroundStore,
+					undefined,
+					'detached background work must not inherit the request user for its ongoing lifetime'
+				);
+			});
+
+			it('still establishes the ambient user for a non-topology operation (does not over-exclude)', async function () {
+				op_func_caller_stub.callThrough();
+				const hdbUser = { username: 'data_user' };
+				let observedStore;
+				await serverUtilities.processLocalTransaction(
+					{ body: { operation: 'insert', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				);
+				assert.equal(observedStore?.user, hdbUser, 'data operations must keep #1591 audit attribution');
+			});
+		});
 	});
 });
