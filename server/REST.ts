@@ -20,8 +20,6 @@ let httpOptions = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
-<<<<<<< HEAD
-=======
 /**
  * Finalize a Response (or a response-like envelope carrying a `headers` field) into the response object
  * handed to the HTTP layer: merge in the accumulated headers, serialize a body from `data` or the object
@@ -73,7 +71,6 @@ function finalizeResponse(responseData, headers, status, request) {
 	return responseData;
 }
 
->>>>>>> 4734b5c67 (fix(rest): copy live cache records in finalizeResponse before mutating headers/status)
 async function http(request: Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
@@ -218,34 +215,8 @@ async function http(request: Request, nextHandler) {
 			if ((httpOptions as any).lastModified && isFinite(lastModification))
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
-			// if response is a Response object, use it as the response
-			if (Object.isFrozen(responseData)) {
-				// make a copy if it is a frozen record
-				responseData = Object.assign({}, responseData);
-			}
-			// merge headers from response
-			const responseHeaders = mergeHeaders(responseData.headers, headers);
-			if (responseData.headers !== responseHeaders)
-				// if we rebuilt the headers, reassign it, but we don't want to assign to a Response object (which should already
-				// have a valid Headers object) or it will throw an error
-				responseData.headers = responseHeaders;
-			// if no body, look for provided data to serialize
-			if (!responseData.body) {
-				let body: any;
-				if ('data' in responseData) {
-					// a standard Response object does not have a setter for body, so we force it
-					body = serialize(responseData.data, request, responseData);
-				} else if (responseData.body === undefined) {
-					// if there is really no body, serialize this object into the body. Note that `new Response()` creates a response
-					// with a null body, and will not fall into this branch
-					body = serialize(responseData, request, responseData);
-				}
-				if (body) {
-					responseData = { status: responseData.status, headers: responseData.headers, body };
-				}
-			}
-			responseData.status ??= status ?? 200;
-			return responseData;
+			// if response is a Response object (or response-like envelope with headers), use it as the response
+			return finalizeResponse(responseData, headers, status, request);
 		} else if (isFinite(lastModification)) {
 			etagFloat[0] = lastModification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
