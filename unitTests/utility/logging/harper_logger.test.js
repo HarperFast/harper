@@ -936,5 +936,31 @@ describe('Test harper_logger module', () => {
 			expect(() => render(undefined)).to.not.throw();
 			expect(render(undefined)).to.equal('undefined');
 		});
+
+		// The sweep for #1734 routes the error arg of two-/multi-arg logger calls
+		// (`logger.warn('msg', errorForLog(error))`) through errorForLog too. Node's Console
+		// formats its arguments with util.format, applying util.inspect to the wrapper — so
+		// util.format reproduces exactly what lands in hdb.log for those call shapes.
+		it('does not leak secrets in the two-arg logger form (message + error)', () => {
+			const error = new Error('WS connection failed');
+			error.hdb_secret = 'Bearer super-secret-token';
+			error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const rendered = util.format('Error in handling WS connection', errorForLog(error));
+			expect(rendered).to.include('Error in handling WS connection');
+			expect(rendered).to.include('Error: WS connection failed');
+			expect(rendered).to.not.include('super-secret-token');
+			expect(rendered).to.not.include('hdb_secret');
+		});
+
+		it('does not leak secrets in the multi-arg logger form (message + error + trailing data)', () => {
+			const error = new Error('decode failed');
+			error.authorization = 'Bearer super-secret-token';
+			const rendered = util.format('Error decoding record', errorForLog(error), 'data: deadbeef');
+			expect(rendered).to.include('Error decoding record');
+			expect(rendered).to.include('Error: decode failed');
+			expect(rendered).to.include('data: deadbeef');
+			expect(rendered).to.not.include('super-secret-token');
+			expect(rendered).to.not.include('authorization');
+		});
 	});
 });

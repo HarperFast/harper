@@ -61,7 +61,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		} catch (error) {
 			logger.warn(
 				`Failed to purge aged transaction logs before replay in ${(rootStore as any).databaseName} database`,
-				error
+				logger.errorForLog(error)
 			);
 		}
 		if (purgedLogs.length > 0) {

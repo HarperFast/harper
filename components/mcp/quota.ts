@@ -138,7 +138,7 @@ export async function checkDurableQuota(info: QuotaCheckInfo): Promise<QuotaDeci
 	} catch (error) {
 		harperLogger.error(
 			`MCP ${info.profile} quota hook '${resourcePath}.${methodName}' threw; denying (fail-closed)`,
-			error
+			harperLogger.errorForLog(error)
 		);
 		return { allowed: false, message: 'quota check failed' };
 	}

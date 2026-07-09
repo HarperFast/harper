@@ -543,7 +543,7 @@ function initStores(
 		} catch (error) {
 			logger.error(
 				`Failed to complete interrupted drop of table ${databaseName}.${tableName}; will retry on next start`,
-				error
+				errorForLog(error)
 			);
 		}
 		// whether or not cleanup succeeded, never load a table that was being dropped
@@ -1652,7 +1652,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		if (Table.primaryStore?.rootStore?.status === 'closed') {
 			logger.debug(
 				`Indexing of ${Table.tableName} interrupted by store shutdown; recovery resumes on the next worker generation`,
-				error
+				errorForLog(error)
 			);
 			return;
 		}
@@ -1697,7 +1697,10 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 					columnStore.dropSync();
 					columnStore.close();
 				} catch (error) {
-					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, errorForLog(error));
+					logger.warn(
+						`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`,
+						errorForLog(error)
+					);
 				}
 			}
 		}

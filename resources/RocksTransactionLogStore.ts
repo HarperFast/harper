@@ -27,7 +27,10 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 // endIteratorOnCorruptFrame in replayLogsGuards.ts for why this is end-of-log, not a crash.
 function warnCorruptFrame(logName: string) {
 	return (error: RangeError) =>
-		harperLogger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, harperLogger.errorForLog(error));
+		harperLogger.warn(
+			`Stopping transaction log "${logName}" at a corrupt entry during replay`,
+			harperLogger.errorForLog(error)
+		);
 }
 
 /**
