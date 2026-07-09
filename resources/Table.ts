@@ -327,6 +327,9 @@ export function makeTable(options) {
 		static get expirationMS() {
 			return expirationMs;
 		}
+		static get evictionMS() {
+			return evictionMs;
+		}
 		static dbisDB = dbisDb;
 		static schemaDefined = schemaDefined;
 		/**
