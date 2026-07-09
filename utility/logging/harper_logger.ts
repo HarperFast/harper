@@ -291,6 +291,7 @@ module.exports = {
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
 	errorToString,
+	errorForLog,
 	disableStdio,
 	externalLogger,
 };
@@ -895,6 +896,20 @@ export function errorToString(error: any) {
 	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
 }
 
+/**
+ * Returns a log-safe representation of an error for passing to the logger. Prefers the stack (which
+ * includes the error class name and message), falling back to the "ClassName: message" string.
+ * This deliberately avoids logging the raw Error object: Node's Console formats a logged Error with
+ * util.inspect, which dumps every own-enumerable property. Anything an app or an HTTP client library
+ * stashes on a thrown Error — a credential used for an outbound Authorization header, an axios
+ * `config`/`request` with headers — would otherwise land verbatim in hdb.log (see #1734). Those
+ * custom properties are not part of `error.stack`, so logging the stack preserves debuggability
+ * without leaking them.
+ */
+export function errorForLog(error: any) {
+	return typeof error?.stack === 'string' ? error.stack : errorToString(error);
+}
+
 export function setMainLogger(logger: any) {
 	mainLogger = logger;
 }
@@ -953,4 +968,5 @@ export default {
 	externalLogger,
 	AuthAuditLog,
 	errorToString,
+	errorForLog,
 };

@@ -875,4 +875,35 @@ describe('Test harper_logger module', () => {
 		expect(enabled_var).to.be.true;
 		expect(fake_func.called).to.be.true;
 	});
+
+	describe('Test errorForLog function (#1734)', () => {
+		const { errorForLog } = harperLoggerModule;
+
+		it('returns the stack (which includes class name and message)', () => {
+			const error = new Error('boom');
+			const result = errorForLog(error);
+			expect(result).to.equal(error.stack);
+			expect(result).to.include('Error: boom');
+		});
+
+		it('does not include own-enumerable properties stashed on the error', () => {
+			// Simulates a secret / axios config attached to a thrown Error — must not leak into the log.
+			const error = new Error('origin fetch failed');
+			error.authorization = 'Bearer super-secret-token';
+			error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const result = errorForLog(error);
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('authorization');
+		});
+
+		it('falls back to "ClassName: message" when there is no stack', () => {
+			// A thrown plain object carrying an HTTP status but no stack.
+			const thrown = { message: 'not found', status: 404 };
+			expect(errorForLog(thrown)).to.equal('Object: not found');
+		});
+
+		it('handles a thrown string', () => {
+			expect(errorForLog('just a string')).to.equal('just a string');
+		});
+	});
 });
