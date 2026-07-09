@@ -114,6 +114,10 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 
 		const ac = new AbortController();
 		res.onAborted(() => ac.abort());
+		// Once a response has been committed (handler result, error, or a 413), writing again to the
+		// same uWS response is invalid and aborts the process — so every write site guards on this in
+		// addition to ac.signal.aborted (which only covers a client-side teardown, not our own writes).
+		let responseCompleted = false;
 
 		const dispatch = (body?: UwsRequestBody) => {
 			const request = new UwsRequest({ method, url, headers, secure, body, signal: ac.signal, ip });
@@ -121,11 +125,13 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 			when(
 				handler(request),
 				(response) => {
-					if (ac.signal.aborted) return;
+					if (ac.signal.aborted || responseCompleted) return;
+					responseCompleted = true;
 					writeResponse(res, response, ac.signal, method);
 				},
 				(error) => {
-					if (ac.signal.aborted) return;
+					if (ac.signal.aborted || responseCompleted) return;
+					responseCompleted = true;
 					const status = (error && error.statusCode) || 500;
 					res.cork(() => {
 						res.writeStatus(statusText(status));
@@ -156,7 +162,12 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 				if (ended || body.destroyed) return;
 				total += chunk.byteLength;
 				if (total > maxBodyBytes) {
-					if (!ac.signal.aborted) res.cork(() => res.writeStatus('413 Payload Too Large').end());
+					// Only send 413 if nothing has been written yet: the handler may have already responded
+					// (or streamed) without consuming the body, and writing to that completed response aborts.
+					if (!ac.signal.aborted && !responseCompleted) {
+						responseCompleted = true;
+						res.cork(() => res.writeStatus('413 Payload Too Large').end());
+					}
 					tearDown(new ClientError(`Request body exceeds ${maxBodyBytes} bytes`, 413));
 					ac.abort();
 					return;

@@ -100,6 +100,8 @@ function readBody(request) {
 				const chunk = Buffer.alloc(64 * 1024, 0x61); // 64 KiB of 'a'
 				return { status: 200, body: chunkStream(Array.from({ length: 64 }, () => chunk)) }; // 4 MiB total
 			}
+			case '/ip':
+				return { status: 200, body: String(request.ip) };
 			case '/method':
 				return { status: 200, body: 'method=' + request.method };
 			case '/boom':
@@ -233,6 +235,17 @@ function readBody(request) {
 		assert.deepStrictEqual(JSON.parse(res.body.toString()), ['a', 'b']);
 	});
 
+	it('falls back to X-Forwarded-For for request.ip on the UDS path (no socket peer address)', async function () {
+		// On the symphony-fronted UDS path the socket carries no client address, so the trusted proxy's
+		// X-Forwarded-For is the authoritative source of request.ip.
+		const res = await udsRequest(socketPath, {
+			pathName: '/ip',
+			headers: { 'x-forwarded-for': '203.0.113.7' },
+		});
+		assert.strictEqual(res.status, 200);
+		assert.strictEqual(res.body.toString(), '203.0.113.7');
+	});
+
 	it('streams a text/event-stream (SSE) body, flushing headers up front', async function () {
 		const res = await udsRequest(socketPath, { pathName: '/sse' });
 		assert.strictEqual(res.status, 200);
@@ -333,6 +346,22 @@ try {
 					.end();
 			});
 			assert.strictEqual(body, '127.0.0.1');
+		});
+
+		it('does not let a spoofed X-Forwarded-For override the authoritative TCP peer address', async function () {
+			// On the direct-TCP path the socket peer IP is authoritative; a client-supplied X-Forwarded-For
+			// must be ignored, or a direct client could spoof `127.0.0.1` to satisfy local auth.
+			const body = await new Promise((resolve, reject) => {
+				http
+					.request({ host: '127.0.0.1', port, path: '/ip', headers: { 'x-forwarded-for': '1.2.3.4' } }, (res) => {
+						const chunks = [];
+						res.on('data', (c) => chunks.push(c));
+						res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+					})
+					.on('error', reject)
+					.end();
+			});
+			assert.strictEqual(body, '127.0.0.1', 'client-supplied XFF must not override the socket peer IP');
 		});
 
 		it('suppresses the body for a HEAD request', async function () {
