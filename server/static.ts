@@ -48,7 +48,8 @@ function serveFile(req, path: string, scope: Scope) {
 	const maxAge = scope.options.get(['maxAge']);
 	const immutable = scope.options.get(['immutable']) ?? false;
 	const cacheControl = scope.options.get(['cacheControl']);
-	if (maxAge !== undefined && typeof maxAge !== 'number' && typeof maxAge !== 'string') {
+	const maxAgeMs = maxAge === undefined ? 0 : convertToMS(maxAge);
+	if ((typeof maxAge !== 'number' && typeof maxAge !== 'string' && maxAge !== undefined) || Number.isNaN(maxAgeMs)) {
 		throw new Error(`Invalid maxAge option: ${maxAge}. Must be a number of seconds or a duration string like '5m'.`);
 	}
 	if (typeof immutable !== 'boolean') {
@@ -61,7 +62,7 @@ function serveFile(req, path: string, scope: Scope) {
 	const stream = send(req, path, {
 		// suppress send's own header when we set a full override below (or when disabled)
 		cacheControl: cacheControl === false || customCacheControl !== undefined ? false : true,
-		maxAge: maxAge === undefined ? 0 : convertToMS(maxAge),
+		maxAge: maxAgeMs,
 		immutable,
 	});
 	if (customCacheControl) {
