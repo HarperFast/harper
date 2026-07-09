@@ -164,14 +164,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.catch((error) => {
 				// If the config file does not exist
 				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-					// Root config file missing (e.g. the install hasn't flushed it yet): ask the
-					// config layer for the env-only overlay so boot-time consumers still see the
-					// effective config (#1618). It becomes our state ONLY when this scope's name
-					// is present — otherwise fall through to the original ENOENT handling with
-					// #rootConfig untouched (a first read must emit `ready`, not `remove`; nothing
-					// consumes `remove` at boot and `ready` would hang forever). overlayRootEnvConfig
-					// returns undefined when no env vars are set, and throws on malformed env JSON —
-					// route that to `error` like the file-read path, not an unhandled rejection.
+					// A readFile ENOENT here is the install window (file not written yet) or a
+					// transient read race — NOT a real deletion, which chokidar routes to
+					// `#handleUnlink`. Ask the config layer for the env-only overlay so boot-time
+					// consumers still see the effective config (#1618). overlayRootEnvConfig returns
+					// undefined when no env vars are set, and throws on malformed env JSON — route
+					// that to `error` like the file-read path, not an unhandled rejection.
 					if (this.#isRootConfig) {
 						let composed: Config | undefined;
 						try {
@@ -180,10 +178,20 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 							this.emit('error', composeError);
 							return;
 						}
-						if (composed && this.#name in composed && !this.#scopedConfig) {
+						// Env config is file-independent: if it provides this scope, a missing/
+						// unreadable file must not discard it (first read → ready; a later read with
+						// config already set → merge, never reset). When this scope is NOT in the env
+						// config, fall through to the original ENOENT handling with #rootConfig
+						// untouched, so a first boot still emits `ready` (not `remove`, which nothing
+						// consumes at boot → `ready` would hang forever).
+						if (composed && this.#name in composed) {
 							this.#rootConfig = composed;
-							this.#scopedConfig = composed[this.#name];
-							this.emit('ready', this.#scopedConfig);
+							if (!this.#scopedConfig) {
+								this.#scopedConfig = composed[this.#name];
+								this.emit('ready', this.#scopedConfig);
+							} else {
+								this.#merge(composed[this.#name], this.#scopedConfig);
+							}
 							return;
 						}
 					}
