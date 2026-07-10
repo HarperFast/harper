@@ -29,11 +29,15 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		await teardownHarper(ctx);
 	});
 
-	async function getCss(): Promise<Response> {
-		const res = await fetch(new URL('/test.css', ctx.harper.httpURL));
+	async function getPath(path: string): Promise<Response> {
+		const res = await fetch(new URL(path, ctx.harper.httpURL));
 		strictEqual(res.status, 200);
 		await res.text(); // drain
 		return res;
+	}
+
+	async function getCss(): Promise<Response> {
+		return getPath('/test.css');
 	}
 
 	async function setStaticConfig(yaml: string): Promise<void> {
@@ -95,5 +99,25 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 
 	test('cacheControl: false suppresses the header', async () => {
 		await applyAndWaitForCacheControl("static:\n  files: 'web/**'\n  cacheControl: false\n", null);
+	});
+
+	test('cacheOverrides: per-file policy layered over the top-level defaults', async () => {
+		// Long-lived immutable default (the hashed-asset case); index.html gets its own short,
+		// revalidating window — Dawson's motivating example.
+		const yaml =
+			'static:\n' +
+			"  files: 'web/**'\n" +
+			'  maxAge: 1y\n' +
+			'  immutable: true\n' +
+			'  cacheOverrides:\n' +
+			"    'index.html': { cacheControl: 'public, max-age=0, stale-while-revalidate=60' }\n" +
+			'    "*.css": { maxAge: 60 }\n';
+		// Poll on the css file until the override lands (confirms the config reload applied). The
+		// '*.css' override sets only maxAge, so immutable is inherited from the top level — partial merge.
+		await applyAndWaitForCacheControl(yaml, 'public, max-age=60, immutable');
+		// index.html, matched by basename on the directory-index (`/`) serve, gets its full-string
+		// override, which takes precedence over the inherited maxAge/immutable.
+		const index = await getPath('/');
+		strictEqual(index.headers.get('cache-control'), 'public, max-age=0, stale-while-revalidate=60');
 	});
 });
