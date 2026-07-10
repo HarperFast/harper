@@ -77,6 +77,14 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No
 - Eventual removal: This code could be maintained within our codebase, if necessary, as it is not very large.
 
+## node-pty
+
+- Need for usage: Provides a real pseudo-terminal (PTY) for the built-in interactive terminal component (`components/terminal`), so Studio can attach an xterm.js shell to an instance. Optional dependency; the component only loads when `terminal.enabled` is set.
+- Size/memory cost: Small (~50KB) plus a prebuilt native binary per platform.
+- Security: No reported vulnerabilities. It spawns a shell, so the terminal component gates access to super_user only.
+- Binary compilation: Yes (native addon; shipped as an optional dependency with prebuilds).
+- Eventual removal: The terminal component is opt-in and off by default; if dropped, remove the component and this dependency together.
+
 ## segfault-handler
 
 - Need for usage: Provides a way to log segfaults in native code

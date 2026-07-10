@@ -115,8 +115,13 @@ export function registerTerminalWebSocket({ nodeServer, config }: RegisterArgs):
 	// app-port WS server. `noServer` because we drive handleUpgrade ourselves.
 	const wss = new WebSocketServer({
 		noServer: true,
+		// Bound frame size so a client can't exhaust memory with a huge frame.
+		maxPayload: 1024 * 1024,
 		handleProtocols: (protocols: Set<string>) => (protocols.has(TERMINAL_SUBPROTOCOL) ? TERMINAL_SUBPROTOCOL : false),
 	});
+	// A ws.Server is an EventEmitter: an unhandled 'error' event throws and would
+	// crash the process, so always attach a listener.
+	wss.on('error', (error) => terminalLog.error?.('terminal WebSocketServer error', error));
 
 	nodeServer.on('upgrade', (req, socket, head) => {
 		let pathname: string;
@@ -146,7 +151,7 @@ interface SessionOptions {
 	maxSessions: number;
 }
 
-async function authenticate(payload: string): Promise<any | null> {
+async function authenticate(payload: string, req: any): Promise<any | null> {
 	let auth: any;
 	try {
 		auth = JSON.parse(payload);
@@ -162,7 +167,9 @@ async function authenticate(payload: string): Promise<any | null> {
 	}
 	if (auth?.username) {
 		try {
-			return await (server as any).authenticateUser(auth.username, auth.password ?? '');
+			// server.authenticateUser expects (username, password, request) — pass req
+			// through so the auth provider gets its usual context (audit, ip, etc.).
+			return await (server as any).authenticateUser(auth.username, auth.password ?? '', req);
 		} catch {
 			return null;
 		}
@@ -173,6 +180,7 @@ async function authenticate(payload: string): Promise<any | null> {
 async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Promise<void> {
 	const remote = req?.socket?.remoteAddress ?? 'unknown';
 	let authed = false;
+	let authenticating = false;
 	let term: any = null;
 	let closed = false;
 	let idleTimer: NodeJS.Timeout | undefined;
@@ -217,11 +225,15 @@ async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Pr
 		const payload = frame.slice(1);
 
 		if (!authed) {
-			if (opcode !== OPCODE_AUTH) {
+			// The message handler is async: a client could fire several auth frames
+			// before the first resolves. `authenticating` is set synchronously (before
+			// any await) so re-entrant frames bail out instead of spawning a 2nd PTY.
+			if (authenticating || opcode !== OPCODE_AUTH) {
 				safeClose(ws, 4401, 'authentication required');
 				return;
 			}
-			const user = await authenticate(payload);
+			authenticating = true;
+			const user = await authenticate(payload, req);
 			const username = user?.username ?? 'anonymous';
 			if (!user) {
 				terminalLog.warn?.(`terminal AUTH-FAIL from ${remote}`);
@@ -233,16 +245,21 @@ async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Pr
 				safeClose(ws, 4403, 'super_user required');
 				return;
 			}
+			// Reserve the session slot synchronously (check + increment with no await
+			// between them) so concurrent connections can't both pass the check and
+			// overshoot maxSessions. Rolled back below if PTY startup fails.
 			if (liveSessions >= opts.maxSessions) {
 				terminalLog.warn?.(`terminal REJECTED for '${username}' from ${remote} (maxSessions reached)`);
 				safeClose(ws, 4429, 'terminal session limit reached');
 				return;
 			}
+			liveSessions++;
 
 			let pty: any;
 			try {
 				pty = await loadPty();
 			} catch (error) {
+				liveSessions = Math.max(0, liveSessions - 1);
 				terminalLog.error?.('node-pty unavailable; install it in the instance image', error);
 				safeClose(ws, 4500, 'terminal backend (node-pty) not installed');
 				return;
@@ -256,6 +273,7 @@ async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Pr
 					env: process.env,
 				});
 			} catch (error) {
+				liveSessions = Math.max(0, liveSessions - 1);
 				terminalLog.error?.(`failed to spawn shell '${opts.shell}'`, error);
 				safeClose(ws, 4500, 'failed to spawn shell');
 				return;
@@ -263,7 +281,6 @@ async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Pr
 
 			authed = true;
 			clearTimeout(authTimer);
-			liveSessions++;
 			resetIdle();
 			terminalLog.notify?.(`terminal OPEN for '${username}' from ${remote} (pid=${term.pid}, live=${liveSessions})`);
 
@@ -282,10 +299,16 @@ async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Pr
 			return;
 		}
 
-		// Authenticated frames.
+		// Authenticated frames. The socket can still deliver messages during the
+		// WS close handshake after the PTY exited, so bail if we're tearing down.
+		if (closed || !term) return;
 		resetIdle();
 		if (opcode === OPCODE_INPUT) {
-			term.write(payload);
+			try {
+				term.write(payload);
+			} catch {
+				teardown('write-failed');
+			}
 		} else if (opcode === OPCODE_RESIZE) {
 			try {
 				const { cols, rows } = JSON.parse(payload);

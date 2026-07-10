@@ -648,7 +648,7 @@
 
 		"terminal": {
 			"type": "object",
-			"description": "Built-in interactive terminal component (PROTOTYPE). Exposes a super_user-only PTY over a WebSocket on the app HTTP port for Studio. Disabled by default — a browser-reachable shell must be explicitly opted in.",
+			"description": "Built-in interactive terminal component (PROTOTYPE). Exposes a super_user-only PTY over a WebSocket on the operations API port for Studio. Disabled by default — a browser-reachable shell must be explicitly opted in.",
 			"additionalProperties": false,
 			"properties": {
 				"enabled": { "type": "boolean", "description": "Enable the interactive terminal component. Default: false" },
