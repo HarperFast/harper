@@ -2,7 +2,7 @@ import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
-import { INVALIDATED, EVICTED } from './Table.ts';
+import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
@@ -375,7 +375,7 @@ export function searchByIndex(
 						let result: any;
 						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) result = SKIP;
 						else {
-							Object.freeze(entry.value);
+							freezeRecord(entry.value);
 							recordRead(entry);
 							result = entry;
 						}
@@ -396,7 +396,7 @@ export function searchByIndex(
 						transaction: context && Table._readTxnForContext(context),
 					});
 					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
-					Object.freeze(loadedEntry?.value);
+					freezeRecord(loadedEntry?.value);
 					recordRead(loadedEntry);
 					return { ...otherProps, ...loadedEntry };
 				}
