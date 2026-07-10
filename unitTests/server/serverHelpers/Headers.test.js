@@ -1,7 +1,13 @@
 'use strict';
 const assert = require('assert');
 
-const { Headers, appendHeader, mergeHeaders, toWriteHeadHeaders } = require('#src/server/serverHelpers/Headers');
+const {
+	Headers,
+	appendHeader,
+	mergeHeaders,
+	toWriteHeadHeaders,
+	addVaryHeader,
+} = require('#src/server/serverHelpers/Headers');
 describe('Test Headers', () => {
 	describe(`Create and modify headers`, function () {
 		it('should handle headers', async function () {
@@ -438,5 +444,38 @@ describe('toWriteHeadHeaders', () => {
 		} finally {
 			await new Promise((resolve) => server.close(resolve));
 		}
+	});
+});
+
+describe('addVaryHeader', () => {
+	it('sets Vary when absent', () => {
+		const headers = new Headers();
+		addVaryHeader(headers, 'Origin');
+		assert.equal(headers.get('Vary'), 'Origin');
+	});
+	it('appends to an existing Vary value', () => {
+		const headers = new Headers();
+		headers.set('Vary', 'Accept, Accept-Encoding');
+		addVaryHeader(headers, 'Origin');
+		assert.equal(headers.get('Vary'), 'Accept, Accept-Encoding, Origin');
+	});
+	it('deduplicates case-insensitively', () => {
+		const headers = new Headers();
+		headers.set('Vary', 'Accept, origin');
+		addVaryHeader(headers, 'Origin');
+		assert.equal(headers.get('Vary'), 'Accept, origin');
+	});
+	it('is a no-op when Vary is *', () => {
+		const headers = new Headers();
+		headers.set('Vary', '*');
+		addVaryHeader(headers, 'Authorization');
+		assert.equal(headers.get('Vary'), '*');
+	});
+	it('handles an array-valued Vary', () => {
+		const headers = new Headers();
+		headers.set('Vary', 'Accept');
+		headers.append('Vary', 'Accept-Encoding');
+		addVaryHeader(headers, 'Cookie');
+		assert.equal(headers.get('Vary'), 'Accept, Accept-Encoding, Cookie');
 	});
 });

@@ -215,6 +215,7 @@ export function makeTable(options) {
 		replicate,
 		description,
 		hidden,
+		cacheControl,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
@@ -318,6 +319,8 @@ export function makeTable(options) {
 		static description = description;
 		static properties = properties;
 		static hidden = hidden;
+		// default `Cache-Control` for anonymous REST reads (from `@table(cacheControl: "...")`), see REST.ts
+		static cacheControl = cacheControl;
 		static outputSchemas: { [verb: string]: JsonSchemaFragment } | undefined;
 		static mcp: { annotations?: { [verb: string]: any } } | undefined;
 		static replicate = replicate;

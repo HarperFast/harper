@@ -254,6 +254,20 @@ async function http(request: Request, nextHandler) {
 			headers,
 			body: undefined,
 		};
+		// #1565 converse: a declared `@table(cacheControl: "...")`/static cacheControl is emitted on
+		// anonymous reads so a shared cache/CDN can store public responses. Emission requires the
+		// explicit declaration — "the anonymous request succeeded" alone doesn't establish that the
+		// content is uniformly public (an allowRead gated on IP or headers would leak across a
+		// URL-keyed cache). Authenticated responses are excluded here — the auth layer applies a
+		// `private` floor to them instead.
+		if (!request.user && (method === 'GET' || method === 'HEAD')) {
+			const responseStatus = responseObject.status;
+			if (responseStatus === 200 || responseStatus === 304) {
+				const cacheControl = (resource as any)?.cacheControl;
+				// setIfNone: a resource-set Cache-Control (including a full no-store opt-out) always wins
+				if (cacheControl) headers.setIfNone('Cache-Control', cacheControl);
+			}
+		}
 		const loadedFromSource = target.loadedFromSource;
 		if (loadedFromSource !== undefined) {
 			// this appears to be a caching table with a source
