@@ -76,11 +76,14 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
-			// Need to remove auth variables and secret-bearing fields (value/values carry .env
-			// secrets from set_env_value; value/envelope carry secrets from set_secret), but we
-			// don't want to create an object unless the logging is actually going to happen.
+			// Need to remove auth variables and secret-bearing fields, but we don't want to create
+			// an object unless the logging is actually going to happen. registryAuth carries a
+			// transient private registry token on deploy_component; value/values carry .env secrets
+			// from set_env_value; value/envelope carry secrets from set_secret — none may reach the
+			// operations log.
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			const { hdb_user, hdbAuthHeader, password, payload, value, values, envelope, ...cleanBody } = req.body;
+			const { hdb_user, hdbAuthHeader, password, payload, registryAuth, value, values, envelope, ...cleanBody } =
+				req.body;
 			operationLog.info(cleanBody);
 		}
 	} catch (e) {
