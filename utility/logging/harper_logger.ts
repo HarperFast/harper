@@ -12,7 +12,7 @@ import * as os from 'os';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
 import { Console } from 'console';
-import { inspect, types } from 'util';
+import { inspect, types } from 'node:util';
 
 const { isNativeError } = types;
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
@@ -945,21 +945,46 @@ function getDefaultConfig() {
  * @return {string|string}
  */
 export function errorToString(error: any) {
+	if (error == null) return String(error);
 	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
 }
 
+// Own-enumerable Error properties considered safe to surface in logs — common diagnostic fields
+// (HTTP status, Node error codes) that libraries and app code don't use to carry secrets, unlike
+// arbitrary properties (axios' `config`/`request` with an Authorization header), which stay
+// excluded. `path` is deliberately omitted: it can reveal internal filesystem layout, and the
+// message/stack already names the failing operation.
+const LOGGABLE_ERROR_PROPS = ['code', 'status', 'statusCode', 'errno', 'syscall'];
+
+function loggablePropsSuffix(error: any): string {
+	if (typeof error !== 'object' || error === null) return '';
+	let suffix = '';
+	for (const key of LOGGABLE_ERROR_PROPS) {
+		const value = error[key];
+		if (value !== undefined) suffix += ` ${key}=${value}`;
+	}
+	return suffix;
+}
+
+function renderErrorLine(error: any): string {
+	const base = typeof error?.stack === 'string' ? error.stack : errorToString(error);
+	return base + loggablePropsSuffix(error);
+}
+
 /**
- * Renders an error to its stack (class name + message + frames), then appends the stack of each
- * error in its `cause` chain. Deliberately excludes own-enumerable properties — those are exactly
+ * Renders an error to its stack (class name + message + frames) plus a small allowlist of
+ * diagnostic properties (see `LOGGABLE_ERROR_PROPS`), then appends the same for each error in its
+ * `cause` chain. Deliberately excludes every OTHER own-enumerable property — those are exactly
  * what leaks secrets in #1734 (see `errorForLog`).
  */
 function errorToLogString(error: any) {
-	let output = typeof error?.stack === 'string' ? error.stack : error == null ? String(error) : errorToString(error);
+	if (error == null) return String(error);
+	let output = renderErrorLine(error);
 	const seen = new Set([error]);
-	let cause = error?.cause;
+	let cause = error.cause;
 	while (cause != null && !seen.has(cause)) {
 		seen.add(cause);
-		output += `\ncaused by: ${typeof cause.stack === 'string' ? cause.stack : errorToString(cause)}`;
+		output += `\ncaused by: ${renderErrorLine(cause)}`;
 		cause = cause.cause;
 	}
 	return output;

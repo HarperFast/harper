@@ -923,7 +923,43 @@ describe('Test harper_logger module', () => {
 		it('falls back to "ClassName: message" when there is no stack', () => {
 			// A thrown plain object carrying an HTTP status but no stack.
 			const thrown = { message: 'not found', status: 404 };
-			expect(render(thrown)).to.equal('Object: not found');
+			expect(render(thrown)).to.equal('Object: not found status=404');
+		});
+
+		it('surfaces the allowlisted diagnostic properties (code/status/statusCode/errno/syscall)', () => {
+			const error = new Error('ENOENT: no such file or directory');
+			error.code = 'ENOENT';
+			error.errno = -2;
+			error.syscall = 'open';
+			error.path = '/home/harperdb/hdb/schema/internal.mdb';
+			const result = render(error);
+			expect(result).to.include('code=ENOENT');
+			expect(result).to.include('errno=-2');
+			expect(result).to.include('syscall=open');
+			// path is deliberately excluded — it can reveal internal filesystem layout.
+			expect(result).to.not.include('/home/harperdb');
+		});
+
+		it('surfaces status/statusCode without leaking sibling secret properties', () => {
+			const error = new Error('request failed');
+			error.status = 401;
+			error.statusCode = 401;
+			error.authorization = 'Bearer super-secret-token';
+			const result = render(error);
+			expect(result).to.include('status=401');
+			expect(result).to.include('statusCode=401');
+			expect(result).to.not.include('super-secret-token');
+		});
+
+		it('surfaces allowlisted properties on a cause without leaking the cause’s secrets', () => {
+			const root = new Error('connection refused');
+			root.code = 'ECONNREFUSED';
+			root.secret = 'Bearer super-secret-token';
+			const error = new Error('origin fetch failed', { cause: root });
+			const result = render(error);
+			expect(result).to.include('caused by:');
+			expect(result).to.include('code=ECONNREFUSED');
+			expect(result).to.not.include('super-secret-token');
 		});
 
 		it('handles a thrown string', () => {
