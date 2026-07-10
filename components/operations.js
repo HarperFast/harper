@@ -520,18 +520,32 @@ async function deployComponent(req) {
 			pseudoResources.isWorker = true;
 
 			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
+			const { trackScopeClose } = require('./scopeShutdown.ts');
 			let lastError;
 			componentLoader.setErrorReporter((error) => (lastError = error));
 			emit('phase', { phase: 'load', status: 'start' });
-			await componentLoader.loadComponent(
-				application.dirPath,
-				pseudoResources,
-				undefined,
-				false,
-				undefined,
-				false,
-				req.project
-			);
+			// This load exists only to surface load-time errors early; the Scopes it creates are
+			// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
+			// can close them here once validation completes — otherwise each deploy leaks the Scope's
+			// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
+			// (#1462).
+			const validationScopes = new Set();
+			const validation = (async () => {
+				try {
+					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
+						collectScopes: validationScopes,
+					});
+				} finally {
+					const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
+					for (const result of closeResults) {
+						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
+					}
+				}
+			})();
+			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
+			// disposing — a plugin may start a native runtime in handleApplication — before realExit.
+			trackScopeClose(validation);
+			await validation;
 			emit('phase', { phase: 'load', status: 'done' });
 
 			if (lastError) throw lastError;
