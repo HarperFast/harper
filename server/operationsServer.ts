@@ -29,6 +29,7 @@ import { registerBunFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
 import { getConfigObj } from '../config/configUtils.ts';
 import { registerMcpProfile } from '../components/mcp/index.ts';
+import { registerTerminalWebSocket } from '../components/terminal/index.ts';
 import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
 type ParsedSqlObject = any;
 import { generateJsonApi } from '../resources/openApi.ts';
@@ -221,6 +222,15 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 			// contaminate the JSON-RPC envelope the MCP handler reads).
 			routeOptions: { preValidation: [authAndEnsureUserOnRequest] },
 		});
+	}
+
+	// Built-in interactive terminal (PROTOTYPE). Opt-in via `terminal.enabled`.
+	// Attaches a `/terminal` WebSocket upgrade handler to this operations node
+	// server, keeping the super_user PTY on the operations security boundary
+	// rather than the application data port. First-message auth (no auth-middleware
+	// change). See components/terminal/index.ts and components/terminal/README.md.
+	if (fullConfig.terminal?.enabled) {
+		registerTerminalWebSocket({ nodeServer: app.server, config: fullConfig.terminal });
 	}
 
 	// Add a simple health check

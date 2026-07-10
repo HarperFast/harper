@@ -646,6 +646,38 @@
 			}
 		},
 
+		"terminal": {
+			"type": "object",
+			"description": "Built-in interactive terminal component (PROTOTYPE). Exposes a super_user-only PTY over a WebSocket on the app HTTP port for Studio. Disabled by default — a browser-reachable shell must be explicitly opted in.",
+			"additionalProperties": false,
+			"properties": {
+				"enabled": { "type": "boolean", "description": "Enable the interactive terminal component. Default: false" },
+				"shell": {
+					"type": "string",
+					"description": "Shell executable to spawn. Default: $SHELL, else bash."
+				},
+				"args": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "Arguments passed to the shell. Default: none."
+				},
+				"cwd": {
+					"type": "string",
+					"description": "Working directory for spawned terminals. Default: the instance root."
+				},
+				"idleTimeoutMs": {
+					"type": "integer",
+					"minimum": 1000,
+					"description": "Close a session after this many ms with no traffic. Default: 600000 (10m)."
+				},
+				"maxSessions": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Maximum concurrent terminal sessions per worker. Default: 10."
+				}
+			}
+		},
+
 		"analytics": {
 			"type": "object",
 			"additionalProperties": false,
