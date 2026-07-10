@@ -1120,17 +1120,17 @@ describe('test MQTT connections and commands', function () {
 			return global.server.socket(() => {}, options);
 		};
 		try {
-			assert.equal(!!makeListener('linux', { port: 21883 }).noReusePort, false, 'TCP should share the port on Linux');
+			const linuxTcp = makeListener('linux', { port: 21883 });
+			assert.equal(!!linuxTcp.noReusePort, false, 'TCP should share the port on Linux');
+			assert.equal(linuxTcp.dedicatedListener, true, 'TCP listener should be marked worker-owned/dedicated');
 			assert.equal(
 				makeListener('darwin', { port: 21884 }).noReusePort,
 				true,
 				'TCP should opt out of reusePort on macOS'
 			);
-			assert.equal(
-				!!makeListener('linux', { securePort: 28883 }).noReusePort,
-				false,
-				'TLS should share the port on Linux'
-			);
+			const linuxTls = makeListener('linux', { securePort: 28883 });
+			assert.equal(!!linuxTls.noReusePort, false, 'TLS should share the port on Linux');
+			assert.equal(linuxTls.dedicatedListener, true, 'TLS listener should be marked worker-owned/dedicated');
 			assert.equal(
 				makeListener('darwin', { securePort: 28884 }).noReusePort,
 				true,
