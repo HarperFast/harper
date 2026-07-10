@@ -15,7 +15,7 @@
  * still starts (the conflict is surfaced, not fatal).
  */
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert/strict';
+import { ok } from 'node:assert';
 import { createServer, type Server } from 'node:net';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
