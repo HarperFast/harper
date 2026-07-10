@@ -135,7 +135,7 @@ function attachMainListeners() {
 	});
 }
 
-function executeRemoteOperation(name: string, body: any): Promise<any> {
+async function executeRemoteOperation(name: string, body: any): Promise<any> {
 	attachMainListeners();
 	const workerIds = registeredByWorker.get(name);
 	const forwardBody = { ...body };
@@ -158,8 +158,9 @@ function executeRemoteOperation(name: string, body: any): Promise<any> {
 			// server-side limitation, not a malformed client request — 500, not 400. No other worker
 			// will fare better with the same body.
 			operationLog.error(`Failed to forward operation '${name}' to worker thread ${targetThreadId}`, error);
-			return Promise.reject(
-				new ServerError(`Operation '${name}' request could not be forwarded to a worker thread: ${error.message}`, 500)
+			throw new ServerError(
+				`Operation '${name}' request could not be forwarded to a worker thread: ${error.message}`,
+				500
 			);
 		}
 		if (!sent) {
@@ -171,7 +172,7 @@ function executeRemoteOperation(name: string, body: any): Promise<any> {
 				pendingExecutions.delete(requestId);
 				promiseReject(new ServerError(`Timed out waiting for worker thread to execute operation '${name}'`, 503));
 			}, EXECUTE_TIMEOUT_MS);
-			timer.unref?.();
+			timer.unref();
 			pendingExecutions.set(requestId, {
 				targetThreadId,
 				resolve(result) {
@@ -186,8 +187,9 @@ function executeRemoteOperation(name: string, body: any): Promise<any> {
 		});
 	}
 	if (registeredByWorker.get(name)?.size === 0) registeredByWorker.delete(name);
-	return Promise.reject(
-		new ServerError(`Operation '${name}' is registered by a component but no worker thread is available to run it`, 503)
+	throw new ServerError(
+		`Operation '${name}' is registered by a component but no worker thread is available to run it`,
+		503
 	);
 }
 
