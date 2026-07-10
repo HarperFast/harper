@@ -252,6 +252,7 @@
 	"optionalDependencies": {
 		"bufferutil": "^4.0.9",
 		"segfault-handler": "^1.3.0",
+		"uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.68.0",
 		"utf-8-validate": "^5.0.10"
 	},
 	"peerDependencies": {

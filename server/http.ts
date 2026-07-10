@@ -17,7 +17,7 @@ import { createSecureServer, createServer as createH2CServer } from 'node:http2'
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { Request, BunRequest, isBun } from './serverHelpers/Request.ts';
+import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
@@ -52,8 +52,15 @@ let httpOptions: HttpOptions = {};
 export const universalHeaders: [string, string][] = [];
 // Bun-specific: stores fetch handler configs per port, used by threadServer.js to call Bun.serve()
 export const bunServeConfigs: Record<string | number, any> = {};
-// Bun-specific: stores non-function listeners (e.g. Fastify servers) per port for fallback delegation
-const bunFallbackServers: Record<string | number, any> = {};
+// uWS backend (#914): stores { socketPath, secure, handler } configs keyed by UDS path. When
+// HARPER_UWS_UDS is set, the per-worker UDS mirror is served by uWebSockets.js instead of a Node
+// http server; threadServer.js consumes these and calls createUwsServer(). Symphony must forward
+// client identity via X-Forwarded-For (not the PROXY protocol) on these sockets, as the Bun path does.
+export const uwsServeConfigs: Record<string, any> = {};
+// Stores non-function listeners (e.g. Fastify servers) per port for fallback delegation on the
+// backends that don't register their own Node http server (Bun, and the uWS HTTP path). Keeping
+// them out of SERVERS is what prevents a competing Node server from binding the same port.
+const fallbackServers: Record<string | number, any> = {};
 const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
@@ -304,7 +311,16 @@ export function httpServer(listener, options) {
 			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
 		} else if (isBun) {
 			// On Bun, store non-function listeners (e.g. Fastify's http.Server) for fallback delegation
-			bunFallbackServers[port] = listener;
+			fallbackServers[port] = listener;
+		} else if ((httpServers[port] as any)?.uws) {
+			// uWS HTTP path (#914, HARPER_UWS_HTTP): the port is backed by uWebSockets.js, not a Node
+			// http server, so a raw non-function listener (e.g. Fastify's http.Server via
+			// server.http(fastify.server)) must NOT go through registerServer() — that would put it in
+			// SERVERS and threadServer would bind a Node http server competing with uWS on the same TCP
+			// port. Divert it to the fallback map like the Bun path; makeUwsHandler delegates unhandled
+			// requests to it via inject(). The { uws: true } marker is guaranteed present here: the
+			// getServer(port) call above (same loop iteration) sets it before this branch runs.
+			fallbackServers[port] = listener;
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
@@ -321,6 +337,31 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	if (!httpServers[port]) {
 		// TODO: These should all come from httpOptions or operationsApiOptions
 		const serverPrefix = isOperationsServer ? 'operationsApi_network' : (usageType ?? 'http');
+		// uWS plaintext-HTTP path (#914, HARPER_UWS_HTTP): back a non-secure TCP HTTP port with
+		// uWebSockets.js directly instead of a Node http server. This is the flag used to run the
+		// integration suite through uWS (no symphony/UDS needed). WebSocket upgrades are wired on this
+		// path via onWebSocket's uWS branch; it's opt-in and separate from HARPER_UWS_UDS.
+		const lastColon = String(port).lastIndexOf(':');
+		const uwsPort = lastColon > 0 ? +String(port).slice(lastColon + 1) : +port;
+		if (
+			process.env.HARPER_UWS_HTTP &&
+			!secure &&
+			!isOperationsServer &&
+			!String(port).includes('/') &&
+			!Number.isNaN(uwsPort)
+		) {
+			uwsServeConfigs[port] = {
+				port: uwsPort,
+				host: lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : undefined,
+				secure: false,
+				handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+			};
+			// Marker so the httpServers guard is satisfied and the caller has a truthy handle; the
+			// actual listen happens in threadServer.js from uwsServeConfigs. onWebSocket() detects
+			// this marker (server.uws) and wires native uWS WebSocket handling into the same config.
+			httpServers[port] = { uws: true, port } as any;
+			return httpServers[port];
+		}
 		const keepAliveTimeout = env.get(serverPrefix + '_keepAliveTimeout');
 		const requestTimeout = env.get(serverPrefix + '_timeout');
 		const headersTimeout = env.get(serverPrefix + '_headersTimeout');
@@ -577,28 +618,41 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			// Create a plain HTTP server (no TLS) with the same request handler
-			const udsServer = createServer(
-				{
-					keepAliveTimeout,
-					headersTimeout,
-					requestTimeout,
-					highWaterMark: 128 * 1024,
-					noDelay: true,
-					keepAlive: true,
-					keepAliveInitialDelay: 600,
-					maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
-				},
-				(nodeRequest: IncomingMessage, nodeResponse: any) => {
-					const method = nodeRequest.method;
-					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-					else throttledRequestHandler(nodeRequest, nodeResponse);
-				}
-			);
+			if (process.env.HARPER_UWS_UDS) {
+				// uWS backend (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
+				// server. threadServer.js consumes uwsServeConfigs and calls createUwsServer(). uWS does
+				// not parse the PROXY protocol, so symphony must use sourceAddressHeader: 'xForwardedFor'
+				// for this socket (the same mode it uses for the Bun path).
+				uwsServeConfigs[udsPath] = {
+					socketPath: udsPath,
+					secure: true,
+					handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+				};
+			} else {
+				// Create a plain HTTP server (no TLS) with the same request handler
+				const udsServer = createServer(
+					{
+						keepAliveTimeout,
+						headersTimeout,
+						requestTimeout,
+						highWaterMark: 128 * 1024,
+						noDelay: true,
+						keepAlive: true,
+						keepAliveInitialDelay: 600,
+						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
+					},
+					(nodeRequest: IncomingMessage, nodeResponse: any) => {
+						const method = nodeRequest.method;
+						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD')
+							requestHandler(nodeRequest, nodeResponse);
+						else throttledRequestHandler(nodeRequest, nodeResponse);
+					}
+				);
 
-			udsServer.isPerThreadSocket = true;
-			enableProxyProtocol(udsServer);
-			SERVERS[udsPath] = udsServer;
+				udsServer.isPerThreadSocket = true;
+				enableProxyProtocol(udsServer);
+				SERVERS[udsPath] = udsServer;
+			}
 			registerUdsCleanupPaths(udsPath, yamlPath);
 
 			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server);
@@ -636,6 +690,210 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 }
 
 /**
+ * uWS backend (#914): builds the per-request handler for a uWS UDS server. Mirrors the Bun
+ * fetchHandler's post-processing (httpChain, unhandled, universalHeaders, Server-Timing,
+ * analytics, logging) but returns a plain Harper response descriptor for createUwsServer to
+ * serialize onto the uWS HttpResponse. When the chain doesn't handle the request (status === -1)
+ * and a Fastify fallback is registered for the port, it delegates via inject() (see injectToFastify),
+ * mirroring the Bun path — so legacy Fastify routes work behind uWS too.
+ */
+function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
+	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
+	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
+	// mutates. `headers` is normalized in place the same way the Bun path does.
+	const handle = async (request: any) => {
+		const startTime = performance.now();
+		let requestId = 0;
+		if (isOperationsServer) request.isOperationsServer = true;
+		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
+		let response = await httpChain[port](request);
+		if (!response) response = unhandled(request);
+		let headers = response.headers;
+		if (!headers?.set) headers = new Headers(headers);
+		for (const [key, value] of universalHeaders) headers.set(key, value);
+		if (response.status === -1) {
+			// The chain didn't handle it. If a Fastify fallback is registered for this port (legacy
+			// custom-function routes via server.http(fastify.server)), delegate to it via inject(),
+			// mirroring the Bun path; otherwise it's a genuine 404.
+			const fastify = fastifyInstances[port];
+			if (fastify) {
+				const injectResult = await injectToFastify(fastify, {
+					method: request.method,
+					url: request.url,
+					headers: request.headers.asObject,
+					body: request.body, // stream; inject() consumes it as the payload
+					user: request.user,
+				});
+				const respHeaders = new Headers();
+				for (const [k, v] of Object.entries(injectResult.headers)) {
+					if (v == null) continue;
+					// Keep Set-Cookie multi-valued (Harper Headers + writeHeaders emit each separately);
+					// only comma-join other repeated headers.
+					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
+					else respHeaders.set(k, String(v));
+				}
+				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
+				const responseStream = injectResult.stream();
+				// Event-stream (SSE) responses must reach the client incrementally — stream the body and,
+				// on client disconnect, destroy the inject response so the Fastify reply's teardown runs
+				// (matches the Bun path). Finite responses buffer so Content-Length stays set.
+				if (String(injectResult.headers['content-type'] ?? '').includes('text/event-stream')) {
+					const injectResponse = injectResult.raw?.res;
+					if (injectResponse && typeof injectResponse.destroy === 'function') {
+						responseStream.once('close', () => injectResponse.destroy());
+					}
+					return { status: injectResult.statusCode, headers: respHeaders, body: responseStream };
+				}
+				const chunks: Buffer[] = [];
+				for await (const chunk of responseStream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				return {
+					status: injectResult.statusCode,
+					headers: respHeaders,
+					body: chunks.length > 0 ? Buffer.concat(chunks) : null,
+				};
+			}
+			logHttpRequest(request, 404, requestId, performance.now() - startTime);
+			return { status: 404, headers: new Headers({ 'content-type': 'text/plain' }), body: 'Not found\n' };
+		}
+		const status = response.status || 200;
+		const executionTime = performance.now() - startTime;
+		if (!response.handlesHeaders) {
+			let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
+			if (response.wasCacheMiss) serverTiming += ', miss';
+			appendHeader(headers, 'Server-Timing', serverTiming, true);
+		}
+		recordAction(
+			executionTime,
+			'duration',
+			request.handlerPath,
+			request.method,
+			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
+		);
+		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
+		recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
+		logHttpRequest(request, status, requestId, executionTime);
+		// Static handlers (the only handlesHeaders producers) return a `send` SendStream that writes
+		// its own headers/body to a Node ServerResponse via .pipe(). uWS has no such object, and a
+		// SendStream doesn't start until piped, so streaming it directly hangs (headers never flush).
+		// Pipe it into a Writable shim that captures the headers and buffers the file, mirroring the
+		// Bun path. Non-handlesHeaders bodies keep streaming through normalizeUwsBody.
+		if (response.handlesHeaders && response.body && typeof response.body.pipe === 'function') {
+			// send() may return 304 (conditional GET) or 206/416 (Range) — honor the status it set.
+			const sent = await bufferSendStream(response.body, headers, status, request.signal);
+			return { status: sent.status, headers, handlesHeaders: true, body: sent.body };
+		}
+		const body = await normalizeUwsBody(response.body, request.signal);
+		return { status, headers, handlesHeaders: response.handlesHeaders, body };
+	};
+	// Shed data-modifying requests when the event queue is backed up (503), mirroring the Node UDS
+	// path — GET/OPTIONS/HEAD are cheap and always run, everything else goes through the throttle.
+	const throttledHandle = throttle(
+		handle,
+		(_request: any) => {
+			recordAction(true, 'service-unavailable', port);
+			return {
+				status: 503,
+				headers: new Headers({ 'content-type': 'text/plain' }),
+				body: 'Service unavailable, exceeded request queue limit',
+			};
+		},
+		requestQueueLimit
+	);
+	return (request: any) => {
+		const method = request.method;
+		if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') return handle(request);
+		return throttledHandle(request);
+	};
+}
+
+/**
+ * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
+ * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
+ * stream it incrementally (buffering an SSE/event-stream body here would never return). `signal`
+ * aborts the collapse of a sync iterable if the client disconnects mid-response.
+ */
+/**
+ * Drive a `send` SendStream to completion against a Writable shim, capturing the headers it writes
+ * (setHeader/writeHead) onto `headers` and the status it sets (statusCode/writeHead) and buffering
+ * the file body. `send` targets an http.ServerResponse (setHeader/writeHead/statusCode/finished);
+ * uWS has none, so we adapt — mirrors the Bun fetchHandler's SendStream path. The captured status
+ * carries send's conditional-GET (304) and Range (206/416) results. Buffering is fine for static
+ * assets and keeps Content-Length set. `defaultStatus` is used when send sets none.
+ */
+function bufferSendStream(
+	body: any,
+	headers: Headers,
+	defaultStatus: number,
+	signal?: AbortSignal
+): Promise<{ body: Buffer; status: number }> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		const dest: any = new Writable({
+			write(chunk, _encoding, callback) {
+				chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				callback();
+			},
+			final(callback) {
+				callback();
+				resolve({ body: Buffer.concat(chunks), status: dest.statusCode || defaultStatus });
+			},
+		});
+		Object.assign(dest, {
+			setHeader: (n: string, v: any) => headers.set(n, v),
+			getHeader: (n: string) => headers.get(n),
+			removeHeader: (n: string) => (headers as any).delete(n.toLowerCase()),
+			// send conveys 304/206/416 via statusCode and/or writeHead's status arg — capture both so
+			// conditional-GET and Range responses aren't flattened to the default 200.
+			writeHead: (s: number, hdrs?: any) => {
+				if (s) dest.statusCode = s;
+				if (hdrs) for (const k in hdrs) headers.set(k, hdrs[k]);
+			},
+			statusCode: defaultStatus,
+			headersSent: false,
+			// 'on-finished' (used by 'send') treats a non-false `finished` as already-done and destroys
+			// the read stream before data flows; keep it false so it waits for the 'finish' event.
+			finished: false,
+		});
+		const onAbort = () => {
+			body.destroy?.();
+			dest.destroy?.();
+			reject(new Error('client aborted'));
+		};
+		if (signal) {
+			if (signal.aborted) return onAbort();
+			signal.addEventListener('abort', onAbort, { once: true });
+		}
+		body.on('error', reject);
+		dest.on('error', reject);
+		body.pipe(dest);
+	});
+}
+
+async function normalizeUwsBody(
+	body: any,
+	signal?: AbortSignal
+): Promise<string | Buffer | Uint8Array | Readable | null> {
+	if (body == null) return null;
+	if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) return body;
+	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
+	if (typeof body.then === 'function') return normalizeUwsBody(await body, signal);
+	// Already a Node stream — stream it as-is (re-wrapping in Readable.from breaks destroy propagation).
+	if (typeof body.pipe === 'function') return body;
+	// Async-iterable (e.g. an event queue) — adapt to a Readable and stream it.
+	if (body[Symbol.asyncIterator]) return Readable.from(body);
+	// Sync iterable — small/finite, collapse to a buffer.
+	if (body[Symbol.iterator]) {
+		const chunks: Buffer[] = [];
+		for (const chunk of body) {
+			if (signal?.aborted) throw new Error('client aborted');
+			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		}
+		return Buffer.concat(chunks);
+	}
+	return String(body);
+}
+
+/**
  * Bun-specific HTTP server setup. Instead of creating a Node http.Server, we store a fetch handler config
  * that will be passed to Bun.serve() when listenOnPorts() is called in threadServer.js.
  */
@@ -664,14 +922,14 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					response.headers.set(key, value);
 				}
 				if (response.status === -1) {
-					const fallbackServer = bunFallbackServers[port];
+					const fallbackServer = fallbackServers[port];
 					if (fallbackServer) {
 						// Delegate to the fallback server (e.g. Fastify) via node:http compatibility.
 						// We create a Node-compatible IncomingMessage/ServerResponse and emit 'request'
 						// on the fallback server, then capture the response.
 						return await bunDelegateToNodeServer(fallbackServer, webRequest, request);
 					}
-					logBunRequest(request, 404, requestId, performance.now() - startTime);
+					logHttpRequest(request, 404, requestId, performance.now() - startTime);
 					return new Response('Not found\n', { status: 404 });
 				}
 				const status = response.status || 200;
@@ -725,7 +983,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
 				recordActionBinary(1, 'response_' + status, handlerPath, method);
-				logBunRequest(request, status, requestId, executionTime);
+				logHttpRequest(request, status, requestId, executionTime);
 				// Convert body to something Bun's Response can accept
 				if (body instanceof ReadableStream) {
 					return new Response(body, { status, headers: responseHeaders });
@@ -780,7 +1038,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 				const statusCode = error.statusCode ?? error.status;
 				const status = statusCode || 500;
-				logBunRequest(null, status, requestId, performance.now() - startTime);
+				logHttpRequest(null, status, requestId, performance.now() - startTime);
 				if (statusCode) {
 					if (statusCode === 500) harperLogger.warn(errorForLog(error));
 					else harperLogger.info(errorForLog(error));
@@ -823,11 +1081,39 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
  * Bridge a Bun fetch request to a Node.js http.Server (e.g. Fastify) by using Fastify's inject()
  * method to send the request through its internal router without needing a real socket.
  */
-let bunFastifyInstances: Record<string | number, any> = {};
-export function registerBunFastifyInstance(port: string | number, instance: any) {
-	bunFastifyInstances[port] = instance;
+let fastifyInstances: Record<string | number, any> = {};
+export function registerFastifyInstance(port: string | number, instance: any) {
+	fastifyInstances[port] = instance;
 }
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
+
+/**
+ * Run a request through a Fastify instance via inject() — its internal router, no socket needed.
+ * Shared by the Bun and uWS fallback-delegation paths. Strips any forged pre-auth header from the
+ * client and, when Harper's auth middleware resolved a user without credentials (e.g. AUTHORIZE_LOCAL
+ * for loopback in dev), forwards it so Fastify can skip its own auth — only when no Authorization
+ * header was supplied, otherwise Fastify's Passport validates the credentials normally.
+ * `payloadAsStream` makes inject() resolve as soon as the response headers are written and exposes
+ * the body as a Readable, so a long-lived SSE response (the MCP server-push GET) streams instead of
+ * buffering forever.
+ */
+function injectToFastify(
+	fastify: any,
+	req: { method: string; url: string; headers: Record<string, any>; body?: Buffer | Readable; user?: any }
+) {
+	const headers: Record<string, any> = {};
+	for (const key in req.headers) {
+		if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = req.headers[key];
+	}
+	// Both callers pass already-lowercased header keys (uWS lowercases at the protocol level →
+	// RequestHeaders.asObject; Bun's webRequest.headers.forEach yields lowercase), so the literal
+	// 'authorization' lookup is reliable — the pre-auth user is only forwarded when the client sent
+	// no credentials of its own.
+	if (req.user && !headers['authorization']) {
+		headers[INTERNAL_USER_HEADER] = JSON.stringify(req.user);
+	}
+	return fastify.inject({ method: req.method, url: req.url, headers, payload: req.body, payloadAsStream: true });
+}
 
 async function bunDelegateToNodeServer(
 	nodeServer: any,
@@ -835,34 +1121,21 @@ async function bunDelegateToNodeServer(
 	bunRequest?: any
 ): Promise<Response> {
 	// Check if there's a Fastify instance registered for this port (preferred path)
-	for (const port in bunFallbackServers) {
-		if (bunFallbackServers[port] === nodeServer && bunFastifyInstances[port]) {
-			const fastify = bunFastifyInstances[port];
+	for (const port in fallbackServers) {
+		if (fallbackServers[port] === nodeServer && fastifyInstances[port]) {
+			const fastify = fastifyInstances[port];
 			const url = new URL(webRequest.url);
 			const body = webRequest.body ? Buffer.from(await webRequest.arrayBuffer()) : undefined;
 			const headers: Record<string, string> = {};
 			webRequest.headers.forEach((value, key) => {
-				// Strip any forged pre-auth header from real clients
-				if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = value;
+				headers[key] = value;
 			});
-			// If Harper's auth middleware authenticated this request without credentials (e.g. via
-			// AUTHORIZE_LOCAL for loopback connections in dev mode), pass the user so Fastify can
-			// skip its own auth. Only applies when there is no Authorization header — if credentials
-			// were provided, let Fastify's Passport validate them normally.
-			if (bunRequest?.user && !headers['authorization']) {
-				headers[INTERNAL_USER_HEADER] = JSON.stringify(bunRequest.user);
-			}
-			// `payloadAsStream` makes inject() resolve as soon as the response headers are
-			// written and exposes the body as a Readable, instead of buffering the whole
-			// payload and resolving only on response end. Without it a long-lived SSE
-			// response (the MCP server-push GET) never ends, so `await inject()` would
-			// hang forever and the client would never receive headers.
-			const injectResult = await fastify.inject({
+			const injectResult = await injectToFastify(fastify, {
 				method: webRequest.method,
 				url: url.pathname + url.search,
 				headers,
-				payload: body,
-				payloadAsStream: true,
+				body,
+				user: bunRequest?.user,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -985,8 +1258,10 @@ export function describeMiddlewareChains() {
 	};
 }
 function unhandled(request) {
-	if (request.user) {
-		// pass on authentication information to the next server
+	if (request.user && request._nodeRequest) {
+		// pass on authentication information to the next server (Node fallback delegation via the
+		// 'unhandled' event chain). The Bun/uWS adapters have no _nodeRequest; they forward the
+		// resolved user to the Fastify fallback via injectToFastify's INTERNAL_USER_HEADER instead.
 		request._nodeRequest.user = request.user;
 	}
 	return {
@@ -1062,7 +1337,35 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		const server = getHTTPServer(port, secure, options);
 
-		if (!websocketServers[port]) {
+		if ((server as any)?.uws) {
+			// uWS-backed port (HARPER_UWS_HTTP): uWS owns the socket, so route upgrades through uWS's
+			// native app.ws() rather than the Node ws.WebSocketServer + server 'upgrade' event. We wire a
+			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
+			const cfg = uwsServeConfigs[port];
+			if (cfg && !cfg.wsHandler) {
+				// Honor a configured WebSocket maxPayload on the uWS transport too (else it defaults to 100 MiB).
+				if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
+				cfg.wsHandler = (ws: any, upgrade: any) => {
+					try {
+						const request: any = new UwsRequest({
+							method: 'GET',
+							url: upgrade.url,
+							headers: upgrade.headers,
+							secure,
+							ip: upgrade.ip,
+						});
+						request.isWebSocket = true;
+						const chainCompletion = httpChain[port](request);
+						websocketChains[port](ws, request, chainCompletion);
+					} catch (error) {
+						harperLogger.warn('Error in handling WS connection', error);
+						try {
+							ws.close();
+						} catch {}
+					}
+				};
+			}
+		} else if (!websocketServers[port]) {
 			websocketServers[port] = new WebSocketServer({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener
@@ -1296,7 +1599,7 @@ function defaultNotFound(request, response) {
 }
 let httpLogger: any;
 
-function logBunRequest(request: any, status: number, requestId: number, executionTime?: number) {
+function logHttpRequest(request: any, status: number, requestId: number, executionTime?: number) {
 	const logging = httpOptions.logging;
 	if (logging) {
 		if (!httpLogger) {

@@ -319,6 +319,33 @@ function listenOnPorts() {
 			})
 		);
 	}
+	// uWS spike (#914): start any uWebSockets.js UDS servers registered by http.ts (HARPER_UWS_UDS).
+	// These replace the Node http UDS mirror; createUwsServer binds the unix socket and bridges each
+	// request through httpChain[port] via UwsRequest.
+	const uwsServeConfigs = httpComponent.uwsServeConfigs;
+	if (uwsServeConfigs) {
+		for (const key in uwsServeConfigs) {
+			const cfg = uwsServeConfigs[key];
+			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
+			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
+			listening.push(
+				createUwsServer(cfg).then(({ close }) => {
+					// Register a minimal server-like entry so closeServers() can tear it down. uWS's
+					// close() is synchronous and takes no callback, so wrap it to invoke the callback
+					// closeServers() passes; omit closeIdleConnections so the Node keep-alive drain loop
+					// (which would spin and then force-exit noisily against this shim) is skipped.
+					SERVERS[key] = {
+						close(callback) {
+							close();
+							callback?.();
+						},
+					};
+					harperLogger.info('uWS listening on ' + (cfg.socketPath ?? cfg.port));
+					return { port: key };
+				})
+			);
+		}
+	}
 	return Promise.all(listening);
 }
 

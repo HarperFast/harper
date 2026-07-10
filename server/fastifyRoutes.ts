@@ -17,6 +17,7 @@ import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConf
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.js';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';
+import { registerFastifyInstance } from './http.ts';
 
 let fastifyServer;
 const routeFolders = new Set();
@@ -44,7 +45,15 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		}
 		if (!fastifyServer) {
 			fastifyServer = buildServer(isHttps);
-			server.http((await fastifyServer).server);
+			const built = await fastifyServer;
+			server.http(built.server);
+			// Register the Fastify app for the http port(s). On plain Node the http.Server above
+			// cascades unhandled requests via the 'unhandled' event, but the Bun and uWS backends bind
+			// those ports themselves and have no Node http.Server to hand off to — they delegate to
+			// these legacy routes via inject() and look the instance up by port (see injectToFastify).
+			for (const port of [env.get(CONFIG_PARAMS.HTTP_PORT), env.get(CONFIG_PARAMS.HTTP_SECUREPORT)]) {
+				if (port != null) registerFastifyInstance(port, built);
+			}
 		}
 		const resolvedServer = await fastifyServer;
 		const routeFolder = dirname(entry.absolutePath);

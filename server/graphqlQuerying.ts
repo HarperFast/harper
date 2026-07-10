@@ -559,8 +559,9 @@ async function graphqlQueryingHandler(request: Request) {
 		}
 		case 'POST': {
 			const requestBodyDeserialize = getDeserializer(request.headers.get('content-type'), true);
-			// @ts-expect-error: _nodeRequest is a custom property on request and is the IncomingMessage with is a Readable
-			const requestParams = await requestBodyDeserialize(request._nodeRequest);
+			// Read the body through request.body (as REST.ts does): it is a Readable-compatible
+			// body stream on every adapter, whereas _nodeRequest is null on the Bun/uWS adapters.
+			const requestParams = await requestBodyDeserialize(request.body as any);
 			assertRequestParams(requestParams);
 			return resolver(requestParams, request);
 		}
