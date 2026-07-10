@@ -426,7 +426,7 @@ export class UwsWebSocket extends EventEmitter {
 		this._socket = new UwsSocketShim(raw);
 	}
 	get readyState(): number {
-		return this.#open ? 1 /* OPEN */ : 3 /* CLOSED */;
+		return this.#open ? 1 /* OPEN */ : 3; /* CLOSED */
 	}
 	send(data: any, optionsOrCb?: any, maybeCb?: any): void {
 		// ws-library signature is send(data[, options][, callback]); tolerate either arrangement.
