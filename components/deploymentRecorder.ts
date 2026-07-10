@@ -15,6 +15,7 @@ import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import { createBlob, isSaving, deleteBlob } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
+import type { RegistryAuthReference } from './secretOperations.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
@@ -61,6 +62,10 @@ interface CreateOptions {
 	user?: string;
 	restart_mode?: 'immediate' | 'rolling' | null;
 	rollback_of?: string | null;
+	// Registry-auth in reference form (`{ registry, secret, scope? }`) — never a literal token. Kept
+	// so a rollback can re-resolve the private-registry credential from hdb_secret without the
+	// operator re-supplying it. Null when the deploy used no auth or a no-custody transient token.
+	registry_auth?: RegistryAuthReference[] | null;
 	emitter?: ProgressEmitter;
 }
 
@@ -98,6 +103,7 @@ export class DeploymentRecorder {
 			completed_at: null,
 			user: options.user ?? null,
 			rollback_of: options.rollback_of ?? null,
+			registry_auth: options.registry_auth ?? null,
 			error: null,
 		};
 		const recorder = new DeploymentRecorder(deploymentId, record);
@@ -446,7 +452,7 @@ export class DeploymentRecorder {
 // take well over the original 30s to arrive on a peer (harper-pro#402). 120s matches the
 // blob-stream receive default and gives a loaded cluster room to converge. Override per-deploy
 // via the `deployment_timeout` operation parameter.
-const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
+export const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
 
 /**
  * Peer-side helper — wait for the hdb_deployment row to arrive via table replication,

@@ -324,3 +324,175 @@ export function getSecretsPublicKey(req: any) {
 	const { publicKey, fingerprint } = custody.getPublicKey();
 	return { public_key: publicKey, fingerprint };
 }
+
+/** A resolved registry-auth entry as consumed by the transient .npmrc writer. */
+export interface ResolvedRegistryAuthEntry {
+	registry: string;
+	token: string;
+	scope?: string;
+}
+
+/** A registry-auth entry after ingestion: a reference into hdb_secret, never a token. */
+export interface RegistryAuthReference {
+	registry: string;
+	secret: string;
+	scope?: string;
+}
+
+/**
+ * Deterministic name for the auto-minted secret backing a literal registry token: keyed by the
+ * deploying component and the registry, so re-supplying (or rotating) the token on a later deploy
+ * overwrites the same row rather than accumulating one per deploy. Sanitized to the set_secret name
+ * grammar (`\w.-`), since a registry can carry a scheme, port, or path.
+ */
+export function deriveRegistrySecretName(component: string, registry: string): string {
+	const registryKey = registry
+		.trim()
+		.replace(/^https?:\/\//i, '')
+		.replace(/^\/\//, '')
+		.replace(/\/+$/, '')
+		.toLowerCase()
+		.replace(/[^\w.-]+/g, '_');
+	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
+	return `deploy.${componentKey}.${registryKey}`;
+}
+
+/**
+ * Ingest deploy_component `registryAuth` into the secrets store so a provided registry token lives
+ * as ciphertext in the replicated, audited `hdb_secret` store (reference, not embed) rather than
+ * travelling in the operation body. Returns the entries in reference form (`{ registry, secret }`).
+ *
+ * - A literal `{ registry, token }` entry is encrypted (via `set_secret`, custody required) under a
+ *   derived name granted to `component`, and returned as a reference. Overwrites an existing
+ *   derived row so token rotation is idempotent.
+ * - An already-reference `{ registry, secret }` entry passes through unchanged (peers re-running a
+ *   replicated deploy already carry references — they never re-ingest).
+ * - With no custody on this node (OSS core, or key not held here), literal tokens CANNOT be sealed;
+ *   they pass through untouched so the caller can fall back to the transient, this-node-only path.
+ *   The reference-form result therefore contains only entries the caller may persist and replicate.
+ *
+ * Runs on the deploying main thread where custody is registered.
+ */
+export async function ingestRegistryAuth(req: any, registryAuth: any[] | undefined, component: string): Promise<any[]> {
+	if (!Array.isArray(registryAuth) || registryAuth.length === 0) return registryAuth ?? [];
+	const custody = getSecretCustody();
+	const out: any[] = [];
+	for (const entry of registryAuth) {
+		// Already a reference (or nothing to seal without custody): leave as-is.
+		if (entry.secret !== undefined || !custody) {
+			out.push(entry);
+			continue;
+		}
+		const name = deriveRegistrySecretName(component, entry.registry);
+		// Reuse set_secret's seal-and-store path (encrypt with custody, grant to the component, audit
+		// the mutation). The deploy request is already super_user, which set_secret requires.
+		await setSecret({
+			operation: terms.OPERATIONS_ENUM.SET_SECRET,
+			hdb_user: req?.hdb_user,
+			name,
+			value: entry.token,
+			grants: [component],
+			processEnv: false,
+		});
+		out.push(
+			entry.scope === undefined
+				? { registry: entry.registry, secret: name }
+				: { registry: entry.registry, secret: name, scope: entry.scope }
+		);
+	}
+	return out;
+}
+
+/** Wait (bounded) for a secret row to appear — covers the replicated-deploy race where a peer runs
+ * the deploy before the origin's hdb_secret row has replicated in. */
+async function waitForSecretRow(table: any, name: string, waitMs: number): Promise<any> {
+	const deadline = Date.now() + waitMs;
+	let row = await table.get(name);
+	while (!row && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, Math.min(200, Math.max(1, waitMs))));
+		row = await table.get(name);
+	}
+	return row;
+}
+
+/**
+ * Resolve deploy_component `registryAuth` entries that reference a stored secret
+ * (`{ registry, secret }`) into concrete token entries (`{ registry, token }`) by decrypting the
+ * named hdb_secret row on this thread. Entries that already carry a literal `token` pass through
+ * unchanged, so this is a no-op for the token-only fallback form.
+ *
+ * This is intentionally NOT a `get_secret` operation — the store never returns plaintext across the
+ * API boundary. The resolved token is handed back to the install path in-memory, fed to the
+ * transient .npmrc, and never written back to the request body, replicated, or logged.
+ *
+ * Authority mirrors the accessor model (#1550): the referenced secret must be usable by the
+ * component being deployed — either a `processEnv` (global) secret or a scoped secret granted to
+ * `component`. Without that, the deploy path would let a super_user pull an arbitrary scoped secret
+ * into an .npmrc, sidestepping the grant that is the store's authority. A missing row, missing
+ * grant, absent custody, or decrypt failure throws a ClientError naming the precise reason.
+ *
+ * `options.waitMs` gives a bounded grace period for a referenced row to replicate in (used on the
+ * peer side of a replicated deploy, where the deploy op can arrive just ahead of the hdb_secret
+ * row); it defaults to 0 (the origin wrote the row before it resolves, so no wait is needed).
+ *
+ * Runs on the main thread, where the operations API dispatches deploys and the Pro secrets
+ * component registers custody — the same place set_secret decrypts. On a node without custody
+ * (OSS core, or a custody key not held here) a referenced secret cannot be resolved and the deploy
+ * fails loudly rather than silently installing without auth.
+ */
+export async function resolveRegistryAuth(
+	registryAuth: any[] | undefined,
+	component: string,
+	options: { waitMs?: number } = {}
+): Promise<ResolvedRegistryAuthEntry[] | undefined> {
+	if (!Array.isArray(registryAuth) || registryAuth.length === 0) return registryAuth;
+	// Token-only requests must not require custody or a provisioned store — keep the fast path pure.
+	if (!registryAuth.some((entry) => entry && entry.secret !== undefined)) return registryAuth;
+
+	const waitMs = options.waitMs ?? 0;
+	const table = secretTable();
+	const resolved: ResolvedRegistryAuthEntry[] = [];
+	for (const entry of registryAuth) {
+		if (!entry) continue; // parity with the fast-path guard above; validated entries are never null
+		if (entry.secret === undefined) {
+			resolved.push({ registry: entry.registry, token: entry.token, scope: entry.scope });
+			continue;
+		}
+		const name: string = entry.secret;
+		const row = waitMs > 0 ? await waitForSecretRow(table, name, waitMs) : await table.get(name);
+		if (!row) {
+			throw new ClientError(
+				`registryAuth references secret '${name}', which does not exist`,
+				HTTP_STATUS_CODES.NOT_FOUND
+			);
+		}
+		const grants = Array.isArray(row.grants) ? row.grants : [];
+		if (!row.processEnv && !grants.includes(component)) {
+			throw new ClientError(
+				`registryAuth secret '${name}' is not granted to component '${component}' ` +
+					`(grant it with grant_secret, or set it processEnv:true)`,
+				HTTP_STATUS_CODES.FORBIDDEN
+			);
+		}
+		const custody = getSecretCustody();
+		if (!custody) {
+			// Server-state condition, not a client-fixable request: the same body would resolve once
+			// custody comes up, so report it retryable (503) rather than the ClientError default 400.
+			throw new ClientError(
+				`secrets custody is not initialized on this node; cannot resolve registryAuth secret '${name}'`,
+				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
+			);
+		}
+		let token: string;
+		try {
+			token = custody.decrypt(row.envelope);
+		} catch (error) {
+			throw new ClientError(
+				`Failed to decrypt registryAuth secret '${name}': ${(error as Error).message}`,
+				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+			);
+		}
+		resolved.push({ registry: entry.registry, token, scope: entry.scope });
+	}
+	return resolved;
+}

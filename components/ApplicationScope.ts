@@ -16,6 +16,8 @@ export class MissingDefaultFilesOptionError extends Error {
  * This class is used to represent the application scope for the VM context used for loading modules within an application
  */
 export class ApplicationScope {
+	/** Component identity (application directory name) — what secret grants are matched against. */
+	name: string;
 	logger: any;
 	resources: Resources;
 	server: Server;
@@ -25,6 +27,7 @@ export class ApplicationScope {
 	config: any;
 	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
 	constructor(name: string, resources: Resources, server: Server, isInternal = false) {
+		this.name = name;
 		this.logger = forComponent(name, !isInternal);
 
 		this.resources = resources;
