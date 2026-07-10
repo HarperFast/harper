@@ -1,7 +1,7 @@
 import { getSuperUser } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken, validateLoginToken } from './tokenAuthentication.ts';
+import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
 import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -201,6 +201,10 @@ export async function authentication(request, nextHandler) {
 						case 'Bearer':
 							try {
 								newUser = await validateOperationToken(credentials);
+								// Capture the token's expiry so a live subscription opened with this bearer
+								// token can be revoked once it expires (#1414).
+								const decoded = decodeJWT(credentials);
+								if (newUser && decoded?.exp) newUser.authExpiresAt = decoded.exp;
 							} catch (error) {
 								if (error.message === 'invalid token') {
 									// see if they provided a refresh token; we can allow that and pass it on to operations API
@@ -345,7 +349,7 @@ export async function authentication(request, nextHandler) {
 		if (l > 0) {
 			let headers = response.headers;
 			if (!headers) response.headers = headers = new Headers();
-			for (let i = 0; i < l; ) {
+			for (let i = 0; i < l;) {
 				const name = responseHeaders[i++];
 				headers.set(name, responseHeaders[i++]);
 			}

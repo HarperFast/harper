@@ -1,0 +1,5 @@
+# Persisted per-identity counter behind the durable quota hook (#1610).
+type QuotaCounter @table @export {
+	id: ID @primaryKey
+	used: Int
+}

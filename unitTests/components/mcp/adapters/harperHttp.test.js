@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { Readable } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { createHarperHttpHandler } = require('#src/components/mcp/adapters/harperHttp');

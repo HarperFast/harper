@@ -1,7 +1,8 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	registerOperationsTools,
 	DEFAULT_ALLOW,
+	DEFAULT_EXCLUDED,
 	_setOperationFunctionMapForTest,
 	_setChooseOperationForTest,
 	_setProcessLocalTransactionForTest,
@@ -122,6 +123,49 @@ describe('mcp/tools/operations — registration', () => {
 		for (const safe of ['get_job', 'get_status', 'get_analytics', 'get_metrics']) {
 			assert.ok(names.has(safe), `${safe} should be default-allowed`);
 		}
+	});
+
+	it('excludes ALL secret-store operations from the default-allow surface', () => {
+		// list_secrets matches the `list_*` glob and get_secrets_public_key looks like a safe
+		// getter, but the secrets store is key custody management — never default-exposed to an
+		// LLM surface. DEFAULT_EXCLUDED pins every secret op, present and future-glob-matching.
+		const secretOps = [
+			'set_secret',
+			'grant_secret',
+			'revoke_secret',
+			'list_secrets',
+			'delete_secret',
+			'get_secrets_public_key',
+		];
+		assert.deepEqual([...DEFAULT_EXCLUDED].sort(), [...secretOps].sort());
+
+		_setOperationFunctionMapForTest(
+			makeOpMap([...secretOps.map((name) => [name, async () => ({})]), ['list_users', async () => ({})]])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		for (const op of secretOps) {
+			assert.ok(!names.has(op), `${op} must not be on the default MCP surface`);
+		}
+		assert.ok(names.has('list_users'), 'list_* glob still works for non-excluded ops');
+	});
+
+	it('an operator can still opt secret operations in via mcp.operations.allow (explicit only)', () => {
+		envOverrides.mcp_operations_allow = ['list_secrets', 'get_secrets_public_key'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['list_secrets', async () => ({ secrets: [] })],
+				['get_secrets_public_key', async () => ({})],
+				['set_secret', async () => ({})], // not on the explicit allow → excluded
+			])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		assert.ok(names.has('list_secrets'));
+		assert.ok(names.has('get_secrets_public_key'));
+		assert.ok(!names.has('set_secret'));
 	});
 
 	it('an operator can still opt sensitive getters into the surface via mcp.operations.allow', () => {
@@ -249,6 +293,50 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(tools.length, 2);
 	});
 
+	it('surfaces operations registered AFTER registration (lazy walk of the live map) — #1562', () => {
+		// Components register their operations via server.registerOperation during
+		// startOnMainThread, which runs after the MCP operations profile registers.
+		// The tool list must be computed lazily so those late ops still appear.
+		const opMap = makeOpMap([['describe_all', null]]);
+		_setOperationFunctionMapForTest(opMap);
+		registerOperationsTools();
+
+		// Only the boot-time op is present at first.
+		let names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
+		assert.deepEqual(names, ['describe_all']);
+
+		// A component registers new ops after registration ran. `list_agents` is
+		// allow-listed by default via `list_*`; `agent_prompt` is opted in explicitly.
+		opMap.set('list_agents', { operation_function: async () => ({ agents: [] }) });
+		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		envOverrides.mcp_operations_allow = ['describe_*', 'list_*', 'agent_prompt'];
+
+		names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
+		assert.deepEqual(names.sort(), ['agent_prompt', 'describe_all', 'list_agents']);
+	});
+
+	it('resolves a late-registered op through getTool for tools/call dispatch — #1562', () => {
+		const opMap = makeOpMap([['describe_all', null]]);
+		_setOperationFunctionMapForTest(opMap);
+		registerOperationsTools();
+
+		// Not registered yet, and not allow-listed → not callable.
+		assert.equal(getTool('agent_prompt'), undefined);
+
+		// Component registers it and the operator opts it in.
+		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		envOverrides.mcp_operations_allow = ['describe_*', 'agent_prompt'];
+
+		const tool = getTool('agent_prompt');
+		assert.ok(tool, 'late-registered allow-listed op must resolve for tools/call');
+		assert.equal(tool.profile, 'operations');
+		assert.equal(typeof tool.handler, 'function');
+
+		// A live op that is NOT allow-listed still must not be callable.
+		opMap.set('drop_table', { operation_function: async () => ({}) });
+		assert.equal(getTool('drop_table'), undefined);
+	});
+
 	it('logs a warning and registers nothing when OPERATION_FUNCTION_MAP is unavailable', () => {
 		_setOperationFunctionMapForTest(undefined);
 		// Force the lazy require to return a module-shape that has no map.
@@ -274,7 +362,11 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 		return new RegExp(`^${escaped}$`);
 	}
 
-	const expandedAllow = allOpNames.filter((name) => DEFAULT_ALLOW.some((p) => globToRegex(p).test(name)));
+	// Mirrors production isOperationAllowed: glob expansion minus the DEFAULT_EXCLUDED set
+	// (secret-store ops match `list_*` etc. but are never on the default surface).
+	const expandedAllow = allOpNames.filter(
+		(name) => !DEFAULT_EXCLUDED.has(name) && DEFAULT_ALLOW.some((p) => globToRegex(p).test(name))
+	);
 
 	it('expansion covers a non-trivial set of operations (sanity check)', () => {
 		// Catches the case where OPERATIONS_ENUM goes missing in a build refactor.

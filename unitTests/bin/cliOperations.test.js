@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('fs-extra');
 const os = require('node:os');
@@ -102,18 +102,18 @@ describe('cliOperations', () => {
 	describe('deploy_component cross-version compatibility', () => {
 		const target = 'https://example.com:9925/';
 		let originalPackageDirectory;
-		let originalGetSize;
+		let originalScan;
 
 		beforeEach(() => {
 			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
 			tokenAuthModule.isJWTExpired = () => false;
 			originalPackageDirectory = packageComponentModule.packageDirectory;
-			originalGetSize = packageComponentModule.getPackagedDirectorySize;
+			originalScan = packageComponentModule.scanPackageDirectory;
 		});
 
 		afterEach(() => {
 			packageComponentModule.packageDirectory = originalPackageDirectory;
-			packageComponentModule.getPackagedDirectorySize = originalGetSize;
+			packageComponentModule.scanPackageDirectory = originalScan;
 		});
 
 		// Streams an SSE `done` event so the modern (>= 5.1) deploy path can read its result.
@@ -155,7 +155,10 @@ describe('cliOperations', () => {
 
 		it('downgrades a directory deploy to a CBOR binary payload when the target is < 5.1', async () => {
 			const fakeTarball = Buffer.from('fake-tarball-bytes');
-			packageComponentModule.getPackagedDirectorySize = async () => fakeTarball.length;
+			packageComponentModule.scanPackageDirectory = async () => ({
+				totalSize: fakeTarball.length,
+				danglingSymlinks: [],
+			});
 			packageComponentModule.packageDirectory = async () => fakeTarball;
 
 			const calls = [];

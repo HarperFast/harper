@@ -260,7 +260,7 @@ describe('Blob test', () => {
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
-		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		assert.notStrictEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
 		filePath = getFilePathForBlob(blob);
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
 		await delay(50); // wait for audit log removal and deletion
@@ -276,7 +276,7 @@ describe('Blob test', () => {
 
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
-		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		assert.notStrictEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
 		filePath = getFilePathForBlob(blob);
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
 		await delay(50); // wait for audit log removal and deletion
@@ -399,7 +399,7 @@ describe('Blob test', () => {
 		let packResult = encodeBlobsAsBuffers(() => {
 			return pack(record);
 		});
-		assert(packResult.then); // shouldn't be resolved yet
+		assert(!packResult.then); // put gates the commit on the blob's durable save, so pack resolves synchronously
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, expectedResults);
 		assert.equal(await streamResults, expectedResults);
@@ -511,15 +511,15 @@ describe('Blob test', () => {
 			}
 		}
 		let blob = createBlob(new BadStream());
-		await BlobTest.put({ id: 5, blob });
+		await assert.rejects(async () => {
+			await BlobTest.put({ id: 5, blob });
+		}, /test error/);
 		let eventError, thrownError;
 		blob.on('error', (err) => {
 			console.log('received error event');
 			eventError = err;
 		});
-		try {
-			await blob.written;
-		} catch {}
+		await assert.rejects(blob.written, /test error/);
 		try {
 			for await (let _entry of blob.stream()) {
 				console.log('got entry');
@@ -529,27 +529,16 @@ describe('Blob test', () => {
 		}
 		assert(thrownError);
 		assert(eventError);
-		thrownError = null;
-		eventError = null;
-		let record = await BlobTest.get(5);
-		record.blob.on('error', (err) => {
-			eventError = err;
-		});
-		try {
-			for await (let _entry of record.blob.stream()) {
-			}
-		} catch (err) {
-			thrownError = err;
-		}
-		assert(thrownError);
-		assert(eventError);
+		assert.equal(await BlobTest.get(5), undefined);
 	});
 	it('Error before streaming', async () => {
 		let pt = new PassThrough();
 		pt.on('error', () => {}); // ignore the uncaught error
 		pt.destroy(new Error('test error'));
 		let blob = createBlob(pt);
-		await BlobTest.put({ id: 6, blob });
+		await assert.rejects(async () => {
+			await BlobTest.put({ id: 6, blob });
+		}, /test error/);
 		let eventError, thrownError;
 		blob.on('error', (err) => {
 			eventError = err;
@@ -563,21 +552,7 @@ describe('Blob test', () => {
 		}
 		assert(thrownError);
 		assert(eventError);
-		thrownError = null;
-		eventError = null;
-
-		let record = await BlobTest.get(6);
-		record.blob.on('error', (err) => {
-			eventError = err;
-		});
-		try {
-			for await (let _entry of record.blob.stream()) {
-			}
-		} catch (err) {
-			thrownError = err;
-		}
-		assert(thrownError);
-		assert(eventError);
+		assert.equal(await BlobTest.get(6), undefined);
 	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
@@ -661,6 +636,25 @@ describe('Blob test', () => {
 		const existing = await BlobTest.get(250);
 		assert.equal(await existing.blob.text(), 'first');
 	});
+	it('gates a local write on a manually started, still-streaming blob save', async () => {
+		// saveBlob assigns the fileId as soon as the save STARTS, so a fileId check alone would
+		// exempt a mid-save blob from the local-write gate and reopen the orphan-reference window
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		saveBlob(blob);
+		slow.write('partial content');
+		const store = BlobTest.primaryStore.rootStore;
+		const preCommit = startPreCommitBlobsForRecord({ id: 8, blob }, store, false, false);
+		assert(preCommit && preCommit.blobs.includes(blob), 'mid-save blob must gate the commit');
+		let completed = false;
+		const completion = preCommit.complete().then(() => (completed = true));
+		await delay(20);
+		assert.equal(completed, false, 'commit must wait for the save to settle');
+		slow.end(' done');
+		await completion;
+		assert.equal(completed, true);
+		unlinkSync(getFilePathForBlob(blob)); // not referenced by any record; keep cleanupOrphans at zero
+	});
 	it('#406: startPreCommitBlobsForRecord tracks an already-saved blob only when trackPersistedBlobs is set', async () => {
 		// A replication-received blob is saved out-of-band by receiveBlobs BEFORE the apply, so at pre-commit
 		// it has a fileId but no saveBeforeCommit flag. It must be tracked (so a superseded apply's cleanup
@@ -718,7 +712,7 @@ describe('Blob test', () => {
 		// the write aborts and retries.
 		const failStream = new PassThrough();
 		const failBlob = await createBlob(failStream, { saveBeforeCommit: true });
-		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, true);
+		const rejectPc = startPreCommitBlobsForRecord({ id: 1, blob: failBlob }, store, false, false);
 		failStream.destroy(new Error('disk full')); // no sourceBlobUnavailable marker
 		await assert.rejects(
 			rejectPc.complete(),
@@ -729,7 +723,7 @@ describe('Blob test', () => {
 		// so the record still commits with a diverged reference.
 		const goneStream = new PassThrough();
 		const goneBlob = await createBlob(goneStream, { saveBeforeCommit: true });
-		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, true);
+		const toleratePc = startPreCommitBlobsForRecord({ id: 2, blob: goneBlob }, store, false, false);
 		goneStream.destroy(Object.assign(new Error('Blob error: ENOENT'), { sourceBlobUnavailable: true }));
 		await assert.doesNotReject(toleratePc.complete(), 'a source-unavailable blob must not abort the commit');
 
@@ -1064,7 +1058,7 @@ describe('Blob test', () => {
 		await assert.rejects(Promise.resolve(saving));
 		await new Promise((resolve) => setTimeout(resolve, 50)); // let any async abort-path write land
 		await assert.rejects(blob.bytes(), (error) => {
-			assert.notEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
+			assert.notStrictEqual(error.statusCode, 503, 'an unarmed app-stream abort must not become a retriable 503');
 			return true;
 		});
 		const filePath = getFilePathForBlob(blob);

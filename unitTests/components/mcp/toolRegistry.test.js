@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	addTool,
 	removeTool,
@@ -181,6 +181,95 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(page2.tools.length, 2);
 			// Names are still drawn from the sorted list; the new tool sorts last.
 			for (const t of page2.tools) assert.match(t.name, /^tool_/);
+		});
+	});
+
+	describe('setProfileToolProvider (dynamic per-profile tools)', () => {
+		const { setProfileToolProvider } = require('#src/components/mcp/toolRegistry');
+
+		function provider(defs) {
+			const byName = new Map(defs.map((d) => [d.name, d]));
+			return { list: () => defs, get: (name) => byName.get(name) };
+		}
+
+		it('lists provider tools merged with statically-registered tools', () => {
+			addTool(makeTool({ name: 'static_op', profile: 'operations' }));
+			setProfileToolProvider('operations', provider([makeTool({ name: 'dynamic_op', profile: 'operations' })]));
+			const result = listTools({ user: {}, profile: 'operations', sessionId: 's', limit: 10 });
+			assert.deepEqual(
+				result.tools.map((t) => t.name),
+				['dynamic_op', 'static_op']
+			);
+		});
+
+		it('reflects a provider whose set changes between calls (lazy walk)', () => {
+			let defs = [makeTool({ name: 'op_a', profile: 'operations' })];
+			setProfileToolProvider('operations', {
+				list: () => defs,
+				get: (name) => defs.find((d) => d.name === name),
+			});
+			assert.deepEqual(
+				listTools({ user: {}, profile: 'operations', sessionId: 's', limit: 10 }).tools.map((t) => t.name),
+				['op_a']
+			);
+			defs = [...defs, makeTool({ name: 'op_b', profile: 'operations' })];
+			assert.deepEqual(
+				listTools({ user: {}, profile: 'operations', sessionId: 's', limit: 10 }).tools.map((t) => t.name),
+				['op_a', 'op_b']
+			);
+		});
+
+		it('a statically-registered tool overrides a provider tool of the same name', () => {
+			addTool(makeTool({ name: 'dup', profile: 'operations', description: 'static wins' }));
+			setProfileToolProvider(
+				'operations',
+				provider([makeTool({ name: 'dup', profile: 'operations', description: 'provider loses' })])
+			);
+			const result = listTools({ user: {}, profile: 'operations', sessionId: 's', limit: 10 });
+			assert.equal(result.tools.length, 1);
+			assert.equal(result.tools[0].description, 'static wins');
+			assert.equal(getTool('dup').description, 'static wins');
+		});
+
+		it('getTool falls back to the provider when the registry misses', () => {
+			setProfileToolProvider('operations', provider([makeTool({ name: 'prov_only', profile: 'operations' })]));
+			assert.equal(getTool('prov_only').name, 'prov_only');
+			assert.equal(getTool('nonexistent'), undefined);
+		});
+
+		it('getTool(name, profile) is profile-scoped so a cross-profile static tool cannot shadow a provider tool', () => {
+			// A static application tool and a dynamic operations tool share a name.
+			// The operations client must still resolve ITS tool (not the app one).
+			addTool(makeTool({ name: 'shared', profile: 'application', description: 'app tool' }));
+			setProfileToolProvider(
+				'operations',
+				provider([makeTool({ name: 'shared', profile: 'operations', description: 'op tool' })])
+			);
+
+			const opTool = getTool('shared', 'operations');
+			assert.equal(opTool.profile, 'operations');
+			assert.equal(opTool.description, 'op tool');
+
+			const appTool = getTool('shared', 'application');
+			assert.equal(appTool.profile, 'application');
+			assert.equal(appTool.description, 'app tool');
+		});
+
+		it('within a profile, a static tool still wins over a same-name provider tool under getTool(name, profile)', () => {
+			addTool(makeTool({ name: 'dup', profile: 'operations', description: 'static wins' }));
+			setProfileToolProvider(
+				'operations',
+				provider([makeTool({ name: 'dup', profile: 'operations', description: 'provider loses' })])
+			);
+			assert.equal(getTool('dup', 'operations').description, 'static wins');
+		});
+
+		it('removing the provider drops its tools', () => {
+			setProfileToolProvider('operations', provider([makeTool({ name: 'gone', profile: 'operations' })]));
+			assert.equal(getTool('gone').name, 'gone');
+			setProfileToolProvider('operations', undefined);
+			assert.equal(getTool('gone'), undefined);
+			assert.equal(listTools({ user: {}, profile: 'operations', sessionId: 's', limit: 10 }).tools.length, 0);
 		});
 	});
 

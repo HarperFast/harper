@@ -2,7 +2,7 @@ import { parse } from 'dotenv';
 import logger from '../utility/logging/harper_logger.ts';
 import { Scope } from '../components/Scope.ts';
 import { isEncryptedEnvValue } from '../utility/envFile.ts';
-import { getSecretDecryptor } from './secretDecryptor.ts';
+import { deferEncryptedEnvValue, getSecretDecryptor } from './secretDecryptor.ts';
 import { CONFIG_SHAPING_ENV_VARS } from '../config/componentEnvPrepass.ts';
 
 export function handleApplication(scope: Scope) {
@@ -23,11 +23,14 @@ export function handleApplication(scope: Scope) {
 				// Logged at error level (not warn) so an undecryptable secret is never silent — but
 				// skipped rather than fatal, so the node still boots and the bad value can be fixed via
 				// set_env_value, and a non-Pro node isn't crashed by a replicated encrypted value. The
-				// app sees a missing var (and should fail on it) rather than receiving ciphertext.
+				// entry is also queued so a decryptor that registers later (custody can come up after
+				// component `.env` loading) replays it into process.env; until then the app sees a
+				// missing var (and should fail on it) rather than receiving ciphertext.
 				if (!decryptor) {
 					logger.error(
-						`Environment variable ${key} from ${entry.absolutePath} is encrypted but no env-secret decryptor is registered (the Harper Pro env-secrets component is required); skipping`
+						`Environment variable ${key} from ${entry.absolutePath} is encrypted but no env-secret decryptor is registered yet (the Harper Pro env-secrets component is required); deferring`
 					);
+					deferEncryptedEnvValue({ key, rawValue, sourcePath: entry.absolutePath, override });
 					continue;
 				}
 				try {

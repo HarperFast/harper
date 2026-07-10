@@ -17,9 +17,7 @@ export interface ResourceEntry {
 }
 
 export type RouteSegment =
-	| { type: 'static'; value: string }
-	| { type: 'param'; value: string }
-	| { type: 'wildcard'; value: string };
+	{ type: 'static'; value: string } | { type: 'param'; value: string } | { type: 'wildcard'; value: string };
 
 export interface CompiledRoute {
 	/** Normalized pattern (leading/trailing slashes stripped) — used as the identity key for the route. */
@@ -111,6 +109,15 @@ export class Resources extends Map<string, ResourceEntry> {
 	allTypes: Map<any, any> = new Map();
 
 	/**
+	 * Monotonic registration version, bumped on every set/delete. Consumers that
+	 * derive surfaces from a registry walk (the MCP tool/prompt/resource
+	 * registries) compare this to the version they last walked and rebuild
+	 * lazily — component entry loading is asynchronous past the boot awaits, so
+	 * there is no reliable "all resources registered" moment to hook (#1609).
+	 */
+	registrationVersion = 0;
+
+	/**
 	 * Parameterised routes (paths containing `:param` or `*wildcard` segments). These are kept out of the base Map so
 	 * the exact/prefix matching fast path is untouched; they are only consulted by {@link getMatch} when no static
 	 * resource matches.
@@ -120,6 +127,7 @@ export class Resources extends Map<string, ResourceEntry> {
 	// @ts-expect-error override with different signature
 	set(path: string, resource: any, exportTypes?: { [key: string]: boolean }, force?: boolean): void {
 		if (!resource) throw new Error('Must provide a resource');
+		this.registrationVersion++;
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
 			Resource: resource,
@@ -164,6 +172,7 @@ export class Resources extends Map<string, ResourceEntry> {
 	// it in sync — otherwise a removed/cleared route would keep matching against an unloaded Resource class.
 	delete(path: string): boolean {
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
+		this.registrationVersion++;
 		const mapDeleted = super.delete(path);
 		const pattern = path.endsWith('/') ? path.replace(/\/+$/, '') : path; // patterns are stored trailing-slash-free
 		const before = this.paramRoutes.length;
