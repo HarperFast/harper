@@ -223,6 +223,43 @@ its coalescing must stay a superset-safe no-op for the single-swap #586 case. Re
 `integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
 (it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
 
+<<<<<<< HEAD
+=======
+## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
+
+`server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
+`req.replicated \!== false` — absence of the flag means "replicate". That default-on contract is what
+DDL ops rely on (`dropSchema`/`dropTable` call it unconditionally), so a handler that mirrors the
+drop_schema pattern without a guard silently becomes replicate-by-default. `setConfiguration` must
+stay **opt-in** (`if (replicated)` truthy guard) because config bodies routinely carry node-local
+params (ports, paths, node identity) that would clobber peers. Two invariants to preserve:
+`replicated` must remain in the handler's destructure strip-list on both origin and peers (peers
+receive `replicated: false` in the forwarded body; anything not stripped is treated as a config
+param), and there is deliberately **no** per-param node-local/cluster-wide guard here — per-field
+replicability metadata is deferred to the cluster-level-config work (CORE-3018), which will own that
+schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
+in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
+operators must inspect the array for per-node outcomes.
+
+## Config is composed and memoized before any component runs (`config/configUtils.ts`)
+
+`getConfigObj()` composes the config once per thread (module-level memo) at its first call, which
+happens before the root component loads and long before any user component's plugins run. Anything a
+component does at load time — like `loadEnv` writing `process.env` — therefore cannot affect the
+composed config (#1513). By design this stays true: configuration is strictly top-down, so the three
+config-shaping env vars (`HARPER_DEFAULT_CONFIG`/`HARPER_CONFIG`/`HARPER_SET_CONFIG`) are **never
+honored** from a component `.env`. What #1513 fixed is the silence: `config/componentEnvPrepass.ts`
+scans `componentsRoot` + `RUN_HDB_APP` for `loadEnv` declarations during `initConfig` and emits an
+actionable warning per config-shaping var found, and `resources/loadEnv.ts` warns again at
+component-load time (covering post-boot deploys) and **skips the `process.env` assignment** for the
+trio — enforce-at-injection, so anything downstream that (re)composes from `process.env`
+(#1618/#1726) can rely on the trio arriving only via sanctioned channels. The pre-pass deliberately
+mirrors loader behaviors that must stay in sync if the loader changes: config filename precedence
+(`harper-config.yaml` → `harperdb-config.yaml` → `config.yaml`) and `files` pattern validation
+(`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
+arrives via env var cannot redirect the scan.
+
+>>>>>>> 0e80b6bdb (Merge pull request #1580 from HarperFast/fix/load-env-config-order-1513)
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
 Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
