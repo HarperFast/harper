@@ -23,7 +23,7 @@ import * as login from '../resources/login.ts';
 import * as REST from '../server/REST.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
@@ -642,7 +642,7 @@ export async function loadComponent(
 					error.message
 				}`;
 				errorReporter?.(error);
-				(getWorkerIndex() === 0 ? console : harperLogger).error(error);
+				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
@@ -718,7 +718,7 @@ export async function loadComponent(
 				);
 		}
 	} catch (error) {
-		console.error(`Could not load application directory ${componentDirectory}`, error);
+		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(error));
 		error.message = `Could not load application due to ${error.message}`;
 		errorReporter?.(error);
 		resources.set('', new ErrorResource(error));

@@ -12,7 +12,9 @@ import * as os from 'os';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
 import { Console } from 'console';
-import { inspect } from 'util';
+import { inspect, types } from 'node:util';
+
+const { isNativeError } = types;
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)
 let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
@@ -181,6 +183,43 @@ async function updateLogSettings() {
 	}
 }
 
+/**
+ * True when the argument is an Error (same-realm or native cross-realm). The try/catch guards
+ * exotic objects whose prototype is unreachable (e.g. a revoked Proxy, where `instanceof`
+ * throws) — the logger must never throw on any input, and util.format renders those fine raw.
+ */
+function isErrorLike(arg: any): boolean {
+	try {
+		return arg instanceof Error || isNativeError(arg);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Replaces every Error argument with its log-safe errorForLog wrapper before the args reach
+ * Console's util.inspect formatting, which would otherwise dump the error's own-enumerable
+ * properties — where libraries and app code stash credentials (axios config headers, an
+ * hdb_secret for an outbound Authorization header) — into hdb.log (see #1734 and errorForLog).
+ * Called inside each level gate so filtered-out log calls pay nothing beyond the arg scan,
+ * and only allocates when an Error is actually present. Deliberately shallow: an Error nested
+ * inside a logged object/array is not rewritten (deep-walking every logged structure is not
+ * worth the per-call cost, and the #1734 threat is raw thrown errors).
+ */
+function sanitizeErrorArgs(args: any[]) {
+	for (let i = 0; i < args.length; i++) {
+		if (isErrorLike(args[i])) {
+			const sanitized = args.slice(0, i);
+			for (let j = i; j < args.length; j++) {
+				const arg = args[j];
+				sanitized[j] = isErrorLike(arg) ? errorForLog(arg) : arg;
+			}
+			return sanitized;
+		}
+	}
+	return args;
+}
+
 class HarperLogger extends Console {
 	[key: string]: any;
 	constructor(streams, level) {
@@ -194,35 +233,35 @@ class HarperLogger extends Console {
 	trace(...args) {
 		currentLevel = 'trace';
 		if (this.level <= LOG_LEVEL_HIERARCHY.trace) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	debug(...args) {
 		currentLevel = 'debug';
 		if (this.level <= LOG_LEVEL_HIERARCHY.debug) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	info(...args) {
 		currentLevel = 'info';
 		if (this.level <= LOG_LEVEL_HIERARCHY.info) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	warn(...args) {
 		currentLevel = 'warn';
 		if (this.level <= LOG_LEVEL_HIERARCHY.warn) {
-			super.warn(...args);
+			super.warn(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	error(...args) {
 		currentLevel = 'error';
 		if (this.level <= LOG_LEVEL_HIERARCHY.error) {
-			super.error(...args);
+			super.error(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
@@ -231,7 +270,7 @@ class HarperLogger extends Console {
 		try {
 			currentLevel = 'fatal';
 			if (this.level <= LOG_LEVEL_HIERARCHY.fatal) {
-				super.error(...args);
+				super.error(...sanitizeErrorArgs(args));
 			}
 			currentLevel = 'info';
 		} finally {
@@ -243,12 +282,24 @@ class HarperLogger extends Console {
 		try {
 			currentLevel = 'notify';
 			if (this.level <= LOG_LEVEL_HIERARCHY.notify) {
-				super.info(...args);
+				super.info(...sanitizeErrorArgs(args));
 			}
 			currentLevel = 'info';
 		} finally {
 			logImmediately = false;
 		}
+	}
+	// Inherited Console methods that format arbitrary values would bypass sanitizeErrorArgs —
+	// guard them too so logger.log(error) / dir / table can't leak either (#1734). Their
+	// existing semantics (no level gate) are preserved; only the Error args are wrapped.
+	log(...args) {
+		super.log(...sanitizeErrorArgs(args));
+	}
+	dir(item, options?) {
+		super.dir(isErrorLike(item) ? errorForLog(item) : item, options);
+	}
+	table(data, columns?) {
+		super.table(Array.isArray(data) ? sanitizeErrorArgs(data) : isErrorLike(data) ? errorForLog(data) : data, columns);
 	}
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
@@ -894,22 +945,79 @@ function getDefaultConfig() {
  * @return {string|string}
  */
 export function errorToString(error: any) {
-	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+	if (error == null) return String(error);
+	try {
+		return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+	} catch {
+		// error is hostile (e.g. a revoked Proxy, or a getter that throws) - this must never throw,
+		// since it's called directly for response bodies (REST.ts/http.ts/JSONStream) as well as here.
+		try {
+			return Object.prototype.toString.call(error);
+		} catch {
+			return '[Unrenderable Object]';
+		}
+	}
+}
+
+// Own-enumerable Error properties considered safe to surface in logs — common diagnostic fields
+// (HTTP status, Node error codes) that libraries and app code don't use to carry secrets, unlike
+// arbitrary properties (axios' `config`/`request` with an Authorization header), which stay
+// excluded. `path` is deliberately omitted: it can reveal internal filesystem layout, and the
+// message/stack already names the failing operation.
+const LOGGABLE_ERROR_PROPS = ['code', 'status', 'statusCode', 'errno', 'syscall'];
+
+function loggablePropsSuffix(error: any): string {
+	if (typeof error !== 'object' || error === null) return '';
+	let suffix = '';
+	for (const key of LOGGABLE_ERROR_PROPS) {
+		try {
+			const value = error[key];
+			if (value !== undefined) suffix += ` ${key}=${value}`;
+		} catch {
+			// A hostile property (revoked Proxy, throwing getter) must not crash the logger - skip it.
+		}
+	}
+	return suffix;
+}
+
+function renderErrorLine(error: any): string {
+	try {
+		const base = typeof error?.stack === 'string' ? error.stack : errorToString(error);
+		return base + loggablePropsSuffix(error);
+	} catch (err) {
+		// error?.stack itself can throw on a hostile object even though errorToString cannot.
+		return `[Unrenderable Error: ${err instanceof Error ? err.message : String(err)}]`;
+	}
 }
 
 /**
- * Renders an error to its stack (class name + message + frames), then appends the stack of each
- * error in its `cause` chain. Deliberately excludes own-enumerable properties — those are exactly
+ * Renders an error to its stack (class name + message + frames) plus a small allowlist of
+ * diagnostic properties (see `LOGGABLE_ERROR_PROPS`), then appends the same for each error in its
+ * `cause` chain. Deliberately excludes every OTHER own-enumerable property — those are exactly
  * what leaks secrets in #1734 (see `errorForLog`).
+ *
+ * The `cause` chain is not under this module's control (any code that threw the outer error could
+ * have attached a hostile `cause` - a revoked Proxy, an object with a throwing getter), so every
+ * step of the walk is defensive: this function must never throw regardless of what it's given.
  */
 function errorToLogString(error: any) {
-	let output = typeof error?.stack === 'string' ? error.stack : error == null ? String(error) : errorToString(error);
+	if (error == null) return String(error);
+	let output = renderErrorLine(error);
 	const seen = new Set([error]);
-	let cause = error?.cause;
+	let cause: any;
+	try {
+		cause = error.cause;
+	} catch {
+		return output;
+	}
 	while (cause != null && !seen.has(cause)) {
 		seen.add(cause);
-		output += `\ncaused by: ${typeof cause.stack === 'string' ? cause.stack : errorToString(cause)}`;
-		cause = cause.cause;
+		output += `\ncaused by: ${renderErrorLine(cause)}`;
+		try {
+			cause = cause.cause;
+		} catch {
+			break;
+		}
 	}
 	return output;
 }

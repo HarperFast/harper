@@ -18,7 +18,7 @@ if (isMainThread) {
 			harperLogger.disableStdio();
 			return;
 		}
-		console.error('uncaughtException', error);
+		console.error('uncaughtException', harperLogger.errorForLog(error));
 	});
 }
 
