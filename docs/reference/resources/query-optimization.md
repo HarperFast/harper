@@ -95,12 +95,12 @@ Example of an indexed foreign key that enables efficient join queries:
 type Product @table {
 	id: Long @primaryKey
 	brandId: Long @indexed # foreign key — index this
-	brand: Related @relation(from: "brandId")
+	brand: Related @relationship(from: "brandId")
 }
 type Brand @table {
 	id: Long @primaryKey
 	name: String @indexed # indexed — enables efficient brand.name queries
-	products: Product @relation(to: "brandId")
+	products: Product @relationship(to: "brandId")
 }
 ```
 

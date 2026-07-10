@@ -179,7 +179,7 @@ GET /Product/?sort(+rating,-price)
 
 <VersionBadge version="v4.3.0" />
 
-Harper supports querying across related tables through dot-syntax chained attributes. Relationships must be defined in the schema using `@relation`.
+Harper supports querying across related tables through dot-syntax chained attributes. Relationships must be defined in the schema using `@relationship`.
 
 **Schema example**:
 
@@ -188,12 +188,12 @@ type Product @table @export {
 	id: Long @primaryKey
 	name: String
 	brandId: Long @indexed
-	brand: Brand @relation(from: "brandId")
+	brand: Brand @relationship(from: "brandId")
 }
 type Brand @table @export {
 	id: Long @primaryKey
 	name: String
-	products: [Product] @relation(to: "brandId")
+	products: [Product] @relationship(to: "brandId")
 }
 ```
 
@@ -225,7 +225,7 @@ type Product @table @export {
 	id: Long @primaryKey
 	name: String
 	resellerIds: [Long] @indexed
-	resellers: [Reseller] @relation(from: "resellerId")
+	resellers: [Reseller] @relationship(from: "resellerId")
 }
 ```
 
