@@ -747,8 +747,7 @@ export async function installApplications() {
 				try {
 					const { resolveRegistryAuth } = await import('./secretOperations.ts');
 					resolvedRegistryAuth = (await resolveRegistryAuth(applicationConfig.registryAuth, name)) as
-						| RegistryAuthEntry[]
-						| undefined;
+						RegistryAuthEntry[] | undefined;
 				} catch (error) {
 					logger.warn?.(
 						`Could not resolve registryAuth for application ${name} at install time: ${(error as Error).message}`
