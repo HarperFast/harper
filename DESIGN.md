@@ -223,8 +223,6 @@ its coalescing must stay a superset-safe no-op for the single-swap #586 case. Re
 `integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
 (it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
 
-<<<<<<< HEAD
-=======
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
@@ -259,7 +257,6 @@ mirrors loader behaviors that must stay in sync if the loader changes: config fi
 (`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
 arrives via env var cannot redirect the scan.
 
->>>>>>> 0e80b6bdb (Merge pull request #1580 from HarperFast/fix/load-env-config-order-1513)
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
 Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
