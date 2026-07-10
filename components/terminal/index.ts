@@ -234,6 +234,10 @@ async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Pr
 			}
 			authenticating = true;
 			const user = await authenticate(payload, req);
+			// The socket may have closed during the await (e.g. a second rapid auth
+			// frame triggered safeClose → teardown). Bail before reserving a slot or
+			// spawning, or we'd leak liveSessions and orphan a PTY on a dead socket.
+			if (closed) return;
 			const username = user?.username ?? 'anonymous';
 			if (!user) {
 				terminalLog.warn?.(`terminal AUTH-FAIL from ${remote}`);
@@ -262,6 +266,12 @@ async function onTerminalConnection(ws: any, req: any, opts: SessionOptions): Pr
 				liveSessions = Math.max(0, liveSessions - 1);
 				terminalLog.error?.('node-pty unavailable; install it in the instance image', error);
 				safeClose(ws, 4500, 'terminal backend (node-pty) not installed');
+				return;
+			}
+			// Socket may have closed during the loadPty() import — roll back the
+			// reserved slot and don't spawn onto a dead socket.
+			if (closed) {
+				liveSessions = Math.max(0, liveSessions - 1);
 				return;
 			}
 			try {
