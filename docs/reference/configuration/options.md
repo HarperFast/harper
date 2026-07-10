@@ -65,6 +65,28 @@ threads:
 - `maxHeapMemory` — Heap limit per thread (MB)
 - `heapSnapshotNearLimit` — Write a `.heapsnapshot` file when a thread nears its heap limit (loadable in Chrome DevTools Memory tab); _Default_: `false`. See [Worker Thread Debugging](./debugging.md#heap-snapshots-near-the-limit)
 - `debug` — Enable Node.js inspector; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`. See [Worker Thread Debugging](./debugging.md)
+- `preload` <VersionBadge version="v5.2.0" /> — Module, or list of modules, to load (via Node's `--import`) before any Harper or application module on each worker thread. Intended for instrumentation/APM agents that must load first to instrument subsequent module loads. Use the agent's ESM/register entry — e.g. `dd-trace/register.js`, which registers the loader hooks that instrument worker threads (where Harper runs its work); the plain `dd-trace/init` (`--require`) entry only covers the main thread. Bare specifiers resolve against the `node_modules` of your installed [components](../components/overview.md) — so the agent can be shipped as a dependency of a deployed component — and absolute paths are also accepted. Applies to worker threads only (not under Bun).
+
+```yaml
+threads:
+  preload: dd-trace/register.js
+```
+
+Or several modules:
+
+```yaml
+threads:
+  preload:
+    - dd-trace/register.js
+    - /opt/instrumentation/agent.mjs
+```
+
+- `preloadRequire` <VersionBadge version="v5.2.0" /> — Same as `preload`, but loads modules via Node's `--require` (CommonJS) instead of `--import`. Use this for agents that document the `--require` path and do not need ESM loader hooks (e.g. `dd-trace/init`, Dynatrace OneAgent). Same resolution rules as `preload`.
+
+```yaml
+threads:
+  preloadRequire: dd-trace/init
+```
 
 ---
 
