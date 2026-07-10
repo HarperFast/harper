@@ -1098,5 +1098,27 @@ describe('Test harper_logger module', () => {
 			expect(() => logger.error('operation failed', proxy)).to.not.throw();
 			expect(lines.join('\n')).to.include('operation failed');
 		});
+
+		it('does not throw when a revoked Proxy appears as a cause', () => {
+			const { logger, lines } = createCapturingLogger();
+			const { proxy, revoke } = Proxy.revocable(new Error('root cause'), {});
+			revoke();
+			const error = new Error('origin fetch failed', { cause: proxy });
+			expect(() => logger.error(error)).to.not.throw();
+			expect(lines.join('\n')).to.include('Error: origin fetch failed');
+		});
+
+		it('does not throw when a cause has a throwing getter', () => {
+			const { logger, lines } = createCapturingLogger();
+			const hostileCause = {};
+			Object.defineProperty(hostileCause, 'stack', {
+				get() {
+					throw new Error('getter boom');
+				},
+			});
+			const error = new Error('origin fetch failed', { cause: hostileCause });
+			expect(() => logger.error(error)).to.not.throw();
+			expect(lines.join('\n')).to.include('Error: origin fetch failed');
+		});
 	});
 });

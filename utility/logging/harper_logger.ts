@@ -946,7 +946,17 @@ function getDefaultConfig() {
  */
 export function errorToString(error: any) {
 	if (error == null) return String(error);
-	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+	try {
+		return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+	} catch {
+		// error is hostile (e.g. a revoked Proxy, or a getter that throws) - this must never throw,
+		// since it's called directly for response bodies (REST.ts/http.ts/JSONStream) as well as here.
+		try {
+			return Object.prototype.toString.call(error);
+		} catch {
+			return '[Unrenderable Object]';
+		}
+	}
 }
 
 // Own-enumerable Error properties considered safe to surface in logs — common diagnostic fields
@@ -960,15 +970,24 @@ function loggablePropsSuffix(error: any): string {
 	if (typeof error !== 'object' || error === null) return '';
 	let suffix = '';
 	for (const key of LOGGABLE_ERROR_PROPS) {
-		const value = error[key];
-		if (value !== undefined) suffix += ` ${key}=${value}`;
+		try {
+			const value = error[key];
+			if (value !== undefined) suffix += ` ${key}=${value}`;
+		} catch {
+			// A hostile property (revoked Proxy, throwing getter) must not crash the logger - skip it.
+		}
 	}
 	return suffix;
 }
 
 function renderErrorLine(error: any): string {
-	const base = typeof error?.stack === 'string' ? error.stack : errorToString(error);
-	return base + loggablePropsSuffix(error);
+	try {
+		const base = typeof error?.stack === 'string' ? error.stack : errorToString(error);
+		return base + loggablePropsSuffix(error);
+	} catch (err) {
+		// error?.stack itself can throw on a hostile object even though errorToString cannot.
+		return `[Unrenderable Error: ${err instanceof Error ? err.message : String(err)}]`;
+	}
 }
 
 /**
@@ -976,16 +995,29 @@ function renderErrorLine(error: any): string {
  * diagnostic properties (see `LOGGABLE_ERROR_PROPS`), then appends the same for each error in its
  * `cause` chain. Deliberately excludes every OTHER own-enumerable property — those are exactly
  * what leaks secrets in #1734 (see `errorForLog`).
+ *
+ * The `cause` chain is not under this module's control (any code that threw the outer error could
+ * have attached a hostile `cause` - a revoked Proxy, an object with a throwing getter), so every
+ * step of the walk is defensive: this function must never throw regardless of what it's given.
  */
 function errorToLogString(error: any) {
 	if (error == null) return String(error);
 	let output = renderErrorLine(error);
 	const seen = new Set([error]);
-	let cause = error.cause;
+	let cause: any;
+	try {
+		cause = error.cause;
+	} catch {
+		return output;
+	}
 	while (cause != null && !seen.has(cause)) {
 		seen.add(cause);
 		output += `\ncaused by: ${renderErrorLine(cause)}`;
-		cause = cause.cause;
+		try {
+			cause = cause.cause;
+		} catch {
+			break;
+		}
 	}
 	return output;
 }
