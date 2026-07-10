@@ -3,7 +3,7 @@
  *   node --test benchmarks/ycsb/
  */
 import { test } from 'node:test';
-import { strictEqual, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, deepStrictEqual } from 'node:assert';
 import { convert, type Results } from './to-benchmark-json.mts';
 
 const latency = { read: { p50: 1, p99: 2 } };

@@ -1,0 +1,6 @@
+# Fixture for MCP application-profile custom content resources (#1609): a
+# docs-style component exposing pages via `static mcpResources` (fixed uri +
+# uriTemplate with completions) without any table backing.
+jsResource:
+  files: resources.js
+rest: true

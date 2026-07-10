@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { expandEnvVar, expandEnvVarsDeep, isUnresolvedEnvVarPlaceholder } = require('#src/utility/expandEnvVar');
 
 describe('expandEnvVar', () => {

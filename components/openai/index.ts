@@ -262,7 +262,10 @@ export class OpenAIBackend implements ModelBackend {
 			// doesn't leak request content. Cap length defensively against a
 			// misbehaving compat shim. Falls back to status-only if the body
 			// isn't JSON or doesn't have the envelope.
-			throw new OpenAIBackendError(`OpenAI ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`);
+			throw new OpenAIBackendError(
+				`OpenAI ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`,
+				res.status
+			);
 		}
 		return res;
 	}
@@ -306,9 +309,13 @@ export function registerOpenAIBackend(args: {
 }
 
 export class OpenAIBackendError extends ServerError {
-	constructor(message: string) {
+	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
+	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
+	declare upstreamStatus?: number;
+	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'OpenAIBackendError';
+		if (upstreamStatus !== undefined) this.upstreamStatus = upstreamStatus;
 	}
 }
 

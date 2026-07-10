@@ -9,7 +9,7 @@ import {
 	rmSync,
 	symlinkSync,
 } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, sep } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -69,6 +69,9 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const appEntry of cfFolders) {
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
+			// Skip hidden entries: component names are never dot-prefixed, and this keeps
+			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
+			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			cfsLoaded.push(
@@ -409,10 +412,22 @@ export async function loadComponent(
 						componentPath = join(componentDirectory, 'components', componentName);
 					} else {
 						let containerFolder = componentDirectory;
+						const hdbBasePath = getHdbBasePath();
+						const componentInsideHdb =
+							componentDirectory === hdbBasePath || componentDirectory.startsWith(hdbBasePath + sep);
 						componentPath = join(containerFolder, 'node_modules', componentName);
 						while (!existsSync(componentPath)) {
-							containerFolder = dirname(containerFolder);
-							if (containerFolder.length < getHdbBasePath().length) {
+							const parentFolder = dirname(containerFolder);
+							if (parentFolder === containerFolder) {
+								componentPath = null;
+								break;
+							}
+							containerFolder = parentFolder;
+							if (
+								componentInsideHdb &&
+								containerFolder !== hdbBasePath &&
+								!containerFolder.startsWith(hdbBasePath + sep)
+							) {
 								componentPath = null;
 								break;
 							}

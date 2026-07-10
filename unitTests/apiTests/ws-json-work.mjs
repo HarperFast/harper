@@ -86,7 +86,7 @@ describe('test WebSocket connections', () => {
 		let message_count = 0;
 		let printing_connection_count;
 		let i = 0;
-		for (; i < 20; ) {
+		for (; i < 20;) {
 			//			let ws = new WebSocket('ws+unix:/tmp/test:/our_data', {
 			let ws = new WebSocket(`${wsBaseUrl}/our_data`, {
 				headers,

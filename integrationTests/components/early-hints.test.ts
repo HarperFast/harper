@@ -6,7 +6,7 @@
  * conversion, empty hints handling, and response length limits.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, match } from 'node:assert/strict';
+import { strictEqual, ok, match } from 'node:assert';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 

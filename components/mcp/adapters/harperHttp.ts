@@ -38,6 +38,8 @@ interface HarperHttpRequest {
 	 */
 	user?: { username?: string; role?: unknown };
 	isWebSocket?: boolean;
+	/** Client socket IP (Harper Request getter; present on Node and Bun). */
+	ip?: string;
 }
 
 interface HarperHttpResponse {
@@ -61,6 +63,7 @@ export function createHarperHttpHandler(profile: McpProfile) {
 			user: request.user?.username ?? '',
 			userObject: request.user as NormRequest['userObject'],
 			profile,
+			clientIp: request.ip,
 		};
 
 		const res = await handleMcpRequest(norm);

@@ -22,7 +22,7 @@
  * indefinitely under Harper-on-Bun. Tracked in issue #697.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import request from 'supertest';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
@@ -80,7 +80,7 @@ suite('Token authentication', (ctx) => {
 		if (authorizeLocal) {
 			// Loopback caller is auto-authorized → mints a token.
 			assert.equal(r.status, 200, r.text);
-			assert.notEqual(r.body.operation_token, undefined, r.text);
+			assert.notStrictEqual(r.body.operation_token, undefined, r.text);
 		} else {
 			assert.equal(r.status, 401, r.text);
 			assert.equal(r.body.error, 'Must login', r.text);
@@ -121,8 +121,8 @@ suite('Token authentication', (ctx) => {
 			})
 			.expect(200);
 
-		assert.notEqual(response.body.operation_token, undefined, response.text);
-		assert.notEqual(response.body.refresh_token, undefined, response.text);
+		assert.notStrictEqual(response.body.operation_token, undefined, response.text);
+		assert.notStrictEqual(response.body.refresh_token, undefined, response.text);
 		operationToken = response.body.operation_token;
 		refreshToken = response.body.refresh_token;
 	});
@@ -173,7 +173,7 @@ suite('Token authentication', (ctx) => {
 				.send({ operation: 'refresh_operation_token' })
 				.expect(200);
 
-			assert.notEqual(response.body.operation_token, undefined, response.text);
+			assert.notStrictEqual(response.body.operation_token, undefined, response.text);
 			operationToken = response.body.operation_token;
 		}
 	);
@@ -190,7 +190,7 @@ suite('Token authentication', (ctx) => {
 
 	test('create_authentication_tokens with basic-auth current user works', async () => {
 		const response = await client.req().send({ operation: 'create_authentication_tokens' }).expect(200);
-		assert.notEqual(response.body.operation_token, undefined, response.text);
-		assert.notEqual(response.body.refresh_token, undefined, response.text);
+		assert.notStrictEqual(response.body.operation_token, undefined, response.text);
+		assert.notStrictEqual(response.body.refresh_token, undefined, response.text);
 	});
 });

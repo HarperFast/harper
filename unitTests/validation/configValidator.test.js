@@ -366,6 +366,26 @@ describe('Test configValidator module', () => {
 		expect(result.message).to.equal("'routes' does not match any of the allowed types");
 	});
 
+	it('Test routesValidator accepts directional controlled-flow fields', () => {
+		const test_array = [
+			{ hostname: 'node-two', port: 9933, replicates: { sends: false, receives: true } },
+			{
+				hostname: 'node-three',
+				replicates: { sends: true, sendsTo: [{ target: 'node-three', database: 'data', excludeTables: ['secret'] }] },
+			},
+			// top-level form, plus entries that intentionally omit target/source and database
+			// (these mean "any peer" / "any database" and must validate)
+			{ host: 'node-four', receivesFrom: ['node-five', { source: 'node-six' }, { excludeTables: ['t'] }] },
+		];
+		const result = routesValidator(test_array);
+		expect(result).to.equal(undefined); // validateBySchema returns undefined when valid
+	});
+
+	it('Test routesValidator rejects a directional field of the wrong type', () => {
+		const result = routesValidator([{ hostname: 'node-two', replicates: { sends: 'yes' } }]);
+		expect(result.message).to.equal("'routes' does not match any of the allowed types");
+	});
+
 	it('Test validateRotationInterval invalid unit', () => {
 		const validate_interval = config_val.__get__('validateRotationInterval');
 		const message_stub = sinon.stub();

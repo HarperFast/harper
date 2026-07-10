@@ -10,6 +10,7 @@ const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
 const logger = require('#src/utility/logging/harper_logger');
+const { contextStorage } = require('#src/resources/transaction');
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';
@@ -455,6 +456,207 @@ describe('Test serverUtilities.js module ', () => {
 				assert.equal(loggedBody.operation, 'create_schema', 'operation should be preserved');
 				assert.equal(loggedBody.schema, 'test', 'schema should be preserved');
 			}
+		});
+
+		it('Should run the operation function with an ambient context carrying hdb_user', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'ambient_user' };
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore?.user, hdbUser);
+		});
+
+		it('Should not establish an ambient context when hdb_user is absent', async function () {
+			op_func_caller_stub.callThrough();
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test' } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore, undefined);
+		});
+
+		it('Should preserve an existing ambient context for the same user', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'ambient_user' };
+			const outerContext = { user: hdbUser, someRequestState: true };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.equal(observedStore, outerContext);
+		});
+
+		it('Should merge ambient context, swapping only the user, when the request user differs', async function () {
+			// An explicitly different hdb_user must never silently ride the outer user's
+			// attribution, but the rest of the ambient context (open transaction, request
+			// state) is preserved so atomicity is unaffected. The outer context object
+			// itself must not be mutated.
+			op_func_caller_stub.callThrough();
+			const userX = { username: 'outer_user' };
+			const userY = { username: 'request_user' };
+			const outerTransaction = { open: true };
+			const outerContext = { user: userX, transaction: outerTransaction, someRequestState: true };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: userY } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, userY);
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(observedStore.someRequestState, true, 'other request state must be preserved');
+			assert.equal(outerContext.user, userX, 'outer context object must not be mutated');
+		});
+
+		it('Should merge the user into a userless ambient context, preserving its transaction', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'request_user' };
+			const outerTransaction = { open: true };
+			const outerContext = { transaction: outerTransaction };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, hdbUser);
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(outerContext.user, undefined, 'outer context object must not be mutated');
+		});
+
+		it('Should not establish an ambient context when hdb_user is null', async function () {
+			// serverHandlers.js sets req.body.hdb_user = null on the unauthenticated-allowed path
+			op_func_caller_stub.callThrough();
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test', hdb_user: null } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore, undefined);
+		});
+	});
+
+	describe('registerOperation permission seam', function () {
+		const { server } = require('#src/server/Server');
+		const op_auth = require('#src/utility/operation_authorization');
+		const { validateOperations } = require('#src/utility/operationPermissions');
+		const SU_OP = 'test_registered_su_op';
+		const OPEN_OP = 'test_registered_open_op';
+
+		// A non-super_user request JSON for a given op, optionally carrying an `operations` grant.
+		const nonSuRequest = (op, operations) => ({
+			operation: op,
+			hdb_user: {
+				active: true,
+				role: { permission: { super_user: false, ...(operations ? { operations } : {}) }, role: 'scoped' },
+				username: 'scoped_user',
+			},
+		});
+		const suRequest = (op) => ({
+			operation: op,
+			hdb_user: { active: true, role: { permission: { super_user: true }, role: 'admin' }, username: 'su' },
+		});
+
+		before(function () {
+			server.registerOperation({ name: SU_OP, execute: async () => ({ ok: true }), requiresSuperUser: true });
+		});
+
+		after(function () {
+			// Keep the process-global registries clean — these test-only ops shouldn't leak into other
+			// suites. registerOperation touches three globals (the op-function map plus verifyPerms'
+			// requiredPermissions and the grantable-ops set), so undo all three, not just the map.
+			for (const op of [SU_OP, OPEN_OP, 'test_name_pinning_op', 'shared_op_a', 'shared_op_b', 'dyn_grantable_op']) {
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+				op_auth.unregisterOperationPermission(op);
+			}
+		});
+
+		it('registers the handler under the op name for verifyPerms, without mutating the caller function', function () {
+			const original = async () => ({});
+			const def = { name: 'test_name_pinning_op', execute: original, requiresSuperUser: true };
+			server.registerOperation(def);
+			// The stored handler is a fresh wrapper named after the op (the key verifyPerms looks up)...
+			assert.equal(
+				serverUtilities.OPERATION_FUNCTION_MAP.get('test_name_pinning_op').operation_function.name,
+				'test_name_pinning_op'
+			);
+			// ...and the caller's own function object is left untouched.
+			assert.equal(def.execute, original);
+			assert.notEqual(original.name, 'test_name_pinning_op');
+		});
+
+		it('does not corrupt authz when one handler function is shared across two op names', function () {
+			const shared = async () => ({});
+			server.registerOperation({ name: 'shared_op_a', execute: shared, requiresSuperUser: true });
+			server.registerOperation({ name: 'shared_op_b', execute: shared, requiresSuperUser: true });
+			// Each registration gets its own named wrapper — the second registration does not rename the first.
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_a').operation_function.name, 'shared_op_a');
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_b').operation_function.name, 'shared_op_b');
+		});
+
+		it('makes a declared op grantable in a role operations allowlist, even a non-enum name', function () {
+			assert.notEqual(validateOperations(['dyn_grantable_op']), null); // unknown name before registration
+			server.registerOperation({ name: 'dyn_grantable_op', execute: async () => ({}), requiresSuperUser: true });
+			assert.equal(validateOperations(['dyn_grantable_op']), null); // grantable after registration
+		});
+
+		it('does not touch handler name or register perms when requiresSuperUser is omitted (opt-in)', function () {
+			const def = { name: OPEN_OP, execute: async () => ({}) };
+			server.registerOperation(def);
+			// Name is left as the arrow's inferred name ("execute" from the property), not forced to OPEN_OP.
+			assert.notEqual(def.execute.name, OPEN_OP);
+			// Unchanged behavior: with no central entry, a non-SU request to this op fails closed the same
+			// way any unregistered op does — verifyPerms throws OP_NOT_FOUND (400), it does not silently allow.
+			let threw;
+			try {
+				op_auth.verifyPerms(nonSuRequest(OPEN_OP), OPEN_OP);
+			} catch (err) {
+				threw = err;
+			}
+			assert.ok(threw, 'expected verifyPerms to throw for an unregistered op');
+			assert.equal(threw.statusCode, 400);
+		});
+
+		it('allows a super_user to call a declared SU op', function () {
+			assert.equal(op_auth.verifyPerms(suRequest(SU_OP), SU_OP), null);
+		});
+
+		it('denies a non-super_user without an operations grant', function () {
+			const result = op_auth.verifyPerms(nonSuRequest(SU_OP), SU_OP);
+			assert.ok(result, 'expected a permissions failure for a non-super_user without a grant');
+		});
+
+		it('allows a non-super_user whose role grants the op via the operations allowlist (SU-bypass)', function () {
+			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
 		});
 	});
 });

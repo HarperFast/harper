@@ -1,0 +1,6 @@
+# QA-328 — concurrent PATCH field-level merge correctness
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: 'resources.js'
+rest: true

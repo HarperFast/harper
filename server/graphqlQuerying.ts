@@ -583,7 +583,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				// Await the `graphqlHandler` call here so that errors are caught.
 				return await graphqlQueryingHandler(request as any);
 			} catch (error) {
-				logger.error(error);
+				logger.error(logger.errorForLog(error));
 
 				// Error Handling
 				// Based on the GraphQL specification, a GraphQL response (non-http) are a map with a `data` field and an `errors` field.

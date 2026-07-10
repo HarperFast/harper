@@ -12,9 +12,9 @@ class Login extends Resource {
 		// TODO: Return a login page
 	}
 	static async post(_id, body, request) {
-		const { username, password } = body;
+		const { username, password, token } = body;
 		return {
-			data: await request.login(username, password),
+			data: await request.login(username, password, token),
 		};
 	}
 }

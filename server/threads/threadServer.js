@@ -14,7 +14,17 @@ const env = require('../../utility/environment/environmentManager.ts');
 const terms = require('../../utility/hdbTerms.ts');
 const { server } = require('../Server.ts');
 let { createServer: createSecureSocketServer } = require('node:tls');
-const { restartNumber, getWorkerIndex } = require('./manageThreads.js');
+const {
+	restartNumber,
+	getWorkerIndex,
+	extendShutdownDeadline,
+	restoreShutdownDeadline,
+} = require('./manageThreads.js');
+const {
+	runShutdownDrains,
+	shutdownDrainsHaveWork,
+	getShutdownDrainCeilingMs,
+} = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
 const { createTLSSelector } = require('../../security/keys.ts');
@@ -173,11 +183,26 @@ function startServers() {
 						harperLogger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 						// close connections as possible, then let the event loop complete.
+						// First, gracefully drain any in-flight work registered by components — notably a
+						// replication blob *send* streaming to a peer, which is cheaper to finish than to interrupt
+						// (interrupting leaves the peer's copy diverged until it re-requests). The drain waits only
+						// on work still making progress, bounded by an absolute deadline. When there is real work to
+						// drain we push the termination backstops out to that deadline first so the drain isn't cut
+						// short, then restore the normal short backstop once draining is done — so any later hang
+						// (closeServers / scope disposal) is still force-killed on the normal timeout, and a worker
+						// with no such work is never affected.
+						const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
+						const extendedForDrain = shutdownDrainsHaveWork();
+						if (extendedForDrain) extendShutdownDeadline(drainDeadline);
 						// Wait for application scopes to finish closing before exiting — some dispose a native
 						// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
 						// worker while that runtime is still live crashes the process. The manageThreads backstop
 						// timers still bound this if a scope's disposal hangs.
-						closeServers()
+						runShutdownDrains(drainDeadline)
+							.then(() => {
+								if (extendedForDrain) restoreShutdownDeadline();
+							})
+							.then(() => closeServers())
 							.then(() => whenScopesClosed())
 							.then(() => {
 								realExit(0);
@@ -511,7 +536,12 @@ function onSocket(listener, options) {
 			listener
 		);
 		SNICallback.initialize(socketServer);
-		socketServer.noReusePort = true;
+		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
+		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
+		// connections for this listener (e.g. MQTT), matching how HTTP servers are bound; without
+		// it only the first worker to bind serves the port and every sibling's listen() fails with
+		// a silently-swallowed EADDRINUSE.
+		if (process.platform === 'darwin') socketServer.noReusePort = true;
 		SERVERS[options.securePort] = socketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
@@ -548,7 +578,9 @@ function onSocket(listener, options) {
 			keepAlive: true,
 			keepAliveInitialDelay: 600,
 		});
-		socketServer.noReusePort = true;
+		// See the securePort path above: opt out of reusePort only on macOS so every worker can
+		// accept connections for this listener elsewhere.
+		if (process.platform === 'darwin') socketServer.noReusePort = true;
 		SERVERS[options.port] = socketServer;
 	}
 	return socketServer;

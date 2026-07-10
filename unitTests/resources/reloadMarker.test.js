@@ -26,8 +26,13 @@ describe('table-reload marker (harper-pro#489)', () => {
 		throw new Error('waitFor timed out: ' + message);
 	}
 
-	it('delivers a reload event to every subscriber on the table', async function () {
+	it('delivers a raw reload event to every subscriber on a system table', async function () {
+		// System-DB subscribers (knownNodes peer discovery, hdb_certificate CA install) consume the raw
+		// marker and run their own bespoke whole-table rescan, so for the system DB the bare 'reload' is
+		// forwarded verbatim. (User-DB tables instead re-snapshot the current scope — see the next test,
+		// harper-pro#495.)
 		const ReloadTable = table({
+			database: 'system',
 			table: 'ReloadMarkerDeliver',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
@@ -47,6 +52,34 @@ describe('table-reload marker (harper-pro#489)', () => {
 		const reload = rootEvents.find((e) => e.type === 'reload');
 		assert.equal(reload.value, undefined, 'reload carries no record value');
 		assert.ok(reload.id == null, 'reload has no record id (whole-table signal)');
+	});
+
+	it('re-snapshots the current scope (not a raw reload) to a user-table subscriber (harper-pro#495)', async function () {
+		// On a user table, a copyApply base copy back-fills rows with no per-row audit events, so the live
+		// listener never fired for them. subscribe() reacts to the reload marker by re-delivering the
+		// current scope as 'put's — recovering those rows — and suppresses the bare marker (a 'reload' typed
+		// event is meaningless to MQTT/SSE/WS clients). Subscribe with omitCurrent so the only delivery is
+		// the reload-driven re-snapshot, not the initial snapshot.
+		const ReloadTable = table({
+			table: 'ReloadMarkerResnapshot',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		await ReloadTable.put({ id: 'r1', name: 'one' });
+
+		const events = [];
+		const sub = await ReloadTable.subscribe({ omitCurrent: true });
+		sub.on('data', (event) => events.push(event));
+
+		await ReloadTable.writeReloadMarker();
+
+		await waitFor(
+			() => events.some((e) => e.type === 'put' && e.id === 'r1'),
+			'subscriber receives the existing row as a put via the reload re-snapshot'
+		);
+		assert.ok(
+			!events.some((e) => e.type === 'reload'),
+			'the bare reload marker is suppressed on a user table (re-snapshotted instead)'
+		);
 	});
 
 	it('persists the marker as a local-only audit entry that never replicates', async function () {

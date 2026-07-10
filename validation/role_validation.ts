@@ -3,6 +3,7 @@ const validator = require('./validationWrapper');
 import * as terms from '../utility/hdbTerms.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { getDatabases } from '../resources/databases.ts';
 
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 
@@ -66,6 +67,10 @@ function customValidate(object, constraints) {
 		schema_permissions: {},
 	};
 
+	// getDatabases() is self-initializing; global.hdb_schema is set lazily and is undefined when a
+	// component's roles.yaml is validated during startup.
+	const hdb_schema: any = getDatabases();
+
 	const jsonMsgKeys = Object.keys(object);
 
 	//Check to confirm that keys in JSON body are valid
@@ -116,7 +121,7 @@ function customValidate(object, constraints) {
 				if (Array.isArray(structureUserPerm)) {
 					for (let k = 0, length = structureUserPerm.length; k < length; k++) {
 						let schemaPerm = structureUserPerm[k];
-						if (!(global as any).hdb_schema[schemaPerm]) {
+						if (!hdb_schema[schemaPerm]) {
 							addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaPerm), validationErrors, undefined, undefined);
 						}
 					}
@@ -146,7 +151,7 @@ function customValidate(object, constraints) {
 
 			let schema = object.permission[item];
 			//validate that schema exists
-			if (!item || !(global as any).hdb_schema[item]) {
+			if (!item || !hdb_schema[item]) {
 				addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(item), validationErrors, undefined, undefined);
 				continue;
 			}
@@ -154,7 +159,7 @@ function customValidate(object, constraints) {
 				for (let t in schema.tables) {
 					let table = schema.tables[t];
 					//validate that table exists in schema
-					if (!t || !(global as any).hdb_schema[item][t]) {
+					if (!t || !hdb_schema[item][t]) {
 						addPermError(HDB_ERROR_MSGS.TABLE_NOT_FOUND(item, t), validationErrors, undefined, undefined);
 						continue;
 					}
@@ -186,7 +191,7 @@ function customValidate(object, constraints) {
 
 					//need this check here to ensure no unexpected errors if key is missing in table perms obj
 					if (table.attribute_permissions) {
-						let tableAttributeNames = (global as any).hdb_schema[item][t].attributes.map(({ attribute }) => attribute);
+						let tableAttributeNames = hdb_schema[item][t].attributes.map(({ attribute }) => attribute);
 						const attrPermsCheck = {
 							read: false,
 							insert: false,

@@ -1,8 +1,9 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	tryAdmit,
 	clearSessionRateState,
 	configFor,
+	resolveClientIdentity,
 	_setClockForTest,
 	_resetForTest,
 } = require('#src/components/mcp/rateLimit');
@@ -30,9 +31,23 @@ describe('mcp/rateLimit', () => {
 	describe('configFor', () => {
 		it('returns the documented defaults for each profile when nothing is configured', () => {
 			const ops = configFor('operations');
-			assert.deepEqual(ops, { perToolPerSecond: 10, perToolBurst: 20, sessionConcurrency: 25, sessionPerSecond: 100 });
+			assert.deepEqual(ops, {
+				perToolPerSecond: 10,
+				perToolBurst: 20,
+				sessionConcurrency: 25,
+				sessionPerSecond: 100,
+				perClientPerSecond: 0,
+				perClientBurst: 0,
+			});
 			const app = configFor('application');
-			assert.deepEqual(app, { perToolPerSecond: 25, perToolBurst: 50, sessionConcurrency: 50, sessionPerSecond: 200 });
+			assert.deepEqual(app, {
+				perToolPerSecond: 25,
+				perToolBurst: 50,
+				sessionConcurrency: 50,
+				sessionPerSecond: 200,
+				perClientPerSecond: 0,
+				perClientBurst: 0,
+			});
 		});
 
 		it('overrides defaults from configured values', () => {
@@ -206,6 +221,92 @@ describe('mcp/rateLimit', () => {
 			// Touching s1 again keeps it fresh.
 			const stillExhausted = tryAdmit('s1', 't', 'application');
 			assert.equal(stillExhausted.allowed, false, 'active session keeps its state');
+		});
+	});
+	describe('per-client identity buckets (#1610)', () => {
+		it('is disabled by default: identity present but zero rate adds no per_client denials', () => {
+			for (let i = 0; i < 60; i++) {
+				const d = tryAdmit(`cycle-${i}`, 'answer', 'application', '203.0.113.7');
+				assert.equal(d.allowed, true, `call ${i} admitted (per-tool bucket is per-session)`);
+				d.release();
+			}
+		});
+
+		it('survives session cycling: fresh sessions share the identity bucket', () => {
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 1;
+			envOverrides.mcp_application_rateLimit_perClientBurst = 3;
+			const results = [];
+			for (let i = 0; i < 5; i++) {
+				// A brand-new session per call — the session-cycling abuse loop.
+				const d = tryAdmit(`fresh-${i}`, 'answer', 'application', '203.0.113.7');
+				results.push(d.allowed ? 'ok' : d.reason);
+				if (d.allowed) d.release();
+			}
+			assert.deepEqual(results, ['ok', 'ok', 'ok', 'per_client', 'per_client']);
+		});
+
+		it('separates identities and profiles', () => {
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 1;
+			envOverrides.mcp_application_rateLimit_perClientBurst = 1;
+			assert.equal(tryAdmit('s1', 't', 'application', 'ip-a').allowed, true);
+			assert.equal(tryAdmit('s2', 't', 'application', 'ip-a').reason, 'per_client');
+			assert.equal(tryAdmit('s3', 't', 'application', 'ip-b').allowed, true, 'other identity unaffected');
+			assert.equal(tryAdmit('s4', 't', 'operations', 'ip-a').allowed, true, 'other profile unaffected');
+		});
+
+		it('refills over time and skips the bucket when identity is unknown', () => {
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 1;
+			envOverrides.mcp_application_rateLimit_perClientBurst = 1;
+			assert.equal(tryAdmit('s1', 't', 'application', 'ip-a').allowed, true);
+			assert.equal(tryAdmit('s2', 't', 'application', 'ip-a').reason, 'per_client');
+			clock += 1000;
+			assert.equal(tryAdmit('s3', 't', 'application', 'ip-a').allowed, true, 'refilled after 1s');
+			assert.equal(tryAdmit('s4', 't', 'application', undefined).allowed, true, 'no identity, no client bucket');
+		});
+
+		it('denied per_client does not burn tool or session tokens', () => {
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 1;
+			envOverrides.mcp_application_rateLimit_perClientBurst = 1;
+			tryAdmit('s1', 't', 'application', 'ip-a').release();
+			// Exhausted identity: repeated denials...
+			for (let i = 0; i < 10; i++) {
+				assert.equal(tryAdmit('s1', 't', 'application', 'ip-a').reason, 'per_client');
+			}
+			// ...must not have drained s1's per-tool/session buckets.
+			clock += 1000;
+			assert.equal(tryAdmit('s1', 't', 'application', 'ip-a').allowed, true);
+		});
+
+		it('perClientBurst defaults to perClientPerSecond when unset, floored at one whole token', () => {
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 2;
+			assert.equal(configFor('application').perClientBurst, 2);
+			_resetForTest();
+			// A fractional sustained rate ("6 per minute") must still admit its
+			// first call — a burst below 1 token could never admit anything.
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 0.1;
+			assert.equal(configFor('application').perClientBurst, 1);
+			assert.equal(tryAdmit('s1', 't', 'application', 'ip-frac').allowed, true);
+			assert.equal(tryAdmit('s2', 't', 'application', 'ip-frac').reason, 'per_client');
+			clock += 10_000;
+			assert.equal(tryAdmit('s3', 't', 'application', 'ip-frac').allowed, true, 'refilled after 10s at 0.1/s');
+		});
+	});
+
+	describe('resolveClientIdentity (#1610)', () => {
+		it('uses the socket IP when no header is configured', () => {
+			assert.equal(resolveClientIdentity({}, '198.51.100.4', 'application'), '198.51.100.4');
+			assert.equal(resolveClientIdentity({}, undefined, 'application'), undefined);
+			assert.equal(resolveClientIdentity({}, '', 'application'), undefined);
+		});
+
+		it('prefers the first value of the configured trusted header, falling back to the socket IP', () => {
+			envOverrides.mcp_application_rateLimit_identityHeader = 'X-Forwarded-For';
+			assert.equal(
+				resolveClientIdentity({ 'x-forwarded-for': '203.0.113.9, 10.0.0.1' }, '10.0.0.1', 'application'),
+				'203.0.113.9'
+			);
+			assert.equal(resolveClientIdentity({}, '10.0.0.1', 'application'), '10.0.0.1');
+			assert.equal(resolveClientIdentity({ 'x-forwarded-for': ' , ' }, '10.0.0.1', 'application'), '10.0.0.1');
 		});
 	});
 });

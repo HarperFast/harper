@@ -327,6 +327,9 @@ export function makeTable(options) {
 		static get expirationMS() {
 			return expirationMs;
 		}
+		static get evictionMS() {
+			return evictionMs;
+		}
 		static dbisDB = dbisDb;
 		static schemaDefined = schemaDefined;
 		/**
@@ -727,7 +730,7 @@ export function makeTable(options) {
 							// return 504 (rather than 404) if there is no content and the cache-control header
 							// dictates not to go to source
 							if (!this.doesExist()) throw new ServerError('Entry is not cached', 504);
-							if (hasSourceGet && target) target.loadedFromSource = false; // mark it as cached
+							if (hasSourceGet) setLoadedFromSource(target, request, false); // mark it as cached
 						} else if (resourceOptions?.ensureLoaded) {
 							const loadingFromSource = ensureLoadedFromSource(
 								(this.constructor as any).source,
@@ -743,7 +746,7 @@ export function makeTable(options) {
 									TableResource._updateResource(this, entry);
 									return this;
 								});
-							} else if (hasSourceGet) target.loadedFromSource = false; // mark it as cached
+							} else if (hasSourceGet) setLoadedFromSource(target, request, false); // mark it as cached
 						}
 						return this;
 					}
@@ -776,7 +779,7 @@ export function makeTable(options) {
 					this.#record = entry.value;
 					this.#version = entry.version;
 				});
-			}
+			} else if (hasSourceGet) setLoadedFromSource(undefined, this.getContext(), false); // mark it as cached
 		}
 		// #section: lifecycle-admin
 		static getNewId(): any {
@@ -1209,7 +1212,12 @@ export function makeTable(options) {
 				let allowed = true;
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowRead(context.user, target, context);
+					try {
+						allowed = this.allowRead(context.user, target, context);
+					} catch {
+						// allow* threw — fail closed rather than letting the request proceed
+						throw new AccessViolation(context.user);
+					}
 				}
 				return promiseNormalize(
 					when(
@@ -1224,6 +1232,7 @@ export function makeTable(options) {
 									// return 504 (rather than 404) if there is no content and the cache-control header
 									// dictates not to go to source
 									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+									if (hasSourceGet) setLoadedFromSource(target, context, false); // mark it as cached
 								} else if (ensureLoaded) {
 									const loadingFromSource = ensureLoadedFromSource(
 										constructor.source,
@@ -1236,7 +1245,7 @@ export function makeTable(options) {
 									if (loadingFromSource) {
 										txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 										return loadingFromSource.then((entry) => entry?.value);
-									}
+									} else if (hasSourceGet) setLoadedFromSource(target, context, false); // mark it as cached
 								}
 								return entry?.value;
 							});
@@ -1300,7 +1309,10 @@ export function makeTable(options) {
 										if (!property.name) property = { name: property };
 										if (!property.checkPermission && (target as any).checkPermission)
 											property.checkPermission = (target as any).checkPermission;
-										if (!relatedTable.prototype.allowRead.call(null, user, property, context)) return false;
+										// Invoke the related table's allowRead on a properly-bound instance rather than
+										// `.call(null, ...)` so `this` is a valid resource of the related type.
+										const relatedResource = new relatedTable(undefined, context);
+										if (!relatedResource.allowRead(user, property, context)) return false;
 										if (!property.select) return property.name; // no select was applied, just return the name
 									}
 									return property;
@@ -1943,6 +1955,16 @@ export function makeTable(options) {
 				},
 				before: writeToSource(),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
+					// save(); log entries are not part of the aborted rocks transaction, so they survive).
+					// Only such a write can find its own orphaned entry in the dedup lookups below and must
+					// not treat it as "already applied". Per-write on purpose: the transaction-wide retry
+					// flag would also suppress dedup for a genuine re-delivered duplicate co-batched with
+					// the conflicting write (double-applying it) and for fresh writes staged through a
+					// reused transaction whose retries counter is stale. Sticky on purpose: a proxy read
+					// from the last attempt's skipped state launders when a recommit round self-skips
+					// (walk identity tie against its own staged record) before a fresh-transaction replay.
+					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2063,8 +2085,12 @@ export function makeTable(options) {
 							// local audit time, not version, so this version-keyed lookup doesn't apply there (LMDB keeps the
 							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard.
-							if (isRocksDB && dedupVersionCouldBeRetained(txnTime)) {
+							// check above remains the read-your-writes guard. Never when this write staged in a prior
+							// failed attempt: that attempt already appended this write's own audit entry, so the lookup
+							// would find it and skip the write as "already applied" when the record was never committed.
+							// A recommit of the same transaction survived that skip only because the old write batch
+							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnTime)) {
 								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -2123,7 +2149,11 @@ export function makeTable(options) {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
+							// Never a duplicate for a write that staged in a prior failed attempt: that attempt already
+							// appended this write's own audit entry, so the lookup would match it while the record was
+							// never committed (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
+								if (stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								return (
@@ -2570,7 +2600,13 @@ export function makeTable(options) {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			if (target.checkPermission) {
 				// requesting authorization verification
-				const allowed = this.allowRead((context as any).user, target, context);
+				let allowed;
+				try {
+					allowed = this.allowRead((context as any).user, target, context);
+				} catch {
+					// allow* threw — fail closed rather than letting the request proceed
+					throw new AccessViolation((context as any).user);
+				}
 				if (!allowed) {
 					throw new AccessViolation((context as any).user);
 				}
@@ -2772,7 +2808,10 @@ export function makeTable(options) {
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
-			const readTxn = txn.useReadTxn();
+			// When the query opts out of a snapshot (`snapshot: false`, e.g. long-running analytics
+			// scans), the read transaction reads against the latest committed data without pinning a
+			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
+			const readTxn = txn.useReadTxn(target.snapshot === false);
 			const entries = executeConditions(
 				conditions,
 				operator,
@@ -3022,6 +3061,7 @@ export function makeTable(options) {
 			}
 			let transformCache;
 			const source = this.source;
+			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
@@ -3059,7 +3099,23 @@ export function makeTable(options) {
 								message: 'This entry has expired',
 							};
 						}
-						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context);
+						// Stale-while-revalidate is an instance method, but a query has no per-row resource
+						// instance to consult (the single-record `get` path passes `this`). Construct one for this
+						// row — via the same `new constructor(id, context)` the framework's getResource uses — so
+						// the hook sees the current row's identity (this.getId()) and record state, matching the
+						// single-record path. It must be a real instance, not the bare class prototype: every
+						// resource prototype chain ends in a tracked-property Proxy, so reading an absent property
+						// (probing for an undefined `allowStaleWhileRevalidate`, or a hook touching `this.x`) on a
+						// non-instance invokes getChanges() with no backing state and throws (harper#1578). We also
+						// load the stale entry into it (as the single-record path does via _updateResource) so a
+						// hook consulting this.getRecord()/this.<field> sees the stale row, not undefined. `entry`
+						// here may be lazy (its `.value` is a GC-able deref, undefined once collected), so we set the
+						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
+						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
+						const swrResource = new resourceClass(entry.key ?? entry, context);
+						resourceClass._updateResource(swrResource, entry);
+						swrResource.setRecord(record);
+						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform);
 						}
@@ -3230,6 +3286,9 @@ export function makeTable(options) {
 			// snapshot:false, which catches any commits that land during yield points; dropping in the
 			// listener avoids duplicate delivery.
 			let dropDuringReplay = false;
+			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
+			let reloadResnapshotRunning = false;
+			let reloadResnapshotPending = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const subscription = addSubscription(
 				TableResource,
@@ -3243,9 +3302,15 @@ export function makeTable(options) {
 							// we only send the full message, this are individual messages that can be sent out of order
 							// TODO: Do we want to have a limit to how far out-of-order we are willing to send?
 							value = auditRecord.getValue?.(primaryStore, getFullRecord);
-						} else if (type !== 'end_txn' && type !== 'reload') {
-							// 'reload' is a whole-table marker with a null id and no record (harper-pro#489); pass it
-							// through verbatim so subscribers re-read the table, skipping the per-record lookup below.
+						} else if (type === 'reload') {
+							// Whole-table marker with a null id and no record (harper-pro#489): a copyApply base copy
+							// back-filled rows with no per-row audit events. For a user table, re-deliver the current
+							// scope as 'put's so MQTT/SSE/WS subscribers recover the snapshotted records, and do NOT
+							// forward the bare marker (harper-pro#495). System-DB subscribers (knownNodes etc.) instead
+							// get the raw marker and run their own bespoke whole-table rescan.
+							if (databaseName !== 'system') return scheduleReloadResnapshot();
+							// system DB: fall through to forward the bare 'reload' event verbatim.
+						} else if (type !== 'end_txn') {
 							// these are events that indicate that the primary record has changed. I believe we always want to simply
 							// send the latest value. Note that it is fine to synchronously access these records, they should have just
 							// been written, so are fresh in memory.
@@ -3366,7 +3431,7 @@ export function makeTable(options) {
 								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
 						}
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							send(history[--i]);
 						}
 						// Use the latest record cursor saw (history[0] = most recent due to reverse
@@ -3475,7 +3540,7 @@ export function makeTable(options) {
 							} else break;
 							if (count) count--;
 						} while (nextTime > startTime && count !== 0);
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							send(history[--i]);
 						}
 					}
@@ -3506,6 +3571,78 @@ export function makeTable(options) {
 				}
 				subscription.send(event);
 			}
+			// #region reload re-snapshot (harper-pro#495)
+			// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
+			// listener above never fires for them and an already-connected subscriber would miss them until
+			// the next direct write. After the copy, a whole-table 'reload' marker is delivered here (id=null).
+			// For a user table we react by re-delivering the subscription's current scope as ordinary 'put'
+			// events — so EVERY consumer that funnels through subscribe() (MQTT, SSE, WS) recovers the records
+			// uniformly, with no per-protocol handling. System-DB reloads are NOT re-snapshotted: their
+			// subscribers (knownNodes peer-discovery, hdb_certificate CA install) run a bespoke whole-table
+			// rescan off the raw marker, which a per-row re-emit cannot express (it can't drop stale rows).
+			// Yields the latest committed value (snapshot:false) and skips tombstones, mirroring the
+			// omitCurrent initial-snapshot scan.
+			async function* currentScopeRecords() {
+				const isCollection = request.isCollection ?? thisId == null;
+				if (isCollection) {
+					let sinceYield = 0;
+					for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+						start: thisId ?? false,
+						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+						versions: true,
+						snapshot: false, // no need for a snapshot, just want the latest data
+					})) {
+						if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+							sinceYield = 0;
+							await rest();
+						}
+						if (!value) continue; // skip tombstones
+						yield { id, localTime, value, version, type: 'put', size };
+					}
+				} else {
+					const entry = primaryStore.getEntry(thisId);
+					if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
+				}
+			}
+			// Drain the current scope into the subscription with the same back-pressure as the live path.
+			// Coalesced: a marker that arrives while a re-snapshot is running just re-arms it once more (so
+			// markers for several tables, or a marker landing mid-scan, are not lost), and we never run two
+			// scans concurrently. The first thing it does is `await rest()` (a setImmediate macrotask), so the
+			// scan never executes inside the synchronous broadcast listener — which on the same-thread
+			// aftercommit path holds an inter-thread lock that must not span event-loop turns.
+			async function runReloadResnapshot() {
+				reloadResnapshotRunning = true;
+				try {
+					await rest(); // defer off the broadcast listener's stack before scanning
+					while (reloadResnapshotPending) {
+						reloadResnapshotPending = false;
+						// Subscription.end() nulls `subscriptions`; bail the moment it closes — before, between,
+						// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
+						// the finally re-arm won't re-loop.
+						if (!subscription.subscriptions) return;
+						for await (const record of currentScopeRecords()) {
+							if (!subscription.subscriptions) return;
+							send(record);
+							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+								if ((await subscription.waitForDrain()) === false) return;
+							}
+						}
+					}
+				} catch (error) {
+					harperLogger.error?.('Error in reload re-snapshot:', error);
+				} finally {
+					reloadResnapshotRunning = false;
+					// A marker that landed after the last pending-check but before we cleared the flag would
+					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
+					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
+				}
+			}
+			function scheduleReloadResnapshot() {
+				if (!subscription.subscriptions) return;
+				reloadResnapshotPending = true;
+				if (!reloadResnapshotRunning) runReloadResnapshot();
+			}
+			// #endregion
 			return subscription;
 		}
 
@@ -3701,12 +3838,10 @@ export function makeTable(options) {
 									);
 								break;
 							case 'ID':
-								if (
-									!(
-										typeof value === 'string' ||
-										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
-									)
-								)
+								if (!(
+									typeof value === 'string' ||
+									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
+								))
 									(validationErrors || (validationErrors = [])).push(
 										`Value ${stringify(value)} in property ${name} must be a string, or an array of strings`
 									);
@@ -4554,6 +4689,17 @@ export function makeTable(options) {
 		}
 	}
 
+	function setLoadedFromSource(
+		target: RequestTarget | undefined,
+		context: Context | undefined,
+		loadedFromSource: boolean
+	) {
+		// mirror the flag onto the context: callers that pass a plain id get an internal
+		// RequestTarget they never see, so the context is their only way to observe cache disposition (#1571)
+		// target may be a primitive id on instance-API calls, which can't hold the flag
+		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
+		if (context) context.loadedFromSource = loadedFromSource;
+	}
 	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
@@ -4786,7 +4932,7 @@ export function makeTable(options) {
 				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
 			else {
 				// served from cache after waiting for another request to resolve
-				if (target) target.loadedFromSource = false;
+				setLoadedFromSource(target, context, false);
 				whenResolved(entry);
 			}
 		};
@@ -4801,7 +4947,7 @@ export function makeTable(options) {
 			});
 		}
 		// lock acquired — this request will actually load from source
-		if (target) target.loadedFromSource = true;
+		setLoadedFromSource(target, context, true);
 
 		const existingRecord = existingEntry?.value;
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing

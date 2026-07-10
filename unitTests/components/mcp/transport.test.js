@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
@@ -197,16 +197,29 @@ describe('mcp/transport', () => {
 			assert.match(res.jsonBody.error.message, /mismatch/);
 		});
 
-		it('treats missing MCP-Protocol-Version as 2025-03-26 (spec compatibility rule)', async () => {
-			// Session is on 2025-06-18 from initialize above, so missing header
-			// (treated as 2025-03-26) should mismatch.
+		it('accepts a missing MCP-Protocol-Version as the session-negotiated version (#1611)', async () => {
+			// Session negotiated 2025-06-18 via initialize; the established session
+			// is the version authority, so a headerless request must NOT be
+			// rejected as a 2025-03-26 mismatch.
 			const res = await handleMcpRequest(
 				makeReq({
 					body: jsonRpc(2, 'tools/list'),
 					headers: { 'mcp-session-id': sessionId },
 				})
 			);
-			assert.equal(res.status, 400);
+			assert.equal(res.status, 200);
+			assert.ok(res.jsonBody.result, `tools/list succeeded: ${JSON.stringify(res.jsonBody)}`);
+		});
+
+		it('accepts a headerless GET SSE open on an established session (#1611)', async () => {
+			const res = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
+				})
+			);
+			assert.equal(res.status, 200, `SSE open succeeded: ${res.status}`);
+			assert.ok(res.sseIterable, 'SSE stream returned');
 		});
 
 		it('accepts a matching MCP-Protocol-Version and returns Method-not-found for unknown methods', async () => {
@@ -481,7 +494,7 @@ describe('mcp/transport', () => {
 					})
 				);
 				assert.equal(page2.jsonBody.result.tools.length, 2);
-				assert.notEqual(page1.jsonBody.result.tools[0].name, page2.jsonBody.result.tools[0].name);
+				assert.notStrictEqual(page1.jsonBody.result.tools[0].name, page2.jsonBody.result.tools[0].name);
 			});
 
 			it('omits nextCursor when the page completes the list', async () => {

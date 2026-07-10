@@ -35,7 +35,7 @@
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/compound-index-conditions.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
