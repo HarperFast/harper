@@ -39,6 +39,12 @@ import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
+import { isMainThread } from 'node:worker_threads';
+import {
+	announceRegisteredOperation,
+	getRemoteOperationFunction,
+	setLocalOperationDispatch,
+} from './registeredOperations.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -77,11 +83,14 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
-			// Need to remove auth variables and secret-bearing fields (value/values carry .env
-			// secrets from set_env_value; value/envelope carry secrets from set_secret), but we
-			// don't want to create an object unless the logging is actually going to happen.
+			// Need to remove auth variables and secret-bearing fields, but we don't want to create
+			// an object unless the logging is actually going to happen. registryAuth carries a
+			// transient private registry token on deploy_component; value/values carry .env secrets
+			// from set_env_value; value/envelope carry secrets from set_secret — none may reach the
+			// operations log.
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			const { hdb_user, hdbAuthHeader, password, payload, value, values, envelope, ...cleanBody } = req.body;
+			const { hdb_user, hdbAuthHeader, password, payload, registryAuth, value, values, envelope, ...cleanBody } =
+				req.body;
 			operationLog.info(cleanBody);
 		}
 	} catch (e) {
@@ -132,6 +141,15 @@ export type OperationDefinition = {
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
 	parametersSchema?: any[];
+	// When set, the operation declares its authorization requirement to the central verifyPerms
+	// system so it participates in the role `operations` allowlist (grantable to a scoped role)
+	// instead of a hand-rolled inline check. Tri-state:
+	//   `true`  = super_user by default (grantable to a scoped role via the `operations` allowlist);
+	//   `false` = grantable AND open to ANY authenticated user with a valid role — it registers an
+	//             empty-perms entry, which verifyPerms treats as "no specific permission required"
+	//             and allows; use deliberately, it is NOT a "still locked down" default;
+	//   omit    = pre-existing behavior (no central entry; the caller enforces its own auth, if any).
+	requiresSuperUser?: boolean;
 };
 
 /**
@@ -139,7 +157,24 @@ export type OperationDefinition = {
  * @param operationDefinition
  */
 server.registerOperation = (operationDefinition: OperationDefinition) => {
-	OPERATION_FUNCTION_MAP.set(operationDefinition.name as any, new OperationFunctionObject(operationDefinition.execute));
+	const { name, execute, requiresSuperUser } = operationDefinition;
+	let handler = execute;
+	if (requiresSuperUser !== undefined) {
+		// verifyPerms keys requiredPermissions by the handler's function `.name`, but registered ops
+		// are typically anonymous arrows (all named "execute") which collide and can't be keyed. Wrap
+		// in a FRESH function named after the op so the lookup resolves the right entry. Wrap rather
+		// than rename `execute` in place: renaming would mutate a handler shared across two op names,
+		// causing the first op to be checked against the second op's permission entry. Forward all
+		// args (transparent pass-through) so the wrapper never changes the handler's call contract.
+		handler = (...args: any[]) => (execute as any)(...args);
+		Object.defineProperty(handler, 'name', { value: name, configurable: true });
+		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
+	}
+	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
+	// Components load per-worker, so a registration made there is invisible to the main-thread
+	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
+	// so the main thread can forward calls to this worker (#1736).
+	if (!isMainThread) announceRegisteredOperation(name);
 };
 
 export function chooseOperation(json: OperationRequestBody) {
@@ -147,6 +182,15 @@ export function chooseOperation(json: OperationRequestBody) {
 	try {
 		getOpResult = getOperationFunction(json);
 	} catch (err) {
+		// Not in this thread's map — a component may have registered it on a worker thread
+		// (components load per-worker). Forward there for execution; the worker runs the
+		// full permission check (with the forwarded hdb_user) where the operation function
+		// and its metadata actually exist, so no perm check is skipped by returning early
+		// here (#1736). Workers never re-forward, so an unknown op can't loop.
+		if (isMainThread) {
+			const remoteOperationFunction = getRemoteOperationFunction(json.operation);
+			if (remoteOperationFunction) return remoteOperationFunction;
+		}
 		operationLog.error(`Error when selecting operation function - ${err}`);
 		throw err;
 	}
@@ -228,6 +272,11 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 		true
 	);
 }
+
+// Give the cross-thread bridge (#1736) the worker-side dispatch path for forwarded operations.
+// Injected (rather than imported there) because registeredOperations is imported above — a
+// static import back into this module would be a cycle.
+setLocalOperationDispatch({ chooseOperation, processLocalTransaction });
 
 _assignPackageExport('operation', operation);
 /**

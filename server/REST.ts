@@ -13,7 +13,7 @@ import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { entryMap } from '../resources/RecordEncoder.ts';
 
-const { errorToString } = harperLogger;
+const { errorToString, errorForLog } = harperLogger;
 const etagBytes = new Uint8Array(8);
 const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
 let httpOptions = {};
@@ -275,8 +275,8 @@ async function http(request: Request, nextHandler) {
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
 		if (statusCode) {
-			if (statusCode === 500) harperLogger.warn(error);
-			else harperLogger.info(error);
+			if (statusCode === 500) harperLogger.warn(errorForLog(error));
+			else harperLogger.info(errorForLog(error));
 			if (statusCode === 405) {
 				if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 				if (error.allow) {
@@ -284,7 +284,7 @@ async function http(request: Request, nextHandler) {
 					headers.setIfNone('Allow', error.allow.map((method) => method.toUpperCase()).join(', '));
 				}
 			}
-		} else harperLogger.error(error);
+		} else harperLogger.error(errorForLog(error));
 
 		// RFC 9457 Problem Details
 		const status = statusCode || 500;
@@ -351,7 +351,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			let hasError;
 			(ws as any).on('error', (error) => {
 				hasError = true;
-				harperLogger.warn(error);
+				harperLogger.warn(errorForLog(error));
 			});
 			let deserializer;
 			(ws as any).on('message', function message(body) {
@@ -414,9 +414,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				}
 			} catch (error) {
 				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
-					else harperLogger.info(error);
-				} else harperLogger.error(error);
+					if (error.statusCode === 500) harperLogger.warn(errorForLog(error));
+					else harperLogger.info(errorForLog(error));
+				} else harperLogger.error(errorForLog(error));
 				ws.close(
 					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 						1011, // otherwise generic internal error

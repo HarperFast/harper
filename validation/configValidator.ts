@@ -14,11 +14,18 @@ import * as validator from './validationWrapper.ts';
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
-const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
+const INVALID_INTERVAL_UNIT_MSG =
+	'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
 const INVALID_INTERVAL_VALUE_MSG =
 	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
+const INVALID_RETENTION_UNIT_MSG =
+	'Invalid logging.rotation.retention unit. Available units are D (days), H (hours), M (months) or m (minutes)';
+const INVALID_RETENTION_VALUE_MSG =
+	"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'";
+// Units accepted for rotation durations, matching convertToMS: note capital M (months) vs lowercase m (minutes).
+const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
 const portConstraints = Joi.alternatives([number.min(0), string])
@@ -251,6 +258,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				compress: boolean.optional(),
 				interval: string.custom(validateRotationInterval).optional().empty(null),
 				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
+				retention: string.custom(validateRotationRetention).optional().empty(null),
 				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
 			root: rootConstraints,
@@ -401,13 +409,32 @@ function validateRotationMaxSize(value, helpers) {
 
 function validateRotationInterval(value, helpers) {
 	const unit = value.slice(-1);
-	if (unit !== 'D' && unit !== 'H' && unit !== 'M') {
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
 		return helpers.message(INVALID_INTERVAL_UNIT_MSG);
 	}
 
 	const size = value.slice(0, -1);
 	if (isNaN(parseInt(size))) {
 		return helpers.message(INVALID_INTERVAL_VALUE_MSG);
+	}
+
+	return value;
+}
+function validateRotationRetention(value, helpers) {
+	if (typeof value !== 'string' || !value.trim()) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
+	const unit = value.slice(-1);
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
+		return helpers.message(INVALID_RETENTION_UNIT_MSG);
+	}
+
+	// parseFloat + strictly-positive check: convertToMS accepts fractional intervals, and a zero or
+	// negative retention makes every rotated log older than the (<=0) window, deleting them immediately.
+	const age = parseFloat(value.slice(0, -1));
+	if (isNaN(age) || age <= 0) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
 	}
 
 	return value;

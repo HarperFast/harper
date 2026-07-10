@@ -503,4 +503,192 @@ describe('secretOperations', () => {
 			);
 		});
 	});
+
+	describe('resolveRegistryAuth (deploy_component secret references)', () => {
+		const gh = 'https://npm.pkg.github.com';
+
+		it('returns undefined/empty inputs untouched', async () => {
+			assert.equal(await secretOps.resolveRegistryAuth(undefined, 'app'), undefined);
+			const empty = [];
+			assert.equal(await secretOps.resolveRegistryAuth(empty, 'app'), empty);
+		});
+
+		it('passes literal-token entries through without needing custody or the store', async () => {
+			// No custody installed, mock table present but never read for the token-only fast path.
+			const input = [{ registry: gh, token: 'tok', scope: '@org' }];
+			const out = await secretOps.resolveRegistryAuth(input, 'app');
+			assert.strictEqual(out, input, 'token-only input returned as-is (identity)');
+		});
+
+		it('resolves a scoped secret granted to the deploying component', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'GH_TOKEN', value: 'ghp_scoped', grants: ['app'] });
+			const out = await secretOps.resolveRegistryAuth([{ registry: gh, secret: 'GH_TOKEN', scope: '@org' }], 'app');
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_scoped', scope: '@org' }]);
+		});
+
+		it('resolves a processEnv (global) secret for any component', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'GLOBAL_TOKEN', value: 'ghp_global', processEnv: true });
+			const out = await secretOps.resolveRegistryAuth([{ registry: gh, secret: 'GLOBAL_TOKEN' }], 'any-app');
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_global', scope: undefined }]);
+		});
+
+		it('resolves literal and secret-backed entries together', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'S', value: 'from_store', grants: ['app'] });
+			const out = await secretOps.resolveRegistryAuth(
+				[
+					{ registry: 'registry.example.com', token: 'literal' },
+					{ registry: gh, secret: 'S', scope: '@org' },
+				],
+				'app'
+			);
+			assert.deepEqual(out, [
+				{ registry: 'registry.example.com', token: 'literal', scope: undefined },
+				{ registry: gh, token: 'from_store', scope: '@org' },
+			]);
+		});
+
+		it('rejects a reference to a non-existent secret with 404', async () => {
+			installCustody();
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'MISSING' }], 'app'),
+				(err) => err.statusCode === 404 && /does not exist/.test(err.message)
+			);
+		});
+
+		it('rejects a scoped secret not granted to the deploying component with 403', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'OTHER', value: 'x', grants: ['different-app'] });
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'OTHER' }], 'app'),
+				(err) => err.statusCode === 403 && /not granted to component 'app'/.test(err.message)
+			);
+		});
+
+		it('fails loudly when a secret is referenced but custody is absent on this node', async () => {
+			// Provision the row under custody, then drop custody as a node that holds the ciphertext
+			// but not the key would see it.
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'NO_KEY', value: 'x', grants: ['app'] });
+			clearSecretCustody();
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'NO_KEY' }], 'app'),
+				// Server-state condition (custody down), not client-fixable → 503, not the default 400.
+				(err) => err.statusCode === 503 && /secrets custody is not initialized/.test(err.message)
+			);
+		});
+
+		it('surfaces a decrypt failure as a precise error', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'BAD', value: 'x', grants: ['app'] });
+			// Swap in a custody whose decrypt throws, simulating a wrong/rotated key.
+			registerSecretCustody({
+				decrypt: () => {
+					throw new Error('unsupported padding');
+				},
+				getPublicKey: () => ({ publicKey, fingerprint: fp }),
+			});
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'BAD' }], 'app'),
+				// Decrypt failure is a node/key condition, not a bad request → 500, not the default 400.
+				(err) =>
+					err.statusCode === 500 && /Failed to decrypt registryAuth secret 'BAD': unsupported padding/.test(err.message)
+			);
+		});
+
+		it('waits out the grace period, then 404s when a referenced secret never replicates in', async () => {
+			installCustody();
+			const start = Date.now();
+			await assert.rejects(
+				async () => secretOps.resolveRegistryAuth([{ registry: gh, secret: 'NEVER' }], 'app', { waitMs: 120 }),
+				(err) => err.statusCode === 404
+			);
+			assert.ok(Date.now() - start >= 100, 'should have waited out the grace period before 404');
+		});
+
+		it('resolves once a referenced secret replicates in during the grace period', async () => {
+			installCustody();
+			// Seed the encrypted row, then hide it until ~60ms in to simulate replication lag.
+			await secretOps.setSecret({ ...su('set_secret'), name: 'LATE', value: 'ghp_late', grants: ['app'] });
+			const realRow = installed.mock.rows.get('LATE');
+			installed.mock.rows.delete('LATE');
+			setTimeout(() => installed.mock.rows.set('LATE', realRow), 60);
+			const out = await secretOps.resolveRegistryAuth([{ registry: gh, secret: 'LATE' }], 'app', { waitMs: 2000 });
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_late', scope: undefined }]);
+		});
+	});
+
+	describe('deriveRegistrySecretName', () => {
+		it('derives a stable name keyed by component and registry, sanitized to the name grammar', () => {
+			assert.equal(
+				secretOps.deriveRegistrySecretName('my-app', 'https://npm.pkg.github.com'),
+				'deploy.my-app.npm.pkg.github.com'
+			);
+		});
+
+		it('strips scheme/slashes and replaces disallowed characters (port, path)', () => {
+			assert.equal(
+				secretOps.deriveRegistrySecretName('app', 'https://registry.example.com:4873/path/'),
+				'deploy.app.registry.example.com_4873_path'
+			);
+		});
+
+		it('is identical for the bare-host and scheme forms of the same registry', () => {
+			assert.equal(
+				secretOps.deriveRegistrySecretName('app', 'npm.pkg.github.com'),
+				secretOps.deriveRegistrySecretName('app', 'https://npm.pkg.github.com/')
+			);
+		});
+	});
+
+	describe('ingestRegistryAuth', () => {
+		const gh = 'https://npm.pkg.github.com';
+		const deploy = (op = 'deploy_component') => su(op);
+
+		it('seals a literal token into the store and returns a reference; round-trips via resolve', async () => {
+			installCustody();
+			const refs = await secretOps.ingestRegistryAuth(
+				deploy(),
+				[{ registry: gh, token: 'ghp_secret', scope: '@org' }],
+				'app'
+			);
+			assert.deepEqual(refs, [{ registry: gh, secret: 'deploy.app.npm.pkg.github.com', scope: '@org' }]);
+			// The stored row is scoped (granted to the component), not processEnv.
+			const row = installed.mock.rows.get('deploy.app.npm.pkg.github.com');
+			assert.deepEqual(row.grants, ['app']);
+			assert.equal(row.processEnv, false);
+			// Resolving the reference yields the original token back.
+			const resolved = await secretOps.resolveRegistryAuth(refs, 'app');
+			assert.deepEqual(resolved, [{ registry: gh, token: 'ghp_secret', scope: '@org' }]);
+		});
+
+		it('passes already-reference entries through without minting a derived row', async () => {
+			installCustody();
+			const input = [{ registry: gh, secret: 'PREEXISTING' }];
+			const out = await secretOps.ingestRegistryAuth(deploy(), input, 'app');
+			assert.deepEqual(out, [{ registry: gh, secret: 'PREEXISTING' }]);
+			assert.ok(!installed.mock.rows.has('deploy.app.npm.pkg.github.com'), 'no derived row minted');
+		});
+
+		it('without custody, leaves a literal token untouched (transient fallback) and stores nothing', async () => {
+			const input = [{ registry: gh, token: 'ghp_secret' }];
+			const out = await secretOps.ingestRegistryAuth(deploy(), input, 'app');
+			assert.deepEqual(out, [{ registry: gh, token: 'ghp_secret' }]);
+			assert.equal(installed.mock.putCount, 0, 'no secret written without custody');
+		});
+
+		it('is idempotent on token rotation — same derived row, latest value', async () => {
+			installCustody();
+			await secretOps.ingestRegistryAuth(deploy(), [{ registry: gh, token: 'v1' }], 'app');
+			await secretOps.ingestRegistryAuth(deploy(), [{ registry: gh, token: 'v2' }], 'app');
+			assert.equal(installed.mock.rows.size, 1, 'one derived row, overwritten');
+			const [resolved] = await secretOps.resolveRegistryAuth(
+				[{ registry: gh, secret: 'deploy.app.npm.pkg.github.com' }],
+				'app'
+			);
+			assert.equal(resolved.token, 'v2');
+		});
+	});
 });

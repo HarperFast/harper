@@ -25,7 +25,11 @@ import readLog from '../utility/logging/readLog.ts';
 import * as commonUtils from './common_utils.ts';
 import * as restart from '../bin/restart.ts';
 import * as terms from './hdbTerms.ts';
-import { expandOperationsPerms } from './operationPermissions.ts';
+import {
+	expandOperationsPerms,
+	registerGrantableOperation,
+	unregisterGrantableOperation,
+} from './operationPermissions.ts';
 import * as permsTranslator from '../security/permissionsTranslator.js';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
@@ -107,6 +111,33 @@ class permission {
 		// Undefined for ops that aren't user-addressable (SQL sub-ops, internal-only ops).
 		this.api_name = apiName;
 	}
+}
+
+/**
+ * Register an authorization entry for a dynamically-registered operation (via
+ * server.registerOperation), so it flows through verifyPerms and the role `operations`
+ * allowlist exactly like a built-in op — instead of hand-rolling an inline super_user check.
+ * Keyed by the snake_case API operation name (which registerOperation also forces onto the
+ * handler's `.name`, the key verifyPerms looks up). SU-only by default.
+ */
+export function registerOperationPermission(
+	apiName: string,
+	{ requiresSu = false, perms = [] }: { requiresSu?: boolean; perms?: string[] } = {}
+) {
+	requiredPermissions.set(apiName, new (permission as any)(requiresSu, perms, apiName));
+	// Also make the op grantable in a role's `operations` allowlist (validateOperations), so a
+	// declared permission can be both enforced AND granted — not just enforced.
+	registerGrantableOperation(apiName);
+}
+
+/**
+ * Remove an authorization entry registered via registerOperationPermission (both the verifyPerms
+ * entry and the grantable-op mark). Mirrors registerOperationPermission; primarily for tests that
+ * register throwaway ops and must not leak them into the process-global registries.
+ */
+export function unregisterOperationPermission(apiName: string) {
+	requiredPermissions.delete(apiName);
+	unregisterGrantableOperation(apiName);
 }
 
 requiredPermissions.set(write.insert.name, new (permission as any)(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
@@ -339,6 +370,8 @@ module.exports = {
 	verifyPerms,
 	verifyPermsAST,
 	verifyBulkLoadAttributePerms,
+	registerOperationPermission,
+	unregisterOperationPermission,
 };
 
 /**

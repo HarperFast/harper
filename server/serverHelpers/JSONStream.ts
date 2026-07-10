@@ -129,7 +129,7 @@ class JSONStream extends Readable {
 				}
 			},
 			(error) => {
-				console.error(error);
+				console.error(harperLogger.errorForLog(error));
 				this.done = true;
 				this.push(errorToString(error));
 				this.push(null);
@@ -201,7 +201,7 @@ class JSONStream extends Readable {
 				}
 			} while (this.push(nextString));
 		} catch (error) {
-			console.error(error);
+			console.error(harperLogger.errorForLog(error));
 			this.push(errorToString(error));
 			this.push(null);
 			return true;
@@ -218,7 +218,7 @@ class JSONStream extends Readable {
 }
 
 function handleError(error) {
-	console.error(error);
+	console.error(harperLogger.errorForLog(error));
 	return JSON.stringify(errorToString(error));
 }
 

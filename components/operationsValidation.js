@@ -398,6 +398,33 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
+		// Private-registry auth. Each entry supplies its credential exactly one of two ways:
+		//   - `token`: a literal token, used only for this node's npm pack/install and never
+		//     persisted or replicated (stripped from req before replicateOperation).
+		//   - `secret`: the name of an hdb_secret row (#1550); the token is resolved by decrypting
+		//     that row on this node at deploy time, so the credential lives in the secrets store
+		//     (reference, not embed) instead of travelling in the operation body.
+		registryAuth: Joi.array()
+			.items(
+				Joi.object({
+					// registry and token are written verbatim into the transient .npmrc, which is
+					// line-based; forbid CR/LF so a super_user can't inject extra npm config lines.
+					// (registry also accepts bare hosts and //host/ forms, so a strict URI validator
+					// would reject supported inputs — the newline guard is the right scope here.)
+					registry: Joi.string()
+						.pattern(/^[^\r\n]+$/)
+						.required(),
+					token: Joi.string().pattern(/^[^\r\n]+$/),
+					// A reference into the hdb_secret store; same name grammar as set_secret's `name`.
+					secret: Joi.string()
+						.pattern(ENV_KEY_REGEX)
+						.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
+					scope: Joi.string()
+						.pattern(/^@[a-z0-9-_.]+$/)
+						.optional(),
+				}).xor('token', 'secret')
+			)
+			.optional(),
 	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);

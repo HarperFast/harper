@@ -436,6 +436,133 @@ export class BunRequest {
 	}
 }
 
+/**
+ * uWebSockets.js Request adapter. Wraps the data extracted from a uWS HttpRequest/HttpResponse
+ * (which is only valid synchronously inside the route handler) into Harper's request interface,
+ * matching BunRequest. Intended for the plaintext-UDS-behind-symphony path: TLS/mTLS are
+ * terminated upstream, so peerCertificate/authorized are not available here and the real client
+ * IP arrives via the X-Forwarded-For header.
+ */
+export class UwsRequest {
+	#body: UwsRequestBody | undefined;
+	#isSecure: boolean;
+	#ip: string | undefined;
+	#signal: AbortSignal | undefined;
+	public _nodeRequest: any = null;
+	public _nodeResponse: any = null;
+	public method: string;
+	public url: string;
+	public headers: RequestHeaders;
+	public isWebSocket?: boolean;
+	public user?: any;
+	public response: {
+		status?: number;
+		headers: ResponseHeaders;
+	};
+	public __harperRequestUpgraded: boolean;
+
+	constructor(source: {
+		method: string;
+		url: string;
+		headers: Record<string, string | string[]>;
+		ip?: string;
+		secure?: boolean;
+		body?: UwsRequestBody;
+		signal?: AbortSignal;
+	}) {
+		this.method = source.method;
+		this.url = source.url;
+		this.headers = new RequestHeaders(source.headers);
+		this.#isSecure = !!source.secure;
+		this.#ip = source.ip;
+		this.#body = source.body;
+		this.#signal = source.signal;
+		this.__harperRequestUpgraded = false;
+	}
+	get absoluteURL() {
+		return this.protocol + '://' + this.host + this.url;
+	}
+	get pathname() {
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) return this.url.slice(0, queryStart);
+		return this.url;
+	}
+	set pathname(pathname) {
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) this.url = pathname + this.url.slice(queryStart);
+		else this.url = pathname;
+	}
+	get protocol() {
+		// Behind symphony the on-the-wire hop is plaintext; the original scheme is conveyed
+		// by the proxy (X-Forwarded-Proto) or assumed from the listener's secure flag.
+		const xfp = this.headers.get('x-forwarded-proto');
+		if (xfp) return Array.isArray(xfp) ? xfp[0] : xfp;
+		return this.#isSecure ? 'https' : 'http';
+	}
+	get ip() {
+		// A real peer address (direct-TCP path) is authoritative and unspoofable, so it wins. Only the
+		// symphony-UDS path — where the socket has no client address (#ip is left unset) and symphony is
+		// the trusted setter/stripper of X-Forwarded-For — falls back to XFF. This prevents a direct
+		// client from spoofing `X-Forwarded-For: 127.0.0.1` to satisfy local auth (security/auth.ts).
+		if (this.#ip) return this.#ip;
+		const xff = this.headers.get('x-forwarded-for');
+		if (xff) return (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
+		return '';
+	}
+	get authorized() {
+		// TLS terminated upstream — client authorization not available at this hop.
+		return undefined;
+	}
+	get peerCertificate() {
+		return null;
+	}
+	get mtlsConfig() {
+		return undefined;
+	}
+	get body() {
+		// Bodyless requests get an already-ended empty stream so consumers can still read it uniformly.
+		if (!this.#body) {
+			this.#body = new UwsRequestBody();
+			this.#body.push(null);
+		}
+		return this.#body;
+	}
+	get host() {
+		return this.headers.get('host') as string;
+	}
+	get hostname() {
+		return this.headers.get('host') as string;
+	}
+	get httpVersion() {
+		return '1.1';
+	}
+	get isAborted() {
+		return this.#signal?.aborted ?? false;
+	}
+	get signal(): AbortSignal {
+		return this.#signal ?? new AbortController().signal;
+	}
+	_abort(): void {
+		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+	}
+	get nodeRequest() {
+		return null;
+	}
+	sendEarlyHints(_link: string, _headers: Record<string, any> = {}) {
+		// Early hints not wired for the uWS path
+	}
+}
+
+// A push-based Readable: the uWS server pushes each request-body chunk (and the terminating null) in
+// as it arrives off the socket, so consumers (streamToBuffer, future streaming deserializers) see a
+// real stream instead of a pre-buffered blob. Extends Readable so it matches the RequestBody/
+// BunRequestBody contract — on/pipe, `for await` async iteration, destroy() for abort handling.
+// _read() is a no-op because flow is driven by push() from the uWS onData callback; uWS has no inbound
+// backpressure, so pushed-but-unread chunks queue here (bounded by the server's maxBodyBytes ceiling).
+export class UwsRequestBody extends Readable {
+	_read() {}
+}
+
 class RequestBody {
 	#nodeRequest: IncomingMessage;
 	constructor(nodeRequest: IncomingMessage) {
