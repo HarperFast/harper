@@ -237,6 +237,13 @@ export class DatabaseTransaction implements Transaction {
 				transaction.setTimestamp(txnTime);
 			}
 		}
+		if (this.isReplay) {
+			// Replayed writes came FROM the transaction log; never re-append them —
+			// replay iterates that same log, so re-appending prevents convergence
+			// (boot hangs replaying its own output). Conflict retries stamp isRetry
+			// at the retry sites in commit(); this is the replay-path equivalent.
+			(transaction as RocksTransactionWithRetry).isRetry = true;
+		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (reloadEntry || operation.entry === undefined) {
 			operation.entry = operation.store.getEntry(operation.key, { transaction });
