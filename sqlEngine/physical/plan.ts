@@ -45,7 +45,7 @@ export function compileToPhysical(plan: LogicalPlan): PhysicalOp {
 function lower(plan: LogicalPlan, qualified: boolean): PhysicalOp {
 	switch (plan.kind) {
 		case 'Scan': {
-			const { conditions, operator, residual } = whereToConditions(plan.pushedFilter);
+			const { conditions, operator, residual } = whereToConditions(plan.pushedFilter, plan.boundTable?.attributes);
 			let op = physicalIndexScan(plan, { conditions, operator });
 			const combinedResidual = mergeResidual(residual, plan.residualFilter);
 			// Residual is single-table; compile it in bare space before qualifying.
@@ -90,7 +90,7 @@ function lowerJoin(join: LogicalJoin): PhysicalOp {
 		const probe = pickIndexedProbe(analysis);
 		if (!probe) throw new EngineUnsupportedError('indexNL join lost its indexed probe key');
 		const inner = analysis.rightScan;
-		const { conditions, operator, residual } = whereToConditions(inner.pushedFilter);
+		const { conditions, operator, residual } = whereToConditions(inner.pushedFilter, inner.boundTable?.attributes);
 		const innerResidual = mergeResidual(residual, inner.residualFilter);
 		// Equi-pairs other than the probe + non-equi ON remainder → merged-row residual.
 		const otherEqui = analysis.equiPairs

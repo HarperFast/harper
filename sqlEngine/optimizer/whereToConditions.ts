@@ -47,7 +47,9 @@ const BINARY_TO_COMPARATOR: Record<string, string> = {
 	'>=': 'ge',
 };
 
-export function whereToConditions(predicate: ExprNode | undefined): ConvertResult {
+export type IndexedAttribute = { name: string; indexed: boolean };
+
+export function whereToConditions(predicate: ExprNode | undefined, attributes?: IndexedAttribute[]): ConvertResult {
 	if (!predicate) {
 		return { conditions: [], operator: 'and' };
 	}
@@ -56,7 +58,15 @@ export function whereToConditions(predicate: ExprNode | undefined): ConvertResul
 	const residuals: ExprNode[] = [];
 	for (const e of conjuncts) {
 		const cond = leafToCondition(e);
-		if (cond) conditions.push(cond);
+		// Only push a conjunct into the Resource API condition tree when every
+		// attribute it references is indexed: Table.search runs searchByIndex on
+		// each condition and throws "…is not indexed" for an unindexed attribute.
+		// A full-scan comparator (e.g. LIKE→contains) on an *indexed* attribute is
+		// still pushable — search applies it as a filter once another condition
+		// drives the index (validateScannable enforces that a driver exists). When
+		// `attributes` is unknown, keep the legacy behavior of pushing any
+		// representable condition.
+		if (cond && (attributes === undefined || conditionIsPushable(cond, attributes))) conditions.push(cond);
 		else residuals.push(e);
 	}
 	const result: ConvertResult = { conditions, operator: 'and' };
@@ -64,6 +74,57 @@ export function whereToConditions(predicate: ExprNode | undefined): ConvertResul
 		result.residual = residuals.length === 1 ? residuals[0] : { kind: 'logical', op: 'and', args: residuals };
 	}
 	return result;
+}
+
+/**
+ * Comparators that force a full scan even on an indexed attribute, because they
+ * can't seek/range a B-tree index (suffix/substring match). These mirror
+ * `core/resources/search.ts`'s `needFullScan` set. `ne` against a non-null value
+ * is the same (an inequality can't seek); `ne null` (IS NOT NULL) is a range and
+ * stays index-servable.
+ */
+const FULL_SCAN_COMPARATORS = new Set(['ends_with', 'contains']);
+
+/**
+ * Whether a condition can be pushed into Table.search at all: every attribute it
+ * references must be indexed, because search runs searchByIndex per condition and
+ * throws on an unindexed attribute. Comparator-agnostic — a full-scan comparator
+ * on an indexed attribute is still pushable (it becomes a filter once another
+ * condition drives the index). Unpushable conditions become a residual Filter.
+ */
+export function conditionIsPushable(cond: ConditionNode, attributes: IndexedAttribute[] | undefined): boolean {
+	if ('attribute' in cond && cond.attribute) {
+		return attributes?.find((x) => x.name === cond.attribute)?.indexed === true;
+	}
+	if ('conditions' in cond) {
+		// Every leaf attribute must be indexed; a single unindexed leaf (in either
+		// an AND or an OR) would make search throw when it evaluates that condition.
+		return cond.conditions.every((c) => conditionIsPushable(c, attributes));
+	}
+	return false;
+}
+
+/**
+ * Whether a condition can *drive* an index scan (seek/range), and therefore make
+ * the scan valid without a full-table traversal. Stricter than pushability:
+ * excludes full-scan comparators and unseekable inequalities. Shared with the R8
+ * validateScannable rule so scannability and pushdown decisions can't drift.
+ */
+export function conditionUsesIndex(cond: ConditionNode, attributes: IndexedAttribute[] | undefined): boolean {
+	if ('attribute' in cond && cond.attribute) {
+		const a = attributes?.find((x) => x.name === cond.attribute);
+		if (!a?.indexed) return false;
+		if (FULL_SCAN_COMPARATORS.has(cond.comparator ?? '')) return false;
+		if (cond.comparator === 'ne' && cond.value !== null) return false;
+		return true;
+	}
+	if ('conditions' in cond) {
+		// AND: at least one indexable child suffices.
+		// OR: every child must be indexable; otherwise the union requires a full scan.
+		if (cond.operator === 'and') return cond.conditions.some((c) => conditionUsesIndex(c, attributes));
+		if (cond.operator === 'or') return cond.conditions.every((c) => conditionUsesIndex(c, attributes));
+	}
+	return false;
 }
 
 function flattenAnd(expr: ExprNode): ExprNode[] {

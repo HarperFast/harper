@@ -25,7 +25,7 @@ export function limitPushdown(plan: LogicalPlan): LogicalPlan | null {
 
 function scanHasResidual(scan: LogicalScan): boolean {
 	if (scan.residualFilter) return true;
-	return whereToConditions(scan.pushedFilter).residual !== undefined;
+	return whereToConditions(scan.pushedFilter, scan.boundTable?.attributes).residual !== undefined;
 }
 
 function rewrite(plan: LogicalPlan): LogicalPlan {
