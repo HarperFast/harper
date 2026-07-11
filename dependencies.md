@@ -176,11 +176,11 @@ Generally, dependencies are added by simply adding them to the dependencies list
 ## @harperfast/skills
 
 - Need for usage: Ships the `harper-best-practices` skill content (rule index + per-rule guidance for schema design, relationships, auth, caching, vector indexing, TypeScript type-stripping, deployment, etc.) that the built-in agent uses to ground itself (#626). Sourcing it from the published package versions the guidance with the Harper release instead of drifting from a separately-updated copy.
-- Size/memory cost: ~412KB on disk, no transitive dependencies. Only the `SKILL.md` overview (~1.2K tokens) is loaded eagerly, into the agent's system prompt; individual rule bodies are read from disk on demand via the `harper_best_practice` tool.
+- Size/memory cost: ~412KB on disk, no transitive dependencies. The package's single export (`.`) surfaces the skill content as JS — `skillSummary`, `ruleNames`, and a `rules` name→markdown map — so the rule bodies are resident in the worker's heap once imported (~400KB of markdown). Only the `SKILL.md` overview (~1.2K tokens) is fed into the agent's system prompt eagerly; individual rule bodies are handed to the model on demand via the `harper_best_practice` tool, so context spend still stays lazy.
 - Security: No reported vulnerabilities; a first-party Harper package.
-- Environment interaction: None. Files are read directly from the installed package directory (the package's `exports` only expose `.`, so the skill assets alongside `dist/` aren't `require`d, just read as static files).
+- Environment interaction: None. The skill content is consumed via the package's module exports — no filesystem access or dynamic resolution.
 - Overlap: None.
-- Can be deferred: Yes — resolution happens lazily and degrades gracefully; if the package isn't resolvable, the overview is omitted and the `harper_best_practice` tool isn't registered, so the agent still runs.
+- Can be deferred: No — it's a declared runtime dependency imported by the agent module. If the built-in agent is disabled the code path isn't exercised, but the module is still installed and imported like any other dependency.
 - Binary compilation: No.
 - Eventual removal: The best-practices content could be vendored directly into `harper` if the separate package ever became a maintenance burden, at the cost of losing independent versioning/updates.
 

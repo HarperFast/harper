@@ -4,7 +4,7 @@
  * Unit tests for the agent's Harper best-practices integration (#626).
  * Exercises the real @harperfast/skills package (a dependency), so it verifies
  * the SKILL.md overview loads and the on-demand rule tool serves rule bodies,
- * lists rules, and rejects traversal / unknown names.
+ * lists rules, and rejects unknown / malformed names.
  */
 
 const assert = require('assert');
@@ -38,8 +38,9 @@ describe('agent/bestPractices', () => {
 
 	it('rejects a traversal / malformed rule name', async () => {
 		const tool = buildBestPracticeTool();
+		// Rule lookup is a plain map access, so traversal-shaped or malformed names just miss.
 		for (const bad of ['../SKILL', 'a/b', 'foo.md', '..', 'Bad_Name']) {
-			await assert.rejects(() => tool.handler({ rule: bad }), /Invalid rule name/, `should reject ${bad}`);
+			await assert.rejects(() => tool.handler({ rule: bad }), /No such best-practice rule/, `should reject ${bad}`);
 		}
 	});
 

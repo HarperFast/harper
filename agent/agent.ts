@@ -248,7 +248,7 @@ function buildSystemPrompt(scopes: AgentScopes, bestPracticesOverview?: string, 
 	if (bestPracticesOverview) {
 		parts.push('', '=== Harper best practices (overview) ===', bestPracticesOverview);
 	}
-	if (append && append.trim()) {
+	if (typeof append === 'string' && append.trim()) {
 		parts.push('', '=== Operator instructions ===', append.trim());
 	}
 	return parts.join('\n');
