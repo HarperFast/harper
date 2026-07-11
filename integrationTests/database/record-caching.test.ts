@@ -11,6 +11,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { WORKER_COUNT, assertMultiWorker } from './recordCachingWorkers.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -67,13 +68,13 @@ suite('record-caching [rocksdb] 4-worker', { skip: SKIP || process.platform === 
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: { logging: { console: true, level: 'error' } },
-			env: { HARPER_WORKER_COUNT: '4' },
+			config: { logging: { console: true, level: 'error' }, threads: { count: WORKER_COUNT } },
 		});
 		const client = createApiClient(ctx.harper);
 		httpURL = ctx.harper.httpURL;
 		authHeader = client.headers.Authorization;
 		await waitForTable(httpURL, authHeader);
+		await assertMultiWorker(ctx);
 	});
 
 	after(async () => {
