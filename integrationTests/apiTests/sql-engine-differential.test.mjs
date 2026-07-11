@@ -21,7 +21,7 @@
  * numeric column). Still NOT covered: the non-PK `LIKE` DELETE 403 (see PLAN.md).
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { startHarper, teardownHarper, createHarperContext } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 
@@ -103,7 +103,7 @@ suite('SQL engine differential — new vs legacy', () => {
 		const legacyNorm = { status: b.status, body: normalizeResponse(b.body) };
 		let equal = true;
 		try {
-			assert.deepEqual(newNorm, legacyNorm);
+			assert.deepStrictEqual(newNorm, legacyNorm);
 		} catch {
 			equal = false;
 		}
@@ -121,7 +121,7 @@ suite('SQL engine differential — new vs legacy', () => {
 		const [n, l] = await Promise.all([fetch(clientNew), fetch(clientLegacy)]);
 		let equal = true;
 		try {
-			assert.deepEqual(n, l);
+			assert.deepStrictEqual(n, l);
 		} catch {
 			equal = false;
 		}
@@ -264,7 +264,7 @@ suite('SQL engine differential — new vs legacy', () => {
 	// Runs last: fail if any comparison diverged (the after() hook prints details).
 	test('new engine matches legacy across the battery', () => {
 		const diverged = differences.filter((d) => !d.equal);
-		assert.equal(
+		assert.strictEqual(
 			diverged.length,
 			0,
 			`engine divergences: ${diverged.map((d) => d.label).join(', ')} (see summary above)`
