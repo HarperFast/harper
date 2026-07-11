@@ -634,6 +634,10 @@
 				"componentsScope": {
 					"type": "string",
 					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
+				},
+				"systemPromptAppend": {
+					"type": "string",
+					"description": "Operator text appended to the agent's system prompt, after the built-in grounding and the Harper best-practices overview. Tunable at runtime via set_agent_config."
 				}
 			}
 		},

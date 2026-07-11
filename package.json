@@ -240,7 +240,8 @@
 		"uuid": "11.1.1",
 		"validate.js": "0.13.1",
 		"ws": "8.21.0",
-		"yaml": "2.9.0"
+		"yaml": "2.9.0",
+		"@harperfast/skills": "^1.10.8"
 	},
 	"overrides": {
 		"alasql": {

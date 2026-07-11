@@ -23,8 +23,10 @@ import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
 import { workers } from '../server/threads/manageThreads.js';
 import { composeToolset } from './toolset.ts';
 import { buildInspectorTools } from './tools/inspectorTool.ts';
+import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
+import { registerAgentMcpTools } from './mcpTools.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool } from './types.ts';
@@ -56,6 +58,7 @@ interface StartOpts {
 	allowDestructive?: boolean;
 	user?: string;
 	componentsScope?: string;
+	systemPromptAppend?: string;
 }
 
 export async function startOnMainThread(opts: StartOpts): Promise<void> {
@@ -90,12 +93,24 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		getWorkerCount: () => workers.length,
 	});
 
-	let composed = composeToolset({
-		allowDestructive: liveConfig.allowDestructive,
-		onFollowup: handleFollowup,
-		inspectorTools,
-		registryTools,
-	});
+	// Harper best-practices skill (@harperfast/skills): the SKILL.md overview goes in the system prompt;
+	// the `harper_best_practice` tool serves the detailed rules on demand. Both degrade to nothing if the
+	// package isn't resolvable, so the agent still runs without it.
+	const bestPracticesOverview = loadBestPracticesOverview();
+	const bestPracticeTool = buildBestPracticeTool();
+	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
+
+	function compose(): ReturnType<typeof composeToolset> {
+		return composeToolset({
+			allowDestructive: liveConfig.allowDestructive,
+			onFollowup: handleFollowup,
+			inspectorTools,
+			registryTools,
+			extraTools,
+		});
+	}
+
+	let composed = compose();
 
 	// Build the listing snapshot best-effort: if the configured user can't be resolved (and isn't the
 	// default bootstrap user), `agentIdentity` fails closed — the agent then runs with only its
@@ -152,7 +167,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
 			generateOpts: { model: liveConfig.model },
-			systemPrompt: buildSystemPrompt(scopes),
+			systemPrompt: buildSystemPrompt(scopes, bestPracticesOverview, liveConfig.systemPromptAppend),
 		})
 			.catch((err) => log.error?.(`Agent run failed for ${sessionId}: ${(err as Error)?.message ?? err}`))
 			.finally(() => {
@@ -181,12 +196,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		const previousAllowDestructive = liveConfig.allowDestructive;
 		liveConfig = { ...liveConfig, ...patch };
 		if (liveConfig.allowDestructive !== previousAllowDestructive) {
-			composed = composeToolset({
-				allowDestructive: liveConfig.allowDestructive,
-				onFollowup: handleFollowup,
-				inspectorTools,
-				registryTools,
-			});
+			composed = compose();
 		}
 		// NOTE: an already in-flight run captured its toolset (and autoApprove) at start, so flipping
 		// allowDestructive here only affects subsequent runs — the live loop finishes on its existing
@@ -204,6 +214,11 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	});
 	for (const op of operations) opts.server.registerOperation(op);
 
+	// Expose the agent over MCP: register curated agent tools into the registry AFTER the ops exist.
+	// (The generic operations-profile walk ran before this, so allow-listing the agent ops wouldn't
+	// surface them — see mcpTools.ts.) They only reach clients when the MCP surface is enabled.
+	registerAgentMcpTools(operations);
+
 	log.info?.(`Agent component initialized with ${composed.tools.length} tools`);
 }
 
@@ -211,11 +226,15 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
  * Grounding prompt so the agent knows what it is, where its files live, and how a Harper app is
  * shaped. Without it the model can't know the absolute componentsRoot and guesses literal path
  * prefixes (e.g. "componentsRoot/…") that fall outside the write scope.
+ *
+ * Assembled as: built-in grounding → Harper best-practices overview (if available) → operator
+ * `agent.systemPromptAppend` (if set). The append is read from liveConfig at each run so it can be
+ * tuned via `set_agent_config` without a restart.
  */
-function buildSystemPrompt(scopes: AgentScopes): string {
-	return [
+function buildSystemPrompt(scopes: AgentScopes, bestPracticesOverview?: string, append?: string): string {
+	const parts = [
 		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
-		'You operate this instance for an operator via tools: Harper operations (describe_all, search, deploy_component, restart, set_configuration, add_role, …), scoped filesystem tools (read_file, write_file, list_dir, grep_files, tail_file), schedule_followup, and http_fetch.',
+		'You operate this instance for an operator via tools: Harper operations (describe_all, search, deploy_component, restart, set_configuration, add_role, …), scoped filesystem tools (read_file, write_file, list_dir, grep_files, tail_file), schedule_followup, http_fetch, and (when available) V8 inspector tools for debugging worker threads and a harper_best_practice tool for detailed Harper guidance.',
 		'',
 		'Filesystem:',
 		`- Components (apps) directory — your WRITE scope: ${scopes.componentsRoot}`,
@@ -224,8 +243,15 @@ function buildSystemPrompt(scopes: AgentScopes): string {
 		'- Pass write_file/read_file paths RELATIVE to the components directory (e.g. "my_app/schema.graphql"), or an absolute path within a scope. Do NOT prefix paths with "componentsRoot".',
 		'',
 		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via http_fetch against this server.',
-		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. Be concise and verify your work.',
-	].join('\n');
+		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the harper_best_practice tool. Be concise and verify your work.',
+	];
+	if (bestPracticesOverview) {
+		parts.push('', '=== Harper best practices (overview) ===', bestPracticesOverview);
+	}
+	if (typeof append === 'string' && append.trim()) {
+		parts.push('', '=== Operator instructions ===', append.trim());
+	}
+	return parts.join('\n');
 }
 
 /**
@@ -295,6 +321,7 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
 		...(opts.user !== undefined && { user: String(opts.user) }),
 		...(opts.componentsScope !== undefined && { componentsScope: String(opts.componentsScope) }),
+		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};
 }
 
