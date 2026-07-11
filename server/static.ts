@@ -2,6 +2,8 @@ import { realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Scope } from '../components/Scope';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
+import { convertToMS } from '../utility/common_utils.ts';
+import { isMatch } from 'micromatch';
 import send from 'send';
 
 /**
@@ -12,6 +14,31 @@ import send from 'send';
  * - `index`: If enabled, it will serve `index.html` files from directories.
  * - `extensions`: An array of file extensions to try when serving files. If a file is not found, it will try appending each extension in order. For example, if set to `['html'], and the request is `/page`, it will try `/page.html` if `/page` is not found.
  * - `fallthrough`: If true, it will fall through to the next handler if the file is not found. If false, it will return a 404 error.
+ * - `maxAge`: Freshness lifetime for served files — a number of seconds or a duration string
+ *   (`'5m'`, `'1d'`). Emitted as `Cache-Control: public, max-age=<seconds>`. Defaults to 0
+ *   (revalidate every request via the ETag/Last-Modified that are always emitted).
+ * - `immutable`: If true, adds the `immutable` directive to `Cache-Control` — for content-hashed
+ *   assets that never change under the same URL. Requires `maxAge` to be meaningful.
+ * - `cacheControl`: Full `Cache-Control` override string (takes precedence over `maxAge`/`immutable`),
+ *   or `false` to suppress the header entirely. Static files are served before authentication, so
+ *   they are public by construction — do not put per-user content behind this handler.
+ * - `cacheOverrides`: A map of glob pattern → partial cache options (`maxAge` / `immutable` /
+ *   `cacheControl`), letting specific files opt out of the top-level defaults. The typical case is
+ *   long-lived `immutable` defaults for content-hashed assets while `index.html` gets a short window
+ *   or `stale-while-revalidate`. Patterns are matched (via `micromatch`, same engine as `files`)
+ *   against the mount-relative URL path **and** the served file's basename — so `index.html` also
+ *   targets the directory-index (`/`) serve. Entries are tested in config order and the first match
+ *   wins; each is a partial (keys present replace the default, absent keys inherit), with the same
+ *   `cacheControl`-beats-`maxAge`/`immutable` precedence as the top level. Example:
+ *   ```yaml
+ *   static:
+ *     files: 'web/**'
+ *     maxAge: 1y
+ *     immutable: true
+ *     cacheOverrides:
+ *       'index.html': { cacheControl: 'public, max-age=0, stale-while-revalidate=60' }
+ *       '*.html': { maxAge: 5m, immutable: false }
+ *   ```
  * - `notFound`: Can be specified as a string to serve a custom 404 page, or an object with `file` and `statusCode` properties to serve a custom file with a specific status code. This is useful for hosting SPAs that use client-side routing. Make sure to set `fallthrough` to `false`!
  * - `before` / `after`: Position this handler in the HTTP middleware chain relative to another named
  *   handler. By default the handler runs `before: 'authentication'` — and therefore before the REST
@@ -28,6 +55,93 @@ import send from 'send';
  * Updates to the `files` option will clear the in-memory maps and allow them to regenerate based on the new configuration (since the default EntryHandler will regenerate anyways).
  * Updates to `urlPath` request a restart: the HTTP route mount is registered once at load and cannot be re-registered on a live server (#1583).
  */
+/**
+ * Resolve the effective cache-header inputs for a given served file: the live top-level
+ * `maxAge`/`immutable`/`cacheControl` options, with the first matching `cacheOverrides` entry layered
+ * on top (a partial — keys present replace the default, absent keys inherit). Patterns are matched
+ * (via `micromatch`, same engine as `files`) against the mount-relative URL path and the file's
+ * basename, so `index.html` also targets the directory-index (`/`) serve.
+ */
+function resolveCacheOptions(scope: Scope, urlKey: string, basename: string) {
+	let maxAge = scope.options.get(['maxAge']);
+	let immutable = scope.options.get(['immutable']);
+	let cacheControl = scope.options.get(['cacheControl']);
+
+	const overrides = scope.options.get(['cacheOverrides']);
+	if (overrides !== undefined) {
+		if (typeof overrides !== 'object' || overrides === null || Array.isArray(overrides)) {
+			throw new Error(`Invalid cacheOverrides option: ${overrides}. Must be a map of glob pattern to cache options.`);
+		}
+		for (const pattern of Object.keys(overrides)) {
+			if (isMatch(urlKey, pattern) || isMatch(basename, pattern)) {
+				const override = overrides[pattern];
+				if (typeof override !== 'object' || override === null || Array.isArray(override)) {
+					throw new Error(
+						`Invalid cacheOverrides['${pattern}'] value: ${override}. Must be an object with maxAge/immutable/cacheControl.`
+					);
+				}
+				// partial merge: only keys present in the override replace the top-level default
+				if ('maxAge' in override) maxAge = override.maxAge;
+				if ('immutable' in override) immutable = override.immutable;
+				if ('cacheControl' in override) cacheControl = override.cacheControl;
+				break; // first match wins
+			}
+		}
+	}
+
+	immutable = immutable ?? false;
+	if (maxAge !== undefined && typeof maxAge !== 'number' && typeof maxAge !== 'string') {
+		throw new Error(`Invalid maxAge option: ${maxAge}. Must be a number of seconds or a duration string like '5m'.`);
+	}
+	const maxAgeMs = maxAge === undefined ? 0 : convertToMS(maxAge);
+	if (Number.isNaN(maxAgeMs)) {
+		throw new Error(`Invalid maxAge option: ${maxAge}. Must be a number of seconds or a duration string like '5m'.`);
+	}
+	if (typeof immutable !== 'boolean') {
+		throw new Error(`Invalid immutable option: ${immutable}. Must be a boolean.`);
+	}
+	if (cacheControl !== undefined && typeof cacheControl !== 'string' && cacheControl !== false) {
+		throw new Error(`Invalid cacheControl option: ${cacheControl}. Must be a string or false.`);
+	}
+	const customCacheControl = typeof cacheControl === 'string' ? cacheControl : undefined;
+	return { cacheControlDisabled: cacheControl === false, maxAgeMs, immutable, customCacheControl };
+}
+
+/**
+ * Serve a file through `send`, applying the plugin's cache-header options (read live from the
+ * component config, like `fallthrough`, and layered with any matching `cacheOverrides` entry).
+ * `cacheControl` as a string overrides `maxAge`/`immutable` via send's `headers` event;
+ * `cacheControl: false` suppresses the header entirely. Applied only to the main file serve — the
+ * `notFound` fallback keeps send's default `max-age=0`, which is the right policy for SPA index
+ * fallbacks.
+ */
+function serveFile(req, path: string, scope: Scope) {
+	// The staticFiles map keys are the mount-relative URL path (leading slash stripped for matching);
+	// for a directory-index serve req.pathname is the directory, so also match the served basename.
+	const urlKey = typeof req.pathname === 'string' ? req.pathname.replace(/^\//, '') : '';
+	const basename = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+	const { cacheControlDisabled, maxAgeMs, immutable, customCacheControl } = resolveCacheOptions(
+		scope,
+		urlKey,
+		basename
+	);
+
+	const stream = send(req, path, {
+		// suppress send's own header when we set a full override below (or when disabled)
+		cacheControl: cacheControlDisabled || customCacheControl !== undefined ? false : true,
+		maxAge: maxAgeMs,
+		immutable,
+	});
+	// an empty-string override intentionally behaves like `false` (send's header is suppressed
+	// above and no override is written)
+	if (customCacheControl) {
+		stream.on('headers', (response) => {
+			response.setHeader('Cache-Control', customCacheControl);
+		});
+	}
+	return stream;
+}
+
 export function handleApplication(scope: Scope) {
 	// in-memory map of static files
 	// keys are the URL paths relative to the mount base, values are the absolute paths to the files
@@ -218,7 +332,7 @@ export function handleApplication(scope: Scope) {
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
 				return {
 					handlesHeaders: true,
-					body: send(req, realpathSync(staticFile)),
+					body: serveFile(req, realpathSync(staticFile), scope),
 				};
 			}
 
