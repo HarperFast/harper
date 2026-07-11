@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783755719235,
+  "lastUpdate": 1783755721639,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -4876,6 +4876,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 45.93,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f55de88a610e53cef28f06c99735a4d21417c72d",
+          "message": "feat(server): surface external port conflicts on all platforms; single-worker default without SO_REUSEPORT (#1605)\n\n* feat(server): surface external port conflicts on all platforms; single-worker default without SO_REUSEPORT\n\nlistenOnPorts() used to swallow every EADDRINUSE (a workaround for a Node\n<20.11.1 reusePort bug now outside Harper's supported range), hiding real\nexternal squatters: an unrelated process holding e.g. the MQTT port silently\nreceived Harper's traffic with no error anywhere (original symptom: a second\nHarper instance on 8883).\n\nEvery EADDRINUSE with an in-process explanation is now structurally ruled out,\nso the remaining ones are logged loudly (port + owning component + error):\n- reusePort listeners (Linux): siblings share the port and never collide, even\n  across overlapping restarts — any EADDRINUSE is external.\n- Main thread (HTTP/operations ports): binds before any worker, never restarts —\n  any EADDRINUSE is external.\n- Dedicated listeners (onSocket, e.g. MQTT — never bound by the main thread):\n  when exclusive (macOS/Windows), bound only by a single owner worker (lowest\n  eligible index) instead of every worker racing; combined with non-overlapping\n  restarts (below), the owner's EADDRINUSE is external.\nThe one remaining benign case — a worker's exclusive HTTP bind losing to the\nmain thread on macOS/Windows — stays silently swallowed. All cases still\nresolve so a squatted port never stalls boot.\n\nrestartWorkers() no longer pre-starts replacement HTTP workers on macOS\n(canPreStartReplacement now excludes darwin, like Windows/Bun): without working\nSO_REUSEPORT the replacement could never bind ports the old worker still held —\nits EADDRINUSE was swallowed and worker-owned listeners like MQTT were left\npermanently unbound after every component-reload restart. The main thread keeps\nserving the HTTP ports throughout, so only worker-owned listeners see the brief\nshutdown-first gap.\n\nthreads.count now defaults to 1 on macOS/Windows (setDefaultThreads): without\nSO_REUSEPORT, additional HTTP workers can never share the server ports, so the\nCPU-based default just spawned workers that serve no direct TCP traffic. An\nexplicit threads.count still overrides.\n\nAdds an integration test that squats the MQTT secure port before boot and\nasserts the conflict is logged and Harper still starts — on every platform.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(lint): use node:assert not node:assert/strict in external-port-conflict test\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-10T22:22:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/f55de88a610e53cef28f06c99735a4d21417c72d"
+        },
+        "date": 1783755721057,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 9.29,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 8.7,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 14.17,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 20.78,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 8.65,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 9.58,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 24.92,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 9.72,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 12.62,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 96.02,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 48.02,
             "unit": "ms"
           }
         ]
