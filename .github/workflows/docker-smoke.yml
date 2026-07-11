@@ -1,0 +1,98 @@
+name: Docker Image Smoke Test
+
+# Builds the container image and boots it to catch breakage that only shows up
+# at runtime (e.g. an empty/unexecutable entrypoint producing "exec format
+# error"). The publish workflow only runs on release and never starts the
+# container, so this guards the gap for changes to the image build.
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker-smoke.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker-smoke.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Building and booting the image only needs read access to the checkout.
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    # arm64 is exercised only on push to main (the publish workflow ships both
+    # arches); PRs stay amd64-only to keep the extra build off every PR run.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ github.event_name == 'push' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build image (${{ matrix.platform }}, load locally)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: harperfast/harper:smoke-test
+
+      - name: Entrypoint is non-empty and valid shell
+        run: |
+          docker run --rm --entrypoint sh harperfast/harper:smoke-test -c '
+            set -e
+            f=/usr/local/bin/docker-entrypoint.sh
+            test -s "$f" || { echo "::error::$f is empty"; ls -l "$f"; exit 1; }
+            test -x "$f" || { echo "::error::$f is not executable"; ls -l "$f"; exit 1; }
+            sh -n "$f" || { echo "::error::$f is not valid shell"; exit 1; }
+            echo "entrypoint OK ($(wc -c < "$f") bytes)"
+          '
+
+      - name: Container boots and serves the Operations API
+        run: |
+          docker run -d --name harper-smoke \
+            -e HDB_ADMIN_USERNAME=admin \
+            -e HDB_ADMIN_PASSWORD=password \
+            -p 9925:9925 \
+            harperfast/harper:smoke-test
+
+          echo "Waiting for Operations API on :9925 ..."
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
+            # Any HTTP response (even 401/404) means the server is up and listening.
+            if [ -n "$code" ] && [ "$code" != "000" ]; then
+              echo "Operations API responded with HTTP $code after ${i}s"
+              exit 0
+            fi
+            if ! docker ps --filter name=harper-smoke --filter status=running -q | grep -q .; then
+              echo "::error::Container exited before the Operations API came up"
+              docker logs harper-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "::error::Operations API did not come up within 60s"
+          docker logs harper-smoke
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs harper-smoke 2>&1 || true
+
+      - name: Teardown
+        if: always()
+        run: docker rm -f harper-smoke 2>/dev/null || true
