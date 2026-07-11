@@ -60,15 +60,20 @@ suite(
 			authHeader = client.headers.Authorization;
 
 			const deadline = Date.now() + 60_000;
+			let ready = false;
 			while (Date.now() < deadline) {
 				try {
 					const r = await fetch(`${httpURL}/CacheRecord/probe`, { headers: headers(authHeader) });
-					if (r.status < 500) break;
+					if (r.status < 500) {
+						ready = true;
+						break;
+					}
 				} catch {
 					/* not ready yet */
 				}
 				await sleep(200);
 			}
+			if (!ready) throw new Error('CacheRecord table never became ready');
 			await assertMultiWorker(ctx);
 		});
 
