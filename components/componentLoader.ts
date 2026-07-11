@@ -507,7 +507,11 @@ export async function loadComponent(
 						componentDirectory,
 						configPath,
 						applicationScope,
-						origin
+						origin,
+						// authoritative root-ness: only root-load scopes watch THE root config and
+						// get the runtime env-config overlay (#1618) — an app component that happens
+						// to ship a root-named config file does not
+						isRoot
 					);
 
 					// Track the close so the worker's shutdown path waits for it (and thus for any async

@@ -76,7 +76,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		directory: string,
 		configFilePath: string,
 		applicationScope: ApplicationScope,
-		origin: string = appName
+		origin: string = appName,
+		isRootConfig?: boolean
 	) {
 		super();
 
@@ -124,7 +125,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.ready = once(this, 'ready');
 
 		// Create the options instance for the scope immediately
-		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger)
+		// isRootConfig is the loader's authoritative isRoot signal — it decides whether the
+		// watcher overlays runtime env config (#1618). When a caller doesn't provide it,
+		// OptionsWatcher falls back to its root-config filename heuristic.
+		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger, isRootConfig)
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));

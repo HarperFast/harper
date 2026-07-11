@@ -796,9 +796,10 @@ export function overlayRootEnvConfig(base: ConfigObject | undefined): ConfigObje
  * opposed to a component/application `config.yaml`. Filename-only by design: an exact
  * path comparison against the resolved root-config path misclassifies watchers in any
  * environment where a real config instance is resolved (including the unit harness).
- * Callers that know root-ness authoritatively should pass it explicitly rather than rely
- * on this heuristic; a component that ships its own root-named file is a known false
- * positive (harmless unless env config is set and its keys collide).
+ * FALLBACK ONLY: real component loads thread the loader's authoritative `isRoot` through
+ * `Scope` → `OptionsWatcher(…, isRootConfig)`, so this heuristic applies just to direct
+ * constructions (tests, ad-hoc callers), where a root-named app config file is a known,
+ * accepted false positive.
  */
 export function isRootConfigFilename(filePath: string): boolean {
 	const name = path.basename(filePath);
