@@ -90,6 +90,11 @@ jobs:
           alert-threshold: '130%'
           alert-comment-cc-users: '@kriszyp'
 
+      - name: Reset local gh-pages ref before second benchmark step
+        run: |
+          git switch --detach
+          git branch -D gh-pages 2>/dev/null || true
+
       - name: Track latency (p99) trend
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:

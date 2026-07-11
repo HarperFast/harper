@@ -5,6 +5,9 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
+// A coordinatedRetry transaction (the source-apply path) signals an optimistic write conflict by
+// resolving commit() with this sentinel instead of rejecting with ERR_BUSY.
+const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
 
 // A source-apply commit that fails its optimistic-conflict check must converge on retry. ERR_BUSY
 // always could: recommitting re-writes each key, re-tracking it at the current sequence, so
@@ -41,6 +44,9 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 			return originalCommit.apply(this, args).then(
 				(result) => {
 					attempt.ok = true;
+					// coordinatedRetry commits resolve with RETRY_NOW_VALUE on conflict rather than rejecting;
+					// record the resolution so a conflict on the coordinated path is observable.
+					attempt.result = result;
 					return result;
 				},
 				(error) => {
@@ -96,10 +102,19 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 			await SpinTable.put('busy', { id: 'busy', writer: 'original' });
 			const outcome = await applyWithMidTransactionConflict('busy', { writer: 'apply' }, { writer: 'concurrent' });
 			assert.equal(outcome, 'committed', 'the conflicted source-apply commit must settle');
-			const failed = attempts.find((attempt) => attempt.code === 'ERR_BUSY' || attempt.code === 'ERR_TRY_AGAIN');
+			// The conflict surfaces one of two ways depending on how the transaction was created: the
+			// coordinatedRetry source-apply transaction resolves commit() with the RETRY_NOW_VALUE sentinel
+			// (record-caching's coordinated path), while an uncoordinated transaction rejects with ERR_BUSY
+			// (or ERR_TRY_AGAIN). Either is a detected conflict that must then have been retried.
+			const failed = attempts.find(
+				(attempt) =>
+					attempt.result === RETRY_NOW_VALUE || attempt.code === 'ERR_BUSY' || attempt.code === 'ERR_TRY_AGAIN'
+			);
 			assert.ok(failed, 'the mid-transaction write should have failed the first commit validation');
 			assert.ok(
-				attempts.find((attempt, index) => attempt.ok && index > attempts.indexOf(failed)),
+				attempts.find(
+					(attempt, index) => attempt.ok && attempt.result !== RETRY_NOW_VALUE && index > attempts.indexOf(failed)
+				),
 				'a later commit attempt must succeed'
 			);
 		} finally {

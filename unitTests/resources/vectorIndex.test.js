@@ -367,7 +367,6 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		assert(invertedSimiliarities <= 6, `expected at most 6 distance inversions, got ${invertedSimiliarities}`);
 	}
 });
-
 describe('HNSW concurrent PUT race condition (issue #386)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const WORKER_COUNT = 4;

@@ -27,6 +27,7 @@ import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
@@ -194,7 +195,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	if (options.dupSort) {
 		db = new RocksIndexStore(path, options).open() as any;
 	} else {
-		db = RocksDatabase.open(path, options) as any;
+		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
 		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
 		db.put = db.putSync as any;
@@ -615,7 +616,7 @@ function initStores(
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key } as any),
+					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
 					rootStore
 				);
 			} else {
@@ -937,6 +938,68 @@ export async function dropDatabase(databaseName) {
 
 	await deleteRootBlobPathsForDB(rootStore);
 }
+// HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
+// versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
+// as enabling the switch — the opposite of intent. Treat "" / "0" / "false" (and unset) as NOT set.
+function hnswAutoVersionDisabled(): boolean {
+	const value = process.env.HNSW_NO_AUTOVERSION;
+	return value != null && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+}
+
+/**
+ * Resolve the storage format of a custom-index object store (e.g. HNSW): `'versioned'` (each node
+ * value is prefixed with a monotonic version the RocksDB Verification Table can extract → cached,
+ * decode-free graph traversal) or `'legacy'` (un-versioned, un-cached).
+ *
+ * The format is decided ONCE — when the index is created — and persisted on the attribute
+ * descriptor (`indexFormat`), so every worker and every reload reads the same authoritative value
+ * rather than re-deriving it from the store's current contents. Re-deriving per-open is racy: a
+ * store that is non-empty mid-backfill would be mis-read as legacy, and opening a versioned store
+ * with the legacy decoder corrupts reads. table() persists the resolved value (and always persists
+ * it BEFORE the first node is written, so by the time a store is non-empty its format is on disk).
+ *
+ * The empty-guard below is only the INITIALIZER for the first open under this feature (no format
+ * persisted yet): an empty store will be written versioned; a pre-existing non-empty store holds
+ * legacy un-prefixed values (incl. small-int id mappings the versioned decoder would misread) and
+ * stays legacy until an explicit reindex rebuilds it. The HNSW_NO_AUTOVERSION kill-switch only
+ * blocks a NEW index from initializing as versioned — an already-versioned store is still resolved
+ * versioned so its reads stay correct. The resolved value is stamped back onto `attribute` so the
+ * caller's attributesDbi.put persists it.
+ */
+function resolveIndexFormat(
+	dbiKey: string,
+	rootStore: RootDatabaseKind,
+	dbi: any,
+	attribute: any
+): 'versioned' | 'legacy' {
+	const persisted = (rootStore as any).dbisDb?.getSync(dbiKey)?.indexFormat;
+	let format: 'versioned' | 'legacy' = persisted ?? attribute.indexFormat;
+	if (format == null) {
+		format = 'legacy';
+		let isEmpty = true;
+		// Probe with no start/end so any key type is counted — numeric, string-pk
+		// safeKeys, and Symbol/array keys (e.g. entryPoint, KEY_PREFIX) are all
+		// included. The old { start: 0, end: Infinity } range missed symbol-array and
+		// string keys, misclassifying non-empty stores as empty after a delete-all.
+		for (const _key of dbi.getKeys({ limit: 1 })) {
+			isEmpty = false;
+			break;
+		}
+		if (isEmpty && !hnswAutoVersionDisabled()) format = 'versioned';
+	}
+	attribute.indexFormat = format;
+	return format;
+}
+
+// Arm a custom-index object store for versioned (VT-cacheable) reads and writes: enable the
+// metadata-prefix encode/decode (isRocksDB) and self-versioning (autoVersion) on its encoder.
+// Idempotent — safe to call again on a re-opened or reindexed store.
+function armVersionedIndexEncoder(dbi: any, rootStore: any) {
+	if (dbi.encoder?.autoVersion) return;
+	handleLocalTimeForGets(dbi, rootStore);
+	if (dbi.encoder) dbi.encoder.autoVersion = true;
+}
+
 // opens an index, consulting with custom indexes that may use alternate store configuration
 function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
 	const objectStorage =
@@ -958,9 +1021,23 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 				indexNulls?: boolean;
 				rootStore?: RocksRootDatabase;
 		  });
+	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	if (rootStore instanceof RocksDatabase) {
-		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey } as any) as any;
+		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
+		// available before resolveIndexFormat decides the format. Versioned stores need the VT
+		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
+		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey, cache: isCustomObjectIndex } as any) as any;
 		(dbi as any).rootStore = rootStore;
+		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
+		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
+		// Verification-Table cache can't track them. A versioned index initialises its encoder as a
+		// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
+		// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
+		// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
+		// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
+		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
+			armVersionedIndexEncoder(dbi, rootStore);
+		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
 	}
@@ -1130,7 +1207,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
@@ -1315,8 +1392,18 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
+				// custom-object) index. An index created before this field existed has no indexFormat on
+				// disk; persist the resolved value now — even when nothing else changed — so the format is
+				// durable BEFORE any node is written. Otherwise an empty pre-existing index would resolve
+				// 'versioned', write versioned nodes, and on the next load re-derive 'legacy' from the
+				// now-non-empty store, opening versioned data with the legacy decoder (silent corruption).
+				// (Scoped by attribute.indexFormat != null: only RocksDB custom-object indexes set it.)
+				const indexFormatNeedsPersist =
+					attribute.indexFormat != null && attributeDescriptor?.indexFormat !== attribute.indexFormat;
 				if (
 					changed ||
+					indexFormatNeedsPersist ||
 					attributeDescriptor?.indexingFailed ||
 					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
 					attributeDescriptor?.restartNumber < currentRestartGeneration
@@ -1351,6 +1438,23 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							attribute.lastIndexedKey = indexOptionsChanged
 								? undefined
 								: (attributeDescriptor?.lastIndexedKey ?? undefined);
+							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
+							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
+							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
+							// new nodes can carry versions: flip the persisted format and re-arm the dbi encoder
+							// (openIndex armed it from the pre-rebuild format, which for a legacy index was
+							// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
+							// existing format — its partial graph was already written under it.
+							if (
+								rootStore instanceof RocksDatabase &&
+								indexType &&
+								CUSTOM_INDEXES[indexType]?.useObjectStore &&
+								!hnswAutoVersionDisabled() &&
+								attribute.lastIndexedKey === undefined
+							) {
+								attribute.indexFormat = 'versioned';
+								armVersionedIndexEncoder(dbi, rootStore);
+							}
 							attribute.indexingPID = process.pid;
 							// Persist the owning restart generation (see currentRestartGeneration above) so
 							// the trigger can re-detect an incomplete index after a worker restart even when
