@@ -12,7 +12,32 @@
 import { ok } from 'node:assert';
 import type { ContextWithHarper } from '@harperfast/integration-testing';
 
-export const WORKER_COUNT = Number(process.env.HARPER_WORKER_COUNT) || 4;
+const parsedWorkerCount = Number(process.env.HARPER_WORKER_COUNT);
+export const WORKER_COUNT = Number.isInteger(parsedWorkerCount) && parsedWorkerCount > 0 ? parsedWorkerCount : 4;
+
+/**
+ * Run `fn` over `items` with at most `limit` in flight at once. These suites issue fresh-
+ * connection requests (no keep-alive) to spray across the worker pool; firing hundreds at
+ * once via an unbounded Promise.all risks ephemeral-port/socket exhaustion on constrained CI
+ * runners, so the large fan-outs (record creation, cache-warming) are bounded while the small
+ * per-key bursts stay concurrent (that concurrency is the point of the cross-worker check).
+ */
+export async function mapBounded<T, R>(
+	items: readonly T[],
+	limit: number,
+	fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	async function worker(): Promise<void> {
+		while (next < items.length) {
+			const i = next++;
+			results[i] = await fn(items[i], i);
+		}
+	}
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+	return results;
+}
 
 /** Number of HTTP worker threads the running instance reports via system_information. */
 export async function observedWorkerCount(ctx: ContextWithHarper): Promise<number> {

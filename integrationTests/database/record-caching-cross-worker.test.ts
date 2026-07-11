@@ -31,10 +31,13 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-import { WORKER_COUNT, assertMultiWorker } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, mapBounded } from './recordCachingWorkers.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-coherence');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+// Cap keys churning concurrently so the per-request fresh connections don't exhaust
+// sockets on constrained CI. Small per-key bursts stay concurrent (the cross-worker check).
+const CONCURRENCY = 24;
 
 type Rec = { id: string; name: string; counter: number };
 
@@ -125,45 +128,45 @@ suite(
 			const ids = Array.from({ length: COUNT }, (_, i) => `s1-${i}`);
 
 			// Create all records.
-			await Promise.all(ids.map((id, i) => putRecord(base, auth, id, `name-${i}-r0`, 0)));
+			await mapBounded(ids, CONCURRENCY, (id, i) => putRecord(base, auth, id, `name-${i}-r0`, 0));
 
 			// Warm caches across workers with several reads per record.
-			await Promise.all(ids.flatMap((id) => Array.from({ length: WARM_READS }, () => getRecord(base, auth, id))));
+			await mapBounded(ids, CONCURRENCY, (id) =>
+				Promise.all(Array.from({ length: WARM_READS }, () => getRecord(base, auth, id)))
+			);
 
 			const errors: string[] = [];
 
 			// Per key: serialized rounds of PUT -> ack -> burst concurrent GETs.
-			await Promise.all(
-				ids.map(async (id, i) => {
-					let lastAckedCounter = 0;
-					let lastAckedName = `name-${i}-r0`;
-					for (let round = 1; round <= ROUNDS; round++) {
-						const newCounter = round;
-						const newName = `name-${i}-r${round}`;
-						await putRecord(base, auth, id, newName, newCounter);
-						// Ack observed: from this point, no GET may return < lastAcked.
-						lastAckedCounter = newCounter;
-						lastAckedName = newName;
+			await mapBounded(ids, CONCURRENCY, async (id, i) => {
+				let lastAckedCounter = 0;
+				let lastAckedName = `name-${i}-r0`;
+				for (let round = 1; round <= ROUNDS; round++) {
+					const newCounter = round;
+					const newName = `name-${i}-r${round}`;
+					await putRecord(base, auth, id, newName, newCounter);
+					// Ack observed: from this point, no GET may return < lastAcked.
+					lastAckedCounter = newCounter;
+					lastAckedName = newName;
 
-						const results = await Promise.all(Array.from({ length: BURST }, () => getRecord(base, auth, id)));
-						for (const { status, body } of results) {
-							if (status !== 200 || !body) {
-								errors.push(`${id} round ${round}: GET returned status ${status} after acked PUT (ghost/absent)`);
-								continue;
-							}
-							if (body.counter < lastAckedCounter) {
-								errors.push(
-									`${id} round ${round}: STALE counter ${body.counter} < acked ${lastAckedCounter} (name=${body.name})`
-								);
-							} else if (body.counter === lastAckedCounter && body.name !== lastAckedName) {
-								errors.push(
-									`${id} round ${round}: TORN write, counter matches (${body.counter}) but name="${body.name}" != acked "${lastAckedName}"`
-								);
-							}
+					const results = await Promise.all(Array.from({ length: BURST }, () => getRecord(base, auth, id)));
+					for (const { status, body } of results) {
+						if (status !== 200 || !body) {
+							errors.push(`${id} round ${round}: GET returned status ${status} after acked PUT (ghost/absent)`);
+							continue;
+						}
+						if (body.counter < lastAckedCounter) {
+							errors.push(
+								`${id} round ${round}: STALE counter ${body.counter} < acked ${lastAckedCounter} (name=${body.name})`
+							);
+						} else if (body.counter === lastAckedCounter && body.name !== lastAckedName) {
+							errors.push(
+								`${id} round ${round}: TORN write, counter matches (${body.counter}) but name="${body.name}" != acked "${lastAckedName}"`
+							);
 						}
 					}
-				})
-			);
+				}
+			});
 
 			if (errors.length > 0) {
 				console.error(
@@ -183,39 +186,37 @@ suite(
 
 				const errors: string[] = [];
 
-				await Promise.all(
-					ids.map(async (id, i) => {
-						const originalName = `orig-${i}`;
-						await putRecord(base, auth, id, originalName, 1);
-						// Warm caches across workers.
-						await Promise.all(Array.from({ length: 3 }, () => getRecord(base, auth, id)));
+				await mapBounded(ids, CONCURRENCY, async (id, i) => {
+					const originalName = `orig-${i}`;
+					await putRecord(base, auth, id, originalName, 1);
+					// Warm caches across workers.
+					await Promise.all(Array.from({ length: 3 }, () => getRecord(base, auth, id)));
 
-						await deleteRecord(base, auth, id);
-						// From here: no worker may serve a 200 with the pre-delete body.
-						const postDelete = await Promise.all(Array.from({ length: BURST }, () => getRecord(base, auth, id)));
-						for (const { status, body } of postDelete) {
-							if (status === 200) {
-								errors.push(`${id}: GHOST after DELETE ack — GET returned 200 body=${JSON.stringify(body)}`);
+					await deleteRecord(base, auth, id);
+					// From here: no worker may serve a 200 with the pre-delete body.
+					const postDelete = await Promise.all(Array.from({ length: BURST }, () => getRecord(base, auth, id)));
+					for (const { status, body } of postDelete) {
+						if (status === 200) {
+							errors.push(`${id}: GHOST after DELETE ack — GET returned 200 body=${JSON.stringify(body)}`);
+						}
+					}
+
+					// Recreate with a distinguishable value; must never see old ghost or 404 afterwards.
+					const recreatedName = `recreated-${i}`;
+					await putRecord(base, auth, id, recreatedName, 99);
+					const postRecreate = await Promise.all(Array.from({ length: BURST }, () => getRecord(base, auth, id)));
+					for (const { status, body } of postRecreate) {
+						if (status === 404) {
+							errors.push(`${id}: 404 after recreate ack (recreate not visible)`);
+						} else if (status === 200 && body) {
+							if (body.name === originalName) {
+								errors.push(`${id}: GHOST of pre-delete body reappeared after recreate: ${JSON.stringify(body)}`);
+							} else if (body.name !== recreatedName || body.counter !== 99) {
+								errors.push(`${id}: unexpected body after recreate: ${JSON.stringify(body)}`);
 							}
 						}
-
-						// Recreate with a distinguishable value; must never see old ghost or 404 afterwards.
-						const recreatedName = `recreated-${i}`;
-						await putRecord(base, auth, id, recreatedName, 99);
-						const postRecreate = await Promise.all(Array.from({ length: BURST }, () => getRecord(base, auth, id)));
-						for (const { status, body } of postRecreate) {
-							if (status === 404) {
-								errors.push(`${id}: 404 after recreate ack (recreate not visible)`);
-							} else if (status === 200 && body) {
-								if (body.name === originalName) {
-									errors.push(`${id}: GHOST of pre-delete body reappeared after recreate: ${JSON.stringify(body)}`);
-								} else if (body.name !== recreatedName || body.counter !== 99) {
-									errors.push(`${id}: unexpected body after recreate: ${JSON.stringify(body)}`);
-								}
-							}
-						}
-					})
-				);
+					}
+				});
 
 				if (errors.length > 0) {
 					console.error(`delete-churn: ${errors.length} violation(s). First 10:\n${errors.slice(0, 10).join('\n')}`);

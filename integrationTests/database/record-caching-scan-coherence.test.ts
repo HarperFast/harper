@@ -24,10 +24,13 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { WORKER_COUNT, assertMultiWorker } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, mapBounded } from './recordCachingWorkers.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-coherence');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+// Cap concurrent fresh-connection requests so cache-warming fan-outs don't exhaust
+// sockets on constrained CI. Per-record bursts stay concurrent (the cross-worker check).
+const CONCURRENCY = 24;
 
 interface Rec {
 	id: string;
@@ -121,14 +124,12 @@ suite(
 				const WARM_READS_PER_ID = 12; // spray point-GETs pre-update to populate every worker's cache
 				const BURST_PER_ID = 8; // concurrent point-GETs sprayed immediately after each update's ack
 
-				await Promise.all(Array.from({ length: N }, (_, i) => putRecord(`div-${i}`, `orig-${i}`, i)));
+				const ids = Array.from({ length: N }, (_, i) => `div-${i}`);
+				await mapBounded(ids, CONCURRENCY, (id, i) => putRecord(id, `orig-${i}`, i));
 
 				// Warm the point-read cache across all workers for every id.
-				await Promise.all(
-					Array.from({ length: N }, (_, i) => {
-						const id = `div-${i}`;
-						return Promise.all(Array.from({ length: WARM_READS_PER_ID }, () => getRecord(id)));
-					})
+				await mapBounded(ids, CONCURRENCY, (id) =>
+					Promise.all(Array.from({ length: WARM_READS_PER_ID }, () => getRecord(id)))
 				);
 				// Sanity: warm reads saw the original values.
 				const warmSample = await getRecord('div-0');
@@ -174,18 +175,15 @@ suite(
 					}
 				}
 
-				// Pipeline: PUT (awaited=ack'd), then fire the comparison burst WITHOUT awaiting it,
-				// so bursts from different ids overlap and spray load across all workers.
-				const bursts: Promise<void>[] = [];
-				for (let i = 0; i < N; i++) {
-					const id = `div-${i}`;
+				// Update each record (awaiting its ack) then compare via a bounded set of
+				// concurrent bursts, so reads still spray across workers without unbounded fan-out.
+				await mapBounded(ids, CONCURRENCY, async (id, i) => {
 					const oldName = `orig-${i}`;
 					const newName = `upd-${i}`;
 					const newCounter = 1000 + i;
 					await putRecord(id, newName, newCounter); // write acknowledged (200/201/204) before comparing
-					bursts.push(burstCheck(id, oldName, newName, newCounter));
-				}
-				await Promise.all(bursts);
+					await burstCheck(id, oldName, newName, newCounter);
+				});
 
 				strictEqual(errors.length, 0, `unexpected errors:\n${errors.join('\n')}`);
 				strictEqual(
@@ -212,12 +210,10 @@ suite(
 			const WARM_READS_PER_ID = 12;
 			const BURST_PER_ID = 8;
 
-			await Promise.all(Array.from({ length: N }, (_, i) => putRecord(`del-${i}`, `delname-${i}`, i)));
-			await Promise.all(
-				Array.from({ length: N }, (_, i) => {
-					const id = `del-${i}`;
-					return Promise.all(Array.from({ length: WARM_READS_PER_ID }, () => getRecord(id)));
-				})
+			const ids = Array.from({ length: N }, (_, i) => `del-${i}`);
+			await mapBounded(ids, CONCURRENCY, (id, i) => putRecord(id, `delname-${i}`, i));
+			await mapBounded(ids, CONCURRENCY, (id) =>
+				Promise.all(Array.from({ length: WARM_READS_PER_ID }, () => getRecord(id)))
 			);
 
 			const ghostPointReads: string[] = []; // point-GET still returns a body (not 404) post-delete
@@ -257,13 +253,7 @@ suite(
 				}
 			}
 
-			const work: Promise<void>[] = [];
-			for (let i = 0; i < N; i++) {
-				const id = `del-${i}`;
-				const name = `delname-${i}`;
-				work.push(deleteAndCheck(id, name, i % 2 === 0));
-			}
-			await Promise.all(work);
+			await mapBounded(ids, CONCURRENCY, (id, i) => deleteAndCheck(id, `delname-${i}`, i % 2 === 0));
 
 			strictEqual(
 				ghostPointReads.length,
@@ -282,11 +272,10 @@ suite(
 			const ROUNDS = 60;
 			const BURST_PER_ID = 10;
 
-			await Promise.all(Array.from({ length: HOT_IDS }, (_, i) => putRecord(`hot-${i}`, `hot-orig-${i}`, 0)));
+			const hotIds = Array.from({ length: HOT_IDS }, (_, i) => `hot-${i}`);
+			await mapBounded(hotIds, CONCURRENCY, (id, i) => putRecord(id, `hot-orig-${i}`, 0));
 			// Warm every worker's cache before churn starts.
-			await Promise.all(
-				Array.from({ length: HOT_IDS }, (_, i) => Promise.all(Array.from({ length: 16 }, () => getRecord(`hot-${i}`))))
-			);
+			await mapBounded(hotIds, CONCURRENCY, (id) => Promise.all(Array.from({ length: 16 }, () => getRecord(id))));
 
 			const staleCachedPoint: string[] = [];
 			const scanMisses: string[] = [];
