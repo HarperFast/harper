@@ -566,4 +566,23 @@ describe('Test common_utils module', () => {
 		const c = cu_rewire.ms_to_time(1672345634534);
 		expect(c).to.equal('52y 27d 20h 27m 14s');
 	});
+
+	describe('Test convertToMS', () => {
+		it('bare number is treated as seconds', () => {
+			expect(cu.convertToMS(5)).to.equal(5000);
+		});
+		it('duration-string units (note case-sensitive M=month vs m=minute)', () => {
+			expect(cu.convertToMS('5m')).to.equal(300000); // minutes
+			expect(cu.convertToMS('2h')).to.equal(7200000);
+			expect(cu.convertToMS('1d')).to.equal(86400000);
+			expect(cu.convertToMS('1M')).to.equal(86400 * 30 * 1000); // 30-day month
+		});
+		it('year suffix (y/Y) resolves to 365 days', () => {
+			expect(cu.convertToMS('1y')).to.equal(86400 * 365 * 1000);
+			expect(cu.convertToMS('1Y')).to.equal(86400 * 365 * 1000);
+		});
+		it('non-numeric string yields NaN (so callers can reject it)', () => {
+			expect(Number.isNaN(cu.convertToMS('abc'))).to.equal(true);
+		});
+	});
 });
