@@ -138,3 +138,36 @@ describe('contentTypes – application/x-ndjson', function () {
 		});
 	});
 });
+
+describe('contentTypes – text/event-stream (SSE)', function () {
+	const handler = contentTypes.get('text/event-stream');
+
+	// #1628: a finite async generator streamed to natural completion must close the SSE
+	// stream cleanly. transformIterable used to hand the terminal `{ value: undefined,
+	// done: true }` step to serialize(), which threw on `undefined.acknowledge` — hanging
+	// the response and raising an uncaughtException. The infinite-subscription case never
+	// reaches a terminal step, so this went unnoticed.
+	it('streams a finite async generator to completion without hanging or throwing', async function () {
+		async function* source() {
+			yield { seq: 'a' };
+			yield { seq: 'b' };
+		}
+		const readable = handler.serializeStream(source());
+		const output = await streamToString(readable);
+		const events = output
+			.split('\n\n')
+			.filter(Boolean)
+			.map((frame) => JSON.parse(frame.replace(/^data: /, '')));
+		assert.deepStrictEqual(events, [{ seq: 'a' }, { seq: 'b' }]);
+	});
+
+	it('streams a finite sync iterable to completion without hanging or throwing', async function () {
+		const readable = handler.serializeStream([{ n: 1 }, { n: 2 }]);
+		const output = await streamToString(readable);
+		const events = output
+			.split('\n\n')
+			.filter(Boolean)
+			.map((frame) => JSON.parse(frame.replace(/^data: /, '')));
+		assert.deepStrictEqual(events, [{ n: 1 }, { n: 2 }]);
+	});
+});
