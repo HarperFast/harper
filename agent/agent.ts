@@ -100,6 +100,11 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const bestPracticeTool = buildBestPracticeTool();
 	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
 
+	// The grounding + best-practices portion of the system prompt is static for the component's
+	// lifetime (scopes don't change), so build it once here; only the operator's per-run
+	// `systemPromptAppend` is folded on at run time in `startRun`.
+	const staticSystemPrompt = buildStaticSystemPrompt(scopes, bestPracticesOverview);
+
 	function compose(): ReturnType<typeof composeToolset> {
 		return composeToolset({
 			allowDestructive: liveConfig.allowDestructive,
@@ -167,7 +172,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
 			generateOpts: { model: liveConfig.model },
-			systemPrompt: buildSystemPrompt(scopes, bestPracticesOverview, liveConfig.systemPromptAppend),
+			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
 		})
 			.catch((err) => log.error?.(`Agent run failed for ${sessionId}: ${(err as Error)?.message ?? err}`))
 			.finally(() => {
@@ -224,34 +229,43 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 
 /**
  * Grounding prompt so the agent knows what it is, where its files live, and how a Harper app is
- * shaped. Without it the model can't know the absolute componentsRoot and guesses literal path
- * prefixes (e.g. "componentsRoot/…") that fall outside the write scope.
+ * shaped. The filesystem tools take a `root` scope enum, so we describe the scopes rather than
+ * spelling out path-prefixing rules.
  *
- * Assembled as: built-in grounding → Harper best-practices overview (if available) → operator
- * `agent.systemPromptAppend` (if set). The append is read from liveConfig at each run so it can be
- * tuned via `set_agent_config` without a restart.
+ * We deliberately do NOT enumerate individual tool names here — the model already receives the full
+ * tool schema from the SDK, and duplicating names in the prompt drifts as tools are added/removed and
+ * invites hallucinated calls. This describes the tool *surface* at a category level only.
+ *
+ * The built-in grounding and best-practices overview are static for the component's lifetime, so the
+ * caller precomputes them once (`buildStaticSystemPrompt`) and only the operator
+ * `agent.systemPromptAppend` — which can change via `set_agent_config` without a restart — is folded
+ * in per run by `composeSystemPrompt`.
  */
-function buildSystemPrompt(scopes: AgentScopes, bestPracticesOverview?: string, append?: string): string {
+function buildStaticSystemPrompt(scopes: AgentScopes, bestPracticesOverview?: string): string {
 	const parts = [
 		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
-		'You operate this instance for an operator via tools: Harper operations (describe_all, search, deploy_component, restart, set_configuration, add_role, …), scoped filesystem tools (read_file, write_file, list_dir, grep_files, tail_file), schedule_followup, http_fetch, and (when available) V8 inspector tools for debugging worker threads and a harper_best_practice tool for detailed Harper guidance.',
+		'You operate this instance for an operator through the tools provided to you: Harper database/cluster operations, scoped filesystem tools, HTTP fetch against this server, followup scheduling, and (when available) V8 inspector tools for debugging worker threads plus a Harper best-practices lookup. Consult the provided tool schemas for the exact set and their parameters.',
 		'',
-		'Filesystem:',
-		`- Components (apps) directory — your WRITE scope: ${scopes.componentsRoot}`,
-		`- Log directory (read-only): ${scopes.logDir}`,
-		`- Config directory (read-only): ${scopes.configDir}`,
-		'- Pass write_file/read_file paths RELATIVE to the components directory (e.g. "my_app/schema.graphql"), or an absolute path within a scope. Do NOT prefix paths with "componentsRoot".',
+		'Filesystem scopes (the fs tools take a `root` naming one of these; paths are relative to it):',
+		`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
+		`- logs — read-only: ${scopes.logDir}`,
+		`- config — read-only: ${scopes.configDir}`,
 		'',
-		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via http_fetch against this server.',
-		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the harper_best_practice tool. Be concise and verify your work.',
+		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via an HTTP fetch against this server.',
+		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool. Be concise and verify your work.',
 	];
 	if (bestPracticesOverview) {
 		parts.push('', '=== Harper best practices (overview) ===', bestPracticesOverview);
 	}
-	if (typeof append === 'string' && append.trim()) {
-		parts.push('', '=== Operator instructions ===', append.trim());
-	}
 	return parts.join('\n');
+}
+
+/** Fold the operator's per-run `systemPromptAppend` onto the precomputed static base. */
+function composeSystemPrompt(staticPrompt: string, append?: string): string {
+	if (typeof append === 'string' && append.trim()) {
+		return `${staticPrompt}\n\n=== Operator instructions ===\n${append.trim()}`;
+	}
+	return staticPrompt;
 }
 
 /**

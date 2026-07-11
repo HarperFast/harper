@@ -23,17 +23,49 @@ const DEFAULT_TAIL_LINES = 200;
 const TAIL_READ_BYTES = 1 * 1024 * 1024; // 1 MiB — enough for thousands of normal log lines
 
 type Access = 'read' | 'write';
+type Scope = 'components' | 'logs' | 'config';
 
-async function resolveScoped(scopes: AgentScopes, path: string, access: Access): Promise<string> {
-	// A relative path is resolved against componentsRoot (the write scope / app root) rather than the
-	// process cwd — the agent addresses component files by their path relative to the components dir
-	// (e.g. `product_app/schema.json`) and doesn't know the absolute root. Absolute paths are used as-is
-	// and still validated against the scope roots below.
-	const absolute = isAbsolute(path) ? resolve(path) : resolve(scopes.componentsRoot, path);
-	const candidates = [scopes.componentsRoot];
-	if (access === 'read') {
-		candidates.push(scopes.logDir, scopes.configDir);
+// The three filesystem scopes the agent can address. Exposed to the model as a `root` enum on the
+// fs tools so it names the scope explicitly instead of guessing an absolute path — which is what led
+// the model to invent literal `componentsRoot/…` prefixes. `components` is the only writable scope.
+const SCOPES: Scope[] = ['components', 'logs', 'config'];
+const SCOPE_DESCRIPTION =
+	"Which scope the `path` is relative to: 'components' (app source directory, the only writable scope), " +
+	"'logs' (read-only), or 'config' (read-only). Defaults to 'components'.";
+
+function scopeRoot(scopes: AgentScopes, scope: Scope): string {
+	switch (scope) {
+		case 'components':
+			return scopes.componentsRoot;
+		case 'logs':
+			return scopes.logDir;
+		case 'config':
+			return scopes.configDir;
+		default:
+			throw new Error(`Unknown fs root '${scope}'. Use one of: ${SCOPES.join(', ')}.`);
 	}
+}
+
+/** Coerce/validate a tool's `root` argument, defaulting to the writable components scope. */
+function normalizeScope(root: unknown): Scope {
+	if (root == null) return 'components';
+	if (typeof root !== 'string' || !SCOPES.includes(root as Scope))
+		throw new Error(`Invalid fs root '${String(root)}'. Use one of: ${SCOPES.join(', ')}.`);
+	return root as Scope;
+}
+
+async function resolveScoped(scopes: AgentScopes, scope: Scope, path: string, access: Access): Promise<string> {
+	// Writes are confined to the components (app) scope; logs and config are observation-only.
+	if (access === 'write' && scope !== 'components') {
+		throw new Error(`Cannot write to the '${scope}' scope; writes are limited to 'components'.`);
+	}
+	const root = scopeRoot(scopes, scope);
+	// Paths are relative to the chosen scope root. Rejecting absolute paths removes the ambiguity that
+	// led the model to guess literal prefixes, and keeps resolution a single unambiguous join.
+	if (isAbsolute(path)) {
+		throw new Error(`Path must be relative to the '${scope}' root, not absolute: ${path}`);
+	}
+	const absolute = resolve(root, path);
 	// Reject a symlink leaf. `safeRealPath` resolves existing symlinks via `realpath` (so a link to
 	// an out-of-scope *existing* file is caught by the isInside check below) — but a link whose
 	// target does NOT exist makes `realpath` throw, and the fallback returns the link's own in-scope
@@ -50,11 +82,9 @@ async function resolveScoped(scopes: AgentScopes, path: string, access: Access):
 		if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
 	}
 	const realAbsolute = await safeRealPath(absolute);
-	for (const root of candidates) {
-		const realRoot = await safeRealPath(root);
-		if (isInside(realAbsolute, realRoot)) return realAbsolute;
-	}
-	throw new Error(`Path is outside the agent's ${access} scope: ${path}`);
+	const realRoot = await safeRealPath(root);
+	if (isInside(realAbsolute, realRoot)) return realAbsolute;
+	throw new Error(`Path is outside the agent's '${scope}' scope: ${path}`);
 }
 
 async function safeRealPath(p: string): Promise<string> {
@@ -81,17 +111,18 @@ function isInside(child: string, parent: string): boolean {
 export const readFileTool: AgentTool = {
 	def: {
 		name: 'read_file',
-		description: 'Read a UTF-8 text file within componentsRoot, logDir, or configDir.',
+		description: 'Read a UTF-8 text file from the components, logs, or config scope.',
 		parameters: {
 			type: 'object',
 			properties: {
-				path: { type: 'string', description: 'Absolute filesystem path.' },
+				root: { type: 'string', enum: SCOPES, description: SCOPE_DESCRIPTION },
+				path: { type: 'string', description: 'Path relative to the chosen root, e.g. "my_app/schema.graphql".' },
 			},
 			required: ['path'],
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const path = await resolveScoped(ctx.scopes, args.path, 'read');
+		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
 		const st = await stat(path);
 		if (st.size > MAX_READ_BYTES) {
 			throw new Error(`File ${path} exceeds ${MAX_READ_BYTES}-byte read cap (size ${st.size})`);
@@ -104,11 +135,15 @@ export const readFileTool: AgentTool = {
 export const writeFileTool: AgentTool = {
 	def: {
 		name: 'write_file',
-		description: 'Write a UTF-8 text file within componentsRoot. Creates parent directories as needed.',
+		description:
+			'Write a UTF-8 text file into the components (app source) scope — the only writable scope. Creates parent directories as needed.',
 		parameters: {
 			type: 'object',
 			properties: {
-				path: { type: 'string', description: 'Absolute filesystem path under componentsRoot.' },
+				path: {
+					type: 'string',
+					description: 'Path relative to the components directory, e.g. "my_app/schema.graphql".',
+				},
 				content: { type: 'string', description: 'UTF-8 file contents.' },
 			},
 			required: ['path', 'content'],
@@ -119,7 +154,7 @@ export const writeFileTool: AgentTool = {
 		if (Buffer.byteLength(content, 'utf8') > MAX_WRITE_BYTES) {
 			throw new Error(`Write exceeds ${MAX_WRITE_BYTES}-byte cap`);
 		}
-		const path = await resolveScoped(ctx.scopes, args.path, 'write');
+		const path = await resolveScoped(ctx.scopes, 'components', args.path, 'write');
 		await mkdir(dirname(path), { recursive: true });
 		await writeFile(path, content, 'utf8');
 		return { path, bytesWritten: Buffer.byteLength(content, 'utf8') };
@@ -130,17 +165,20 @@ export const writeFileTool: AgentTool = {
 export const listDirTool: AgentTool = {
 	def: {
 		name: 'list_dir',
-		description: 'List the immediate entries in a directory within an allowed scope.',
+		description: 'List the immediate entries in a directory within the components, logs, or config scope.',
 		parameters: {
 			type: 'object',
 			properties: {
-				path: { type: 'string', description: 'Absolute filesystem path.' },
+				root: { type: 'string', enum: SCOPES, description: SCOPE_DESCRIPTION },
+				path: {
+					type: 'string',
+					description: 'Directory relative to the chosen root. Omit or "" for the root itself.',
+				},
 			},
-			required: ['path'],
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const path = await resolveScoped(ctx.scopes, args.path, 'read');
+		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path ?? '', 'read');
 		const entries = await readdir(path, { withFileTypes: true });
 		return {
 			path,
@@ -155,20 +193,24 @@ export const listDirTool: AgentTool = {
 export const grepFilesTool: AgentTool = {
 	def: {
 		name: 'grep_files',
-		description: 'Search recursively under a scoped directory for a regex pattern. Returns matched lines.',
+		description: 'Search recursively within a scope for a regex pattern. Returns matched lines.',
 		parameters: {
 			type: 'object',
 			properties: {
-				root: { type: 'string', description: 'Directory to search under.' },
+				root: { type: 'string', enum: SCOPES, description: SCOPE_DESCRIPTION },
+				path: {
+					type: 'string',
+					description: 'Subdirectory relative to the chosen root to search under. Omit or "" for the whole scope.',
+				},
 				pattern: { type: 'string', description: 'JavaScript-compatible regular expression source.' },
 				flags: { type: 'string', description: 'Regex flags (default: "i").' },
 				maxResults: { type: 'integer', minimum: 1, maximum: MAX_GREP_RESULTS },
 			},
-			required: ['root', 'pattern'],
+			required: ['pattern'],
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const root = await resolveScoped(ctx.scopes, args.root, 'read');
+		const root = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path ?? '', 'read');
 		// Cap pattern length. A maliciously crafted regex (e.g. nested quantifiers) can backtrack
 		// catastrophically and block the main thread; JS has no native per-match timeout. The agent
 		// is super_user-gated so this is self-inflicted DoS rather than a privilege boundary, but a
@@ -208,18 +250,19 @@ export const grepFilesTool: AgentTool = {
 export const tailFileTool: AgentTool = {
 	def: {
 		name: 'tail_file',
-		description: 'Return the last N lines of a UTF-8 file. Useful for log tails.',
+		description: 'Return the last N lines of a UTF-8 file. Useful for log tails (root: "logs").',
 		parameters: {
 			type: 'object',
 			properties: {
-				path: { type: 'string', description: 'Absolute filesystem path.' },
+				root: { type: 'string', enum: SCOPES, description: SCOPE_DESCRIPTION },
+				path: { type: 'string', description: 'Path relative to the chosen root, e.g. "hdb.log".' },
 				lines: { type: 'integer', minimum: 1, maximum: 5000 },
 			},
 			required: ['path'],
 		},
 	},
 	handler: async (args: any, ctx: AgentToolContext) => {
-		const path = await resolveScoped(ctx.scopes, args.path, 'read');
+		const path = await resolveScoped(ctx.scopes, normalizeScope(args.root), args.path, 'read');
 		const wanted = Math.min(args.lines ?? DEFAULT_TAIL_LINES, 5000);
 		// Read only the trailing TAIL_READ_BYTES — a multi-GB log file otherwise OOMs the process.
 		const st = await stat(path);
