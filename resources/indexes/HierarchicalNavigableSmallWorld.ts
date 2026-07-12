@@ -858,6 +858,8 @@ export class HierarchicalNavigableSmallWorld {
 		// brute-force path for condition filters, leaving function predicates the real beneficiary), and
 		// a filter that fills `ef` with distant matches (a loose worst-match bound would otherwise let
 		// the distance rule explore almost everything).
+		// search() always supplies filterState alongside filter; default one for any direct caller that doesn't.
+		if (!filterState) filterState = { maxVisits: Infinity, nodesVisited: 0, filterEvaluations: 0 };
 		const results = [] as unknown as SearchResults;
 		if (this.admit(filter, filterState, entryPoint.primaryKey)) results.push(initialCandidate);
 		let budgetExhausted = false;
@@ -874,7 +876,7 @@ export class HierarchicalNavigableSmallWorld {
 				const neighbor = this.safeGetSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
-				filterState!.nodesVisited++;
+				filterState.nodesVisited++;
 				const distance = computeDistance(neighbor.vector, neighbor.invMag, neighbor.scale);
 
 				// Route through any node that could still improve the result set (under-filled or nearer
@@ -887,7 +889,7 @@ export class HierarchicalNavigableSmallWorld {
 						if (results.length > ef) results.pop();
 					}
 				}
-				if (filterState!.nodesVisited >= filterState!.maxVisits) {
+				if (filterState.nodesVisited >= filterState.maxVisits) {
 					budgetExhausted = true;
 					break;
 				}

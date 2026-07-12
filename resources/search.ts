@@ -184,7 +184,7 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 /** True when a condition's index is a custom index that participates in predicate-aware traversal (HNSW). */
 function isFilterablePushdown(condition, table): boolean {
 	const attributeName = condition?.attribute ?? condition?.[0];
-	if (attributeName == null) return false;
+	if (attributeName == null || table == null) return false;
 	const index = attributeName === table.primaryKey ? table.primaryStore : table.indices?.[attributeName];
 	return Boolean(index?.customIndex?.filteredSearch);
 }
