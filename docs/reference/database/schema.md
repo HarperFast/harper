@@ -526,13 +526,13 @@ let results = Document.search(
 );
 ```
 
-`vectorFilter` is available from the JavaScript API only (it cannot be expressed in a REST query string). The function must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). Records passed to it are frozen.
+`vectorFilter` is available from the JavaScript API only (it cannot be expressed in a REST query string). The function receives the candidate record and must return a boolean — `true` to include the record in results, `false` to exclude it (it still routes traversal either way). It must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). Records passed to it are frozen.
 
 ### Record-Level Access Control in Vector Search
 
 <VersionBadge version="v5.2.0" />
 
-A resource class can define a static `allowReadRecord(user, record)` check that filters query results per record. For vector queries it participates in the traversal, so a restricted user receives the k nearest records _they are allowed to see_ rather than "nearest k, minus redacted" (which under-fills results and reveals that nearby restricted records exist):
+A resource class can define a static `allowReadRecord(user, record)` check that filters query results per record, returning a boolean — `true` if the user may see the record, `false` to withhold it. For vector queries it participates in the traversal, so a restricted user receives the k nearest records _they are allowed to see_ rather than "nearest k, minus redacted" (which under-fills results and reveals that nearby restricted records exist):
 
 ```javascript
 export class Reports extends tables.Reports {
