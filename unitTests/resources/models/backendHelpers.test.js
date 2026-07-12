@@ -11,6 +11,16 @@ const {
 	requireModel,
 	requireCredential,
 	normalizeOrigin,
+	DEFAULT_MAX_RETRIES,
+	DEFAULT_RETRY_BACKOFF_MS,
+	MAX_RETRY_DELAY_MS,
+	MAX_RETRY_AFTER_MS,
+	resolveRetryConfig,
+	isRetriableStatus,
+	parseRetryAfterMs,
+	computeRetryDelayMs,
+	abortableSleep,
+	fetchWithRetry,
 } = require('#src/resources/models/backendHelpers');
 
 // Backend-specific error class used to verify the helpers route the thrown
@@ -318,5 +328,251 @@ describe('readBoundedJson', () => {
 
 	it('MAX_ERROR_BODY_BYTES is 256 KiB', () => {
 		assert.strictEqual(MAX_ERROR_BODY_BYTES, 256 * 1024);
+	});
+});
+
+describe('backendHelpers retry (#1594)', () => {
+	// Records requested sleep durations without actually sleeping — keeps the
+	// backoff paths deterministic and instant.
+	function sleepRecorder() {
+		const sleeps = [];
+		return {
+			sleeps,
+			sleep: async (ms) => {
+				sleeps.push(ms);
+			},
+		};
+	}
+
+	function retryOpts(overrides = {}) {
+		return { maxRetries: 2, retryBackoffMs: 500, random: () => 0, ...overrides };
+	}
+
+	describe('resolveRetryConfig', () => {
+		it('falls back to defaults on an empty config', () => {
+			assert.deepStrictEqual(resolveRetryConfig({}), {
+				maxRetries: DEFAULT_MAX_RETRIES,
+				retryBackoffMs: DEFAULT_RETRY_BACKOFF_MS,
+			});
+		});
+
+		it('respects an explicit maxRetries of 0', () => {
+			assert.strictEqual(resolveRetryConfig({ maxRetries: 0 }).maxRetries, 0);
+		});
+
+		it('passes through valid values', () => {
+			assert.deepStrictEqual(resolveRetryConfig({ maxRetries: 5, retryBackoffMs: 100 }), {
+				maxRetries: 5,
+				retryBackoffMs: 100,
+			});
+		});
+
+		it('rejects malformed values back to defaults', () => {
+			for (const maxRetries of [-1, 1.5, NaN, Infinity, '2']) {
+				assert.strictEqual(resolveRetryConfig({ maxRetries }).maxRetries, DEFAULT_MAX_RETRIES);
+			}
+			for (const retryBackoffMs of [0, -100, NaN, Infinity, '500']) {
+				assert.strictEqual(resolveRetryConfig({ retryBackoffMs }).retryBackoffMs, DEFAULT_RETRY_BACKOFF_MS);
+			}
+		});
+	});
+
+	describe('isRetriableStatus', () => {
+		it('retries timeout, rate limit, and server errors', () => {
+			for (const status of [408, 429, 500, 502, 503, 504, 529, 599]) {
+				assert.strictEqual(isRetriableStatus(status), true, `expected ${status} retriable`);
+			}
+		});
+
+		it('does not retry deterministic client errors or success', () => {
+			for (const status of [200, 201, 301, 400, 401, 403, 404, 409, 422]) {
+				assert.strictEqual(isRetriableStatus(status), false, `expected ${status} non-retriable`);
+			}
+		});
+	});
+
+	describe('parseRetryAfterMs', () => {
+		it('parses delta-seconds', () => {
+			assert.strictEqual(parseRetryAfterMs('2'), 2000);
+			assert.strictEqual(parseRetryAfterMs('0'), 0);
+		});
+
+		it('parses an HTTP-date into a forward delay', () => {
+			const ms = parseRetryAfterMs(new Date(Date.now() + 5000).toUTCString());
+			assert.ok(ms > 0 && ms <= 5000, `expected 0 < ms <= 5000, got ${ms}`);
+		});
+
+		it('clamps a past HTTP-date to 0', () => {
+			assert.strictEqual(parseRetryAfterMs(new Date(Date.now() - 60_000).toUTCString()), 0);
+		});
+
+		it('returns undefined for absent, negative, or garbage values', () => {
+			assert.strictEqual(parseRetryAfterMs(null), undefined);
+			assert.strictEqual(parseRetryAfterMs('-5'), undefined);
+			assert.strictEqual(parseRetryAfterMs('soon'), undefined);
+		});
+	});
+
+	describe('computeRetryDelayMs', () => {
+		it('doubles per attempt with the jitter floor at half the exponential', () => {
+			assert.strictEqual(
+				computeRetryDelayMs(0, 500, () => 0),
+				250
+			);
+			assert.strictEqual(
+				computeRetryDelayMs(1, 500, () => 0),
+				500
+			);
+			assert.strictEqual(
+				computeRetryDelayMs(2, 500, () => 0),
+				1000
+			);
+		});
+
+		it('never exceeds the exponential value', () => {
+			const delay = computeRetryDelayMs(1, 500, () => 0.999999);
+			assert.ok(delay < 1000, `expected < 1000, got ${delay}`);
+		});
+
+		it('caps the exponential at MAX_RETRY_DELAY_MS', () => {
+			const delay = computeRetryDelayMs(30, 500, () => 0.999999);
+			assert.ok(delay <= MAX_RETRY_DELAY_MS, `expected <= ${MAX_RETRY_DELAY_MS}, got ${delay}`);
+		});
+	});
+
+	describe('abortableSleep', () => {
+		it('resolves after the given duration', async () => {
+			await abortableSleep(5);
+		});
+
+		it('rejects with the abort reason when the signal fires mid-sleep', async () => {
+			const ctrl = new AbortController();
+			const reason = new Error('deadline');
+			setTimeout(() => ctrl.abort(reason), 5);
+			await assert.rejects(abortableSleep(60_000, ctrl.signal), (err) => err === reason);
+		});
+
+		it('rejects immediately on an already-aborted signal', async () => {
+			const ctrl = new AbortController();
+			ctrl.abort();
+			await assert.rejects(abortableSleep(60_000, ctrl.signal));
+		});
+	});
+
+	describe('fetchWithRetry', () => {
+		function mockFetch(responders) {
+			const calls = [];
+			const fn = async (url, init) => {
+				calls.push({ url, init });
+				const responder = responders[Math.min(calls.length - 1, responders.length - 1)];
+				if (responder instanceof Error) throw responder;
+				return responder();
+			};
+			fn.calls = calls;
+			return fn;
+		}
+
+		it('retries a retriable status and returns the eventual success', async () => {
+			const { sleeps, sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([() => new Response('', { status: 503 }), () => new Response('ok', { status: 200 })]);
+			const res = await fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep }));
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(fetchImpl.calls.length, 2);
+			assert.deepStrictEqual(sleeps, [250]); // 500 * 2^0 * 0.5 (random pinned to 0)
+		});
+
+		it('honors Retry-After delta-seconds over the computed backoff', async () => {
+			const { sleeps, sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([
+				() => new Response('', { status: 429, headers: { 'retry-after': '1' } }),
+				() => new Response('ok', { status: 200 }),
+			]);
+			const res = await fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep }));
+			assert.strictEqual(res.status, 200);
+			assert.deepStrictEqual(sleeps, [1000]);
+		});
+
+		it('surfaces the response instead of honoring a Retry-After beyond the cap', async () => {
+			const { sleeps, sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([
+				() => new Response('', { status: 429, headers: { 'retry-after': String(MAX_RETRY_AFTER_MS / 1000 + 1) } }),
+			]);
+			const res = await fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep }));
+			assert.strictEqual(res.status, 429);
+			assert.strictEqual(fetchImpl.calls.length, 1);
+			assert.deepStrictEqual(sleeps, []);
+		});
+
+		it('does not retry a non-retriable status', async () => {
+			const { sleeps, sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([() => new Response('', { status: 400 })]);
+			const res = await fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep }));
+			assert.strictEqual(res.status, 400);
+			assert.strictEqual(fetchImpl.calls.length, 1);
+			assert.deepStrictEqual(sleeps, []);
+		});
+
+		it('returns the final retriable response once maxRetries is exhausted', async () => {
+			const { sleeps, sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([() => new Response('', { status: 503 })]);
+			const res = await fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep }));
+			assert.strictEqual(res.status, 503);
+			assert.strictEqual(fetchImpl.calls.length, 3); // initial + 2 retries
+			assert.deepStrictEqual(sleeps, [250, 500]);
+		});
+
+		it('makes a single attempt when maxRetries is 0', async () => {
+			const fetchImpl = mockFetch([() => new Response('', { status: 503 })]);
+			const res = await fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ maxRetries: 0 }));
+			assert.strictEqual(res.status, 503);
+			assert.strictEqual(fetchImpl.calls.length, 1);
+		});
+
+		it('retries a transient network rejection', async () => {
+			const { sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([new TypeError('fetch failed'), () => new Response('ok', { status: 200 })]);
+			const res = await fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep }));
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(fetchImpl.calls.length, 2);
+		});
+
+		it('rethrows the network error once maxRetries is exhausted', async () => {
+			const { sleep } = sleepRecorder();
+			const boom = new TypeError('fetch failed');
+			const fetchImpl = mockFetch([boom]);
+			await assert.rejects(fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ maxRetries: 1, sleep })), boom);
+			assert.strictEqual(fetchImpl.calls.length, 2);
+		});
+
+		it('never retries an abort', async () => {
+			const { sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([new DOMException('This operation was aborted', 'AbortError')]);
+			await assert.rejects(fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep })), /aborted/i);
+			assert.strictEqual(fetchImpl.calls.length, 1);
+		});
+
+		it('never retries a timeout abort', async () => {
+			const { sleep } = sleepRecorder();
+			const fetchImpl = mockFetch([new DOMException('The operation timed out', 'TimeoutError')]);
+			await assert.rejects(fetchWithRetry(fetchImpl, 'http://u', {}, retryOpts({ sleep })), /timed out/i);
+			assert.strictEqual(fetchImpl.calls.length, 1);
+		});
+
+		it('a signal abort during backoff stops the retry loop promptly', async () => {
+			const ctrl = new AbortController();
+			const reason = new Error('caller gave up');
+			const fetchImpl = mockFetch([
+				() => {
+					setTimeout(() => ctrl.abort(reason), 5);
+					return new Response('', { status: 503 });
+				},
+			]);
+			// Real abortableSleep + a long backoff: only the abort can end the test quickly.
+			await assert.rejects(
+				fetchWithRetry(fetchImpl, 'http://u', { signal: ctrl.signal }, retryOpts({ retryBackoffMs: 60_000 })),
+				(err) => err === reason
+			);
+			assert.strictEqual(fetchImpl.calls.length, 1);
+		});
 	});
 });

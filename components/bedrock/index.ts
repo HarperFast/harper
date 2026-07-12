@@ -21,7 +21,12 @@
  * helpers below.
  */
 import { setEmbedding, setGenerative } from '../../resources/models/backendRegistry.ts';
-import { assignFiniteTokenCount, composeSignal, requireModel } from '../../resources/models/backendHelpers.ts';
+import {
+	assignFiniteTokenCount,
+	composeSignal,
+	requireModel,
+	resolveRetryConfig,
+} from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import type {
@@ -68,6 +73,14 @@ export interface BedrockBackendConfig {
 	 */
 	model?: string;
 	requestTimeoutMs?: number;
+	/**
+	 * Retries after the initial attempt for retriable failures (#1594). Plumbed
+	 * to the AWS SDK's `maxAttempts` (`maxRetries + 1`) — the SDK owns the retry
+	 * loop and backoff for Bedrock, unlike the fetch-based backends. `0` disables.
+	 * Default 2, matching both the other backends and the SDK's own default.
+	 * There is no `retryBackoffMs` here; the SDK's retry strategy manages delays.
+	 */
+	maxRetries?: number;
 }
 
 /**
@@ -76,7 +89,7 @@ export interface BedrockBackendConfig {
  * compile doesn't depend on the SDK either.
  */
 type SdkLike = {
-	BedrockRuntimeClient: new (config: { region?: string }) => {
+	BedrockRuntimeClient: new (config: { region?: string; maxAttempts?: number }) => {
 		send: (cmd: object) => Promise<unknown>;
 	};
 	InvokeModelCommand: new (input: { modelId: string; body: string; contentType?: string; accept?: string }) => object;
@@ -150,12 +163,14 @@ export class BedrockBackend implements ModelBackend {
 	readonly #region?: string;
 	readonly #defaultModel?: string;
 	readonly #requestTimeoutMs?: number;
+	readonly #maxRetries: number;
 	#client?: { send: (cmd: object) => Promise<unknown> };
 
 	constructor(config: BedrockBackendConfig = {}) {
 		this.#region = config.region;
 		this.#defaultModel = config.model;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
+		this.#maxRetries = resolveRetryConfig(config).maxRetries;
 	}
 
 	capabilities(): ModelCapabilities {
@@ -248,7 +263,7 @@ export class BedrockBackend implements ModelBackend {
 	async #getClient(): Promise<{ send: (cmd: object) => Promise<unknown> }> {
 		if (this.#client) return this.#client;
 		const sdk = await loadSdk();
-		this.#client = new sdk.BedrockRuntimeClient({ region: this.#region });
+		this.#client = new sdk.BedrockRuntimeClient({ region: this.#region, maxAttempts: this.#maxRetries + 1 });
 		return this.#client;
 	}
 

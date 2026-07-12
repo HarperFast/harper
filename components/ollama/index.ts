@@ -13,9 +13,11 @@ import { setEmbedding, setGenerative } from '../../resources/models/backendRegis
 import {
 	assignFiniteTokenCount,
 	composeSignal,
+	fetchWithRetry,
 	normalizeOrigin,
 	parseJsonResponse,
 	requireModel,
+	resolveRetryConfig,
 } from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import type {
@@ -44,6 +46,15 @@ export interface OllamaBackendConfig {
 	model?: string;
 	/** Per-request timeout. When set, combined with `opts.signal` via `AbortSignal.any`. */
 	requestTimeoutMs?: number;
+	/**
+	 * Retries after the initial attempt for retriable failures — HTTP 408/429/5xx
+	 * and transient network errors (#1594). Honors `Retry-After`; jittered
+	 * exponential backoff otherwise. All attempts share the `requestTimeoutMs` /
+	 * caller-signal budget. `0` disables. Default 2.
+	 */
+	maxRetries?: number;
+	/** Initial retry backoff in ms (default 500); doubles per attempt with jitter. */
+	retryBackoffMs?: number;
 }
 
 /**
@@ -64,12 +75,15 @@ export class OllamaBackend implements ModelBackend {
 	readonly #origin: string;
 	readonly #defaultModel?: string;
 	readonly #requestTimeoutMs?: number;
+	readonly #maxRetries: number;
+	readonly #retryBackoffMs: number;
 	readonly #fetch: typeof fetch;
 
 	constructor(config: OllamaBackendConfig = {}, fetchImpl: typeof fetch = fetch) {
 		this.#origin = normalizeOrigin(config.host, { host: DEFAULT_HOST, secure: false });
 		this.#defaultModel = config.model;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
+		({ maxRetries: this.#maxRetries, retryBackoffMs: this.#retryBackoffMs } = resolveRetryConfig(config));
 		this.#fetch = fetchImpl;
 	}
 
@@ -140,12 +154,12 @@ export class OllamaBackend implements ModelBackend {
 
 	async #post(path: string, body: object, callerSignal?: AbortSignal): Promise<Response> {
 		const signal = composeSignal(callerSignal, this.#requestTimeoutMs);
-		const res = await this.#fetch(`${this.#origin}${path}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body),
-			signal,
-		});
+		const res = await fetchWithRetry(
+			this.#fetch,
+			`${this.#origin}${path}`,
+			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal },
+			{ maxRetries: this.#maxRetries, retryBackoffMs: this.#retryBackoffMs }
+		);
 		if (!res.ok) {
 			throw new OllamaBackendError(`Ollama ${path} returned HTTP ${res.status}`, res.status);
 		}

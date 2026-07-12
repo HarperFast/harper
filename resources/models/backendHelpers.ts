@@ -29,6 +29,161 @@ export function composeSignal(caller?: AbortSignal, timeoutMs?: number): AbortSi
 	return AbortSignal.any([caller, timeout]);
 }
 
+// ---------- retry (#1594) ----------
+
+/** Retries after the initial attempt when the backend doesn't configure `maxRetries`. */
+export const DEFAULT_MAX_RETRIES = 2;
+/** Initial backoff when the backend doesn't configure `retryBackoffMs`; doubles per attempt. */
+export const DEFAULT_RETRY_BACKOFF_MS = 500;
+/** Upper bound on any single computed backoff sleep. */
+export const MAX_RETRY_DELAY_MS = 10_000;
+/**
+ * Upper bound on an honored `Retry-After`. A server demanding a longer wait
+ * is surfaced immediately rather than retried early (which would ignore the
+ * server's request) or held open (which would stall the caller's write).
+ */
+export const MAX_RETRY_AFTER_MS = 30_000;
+
+/** Config fields shared by every backend that supports retry. */
+export interface RetryConfig {
+	maxRetries?: number;
+	retryBackoffMs?: number;
+}
+
+/**
+ * Validate the retry knobs from a backend config entry, falling back to the
+ * defaults on missing or malformed values (negative, non-integer `maxRetries`;
+ * non-positive or non-finite `retryBackoffMs`). `maxRetries: 0` is a valid,
+ * deliberate "no retries" setting.
+ */
+export function resolveRetryConfig(config: RetryConfig): { maxRetries: number; retryBackoffMs: number } {
+	const { maxRetries, retryBackoffMs } = config;
+	return {
+		maxRetries:
+			Number.isInteger(maxRetries) && (maxRetries as number) >= 0 ? (maxRetries as number) : DEFAULT_MAX_RETRIES,
+		retryBackoffMs:
+			typeof retryBackoffMs === 'number' && Number.isFinite(retryBackoffMs) && retryBackoffMs > 0
+				? retryBackoffMs
+				: DEFAULT_RETRY_BACKOFF_MS,
+	};
+}
+
+/**
+ * Statuses worth a same-backend retry: request timeout, rate limit, and server
+ * errors (including Anthropic's 529 overloaded). Everything else — auth,
+ * validation, not-found — is deterministic and re-attempting it just burns quota.
+ */
+export function isRetriableStatus(status: number): boolean {
+	return status === 408 || status === 429 || (status >= 500 && status < 600);
+}
+
+/**
+ * Parse a `Retry-After` response header (delta-seconds or HTTP-date form) into
+ * milliseconds from now. Returns `undefined` for absent/unparseable values;
+ * clamps a past HTTP-date to 0.
+ */
+export function parseRetryAfterMs(header: string | null): number | undefined {
+	if (!header) return undefined;
+	const seconds = Number(header);
+	if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1000 : undefined;
+	const date = Date.parse(header);
+	if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+	return undefined;
+}
+
+/**
+ * Jittered exponential backoff: `baseMs * 2^attempt`, capped at
+ * `MAX_RETRY_DELAY_MS`, scaled by a random factor in [0.5, 1). The half floor
+ * keeps the backoff meaningful under jitter; the cap bounds the tail. `random`
+ * is injectable for deterministic tests.
+ */
+export function computeRetryDelayMs(attempt: number, baseMs: number, random: () => number = Math.random): number {
+	const exponential = Math.min(MAX_RETRY_DELAY_MS, baseMs * 2 ** attempt);
+	return exponential * (0.5 + random() * 0.5);
+}
+
+/** Abort-driven rejections (caller abort or `AbortSignal.timeout`) — deliberate deadlines, never retried. */
+function isAbortError(err: unknown): boolean {
+	const name = (err as { name?: string } | null)?.name;
+	return name === 'AbortError' || name === 'TimeoutError';
+}
+
+/**
+ * `setTimeout` as a promise that rejects immediately with the signal's reason
+ * when `signal` aborts, so a backoff sleep never outlives the caller's deadline.
+ */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason ?? new DOMException('This operation was aborted', 'AbortError'));
+			return;
+		}
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal!.reason ?? new DOMException('This operation was aborted', 'AbortError'));
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener('abort', onAbort, { once: true });
+	});
+}
+
+export interface FetchRetryOpts {
+	/** Retries after the initial attempt. 0 = single attempt. */
+	maxRetries: number;
+	/** Initial backoff in ms; doubles per attempt with jitter. */
+	retryBackoffMs: number;
+	/** Test seam — replaces `abortableSleep`. */
+	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+	/** Test seam — replaces `Math.random` in the jitter computation. */
+	random?: () => number;
+}
+
+/**
+ * `fetch` with bounded same-endpoint retries (#1594): retriable HTTP statuses
+ * (`isRetriableStatus`) and transient network rejections re-attempt with
+ * jittered exponential backoff, honoring `Retry-After` when present (up to
+ * `MAX_RETRY_AFTER_MS` — a longer server-requested wait surfaces the response
+ * instead). Every attempt and backoff sleep runs under `init.signal`, so a
+ * composed caller-abort/`requestTimeoutMs` signal remains the overall deadline
+ * for the whole call — retries fit inside the existing budget rather than
+ * extending it — and aborts are never retried. The final attempt's response is
+ * returned unread (ok or not) so the caller's error path can consume the body;
+ * earlier retriable responses have their bodies cancelled to release the
+ * connection. Mid-stream failures after a returned `ok` response are the
+ * caller's concern — a partially consumed stream is not retriable here.
+ */
+export async function fetchWithRetry(
+	fetchImpl: typeof fetch,
+	url: string,
+	init: RequestInit,
+	opts: FetchRetryOpts
+): Promise<Response> {
+	const sleep = opts.sleep ?? abortableSleep;
+	const signal = init.signal ?? undefined;
+	for (let attempt = 0; ; attempt++) {
+		let res: Response;
+		try {
+			res = await fetchImpl(url, init);
+		} catch (err) {
+			if (attempt >= opts.maxRetries || signal?.aborted || isAbortError(err)) throw err;
+			await sleep(computeRetryDelayMs(attempt, opts.retryBackoffMs, opts.random), signal);
+			continue;
+		}
+		if (res.ok || !isRetriableStatus(res.status) || attempt >= opts.maxRetries) return res;
+		const retryAfterMs = parseRetryAfterMs(res.headers?.get?.('retry-after') ?? null);
+		if (retryAfterMs !== undefined && retryAfterMs > MAX_RETRY_AFTER_MS) return res;
+		try {
+			res.body?.cancel?.()?.catch?.(() => {});
+		} catch {
+			// A locked or already-disturbed body can't be cancelled; the retry proceeds regardless.
+		}
+		await sleep(retryAfterMs ?? computeRetryDelayMs(attempt, opts.retryBackoffMs, opts.random), signal);
+	}
+}
+
 /**
  * Write a token count to `usage` only when the value is a finite, non-negative
  * integer. Drops `NaN`, `Infinity`, negatives, and non-integers silently —

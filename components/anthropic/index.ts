@@ -25,12 +25,14 @@ import { setGenerative } from '../../resources/models/backendRegistry.ts';
 import {
 	assignFiniteTokenCount,
 	composeSignal,
+	fetchWithRetry,
 	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
 	parseJsonResponse,
 	readBoundedJson,
 	requireCredential,
 	requireModel,
+	resolveRetryConfig,
 } from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -77,6 +79,15 @@ export interface AnthropicBackendConfig {
 	model?: string;
 	baseUrl?: string;
 	requestTimeoutMs?: number;
+	/**
+	 * Retries after the initial attempt for retriable failures — HTTP 408/429/5xx
+	 * (including Anthropic's 529 overloaded) and transient network errors (#1594).
+	 * Honors `Retry-After`; jittered exponential backoff otherwise. All attempts
+	 * share the `requestTimeoutMs` / caller-signal budget. `0` disables. Default 2.
+	 */
+	maxRetries?: number;
+	/** Initial retry backoff in ms (default 500); doubles per attempt with jitter. */
+	retryBackoffMs?: number;
 }
 
 /**
@@ -95,6 +106,8 @@ export class AnthropicBackend implements ModelBackend {
 	readonly #defaultModel?: string;
 	readonly #apiKey: string;
 	readonly #requestTimeoutMs?: number;
+	readonly #maxRetries: number;
+	readonly #retryBackoffMs: number;
 	readonly #fetch: typeof fetch;
 
 	constructor(config: AnthropicBackendConfig = {}, fetchImpl: typeof fetch = fetch) {
@@ -102,6 +115,7 @@ export class AnthropicBackend implements ModelBackend {
 		this.#baseUrl = normalizeOrigin(config.baseUrl, { host: DEFAULT_BASE_URL, secure: true });
 		this.#defaultModel = config.model;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
+		({ maxRetries: this.#maxRetries, retryBackoffMs: this.#retryBackoffMs } = resolveRetryConfig(config));
 		this.#fetch = fetchImpl;
 	}
 
@@ -250,12 +264,12 @@ export class AnthropicBackend implements ModelBackend {
 			'x-api-key': this.#apiKey,
 			'anthropic-version': ANTHROPIC_API_VERSION,
 		};
-		const res = await this.#fetch(`${this.#baseUrl}${path}`, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(body),
-			signal,
-		});
+		const res = await fetchWithRetry(
+			this.#fetch,
+			`${this.#baseUrl}${path}`,
+			{ method: 'POST', headers, body: JSON.stringify(body), signal },
+			{ maxRetries: this.#maxRetries, retryBackoffMs: this.#retryBackoffMs }
+		);
 		if (!res.ok) {
 			throw new AnthropicBackendError(
 				`Anthropic ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`,
