@@ -184,3 +184,13 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Can be deferred: The require happens only when `server/serverHelpers/multipartParser.ts` is imported, which is loaded by `registerContentHandlers` at operations-server boot. Realistically always loaded.
 - Eventual removal: Could be replaced by writing our own streaming multipart parser (a few hundred lines plus tests for edge cases) if maintenance ever lapses, or by Node.js's `request.formData()` once that API supports streaming file parts without buffering (currently it doesn't on the standard Node http server interface used by Fastify).
+
+## openai (devDependency)
+
+- Need for usage: End-to-end acceptance test for the OpenAI-compatible `/v1/*` gateway (#631/#510). The acceptance criterion is that an **unmodified** OpenAI SDK client completes chat and embedding calls against Harper — which cannot be demonstrated without the actual SDK. Imported dynamically in a single integration test (`integrationTests/server/v1-gateway.test.ts`); never loaded in production and never in the published package's install tree (devDependencies only).
+- Size/memory cost: ~10 MB unpacked, **zero transitive dependencies** (v6 is self-contained). Cost is contributor `npm install` and CI only.
+- Security: High-profile, actively maintained (OpenAI). Dev-only, so supply-chain exposure is limited to development/CI environments, not production.
+- Environment interaction: None in production (not loaded). In the test it constructs a client pointed at the local Harper instance; no global mutation.
+- Overlap: The wire-shape coverage (raw `fetch` + the `eventsource` client over Harper's real SSE serializer) already exists and is independent; the SDK test exists specifically to prove _unmodified-client_ compatibility, which hand-rolled assertions cannot.
+- Binary compilation: No.
+- Eventual removal: Delete the one dynamic import and the devDependency line; the wire-shape tests remain. If the gateway's compatibility target ever changes, the SDK pin changes with it.
