@@ -683,10 +683,12 @@ describe('normalizeUrlPath', () => {
 	it('normalizes the root mount to undefined — no path constraint (#1766)', () => {
 		assert.strictEqual(normalizeUrlPath('/'), undefined);
 		assert.strictEqual(normalizeUrlPath('//'), undefined);
+		assert.strictEqual(normalizeUrlPath('///'), undefined);
 	});
 
-	it('strips a single trailing slash', () => {
+	it('strips trailing slashes', () => {
 		assert.strictEqual(normalizeUrlPath('/api/'), '/api');
+		assert.strictEqual(normalizeUrlPath('/api//'), '/api');
 	});
 
 	it('leaves paths without trailing slash unchanged', () => {
