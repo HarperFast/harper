@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783843151075,
+  "lastUpdate": 1783843154438,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5010,6 +5010,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 48.02,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "31de6a3bebc5fec85a8eba98087fda00dbc3f477",
+          "message": "fix: pin uWebSockets.js via tarball URL, not a github: git spec\n\nSame issue as harper-pro#561: the github: shorthand\n(github:uNetworking/uWebSockets.js#v20.68.0) gets re-resolved by npm as\ngit+ssh://github.com/... on any npm install. Our Docker build stage has\nno SSH credentials for github.com, so npm silently skips the (optional)\ndependency and the shipped image never bundles the native addon —\nHARPER_UWS_UDS / HARPER_UWS_HTTP are inert even when set.\n\nAn explicit git+https:// spec doesn't fix this either — confirmed with\na clean npm cache that npm/hosted-git-info canonicalizes ANY\ngithub.com git dependency back to git+ssh:// regardless of requested\nprotocol. Switching to a plain tarball URL\n(https://.../archive/<sha>.tar.gz) sidesteps hosted-git-info entirely:\nnpm treats it as a remote-tarball dependency, resolved stays a plain\nhttps URL with a pinned integrity hash, and it can't regress on a\nfuture npm install.\n\nVerified npm ci installs all 15 native .node binaries in a\nHOME-stripped, credential-less environment (matching the Docker build\nstage) both before and after a full npm install regenerates the\nlockfile from package.json.",
+          "timestamp": "2026-07-10T21:38:26Z",
+          "url": "https://github.com/HarperFast/harper/commit/31de6a3bebc5fec85a8eba98087fda00dbc3f477"
+        },
+        "date": 1783843153599,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.77,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.38,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.02,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.42,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 24.09,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.65,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 35.09,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.65,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 18.87,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 45.92,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 159.81,
             "unit": "ms"
           }
         ]
