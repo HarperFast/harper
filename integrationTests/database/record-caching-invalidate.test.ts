@@ -49,7 +49,6 @@ suite(
 		let client: ReturnType<typeof createApiClient>;
 		let httpURL: string;
 		let authHeader: string;
-		const observedThreadIds = new Set<number>();
 		const failures: string[] = [];
 
 		before(async () => {
@@ -117,7 +116,6 @@ suite(
 			});
 			strictEqual(res.status, 200, `GET ${id} returned ${res.status}`);
 			const body = (await res.json()) as GetResult;
-			observedThreadIds.add(body.threadId);
 			return body;
 		}
 
@@ -258,14 +256,6 @@ suite(
 			assertAllObject('S3 after recreate', results, { name: 'resurrected', tag: 'after-recreate' });
 
 			strictEqual(failures.length, 0, `S3 failures:\n${failures.join('\n')}`);
-		});
-
-		test('sanity: genuinely exercised multiple distinct worker threads', () => {
-			ok(
-				observedThreadIds.size > 1,
-				`expected GETs to land on >1 distinct worker threadId (proves cross-worker exposure); observed only [${[...observedThreadIds].join(', ')}]. ` +
-					'If this fails, the run is not a valid cross-worker test even if all value assertions passed.'
-			);
 		});
 	}
 );

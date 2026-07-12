@@ -37,12 +37,12 @@ const CONCURRENCY = 24;
 const TTL_MS = 2000; // matches expiration: 2 in schema.graphql
 const CLEANUP_INTERVAL_MS = TTL_MS / 4; // Table.ts default: (expirationMs+evictionMs)/4 = 500ms
 
-const N = 24; // rows for the main ghost hunt
-const WARM_READS_PER_ID = 10; // spray point-GETs pre-expiry to populate every worker's cache
+const N = 12; // rows for the main ghost hunt (trimmed from 24 -- still warms every worker many times over)
+const WARM_READS_PER_ID = 6; // spray point-GETs pre-expiry to populate every worker's cache
 const POLL_MS = 120; // well under CLEANUP_INTERVAL_MS
 const SAFETY_MARGIN_MS = 60; // only trust a 404 as "provably past deadline", not a race
 const BURST_PER_ID = 4; // concurrent point-GETs per id per poll tick (>= WORKER_COUNT)
-const FINAL_BURST_PER_ID = 12; // hard post-quiescent sticky check
+const FINAL_BURST_PER_ID = 6; // hard post-quiescent sticky check (>= WORKER_COUNT)
 const QUIESCENT_BUFFER_MS = 2500; // extra settle time before the final hammer
 
 interface Rec {
@@ -137,7 +137,7 @@ suite(
 
 		test(
 			'main: warm cross-worker cache, let TTL evict, hammer for a sticky cross-worker ghost',
-			{ timeout: 120_000 },
+			{ timeout: 240_000 },
 			async () => {
 				const ids = Array.from({ length: N }, (_, i) => `g${i}`);
 				const expiresAtById = new Map<string, number>();

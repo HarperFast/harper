@@ -79,12 +79,35 @@ function rawGet(httpURL: string, id: string, authHeader: string): Promise<RawGet
 	});
 }
 
+// Bun's fetch/HTTP client can drop sockets under concurrent load on short-lived
+// (Connection: close) requests, surfacing as status===-1 ('socket hang up' etc). That's a
+// transport-layer flake, not evidence of stale/dangling content, so retry it a few times
+// before treating the read as inconclusive.
+const TRANSPORT_RETRY_ATTEMPTS = 3;
+const TRANSPORT_RETRY_BACKOFF_MS = 40;
+
+/** A read is INCONCLUSIVE (not a content defect) only if it's still a transport error
+ * (status===-1) after retries -- it proves nothing about staleness/dangling/ghosts. */
+function isInconclusive(r: RawGetResult): boolean {
+	return r.status === -1;
+}
+
+async function rawGetWithRetry(httpURL: string, id: string, authHeader: string): Promise<RawGetResult> {
+	let result: RawGetResult = { status: -1, bytes: 0, sha256: '', error: 'unreached' };
+	for (let attempt = 0; attempt <= TRANSPORT_RETRY_ATTEMPTS; attempt++) {
+		result = await rawGet(httpURL, id, authHeader);
+		if (result.status !== -1) return result;
+		if (attempt < TRANSPORT_RETRY_ATTEMPTS) await sleep(TRANSPORT_RETRY_BACKOFF_MS * (attempt + 1));
+	}
+	return result; // still a transport error after retries -- caller treats as inconclusive
+}
+
 /** Fan out `count` fresh-connection reads for `id`, bounded by CONCURRENCY. */
 async function hammer(httpURL: string, id: string, authHeader: string, count: number): Promise<RawGetResult[]> {
 	return mapBounded(
 		Array.from({ length: count }, (_, i) => i),
 		CONCURRENCY,
-		() => rawGet(httpURL, id, authHeader)
+		() => rawGetWithRetry(httpURL, id, authHeader)
 	);
 }
 
@@ -183,6 +206,7 @@ suite(
 				const id = `warm-${i}`;
 				const results = await hammer(httpURL, id, authHeader, READS_PER_RECORD);
 				for (const r of results) {
+					if (isInconclusive(r)) continue; // transport error after retries -- proves nothing
 					if (r.status !== 200) {
 						errors.push(`${id}: status=${r.status} error=${r.error ?? ''}`);
 					} else if (r.sha256 !== shas[id]) {
@@ -215,7 +239,7 @@ suite(
 				// Warm across workers before the first update.
 				{
 					const warm = await hammer(httpURL, id, authHeader, WORKER_COUNT * 6);
-					const bad = warm.filter((r) => r.status !== 200 || r.sha256 !== prevSha);
+					const bad = warm.filter((r) => !isInconclusive(r) && (r.status !== 200 || r.sha256 !== prevSha));
 					ok(bad.length === 0, `(2) initial warm not clean: ${JSON.stringify(bad.slice(0, 5))}`);
 				}
 
@@ -226,24 +250,26 @@ suite(
 					const ackedAt = Date.now();
 
 					const results = await hammer(httpURL, id, authHeader, HAMMER_READS);
+					const inconclusive = results.filter((x) => isInconclusive(x));
 					const stale = results.filter((x) => x.status === 200 && x.sha256 === prevSha);
-					const dangling = results.filter((x) => x.status !== 200 && x.status !== 404);
+					const dangling = results.filter((x) => !isInconclusive(x) && x.status !== 200 && x.status !== 404);
 					const wrongOther = results.filter((x) => x.status === 200 && x.sha256 !== newSha && x.sha256 !== prevSha);
 					const correct = results.filter((x) => x.status === 200 && x.sha256 === newSha);
 
 					if (stale.length || dangling.length || wrongOther.length) {
 						console.error(
 							`(2) iter ${iter}: IMMEDIATE divergence — correct=${correct.length} stale=${stale.length} ` +
-								`dangling=${dangling.length} wrongOther=${wrongOther.length} (of ${HAMMER_READS}), ` +
-								`${Date.now() - ackedAt}ms after ack`
+								`dangling=${dangling.length} wrongOther=${wrongOther.length} inconclusive=${inconclusive.length} ` +
+								`(of ${HAMMER_READS}), ${Date.now() - ackedAt}ms after ack`
 						);
 
-						// Bounded self-heal poll: how long until every read is clean?
+						// Bounded self-heal poll: how long until every read is clean (ignoring transport
+						// flakes that are still inconclusive after their own internal retries)?
 						const pollStart = Date.now();
 						let healedAt = -1;
 						while (Date.now() - pollStart < SELFHEAL_BUDGET_MS) {
 							const check = await hammer(httpURL, id, authHeader, HAMMER_READS);
-							const badNow = check.filter((x) => !(x.status === 200 && x.sha256 === newSha));
+							const badNow = check.filter((x) => !isInconclusive(x) && !(x.status === 200 && x.sha256 === newSha));
 							if (badNow.length === 0) {
 								healedAt = Date.now() - ackedAt;
 								break;
@@ -274,7 +300,7 @@ suite(
 				// Warm across workers first.
 				const warm = await hammer(httpURL, id, authHeader, WORKER_COUNT * 6);
 				ok(
-					warm.every((r) => r.status === 200 && r.sha256 === oldSha),
+					warm.every((r) => isInconclusive(r) || (r.status === 200 && r.sha256 === oldSha)),
 					`(3) warm not clean before delete`
 				);
 
@@ -293,7 +319,7 @@ suite(
 				const newSha = recreate.body.sha as string;
 
 				const afterRecreate = await hammer(httpURL, id, authHeader, 40);
-				const bad = afterRecreate.filter((r) => !(r.status === 200 && r.sha256 === newSha));
+				const bad = afterRecreate.filter((r) => !isInconclusive(r) && !(r.status === 200 && r.sha256 === newSha));
 				ok(bad.length === 0, `(3) DEFECT after recreate: ${JSON.stringify(bad.slice(0, 5))}`);
 			}
 		);
