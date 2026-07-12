@@ -44,8 +44,24 @@ export const COERCIBLE_OPERATORS = {
 	ne: true,
 	eq: true,
 };
-export function executeConditions(conditions, operator, table, txn, request, context, transformToEntries, filtered) {
+export function executeConditions(
+	conditions,
+	operator,
+	table,
+	txn,
+	request,
+	context,
+	transformToEntries,
+	filtered,
+	recordAccess?
+) {
 	const firstSearch = conditions[0];
+	// Record-level guards (a caller-supplied vectorFilter + RBAC allowReadRecord) apply to every record
+	// the query returns, independent of which condition leads (#1241). `recordAccess` is supplied only on
+	// the top-level executeConditions call (Table.search) and deliberately NOT threaded into the recursive
+	// calls below, so the guards run exactly once — on the final result set — rather than redundantly at
+	// each nested group.
+	const recordGuards = buildRecordGuards(recordAccess);
 	// both AND and OR start by getting an iterator for the ids for first condition
 	// and then things diverge...
 	if (operator === 'or') {
@@ -58,7 +74,7 @@ export function executeConditions(conditions, operator, table, txn, request, con
 			results = results.concat(nextResults);
 		}
 		const returnedIds = new Set();
-		return results.filter((entry) => {
+		const deduped = results.filter((entry) => {
 			const id = entry.key ?? entry;
 			if (returnedIds.has(id))
 				// skip duplicate ids
@@ -66,14 +82,35 @@ export function executeConditions(conditions, operator, table, txn, request, con
 			returnedIds.add(id);
 			return true;
 		});
+		// Record guards must hold on the OR union too — loading each surviving record and dropping the
+		// ones the guards reject (transformToEntries loads the record to evaluate a filter). Without this
+		// a record-level RBAC check would be bypassed by any OR query.
+		return recordGuards ? transformToEntries(deduped, recordGuards) : deduped;
 	} else {
-		// AND
+		// AND: use the indexed query for the first condition and filter by all subsequent conditions.
+		if (isFilterablePushdown(firstSearch, table)) {
+			// The lead is a filterable custom index (HNSW). It doesn't populate the join map (`filtered`)
+			// that sibling filters read, so — unlike the general case below — we can build the sibling
+			// filters BEFORE executing the lead and push them into the traversal, so filtering happens
+			// during the graph walk instead of post-filtering an under-filled candidate set (#1241). They
+			// also stay in the post-filter chain as a deterministic, harmless re-check.
+			const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count);
+			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
+			// Execute a COPY carrying the pushed-down predicate, never mutating the caller's condition
+			// object (which may be reused across requests with different users / guards).
+			const lead =
+				recordFilters.length > 0
+					? { ...firstSearch, recordFilter: composeRecordFilter(recordFilters, table, context) }
+					: firstSearch;
+			const results = executeCondition(lead);
+			return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
+		}
+		// General path: execute the lead FIRST — a leading join populates `filtered`, which the sibling
+		// filters read as they are built — then apply the sibling filters plus any record guards.
 		const results = executeCondition(firstSearch);
-		// get the intersection of condition searches by using the indexed query for the first condition
-		// and then filtering by all subsequent conditions.
-		// now apply filters that require looking up records
 		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count);
-		return filters.length > 0 ? transformToEntries(results, filters) : results;
+		const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
+		return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
 	}
 	function executeCondition(condition) {
 		if (condition.conditions)
@@ -86,6 +123,7 @@ export function executeConditions(conditions, operator, table, txn, request, con
 				context,
 				transformToEntries,
 				filtered
+				// recordAccess intentionally omitted: guards run once, at the top level (see above).
 			);
 		return searchByIndex(
 			condition,
@@ -120,6 +158,65 @@ export function executeConditions(conditions, operator, table, txn, request, con
 			})
 			.filter(Boolean);
 	}
+}
+
+/**
+ * Build the record-level guards that apply to a query independent of its conditions (#1241):
+ *   - `vectorFilter`: a caller-supplied `(record) => boolean` predicate (JS-API only).
+ *   - `allowReadRecord`: a resource's static record-level RBAC check `(user, record) => boolean`.
+ * Both arrive already resolved on `recordAccess` (assembled once in Table.search). Returns an array of
+ * `(record) => boolean` predicates, or undefined when neither is defined (the common case — zero
+ * overhead). Predicates must be synchronous and side-effect free; records passed in are frozen.
+ */
+function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefined {
+	if (!recordAccess) return undefined;
+	const guards: ((record: any) => boolean)[] = [];
+	const vectorFilter = recordAccess.vectorFilter;
+	if (typeof vectorFilter === 'function') guards.push((record) => vectorFilter(record));
+	const allowReadRecord = recordAccess.allowReadRecord;
+	if (typeof allowReadRecord === 'function') {
+		const user = recordAccess.user;
+		guards.push((record) => allowReadRecord(user, record));
+	}
+	return guards.length > 0 ? guards : undefined;
+}
+
+/** True when a condition's index is a custom index that participates in predicate-aware traversal (HNSW). */
+function isFilterablePushdown(condition, table): boolean {
+	const attributeName = condition?.attribute ?? condition?.[0];
+	if (attributeName == null) return false;
+	const index = attributeName === table.primaryKey ? table.primaryStore : table.indices?.[attributeName];
+	return Boolean(index?.customIndex?.filteredSearch);
+}
+
+/**
+ * Compose a set of record predicates into the single `(primaryKey) => boolean` the custom index calls
+ * during traversal (#1241). The record is loaded lazily (only when the index reaches a node) via
+ * `primaryStore.getEntry` and frozen before the predicates see it. Verdicts are memoized per query since
+ * the graph can reach a node from multiple neighbors. A missing/deleted record fails the predicate.
+ */
+function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) => boolean {
+	const memo = new Map<Id, boolean>();
+	const transaction = context && table._readTxnForContext ? table._readTxnForContext(context) : undefined;
+	return (primaryKey: Id) => {
+		const cached = memo.get(primaryKey);
+		if (cached !== undefined) return cached;
+		let verdict = false;
+		const entry = table.primaryStore.getEntry(primaryKey, { transaction });
+		const record = entry?.value;
+		if (record != null) {
+			freezeRecord(record);
+			verdict = true;
+			for (const filter of recordFilters) {
+				if (!filter(record, entry)) {
+					verdict = false;
+					break;
+				}
+			}
+		}
+		memo.set(primaryKey, verdict);
+		return verdict;
+	};
 }
 
 /**
@@ -387,7 +484,12 @@ export function searchByIndex(
 		return results;
 	} else if (index && !skipIndex) {
 		if (index.customIndex) {
-			const loaded = index.customIndex.search(searchCondition, context).map((entry) => {
+			// Predicate-aware traversal (#1241): a record filter composed from companion AND conditions,
+			// a caller-supplied vectorFilter, and record-level RBAC is pushed into the index so it keeps
+			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
+			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
+			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
+			const loaded = index.customIndex.search(searchCondition, context, recordFilter).map((entry) => {
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;

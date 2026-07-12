@@ -181,6 +181,12 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	 * full scan unless paired with another indexed condition.
 	 */
 	negated?: boolean;
+	/**
+	 * Internal (#1241): a `(primaryKey) => boolean` predicate composed by the query executor from
+	 * companion conditions, a caller `vectorFilter`, and record-level RBAC, pushed into a filterable
+	 * custom index (HNSW) so filtering happens during traversal. Not part of the public query surface.
+	 */
+	recordFilter?: (primaryKey: Id) => boolean;
 }
 
 interface ConditionGroup<Record extends object = any> {
