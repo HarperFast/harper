@@ -10,6 +10,14 @@ if (!workerThreads.isMainThread) {
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { flushDatabases } from './resources/databases.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
+// Code-first schema authoring (RFC 0001): declare a table as a TypeScript value; the returned
+// handle is the live, registered table class with per-verb shapes inferred from the definition.
+export { defineTable, types } from './resources/defineTable.ts';
+
+// RFC 0001 Pillar 2 — the per-method request contract. `defineResource`/`Resource.withSchema` type
+// handlers from a runtime contract and feed validation + OpenAPI + MCP from one declaration; `t` and
+// `schemaOf` are the built-in query/body vocabulary (both reduce to a JsonSchemaFragment).
+export { defineResource, t, schemaOf, projectTableFragment } from './resources/withSchema.ts';
 
 // Type only exports.
 // Anything exported here will only be available as TypeScript types, not as values.
@@ -28,6 +36,31 @@ export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
+// Code-first schema types: the table handle and field model. Per-verb record shapes are
+// discoverable on the handle itself: (typeof Track)['$record' | '$insert' | '$upsert' | '$patch' | '$query'].
+export type {
+	TableHandle,
+	Field,
+	DateField,
+	RelationField,
+	Shape,
+	Flags,
+	DefineTableOptions,
+} from './resources/defineTable.ts';
+// RFC 0001 Pillar 2 request-contract types.
+export type {
+	Contract,
+	VerbSchemas,
+	VerbName,
+	Schema,
+	SchemaSource,
+	Projection,
+	PathParams,
+	TypedTarget,
+	TypedSearchParams,
+	ImplFor,
+	SchemaClass,
+} from './resources/withSchema.ts';
 export type { Scope } from './components/Scope.ts';
 export type {
 	ModelBackend,

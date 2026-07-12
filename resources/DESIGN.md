@@ -25,6 +25,9 @@ See also: `../DESIGN.md` for cross-cutting non-obvious internals (RecordObject p
 | `auditStore.ts`         | Append-only audit log records                                                                                                        |
 | `nodeIdMapping.ts`      | Maps node IDs ↔ timestamps for replication ordering                                                                                  |
 | `openApi.ts`            | Generates OpenAPI/JSON Schema from `@export` schemas                                                                                 |
+| `defineTable.ts`        | Code-first table authoring (`defineTable` + `types`) — a TS front-end to the canonical `table()` model                               |
+| `withSchema.ts`         | Per-method request contract (`defineResource` / `Resource.withSchema`, `t`, `schemaOf`) — typed handlers + edge validation           |
+| `jsonSchemaTypes.ts`    | Shared `JsonSchemaFragment` IR + `attributeToFragment` projector (one vocabulary for validation/OpenAPI/MCP)                         |
 | `analytics/`            | Telemetry recording (separate from monitoring)                                                                                       |
 
 ---
@@ -124,6 +127,29 @@ Mechanics:
 - **Discovery surfaces:** because parameterised routes live outside the base Map, the enumerators read `resources.paramRoutes` explicitly — `openApi.ts` emits them as templated paths (`:id` → `{id}`) with path parameters, and `components/mcp/resources.ts` lists them via `resources/templates/list` as `{param}` URI templates. `routePatternToTemplate` (exported from `Resources.ts`) is the shared `:param`/`*wildcard` → `{param}` converter.
 
 Tests: `../unitTests/resources/paramRoutes.test.js` (unit) and `../integrationTests/apiTests/param-routes.test.mjs` (end-to-end); enumeration coverage in `../unitTests/resources/openApi.test.js` and `../unitTests/components/mcp/resources.test.js`.
+
+---
+
+## Typed, discoverable resources (code-first schema + request contract)
+
+Design record: **RFC 0001** and its type-level spikes live in the design PR (**HarperFast/harper#1503**); this section is the retained summary. The type contract is re-verified against the built package types in `../docs/rfcs/spikes/0001/*-real.check.ts` (checked with that directory's `tsconfig.json`).
+
+**The principle.** Harper strips TypeScript at runtime (`--conditions=typestrip`), which erases types and rules out metadata-emitting decorators. So **runtime metadata must be values, and TypeScript types are _derived_ from those values — never the reverse.** Everything here is erasable syntax; the values survive stripping, the types are inferred, nothing can drift. One shared IR — `JsonSchemaFragment` (`jsonSchemaTypes.ts`), produced by `attributeToFragment` — feeds validation, OpenAPI, and MCP, so those surfaces cannot silently disagree.
+
+**Code-first tables (`defineTable.ts`).** `defineTable(name, shape, opts)` authors a table in TypeScript and eagerly registers it through the same `table()` factory GraphQL drives — the returned value _is_ the live table class (`Track.get/put/...` work, `new Track()`/`instanceof` hold). Fields come from the `types` vocabulary (getter flags: `string.indexed`, `id.primaryKey`, `date.createdTime`); per-verb shapes are inferred projections discoverable as members (`(typeof Track)['$insert' | '$upsert' | '$patch' | '$query' | '$record']`). Relationships use lazy thunks (`types.relation(() => Album, { from })`) so forward references/cycles resolve at query time; `relationOf`/`hasManyOf` are the escape hatch for a mutual pair whose eager const-inference would otherwise collapse to `any`.
+
+**Per-method request contract (`withSchema.ts`).** Two front-ends, same runtime metadata:
+
+- `defineResource(contract, impl)` — function form (an object of verb handlers).
+- `Resource.withSchema(contract)` — class form; `extends` it and implement the declared verbs. It pins `static loadAsInstance = false` so instance verbs receive the converged `(target, data)` arg order the types assume (the default dispatch order is `(data, target)` — see `Resource.post/put/patch`).
+
+A contract is `{ path, record?, get/post/put/patch/delete: { query?, body?, response? } }`. Handler types are **derived** from it: path params from a template-literal parse of `path`, query/body/response from the schema's inferred type. It is a **subset, not a fork** — a handler gets the SAME `RequestTarget`, structurally narrowed (`target.id: string`, `target.get('expand')` typed by the query schema), and the resource still registers/serves like a plain one. The narrowed types are justified by **runtime enforcement**: each declared verb validates/coerces `query`/`body` before dispatch and throws a structured 400 (`ValidationError`, per-field `{ path, code, message }[]`) — the same bargain `Table.validate` makes for tables.
+
+**Vocabulary.** The built-in `t` (`t.string/number/integer/boolean/date/enum/array/object`) and `schemaOf<T>(source?)` both reduce to `JsonSchemaFragment`. A `defineTable` projection slots straight into a contract body/response — `schemaOf<(typeof Track)['$insert']>({ table: Track, projection: 'insert' })` derives the compile-time type from the projection and the runtime fragment from the table's attributes (via `projectTableFragment` → `attributeToFragment`). **Nullability:** non-nullable by default (a bare `t.string` rejects `null`); `.optional` allows absence, `.nullable` allows an explicit `null`; table-derived bodies mirror `Table.validate`'s policy (null rejected only when `nullable === false`).
+
+**Downstream surfaces.** `openApi.ts` emits a contract's query params, request body, and response for parameterised routes; `components/mcp/tools/application.ts` drives the tool input/output schema off the contract and binds arbitrary path params + query (`applyContractInputs`), which lifts the generated-verb binding restriction for contract resources. `ValidationError` (`../utility/errors/hdbError.ts`) extends `ClientError` (400) so existing HTTP handling is unchanged; the structured issues ride on `.detail`/`.errors`.
+
+Tests: `../unitTests/resources/withSchema.test.js`, `../unitTests/resources/defineTable-registration.test.js`, `../unitTests/resources/openApi-contract.test.js`, `../unitTests/components/mcp/tools/application-contract.test.js`.
 
 ---
 

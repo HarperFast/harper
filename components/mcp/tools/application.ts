@@ -84,6 +84,12 @@ interface ResourceClassLike {
 	hidden?: boolean;
 	properties?: Record<string, unknown>;
 	outputSchemas?: { [verb: string]: object };
+	/** The URL path (may carry `:param`/`*wildcard` segments), used to bind path params for contract resources. */
+	path?: string;
+	/** Present when built via `Resource.withSchema` (RFC 0001, Pillar 2) — drives typed tool schemas + binding. */
+	requestContract?: unknown;
+	/** Per-verb `{ query?, body? }` JSON-Schema fragments derived from the request contract. */
+	inputSchemas?: { [verb: string]: { query?: JsonSchemaFragmentLike; body?: JsonSchemaFragmentLike } };
 	mcp?: { annotations?: { [verb: string]: ToolAnnotationsLike } };
 	get?: (target: unknown, request: unknown, data?: unknown) => unknown;
 	put?: (target: unknown, data: unknown, request: unknown) => unknown;
@@ -183,6 +189,119 @@ function isSimpleIdRoute(pattern: string): boolean {
 		}
 	}
 	return paramCount === 1;
+}
+
+/** A subset of `JsonSchemaFragment` (resources/jsonSchemaTypes.ts) — the shared IR request contracts reduce to. */
+interface JsonSchemaFragmentLike {
+	type?: string | string[];
+	properties?: Record<string, unknown>;
+	required?: readonly string[];
+	items?: unknown;
+	enum?: readonly unknown[];
+}
+
+/** MCP verb → request-contract verb. `search` maps to `get`'s query grammar; others are 1:1. */
+const CONTRACT_VERB: Record<string, 'get' | 'post' | 'put' | 'patch' | 'delete'> = {
+	get: 'get',
+	search: 'get',
+	create: 'post',
+	update: 'put',
+	patch: 'patch',
+	delete: 'delete',
+};
+
+/** Parse `:param`/`*wildcard` segments out of a resource path (mirrors the route matcher). */
+function pathParamNames(path?: string): string[] {
+	if (!path) return [];
+	return path
+		.split('/')
+		.filter((segment) => segment.charAt(0) === ':' || segment.charAt(0) === '*')
+		.map((segment) => (segment.charAt(0) === '*' ? segment.slice(1) || 'wildcard' : segment.slice(1)));
+}
+
+/**
+ * Build an MCP tool input schema from a resource's request contract (RFC 0001, Pillar 2): the path
+ * params (always required strings) plus the verb's declared query and body fields, all off the shared
+ * JsonSchemaFragment. Returns undefined when there is nothing contract-derived to advertise (the caller
+ * then falls back to the generic table-attribute derivation).
+ */
+function contractInputSchema(ResourceClass: ResourceClassLike, contractVerb: string): object | undefined {
+	const input = ResourceClass.inputSchemas?.[contractVerb];
+	const params = pathParamNames(ResourceClass.path);
+	if (!input?.query?.properties && !input?.body?.properties && params.length === 0) return undefined;
+	const properties: Record<string, unknown> = {};
+	const required: string[] = [];
+	for (const param of params) {
+		properties[param] = { type: 'string', description: `Path parameter :${param}.` };
+		required.push(param);
+	}
+	const merge = (fragment?: JsonSchemaFragmentLike) => {
+		if (!fragment?.properties) return;
+		for (const [key, sub] of Object.entries(fragment.properties)) properties[key] = sub;
+		for (const key of fragment.required ?? []) if (!required.includes(key)) required.push(key);
+	};
+	merge(input?.query);
+	merge(input?.body);
+	const schema: { type: string; properties: Record<string, unknown>; required?: string[] } = {
+		type: 'object',
+		properties,
+	};
+	if (required.length) schema.required = required;
+	return schema;
+}
+
+/**
+ * Bind a contract resource's MCP arguments onto the RequestTarget the way the router would: path params
+ * as own properties (`target.id`, `target.n`, …) and declared query params via the URLSearchParams API
+ * (so `withSchema`'s pre-dispatch validation/coercion reads them). No-op for non-contract resources, so
+ * table tools are unaffected.
+ */
+function applyContractInputs(
+	target: Record<string, unknown>,
+	ResourceClass: ResourceClassLike,
+	a: Record<string, unknown>,
+	contractVerb: string
+): void {
+	if (!ResourceClass.requestContract) return;
+	for (const param of pathParamNames(ResourceClass.path)) {
+		if (a[param] !== undefined) target[param] = a[param];
+	}
+	const queryProps = ResourceClass.inputSchemas?.[contractVerb]?.query?.properties;
+	const setter = (target as { set?: (n: string, v: string) => void }).set;
+	const appender = (target as { append?: (n: string, v: string) => void }).append;
+	if (queryProps && typeof setter === 'function') {
+		for (const key of Object.keys(queryProps)) {
+			const val = a[key];
+			if (val === undefined) continue;
+			if (Array.isArray(val) && typeof appender === 'function') {
+				for (const el of val) appender.call(target, key, String(el));
+			} else {
+				setter.call(target, key, String(val));
+			}
+		}
+	}
+}
+
+/**
+ * MCP delivers path params, query params, and body fields flattened into ONE args object. For a
+ * contract resource those non-body keys are already bound onto the target by {@link applyContractInputs};
+ * strip them here so the remaining object is the request body the contract's `additionalProperties:false`
+ * body schema will accept (otherwise a bound `id`/query key poisons body validation). Non-contract
+ * resources pass through unchanged.
+ */
+function contractBody(
+	a: Record<string, unknown>,
+	ResourceClass: ResourceClassLike,
+	contractVerb: string
+): Record<string, unknown> {
+	if (!ResourceClass.requestContract) return a;
+	const exclude = new Set(pathParamNames(ResourceClass.path));
+	const queryProps = ResourceClass.inputSchemas?.[contractVerb]?.query?.properties;
+	if (queryProps) for (const key of Object.keys(queryProps)) exclude.add(key);
+	if (exclude.size === 0) return a;
+	const body: Record<string, unknown> = {};
+	for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
+	return body;
 }
 
 /** A compiled parameterised route (e.g. `/widget/:id`), stored outside the base Map. */
@@ -363,15 +482,25 @@ function wrapResult(data: unknown): ToolResult {
 }
 
 function wrapError(toolName: string, err: unknown): ToolResult {
-	const e = err as { message?: string; http_resp_msg?: string };
+	const e = err as { message?: string; http_resp_msg?: string; errors?: unknown; code?: string };
 	const message = e?.http_resp_msg ?? e?.message ?? `${toolName} failed`;
 	harperLogger.trace(`MCP ${toolName} threw: ${(err as Error).stack ?? message}`);
+	const payload: { kind: string; tool: string; message: string; code?: string; errors?: unknown } = {
+		kind: 'harper_error',
+		tool: toolName,
+		message,
+	};
+	// Pass structured validation issues through rather than flattening to a single string (RFC 0001 §8).
+	if (Array.isArray(e?.errors) && e.errors.length) {
+		payload.code = e.code;
+		payload.errors = e.errors;
+	}
 	return {
 		isError: true,
 		content: [
 			{
 				type: 'text',
-				text: JSON.stringify({ kind: 'harper_error', tool: toolName, message }),
+				text: JSON.stringify(payload),
 			},
 		],
 	};
@@ -387,6 +516,7 @@ function makeGetHandler(toolName: string, path: string, capturedClass: ResourceC
 			const target = makeTarget();
 			target.id = a.id;
 			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
+			applyContractInputs(target, ResourceClass, a, 'get');
 			const data = await ResourceClass.get!(target, buildContext(context.user));
 			return wrapResult(data);
 		} catch (err) {
@@ -455,7 +585,12 @@ function makeCreateHandler(toolName: string, path: string, capturedClass: Resour
 			// base `post` throws `missingMethod` ("does not have a post method")
 			// because a record-scoped resource has no insert path (#1317).
 			target.isCollection = true;
-			const data = await ResourceClass.post!(target, a, buildContext(context.user));
+			applyContractInputs(target, ResourceClass, a, 'post');
+			const data = await ResourceClass.post!(
+				target,
+				contractBody(a, ResourceClass, 'post'),
+				buildContext(context.user)
+			);
 			// Standard table create resolves to the new record's primary key (a
 			// scalar). Wrap it as `{ id }` so the result carries `structuredContent`
 			// matching `deriveCreateOutputSchema`; strict SDK clients reject a bare
@@ -477,13 +612,17 @@ function makeUpdateHandler(toolName: string, path: string, capturedClass: Resour
 			const ResourceClass = liveResource(path, capturedClass);
 			const target = makeTarget();
 			target.id = id;
+			applyContractInputs(target, ResourceClass, a, verb);
 			// Call the verb method *on* ResourceClass so `this` stays bound to the
 			// class — detaching it (`const fn = ResourceClass.put`) makes the static
 			// Resource dispatcher read `this.directURLMapping` off undefined and throw.
 			const ctx = buildContext(context.user);
+			// For a contract resource, strip path/query keys from the body (they're bound onto the target
+			// above); otherwise keep the historical `id`-stripped rest.
+			const body = ResourceClass.requestContract ? contractBody(a, ResourceClass, verb) : rest;
 			const data = await (verb === 'put'
-				? ResourceClass.put!(target, rest, ctx)
-				: ResourceClass.patch!(target, rest, ctx));
+				? ResourceClass.put!(target, body, ctx)
+				: ResourceClass.patch!(target, body, ctx));
 			// Table.put/patch resolve to undefined; surface a `{ ok: true }`
 			// acknowledgement so the result has structuredContent matching
 			// derive{Update,Patch}OutputSchema. A custom Resource that returns a
@@ -503,6 +642,7 @@ function makeDeleteHandler(toolName: string, path: string, capturedClass: Resour
 			const ResourceClass = liveResource(path, capturedClass);
 			const target = makeTarget();
 			target.id = a.id;
+			applyContractInputs(target, ResourceClass, a, 'delete');
 			const data = await ResourceClass.delete!(target, buildContext(context.user));
 			// Table.delete resolves to a boolean; wrap it as `{ deleted }` so the
 			// result carries structuredContent matching deriveDeleteOutputSchema. A
@@ -670,14 +810,26 @@ function registerVerbTools(ctx: ResourceContext): number {
 	const primaryKey = ResourceClass.primaryKey;
 	const ctxForVerb: VerbDescriptionContext = { tableDoc, tableName, primaryKey, path };
 
-	const overrideOutput = (verb: Verb): object | undefined => ResourceClass.outputSchemas?.[verb];
+	// `outputSchemas` is authored/keyed by MCP verb (`create`/`update`) for table resources, but a request
+	// contract stores it by HTTP verb (`post`/`put`); fall back to the HTTP-verb key so a contract's
+	// `post.response`/`put.response` reaches the `create_*`/`update_*` output schema.
+	const overrideOutput = (verb: Verb): object | undefined =>
+		ResourceClass.outputSchemas?.[verb] ?? ResourceClass.outputSchemas?.[CONTRACT_VERB[verb]];
+	// When the resource carries a request contract (RFC 0001, Pillar 2), drive the tool INPUT schema off
+	// the contract (path params + declared query/body) instead of the generic table-attribute derivation.
+	// `search_*` is excluded: the contract has no `search` verb and the `search`/`query` static isn't
+	// wrapped by the contract validator, so it keeps the rich generic conditions/sort/limit grammar.
+	const overrideInput = (verb: Verb): object | undefined =>
+		ResourceClass.requestContract && verb !== 'search'
+			? contractInputSchema(ResourceClass, CONTRACT_VERB[verb])
+			: undefined;
 
 	if (verbs.get) {
 		const name = `get_${suffix}`;
 		addTool({
 			name,
 			description: verbDescription('get', ctxForVerb),
-			inputSchema: deriveGetSchema(attributes, undefined),
+			inputSchema: overrideInput('get') ?? deriveGetSchema(attributes, undefined),
 			outputSchema: overrideOutput('get') ?? deriveGetOutputSchema(attributes, undefined),
 			profile: 'application',
 			annotations: mergeAnnotations('get', { readOnlyHint: true }, ResourceClass),
@@ -693,7 +845,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		addTool({
 			name,
 			description: verbDescription('search', ctxForVerb),
-			inputSchema: deriveSearchSchema(attributes, undefined),
+			inputSchema: overrideInput('search') ?? deriveSearchSchema(attributes, undefined),
 			profile: 'application',
 			annotations: mergeAnnotations('search', { readOnlyHint: true }, ResourceClass),
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
@@ -706,7 +858,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		addTool({
 			name,
 			description: verbDescription('create', ctxForVerb),
-			inputSchema: deriveCreateSchema(attributes, undefined),
+			inputSchema: overrideInput('create') ?? deriveCreateSchema(attributes, undefined),
 			outputSchema: overrideOutput('create') ?? deriveCreateOutputSchema(attributes, undefined),
 			profile: 'application',
 			annotations: mergeAnnotations('create', {}, ResourceClass),
@@ -720,7 +872,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		addTool({
 			name,
 			description: verbDescription('update', ctxForVerb),
-			inputSchema: deriveUpdateSchema(attributes, undefined),
+			inputSchema: overrideInput('update') ?? deriveUpdateSchema(attributes, undefined),
 			outputSchema: overrideOutput('update') ?? deriveUpdateOutputSchema(attributes, undefined),
 			profile: 'application',
 			// PUT semantics: replacing with the same payload yields the same state,
@@ -735,7 +887,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		addTool({
 			name,
 			description: verbDescription('patch', ctxForVerb),
-			inputSchema: deriveUpdateSchema(attributes, undefined),
+			inputSchema: overrideInput('patch') ?? deriveUpdateSchema(attributes, undefined),
 			outputSchema: overrideOutput('patch') ?? derivePatchOutputSchema(attributes, undefined),
 			profile: 'application',
 			// patch_* idempotency depends on partial-update semantics; default
@@ -755,7 +907,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		addTool({
 			name,
 			description: verbDescription('delete', ctxForVerb),
-			inputSchema: deriveDeleteSchema(attributes, undefined),
+			inputSchema: overrideInput('delete') ?? deriveDeleteSchema(attributes, undefined),
 			outputSchema: overrideOutput('delete') ?? deriveDeleteOutputSchema(attributes),
 			profile: 'application',
 			// delete_* idempotency depends on delete-of-deleted behavior; default
@@ -1148,6 +1300,9 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	//          segments yet, so ALL generated verbs are dropped. Author-defined
 	//          mcpTools/mcpPrompts carry their own schemas and handler methods, so they
 	//          register regardless of binding mode.
+	// A request contract (RFC 0001, Pillar 2) LIFTS this: `applyContractInputs` binds arbitrary
+	// path params + declared query itself, so contract resources register their generated verbs on
+	// any route shape — this is the "richer binding rides on the contract" the plain paths defer.
 	const considerEntry = (
 		path: string,
 		entry: ResourceRegistryEntry | undefined,
@@ -1164,14 +1319,18 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 			return;
 		}
 		const verbs = detectVerbs(ResourceClass);
-		if (paramBinding === 'id') {
-			verbs.search = false;
-			verbs.create = false;
-		} else if (paramBinding === 'none') {
-			harperLogger.trace(
-				`MCP application: '/${path}' generated verb tools skipped — multi-segment/named-wildcard binding not yet supported`
-			);
-			verbs.get = verbs.search = verbs.create = verbs.updatePut = verbs.updatePatch = verbs.delete = false;
+		// A request contract binds arbitrary path params + query (applyContractInputs), so it is exempt
+		// from the generated-handler binding restrictions below.
+		if (!ResourceClass.requestContract) {
+			if (paramBinding === 'id') {
+				verbs.search = false;
+				verbs.create = false;
+			} else if (paramBinding === 'none') {
+				harperLogger.trace(
+					`MCP application: '/${path}' generated verb tools skipped — multi-segment/named-wildcard binding not yet supported`
+				);
+				verbs.get = verbs.search = verbs.create = verbs.updatePut = verbs.updatePatch = verbs.delete = false;
+			}
 		}
 		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
@@ -1207,7 +1366,7 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	// tools — even though it appears in the OpenAPI document, which already iterates `paramRoutes`.
 	// Enumerate them so the tool surface matches the REST surface; the binding mode restricts the
 	// GENERATED verb tools to what their handlers actually bind (see considerEntry), while custom
-	// mcpTools/mcpPrompts register on every route shape.
+	// mcpTools/mcpPrompts (and contract resources) register on every route shape.
 	for (const route of resources.paramRoutes ?? []) {
 		considerEntry(route.pattern, route.entry, isSimpleIdRoute(route.pattern) ? 'id' : 'none');
 	}
