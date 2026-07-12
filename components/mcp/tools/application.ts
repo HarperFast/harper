@@ -482,18 +482,33 @@ function wrapResult(data: unknown): ToolResult {
 }
 
 function wrapError(toolName: string, err: unknown): ToolResult {
-	const e = err as { message?: string; http_resp_msg?: string; errors?: unknown; code?: string };
-	const message = e?.http_resp_msg ?? e?.message ?? `${toolName} failed`;
-	harperLogger.trace(`MCP ${toolName} threw: ${(err as Error).stack ?? message}`);
+	// `err` is arbitrary/untrusted — a revoked Proxy or a throwing getter would crash this
+	// error-serialization path if we accessed properties bare. Read everything inside one guard.
+	let message = `${toolName} failed`;
+	let errors: unknown;
+	let code: string | undefined;
+	let stack: string | undefined;
+	try {
+		const e = err as { message?: string; http_resp_msg?: string; errors?: unknown; code?: string; stack?: string };
+		if (e && typeof e === 'object') {
+			message = e.http_resp_msg ?? e.message ?? message;
+			errors = e.errors;
+			code = e.code;
+			stack = e.stack;
+		}
+	} catch (serializeErr) {
+		harperLogger.error(`Failed to read error in wrapError: ${(serializeErr as Error).message}`);
+	}
+	harperLogger.trace(`MCP ${toolName} threw: ${stack ?? message}`);
 	const payload: { kind: string; tool: string; message: string; code?: string; errors?: unknown } = {
 		kind: 'harper_error',
 		tool: toolName,
 		message,
 	};
 	// Pass structured validation issues through rather than flattening to a single string (RFC 0001 §8).
-	if (Array.isArray(e?.errors) && e.errors.length) {
-		payload.code = e.code;
-		payload.errors = e.errors;
+	if (Array.isArray(errors) && errors.length) {
+		payload.code = code;
+		payload.errors = errors;
 	}
 	return {
 		isError: true,

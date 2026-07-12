@@ -3,7 +3,7 @@
 // the empty/generic derivation a parameterised custom resource got before. Complements
 // application-paramroutes.test.js (which proved such resources produce tools at all).
 
-const assert = require('node:assert/strict');
+const assert = require('assert');
 const {
 	registerApplicationTools,
 	_setResourcesForTest,
@@ -78,10 +78,10 @@ describe('mcp/tools/application — request-contract input schemas (RFC 0001)', 
 		assert.ok(tool, 'expected a get_* tool');
 		const props = tool.inputSchema.properties;
 		assert.ok(props.id, 'path param :id advertised');
-		assert.deepEqual(tool.inputSchema.required, ['id'], 'path param required');
+		assert.deepStrictEqual(tool.inputSchema.required, ['id'], 'path param required');
 		assert.ok(props.expand, 'declared query param advertised');
-		assert.equal(props.expand.type, 'array', 'query param carries its declared JSON-Schema type');
-		assert.deepEqual(props.expand.items.enum, ['parts', 'owner'], 'enum carried through');
+		assert.strictEqual(props.expand.type, 'array', 'query param carries its declared JSON-Schema type');
+		assert.deepStrictEqual(props.expand.items.enum, ['parts', 'owner'], 'enum carried through');
 	});
 
 	it('drives the create_* input schema off the contract body (path param + body fields)', () => {
@@ -141,7 +141,7 @@ describe('mcp/tools/application — contract body strips bound path params (RFC 
 		const tool = [...toolsByName().values()].find((t) => t.name.startsWith('create_'));
 		assert.ok(tool, 'create tool registered');
 		await getTool(tool.name).handler({ id: 'w1', name: 'A' }, { user: SUPER });
-		assert.equal(captured.id, 'w1', 'path param bound onto target');
-		assert.deepEqual(captured.body, { name: 'A' }, 'body excludes the bound path param');
+		assert.strictEqual(captured.id, 'w1', 'path param bound onto target');
+		assert.deepStrictEqual(captured.body, { name: 'A' }, 'body excludes the bound path param');
 	});
 });

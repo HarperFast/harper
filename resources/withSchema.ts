@@ -308,8 +308,13 @@ function validateValue(value: any, fragment: JsonSchemaFragment, path: string, i
 		}
 		value = d;
 	}
-	const matches = types.some((ty) => JSON_TYPE_CHECK[ty as string]?.(value) ?? true);
-	if (!(value instanceof Date) && !matches) {
+	// A Date is a valid value ONLY for a `string`/`date-time` field (we coerced an ISO string above);
+	// it must not slip past the type check for a number/boolean/array/object schema.
+	const matches = types.some((ty) => {
+		if (ty === 'string' && fragment.format === 'date-time' && value instanceof Date) return true;
+		return JSON_TYPE_CHECK[ty as string]?.(value) ?? true;
+	});
+	if (!matches) {
 		issues.push({ path, code: 'type', message: `${path} must be of type ${types.join(' | ')}` });
 		return value;
 	}
@@ -404,6 +409,19 @@ function coerceAndValidateQuery(fragment: JsonSchemaFragment, target: any, issue
 			return name in coerced ? coerced[name] : rawGet.call(this, name);
 		},
 	});
+	// Keep `getAll` consistent with the coercing `get`: a declared key returns its coerced value as an
+	// array (arrays pass through; a scalar is wrapped, undefined → []); undeclared keys read raw.
+	Object.defineProperty(target, 'getAll', {
+		configurable: true,
+		writable: true,
+		value: function (name: string) {
+			if (name in coerced) {
+				const val = coerced[name];
+				return Array.isArray(val) ? val : val === undefined ? [] : [val];
+			}
+			return rawGetAll.call(this, name);
+		},
+	});
 }
 
 /** Coerce a single query string to the fragment's scalar type and validate enum membership. */
@@ -417,6 +435,11 @@ function coerceScalar(
 	const type = Array.isArray(fragment.type) ? fragment.type[0] : fragment.type;
 	let value: any = raw;
 	if (type === 'integer' || type === 'number') {
+		// `Number('')`/`Number(' ')` are 0 — treat an empty/whitespace param as a type error, not a silent 0.
+		if (raw == null || raw.trim() === '') {
+			issues.push({ path, code: 'type', message: `${path} must be ${type === 'integer' ? 'an integer' : 'a number'}` });
+			return raw;
+		}
 		value = Number(raw);
 		if (Number.isNaN(value) || (type === 'integer' && !Number.isInteger(value))) {
 			issues.push({ path, code: 'type', message: `${path} must be ${type === 'integer' ? 'an integer' : 'a number'}` });

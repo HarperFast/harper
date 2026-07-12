@@ -40,6 +40,7 @@ describe('RFC 0001: withSchema / defineResource — runtime request contract', (
 						limit: target.get('limit'),
 						flag: target.get('flag'),
 						expand: target.get('expand'),
+						expandAll: target.getAll('expand'),
 						raw: target.get('unknown'),
 					};
 					return { ok: true };
@@ -54,7 +55,23 @@ describe('RFC 0001: withSchema / defineResource — runtime request contract', (
 			assert.strictEqual(captured.limit, 5, 'integer coerced from string');
 			assert.strictEqual(captured.flag, true, 'boolean coerced from string');
 			assert.deepStrictEqual(captured.expand, ['parts', 'owner'], 'array coerced via getAll');
+			assert.deepStrictEqual(captured.expandAll, ['parts', 'owner'], 'getAll returns the coerced array too');
 			assert.strictEqual(captured.raw, null, 'undeclared query key falls back to string|null');
+		});
+
+		it('rejects an empty numeric query param instead of silently coercing to 0', () => {
+			const Api = defineResource({ path: '/n', get: { query: { limit: t.integer.optional } } }, { async get() {} });
+			let error;
+			try {
+				Api.get(targetWith('limit=', null));
+			} catch (e) {
+				error = e;
+			}
+			assert.ok(error, 'empty numeric param should be a type error, not 0');
+			assert.ok(
+				error.errors.some((i) => i.path === 'query.limit' && i.code === 'type'),
+				JSON.stringify(error.errors)
+			);
 		});
 
 		it('an absent optional query param reads as undefined', async () => {
