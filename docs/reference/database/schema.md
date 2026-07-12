@@ -507,6 +507,60 @@ let results = Document.search({
 });
 ```
 
+<VersionBadge type="changed" version="v5.2.0" /> — Conditions combined with a vector sort are evaluated _during_ graph traversal (predicate-aware search): the search keeps exploring until it has enough _matching_ nearest neighbors, instead of finding the nearest candidates first and then dropping the ones that fail the filter. With a selective filter this is the difference between a full result set and an under-filled one. When a companion condition is very selective, Harper instead computes exact distances over just the records matching that condition, which is both exact and faster than traversing the graph.
+
+### Filtered Vector Search with a Function Predicate
+
+<VersionBadge version="v5.2.0" />
+
+A `vectorFilter` function on the query participates in the traversal the same way, for predicates that are not expressible as conditions:
+
+```javascript
+let results = Document.search(
+	{
+		sort: { attribute: 'textEmbeddings', target: searchVector },
+		vectorFilter: (record) => record.tenantId === context.user.tenantId && record.status === 'published',
+		limit: 10,
+	},
+	context
+);
+```
+
+`vectorFilter` is available from the JavaScript API only (it cannot be expressed in a REST query string). The function must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). Records passed to it are frozen.
+
+### Record-Level Access Control in Vector Search
+
+<VersionBadge version="v5.2.0" />
+
+A resource class can define a static `allowReadRecord(user, record)` check that filters query results per record. For vector queries it participates in the traversal, so a restricted user receives the k nearest records _they are allowed to see_ rather than "nearest k, minus redacted" (which under-fills results and reveals that nearby restricted records exist):
+
+```javascript
+export class Reports extends tables.Reports {
+	static allowReadRecord(user, record) {
+		return record.ownerId === user.id || user.role?.permissions?.super_user;
+	}
+}
+```
+
+`allowReadRecord` applies to all query results from `search()` (vector or not; on caching tables it is enforced against the record actually returned, after any source revalidation). It is a query-result filter, not a general read-authorization boundary: direct single-record `get(id)` does not consult it — use [`allowRead`](../resources/resource-api.md) for request-level authorization. The same synchronous/side-effect-free constraints as `vectorFilter` apply.
+
+### Tuning Filtered Traversal
+
+Filtered traversal is bounded by a visit budget of `ef * filterExpansion` nodes (`filterExpansion` defaults to 24). If the budget is exhausted before the result list fills — which happens when the filter matches only a tiny fraction of records — the search returns the matches found so far rather than erroring. Both knobs can be set per query:
+
+```javascript
+let results = Document.search(
+	{
+		sort: { attribute: 'textEmbeddings', target: searchVector, ef: 200, filterExpansion: 40 },
+		vectorFilter: (record) => record.category === 'rare',
+		limit: 10,
+	},
+	context
+);
+```
+
+Raise `filterExpansion` (or `ef`) to trade latency for recall under selective function predicates. Condition-based filters rarely need tuning: very selective conditions are automatically diverted to the exact-scan strategy instead of graph traversal.
+
 ### Filtering by Distance Threshold
 
 To return only records whose distance to a target vector is below a threshold, place `target` directly on the condition (alongside `comparator` and `value`). This returns matches within the threshold without using `sort`:
@@ -565,6 +619,7 @@ let results = Document.search({
 | `mL`                   | computed from `M` | Normalization factor for level generation                                                                                                                |
 | `efConstructionSearch` | auto-scaled       | Max nodes explored during search. When unset, auto-scales with index size (see above); setting it (or `efConstruction`, which seeds it) fixes the budget |
 | `quantization`         | —                 | `"int8"` stores vectors quantized to int8 (added in v5.1.0, see below)                                                                                   |
+| `filterExpansion`      | `24`              | Visit-budget multiplier for filtered (predicate-aware) search: a filtered query visits at most `ef * filterExpansion` nodes (added in v5.2.0, see above) |
 
 Example with custom parameters:
 
