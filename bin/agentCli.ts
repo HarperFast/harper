@@ -39,7 +39,7 @@ interface Connection {
 	label: string;
 }
 
-const HELP = `harper agent — interact with the built-in Harper agent
+const HELP = `harper agent — interact with the built-in Harper agent (alias: harper chat)
 
 Usage:
   harper agent [message]              Send a prompt (one-shot) and print the reply
