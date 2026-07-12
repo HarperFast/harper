@@ -70,9 +70,13 @@ node benchmarks/ycsb/run-single-node.mts --engine=lmdb --threads=4
 ### Flags
 
 `--scale` `--records` `--ops` `--concurrency` `--load-concurrency` `--fields`
-`--field-length` `--scan-max` `--warmup` `--workloads` `--distribution`
+`--field-length` `--scan-max` `--warmup` `--reps` `--workloads` `--distribution`
 `--engine` (`rocksdb`|`lmdb`) `--threads` `--out` `--startup-timeout`.
 Individual flags override the scale preset.
+
+`--reps` (default 1) runs each workload N times and reports the **median rep by
+throughput** — robust to a single degenerate rep. Warmup runs once per workload,
+not per rep. The cluster runner defaults this to 3 to dampen its higher variance.
 
 ## Output
 

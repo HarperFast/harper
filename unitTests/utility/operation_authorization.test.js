@@ -17,7 +17,7 @@ const user = require('#src/security/user');
 const alasql = require('alasql');
 const search = require('#src/dataLayer/search');
 const restart = require('#src/bin/restart');
-const configUtils = require('#js/config/configUtils');
+const configUtils = require('#src/config/configUtils');
 const jobs = require('#src/server/jobs/jobs');
 const terms = require('#src/utility/hdbTerms');
 
@@ -28,10 +28,22 @@ const PermissionAttributeResponseObject =
 	require('#src/security/data_objects/PermissionAttributeResponseObject').default;
 const { TEST_SCHEMA_OP_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
 
+// rewire() bypasses the require cache and re-executes serverUtilities' module body in an isolated
+// instance so we can reach its private initializeOperationFunctionMap(). But that module body also
+// assigns `server.registerOperation`/`server.operation` onto the shared `server` singleton (imported
+// from Server.ts) as a side effect - each rewire() call clobbers those with a closure bound to its OWN
+// (orphaned) OPERATION_FUNCTION_MAP, permanently hijacking the real registration path for the rest of
+// this mocha process. Snapshot and restore the real bindings so this stays scoped to this file instead
+// of leaking into other test files that run later (e.g. serverUtilities.test.js's registerOperation tests).
+const { server } = require('#src/server/Server');
+require('#src/server/serverHelpers/serverUtilities'); // ensure the real (cached) bindings are set first
+const realRegisterOperation = server.registerOperation;
+const realOperation = server.operation;
 const serverUtilities_rw = rewire('#src/server/serverHelpers/serverUtilities');
 const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
 const OPERATION_MAP = initializeOperationFunctionMap_rw();
-rewire('#src/server/serverHelpers/serverUtilities');
+server.registerOperation = realRegisterOperation;
+server.operation = realOperation;
 
 const test_terms = testUtils.COMMON_TEST_TERMS;
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;
@@ -1560,7 +1572,7 @@ describe('Test operations permissions', function () {
 		it('op NOT in operations list — insert blocked even with table perms', function () {
 			const req_json = makeOpUserRequest(['read_only'], { insert: true });
 			const result = op_auth.verifyPerms(req_json, write.insert.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 			assert.equal(result.unauthorized_access.length, 1);
 			// Error message uses the API name (terms.OPERATIONS_ENUM.INSERT = 'insert'), not the internal
 			// function name (write.insert.name = 'insertData'), because that's what users put in operations.
@@ -1578,7 +1590,7 @@ describe('Test operations permissions', function () {
 		it('SU-only op NOT in operations — restart denied', function () {
 			const req_json = makeOpUserSystemRequest(['read_only']);
 			const result = op_auth.verifyPerms(req_json, restart.restart.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 			assert.equal(result.unauthorized_access.length, 1);
 		});
 
@@ -1593,7 +1605,7 @@ describe('Test operations permissions', function () {
 			const req_json = makeOpUserRequest(['read_only'], { read: false });
 			req_json.operation = terms.OPERATIONS_ENUM.SEARCH;
 			const result = op_auth.verifyPerms(req_json, search.search.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 		});
 
 		it('no operations set — SU-only op still denied for non-SU user (no regression)', function () {
@@ -1611,7 +1623,7 @@ describe('Test operations permissions', function () {
 				},
 			};
 			const result = op_auth.verifyPerms(req_json, restart.restart.name);
-			assert.notEqual(result, null);
+			assert.notStrictEqual(result, null);
 			assert.equal(result.unauthorized_access.length, 1);
 		});
 

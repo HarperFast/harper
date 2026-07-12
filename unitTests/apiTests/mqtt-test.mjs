@@ -2,7 +2,7 @@
 
 /** @typedef {import("mqtt/build").MqttClient} MqttClient */
 
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { once } from 'node:events';
 import { decode } from 'cbor-x';
 import { callOperation } from './utility.js';
@@ -12,6 +12,7 @@ const { get: env_get, setProperty } = environmentManager;
 import { connect, connectAsync } from 'mqtt';
 import { readFileSync } from 'fs';
 import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
+import { SERVERS, portServer } from '#src/server/serverRegistry';
 
 // Adapter: creates a minimal scope and delegates to the new plugin API,
 // capturing socket/ws server instances so callers can call .listen() on them.
@@ -61,6 +62,41 @@ async function connectWithMessageListener(brokerUrl, options, listener) {
 	return client;
 }
 
+// Waits for a server-side MQTT session event (see `server/mqtt.ts` `emitEvent`) for a specific
+// clientId, rather than guessing with a fixed delay for the broker to finish some async step.
+function waitForMqttSessionEvent(eventName, clientId) {
+	return new Promise((resolve) => {
+		function onEvent(session) {
+			if (session?.sessionId === clientId) {
+				global.server.mqtt.events.off(eventName, onEvent);
+				resolve();
+			}
+		}
+		global.server.mqtt.events.on(eventName, onEvent);
+	});
+}
+
+// `client.endAsync()` only resolves once the local socket is closed — it does not wait for the
+// broker to process the disconnect and tear down the session — so callers that immediately
+// reconnect with the same clientId can otherwise race the broker's teardown.
+async function endDurableSession(client, clientId) {
+	let onDisconnected;
+	const torn_down = new Promise((resolve) => {
+		onDisconnected = (session) => {
+			if (session?.sessionId === clientId) resolve();
+		};
+		global.server.mqtt.events.on('disconnected', onDisconnected);
+	});
+	try {
+		await client.endAsync();
+		await torn_down;
+	} finally {
+		// Always clean up the listener, even if endAsync() rejects or the event never fires,
+		// so a failed disconnect doesn't leak a listener on the shared event emitter.
+		global.server.mqtt.events.off('disconnected', onDisconnected);
+	}
+}
+
 describe('test MQTT connections and commands', function () {
 	this.timeout(10000);
 	let available_records;
@@ -87,14 +123,17 @@ describe('test MQTT connections and commands', function () {
 	});
 
 	it('subscribe to retained/persisted record', async function () {
+		// Retained delivery is async (transaction -> persisted-record read -> serialization ->
+		// setImmediate yield -> socket write -> client message event) and on a loaded CI runner
+		// this has been observed taking well over the previous 8 s budget. Give this test more
+		// room than the suite-level 10 s, same as the QoS=1 reconnect test below.
+		this.timeout(20000);
 		let path = 'VariedProps/' + available_records[1];
-		await new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				clientV4.off('message', onMessage);
-				reject(new Error('Timeout waiting for retained message'));
-			}, 1000);
-			const onMessage = (topic, payload) => {
-				clearTimeout(timeout);
+		// Register the message listener before subscribing so a retained message delivered
+		// during the subscribe round-trip can't be missed.
+		let onMessage;
+		const messageReceived = new Promise((resolve, reject) => {
+			onMessage = (topic, payload) => {
 				try {
 					assert.equal(topic, path);
 					const data = decode(payload);
@@ -105,8 +144,26 @@ describe('test MQTT connections and commands', function () {
 				}
 			};
 			clientV4.once('message', onMessage);
-			clientV4.subscribeAsync(path).catch(reject);
 		});
+		// Await the suback so a subscribe failure surfaces immediately rather than hanging
+		// until the retained-message timeout.
+		await clientV4.subscribeAsync(path);
+		// Wait for the actual message, bounded by a backstop derived from this test's own mocha
+		// timeout (rather than a hardcoded value) so the two can never race each other — a fixed
+		// inner timeout close to (or exceeding) the outer mocha timeout previously meant this could
+		// fail with our own message right as it also became a hairline call against mocha's timeout.
+		let timer;
+		try {
+			await Promise.race([
+				messageReceived,
+				new Promise((_, reject) => {
+					timer = setTimeout(() => reject(new Error('Timeout waiting for retained message')), this.timeout() - 2000);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+			clientV4.off('message', onMessage);
+		}
 	});
 	it('subscribe to retained/persisted record but with retain handling disabling retain messages', async function () {
 		let path = 'VariedProps/' + available_records[1];
@@ -823,25 +880,26 @@ describe('test MQTT connections and commands', function () {
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
-		await client.endAsync();
-		await delay(10);
+		await endDurableSession(client, 'test-client1');
 		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
-		await client.endAsync();
-		await delay(10);
+		await endDurableSession(client, 'test-client1');
 		client = await connectAsync(mqttUrl, {
 			clean: false,
 			clientId: 'test-client1',
 			protocolVersion: 4,
 		});
 		await new Promise((resolve) => {
+			// Wait for the broker to finish processing (and durably persisting) our ack of this
+			// message, not just for the client to have sent it — see `session.acknowledge()`.
+			const acknowledged = waitForMqttSessionEvent('acknowledged', 'test-client1');
 			client.on('message', (topic, payload) => {
 				JSON.parse(payload);
-				resolve();
+				resolve(acknowledged);
 			});
 
 			client.publish(
@@ -854,10 +912,8 @@ describe('test MQTT connections and commands', function () {
 				}
 			);
 		});
-		await delay(10);
-		await client.endAsync();
-		await delay(50);
-		clientV5.publish(
+		await endDurableSession(client, 'test-client1');
+		await clientV5.publishAsync(
 			'SimpleRecord/41',
 			JSON.stringify({
 				name: 'This is a test of publishing to a disconnected durable session',
@@ -884,7 +940,6 @@ describe('test MQTT connections and commands', function () {
 				qos: 1,
 			}
 		);
-		await delay(10);
 		let messages = [];
 		client = await connectWithMessageListener(
 			mqttUrl,
@@ -1044,6 +1099,52 @@ describe('test MQTT connections and commands', function () {
 				}
 			});
 		});
+	});
+
+	it('socket listeners only opt out of reusePort on macOS (so every worker shares the port elsewhere)', function () {
+		// server.socket() (onSocket in threadServer.js) is what the MQTT component uses to create
+		// its TCP and TLS listeners. On every platform except macOS these listeners must share the
+		// port via SO_REUSEPORT so all workers accept connections; macOS opts out because it does
+		// not reliably support SO_REUSEPORT on these socket types. Stub process.platform so both
+		// branches are exercised regardless of the host/CI OS, and cover both the TCP and TLS paths
+		// since the guard has to be applied to each.
+		const originalPlatform = process.platform;
+		// Snapshot both registries by value so cleanup restores them exactly — dropping keys these
+		// calls add (incl. any UDS-mirror entry) and undoing any array append setPortServerMap()
+		// would make on a port-key collision. SERVERS is a plain object; portServer is a Map of
+		// port -> server[], so deep-copy each array.
+		const preexistingServers = { ...SERVERS };
+		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
+		const makeListener = (platform, options) => {
+			Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+			return global.server.socket(() => {}, options);
+		};
+		try {
+			const linuxTcp = makeListener('linux', { port: 21883 });
+			assert.equal(!!linuxTcp.noReusePort, false, 'TCP should share the port on Linux');
+			assert.equal(linuxTcp.dedicatedListener, true, 'TCP listener should be marked worker-owned/dedicated');
+			assert.equal(
+				makeListener('darwin', { port: 21884 }).noReusePort,
+				true,
+				'TCP should opt out of reusePort on macOS'
+			);
+			const linuxTls = makeListener('linux', { securePort: 28883 });
+			assert.equal(!!linuxTls.noReusePort, false, 'TLS should share the port on Linux');
+			assert.equal(linuxTls.dedicatedListener, true, 'TLS listener should be marked worker-owned/dedicated');
+			assert.equal(
+				makeListener('darwin', { securePort: 28884 }).noReusePort,
+				true,
+				'TLS should opt out of reusePort on macOS'
+			);
+		} finally {
+			Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+			// These listeners were never bound (no listen()); restore both registries to their exact
+			// pre-test state so nothing leaks into other tests.
+			for (const key of Object.keys(SERVERS)) delete SERVERS[key];
+			Object.assign(SERVERS, preexistingServers);
+			portServer.clear();
+			for (const [key, servers] of preexistingPortServer) portServer.set(key, servers);
+		}
 	});
 
 	after(() => {

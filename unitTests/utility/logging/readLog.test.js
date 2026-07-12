@@ -74,7 +74,7 @@ describe('Test readLog module', () => {
 		});
 
 		beforeEach(() => {
-			getConfigPath_rw = read_log.__set__('configUtils_js_1', {
+			getConfigPath_rw = read_log.__set__('configUtils_ts_1', {
 				getConfigPath: (key) => {
 					if (key === hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) {
 						return TEST_LOG_DIR;

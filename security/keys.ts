@@ -21,7 +21,7 @@ const tls = require('node:tls');
 import { relative, join } from 'node:path';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
 const logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
@@ -36,6 +36,13 @@ import { isMainThread } from 'worker_threads';
 import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
+// Default interval (ms) for the periodic cert-file re-read safety net. The chokidar (inotify)
+// watcher is the fast path; this poll catches changes on filesystems where inotify is unreliable
+// (overlayfs, many container setups, network mounts). Overridable via tls.certificateWatchInterval; 0 disables.
+const DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS = 300_000;
+// Lower bound (ms) for a configured poll interval; a misconfigured sub-second value is clamped up
+// to keep the safety-net poll from becoming a tight stat() loop. 0 still disables polling entirely.
+const MIN_CERTIFICATE_WATCH_INTERVAL_MS = 1000;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
 export const CERT_ATTRIBUTES = [
 	{ name: 'countryName', value: 'USA' },
@@ -98,6 +105,9 @@ export function getCertTable() {
 						attribute: 'is_self_signed',
 					},
 					{
+						attribute: 'file_timestamp',
+					},
+					{
 						attribute: '__updatedtime__',
 					},
 				],
@@ -109,7 +119,7 @@ export function getCertTable() {
 }
 
 export async function getReplicationCert() {
-	const SNICallback = createTLSSelector('replication', undefined);
+	const SNICallback = createTLSSelector('replication', undefined, false);
 	const secureTarget = {
 		secureContexts: null,
 		setSecureContext: (_ctx) => {},
@@ -134,6 +144,43 @@ export async function getReplicationCertAuth() {
 
 let configuredCertsLoaded;
 const privateKeys = new Map();
+
+// Debounce window (ms) for rebuilding TLS secure contexts. Shared by the hdb_certificate
+// subscription and the private-key hot-reload trigger so both coalesce on the same cadence.
+const TLS_REBUILD_DEBOUNCE_MS = 1500;
+
+// Debounced rebuild triggers, one per live server TLS selector (registered in createTLSSelector's
+// initialize). When a private key is hot-reloaded on this thread, every live selector re-runs
+// updateTLS so a secure context built with a stale key — or built before this key arrived — is
+// regenerated. Transient selectors (getReplicationCert) opt out so they don't accumulate here.
+const liveTLSRebuilders = new Set<() => void>();
+
+/**
+ * Trigger a debounced rebuild of every live server's TLS secure contexts on this thread.
+ *
+ * Workers load their private key directly from disk into the privateKeys map (there is no table
+ * propagation for keys), so a key rotation must rebuild the secure contexts locally. The cert side
+ * already propagates via the hdb_certificate subscription; without this, a worker that rebuilt for
+ * the new cert before reloading the matching key would serve the new cert paired with the old key
+ * until the next cert-table change.
+ */
+function rebuildLiveTLSContexts() {
+	for (const scheduleRebuild of liveTLSRebuilders) scheduleRebuild();
+}
+
+/**
+ * Handle a private-key (re)load: update the in-thread map and, on any content change, trigger a
+ * local TLS context rebuild. The `previous !== private_key` guard skips identical-content reloads
+ * (so neither chokidar nor the periodic poll thrashes) while still rebuilding when a key first
+ * appears or is restored after boot — the recovery case we must not strand. During normal startup
+ * this runs before any TLS selector is registered, so the rebuild is a harmless no-op on an empty
+ * rebuilder set.
+ */
+function handlePrivateKeyReload(private_key_name, private_key) {
+	const previous = privateKeys.get(private_key_name);
+	privateKeys.set(private_key_name, private_key);
+	if (previous !== private_key) rebuildLiveTLSContexts();
+}
 
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdbCertificate table.
@@ -163,9 +210,7 @@ export function loadCertificates() {
 				if (private_key_name) {
 					loadAndWatch(
 						privateKeyPath,
-						(private_key) => {
-							privateKeys.set(private_key_name, private_key);
-						},
+						(private_key) => handlePrivateKeyReload(private_key_name, private_key),
 						'private key'
 					);
 				}
@@ -202,7 +247,11 @@ export function loadCertificates() {
 
 								// If a record already exists for cert check to see who is newer, cert record or cert file.
 								// If cert file is newer, add it to table
-								const certRecord = certificateTable.primaryStore.get(certCn);
+								// getSync (not get): this runs in a synchronous loadAndWatch callback. On RocksDB get()
+								// returns a Promise on a block-cache miss, which is truthy but has no timestamp fields,
+								// so the staleness guard below is bypassed and a stale on-disk cert can overwrite a
+								// newer replicated record (TLS churn / downgrade) once hdb_certificate evicts.
+								const certRecord = certificateTable.primaryStore.getSync(certCn);
 								let fileTimestamp = statSync(path).mtimeMs;
 								let recordTimestamp =
 									!certRecord || certRecord.is_self_signed
@@ -228,7 +277,7 @@ export function loadCertificates() {
 									private_key_name,
 									is_authority: ca,
 									hostnames,
-									fileTimestamp,
+									file_timestamp: fileTimestamp,
 									details: {
 										issuer: x509Cert.issuer.replace(/\n/g, ' '),
 										subject: x509Cert.subject?.replace(/\n/g, ' '),
@@ -250,7 +299,39 @@ export function loadCertificates() {
 }
 
 /**
- * Load the certificate file and watch for changes and reload with any changes
+ * Resolve the periodic cert-watch poll interval (ms) from config, falling back to the default.
+ * Returns 0 (polling disabled) only when explicitly configured to 0.
+ *
+ * This is a single global watcher-behavior knob, read from the top-level `tls.certificateWatchInterval`
+ * (mirrors how `tls.unixDomainSockets`/`tls.ciphers` are read globally via env.get). It is not honored
+ * per-cert inside an SNI `tls` array or under `operationsApi.tls`; those configs use the default.
+ */
+function getCertificateWatchInterval(): number {
+	const configured = envManager.get(CONFIG_PARAMS.TLS_CERTIFICATEWATCHINTERVAL);
+	if (configured == null) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
+	const interval = Number(configured);
+	if (!Number.isFinite(interval) || interval < 0) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
+	// 0 explicitly disables the poll; otherwise floor at MIN to keep a typo (e.g. 1ms) from
+	// spinning a stat() loop. This is a safety net, not a hot-poll path, so sub-second is never wanted.
+	if (interval === 0) return 0;
+	return Math.max(interval, MIN_CERTIFICATE_WATCH_INTERVAL_MS);
+}
+
+// Active poll timers, keyed by watched path (exposed for test cleanup).
+const certificateWatchTimers = new Map<string, NodeJS.Timeout>();
+// The poll callback for each watched path, keyed by path. Exposed so tests can drive a single
+// re-read deterministically (simulating a missed inotify event) without waiting for the interval.
+const certificateWatchPollers = new Map<string, () => void>();
+
+/**
+ * Load the certificate file and watch for changes and reload with any changes.
+ *
+ * Two detection mechanisms feed the same reload path (and share the `lastModified` fingerprint,
+ * so they never double-reload for the same change):
+ *   1. chokidar inotify watcher — the fast path, reacts immediately to fs events.
+ *   2. A periodic re-read (main thread only) — a safety net for filesystems where inotify is
+ *      unreliable (overlayfs/containers/network mounts), where a real renewal can otherwise be
+ *      silently missed. Interval is tls.certificateWatchInterval (default 5m); 0 disables it.
  * @param path
  * @param loadCert
  * @param type
@@ -259,7 +340,10 @@ function loadAndWatch(path, loadCert, type) {
 	let lastModified;
 	const loadFile = (path, stats) => {
 		try {
-			let modified = stats.mtimeMs;
+			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
+			// stat the file here when it's missing — otherwise the inotify fast path would throw and
+			// silently never reload, leaving only the periodic poll to catch the change.
+			let modified = (stats ?? statSync(path)).mtimeMs;
 			if (modified && modified !== lastModified) {
 				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
@@ -272,6 +356,39 @@ function loadAndWatch(path, loadCert, type) {
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
 	watch(path, { persistent: false }).on('change', loadFile);
+
+	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers
+	// receive cert updates via the hdb_certificate table subscription, so polling the cert file on
+	// every worker would be wasteful. Private keys are different: each worker loads its own key
+	// directly from disk into its privateKeys map (no table propagation), so a renewal missed by
+	// inotify on a worker would strand the stale key — therefore the key poll must run on all
+	// threads. mtime is checked first against the last-loaded fingerprint, so an unchanged file does
+	// no PEM read and no reload (and shares the fingerprint with the chokidar watcher, so the two
+	// detection paths never double-reload the same change).
+	const pollsOnThisThread = isMainThread || type === 'private key';
+	if (pollsOnThisThread) {
+		const poll = () => {
+			let stats;
+			try {
+				stats = statSync(path);
+			} catch (error) {
+				// File may be transiently absent (e.g. atomic-rename renewal in flight); the chokidar
+				// watcher and the next poll will pick up the replacement.
+				logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
+				return;
+			}
+			loadFile(path, stats);
+		};
+		certificateWatchPollers.set(path, poll);
+		const interval = getCertificateWatchInterval();
+		if (interval > 0) {
+			const existingTimer = certificateWatchTimers.get(path);
+			if (existingTimer) clearInterval(existingTimer);
+			const timer = setInterval(poll, interval);
+			timer.unref();
+			certificateWatchTimers.set(path, timer);
+		}
+	}
 }
 
 function getHost() {
@@ -707,9 +824,11 @@ let caCerts = new Map();
  * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
  * @param type
  * @param mtlsOptions
+ * @param liveReload when true (default) the selector registers for private-key hot-reload rebuilds.
+ *   Pass false for transient, single-use selectors (e.g. getReplicationCert) so they don't accumulate.
  * @return {(function(*, *): (*|undefined))|*}
  */
-export function createTLSSelector(type, mtlsOptions?): any {
+export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;
@@ -839,10 +958,19 @@ export function createTLSSelector(type, mtlsOptions?): any {
 					reject(error);
 				}
 			}
+			let rebuildTimer;
+			const scheduleRebuild = () => {
+				if (rebuildTimer) return; // coalesce bursts of triggers into a single rebuild
+				rebuildTimer = setTimeout(() => {
+					rebuildTimer = undefined;
+					updateTLS();
+				}, TLS_REBUILD_DEBOUNCE_MS).unref();
+			};
 			databases?.system.hdb_certificate.subscribe({
-				listener: () => setTimeout(() => updateTLS(), 1500).unref(),
+				listener: scheduleRebuild,
 				omitCurrent: true,
 			} as any);
+			if (liveReload) liveTLSRebuilders.add(scheduleRebuild);
 			updateTLS();
 		}));
 	};

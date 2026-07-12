@@ -1,8 +1,8 @@
-import { ClientError, ServerError, Violation } from '../utility/errors/hdbError.ts';
+import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
-import { INVALIDATED, EVICTED } from './Table.ts';
+import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
@@ -333,7 +333,7 @@ export function searchByIndex(
 				403
 			);
 		if (index?.isIndexing)
-			throw new ServerError(`"${attribute_name}" is not indexed yet, can not search for this attribute`, 503);
+			throw new IndexRebuildingError(`"${attribute_name}" is not indexed yet, can not search for this attribute`);
 		if (value === null && index && !index.indexNulls)
 			throw new ClientError(
 				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
@@ -375,7 +375,7 @@ export function searchByIndex(
 						let result: any;
 						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) result = SKIP;
 						else {
-							Object.freeze(entry.value);
+							freezeRecord(entry.value);
 							recordRead(entry);
 							result = entry;
 						}
@@ -396,7 +396,7 @@ export function searchByIndex(
 						transaction: context && Table._readTxnForContext(context),
 					});
 					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
-					Object.freeze(loadedEntry?.value);
+					freezeRecord(loadedEntry?.value);
 					recordRead(loadedEntry);
 					return { ...otherProps, ...loadedEntry };
 				}

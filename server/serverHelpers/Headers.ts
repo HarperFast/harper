@@ -60,6 +60,30 @@ export class Headers extends Map<string, [string, string | string[]]> {
 	}
 }
 
+/**
+ * Add a field-name token to the `Vary` response header, appending to (and de-duplicating against) any
+ * existing value rather than overwriting it. Used to declare cache-partitioning dimensions (Origin,
+ * Authorization, Cookie) so a shared cache/CDN keys the response correctly (#1518, #1565).
+ */
+export function addVaryHeader(
+	headers: { get(name: string): any; set(name: string, value: string): any },
+	token: string
+) {
+	const existing = headers.get('Vary');
+	if (!existing) {
+		headers.set('Vary', token);
+		return;
+	}
+	const existingString = Array.isArray(existing) ? existing.join(', ') : existing;
+	const lowerToken = token.toLowerCase();
+	for (const part of existingString.split(',')) {
+		const trimmed = part.trim().toLowerCase();
+		// a `Vary: *` already covers every dimension, and an exact token match is a no-op
+		if (trimmed === lowerToken || trimmed === '*') return;
+	}
+	headers.set('Vary', existingString + ', ' + token);
+}
+
 export function appendHeader(headers, name, value, commaDelimited) {
 	if (headers.append) {
 		headers.append(name, value, commaDelimited);
@@ -115,10 +139,23 @@ export function mergeHeaders(target: any, source: Headers) {
  * `writeHead`'s array form is a FLAT `[name, value, name, value]` list, not a list of tuples — so an
  * iterable of `[name, value]` pairs (a `Headers`/`Map`) must be turned into an object. Passing
  * `Array.from(headers)` (nested `[[name, value], …]`) makes Node read a tuple as a header name and throw
- * `TypeError: The "name" argument must be of type string. Received an instance of Array`. A plain object
- * (or a falsy value, e.g. when there are no headers) is returned unchanged.
+ * `TypeError: The "name" argument must be of type string. Received an instance of Array`.
+ *
+ * Multi-valued headers (notably `Set-Cookie`, which by spec retains its multiple values when iterating
+ * a `Headers` object instead of being comma-joined) must be grouped into arrays rather than collapsed
+ * via `Object.fromEntries` last-wins. `writeHead` accepts `{name: ['value1', 'value2']}` for that, and
+ * emits the values as separate header lines on the wire. A plain object (or a falsy value, e.g. when
+ * there are no headers) is returned unchanged.
  */
 export function toWriteHeadHeaders(headers: any): any {
 	if (!headers) return headers;
-	return headers[Symbol.iterator] ? Object.fromEntries(headers) : headers;
+	if (!headers[Symbol.iterator]) return headers;
+	const result: Record<string, string | string[]> = {};
+	for (const [name, value] of headers) {
+		const existing = result[name];
+		if (existing === undefined) result[name] = value;
+		else if (Array.isArray(existing)) existing.push(value);
+		else result[name] = [existing, value];
+	}
+	return result;
 }

@@ -1,0 +1,40 @@
+# schema-types integration test fixture
+#
+# Covers Category 1 / §5.1 of the Harper v5 Integration Test Plan:
+# schema-type contract tests not formally covered by existing suites.
+
+# Case 1: @sealed — schema-strict table; undeclared properties must be rejected.
+type SealedItem @table @sealed @export {
+	id: ID @primaryKey
+	name: String
+	value: Int
+}
+
+# Case 2: Blob with brotli payload — raw bytes stored and retrieved byte-exact;
+# Content-Encoding pass-through via custom resource BrotliStore (resources.js).
+type BrotliBlob @table @export {
+	id: ID @primaryKey
+	payload: Blob
+	encoding: String
+}
+
+# Case 3: [String] array field + @indexed — element-level indexed search.
+type TaggedItem @table @export {
+	id: ID @primaryKey
+	tags: [String] @indexed
+	label: String
+}
+
+# Case 4: Schema-less (open) table — only a PK declared, no @sealed;
+# accepts arbitrary record shapes (MQTT retained-message pattern).
+type RawMessage @table @export {
+	id: ID @primaryKey
+}
+
+# Case 5: Optional nullable fields — no coercion of null/undefined on round-trip.
+type NullableItem @table @export {
+	id: ID @primaryKey
+	optStr: String
+	optNum: Int
+	optBool: Boolean
+}

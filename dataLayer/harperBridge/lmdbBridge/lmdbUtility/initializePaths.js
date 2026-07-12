@@ -7,7 +7,7 @@ const path = require('path');
 const minimist = require('minimist');
 const fs = require('fs-extra');
 const _ = require('lodash');
-const { getConfigPath } = require('../../../../config/configUtils.js');
+const { getConfigPath } = require('../../../../config/configUtils.ts');
 env.initSync();
 
 const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdbTerms;
@@ -86,9 +86,10 @@ function initSystemSchemaPaths(schema, table) {
 	schema = schema.toString();
 	table = table.toString();
 
-	// Check to see if there are any CLI or env args related to schema/table path
-	const args = process.env;
-	Object.assign(args, minimist(process.argv));
+	// Check to see if there are any CLI or env args related to schema/table path.
+	// Merge CLI args over env vars WITHOUT mutating process.env: assigning into process.env
+	// permanently clobbered real env vars (e.g. AUTHENTICATION_AUTHORIZELOCAL) with CLI values.
+	const args = Object.assign({}, process.env, minimist(process.argv));
 
 	const schemaConfJson = args[CONFIG_PARAMS.DATABASES.toUpperCase()];
 	if (schemaConfJson) {

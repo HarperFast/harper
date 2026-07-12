@@ -1,0 +1,7 @@
+{
+	"name": "ops-port-collision-app",
+	"version": "1.0.0",
+	"type": "module",
+	"main": "resources.js",
+	"license": "Apache-2.0"
+}

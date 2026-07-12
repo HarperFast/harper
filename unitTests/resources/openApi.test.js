@@ -1,5 +1,6 @@
 const { expect } = require('chai');
 const { generateJsonApi } = require('#src/resources/openApi');
+const { Resources } = require('#src/resources/Resources');
 
 describe('test openApi module', () => {
 	let resources;
@@ -191,6 +192,66 @@ describe('test openApi module', () => {
 			expect(api.components.schemas.Owner).to.have.property('properties');
 			expect(api.components.schemas.Owner.properties).to.have.property('firstName');
 			expect(api.components.schemas.Owner.properties).to.have.property('lastName');
+		});
+	});
+
+	describe('parameterised routes', () => {
+		it('emits a parameterised route as a templated path with path parameters', () => {
+			const paramResources = new Resources();
+			paramResources.set('widget/:id/action/:action', { prototype: { get: () => [] } });
+
+			const api = generateJsonApi(paramResources, serverURL);
+			expect(api.paths).to.have.property('/widget/{id}/action/{action}');
+			const path = api.paths['/widget/{id}/action/{action}'];
+			expect(path).to.have.property('get');
+
+			const params = path.get.parameters;
+			const names = params.map((p) => p.name);
+			expect(names).to.include('id');
+			expect(names).to.include('action');
+			params.forEach((p) => {
+				expect(p.in).to.equal('path');
+				expect(p.required).to.equal(true);
+			});
+		});
+
+		it('emits a wildcard route with a single catch-all path parameter', () => {
+			const paramResources = new Resources();
+			paramResources.set('files/*rest', { prototype: { get: () => [] } });
+
+			const api = generateJsonApi(paramResources, serverURL);
+			expect(api.paths).to.have.property('/files/{rest}');
+			const params = api.paths['/files/{rest}'].get.parameters;
+			expect(params.map((p) => p.name)).to.deep.equal(['rest']);
+			expect(params[0].description).to.match(/remaining path/);
+		});
+
+		it('names a bare wildcard {wildcard} so the path template is a valid OpenAPI variable', () => {
+			const paramResources = new Resources();
+			paramResources.set('proxy/*', { prototype: { get: () => [] } });
+
+			const api = generateJsonApi(paramResources, serverURL);
+			expect(api.paths).to.have.property('/proxy/{wildcard}');
+			expect(api.paths['/proxy/{wildcard}'].get.parameters.map((p) => p.name)).to.deep.equal(['wildcard']);
+		});
+
+		it('only emits the verbs the resource implements', () => {
+			const paramResources = new Resources();
+			paramResources.set('widget/:id', { prototype: { get: () => [], put: () => [] } });
+
+			const path = generateJsonApi(paramResources, serverURL).paths['/widget/{id}'];
+			expect(path).to.have.property('get');
+			expect(path).to.have.property('put');
+			expect(path).not.to.have.property('delete');
+			expect(path).not.to.have.property('patch');
+		});
+
+		it('omits @hidden parameterised resources', () => {
+			const paramResources = new Resources();
+			paramResources.set('secret/:id', { hidden: true, prototype: { get: () => [] } });
+
+			const api = generateJsonApi(paramResources, serverURL);
+			expect(api.paths).not.to.have.property('/secret/{id}');
 		});
 	});
 });

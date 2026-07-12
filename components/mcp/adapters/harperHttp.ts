@@ -12,6 +12,7 @@
  * automatically and pipes the iterable to the wire.
  */
 import { handleMcpRequest, type McpProfile, type NormRequest, type NormResponse } from '../transport.ts';
+import { toSseStream, type SseFrameSource } from '../sse.ts';
 
 /**
  * The inbound body as Harper hands it to a custom HTTP handler: a Node-stream
@@ -37,6 +38,8 @@ interface HarperHttpRequest {
 	 */
 	user?: { username?: string; role?: unknown };
 	isWebSocket?: boolean;
+	/** Client socket IP (Harper Request getter; present on Node and Bun). */
+	ip?: string;
 }
 
 interface HarperHttpResponse {
@@ -60,6 +63,7 @@ export function createHarperHttpHandler(profile: McpProfile) {
 			user: request.user?.username ?? '',
 			userObject: request.user as NormRequest['userObject'],
 			profile,
+			clientIp: request.ip,
 		};
 
 		const res = await handleMcpRequest(norm);
@@ -134,10 +138,15 @@ function toHarperResponse(res: NormResponse): HarperHttpResponse {
 		if (!headers['Cache-Control'] && !headers['cache-control']) {
 			headers['Cache-Control'] = 'no-store';
 		}
+		// Frame the raw IterableEventQueue into a primed SSE Readable. Harper's
+		// HTTP server pipes a Readable directly but (a) won't serialize the
+		// queue's objects to SSE text and (b) defers header transmission until the
+		// first body byte — so without the primed comment the GET hangs with
+		// headers unsent until a push fires. See `sse.ts`.
 		return {
 			status: res.status,
 			headers,
-			body: res.sseIterable,
+			body: toSseStream(res.sseIterable as unknown as SseFrameSource),
 		};
 	}
 

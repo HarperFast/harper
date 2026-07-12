@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
@@ -13,7 +13,7 @@ const hdb_info_controller = require('#src/dataLayer/hdbInfoController');
 const hdb_logger = require('#src/utility/logging/harper_logger');
 const installer_mod_path = '#js/utility/install/installer';
 const env_manager = require('#src/utility/environment/environmentManager');
-const config_utils = require('#js/config/configUtils');
+const config_utils = require('#src/config/configUtils');
 const { packageJson } = require('#src/utility/packageUtils');
 const role_ops = require('#src/security/role');
 const user_ops = require('#src/security/user');
@@ -561,7 +561,7 @@ describe('applyInstallModeDefaults', () => {
 	// fallback chain (replication.hostname -> cert CN -> listening port) keeps the real identity.
 	it('does not cement a concrete node.hostname for a dev install (harper-pro#351)', () => {
 		const args = applyInstallModeDefaults({}, 'dev');
-		assert.notEqual(args.node_hostname, 'localhost');
+		assert.notStrictEqual(args.node_hostname, 'localhost');
 		// null is acceptable (matches defaultConfig.yaml node.hostname: null); a truthy concrete
 		// value is not.
 		assert.ok(args.node_hostname == null, `node_hostname should be unset/null, got ${args.node_hostname}`);

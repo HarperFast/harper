@@ -2,21 +2,24 @@
  * MCP resources capability — implements `resources/list`, `resources/read`,
  * and `resources/templates/list` per MCP §server/resources (rev 2025-06-18).
  *
- * Two URI schemes:
- *   - `https://<host>[:<port>]/<path>` for app-exported Resources. The same
- *     URL the REST API uses. Resolved **in-process** via
- *     `Resources.getMatch(path)` — never makes an outbound HTTP request.
+ * Three URI surfaces:
+ *   - `harper+rest://<host>[:<port>]/<path>` for app-exported Resource
+ *     descriptors (#1609 — the spec reserves https:// for web-fetchable
+ *     resources). Resolved **in-process** via `Resources.getMatch(path)`;
+ *     legacy `http(s)://` URIs from older listings still read/subscribe.
  *   - `harper://...` for synthetic / metadata resources that don't have a
  *     real HTTP endpoint:
  *       harper://about              — server version, profile, capabilities
  *       harper://schema/{database}/{table} — Table.attributes (RBAC-filtered at read time)
  *       harper://openapi             — OpenAPI 3.0.3 document
  *       harper://operations          — ops-profile only; canonical ops list
+ *   - author-chosen custom schemes (e.g. `docs:///...`) for component-declared
+ *     content resources (`static mcpResources`, #1609) — registered in
+ *     customResourceRegistry.ts and matched before the discovered surfaces.
  *
- * Unlike the tool registry, resources aren't *registered* — they're
- * *discovered* at request time. Apps register their `Resource` classes
- * through Harper's normal flow; this module enumerates the global
- * `resources` registry and adds the synthetic URIs that v1 exposes.
+ * The descriptor/metadata surfaces aren't *registered* — they're *discovered*
+ * at request time from the global `resources` registry; custom content
+ * resources are registered by the application-profile walk.
  *
  * Security model: list time only checks REST-method presence on the
  * Resource class. Resource access is determined programmatically (per-
@@ -34,17 +37,29 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { encodeCursor } from './pagination.ts';
+import {
+	customResourceCompletionValues,
+	listCustomResources,
+	listCustomResourceTemplates,
+	matchCustomResource,
+} from './customResourceRegistry.ts';
 import type { McpProfile } from './transport.ts';
 
 // Harper's resource graph (Resources, generateJsonApi, Server) initializes
 // eagerly when imported at module-load. Unit tests that don't boot Harper
 // would fail to load this module. Lazy-resolve via require() inside the
 // getters below; test seams below let unit tests bypass the real bindings.
+interface ParamRouteEntry {
+	pattern: string;
+	entry: { Resource?: unknown; path?: string; exportTypes?: unknown };
+}
 type ResourcesType = Map<
 	string,
 	{ Resource: unknown; path: string; exportTypes: unknown; hasSubPaths: boolean; relativeURL: string }
 > & {
 	getMatch?: (path: string, exportType?: string) => { Resource: unknown; path: string } | undefined;
+	/** Parameterised routes (`:param`/`*wildcard`); kept out of the Map, enumerated as URI templates. */
+	paramRoutes?: ParamRouteEntry[];
 };
 type OpenApiGenerator = (resources: ResourcesType, serverHttpURL: string) => unknown;
 
@@ -104,6 +119,13 @@ export interface ResourceTemplate {
 const HARPER_SCHEME = 'harper:';
 const HTTPS_SCHEME = 'https:';
 const HTTP_SCHEME = 'http:';
+/**
+ * Scheme for exported-Resource descriptor URIs. The MCP spec reserves
+ * `https://` for resources a client can fetch directly from the web; these
+ * descriptors resolve in-process (RBAC-gated), so they get a custom scheme
+ * (#1609). `http(s)://` URIs from older listings still read (back-compat).
+ */
+const HARPER_REST_SCHEME = 'harper+rest:';
 
 const DEFAULT_LIMIT = 200;
 
@@ -126,6 +148,22 @@ export function _setOpenApiGeneratorForTest(fn: OpenApiGenerator | undefined): v
 /** Test seam: replace the inferred application HTTP URL prefix. */
 export function _setHttpUrlPrefixForTest(prefix: string | undefined): void {
 	_httpUrlPrefixOverride = prefix;
+}
+
+/**
+ * A live audit-log subscription started by `resource.subscribe`, viewed as an
+ * async-iterable with an `.end()` to stop it (the shape MQTT's durable session
+ * consumes). Test seam below injects a fake so unit tests don't need the real
+ * audit log.
+ */
+type ResourceChangeStream = AsyncIterable<{ acknowledge?: () => void }> & { end?: () => void };
+let _subscribeImplOverride: ((path: string, user: AuthedUser) => Promise<ResourceChangeStream | null>) | undefined;
+
+/** Test seam: replace the real `resource.subscribe` resolution with a fake stream. */
+export function _setSubscribeImplForTest(
+	fn: ((path: string, user: AuthedUser) => Promise<ResourceChangeStream | null>) | undefined
+): void {
+	_subscribeImplOverride = fn;
 }
 
 function getResources(): ResourcesType {
@@ -172,27 +210,283 @@ export function listResources(args: ListResourcesArgs): ListResourcesResult {
 	};
 }
 
-export function listResourceTemplates(profile: McpProfile): ResourceTemplate[] {
-	const templates: ResourceTemplate[] = [];
+export interface ListResourceTemplatesResult {
+	resourceTemplates: ResourceTemplate[];
+	nextCursor?: string;
+}
+
+/**
+ * List resource templates for a profile, paginated by opaque cursor offset like
+ * `listResources`/`listTools`. The 2025-06-18 spec says `resources/templates/list`
+ * supports pagination; the set is tiny today, but paginating keeps the shape
+ * spec-conformant and consistent with the other list methods. `offset` is the
+ * decoded cursor (the transport rejects malformed cursors with `-32602` first).
+ */
+export function listResourceTemplates(
+	profile: McpProfile,
+	offset?: number,
+	limit?: number
+): ListResourceTemplatesResult {
+	const all: ResourceTemplate[] = [];
 	if (profile === 'application') {
-		templates.push({
+		all.push({
 			uriTemplate: 'harper://schema/{database}/{table}',
 			name: 'Table schema',
 			description: 'Attribute definitions for a Harper table, RBAC-filtered by attribute_permissions',
 			mimeType: 'application/json',
 		});
-		const serverHttpURL = guessAppHttpUrlPrefix();
-		if (serverHttpURL) {
-			templates.push({
-				uriTemplate: `${serverHttpURL}/{resourcePath}`,
+		const appUriPrefix = appResourceUriPrefix();
+		if (appUriPrefix) {
+			all.push({
+				uriTemplate: `${appUriPrefix}/{resourcePath}`,
 				name: 'Application resource',
-				description:
-					'A Resource exported on the HTTP port. The URI is the canonical REST URL; resolution is in-process.',
+				description: 'A Resource exported on the HTTP port, resolved in-process (not fetchable from the web directly).',
 				mimeType: 'application/json',
 			});
+			// One concrete template per parameterised route, with `{param}` placeholders for its `:param`/`*wildcard`
+			// segments — more discoverable than the generic `{resourcePath}` catch-all above.
+			for (const template of enumerateParamRouteTemplates(appUriPrefix)) all.push(template);
+		}
+		// Author-registered custom resource templates (#1609).
+		for (const template of listCustomResourceTemplates('application')) all.push(template);
+	}
+	const start = offset ?? 0;
+	const max = limit && limit > 0 ? limit : DEFAULT_LIMIT;
+	const slice = all.slice(start, start + max);
+	const next = start + slice.length;
+	return {
+		resourceTemplates: slice,
+		nextCursor: next < all.length ? encodeCursor(next) : undefined,
+	};
+}
+
+/** Result shape for `completion/complete` (#1349 §3.2). */
+export interface CompletionResult {
+	values: string[];
+	total: number;
+	hasMore: boolean;
+}
+
+const COMPLETION_CAP = 100;
+
+export interface CompleteResourceArgs {
+	/** The template variable being completed (e.g. `database`, `table`, `resourcePath`). */
+	argument: { name: string; value: string };
+	/** Previously-resolved sibling variables (e.g. `database` when completing `table`). */
+	context?: { arguments?: Record<string, string> };
+	user: AuthedUser;
+	/** Caller's profile — resource templates exist only on `application`. */
+	profile: McpProfile;
+	/** The `ref/resource` URI (template) being completed against, when the client sent one. */
+	refUri?: string;
+}
+
+/**
+ * Complete a resource-template variable (`ref/resource`) from schema introspection,
+ * RBAC-filtered. Candidates are derived from the same Resource registry the rest of
+ * the MCP resource surface uses; prefix-matched (case-insensitive) against the
+ * partial value and capped at 100 per the MCP completion spec.
+ *
+ * Gated to the templates `resources/templates/list` actually advertises: resource
+ * templates exist only on the `application` profile, and `{resourcePath}` only when
+ * an application HTTP URL is inferable. Otherwise return nothing rather than leak
+ * route/schema names a profile can't read.
+ */
+export function completeResourceArgument(args: CompleteResourceArgs): CompletionResult {
+	const { argument, context, user, profile } = args;
+	if (profile !== 'application') return capCompletion([]);
+	const partial = (argument.value ?? '').toLowerCase();
+	// Custom mcpResources templates complete from author-declared values (#1609);
+	// the ref URI selects which template's declaration applies.
+	if (args.refUri) {
+		const values = customResourceCompletionValues(profile, args.refUri, argument.name);
+		if (values) {
+			return capCompletion(values.filter((v) => v.toLowerCase().startsWith(partial)).sort());
 		}
 	}
-	return templates;
+	let candidates: string[] = [];
+	if (argument.name === 'database') {
+		const dbs = new Set<string>();
+		for (const { db, table } of enumerateTableBackedResources()) {
+			if (canSeeTable(user, db, table)) dbs.add(db);
+		}
+		candidates = [...dbs];
+	} else if (argument.name === 'table') {
+		const db = context?.arguments?.database;
+		const tables = new Set<string>();
+		for (const e of enumerateTableBackedResources()) {
+			if (db && e.db !== db) continue;
+			if (canSeeTable(user, e.db, e.table)) tables.add(e.table);
+		}
+		candidates = [...tables];
+	} else if (argument.name === 'resourcePath') {
+		// Only advertised when an app HTTP URL prefix exists (the `{resourcePath}`
+		// template). No prefix → no such template → no completions.
+		if (guessAppHttpUrlPrefix()) candidates = enumerateMcpResourcePaths();
+	}
+	const filtered = candidates.filter((c) => c.toLowerCase().startsWith(partial)).sort();
+	return capCompletion(filtered);
+}
+
+/** Cap a candidate list to the MCP completion limit, reporting total + hasMore. */
+export function capCompletion(values: string[]): CompletionResult {
+	const total = values.length;
+	const capped = values.slice(0, COMPLETION_CAP);
+	return { values: capped, total, hasMore: total > capped.length };
+}
+
+/** A table is offerable if the user may read or describe it. */
+function canSeeTable(user: AuthedUser, db: string, table: string): boolean {
+	const perm = userTablePermissions(user, db, table);
+	return !!perm && (perm.read === true || perm.describe === true);
+}
+
+/** MCP-exposed application resource paths (the `{resourcePath}` candidates). */
+function enumerateMcpResourcePaths(): string[] {
+	const out: string[] = [];
+	for (const [path, entry] of getResources()) {
+		if (!isMcpExposed(entry)) continue;
+		const ResourceClass = entry.Resource as { prototype?: unknown; hidden?: boolean } | undefined;
+		if (ResourceClass?.hidden === true) continue;
+		if (!hasRestVerbs(ResourceClass?.prototype)) continue;
+		out.push(path);
+	}
+	return out;
+}
+
+export interface ResourceSubscription {
+	/** Stop the subscription and release the underlying audit-log iterator. */
+	stop: () => void;
+}
+
+/**
+ * Subscribe to changes on a row-backed resource URI (#1349 §3.6), invoking
+ * `onUpdate` once per committed change. Returns a handle to stop it, or `null`
+ * if the URI is not subscribable — only application HTTP(S) resource URLs backed
+ * by a Resource with `subscribe` qualify; synthetic `harper://*` URIs have no
+ * row-change source and are list_changed-only.
+ *
+ * Mirrors the MQTT durable-subscription consumer (`server/DurableSubscriptionsSession.ts`):
+ * `resource.subscribe` (a transactional static) returns an async-iterable with an
+ * `.end()`; we iterate it on the worker holding the SSE stream, so the audit-log
+ * `'committed'` broadcast delivers changes locally (cross-worker via the shared log).
+ */
+export async function subscribeToResource(
+	uri: string,
+	user: AuthedUser,
+	onUpdate: () => void
+): Promise<ResourceSubscription | null> {
+	let parsed: URL;
+	try {
+		parsed = new URL(uri);
+	} catch {
+		return null;
+	}
+	if (parsed.protocol !== HARPER_REST_SCHEME && parsed.protocol !== HTTPS_SCHEME && parsed.protocol !== HTTP_SCHEME) {
+		return null;
+	}
+	const path = parsed.pathname.replace(/^\/+/, '');
+
+	let stream: ResourceChangeStream | null;
+	if (_subscribeImplOverride) {
+		stream = await _subscribeImplOverride(path, user);
+	} else {
+		const resourcesRegistry = getResources();
+		const entry = resourcesRegistry.getMatch(path, 'mcp') as
+			{ Resource: { subscribe?: (request: unknown, context: unknown) => unknown }; relativeURL?: string } | undefined;
+		const ResourceClass = entry?.Resource;
+		if (!entry || typeof ResourceClass?.subscribe !== 'function') return null;
+		// `getMatch` matched the Resource and put the remaining path (the record key,
+		// if any) on `entry.relativeURL`. The table subscribe targets `request.id`,
+		// so set it explicitly: a record URI watches that record; a collection URI
+		// (empty remainder — what `resources/list` advertises) watches the whole
+		// table. `new RequestTarget(path)` parses an id out of the path on its own,
+		// so we must override both cases (else a collection URI watches a phantom
+		// record named after the resource and receives nothing).
+		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
+		// Lazy-require the server-layer machinery (see file-top note on eager init).
+		const { transaction } = require('../../resources/transaction');
+		const { RequestTarget } = require('../../resources/RequestTarget');
+		const request = new RequestTarget(path);
+		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
+		// the MCP notification just says "this resource changed; re-read it".
+		Object.assign(request, {
+			id: recordId || undefined,
+			isCollection: !recordId,
+			omitCurrent: true,
+			checkPermission: user?.role?.permission ?? {},
+		});
+		const context = { user, authorize: true, request };
+		const result = await transaction(context, async () => ResourceClass.subscribe!(request, context));
+		stream =
+			result && typeof (result as ResourceChangeStream)[Symbol.asyncIterator] === 'function'
+				? (result as ResourceChangeStream)
+				: null;
+	}
+	if (!stream) return null;
+
+	let stopped = false;
+	void (async () => {
+		try {
+			for await (const update of stream) {
+				if (stopped) break;
+				update?.acknowledge?.();
+				onUpdate();
+			}
+		} catch (err) {
+			harperLogger.trace(`MCP subscription ${uri} ended: ${(err as Error).message}`);
+		}
+	})();
+
+	return {
+		stop: () => {
+			stopped = true;
+			try {
+				stream.end?.();
+			} catch (err) {
+				harperLogger.trace(`MCP subscription ${uri} stop: ${(err as Error).message}`);
+			}
+		},
+	};
+}
+
+/**
+ * Render each registered parameterised route as an MCP URI template. Mirrors `routePatternToTemplate` in
+ * `Resources.ts` but works from the pattern string so this module stays free of a Resources import (preserving its
+ * test seams). Honors `exportTypes.mcp` and `@hidden` like the other enumerators.
+ */
+function enumerateParamRouteTemplates(prefix: string): ResourceTemplate[] {
+	const out: ResourceTemplate[] = [];
+	for (const route of getResources().paramRoutes ?? []) {
+		if (!isMcpExposed(route.entry)) continue;
+		const ResourceClass = route.entry.Resource as
+			{ prototype?: unknown; description?: string; hidden?: boolean } | undefined;
+		// @hidden suppresses the Resource from descriptive surfaces (MCP + OpenAPI).
+		if (ResourceClass?.hidden === true) continue;
+		if (!hasRestVerbs(ResourceClass?.prototype)) continue;
+		const uriPath = paramPatternToUriTemplate(route.pattern);
+		const tableDoc = ResourceClass?.description;
+		const base = `Parameterised application resource at /${route.pattern}. Resolves in-process via Resources.getMatch.`;
+		out.push({
+			uriTemplate: `${prefix}/${uriPath}`,
+			name: route.pattern,
+			description: tableDoc ? `${tableDoc} ${base}` : base,
+			mimeType: 'application/json',
+		});
+	}
+	return out;
+}
+
+/** `widget/:id/action/:action` → `widget/{id}/action/{action}` (and `*rest` → `{rest}`). */
+function paramPatternToUriTemplate(pattern: string): string {
+	return pattern
+		.split('/')
+		.map((segment) => {
+			if (segment.charAt(0) === ':') return `{${segment.slice(1)}}`;
+			if (segment.charAt(0) === '*') return `{${segment.slice(1) || 'wildcard'}}`;
+			return segment;
+		})
+		.join('/');
 }
 
 export interface ReadResourceArgs {
@@ -213,6 +507,14 @@ export interface ReadResourceFail {
 
 export async function readResource(args: ReadResourceArgs): Promise<ReadResourceOk | ReadResourceFail> {
 	const { uri, user, profile } = args;
+
+	// Author-registered custom resources match first — a registered URI (fixed or
+	// template) always wins over the discovered surface (#1609).
+	const custom = matchCustomResource(profile, uri);
+	if (custom) {
+		return readCustomResource(uri, custom, user, profile);
+	}
+
 	let parsed: URL;
 	try {
 		parsed = new URL(uri);
@@ -223,13 +525,70 @@ export async function readResource(args: ReadResourceArgs): Promise<ReadResource
 	if (parsed.protocol === HARPER_SCHEME) {
 		return readHarperUri(parsed, user, profile);
 	}
-	if (parsed.protocol === HTTPS_SCHEME || parsed.protocol === HTTP_SCHEME) {
+	if (parsed.protocol === HARPER_REST_SCHEME || parsed.protocol === HTTPS_SCHEME || parsed.protocol === HTTP_SCHEME) {
 		if (profile !== 'application') {
-			return { ok: false, reason: 'https:// resources are only available on the application profile' };
+			return { ok: false, reason: 'application resources are only available on the application profile' };
 		}
 		return readAppResource(parsed);
 	}
 	return { ok: false, reason: `unsupported uri scheme: ${parsed.protocol}` };
+}
+
+/**
+ * Read an author-registered custom resource (#1609): invoke the registered
+ * `read` (live-class method dispatch — see `registerCustomMcpResources`) and
+ * normalize the result to MCP contents. A string is text; `{ text }` /
+ * `{ blob }` pass through; any other object serializes as JSON.
+ */
+async function readCustomResource(
+	uri: string,
+	custom: NonNullable<ReturnType<typeof matchCustomResource>>,
+	user: AuthedUser,
+	profile: McpProfile
+): Promise<ReadResourceOk | ReadResourceFail> {
+	const { def, params } = custom;
+	try {
+		const result = await def.read(params, { user, profile });
+		if (typeof result === 'string') {
+			return { ok: true, contents: [{ uri, mimeType: def.mimeType ?? 'text/plain', text: result }] };
+		}
+		if (result && typeof result === 'object') {
+			const content = result as { text?: unknown; blob?: unknown; mimeType?: unknown };
+			if (typeof content.text === 'string') {
+				return {
+					ok: true,
+					contents: [
+						{
+							uri,
+							mimeType: typeof content.mimeType === 'string' ? content.mimeType : (def.mimeType ?? 'text/plain'),
+							text: content.text,
+						},
+					],
+				};
+			}
+			if (typeof content.blob === 'string') {
+				return {
+					ok: true,
+					contents: [
+						{
+							uri,
+							mimeType:
+								typeof content.mimeType === 'string' ? content.mimeType : (def.mimeType ?? 'application/octet-stream'),
+							blob: content.blob,
+						},
+					],
+				};
+			}
+			return jsonContent(uri, result);
+		}
+		return { ok: false, reason: `custom resource '${def.name}' returned no content for: ${uri}` };
+	} catch (err) {
+		// Author read errors surface as read failures (JSON-RPC error at the
+		// transport), with the raw error only in the server log — same
+		// sanitization posture as custom tools.
+		harperLogger.error(`MCP custom resource '${def.name}' read failed for ${uri}:`, err);
+		return { ok: false, reason: `custom resource '${def.name}' failed to read: ${uri}` };
+	}
 }
 
 // ─── Enumeration ───────────────────────────────────────────────────────
@@ -274,10 +633,14 @@ function enumerate(profile: McpProfile): ResourceDescriptor[] {
 			});
 		}
 
-		// https://... — one per exported Resource that has class-level REST methods.
+		// harper+rest://... — one per exported Resource that has class-level REST methods.
 		// Per-record access is decided by each Resource's `allow{Read,...}` predicate
 		// at read time, so the list filter only checks method presence.
 		for (const entry of enumerateAppHttpResources()) out.push(entry);
+
+		// Author-registered custom content resources (#1609) — fixed URIs only;
+		// templates are listed by `resources/templates/list`.
+		for (const entry of listCustomResources('application')) out.push(entry);
 	}
 
 	out.sort((a, b) => (a.uri < b.uri ? -1 : a.uri > b.uri ? 1 : 0));
@@ -309,7 +672,7 @@ function enumerateTableBackedResources(): Array<{ db: string; table: string; des
 }
 
 function enumerateAppHttpResources(): ResourceDescriptor[] {
-	const prefix = guessAppHttpUrlPrefix();
+	const prefix = appResourceUriPrefix();
 	if (!prefix) return [];
 	const out: ResourceDescriptor[] = [];
 	for (const [path, entry] of getResources()) {
@@ -549,6 +912,18 @@ function filterAttributesByPermissions(attributes: any[], attributePermissions: 
 	return attributes.filter((a) => !denied.has(a?.name));
 }
 
+/**
+ * URI prefix for exported-Resource descriptors: the app HTTP host/port under
+ * the `harper+rest:` scheme (#1609). Derived from the HTTP prefix so the
+ * authority still identifies the instance, but the scheme signals "resolve
+ * via MCP, not the web" per spec guidance.
+ */
+function appResourceUriPrefix(): string | undefined {
+	const httpPrefix = guessAppHttpUrlPrefix();
+	if (!httpPrefix) return undefined;
+	return httpPrefix.replace(/^https?:/, HARPER_REST_SCHEME);
+}
+
 function guessAppHttpUrlPrefix(): string | undefined {
 	// Best-effort URL prefix construction. Hostname comes from the server
 	// module post-boot; the port comes from config. In tests where neither
@@ -573,11 +948,24 @@ function guessAppHttpUrlPrefix(): string | undefined {
 
 	// Standard deployment: prefer the HTTPS port. Fall back to the plain
 	// HTTP port for dev setups that don't configure TLS.
-	const securePort = env.get(CONFIG_PARAMS.HTTP_SECUREPORT);
+	const securePort = normalizePortForUrl(env.get(CONFIG_PARAMS.HTTP_SECUREPORT));
 	if (securePort) return `https://${hostname}:${securePort}`;
-	const httpPort = env.get(CONFIG_PARAMS.HTTP_PORT);
+	const httpPort = normalizePortForUrl(env.get(CONFIG_PARAMS.HTTP_PORT));
 	if (httpPort) return `http://${hostname}:${httpPort}`;
 	return undefined;
+}
+
+/**
+ * Port config accepts a bare port or a `host:port` bind-address form
+ * (e.g. `--HTTP_PORT=127.0.0.9:9926`); descriptor URLs need only the port —
+ * appending the raw value produced authorities like `host:host:port` (#1609).
+ * Exported for unit tests.
+ */
+export function normalizePortForUrl(value: unknown): string | undefined {
+	if (value == null || value === '') return undefined;
+	const str = String(value);
+	const colon = str.lastIndexOf(':');
+	return colon === -1 ? str : str.slice(colon + 1);
 }
 
 function jsonContent(uri: string, body: unknown): ReadResourceOk {

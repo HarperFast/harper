@@ -2,10 +2,11 @@ const { isMainThread } = require('worker_threads');
 const { getTables } = require('../resources/databases.ts');
 const { loadComponentDirectories, loadComponent } = require('../components/componentLoader.ts');
 const { resetResources } = require('../resources/Resources.ts');
-const configUtils = require('../config/configUtils.js');
+const configUtils = require('../config/configUtils.ts');
 const { dirname } = require('path');
 const { loadCertificates } = require('../security/keys.ts');
 const { installApplications } = require('../components/Application.ts');
+const { errorForLog } = require('../utility/logging/harper_logger.ts');
 
 let loadedComponents = new Map();
 /**
@@ -16,7 +17,7 @@ async function loadRootComponents(isWorkerThread = false) {
 	try {
 		if (isMainThread && !process.env.HARPER_SAFE_MODE) await installApplications();
 	} catch (error) {
-		console.error(error);
+		console.error(errorForLog(error));
 	}
 
 	let resources = resetResources();

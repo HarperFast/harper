@@ -1,0 +1,21 @@
+# QA-185 — Within-request read-snapshot contract.
+#
+# Ledger: the primary churn table. Rows are inserted/deleted by concurrent writers.
+#   `bucket` is the indexed grouping attribute; readers scan by bucket and check
+#   that every returned `value` equals the seeded constant (torn-value = non-seeded value
+#   visible in a single response = within-request snapshot break).
+#
+# Account: the F-029 cross-check table. A constant A+B invariant is maintained by
+#   concurrent TransferAccount calls. A single-request AccountPairSnap reads both
+#   keys in one request transaction; A+B != constant = within-request snapshot tear.
+type Ledger @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	val: Int
+}
+
+type Account @table @export {
+	id: ID @primaryKey
+	balance: Int
+}

@@ -1,10 +1,10 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.js';
+import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 
-import { dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import {
 	access,
 	constants,
@@ -13,12 +13,15 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	rename,
 	rm,
 	stat,
 	symlink,
 	writeFile,
 } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -35,6 +38,10 @@ interface ApplicationConfig {
 		timeout?: number;
 		allowInstallScripts?: boolean;
 	};
+	// Private-registry auth in reference form only — each entry names an hdb_secret row, never a
+	// token. Recorded by deploy_component so every (cold) install — reboot, new peer, rollback —
+	// re-resolves the credential from the store rather than needing it re-supplied.
+	registryAuth?: { registry: string; secret: string; scope?: string }[];
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -67,6 +74,22 @@ export class InvalidInstallTimeoutError extends TypeError {
 	constructor(applicationName: string, timeout: unknown) {
 		super(
 			`Invalid 'install.timeout' property for application ${applicationName}: expected non-negative number, got ${typeof timeout}`
+		);
+	}
+}
+
+export class InvalidRegistryAuthPropertyError extends TypeError {
+	constructor(applicationName: string, registryAuth: unknown) {
+		super(
+			`Invalid 'registryAuth' property for application ${applicationName}: expected array, got ${typeof registryAuth}`
+		);
+	}
+}
+
+export class InvalidRegistryAuthEntryError extends TypeError {
+	constructor(applicationName: string) {
+		super(
+			`Invalid 'registryAuth' entry for application ${applicationName}: expected { registry, secret, scope? } reference`
 		);
 	}
 }
@@ -108,6 +131,24 @@ export function assertApplicationConfig(
 			);
 		}
 	}
+	if ('registryAuth' in applicationConfig && applicationConfig.registryAuth !== undefined) {
+		const entries = applicationConfig.registryAuth;
+		if (!Array.isArray(entries)) {
+			throw new InvalidRegistryAuthPropertyError(applicationName, entries);
+		}
+		for (const entry of entries) {
+			// Config carries references only — a literal `token` here would mean a plaintext credential
+			// was persisted to disk, which the deploy path is designed to prevent.
+			if (
+				typeof entry !== 'object' ||
+				entry === null ||
+				typeof (entry as any).registry !== 'string' ||
+				typeof (entry as any).secret !== 'string'
+			) {
+				throw new InvalidRegistryAuthEntryError(applicationName);
+			}
+		}
+	}
 }
 
 /**
@@ -124,6 +165,11 @@ export function isSSHAuthFailure(stderr: string): boolean {
 		stderr.includes('Host key verification failed')
 	);
 }
+
+// Hidden directory under the components root holding component versions renamed aside
+// during a deploy swap (see extractApplication). The leading dot keeps
+// loadComponentDirectories from loading its contents as components.
+export const ASIDE_STAGING_DIR = '.deploy-aside';
 
 /**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
@@ -203,7 +249,10 @@ export async function extractApplication(application: Application) {
 				application.name,
 				'npm',
 				['pack', '--json', application.packageIdentifier],
-				parentDirPath
+				parentDirPath,
+				undefined,
+				undefined,
+				application.npmUserconfigPath
 			);
 			if (code !== 0) {
 				if (isSSHAuthFailure(stderr)) {
@@ -233,11 +282,29 @@ export async function extractApplication(application: Application) {
 		}
 	}
 
-	// Create the application directory
+	// Replace any existing component directory atomically instead of clearing it in
+	// place. A previous version's worker can still be running and actively writing
+	// into this directory — e.g. a live Next.js app writing into `.next/cache` — and
+	// an in-place recursive rm races that writer: rm empties `.next`, then its leaf
+	// `rmdir('.next')` fails with ENOTEMPTY because the worker just re-created a cache
+	// entry. (`force: true` only suppresses ENOENT; ENOTEMPTY is not retried unless
+	// `maxRetries` is set, and a continuously-writing app would outlast retries
+	// anyway.) Renaming the old directory aside is atomic and immune to the race: the
+	// still-running worker keeps writing into the renamed inode harmlessly until it's
+	// replaced on restart, and the aside copy is removed best-effort below.
+	//
+	// The aside lives under a hidden, component-scoped staging directory inside the
+	// components root: same filesystem as the source so the rename stays atomic, the
+	// leading dot keeps loadComponentDirectories from picking it up as a phantom
+	// component, and the per-component path means a sibling component never collides
+	// with (or sweeps) another's aside.
+	const asideStagingDir = join(dirname(application.dirPath), ASIDE_STAGING_DIR, basename(application.dirPath));
+	let didRenameAside = false;
 	try {
 		await access(application.dirPath, constants.F_OK);
-		// directory already exists; clear it
-		await rm(application.dirPath, { recursive: true, force: true });
+		await mkdir(asideStagingDir, { recursive: true });
+		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
+		didRenameAside = true;
 	} catch (err) {
 		// Ignore does not exist error
 		if (err.code !== 'ENOENT') {
@@ -272,6 +339,18 @@ export async function extractApplication(application: Application) {
 	// Clean up the original tarball
 	if (shouldDeleteTarball && tarballPath) {
 		await rm(tarballPath, { force: true });
+	}
+
+	// Remove this component's aside copies. The old worker may still hold files open
+	// in the just-renamed copy (the live writer that motivated the rename), so this is
+	// best-effort: removing the whole staging subdirectory also clears leftovers from
+	// earlier deploys whose workers have since exited, and a copy that survives because
+	// its worker is still live is swept by the next deploy. The failure is expected in
+	// the live-worker case, so it's logged at trace rather than as a warning.
+	if (didRenameAside) {
+		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
+		);
 	}
 }
 
@@ -317,7 +396,8 @@ export async function installApplication(application: Application) {
 			args,
 			application.dirPath,
 			application.install?.timeout,
-			customOnLine
+			customOnLine,
+			application.npmUserconfigPath
 		);
 		// if it succeeds, return
 		if (code === 0) {
@@ -377,7 +457,8 @@ export async function installApplication(application: Application) {
 			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
 			application.dirPath,
 			application.install?.timeout,
-			pmOnLine
+			pmOnLine,
+			application.npmUserconfigPath
 		);
 
 		// if it succeeds, return
@@ -433,7 +514,8 @@ export async function installApplication(application: Application) {
 		npmInstallArgs,
 		application.dirPath,
 		application.install?.timeout,
-		npmOnLine
+		npmOnLine,
+		application.npmUserconfigPath
 	);
 
 	// if it succeeds, return
@@ -469,6 +551,7 @@ interface ApplicationOptions {
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	onInstallLine?: OnInstallLine;
+	registryAuth?: RegistryAuthEntry[];
 }
 
 export class Application {
@@ -480,18 +563,74 @@ export class Application {
 	dirPath: string;
 	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
+	// Transient registry auth provided by a deploy. The token is held only in memory and a
+	// per-deploy `.npmrc`; it is never persisted to config, hdb_deployment, or replicated.
+	registryAuth?: RegistryAuthEntry[];
+	// Path to the per-deploy `.npmrc`, set by writeTransientNpmrc() during prepareApplication and
+	// passed to the spawn calls; undefined when no registry auth was provided.
+	npmUserconfigPath?: string;
+	#npmrcTempDir?: string;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine, registryAuth }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
 		this.onInstallLine = onInstallLine;
+		this.registryAuth = registryAuth;
 		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		if (!componentsRoot) throw new Error('componentsRoot is not configured');
 		this.dirPath = join(componentsRoot, name);
 		this.logger = logger.loggerWithTag(name);
 		this.packageManagerPrefix = getConfigValue(CONFIG_PARAMS.APPLICATIONS_PACKAGEMANAGERPREFIX);
+	}
+
+	// Write the transient `.npmrc` into a fresh 0700 temp dir (file mode 0600) and record its path
+	// so the deploy's npm spawns authenticate against the private registry. No-op without registry auth.
+	//
+	// Because `nonInteractiveSpawn` points npm at this single file (replacing any inherited
+	// npm_config_userconfig), prepend the contents of an already-configured userconfig — e.g. a
+	// fabric-injected file carrying cluster registries, a proxy, or a cafile — so those settings
+	// survive. The transient auth is appended last so it wins on conflict (npm honors the last
+	// value for a given key).
+	async writeTransientNpmrc(): Promise<void> {
+		if (!this.registryAuth?.length) return;
+		// Defensive: if called more than once, remove the prior temp dir first so it isn't leaked.
+		if (this.#npmrcTempDir) await this.cleanupTransientNpmrc();
+		this.#npmrcTempDir = await mkdtemp(join(tmpdir(), 'harper-npmrc-'));
+		const npmrcPath = join(this.#npmrcTempDir, '.npmrc');
+		let content = '';
+		const inheritedUserconfig = process.env.npm_config_userconfig ?? process.env.NPM_CONFIG_USERCONFIG;
+		if (inheritedUserconfig) {
+			try {
+				const inherited = await readFile(inheritedUserconfig, 'utf8');
+				content = inherited.endsWith('\n') ? inherited : inherited + '\n';
+			} catch (error: any) {
+				// Missing inherited file is fine (npm would have created/ignored it); surface anything else.
+				if (error?.code !== 'ENOENT') throw error;
+			}
+		}
+		content += buildNpmrcContent(this.registryAuth);
+		await writeFile(npmrcPath, content, { mode: 0o600 });
+		this.npmUserconfigPath = npmrcPath;
+	}
+
+	// Remove the transient `.npmrc` (and its temp dir) once the deploy's npm work is done.
+	async cleanupTransientNpmrc(): Promise<void> {
+		if (!this.#npmrcTempDir) return;
+		try {
+			await rm(this.#npmrcTempDir, { recursive: true, force: true });
+		} catch (error) {
+			// Called from prepareApplication's finally; a throw here (e.g. a Windows file lock) would
+			// mask the original deploy error and skip broadcastDeployEnd. Log and always clear state.
+			this.logger.warn(`Failed to remove transient .npmrc dir ${this.#npmrcTempDir}:`, error);
+		} finally {
+			this.#npmrcTempDir = undefined;
+			this.npmUserconfigPath = undefined;
+			// Drop the in-memory token array too, so it can't surface in a later heap dump or error
+			// serialization of this Application instance.
+			this.registryAuth = undefined;
+		}
 	}
 }
 
@@ -532,9 +671,13 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 export async function prepareApplication(application: Application) {
 	await broadcastDeployStart(application.name);
 	try {
+		// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
+		// `npm install` authenticate against the private registry; always remove it afterward.
+		await application.writeTransientNpmrc();
 		await extractApplication(application);
 		await installApplication(application);
 	} finally {
+		await application.cleanupTransientNpmrc();
 		broadcastDeployEnd(application.name);
 	}
 }
@@ -594,10 +737,29 @@ export async function installApplications() {
 			// This will throw if the config is invalid
 			assertApplicationConfig(name, applicationConfig);
 
+			// Resolve any private-registry auth references from the store so a cold install (fresh
+			// node, wiped components dir, new peer that never installed) can authenticate without the
+			// token being re-supplied. Best-effort: if custody isn't available yet or a referenced
+			// secret is missing, log and install without it (a truly private package then fails in
+			// npm with its own error) rather than blocking boot.
+			let resolvedRegistryAuth: RegistryAuthEntry[] | undefined;
+			if (applicationConfig.registryAuth?.length) {
+				try {
+					const { resolveRegistryAuth } = await import('./secretOperations.ts');
+					resolvedRegistryAuth = (await resolveRegistryAuth(applicationConfig.registryAuth, name)) as
+						RegistryAuthEntry[] | undefined;
+				} catch (error) {
+					logger.warn?.(
+						`Could not resolve registryAuth for application ${name} at install time: ${(error as Error).message}`
+					);
+				}
+			}
+
 			const application = new Application({
 				name,
 				packageIdentifier: applicationConfig.package,
 				install: applicationConfig.install,
+				registryAuth: resolvedRegistryAuth,
 			});
 
 			// Lock check: only install if not already installed with matching configuration
@@ -636,6 +798,49 @@ function getGitSSHCommand() {
 			}
 		}
 	}
+}
+
+export interface RegistryAuthEntry {
+	registry: string;
+	token: string;
+	scope?: string;
+}
+
+// Normalize a registry to a full URL with a scheme and trailing slash, e.g.
+// `npm.pkg.github.com` or `//npm.pkg.github.com` → `https://npm.pkg.github.com/`.
+function normalizeRegistryUrl(registry: string): string {
+	let url = registry.trim();
+	if (!/^https?:\/\//i.test(url)) {
+		url = url.startsWith('//') ? `https:${url}` : `https://${url}`;
+	}
+	if (!url.endsWith('/')) url += '/';
+	return url;
+}
+
+// Build the contents of a transient `.npmrc` from registry auth entries: an auth-token line keyed
+// by npm's registry auth key (scheme stripped, leading `//`, trailing `/`) plus a registry-routing
+// line. A scope routes only that `@scope` to the registry (`@scope:registry=…`); without a scope
+// the entry sets npm's default `registry=…` so an unscoped package spec (e.g. `npm:my-private-app`)
+// or its transitive deps actually resolve against this registry rather than the public default.
+// A scope-less entry therefore requires its registry to serve/proxy whatever npm needs to install;
+// with multiple scope-less entries npm's last-value-wins applies to the default `registry`.
+export function buildNpmrcContent(registryAuth: RegistryAuthEntry[]): string {
+	const lines: string[] = [];
+	for (const { registry, token, scope } of registryAuth) {
+		// Enforce the no-newline invariant at the injection point so it holds for every source. The
+		// ops validator already rejects CR/LF in a literal `token`, but a token resolved from an
+		// hdb_secret row bypasses that guard; without this a `\n` in a secret value would inject
+		// arbitrary .npmrc lines (admin-only per the threat model, but the literal path already
+		// defends this class).
+		if (/[\r\n]/.test(token)) {
+			throw new Error(`registry auth token for '${registry}' contains an illegal newline character`);
+		}
+		const registryUrl = normalizeRegistryUrl(registry);
+		const authKey = registryUrl.replace(/^https?:/i, '');
+		lines.push(`${authKey}:_authToken=${token}`);
+		lines.push(scope ? `${scope}:registry=${registryUrl}` : `registry=${registryUrl}`);
+	}
+	return lines.join('\n') + '\n';
 }
 
 /**
@@ -697,7 +902,8 @@ export function nonInteractiveSpawn(
 	args: string[],
 	cwd: string,
 	timeoutMs: number = 60 * 60 * 1000,
-	onLine?: (stream: 'stdout' | 'stderr', line: string) => void
+	onLine?: (stream: 'stdout' | 'stderr', line: string) => void,
+	npmUserconfigPath?: string
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
@@ -709,6 +915,18 @@ export function nonInteractiveSpawn(
 		const gitSSHCommand = getGitSSHCommand();
 		if (gitSSHCommand) {
 			env.GIT_SSH_COMMAND = gitSSHCommand;
+		}
+
+		// A deploy carrying transient registry auth points npm at a per-deploy `.npmrc` so
+		// `npm pack`/`install` can authenticate against a private registry without the token
+		// ever touching disk durably, the package reference, config, or hdb_deployment.
+		if (npmUserconfigPath) {
+			// On case-insensitive platforms (Windows) an inherited NPM_CONFIG_USERCONFIG would
+			// shadow the lowercase key we set, so drop any existing case variant first.
+			for (const key of Object.keys(env)) {
+				if (key.toLowerCase() === 'npm_config_userconfig') delete env[key];
+			}
+			env.npm_config_userconfig = npmUserconfigPath;
 		}
 
 		if (process.platform === 'win32' && command === 'npm') {

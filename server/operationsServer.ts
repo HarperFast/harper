@@ -25,9 +25,9 @@ import {
 	serverErrorHandler,
 	reqBodyValidationHandler,
 } from './serverHelpers/serverHandlers.js';
-import { registerBunFastifyInstance } from './http.ts';
+import { registerFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
-import { getConfigObj } from '../config/configUtils.js';
+import { getConfigObj } from '../config/configUtils.ts';
 import { registerMcpProfile } from '../components/mcp/index.ts';
 import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
 type ParsedSqlObject = any;
@@ -94,7 +94,7 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 			// On Bun, register the Fastify instance so requests can be delegated via inject()
 			if (typeof globalThis.Bun !== 'undefined') {
 				const port = options.port || options.securePort || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
-				if (port) registerBunFastifyInstance(port, server);
+				if (port) registerFastifyInstance(port, server);
 			}
 			if (!server.server.closeIdleConnections) {
 				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify

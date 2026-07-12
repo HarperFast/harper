@@ -66,8 +66,16 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `threads/manageThreads.js` | Thread pool lifecycle.                                   |
 | `threads/threadServer.js`  | Worker entry point — receives sockets via IPC.           |
 | `threads/itc.js`           | Inter-thread comms primitives.                           |
+| `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.      |
 
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
+
+### Where periodic maintenance runs (main thread vs last worker)
+
+Single-instance background tasks pick their thread by what state they touch:
+
+- **Last worker** (`getWorkerIndex() === getWorkerCount() - 1`) — for tasks that operate on **worker-resident JS state**: audit cleanup (`resources/auditStore.ts`) and disk reclamation (`storageReclamation.ts`) walk per-store objects that only exist in a worker.
+- **Main thread** (`isMainThread`) — for tasks that drive a **process-global native singleton** and need no JS state. `transactionLogCooling.ts` is the example: rocksdb-js's transaction-log registry is one C++ static shared across all worker threads, so any thread cools every log. The main thread is chosen because it is the only thread that lives for the whole process — a worker-driven timer would stall whenever that worker is recycled.
 
 ---
 
@@ -111,6 +119,16 @@ The default WebSocket upgrade handler is registered automatically inside `onWebS
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
+
+### Response Cache-Control / Vary policy (#1518, #1565)
+
+Three tiers, applied in two places:
+
+1. **App/resource explicit** — a `Cache-Control` set by the resource (or `@table(cacheControl: "...")` for anonymous reads, emitted in `REST.ts → http()`) always wins. The declaration is required: anonymous readability alone never emits shared-cache headers, because a request-attribute-gated `allowRead` (IP, headers) would make inferred `public` unsound.
+2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved or credentials were rejected (401), _unless_ the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
+3. **CORS partitioning** — when CORS is enabled, every response gets `Vary: Origin` (the ACAO header is reflected per-origin, and its absence on no-Origin requests is origin-dependent too).
+
+The `@table(cacheControl:)` value is persisted on the primary-key attribute (like `expiration`), so all threads and future boots see it; `resources/databases.ts → table()` treats `null` as "schema explicitly has none" (clears on reload) and `undefined` as "caller is not schema-defining" (no clobber from `add_attribute`/cluster schema events).
 
 ---
 

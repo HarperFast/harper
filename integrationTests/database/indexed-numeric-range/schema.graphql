@@ -1,0 +1,16 @@
+# QA-188 — @indexed numeric attribute range queries: boundary inclusivity / exclusivity,
+# Int vs Long(>2^53) vs Float, negatives/zero, and post-churn correctness.
+#
+# Three @indexed numeric columns:
+#   n     Int    — primary range-test column; signed, densely seeded around boundaries
+#   big   Float  — carries Long(>2^53) values via Float (JS doubles), tests 2^53 region
+#   fval  Float  — fractional float values for sub-integer boundary probes
+#
+# OPEN table (no @sealed) so we can stash arbitrary fields alongside.
+type NumRow @table @export {
+	id: ID @primaryKey
+	n: Int @indexed
+	big: Float @indexed
+	fval: Float @indexed
+	label: String
+}

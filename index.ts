@@ -29,6 +29,31 @@ export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
 export type { Scope } from './components/Scope.ts';
+export type {
+	ModelBackend,
+	ModelCapabilities,
+	DefineBackendSpec,
+	Capability,
+	ModelRouter,
+	RouteRequest,
+	EmbedOpts,
+	GenerateOpts,
+	GenerateInput,
+	GenerateResult,
+	GenerateChunk,
+	BackendOpts,
+	AccountingContext,
+	ModelCallResult,
+	TokenUsage,
+	Message,
+	ToolDef,
+	ToolCall,
+	ToolHandler,
+	ToolHandlerContext,
+	ToolTraceEntry,
+	ConversationAppender,
+	ConversationTurn,
+} from './resources/models/types.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';
 export type { OptionsWatcher, Config, ConfigValue } from './components/OptionsWatcher.ts';
@@ -65,11 +90,22 @@ import type { Logger } from './utility/logging/logger.ts';
 import type { models as ModelsImport } from './resources/models/Models.ts';
 import type { operation as OperationImport } from './server/serverHelpers/serverUtilities.ts';
 import type { Resource as ResourceImport } from './resources/Resource.ts';
+import type { SecretsView as SecretsImport } from './components/componentSecrets.ts'; // per-component secrets view (#1550)
 import type { server as ServerImport } from './server/Server.ts';
 import type { tables as TablesImport } from './resources/databases.ts';
 type ThreadsImport = unknown[]; // TODO: figure out actual type for this
 import type { transaction as TransactionImport } from './resources/transaction.ts';
 
+// These names are exposed TWO ways that resolve to the SAME live, process-wide value:
+//   1. as ambient globals (the `declare global` block below), and
+//   2. as named exports of the `harper` package (the `export declare const` block below).
+// At runtime each is populated in place by `_assignPackageExport(name, value)` (see globals.js),
+// which assigns BOTH `global[name]` and `exports[name]` to the one shared instance. So
+// `tables`/`databases`/etc. are not per-module or per-compartment copies: the bare global `tables`
+// and `import { tables } from 'harper'` are the same object, available in any module Harper loads —
+// resources, plugins, and e.g. a Vite SSR entry (whose `node_modules/harper` is symlinked to this
+// running install, see components/componentLoader.ts). Application VM compartments are *seeded* from
+// this process global, not given an alternate set (see security/jsLoader.ts `getGlobalObject`).
 declare global {
 	const contentTypes: typeof ContentTypesImport;
 	const createBlob: typeof CreateBlobImport;
@@ -78,6 +114,7 @@ declare global {
 	const models: typeof ModelsImport;
 	const operation: typeof OperationImport;
 	const Resource: typeof ResourceImport;
+	const secrets: SecretsImport;
 	const server: typeof ServerImport;
 	const tables: typeof TablesImport;
 	const threads: ThreadsImport;
@@ -92,6 +129,7 @@ export declare const logger: Logger;
 export declare const models: typeof ModelsImport;
 export declare const operation: typeof OperationImport;
 export declare const Resource: typeof ResourceImport;
+export declare const secrets: SecretsImport;
 export declare const server: typeof ServerImport;
 export declare const tables: typeof TablesImport;
 export declare const threads: ThreadsImport;
@@ -105,6 +143,7 @@ exports.logger = {};
 exports.models = undefined;
 exports.operation = undefined;
 exports.Resource = undefined;
+exports.secrets = undefined;
 exports.server = {};
 exports.tables = {};
 exports.threads = [];

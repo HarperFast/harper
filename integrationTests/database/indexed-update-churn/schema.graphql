@@ -1,0 +1,11 @@
+# QA-186 — Secondary-index consistency under concurrent in-place UPDATE churn.
+#
+# StatusRecord: `status` is the @indexed attribute under test.
+# A churn workload repeatedly updates `status` across 50 rows.
+# The reconcile oracle checks that search([{attribute:'status', value:X}]) is
+# consistent with the actual current status of each row in a single snapshot.
+type StatusRecord @table @export {
+	id: ID @primaryKey
+	status: String @indexed
+	label: String
+}

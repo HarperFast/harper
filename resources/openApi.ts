@@ -1,5 +1,5 @@
 import { packageJson } from '../utility/packageUtils.js';
-import { Resources } from './Resources.ts';
+import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
 import { DATA_TYPES } from './jsonSchemaTypes.ts';
 
@@ -308,6 +308,88 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 
 				withDoc('used to retrieve the specified property of the specified record')
 			);
+		}
+	}
+
+	// Parameterised routes (e.g. `/widget/:id/action/:action`) live outside the resource Map; emit them as templated
+	// paths with `{param}` path parameters so they appear in the OpenAPI document like any other endpoint.
+	for (const route of resources.paramRoutes ?? []) {
+		const entry = route.entry;
+		if (!entry?.path || entry.Resource?.isError) continue;
+		// @hidden: drop the Resource from the OpenAPI document entirely.
+		if (entry.Resource?.hidden === true) continue;
+		const { prototype } = entry.Resource;
+		if (!prototype) continue;
+
+		const { template, params } = routePatternToTemplate(route.segments);
+		const url = `/${template}`;
+		const pathParams = params.map((param) => {
+			const parameter = new Parameter(param.name, 'path', { type: 'string' });
+			parameter.required = true;
+			parameter.description = param.wildcard
+				? 'captures the remaining path segments'
+				: `value bound from the :${param.name} path segment`;
+			return parameter;
+		});
+
+		const tableDoc: string | undefined = entry.Resource.description;
+		const withDoc = (sentence: string) => (tableDoc ? `${tableDoc} ${sentence}` : sentence);
+		const responseSchema = { type: 'object' };
+		// custom (non-table) resources have no generated schema component, so request bodies are loosely typed
+		const genericRequestBody = { content: { 'application/json': { schema: { type: 'object' } } } };
+
+		const hasPost = prototype.post !== Resource.prototype.post || prototype.update;
+		const hasPut = typeof prototype.put === 'function';
+		const hasGet = typeof prototype.get === 'function';
+		const hasDelete = typeof prototype.delete === 'function';
+		const hasPatch = typeof prototype.patch === 'function';
+
+		if (!api.paths[url]) api.paths[url] = {};
+		api.paths[url].options = new Options(
+			pathParams,
+			security,
+			{ '200': new ResponseOptions200() },
+			'retrieve information about the communication options available for a target resource or the server as a whole, without performing any resource action'
+		);
+		if (hasGet) {
+			api.paths[url].get = new Get(
+				pathParams,
+				security,
+				{ '200': new Response200(responseSchema) },
+				withDoc('handle a GET request for this route')
+			);
+		}
+		if (hasPost) {
+			api.paths[url].post = {
+				description: withDoc('handle a POST request for this route'),
+				parameters: pathParams,
+				security,
+				requestBody: genericRequestBody,
+				responses: { '200': new Response200(responseSchema) },
+			};
+		}
+		if (hasPut) {
+			api.paths[url].put = {
+				description: withDoc('handle a PUT request for this route'),
+				parameters: pathParams,
+				security,
+				requestBody: genericRequestBody,
+				responses: { '200': new Response200(responseSchema) },
+			};
+		}
+		if (hasPatch) {
+			api.paths[url].patch = {
+				description: withDoc('handle a PATCH request for this route'),
+				parameters: pathParams,
+				security,
+				requestBody: genericRequestBody,
+				responses: { '200': new Response200(responseSchema) },
+			};
+		}
+		if (hasDelete) {
+			api.paths[url].delete = new Delete(pathParams, security, withDoc('handle a DELETE request for this route'), {
+				'204': new Response204(),
+			});
 		}
 	}
 

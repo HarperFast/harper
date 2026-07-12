@@ -296,6 +296,16 @@ export class KeyState {
 		return formatKey(this.chooser.next(this.readableCount), this.width);
 	}
 
+	/**
+	 * Current readable key count, including any keys this run inserted. Used to seed a
+	 * subsequent repetition's `initialKeyCount` so reps keep growing the keyspace (each
+	 * rep's inserts allocate fresh keys) instead of re-inserting the same keys as PUT
+	 * overwrites — matching how one continuous run would evolve the dataset.
+	 */
+	get keyCount(): number {
+		return this.readableCount;
+	}
+
 	/** Allocate a new key beyond the loaded range. Not readable until acknowledged. */
 	nextInsert(): { index: number; key: string } {
 		const index = this.insertCursor++;

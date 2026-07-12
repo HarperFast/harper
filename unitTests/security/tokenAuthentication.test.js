@@ -251,6 +251,89 @@ describe('test getJWTRSAKeys function', () => {
 	});
 });
 
+describe('test clearJWTRSAKeysCache function', () => {
+	let get_jwt_keys_func;
+	let clear_cache_func;
+
+	before(() => {
+		const testPath = testUtils.getMockTestPath();
+		keysPath = path.join(testPath, 'keys');
+		passphrasePath = path.join(keysPath, '.jwtPass');
+		privateKeyPath = path.join(keysPath, '.jwtPrivate.key');
+		publicKeyPath = path.join(keysPath, '.jwtPublic.key');
+		get_jwt_keys_func = token_auth.__get__('getJWTRSAKeys');
+		clear_cache_func = token_auth.__get__('clearJWTRSAKeysCache');
+	});
+
+	beforeEach(() => {
+		fs.mkdirpSync(keysPath);
+		fs.writeFileSync(passphrasePath, PASSPHRASE_VALUE);
+		fs.writeFileSync(privateKeyPath, PRIVATE_KEY_VALUE);
+		fs.writeFileSync(publicKeyPath, PUBLIC_KEY_VALUE);
+	});
+
+	afterEach(() => {
+		fs.removeSync(keysPath);
+		token_auth.__set__('rsaKeys', undefined);
+	});
+
+	// Models the node-clone race: an early Bearer-auth request caches the install-generated keys, then
+	// the clone overwrites the key files on disk. Without invalidation, getJWTRSAKeys keeps returning the
+	// stale cached set. clearJWTRSAKeysCache must drop the cache so the next read picks up the new files.
+	it('forces the next getJWTRSAKeys to re-read replaced key files from disk', async () => {
+		const stale = { publicKey: 'stale-public', privateKey: 'stale-private', passphrase: 'stale-pass' };
+		token_auth.__set__('rsaKeys', stale);
+
+		// Sanity: while cached, the stale set is returned regardless of what is on disk.
+		assert.deepStrictEqual(await get_jwt_keys_func(), stale);
+
+		clear_cache_func();
+
+		const reloaded = await get_jwt_keys_func();
+		assert.deepStrictEqual(reloaded, {
+			publicKey: PUBLIC_KEY_VALUE,
+			privateKey: PRIVATE_KEY_VALUE,
+			passphrase: PASSPHRASE_VALUE,
+		});
+	});
+
+	it('is a no-op when the cache is already empty', async () => {
+		token_auth.__set__('rsaKeys', undefined);
+		assert.doesNotThrow(() => clear_cache_func());
+		// Still reads cleanly from disk afterward.
+		const reloaded = await get_jwt_keys_func();
+		assert.deepStrictEqual(reloaded.passphrase, PASSPHRASE_VALUE);
+	});
+
+	// A clear that lands while a getJWTRSAKeys() read is in flight must not let that read repopulate the
+	// cache with the pre-clear keys — otherwise the very clone race we are fixing could resurrect the stale
+	// set. The in-flight read still returns its own result, but the cache is left empty so the next read
+	// picks up the replaced files.
+	it('does not let a read in flight when the cache is cleared repopulate it', async () => {
+		token_auth.__set__('rsaKeys', undefined);
+		const readFileStub = sandbox.stub(fs, 'readFile');
+		try {
+			let cleared = false;
+			readFileStub.callsFake(async (...args) => {
+				// Simulate the clone overwriting the files + clearing the cache partway through this read.
+				if (!cleared) {
+					cleared = true;
+					clear_cache_func();
+				}
+				return readFileStub.wrappedMethod.apply(fs, args);
+			});
+
+			const result = await get_jwt_keys_func();
+			// The in-flight call still resolves with what it read...
+			assert.deepStrictEqual(result.passphrase, PASSPHRASE_VALUE);
+			// ...but it must not have committed to the cache, since a clear happened mid-read.
+			assert.deepStrictEqual(token_auth.__get__('rsaKeys'), undefined);
+		} finally {
+			readFileStub.restore();
+		}
+	});
+});
+
 describe('test createTokens', () => {
 	let validate_user_stub;
 	let update_stub;
@@ -399,6 +482,25 @@ describe('test createTokens', () => {
 		assert.deepStrictEqual(result, undefined);
 		assert.deepStrictEqual(error.message, 'unable to store refresh_token');
 	});
+
+	it("test purpose: 'login' mints a login-only token and skips refresh-token bookkeeping", async () => {
+		let rw_get_tokens = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+		let result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass', purpose: 'login' });
+		rw_get_tokens();
+
+		assert.notDeepStrictEqual(result.operation_token, undefined);
+		assert.deepStrictEqual(result.refresh_token, undefined);
+
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.username, 'HDB_USER');
+		assert.deepStrictEqual(payload.sub, 'login');
+		// no operation-token side effects: nothing persisted, no user-change broadcast
+		assert(update_stub.called === false);
+		assert(signalling_stub.called === false);
+	});
 });
 
 describe('test validateOperationToken function', () => {
@@ -542,6 +644,134 @@ describe('test validateOperationToken function', () => {
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === true);
 		assert(validate_user_stub.callCount === 0);
+	});
+});
+
+describe('test validateLoginToken function', () => {
+	let rw_get_tokens;
+	let jwt_spy;
+	let validate_user_stub;
+	let hdb_admin_login_token;
+	let old_user_login_token;
+	let non_user_login_token;
+	let expired_login_token;
+	let hdb_admin_operation_token;
+
+	before(async () => {
+		sandbox.restore();
+
+		rw_get_tokens = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+
+		let update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
+			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
+		});
+		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
+		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+
+		await user.setUsersWithRolesCache(
+			new Map([
+				['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
+				['old_user', { username: 'old_user', active: false }],
+			])
+		);
+
+		const expiry_timeout = token_auth.__set__('LOGIN_TOKEN_TIMEOUT', '-1');
+		expired_login_token = (await token_auth.createTokens({ username: 'EXPIRED', password: 'cool', purpose: 'login' }))
+			.operation_token;
+		expiry_timeout();
+
+		hdb_admin_login_token = (
+			await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool', purpose: 'login' })
+		).operation_token;
+		old_user_login_token = (
+			await token_auth.createTokens({ username: 'old_user', password: 'notcool', purpose: 'login' })
+		).operation_token;
+		non_user_login_token = (
+			await token_auth.createTokens({ username: 'non_user', password: 'notcool', purpose: 'login' })
+		).operation_token;
+		hdb_admin_operation_token = (await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' }))
+			.operation_token;
+
+		validate_user_stub.restore();
+		jwt_spy = sandbox.spy(jwt, 'verify');
+		validate_user_stub = sandbox.spy(user, 'findAndValidateUser');
+
+		update_stub.restore();
+		signalling_stub.restore();
+	});
+
+	afterEach(() => {
+		jwt_spy.resetHistory();
+		validate_user_stub.resetHistory();
+	});
+
+	after(() => {
+		rw_get_tokens();
+		sandbox.restore();
+	});
+
+	it('test hdb_admin login token', async () => {
+		const result_user = await token_auth.validateLoginToken(hdb_admin_login_token);
+		assert.deepStrictEqual(result_user, { active: true, username: 'HDB_ADMIN' });
+	});
+
+	it('test old_user login token', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken(old_user_login_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
+	});
+
+	it('test non-existent user login token', async () => {
+		const result_user = await token_auth.validateLoginToken(non_user_login_token);
+		assert.deepStrictEqual(result_user, { username: 'non_user' });
+	});
+
+	it('test bad login token', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken('BAD_TOKEN');
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
+	});
+
+	it('test expired login token', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken(expired_login_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'token expired');
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('rejects an operation token — a login token is not a substitute Bearer credential', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken(hdb_admin_operation_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
+	});
+
+	it('validateOperationToken rejects a login token — cannot be replayed as a Bearer credential', async () => {
+		let error;
+		try {
+			await token_auth.validateOperationToken(hdb_admin_login_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
 	});
 });
 

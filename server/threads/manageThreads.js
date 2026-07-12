@@ -7,6 +7,7 @@ const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { join, isAbsolute, extname } = require('path');
+const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
 const { totalmem } = require('os');
 const { setHeapSnapshotNearHeapLimit } = typeof globalThis.Bun !== 'undefined' ? {} : require('v8');
@@ -16,6 +17,28 @@ const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
+const { resolvePreloadModules } = require('./resolvePreload.ts');
+const { getConfigPath } = require('../../config/configUtils.ts');
+let importModules;
+function getImportModules() {
+	if (importModules === undefined)
+		importModules = resolvePreloadModules(
+			envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_PRELOAD),
+			getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
+			'threads.preload'
+		);
+	return importModules;
+}
+let requireModules;
+function getRequireModules() {
+	if (requireModules === undefined)
+		requireModules = resolvePreloadModules(
+			envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_PRELOADREQUIRE),
+			getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
+			'threads.preloadRequire'
+		);
+	return requireModules;
+}
 const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
@@ -34,8 +57,63 @@ const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
 const REMOVE_PORT = 'remove-port';
 const FORCE_EXIT = 'force-exit';
+// Worker -> main request to push out the force-terminate backstop while the worker gracefully drains
+// in-flight work (e.g. replication blob sends) before shutdown. Carries an absolute epoch deadline.
+const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
 let getThreadInfo;
+// Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
+let selfExitTimer;
+// An extended self-exit deadline requested by a drain (absolute epoch ms), honored regardless of whether
+// it is recorded before or after the SHUTDOWN handler arms the timer (the two race across listeners).
+let selfExitDrainDeadline = 0;
 _assignPackageExport('threads', connectedPorts);
+
+// Worker-side: (re)arm the self-exit backstop `delay` ms out, but never earlier than a drain deadline
+// already requested via extendShutdownDeadline (so ordering between the SHUTDOWN handler and the drain
+// extension doesn't matter).
+function armSelfExit(delay) {
+	if (selfExitDrainDeadline) {
+		// selfExitDrainDeadline is already clamped to the configured ceiling (see boundedTerminateDelay),
+		// but adding threadTerminationTimeout headroom on top can push the sum back over the max timer
+		// value at the extreme end of that ceiling, silently defeating the overflow guard.
+		const { MAX_TIMER_MS } = require('../../components/shutdownDrain.ts');
+		delay = Math.max(
+			delay,
+			Math.min(Math.max(0, selfExitDrainDeadline - Date.now()) + threadTerminationTimeout, MAX_TIMER_MS)
+		);
+	}
+	if (selfExitTimer) clearTimeout(selfExitTimer);
+	selfExitTimer = setTimeout(() => {
+		harperLogger.warn('Thread did not voluntarily terminate', threadId);
+		// Note that if this occurs, you may want to use this to debug what is currently running:
+		// require('why-is-node-running')();
+		realExit(0);
+	}, delay).unref(); // don't block the shutdown
+}
+
+// Worker-side: push both termination backstops out to `deadlineMs` (an absolute epoch timestamp) so the
+// worker can gracefully drain in-flight work before exiting. Extends the local self-exit timer and asks
+// the main thread to extend its external force-terminate timer to match. Called from the shutdown path
+// only when there is real work to drain (see threadServer / shutdownDrain), so an unrelated hang is
+// still force-killed on the normal short timeout.
+function extendShutdownDeadline(deadlineMs) {
+	selfExitDrainDeadline = Math.max(selfExitDrainDeadline, deadlineMs);
+	if (selfExitTimer) armSelfExit(0); // re-arm honoring the (now recorded) drain deadline
+	try {
+		parentPort?.postMessage({ type: EXTEND_SHUTDOWN_DEADLINE, deadlineMs });
+	} catch {}
+}
+
+// Worker-side: drop a drain extension once draining is done, restoring the normal short backstops for
+// the remaining shutdown steps (closeServers / scope disposal) so a later hang is still force-killed
+// promptly. Posting a now-deadline re-arms the main thread's terminate timer back to its normal window.
+function restoreShutdownDeadline() {
+	selfExitDrainDeadline = 0;
+	if (selfExitTimer) armSelfExit(threadTerminationTimeout);
+	try {
+		parentPort?.postMessage({ type: EXTEND_SHUTDOWN_DEADLINE, deadlineMs: Date.now() });
+	} catch {}
+}
 
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
@@ -56,6 +134,10 @@ module.exports = {
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
+	extendShutdownDeadline,
+	restoreShutdownDeadline,
+	registerWorkerDataProvider,
+	onThreadExit,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -98,6 +180,59 @@ function setMainIsWorker(isWorker) {
 	module.exports.threadsHaveStarted();
 }
 let workerCount = 1; // should be assigned when workers are created
+
+// Every workerData key core itself produces or consumes — providers may not collide with these.
+// Covers the keys startWorker spreads below plus keys read elsewhere: `noServerStart` is set by
+// the embedding entry point (index.ts) and read by threadServer.js to skip startServers(); a
+// provider shadowing it would wedge HTTP worker startup.
+const RESERVED_WORKER_DATA_KEYS = [
+	'addPorts',
+	'addThreadIds',
+	'workerIndex',
+	'workerCount',
+	'name',
+	'restartNumber',
+	'ticketKeys',
+	'noServerStart',
+	'__proto__', // never a legitimate payload name; spread would define it as an own property
+];
+const workerDataProviders = new Map();
+/**
+ * Register a provider that contributes an extra `workerData` property to every worker spawned
+ * from this thread. `provider(options)` receives the startWorker options (`options.name` is the
+ * thread type, e.g. 'http' or 'job') and returns the value to place at `workerData[name]`, or
+ * undefined to skip that worker. Values must be structured-cloneable; a provider that throws or
+ * returns a non-cloneable value is logged and skipped so it can never break a spawn.
+ * Returns a function that unregisters the provider.
+ */
+function registerWorkerDataProvider(name, provider) {
+	if (RESERVED_WORKER_DATA_KEYS.includes(name) || workerDataProviders.has(name)) {
+		throw new Error(`workerData provider name '${name}' is already in use`);
+	}
+	if (typeof provider !== 'function') throw new Error('workerData provider must be a function');
+	workerDataProviders.set(name, provider);
+	return () => {
+		if (workerDataProviders.get(name) === provider) workerDataProviders.delete(name);
+	};
+}
+function collectProvidedWorkerData(options) {
+	if (workerDataProviders.size === 0) return undefined;
+	let provided;
+	for (const [name, provider] of workerDataProviders) {
+		try {
+			const value = provider(options);
+			if (value === undefined) continue;
+			// Use the clone, not the original: this both pre-flights cloneability (so a bad value
+			// can't break the Worker spawn) and detaches the payload from accessor-backed objects
+			// or later mutation that could still throw inside new Worker(). Null prototype so a
+			// provider name can never collide with Object.prototype members.
+			(provided ??= Object.create(null))[name] = structuredClone(value);
+		} catch (error) {
+			harperLogger.error(`workerData provider '${name}' failed and will be skipped for this worker:`, error);
+		}
+	}
+	return provided;
+}
 let ticketKeys;
 function getTicketKeys() {
 	if (ticketKeys) return ticketKeys;
@@ -121,6 +256,9 @@ if (!parentPort) {
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
 		if (worker) recordResourceReport(worker, message);
 	});
+	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
+		worker?.extendTerminateDeadline?.(message.deadlineMs);
+	});
 }
 // postMessage type listeners that are registered in other ways or can be registered later
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
@@ -129,6 +267,11 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.USER, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 
 function startWorker(path, options = {}) {
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
@@ -176,6 +319,18 @@ function startWorker(path, options = {}) {
 			];
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
+	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
+	// script so they can instrument all subsequent Harper and app module loads. Resolved once
+	// (config and installed components are fixed for the process lifetime). `threads.preload`
+	// uses --import (ESM/loader-hook registration, e.g. dd-trace/register.js — the entry that
+	// instruments worker threads); `threads.preloadRequire` uses --require for CJS agents that
+	// document that path (e.g. dd-trace/init, Dynatrace OneAgent). --import is URL-based, so
+	// resolved paths are passed as file URLs. Not supported under Bun, which does not use
+	// execArgv here.
+	if (!isBun) {
+		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
+		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
+	}
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
@@ -186,6 +341,7 @@ function startWorker(path, options = {}) {
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
+			...collectProvidedWorkerData(options),
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			workerIndex: options.workerIndex,
@@ -199,17 +355,19 @@ function startWorker(path, options = {}) {
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
+	const isJobWorker = options.name === hdbTerms.THREAD_TYPES.JOB;
 	for (let { port1, existingPort } of channelsToConnect) {
 		existingPort.postMessage(
 			{
 				type: ADDED_PORT,
 				port: port1,
 				threadId: worker.threadId,
+				isJobWorker,
 			},
 			[port1]
 		);
 	}
-	addPort(worker, true);
+	addPort(worker, true, isJobWorker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -280,70 +438,154 @@ async function restartWorkers(
 			// threads
 			maxWorkersDown = maxWorkersDown * workers.length;
 		}
-		let waitingToFinish = []; // array of workers that we are waiting to restart
-		// make a copy of the workers before iterating them, as the workers
-		// array will be mutating a lot during this
-		let waitingToStart = [];
+		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
+		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
+		// We can only start the replacement *before* the old worker releases its port when the OS lets
+		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
+		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
+		// bind a port the old worker still holds: its EADDRINUSE would be swallowed and the port left
+		// unbound once the old worker exits (this silently killed worker-owned listeners like MQTT on
+		// macOS after every component-reload restart). So there we keep the original ordering: shut the
+		// old worker down first (server.close() releases its ports immediately), then start the
+		// replacement — an unavoidable brief gap, but only for worker-owned listeners, since the main
+		// thread keeps serving the HTTP ports throughout. This ordering is also what lets
+		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
+		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
+			if (overlapping && startReplacementThreads && canPreStartReplacement) {
+				// Overlapping restart: start the replacement and wait until it is accepting connections
+				// *before* shutting down the worker it replaces. The replacement joins the (SO_REUSEPORT)
+				// listener group while the old worker is still serving, so the pool never loses capacity
+				// and clients never see a connection-refused gap during the restart. (Startups are awaited
+				// one at a time, so at most one extra worker is booting at once regardless of maxWorkersDown.)
+				// Mark the old worker shut down up front: if it happens to exit while we are booting its
+				// replacement, startWorker's unexpected-exit handler must not auto-restart it (that would
+				// leave a duplicate once the replacement is up). Restored below if the replacement fails.
+				worker.wasShutdown = true;
+				let newWorker = worker.startCopy();
+				// Likewise suppress auto-restart on the replacement *while it boots*: if it fails to come up
+				// we leave the existing worker in place, and a background retry succeeding later would push the
+				// pool over its configured worker count. Re-enabled once it has started.
+				newWorker.wasShutdown = true;
+				let started = await new Promise((resolve) => {
+					// Generous backstop so a replacement that deadlocks during init can't wedge the whole
+					// restart forever. Far longer than any legitimate startup, so it never fires in practice.
+					let timeout = setTimeout(
+						() => {
+							harperLogger.error(
+								'Replacement worker did not start in time; leaving the existing worker in place',
+								newWorker.threadId
+							);
+							newWorker.terminate(); // canPreStartReplacement excludes Bun, so terminate() is safe here
+							cleanup();
+							resolve(false);
+						},
+						Math.max(threadTerminationTimeout * 2, 60000)
+					).unref();
+					const startListener = (message) => {
+						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
+							harperLogger.trace('Worker has started', newWorker.threadId);
+							newWorker.wasShutdown = false; // now a normal managed worker; allow future auto-restart
+							cleanup();
+							resolve(true);
+						}
+					};
+					// If the replacement dies before it ever starts listening, don't wait forever — and
+					// crucially, leave the still-healthy worker it was meant to replace in place rather than
+					// taking the pool down (e.g. a faulty deploy whose workers keep crashing).
+					const exitListener = () => {
+						harperLogger.warn(
+							'Replacement worker exited before starting; leaving the existing worker in place',
+							newWorker.threadId
+						);
+						cleanup();
+						resolve(false);
+					};
+					const cleanup = () => {
+						clearTimeout(timeout);
+						newWorker.off('message', startListener);
+						newWorker.off('exit', exitListener);
+					};
+					harperLogger.trace('Waiting for worker to start', newWorker.threadId);
+					newWorker.on('message', startListener);
+					newWorker.on('exit', exitListener);
+				});
+				if (!started) {
+					// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
+					// protection if it is still alive (it may have exited on its own during the wait).
+					if (workers.includes(worker)) worker.wasShutdown = false;
+					continue;
+				}
+			}
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
-			worker.postMessage({
-				restartNumber: module.exports.restartNumber,
-				type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
-			});
+			try {
+				worker.postMessage({
+					restartNumber: module.exports.restartNumber,
+					type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
+				});
+			} catch (err) {
+				// the worker exited on its own while we were starting its replacement — nothing left to
+				// shut down (its overlapping replacement, if any, is already up). Skip to the next worker.
+				if (err?.code === 'ERR_CLOSED_MESSAGE_PORT') continue;
+				throw err;
+			}
 			worker.wasShutdown = true;
 			worker.emit('shutdown', {});
-			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
+			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
+			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
+			// well before the replacement finishes booting and binds.
+			if (overlapping && startReplacementThreads && !canPreStartReplacement) worker.startCopy();
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
-				let timeout = setTimeout(() => {
-					harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-					if (isBun) {
-						// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
-						try {
-							worker.postMessage({ type: FORCE_EXIT });
-						} catch {}
-					} else {
-						worker.terminate();
-					}
-				}, threadTerminationTimeout * 2).unref();
+				const armTerminate = (delay) =>
+					setTimeout(() => {
+						harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+						if (isBun) {
+							// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
+							try {
+								worker.postMessage({ type: FORCE_EXIT });
+							} catch {}
+						} else {
+							worker.terminate();
+						}
+					}, delay).unref();
+				let timeout = armTerminate(threadTerminationTimeout * 2);
+				// The worker can push this backstop out while it gracefully drains in-flight work (e.g. a
+				// replication blob send) before exiting. It only asks when it actually has such work, so a
+				// worker hung for an unrelated reason is still force-killed on the normal short timeout.
+				// This timer is armed synchronously above, in the same tick as the SHUTDOWN post, so the
+				// worker's EXTEND request can only arrive after it exists.
+				worker.extendTerminateDeadline = (deadlineMs) => {
+					clearTimeout(timeout);
+					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
+					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
+					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
+					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+					timeout = armTerminate(
+						boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
+					);
+				};
 				worker.on('exit', () => {
 					clearTimeout(timeout);
-					waitingToFinish.splice(waitingToFinish.indexOf(whenDone));
+					worker.extendTerminateDeadline = undefined;
+					const index = waitingToFinish.indexOf(whenDone);
+					if (index > -1) waitingToFinish.splice(index, 1);
+					// non-overlapping types have no advance replacement, so start it once the old one is gone
 					if (!overlapping && startReplacementThreads) worker.startCopy();
 					resolve();
 				});
 			});
 			waitingToFinish.push(whenDone);
-			if (overlapping && startReplacementThreads) {
-				let newWorker = worker.startCopy();
-				let whenStarted = new Promise((resolve) => {
-					const startListener = (message) => {
-						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
-							harperLogger.trace('Worker has started', newWorker.threadId);
-							resolve();
-							waitingToStart.splice(waitingToStart.indexOf(whenStarted));
-							newWorker.off('message', startListener);
-						}
-					};
-					harperLogger.trace('Waiting for worker to start', newWorker.threadId);
-					newWorker.on('message', startListener);
-				});
-				waitingToStart.push(whenStarted);
-				if (waitingToFinish.length >= maxWorkersDown) {
-					// wait for one to finish before terminating to restart more
-					await Promise.race(waitingToFinish);
-				}
-				if (waitingToStart.length >= maxWorkersDown) {
-					// wait for one to finish before starting to restart more
-					await Promise.race(waitingToStart);
-				}
+			if (waitingToFinish.length >= maxWorkersDown) {
+				// throttle how many workers are draining/down at once to limit load
+				await Promise.race(waitingToFinish);
 			}
 		}
 		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
 		// to finish, so not that important
 		await Promise.all(waitingToFinish);
-		await Promise.all(waitingToStart);
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
@@ -408,22 +650,46 @@ async function broadcast(message, includeSelf) {
 
 const awaitingResponses = new Map();
 let nextId = 1;
-function broadcastWithAcknowledgement(message) {
+// Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
+// whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
+// already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
+// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+const DEFAULT_ACK_TIMEOUT_MS = 30000;
+function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
 	return new Promise((resolve) => {
 		let waitingCount = 0;
+		let timer;
+		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
+		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
+		// the close listener, or the timeout below.
+		const pending = new Set();
+		const finish = () => {
+			if (timer) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			resolve();
+		};
 		for (let port of connectedPorts) {
+			// Job workers run a single isolated task and exit; they don't participate in
+			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
+			// the job worker's ACK while the job worker's event loop is busy waiting for the
+			// same broadcast to complete (re-entrant schema change triggered by the job op).
+			if (port.isJobWorker) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
+					if (!pending.delete(ackHandler)) return; // already settled for this port
 					awaitingResponses.delete(requestId);
 					if (--waitingCount === 0) {
-						resolve();
+						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
 						port.unref();
 					}
 				};
 				ackHandler.port = port;
+				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
 				awaitingResponses.set((message.requestId = requestId), ackHandler);
@@ -444,7 +710,21 @@ function broadcastWithAcknowledgement(message) {
 				harperLogger.error(`Unable to send message to worker`, error);
 			}
 		}
-		if (waitingCount === 0) resolve();
+		if (waitingCount === 0) return resolve();
+		if (timeout > 0) {
+			timer = setTimeout(() => {
+				timer = undefined;
+				const stuck = [];
+				for (let ackHandler of [...pending]) {
+					stuck.push(ackHandler.port?.threadId);
+					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+				}
+				harperLogger.warn(
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
+				);
+			}, timeout);
+			timer.unref?.();
+		}
 	});
 }
 
@@ -553,10 +833,36 @@ if (parentPort && workerData?.addPorts) {
 }
 module.exports.getThreadInfo = getThreadInfo;
 
+// Listeners notified when a connected thread's port closes (worker exit/restart), so
+// modules holding per-thread state (e.g. registeredOperations' registry and in-flight
+// forwards) can clean up.
+const threadExitListeners = [];
+function onThreadExit(listener) {
+	threadExitListeners.push(listener);
+}
+
+// Thread ids already reported to threadExitListeners, so a dead worker is only reported once
+// regardless of which of the two removal paths below observes it first. Node worker_threads
+// ids are monotonically increasing and never reused within a process, so this never needs
+// pruning (unbounded growth is one entry per worker restart over the process lifetime).
+const notifiedDeadThreadIds = new Set();
+function notifyThreadExit(deadThreadId) {
+	if (deadThreadId == null || notifiedDeadThreadIds.has(deadThreadId)) return;
+	notifiedDeadThreadIds.add(deadThreadId);
+	for (const listener of threadExitListeners) {
+		try {
+			listener(deadThreadId);
+		} catch (error) {
+			harperLogger.error(error);
+		}
+	}
+}
+
 function removePort(port, deadThreadId) {
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
+	if (deadThreadId != null) notifyThreadExit(deadThreadId);
 	// Notify remaining peers to remove this dead sibling port. In Bun, sibling
 	// MessagePorts don't emit 'close' when a peer worker exits, so we broadcast
 	// a REMOVE_PORT message from here (which fires reliably on Worker 'exit')
@@ -573,7 +879,8 @@ function removePort(port, deadThreadId) {
 	}
 }
 
-function addPort(port, keepRef) {
+function addPort(port, keepRef, isJobWorker) {
+	if (isJobWorker) port.isJobWorker = true;
 	connectedPorts.push(port);
 	// Capture threadId now — Bun resets port.threadId to -1 by the time 'exit' fires.
 	const portThreadId = port.threadId;
@@ -581,7 +888,7 @@ function addPort(port, keepRef) {
 		.on('message', (message) => {
 			if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
-				addPort(message.port);
+				addPort(message.port, false, message.isJobWorker);
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
@@ -590,6 +897,11 @@ function addPort(port, keepRef) {
 			} else if (message.type === REMOVE_PORT) {
 				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);
 				if (idx !== -1) connectedPorts.splice(idx, 1);
+				// A sibling's port-to-the-dead-worker can close (and broadcast this) before this
+				// thread's OWN port to that worker fires its 'close'/'exit' — at which point
+				// removePort() would no-op (already spliced) and threadExitListeners would never
+				// fire. Notify here too; notifyThreadExit dedupes so it isn't reported twice.
+				notifyThreadExit(message.threadId);
 			} else {
 				notifyMessageListeners(message, port);
 			}
@@ -658,12 +970,7 @@ if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
 		module.exports.restartNumber = message.restartNumber;
 		parentPort.unref(); // remove this handle
-		setTimeout(() => {
-			harperLogger.warn('Thread did not voluntarily terminate', threadId);
-			// Note that if this occurs, you may want to use this to debug what is currently running:
-			// require('why-is-node-running')();
-			realExit(0);
-		}, threadTerminationTimeout).unref(); // don't block the shutdown
+		armSelfExit(threadTerminationTimeout);
 	});
 	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT
 	// instead, and the worker self-exits cleanly to avoid the crash.

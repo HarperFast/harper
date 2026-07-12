@@ -14,7 +14,17 @@ const env = require('../../utility/environment/environmentManager.ts');
 const terms = require('../../utility/hdbTerms.ts');
 const { server } = require('../Server.ts');
 let { createServer: createSecureSocketServer } = require('node:tls');
-const { restartNumber, getWorkerIndex } = require('./manageThreads.js');
+const {
+	restartNumber,
+	getWorkerIndex,
+	extendShutdownDeadline,
+	restoreShutdownDeadline,
+} = require('./manageThreads.js');
+const {
+	runShutdownDrains,
+	shutdownDrainsHaveWork,
+	getShutdownDrainCeilingMs,
+} = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
 const { createTLSSelector } = require('../../security/keys.ts');
@@ -173,11 +183,26 @@ function startServers() {
 						harperLogger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 						// close connections as possible, then let the event loop complete.
+						// First, gracefully drain any in-flight work registered by components — notably a
+						// replication blob *send* streaming to a peer, which is cheaper to finish than to interrupt
+						// (interrupting leaves the peer's copy diverged until it re-requests). The drain waits only
+						// on work still making progress, bounded by an absolute deadline. When there is real work to
+						// drain we push the termination backstops out to that deadline first so the drain isn't cut
+						// short, then restore the normal short backstop once draining is done — so any later hang
+						// (closeServers / scope disposal) is still force-killed on the normal timeout, and a worker
+						// with no such work is never affected.
+						const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
+						const extendedForDrain = shutdownDrainsHaveWork();
+						if (extendedForDrain) extendShutdownDeadline(drainDeadline);
 						// Wait for application scopes to finish closing before exiting — some dispose a native
 						// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
 						// worker while that runtime is still live crashes the process. The manageThreads backstop
 						// timers still bound this if a scope's disposal hangs.
-						closeServers()
+						runShutdownDrains(drainDeadline)
+							.then(() => {
+								if (extendedForDrain) restoreShutdownDeadline();
+							})
+							.then(() => closeServers())
 							.then(() => whenScopesClosed())
 							.then(() => {
 								realExit(0);
@@ -251,6 +276,7 @@ function listenOnPorts() {
 			continue;
 		}
 		let listen_on;
+		let ownerWorkerIndex = 0; // lowest eligible worker index for this port
 		const threadRange = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
 		if (threadRange) {
 			let threadRangeArray = typeof threadRange === 'string' ? threadRange.split('-') : threadRange;
@@ -258,6 +284,7 @@ function listenOnPorts() {
 			if (threadIndex < threadRangeArray[0] || threadIndex > threadRangeArray[1]) {
 				continue;
 			}
+			ownerWorkerIndex = +threadRangeArray[0];
 		}
 
 		try {
@@ -276,6 +303,13 @@ function listenOnPorts() {
 			harperLogger.error(`Unable to bind to port ${port}`, error);
 			continue;
 		}
+		// A dedicated listener (see onSocket()) with an exclusive (non-reusePort) bind is owned by a
+		// single deterministic worker — the lowest eligible index — instead of every worker racing
+		// for it. Nothing else in-process can then hold its port (the main thread doesn't bind these,
+		// and restarts of the owner are non-overlapping on non-reusePort platforms, see
+		// restartWorkers()), which is what makes the owner's EADDRINUSE below unambiguously external.
+		if (server.dedicatedListener && !listen_on.reusePort && !isMainThread && getWorkerIndex() !== ownerWorkerIndex)
+			continue;
 		listening.push(
 			new Promise((resolve, reject) => {
 				server
@@ -284,17 +318,73 @@ function listenOnPorts() {
 						harperLogger.trace('Listening on port ' + port, threadId);
 					})
 					.on('error', (err) => {
-						// Node.js before v20.11.1 does not properly support reusePort for net.Server —
-						// workers receive EADDRINUSE even though the main thread bound with reusePort: true.
-						// Resolve rather than reject so the worker can proceed, matching the same graceful
-						// handling already present in listenOnPortsBun().
-						if (err.code === 'EADDRINUSE') resolve({ port, name: server.name, protocol_name: server.protocol_name });
-						else reject(err);
+						if (err.code !== 'EADDRINUSE') return reject(err);
+						// An EADDRINUSE here is unambiguously an unrelated external process already
+						// holding the port (which will silently receive this listener's traffic) when:
+						// - the listener uses reusePort: Harper's supported Node fully supports
+						//   SO_REUSEPORT, so sibling workers share the port and never raise EADDRINUSE,
+						//   even across an overlapping restart (the replacement co-binds while the old
+						//   worker is still up); or
+						// - this is the main thread: it binds the HTTP/operations ports (awaited) before
+						//   any worker starts and never restarts, so nothing in-process can already hold
+						//   them; or
+						// - this is a dedicated listener's owner worker (gated above): no other thread
+						//   binds it, and its restarts are non-overlapping without reusePort.
+						// The remaining case — a worker's exclusive HTTP bind on macOS/Windows —
+						// deterministically loses to the main thread's earlier bind; that benign
+						// EADDRINUSE stays swallowed silently. Resolve either way so one unavailable
+						// port doesn't stall the rest of this thread's boot.
+						if (listen_on.reusePort || isMainThread || server.dedicatedListener) logExternalBindConflict(port, err);
+						resolve({ port, name: server.name, protocol_name: server.protocol_name });
 					});
 			})
 		);
 	}
+	// uWS spike (#914): start any uWebSockets.js UDS servers registered by http.ts (HARPER_UWS_UDS).
+	// These replace the Node http UDS mirror; createUwsServer binds the unix socket and bridges each
+	// request through httpChain[port] via UwsRequest.
+	const uwsServeConfigs = httpComponent.uwsServeConfigs;
+	if (uwsServeConfigs) {
+		for (const key in uwsServeConfigs) {
+			const cfg = uwsServeConfigs[key];
+			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
+			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
+			listening.push(
+				createUwsServer(cfg).then(({ close }) => {
+					// Register a minimal server-like entry so closeServers() can tear it down. uWS's
+					// close() is synchronous and takes no callback, so wrap it to invoke the callback
+					// closeServers() passes; omit closeIdleConnections so the Node keep-alive drain loop
+					// (which would spin and then force-exit noisily against this shim) is skipped.
+					SERVERS[key] = {
+						close(callback) {
+							close();
+							callback?.();
+						},
+					};
+					harperLogger.info('uWS listening on ' + (cfg.socketPath ?? cfg.port));
+					return { port: key };
+				})
+			);
+		}
+	}
 	return Promise.all(listening);
+}
+
+/**
+ * Log that a port could not be bound because an unrelated process already holds it — meaning that
+ * process, not this listener, will receive the port's traffic. Only called once in-process
+ * collisions have been ruled out (reusePort sharing, or the main thread's first-bind ordering),
+ * so this is unambiguously external.
+ */
+function logExternalBindConflict(port, err) {
+	// `port` is a string key from `for..in SERVERS`, but portServer may be keyed by the numeric
+	// port setPortServerMap() was called with, so fall back to a numeric lookup.
+	const registered = portServer.get(port) ?? portServer.get(Number(port));
+	const owner = registered?.[registered.length - 1];
+	harperLogger.error(
+		`Failed to bind ${owner?.protocol_name ?? 'socket'} listener${owner?.name ? ` for component '${owner.name}'` : ''} to port ${port}: address already in use by another process`,
+		err
+	);
 }
 
 async function listenOnPortsBun() {
@@ -434,6 +524,13 @@ async function listenOnPortsBun() {
 				const lastColon = String(port).lastIndexOf(':');
 				const rawHostname = lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : null;
 				const portNum = lastColon > 0 ? +String(port).slice(lastColon + 1) : +port;
+				// These raw-socket listens bind exclusively (no reusePort), so a dedicated listener
+				// gets a single owner worker — same reasoning as listenOnPorts(). Bun restarts are
+				// already non-overlapping (see restartWorkers()).
+				if (server.dedicatedListener && !isMainThread && getWorkerIndex() !== 0) {
+					listening.push(Promise.resolve({ port }));
+					continue;
+				}
 				listening.push(
 					new Promise((resolve, reject) => {
 						server
@@ -442,9 +539,14 @@ async function listenOnPortsBun() {
 								harperLogger.trace('Listening on port ' + port, threadId);
 							})
 							.on('error', (err) => {
-								// Another worker already bound this port — that's fine
-								if (err.code === 'EADDRINUSE') resolve({ port });
-								else reject(err);
+								if (err.code !== 'EADDRINUSE') return reject(err);
+								// The main thread binds before any worker and never restarts, and a
+								// dedicated listener's owner worker is the only thread that binds it — in
+								// both cases EADDRINUSE can only come from an unrelated external process;
+								// surface it (see listenOnPorts()). Otherwise another worker already bound
+								// the port — that's fine.
+								if (isMainThread || server.dedicatedListener) logExternalBindConflict(port, err);
+								resolve({ port });
 							});
 					})
 				);
@@ -484,7 +586,17 @@ function onSocket(listener, options) {
 			listener
 		);
 		SNICallback.initialize(socketServer);
-		socketServer.noReusePort = true;
+		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
+		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
+		// connections for this listener (e.g. MQTT), matching how HTTP servers are bound; without
+		// it only the first worker to bind serves the port and every sibling's listen() fails with
+		// a silently-swallowed EADDRINUSE.
+		if (process.platform === 'darwin') socketServer.noReusePort = true;
+		// Unlike HTTP/operations ports, these component listeners are never bound by the main
+		// thread (components don't run handleApplication there), so a worker owns them. Marking
+		// them lets listenOnPorts() give an exclusive (non-reusePort) one a single deterministic
+		// owner worker, which makes any EADDRINUSE on it unambiguously an external process.
+		socketServer.dedicatedListener = true;
 		SERVERS[options.securePort] = socketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
@@ -521,7 +633,10 @@ function onSocket(listener, options) {
 			keepAlive: true,
 			keepAliveInitialDelay: 600,
 		});
-		socketServer.noReusePort = true;
+		// See the securePort path above: opt out of reusePort only on macOS so every worker can
+		// accept connections for this listener elsewhere, and mark it worker-owned.
+		if (process.platform === 'darwin') socketServer.noReusePort = true;
+		socketServer.dedicatedListener = true;
 		SERVERS[options.port] = socketServer;
 	}
 	return socketServer;

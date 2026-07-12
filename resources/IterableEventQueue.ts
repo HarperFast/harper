@@ -39,8 +39,21 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 		return new Promise((resolve) => {
 			if (!this.queue || this.queue.length === 0) resolve(true);
 			else {
-				this.once('drained', () => resolve(true));
-				this.currentDrainResolver = resolve;
+				// The queue can also empty through paths that never emit 'drained' (the on('data')
+				// attach loop and the resolveNext bypass), so a waiter relying on the event alone
+				// can hang forever on an already-empty queue. Poll as a fallback wakeup.
+				const settle = (drained: boolean) => {
+					clearInterval(poll);
+					this.removeListener('drained', onDrained);
+					resolve(drained);
+				};
+				const onDrained = () => settle(true);
+				this.once('drained', onDrained);
+				this.currentDrainResolver = settle;
+				const poll = setInterval(() => {
+					if (!this.queue || this.queue.length === 0) settle(true);
+				}, 100);
+				poll.unref?.();
 				if (!this.drainCloseListener) {
 					this.drainCloseListener = true;
 					this.on('close', () => {
@@ -56,6 +69,21 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 			while (this.queue?.length > 0) listener(this.queue.shift());
 		}
 		return super.on(eventName, listener);
+	}
+	// `hasDataListeners` gates whether `send()` emits 'data' or buffers; keep it in
+	// step with reality when a 'data' listener is removed (e.g. an MCP SSE stream
+	// torn down on disconnect). Without this it stayed stuck on `true` for the life
+	// of the queue once any 'data' listener had ever attached.
+	removeListener(eventName: 'data' | string, listener: (...args: any[]) => void) {
+		const result = super.removeListener(eventName, listener);
+		if (eventName === 'data') this.hasDataListeners = this.listenerCount('data') > 0;
+		return result;
+	}
+	// `EventEmitter.off` is a direct alias of the *base* `removeListener`, so it
+	// would bypass the override above (and SSE teardown unsubscribes via `off`).
+	// Route it through our `removeListener` so the flag is recomputed either way.
+	off(eventName: 'data' | string, listener: (...args: any[]) => void) {
+		return this.removeListener(eventName, listener);
 	}
 }
 

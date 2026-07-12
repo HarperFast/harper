@@ -18,7 +18,7 @@
  * unrecognized-cursor `-32602` frame (S2).
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -113,6 +113,15 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 	// operation persisted. (patch_ shares makeUpdateHandler + the { ok } ack schema
 	// with update_; a standard table exposes update_, not patch_, so the patch
 	// envelope is covered by the unit suite.)
+	//
+	// NOTE (#1448/#1487): the application tools bind to the exported WorkItem subclass — the
+	// same object REST routes to — so create_ invokes its post() override, which sets
+	// state:'pending' (vs the input 'open') and stores payload as JSON.stringify(body), the
+	// same value REST returns. (Two independent fixes guarantee this dispatch: #1487 resolves
+	// the live Resource subclass at call time; #1448 rebuilds the application tool list once
+	// resources.js registers the subclass, which also surfaces its custom mcpTools/mcpPrompts.)
+	// The envelope contract is unchanged (create_ still returns { id }); we assert both
+	// override effects on get_ rather than the raw input round-trip.
 	test('create_/get_/update_/delete_ round-trip via the SDK client validates output schemas (#1324)', async () => {
 		const { client, transport } = await newAppClient(ctx);
 
@@ -126,7 +135,9 @@ suite('MCP v1 application profile + operations error framing (#1317)', (ctx: Con
 
 		const got = await client.callTool({ name: 'get_WorkItem', arguments: { id: newId } });
 		ok(!got.isError, `get should succeed: ${JSON.stringify(got)}`);
-		strictEqual((got.structuredContent as { payload?: string } | undefined)?.payload, 'hello-1324');
+		const gotStructured = got.structuredContent as { state?: string; payload?: string } | undefined;
+		strictEqual(gotStructured?.state, 'pending');
+		strictEqual(JSON.parse(gotStructured?.payload ?? '{}').payload, 'hello-1324');
 
 		const updated = await client.callTool({
 			name: 'update_WorkItem',

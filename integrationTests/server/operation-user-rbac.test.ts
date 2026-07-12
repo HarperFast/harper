@@ -9,7 +9,7 @@
  * CRUD permissions still apply for data operations — both must pass.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 

@@ -179,6 +179,7 @@ export const SYSTEM_TABLE_NAMES = {
 	INFO_TABLE_NAME: 'hdb_info',
 	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
 	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
+	SECRET_TABLE_NAME: 'hdb_secret',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -278,6 +279,9 @@ export const OPERATIONS_ENUM = {
 	GET_COMPONENTS: 'get_components',
 	GET_COMPONENT_FILE: 'get_component_file',
 	SET_COMPONENT_FILE: 'set_component_file',
+	GET_ENV_KEYS: 'get_env_keys',
+	SET_ENV_VALUE: 'set_env_value',
+	DELETE_ENV_VALUE: 'delete_env_value',
 	DROP_COMPONENT: 'drop_component',
 	DROP_CUSTOM_FUNCTION: 'drop_custom_function',
 	ADD_CUSTOM_FUNCTION_PROJECT: 'add_custom_function_project',
@@ -301,6 +305,12 @@ export const OPERATIONS_ENUM = {
 	CLEAR_STATUS: 'clear_status',
 	LIST_DEPLOYMENTS: 'list_deployments',
 	GET_DEPLOYMENT: 'get_deployment',
+	SET_SECRET: 'set_secret',
+	GRANT_SECRET: 'grant_secret',
+	REVOKE_SECRET: 'revoke_secret',
+	LIST_SECRETS: 'list_secrets',
+	DELETE_SECRET: 'delete_secret',
+	GET_SECRETS_PUBLIC_KEY: 'get_secrets_public_key',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',
@@ -468,6 +478,8 @@ export const CONFIG_PARAMS = {
 	THREADS_DEBUG_WAITFORDEBUGGER: 'threads_debug_waitForDebugger',
 	THREADS_MAXHEAPMEMORY: 'threads_maxHeapMemory',
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
+	THREADS_PRELOAD: 'threads_preload',
+	THREADS_PRELOADREQUIRE: 'threads_preloadRequire',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',
@@ -532,6 +544,7 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_HTTP2: 'operationsApi_network_http2',
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
+	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
@@ -547,6 +560,11 @@ export const CONFIG_PARAMS = {
 	MCP_OPERATIONS_RATELIMIT_PERTOOLBURST: 'mcp_operations_rateLimit_perToolBurst',
 	MCP_OPERATIONS_RATELIMIT_SESSIONCONCURRENCY: 'mcp_operations_rateLimit_sessionConcurrency',
 	MCP_OPERATIONS_RATELIMIT_SESSIONPERSECOND: 'mcp_operations_rateLimit_sessionPerSecond',
+	MCP_OPERATIONS_RATELIMIT_PERCLIENTPERSECOND: 'mcp_operations_rateLimit_perClientPerSecond',
+	MCP_OPERATIONS_RATELIMIT_PERCLIENTBURST: 'mcp_operations_rateLimit_perClientBurst',
+	MCP_OPERATIONS_RATELIMIT_IDENTITYHEADER: 'mcp_operations_rateLimit_identityHeader',
+	MCP_OPERATIONS_QUOTA_RESOURCE: 'mcp_operations_quota_resource',
+	MCP_OPERATIONS_QUOTA_METHOD: 'mcp_operations_quota_method',
 	MCP_APPLICATION_MOUNTPATH: 'mcp_application_mountPath',
 	MCP_APPLICATION_ALLOW: 'mcp_application_allow',
 	MCP_APPLICATION_DENY: 'mcp_application_deny',
@@ -556,6 +574,11 @@ export const CONFIG_PARAMS = {
 	MCP_APPLICATION_RATELIMIT_PERTOOLBURST: 'mcp_application_rateLimit_perToolBurst',
 	MCP_APPLICATION_RATELIMIT_SESSIONCONCURRENCY: 'mcp_application_rateLimit_sessionConcurrency',
 	MCP_APPLICATION_RATELIMIT_SESSIONPERSECOND: 'mcp_application_rateLimit_sessionPerSecond',
+	MCP_APPLICATION_RATELIMIT_PERCLIENTPERSECOND: 'mcp_application_rateLimit_perClientPerSecond',
+	MCP_APPLICATION_RATELIMIT_PERCLIENTBURST: 'mcp_application_rateLimit_perClientBurst',
+	MCP_APPLICATION_RATELIMIT_IDENTITYHEADER: 'mcp_application_rateLimit_identityHeader',
+	MCP_APPLICATION_QUOTA_RESOURCE: 'mcp_application_quota_resource',
+	MCP_APPLICATION_QUOTA_METHOD: 'mcp_application_quota_method',
 	MCP_SESSION_IDLETIMEOUTSECONDS: 'mcp_session_idleTimeoutSeconds',
 	MCP_SESSION_ALLOWCLIENTDELETE: 'mcp_session_allowClientDelete',
 	AGENT_ENABLED: 'agent_enabled',
@@ -591,12 +614,14 @@ export const CONFIG_PARAMS = {
 		'replication_mtls_certificateVerification_ocsp_failureMode',
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
+	REPLICATION_BLOBSENDDRAINTIMEOUT: 'replication_blobSendDrainTimeout',
 	REPLICATION_FAILOVER: 'replication_failover',
 	REPLICATION_BLOBCONCURRENCY: 'replication_blobConcurrency',
 	REPLICATION_MAXPAYLOAD: 'replication_maxPayload',
 	REPLICATION_RECORDCONCURRENCY: 'replication_recordConcurrency',
 	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
 	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
+	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',
 	REPLICATION_LEADINGDUPLICATESKIP: 'replication_leadingDuplicateSkip',
 	REPLICATION_REPLAYTIMEOUT: 'replication_replayTimeout',
 	ROOTPATH: 'rootPath',
@@ -616,6 +641,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_PATH: 'storage_path',
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
 	STORAGE_BLOBCLEANUPSPEED: 'storage_blobCleanupSpeed',
+	STORAGE_BLOBREADTIMEOUT: 'storage_blobReadTimeout',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	STORAGE_MAXFREESPACETOLOAD: 'storage_maxFreeSpaceToLoad',
 	STORAGE_MAXFREESPACETORETAIN: 'storage_maxFreeSpaceToRetain',
@@ -628,6 +654,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_RECLAMATION_THRESHOLD: 'storage_reclamation_threshold',
 	STORAGE_RECLAMATION_INTERVAL: 'storage_reclamation_interval',
 	STORAGE_RECLAMATION_EVICTIONFACTOR: 'storage_reclamation_evictionFactor',
+	STORAGE_TRANSACTIONLOG_COOLINGINTERVAL: 'storage_transactionLog_coolingInterval',
 	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
 	STORAGE_ROCKS_BLOCKCACHESIZE: 'storage_rocks_blockCacheSize',
@@ -650,6 +677,7 @@ export const CONFIG_PARAMS = {
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
 	TLS_CIPHERS: 'tls_ciphers',
 	TLS_UNIXDOMAINSOCKETS: 'tls_unixDomainSockets',
+	TLS_CERTIFICATEWATCHINTERVAL: 'tls_certificateWatchInterval',
 	TLS: 'tls',
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',
@@ -858,11 +886,26 @@ export const ITC_EVENT_TYPES = {
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',
 	RESOURCE_OPENAPI_RESPONSE: 'resource_openapi_response',
+	// Main thread asks an HTTP worker for its resolved middleware chains (#1573); app HTTP
+	// middleware is only registered on worker threads, so get_status must fetch it from one.
+	MIDDLEWARE_CHAINS_REQUEST: 'middleware_chains_request',
+	MIDDLEWARE_CHAINS_RESPONSE: 'middleware_chains_response',
+	// MCP §3.7: route a client's response to a server→client request back to the
+	// worker awaiting it (the response POST can land on any worker).
+	MCP_CLIENT_RESPONSE: 'mcp_client_response',
+	// #1736: components load per-worker, so a `server.registerOperation()` made there lands in
+	// a worker-local OPERATION_FUNCTION_MAP the main-thread ops-API dispatcher can't see. A
+	// worker announces each registration (OPERATION_REGISTERED) so the main thread can forward
+	// an unrecognized operation to one registering worker for execution (REQUEST/RESPONSE).
+	OPERATION_REGISTERED: 'operation_registered',
+	OPERATION_EXECUTE_REQUEST: 'operation_execute_request',
+	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
 } as const;
 
 /** Supported thread types */
 export const THREAD_TYPES = {
 	HTTP: 'http',
+	JOB: 'job',
 } as const;
 
 /** A version string for pre 4.0.0 comparison */

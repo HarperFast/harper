@@ -1,7 +1,13 @@
 'use strict';
 const assert = require('assert');
 
-const { Headers, appendHeader, mergeHeaders, toWriteHeadHeaders } = require('#src/server/serverHelpers/Headers');
+const {
+	Headers,
+	appendHeader,
+	mergeHeaders,
+	toWriteHeadHeaders,
+	addVaryHeader,
+} = require('#src/server/serverHelpers/Headers');
 describe('Test Headers', () => {
 	describe(`Create and modify headers`, function () {
 		it('should handle headers', async function () {
@@ -380,6 +386,43 @@ describe('toWriteHeadHeaders', () => {
 		assert.deepEqual(toWriteHeadHeaders(headers), { 'X-A': '1' });
 	});
 
+	it('groups multi-valued headers (Set-Cookie) into arrays rather than last-wins', () => {
+		// Headers iteration yields one entry per Set-Cookie value. Object.fromEntries collapses
+		// duplicate keys last-wins, which broke `mergeHeaders preserves multiple Set-Cookie headers`.
+		const headers = new Headers();
+		headers.append('Set-Cookie', 'hdb-session=mock-session-id; Path=/; HttpOnly');
+		headers.append('Set-Cookie', 'hdb-tracking=track123; Path=/; HttpOnly');
+		headers.append('Set-Cookie', 'app-cookie1=value1; Path=/; HttpOnly');
+		const out = toWriteHeadHeaders(headers);
+		assert.ok(Array.isArray(out['Set-Cookie']), 'Set-Cookie value should be an array');
+		assert.equal(out['Set-Cookie'].length, 3, `expected 3 Set-Cookie values, got ${out['Set-Cookie']?.length}`);
+	});
+
+	it('Set-Cookie array reaches the wire as separate header lines (round-trip)', async () => {
+		// What the failing integration tests assert: every cookie shows up as its own header line.
+		const http = require('node:http');
+		const headers = new Headers();
+		headers.append('Set-Cookie', 'a=1; Path=/');
+		headers.append('Set-Cookie', 'b=2; Path=/');
+		headers.append('Set-Cookie', 'c=3; Path=/');
+		const server = http.createServer((req, res) => {
+			res.writeHead(200, toWriteHeadHeaders(headers));
+			res.end('ok');
+		});
+		try {
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			const { port } = server.address();
+			const res = await fetch(`http://127.0.0.1:${port}/`);
+			const setCookies = res.headers.getSetCookie();
+			assert.equal(setCookies.length, 3, `expected 3 Set-Cookie lines on the wire, got ${setCookies.length}`);
+			assert.ok(setCookies.some((c) => c.includes('a=1')));
+			assert.ok(setCookies.some((c) => c.includes('b=2')));
+			assert.ok(setCookies.some((c) => c.includes('c=3')));
+		} finally {
+			await new Promise((resolve) => server.close(resolve));
+		}
+	});
+
 	it("its output is accepted by a live response's writeHead (round-trip)", async () => {
 		const http = require('node:http');
 		const headers = new Headers();
@@ -401,5 +444,38 @@ describe('toWriteHeadHeaders', () => {
 		} finally {
 			await new Promise((resolve) => server.close(resolve));
 		}
+	});
+});
+
+describe('addVaryHeader', () => {
+	it('sets Vary when absent', () => {
+		const headers = new Headers();
+		addVaryHeader(headers, 'Origin');
+		assert.equal(headers.get('Vary'), 'Origin');
+	});
+	it('appends to an existing Vary value', () => {
+		const headers = new Headers();
+		headers.set('Vary', 'Accept, Accept-Encoding');
+		addVaryHeader(headers, 'Origin');
+		assert.equal(headers.get('Vary'), 'Accept, Accept-Encoding, Origin');
+	});
+	it('deduplicates case-insensitively', () => {
+		const headers = new Headers();
+		headers.set('Vary', 'Accept, origin');
+		addVaryHeader(headers, 'Origin');
+		assert.equal(headers.get('Vary'), 'Accept, origin');
+	});
+	it('is a no-op when Vary is *', () => {
+		const headers = new Headers();
+		headers.set('Vary', '*');
+		addVaryHeader(headers, 'Authorization');
+		assert.equal(headers.get('Vary'), '*');
+	});
+	it('handles an array-valued Vary', () => {
+		const headers = new Headers();
+		headers.set('Vary', 'Accept');
+		headers.append('Vary', 'Accept-Encoding');
+		addVaryHeader(headers, 'Cookie');
+		assert.equal(headers.get('Vary'), 'Accept, Accept-Encoding, Cookie');
 	});
 });

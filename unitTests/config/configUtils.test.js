@@ -6,7 +6,7 @@ const expect = chai.expect;
 const rewire = require('rewire');
 const path = require('path');
 const fs = require('fs-extra');
-const config_utils_rw = rewire('#js/config/configUtils');
+const config_utils_rw = rewire('#src/config/configUtils');
 const YAML = require('yaml');
 const logger = require('#src/utility/logging/harper_logger');
 const common_utils = require('#src/utility/common_utils');
@@ -14,6 +14,10 @@ const testUtils = require('../testUtils.js');
 const hdbTerms = require('#src/utility/hdbTerms');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = require('#src/utility/errors/commonErrors');
+// configUtils imports `configValidator` as a named export; stub it on the shared
+// module object (configUtils reads the same cached module) rather than via rewire,
+// which can no longer reach the binding once the module is compiled from TS.
+const configValidatorModule = require('#src/validation/configValidator');
 
 const DIRNAME = __dirname;
 const HDB_ROOT = path.join(DIRNAME, 'yaml');
@@ -430,6 +434,12 @@ describe('Test configUtils module', () => {
 			validate_config = config_utils_rw.__get__('validateConfig');
 		});
 
+		afterEach(() => {
+			// configValidator is stubbed on the shared module; restore between cases so
+			// the next stub() doesn't fail with "already wrapped".
+			config_validator_stub?.restore();
+		});
+
 		it('Test error message is thrown if there is a validation error', () => {
 			const test_val_config_obj = {
 				value: {},
@@ -443,8 +453,7 @@ describe('Test configUtils module', () => {
 
 			const test_config_doc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
 			const test_config_json = test_config_doc.toJSON();
-			config_validator_stub = sandbox.stub().returns(test_val_config_obj);
-			config_utils_rw.__set__('configValidator', config_validator_stub);
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(test_val_config_obj);
 
 			let error;
 			try {
@@ -502,8 +511,7 @@ describe('Test configUtils module', () => {
 				toJSON: () => fake_json,
 				setIn: set_in_stub,
 			};
-			config_validator_stub = sandbox.stub().returns(fake_validation);
-			config_utils_rw.__set__('configValidator', config_validator_stub);
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
 
 			let error;
 			try {
@@ -521,6 +529,162 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
 			expect(set_in_stub.args[3][1]).to.equal('path/to/storage');
 			expect(set_in_stub.args[4][1]).to.equal('path/for/rotated/logs');
+		});
+
+		it('Test error is thrown if operationsApi securePort collides with http securePort', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { securePort: 9926 },
+					operationsApi: { network: { port: 9925, securePort: 9926 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.securePort and operationsApi.network.securePort cannot be the same value (9926)'
+			);
+		});
+
+		it('Test error is thrown if operationsApi port collides with http port', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 9926 },
+					operationsApi: { network: { port: 9926 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.port and operationsApi.network.port cannot be the same value (9926)'
+			);
+		});
+
+		it('Test collision is detected when one port is a string and the other a number', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { securePort: 9926 },
+					operationsApi: { network: { securePort: '9926' } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.securePort and operationsApi.network.securePort cannot be the same value (9926)'
+			);
+		});
+
+		it('Test port 0 (OS-assigned) does not trigger a collision error', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 0 },
+					operationsApi: { network: { port: 0 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+		});
+
+		it('Test non-numeric port values do not trigger a collision error', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+
+			// Malformed values (e.g. boolean true, which Number() would coerce to 1) must not be treated as ports here;
+			// the schema validator reports them.
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: true },
+					operationsApi: { network: { port: true } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+		});
+
+		it('Test no collision error is thrown when http and operationsApi ports are distinct', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 9926, securePort: 9927 },
+					operationsApi: { network: { port: 9925, securePort: 9928 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+			expect(config_validator_stub.called).to.be.true;
 		});
 	});
 
@@ -909,6 +1073,130 @@ describe('Test configUtils module', () => {
 
 			expect(error.name).to.equal(STRING_ERROR);
 		});
+
+		describe('replicated: true', () => {
+			// configUtils reads `server` from the shared module object, so stubbing the
+			// property (the same way harper-pro installs the real implementation) reaches it.
+			const { server } = require('#src/server/Server');
+			let replicate_operation_stub;
+			let original_replicate_operation;
+
+			beforeEach(() => {
+				original_replicate_operation = server.replication.replicateOperation;
+				replicate_operation_stub = sandbox.stub().resolves({
+					message: '',
+					replicated: [{ message: 'ok', node: 'peer-1' }],
+				});
+				server.replication.replicateOperation = replicate_operation_stub;
+			});
+
+			afterEach(() => {
+				server.replication.replicateOperation = original_replicate_operation;
+			});
+
+			it('Test replicated: true fans out and returns per-node results', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: true,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.calledOnceWith(test_set_config_json)).to.equal(true);
+				expect(result.message).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+				expect(result.replicated).to.eql([{ message: 'ok', node: 'peer-1' }]);
+			});
+
+			it('Test replicated is stripped from the config fields written to file', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: true,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				await config_utils_rw.setConfiguration(test_set_config_json);
+
+				const config_fields = update_config_value_stub.firstCall.args[2];
+				expect(config_fields).to.eql({
+					http_corsAccessList: ['harper.fast'],
+					hdb_auth_header: 'test_header',
+				});
+			});
+
+			it('Test no replicated flag does not fan out', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					operationsApi_processes: 18,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.called).to.equal(false);
+				expect(result).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+			});
+
+			it('Test replicated: false (peer receiving a fanned-out call) does not re-replicate', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: false,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.called).to.equal(false);
+				expect(result).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+				const config_fields = update_config_value_stub.firstCall.args[2];
+				expect(config_fields).to.not.have.property('replicated');
+			});
+
+			it('Test non-boolean replicated is rejected before any local write', async () => {
+				for (const bad of ['false', 'true', 1, 0]) {
+					let error;
+					try {
+						await config_utils_rw.setConfiguration({
+							operation: 'set_configuration',
+							http_corsAccessList: ['harper.fast'],
+							replicated: bad,
+						});
+					} catch (err) {
+						error = err;
+					}
+
+					expect(error, `expected rejection for replicated: ${JSON.stringify(bad)}`).to.not.equal(undefined);
+					expect(error.http_resp_msg ?? error.message).to.include('replicated');
+				}
+				expect(update_config_value_stub.called).to.equal(false);
+				expect(replicate_operation_stub.called).to.equal(false);
+			});
+
+			it('Test local config write failure propagates without fanning out', async () => {
+				update_config_value_stub.throws(STRING_ERROR);
+
+				let error;
+				try {
+					await config_utils_rw.setConfiguration({
+						operation: 'set_configuration',
+						http_corsAccessList: ['harper.fast'],
+						replicated: true,
+					});
+				} catch (err) {
+					error = err;
+				}
+
+				expect(error.name).to.equal(STRING_ERROR);
+				expect(replicate_operation_stub.called).to.equal(false);
+			});
+		});
 	});
 	describe('Test readConfigFile function', () => {
 		let properties_reader_rw;
@@ -1092,9 +1380,9 @@ describe('Test configUtils module', () => {
 
 			// Reset parseYamlDoc in case previous tests stubbed it
 			// Re-require the module to get a fresh copy
-			delete require.cache[require.resolve('#js/config/configUtils')];
-			require('#js/config/configUtils');
-			const freshRewire = rewire('#js/config/configUtils');
+			delete require.cache[require.resolve('#src/config/configUtils')];
+			require('#src/config/configUtils');
+			const freshRewire = rewire('#src/config/configUtils');
 			// Copy the fresh parseYamlDoc to our rewired module
 			const parseYamlDoc = freshRewire.__get__('parseYamlDoc');
 			config_utils_rw.__set__('parseYamlDoc', parseYamlDoc);

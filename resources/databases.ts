@@ -12,7 +12,7 @@ import {
 import { makeTable } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.js';
+import { getConfigPath } from '../config/configUtils.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -27,6 +27,7 @@ import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -195,7 +196,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	if (options.dupSort) {
 		db = new RocksIndexStore(path, options).open() as any;
 	} else {
-		db = RocksDatabase.open(path, options) as any;
+		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
 		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
 		db.put = db.putSync as any;
@@ -583,6 +584,7 @@ function initStores(
 		const expiration = primaryAttribute.expiration;
 		const eviction = primaryAttribute.eviction;
 		const sealed = primaryAttribute.sealed;
+		const cacheControl = primaryAttribute.cacheControl;
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
 		if (table && !recreateForEngineChange) {
@@ -615,7 +617,7 @@ function initStores(
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key } as any),
+					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
 					rootStore
 				);
 			} else {
@@ -721,6 +723,7 @@ function initStores(
 					replicate,
 					expirationMS: expiration && expiration * 1000,
 					evictionMS: eviction && eviction * 1000,
+					cacheControl,
 					trackDeletes,
 					tableName,
 					tableId,
@@ -774,6 +777,9 @@ interface TableDefinition {
 	description?: string;
 	properties?: Record<string, any>;
 	hidden?: boolean;
+	// default Cache-Control for anonymous REST reads; null = schema explicitly has none (clears a
+	// prior value on reload), undefined = caller is not schema-defining (leave the current value)
+	cacheControl?: string | null;
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -933,6 +939,68 @@ export async function dropDatabase(databaseName) {
 
 	await deleteRootBlobPathsForDB(rootStore);
 }
+// HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
+// versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
+// as enabling the switch — the opposite of intent. Treat "" / "0" / "false" (and unset) as NOT set.
+function hnswAutoVersionDisabled(): boolean {
+	const value = process.env.HNSW_NO_AUTOVERSION;
+	return value != null && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+}
+
+/**
+ * Resolve the storage format of a custom-index object store (e.g. HNSW): `'versioned'` (each node
+ * value is prefixed with a monotonic version the RocksDB Verification Table can extract → cached,
+ * decode-free graph traversal) or `'legacy'` (un-versioned, un-cached).
+ *
+ * The format is decided ONCE — when the index is created — and persisted on the attribute
+ * descriptor (`indexFormat`), so every worker and every reload reads the same authoritative value
+ * rather than re-deriving it from the store's current contents. Re-deriving per-open is racy: a
+ * store that is non-empty mid-backfill would be mis-read as legacy, and opening a versioned store
+ * with the legacy decoder corrupts reads. table() persists the resolved value (and always persists
+ * it BEFORE the first node is written, so by the time a store is non-empty its format is on disk).
+ *
+ * The empty-guard below is only the INITIALIZER for the first open under this feature (no format
+ * persisted yet): an empty store will be written versioned; a pre-existing non-empty store holds
+ * legacy un-prefixed values (incl. small-int id mappings the versioned decoder would misread) and
+ * stays legacy until an explicit reindex rebuilds it. The HNSW_NO_AUTOVERSION kill-switch only
+ * blocks a NEW index from initializing as versioned — an already-versioned store is still resolved
+ * versioned so its reads stay correct. The resolved value is stamped back onto `attribute` so the
+ * caller's attributesDbi.put persists it.
+ */
+function resolveIndexFormat(
+	dbiKey: string,
+	rootStore: RootDatabaseKind,
+	dbi: any,
+	attribute: any
+): 'versioned' | 'legacy' {
+	const persisted = (rootStore as any).dbisDb?.getSync(dbiKey)?.indexFormat;
+	let format: 'versioned' | 'legacy' = persisted ?? attribute.indexFormat;
+	if (format == null) {
+		format = 'legacy';
+		let isEmpty = true;
+		// Probe with no start/end so any key type is counted — numeric, string-pk
+		// safeKeys, and Symbol/array keys (e.g. entryPoint, KEY_PREFIX) are all
+		// included. The old { start: 0, end: Infinity } range missed symbol-array and
+		// string keys, misclassifying non-empty stores as empty after a delete-all.
+		for (const _key of dbi.getKeys({ limit: 1 })) {
+			isEmpty = false;
+			break;
+		}
+		if (isEmpty && !hnswAutoVersionDisabled()) format = 'versioned';
+	}
+	attribute.indexFormat = format;
+	return format;
+}
+
+// Arm a custom-index object store for versioned (VT-cacheable) reads and writes: enable the
+// metadata-prefix encode/decode (isRocksDB) and self-versioning (autoVersion) on its encoder.
+// Idempotent — safe to call again on a re-opened or reindexed store.
+function armVersionedIndexEncoder(dbi: any, rootStore: any) {
+	if (dbi.encoder?.autoVersion) return;
+	handleLocalTimeForGets(dbi, rootStore);
+	if (dbi.encoder) dbi.encoder.autoVersion = true;
+}
+
 // opens an index, consulting with custom indexes that may use alternate store configuration
 function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
 	const objectStorage =
@@ -954,9 +1022,23 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 				indexNulls?: boolean;
 				rootStore?: RocksRootDatabase;
 		  });
+	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	if (rootStore instanceof RocksDatabase) {
-		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey } as any) as any;
+		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
+		// available before resolveIndexFormat decides the format. Versioned stores need the VT
+		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
+		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey, cache: isCustomObjectIndex } as any) as any;
 		(dbi as any).rootStore = rootStore;
+		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
+		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
+		// Verification-Table cache can't track them. A versioned index initialises its encoder as a
+		// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
+		// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
+		// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
+		// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
+		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
+			armVersionedIndexEncoder(dbi, rootStore);
+		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
 	}
@@ -1004,6 +1086,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		description,
 		properties,
 		hidden,
+		cacheControl,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	const rootStore = database({ database: databaseName, table: tableName });
@@ -1050,6 +1133,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		Table.description = description;
 		Table.properties = properties;
 		Table.hidden = hidden;
+		// undefined means a non-schema caller (add_attribute, cluster schema events) — don't clobber
+		if (cacheControl !== undefined) Table.cacheControl = cacheControl;
 	} else {
 		const auditStore = rootStore.auditStore;
 		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
@@ -1063,6 +1148,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primaryKeyAttribute.expiration = expiration;
 		if (eviction) primaryKeyAttribute.eviction = eviction;
+		// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
+		// a descriptor value carried by cluster schema events; null (schema has no directive)
+		// clears a stale value the carried descriptor may hold
+		if (cacheControl === undefined) cacheControl = primaryKeyAttribute.cacheControl;
+		else if (cacheControl === null) delete primaryKeyAttribute.cacheControl;
+		else primaryKeyAttribute.cacheControl = cacheControl;
 		splitSegments ??= false;
 		primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
 		if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
@@ -1117,7 +1208,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName } as any);
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
@@ -1154,6 +1245,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					description,
 					properties,
 					hidden,
+					cacheControl,
 				})
 			);
 			Table.schemaVersion = 1;
@@ -1269,6 +1361,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				for (const key of searchOnlyOptions) delete copy[key];
 				return copy;
 			};
+			// Canonical key for the structural (reindex-triggering) comparison only: strip search-only
+			// options, then sort keys and coerce numeric-looking string scalars so a representation-only
+			// difference (key order, string-vs-number) does not force a needless rebuild. harper#1357
+			const canonicalIndexKey = (indexed: any) => JSON.stringify(canonicalizeIndexOptions(stripSearchOnly(indexed)));
 			const commonChanged =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
@@ -1282,18 +1378,36 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			// any metadata difference (drives persistence)
 			const changed =
 				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
-			// structure-affecting difference (drives reindex) — ignores search-only option changes
-			const structurallyChanged =
-				commonChanged ||
-				JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
-					JSON.stringify(stripSearchOnly(attribute.indexed));
+			// structure-affecting difference (drives reindex) — ignores search-only option changes and
+			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
+			const indexOptionsStructurallyChanged =
+				canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
+			const structurallyChanged = commonChanged || indexOptionsStructurallyChanged;
 			if (attribute.indexed) {
+				// The restart generation that owns any in-progress build of this index. Use the
+				// worker's stable startup generation (workerData.restartNumber), NOT the mutable
+				// manageThreads counter: during a worker's shutdown/drain the global counter has
+				// already advanced to the replacement generation, so stamping that would make the
+				// replacement worker see an equal generation (and a possibly-reused PID) and skip
+				// crash-recovery, leaving the index stuck. Falls back to manageThreads.restartNumber
+				// on the main thread, where workerData is undefined (and it is initialized to 1).
+				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
+				// custom-object) index. An index created before this field existed has no indexFormat on
+				// disk; persist the resolved value now — even when nothing else changed — so the format is
+				// durable BEFORE any node is written. Otherwise an empty pre-existing index would resolve
+				// 'versioned', write versioned nodes, and on the next load re-derive 'legacy' from the
+				// now-non-empty store, opening versioned data with the legacy decoder (silent corruption).
+				// (Scoped by attribute.indexFormat != null: only RocksDB custom-object indexes set it.)
+				const indexFormatNeedsPersist =
+					attribute.indexFormat != null && attributeDescriptor?.indexFormat !== attribute.indexFormat;
 				if (
 					changed ||
+					indexFormatNeedsPersist ||
 					attributeDescriptor?.indexingFailed ||
 					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-					attributeDescriptor?.restartNumber < workerData?.restartNumber
+					attributeDescriptor?.restartNumber < currentRestartGeneration
 				) {
 					hasChanges = true;
 					exclusiveLock();
@@ -1302,7 +1416,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						structurallyChanged ||
 						attributeDescriptor?.indexingFailed ||
 						(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-						attributeDescriptor?.restartNumber < workerData?.restartNumber
+						attributeDescriptor?.restartNumber < currentRestartGeneration
 					) {
 						hasChanges = true;
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
@@ -1317,18 +1431,53 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							// previous lastIndexedKey checkpoint is for a graph built under the old options —
 							// resuming from it would mix two incompatible graphs. Reset to undefined so
 							// runIndexing clears the dbi and starts from scratch.
-							// For pure crash-recovery (same options, different PID/restartNumber), preserve
-							// the checkpoint so the backfill resumes rather than restarts.
+							// For pure crash-recovery (same options, different PID/restartNumber) — including a
+							// representation-only option difference — preserve the checkpoint so the backfill
+							// resumes rather than restarts. Canonicalized to match structurallyChanged above.
 							const indexOptionsChanged =
-								JSON.stringify(stripSearchOnly(attributeDescriptor?.indexed)) !==
-								JSON.stringify(stripSearchOnly(attribute.indexed));
+								canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
 							attribute.lastIndexedKey = indexOptionsChanged
 								? undefined
 								: (attributeDescriptor?.lastIndexedKey ?? undefined);
+							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
+							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
+							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
+							// new nodes can carry versions: flip the persisted format and re-arm the dbi encoder
+							// (openIndex armed it from the pre-rebuild format, which for a legacy index was
+							// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
+							// existing format — its partial graph was already written under it.
+							if (
+								rootStore instanceof RocksDatabase &&
+								indexType &&
+								CUSTOM_INDEXES[indexType]?.useObjectStore &&
+								!hnswAutoVersionDisabled() &&
+								attribute.lastIndexedKey === undefined
+							) {
+								attribute.indexFormat = 'versioned';
+								armVersionedIndexEncoder(dbi, rootStore);
+							}
 							attribute.indexingPID = process.pid;
+							// Persist the owning restart generation (see currentRestartGeneration above) so
+							// the trigger can re-detect an incomplete index after a worker restart even when
+							// the new process reuses the old PID. Cleared on clean completion; left in place
+							// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
+							attribute.restartNumber = currentRestartGeneration;
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
+							// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
+							const reindexReasons: string[] = [];
+							if (commonChanged)
+								reindexReasons.push(attributeDescriptor ? 'attribute-definition-changed' : 'new-index');
+							if (attributeDescriptor && indexOptionsStructurallyChanged)
+								reindexReasons.push('structural-options-changed');
+							if (attributeDescriptor?.indexingFailed) reindexReasons.push('indexing-failed-retry');
+							if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
+								reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
+							if (attributeDescriptor?.restartNumber < currentRestartGeneration) reindexReasons.push('restart-number');
+							logger.info(
+								`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
+							);
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
 							attributesToIndex.push(attribute);
 						}
@@ -1339,6 +1488,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
 						attribute.indexingPID = attributeDescriptor.indexingPID;
 						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+						// Carry the in-progress restart generation too, so persisting this metadata-only
+						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
+						attribute.restartNumber = attributeDescriptor.restartNumber;
 						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
 					attributesDbi.put(dbiKey, attribute);
@@ -1404,6 +1556,37 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			});
 		}
 	}
+}
+/**
+ * Canonical form used ONLY for the structural (reindex-triggering) comparison of index options.
+ * `@indexed(...)` records options in source-argument order and as strings, while the operations API
+ * and config objects can supply them reordered or as numbers; without canonicalizing, such a
+ * representation-only difference flips the structural comparison and forces a needless full rebuild
+ * (clearing + rebuilding the index, 503-ing the attribute throughout) for a semantically identical
+ * index. Sorts object keys and coerces numeric-looking (non-zero) string scalars to numbers.
+ * Conservative by design: boolean-vs-object, absent-vs-present, and string-"0"-vs-number-0
+ * differences are all preserved, so a genuine change (`true` vs `{ type: 'HNSW' }`, an added/removed
+ * option, a changed value) still triggers a rebuild. Persistence keys off the raw form, so the stored
+ * descriptor self-heals toward this shape over time. harper#1357
+ */
+export function canonicalizeIndexOptions(value: any): any {
+	if (Array.isArray(value)) return value.map(canonicalizeIndexOptions);
+	if (value && typeof value === 'object') {
+		const canonical: Record<string, any> = {};
+		for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeIndexOptions(value[key]);
+		return canonical;
+	}
+	// Coerce numeric-looking strings ("16" -> 16) so string-vs-number representations of the same
+	// option compare equal — EXCEPT zero: the string "0" is truthy while the number 0 is falsy, and
+	// index code may branch on truthiness (e.g. HNSW `if (this.optimizeRouting)` doubles maxConnections),
+	// so "0" and 0 build structurally different indexes and must still trigger a rebuild. Zero is the
+	// only finite number whose string and numeric forms diverge in truthiness, so excluding it fully
+	// closes that gap. Leave non-numeric strings, booleans, null, etc. intact.
+	if (typeof value === 'string' && value.trim() !== '') {
+		const numeric = Number(value);
+		if (numeric !== 0 && Number.isFinite(numeric)) return numeric;
+	}
+	return value;
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
@@ -1506,9 +1689,14 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 						hadIndexingErrors = true;
 						if (!isTransientIndexingError(error)) hadPermanentIndexingError = true;
 						if (!attributeErrorReported[property]) {
-							// just report an indexing error once per attribute so we don't spam the logs
+							// just report an indexing error once per attribute so we don't spam the logs.
+							// A store closed by worker shutdown surfaces here as "Database not open"; that is
+							// a benign interruption (the next generation re-runs the backfill), so don't log
+							// it as an error — the outer catch returns quietly once the iterator also throws.
 							attributeErrorReported[property] = true;
-							logger.error(`Error indexing attribute ${property}`, error);
+							if (Table.primaryStore?.rootStore?.status === 'closed')
+								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
+							else logger.error(`Error indexing attribute ${property}`, error);
 						}
 					}
 				}
@@ -1618,6 +1806,7 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 				delete attribute.lastIndexedKey;
 				delete attribute.indexingPID;
 				delete attribute.indexingFailed;
+				delete attribute.restartNumber;
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
@@ -1634,6 +1823,19 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 		}
 	} catch (error) {
+		// A worker shutting down closes its stores mid-backfill, so the range iterator or a
+		// put throws (e.g. "Database not open" / "Iterator not initialized"). This is an
+		// interruption, not a data error: the next worker generation re-runs the backfill via
+		// the crash-recovery trigger (indexingPID / restartNumber mismatch), and persisting
+		// indexingFailed here would fail anyway against the closed store. Treat it as a benign
+		// interruption instead of logging a misleading error and a "failed to persist" warning.
+		if (Table.primaryStore?.rootStore?.status === 'closed') {
+			logger.debug(
+				`Indexing of ${Table.tableName} interrupted by store shutdown; recovery resumes on the next worker generation`,
+				error
+			);
+			return;
+		}
 		logger.error('Error in indexing', error);
 		// Persist indexingFailed so the next restart re-triggers the rebuild from an
 		// explicitly failed state rather than silently looping. Without this,

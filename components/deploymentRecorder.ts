@@ -10,12 +10,14 @@
 // as the rollback source when that operation lands.
 
 import { randomUUID } from 'node:crypto';
-import { createHash, Hash } from 'node:crypto';
-import type { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
+import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
-import { createBlob } from '../resources/blob.ts';
+import { createBlob, isSaving, deleteBlob } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
+import type { RegistryAuthReference } from './secretOperations.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
 import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 
@@ -37,11 +39,11 @@ export function getActiveEmitter(deploymentId: string): ProgressEmitter | undefi
 	return activeEmitters.get(deploymentId);
 }
 
-// Interim cap: ingestPayload currently buffers the entire payload in memory before
-// computing the hash and persisting. This cap prevents an OOM on accidentally-huge
-// uploads. A follow-up will swap this for a true streaming-hash + blob-source pattern
-// that lifts the limit back to whatever the replication path supports.
-const PAYLOAD_BUFFER_CAP_BYTES = 200 * 1024 * 1024;
+// Cap for the degraded fallback used only when the hdb_deployment table is missing (so the
+// payload can't stream into a row-backed blob and must be buffered in memory). The normal
+// streaming path is uncapped — this bound exists solely to keep a pending-upgrade window from
+// OOMing the node on a large deploy. 1 GiB comfortably covers real components.
+const UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES = 1024 * 1024 * 1024;
 
 type DeploymentStatus =
 	| 'pending'
@@ -60,14 +62,16 @@ interface CreateOptions {
 	user?: string;
 	restart_mode?: 'immediate' | 'rolling' | null;
 	rollback_of?: string | null;
+	// Registry-auth in reference form (`{ registry, secret, scope? }`) — never a literal token. Kept
+	// so a rollback can re-resolve the private-registry credential from hdb_secret without the
+	// operator re-supplying it. Null when the deploy used no auth or a no-custody transient token.
+	registry_auth?: RegistryAuthReference[] | null;
 	emitter?: ProgressEmitter;
 }
 
 export class DeploymentRecorder {
 	readonly deploymentId: string;
 	private readonly record: Record<string, any>;
-	private hash: Hash | null = null;
-	private byteCount = 0;
 	private finished = false;
 	private unsubscribe: (() => void) | null = null;
 	private pendingPut: Promise<void> | null = null;
@@ -99,6 +103,7 @@ export class DeploymentRecorder {
 			completed_at: null,
 			user: options.user ?? null,
 			rollback_of: options.rollback_of ?? null,
+			registry_auth: options.registry_auth ?? null,
 			error: null,
 		};
 		const recorder = new DeploymentRecorder(deploymentId, record);
@@ -172,58 +177,147 @@ export class DeploymentRecorder {
 	}
 
 	/**
-	 * Drain a payload source (Buffer or Readable) into the row's payload_blob attribute,
-	 * computing sha256 and byte count alongside. After this resolves the row has been
-	 * committed once with the final hash and size, and `this.row.payload_blob.stream()`
-	 * yields a fresh Readable that callers can pass to extraction.
+	 * Drain a payload source (Buffer, base64 string, or Readable) into the row's
+	 * payload_blob attribute, computing sha256 and byte count alongside. After this
+	 * resolves the row has been committed with the final hash and size, and
+	 * `this.row.payload_blob.stream()` yields a fresh Readable callers pass to extraction.
 	 *
-	 * Buffers the payload in memory (subject to PAYLOAD_BUFFER_CAP_BYTES) so the
-	 * hash/size are known synchronously before we commit and so the blob's `saveBlob`
-	 * lifecycle doesn't race with our digest() call. A streaming variant is a planned
-	 * follow-up that uses the unused `hash`/`byteCount` instance fields below.
+	 * The Readable path (the multipart file part) is fully streaming: the tarball is teed
+	 * through a hash/size tap straight into the blob's file-backed storage, so a multi-GB
+	 * component is bounded by disk, not memory. No payload size cap is imposed — the
+	 * deployment system is explicitly designed to carry arbitrarily large components.
+	 * In-memory sources (a Buffer, or the legacy base64-in-JSON/CBOR body) are already
+	 * materialized by the time they reach us, so they take the simpler buffer path.
 	 */
 	async ingestPayload(source: Readable | Buffer | string): Promise<void> {
 		const hash = createHash('sha256');
-		let byteCount = 0;
-		let buffer: Buffer;
-		if (Buffer.isBuffer(source)) {
-			buffer = source;
-		} else if (typeof source === 'string') {
-			// Legacy CBOR/JSON path: payload arrives as a base64-encoded string.
-			buffer = Buffer.from(source, 'base64');
-		} else {
+
+		// In-memory sources: the bytes are already resident, so hashing them and creating a
+		// buffer-backed blob is both simplest and no worse for memory than what the caller
+		// already holds. No cap — a large base64-in-JSON body is the caller's choice.
+		if (Buffer.isBuffer(source) || typeof source === 'string') {
+			const buffer = Buffer.isBuffer(source) ? source : Buffer.from(source, 'base64');
+			hash.update(buffer);
+			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
+			this.record.payload_hash = hash.digest('hex');
+			this.record.payload_size = buffer.length;
+			await this.put();
+			return;
+		}
+
+		// Streaming source. If the hdb_deployment table is missing (upgrade directive hasn't
+		// run, or it was dropped) there is no row to attach the blob to, and a file-backed
+		// blob would never be persisted for extraction to re-read. Fall back to buffering in
+		// that degraded case so the deploy still works. Unlike the streaming path below, this
+		// buffer is held in memory, so it carries a cap: without it a multi-GB deploy during the
+		// upgrade window would OOM the node (or throw on Node's ~2 GB Buffer limit). We fail fast
+		// with a clear error instead. The cap applies ONLY to this degraded path — once the
+		// table exists, deploys stream to disk with no size limit.
+		const tableMissing = !(databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+		if (tableMissing) {
 			const chunks: Buffer[] = [];
 			let collected = 0;
 			for await (const chunk of source as AsyncIterable<Buffer | string>) {
 				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any);
 				collected += buf.length;
-				if (collected > PAYLOAD_BUFFER_CAP_BYTES) {
+				if (collected > UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES) {
 					(source as Readable).destroy?.();
 					throw new ClientError(
-						`Deploy payload exceeds the ${PAYLOAD_BUFFER_CAP_BYTES} byte buffer cap. ` +
-							`Use a package identifier (npm:/file:/git:) for larger components.`
+						`Deploy payload exceeds the ${UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES}-byte limit that applies while ` +
+							`deployment tracking is unavailable (the system.${terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME} ` +
+							`table is missing — likely a pending upgrade). Retry once the upgrade completes, or use a ` +
+							`package identifier (npm:/file:/git:) for larger components.`
 					);
 				}
 				chunks.push(buf);
 			}
-			buffer = Buffer.concat(chunks);
+			const buffer = Buffer.concat(chunks);
+			hash.update(buffer);
+			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
+			this.record.payload_hash = hash.digest('hex');
+			this.record.payload_size = buffer.length;
+			await this.put();
+			return;
 		}
-		if (buffer.length > PAYLOAD_BUFFER_CAP_BYTES) {
-			throw new ClientError(
-				`Deploy payload (${buffer.length} bytes) exceeds the ${PAYLOAD_BUFFER_CAP_BYTES} byte buffer cap. ` +
-					`Use a package identifier (npm:/file:/git:) for larger components.`
-			);
+
+		// Tee the source through a hash/size tap into a file-backed blob. The blob's
+		// saveBlob (driven by the put() below, via encodeBlobsWithFilePath) reads from the
+		// tap's output side; we pump the source into its input side. Memory stays O(chunk).
+		let byteCount = 0;
+		const tap = new Transform({
+			transform(chunk, _encoding, callback) {
+				// Normalize to a Buffer: a string chunk would otherwise hash as utf8 and count
+				// characters, not bytes — corrupting both payload_hash and payload_size.
+				const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any);
+				hash.update(buf);
+				byteCount += buf.length;
+				callback(null, buf);
+			},
+		});
+		// `tapDone` resolves once every source byte has passed through the tap (so the hash
+		// and byteCount are final) and rejects if the source or the downstream blob write
+		// errors — a destroyed tap fails the pipeline.
+		const tapDone = new Promise<void>((resolve, reject) => {
+			pipeline(source, tap, (error) => (error ? reject(error) : resolve()));
+		});
+		const blob = createBlob(tap, { type: 'application/gzip' });
+		this.record.payload_blob = blob;
+		// Persisting the row encodes the blob, which synchronously starts the file write that
+		// drains the tap, so `isSaving(blob)` is set as soon as put() is *called*. Await the put,
+		// the source draining (tapDone), and the file flush (saving) together: handing all three
+		// to Promise.all subscribes a rejection handler to each up front, so a client that aborts
+		// a large upload mid-stream (which rejects both tapDone and the blob write) fails the
+		// deploy loudly here instead of leaking an unhandledRejection. This also makes hash/size
+		// correctness independent of the put()/store write timing and of isSaving() being defined.
+		const putDone = this.put();
+		const saving = isSaving(blob) ?? Promise.resolve();
+		try {
+			await Promise.all([putDone, tapDone, saving]);
+		} catch (error) {
+			// Aborted/failed upload (e.g. the client disconnects mid-stream). The first put()
+			// already persisted the row's reference to a now-partial blob; since cleanupOrphans
+			// only reclaims UNreferenced blobs, leaving it would leak the file permanently. Drop
+			// the reference and delete the partial file. Cleanup is best-effort — never let it
+			// mask the original failure.
+			this.record.payload_blob = null;
+			this.record.payload_hash = null;
+			this.record.payload_size = null;
+			try {
+				// Let the first put and the blob write fully settle before re-putting: this
+				// ensures the null-reference write lands after the original reference write
+				// (so it wins) and the blob's file lock is released before we unlink it.
+				await Promise.allSettled([putDone, saving]);
+				await this.put();
+				deleteBlob(blob);
+			} catch (cleanupError) {
+				logger.warn?.('Failed to clean up partial deploy payload blob', cleanupError);
+			}
+			throw error;
 		}
-		hash.update(buffer);
-		byteCount = buffer.length;
-		this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
+		// Bytes are fully hashed (tapDone) and the file is flushed with its size header
+		// back-patched (saving), so the digest and blob.size below are final.
 		this.record.payload_hash = hash.digest('hex');
-		this.record.payload_size = byteCount;
-		// Touch the unused private fields so the type system stays happy when a streaming
-		// variant lands that uses them.
-		this.hash = hash;
-		this.byteCount = byteCount;
+		this.record.payload_size = blob.size ?? byteCount;
+		// Persist the now-known hash + size. The blob is already saved, so this re-put does
+		// not re-stream — saveBlob short-circuits on the existing fileId.
 		await this.put();
+	}
+
+	/**
+	 * Drop the stored payload tarball, retaining the metadata (size, hash, event_log). Used to
+	 * reclaim storage for large deploys once every peer has installed from the blob and it is no
+	 * longer needed. Only mutates the in-memory record — the caller drops the payload before the
+	 * terminal finish() write so the null reference lands in that single put rather than a
+	 * separate one. Committing the row with no blob reference unlinks the file locally (via the
+	 * RecordEncoder retained-blob check) and replicates the null so peers drop their copies too.
+	 *
+	 * Returns the freed payload size (bytes) when a blob was present and dropped, otherwise 0.
+	 */
+	dropPayload(): number {
+		if (this.finished || this.record.payload_blob == null) return 0;
+		const freed = typeof this.record.payload_size === 'number' ? this.record.payload_size : 0;
+		this.record.payload_blob = null;
+		return freed;
 	}
 
 	async transitionPhase(phase: string, status?: DeploymentStatus): Promise<void> {
@@ -358,7 +452,7 @@ export class DeploymentRecorder {
 // take well over the original 30s to arrive on a peer (harper-pro#402). 120s matches the
 // blob-stream receive default and gives a loaded cluster room to converge. Override per-deploy
 // via the `deployment_timeout` operation parameter.
-const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
+export const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
 
 /**
  * Peer-side helper — wait for the hdb_deployment row to arrive via table replication,

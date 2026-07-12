@@ -16,7 +16,7 @@
  *   - `BEDROCK_EMBED_MODEL`      (default `amazon.titan-embed-text-v2:0`)
  */
 import { suite, test, before } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 
 type BedrockBackendCtor = new (config: { region?: string; model?: string; requestTimeoutMs?: number }) => {
 	embed: (input: string | string[], opts: object) => Promise<{ status: string; output: Float32Array[]; usage: object }>;

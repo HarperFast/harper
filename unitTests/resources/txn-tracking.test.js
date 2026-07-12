@@ -6,6 +6,7 @@ const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBT
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 describe('Txn Expiration', () => {
@@ -57,10 +58,110 @@ describe('Txn Expiration', () => {
 		}
 		await Promise.race([delay(50), result]);
 		assert(performedDBInteractions);
-		assert.equal(trackedTxns.size, existingTxns);
+		// Check the specific txn we started was expired and removed. Counting against
+		// existingTxns is unreliable: other tests' transactions can expire concurrently and
+		// shift the count underneath us during the 50ms window.
+		assert.ok(
+			!trackedTxns.has(lastTxn),
+			'expected the slow transaction to have been expired and removed from trackedTxns'
+		);
 	});
 	after(function () {
 		setTxnExpiration(30000);
+	});
+});
+
+describe('Write txn timeout', () => {
+	let IndexedResource, OtherResource;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		IndexedResource = table({
+			table: 'IndexedTxnTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 't', indexed: true },
+			],
+		});
+		// a second table so a single transaction can span two databases (writes to the second live on the
+		// transaction's `next` chain), exercising the multi-store classification path
+		OtherResource = table({
+			table: 'OtherTxnTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+	});
+
+	function setExpiration(ms) {
+		return IndexedResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
+	}
+
+	// A transaction held open past the limit with uncommitted writes must be aborted and surface an error,
+	// not silently force-committed. Force-committing a partial write set violates atomicity and can orphan
+	// secondary-index entries that only a full index rebuild repairs (issue #1407).
+	it('aborts a write-bearing txn open too long, surfacing an error and leaving no record or index entry', async function () {
+		setExpiration(20);
+		try {
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await IndexedResource.put(101, { t: 9999 }, context);
+					// hold the transaction open (with a pending write) long enough for the monitor to fire
+					await delay(150);
+				}),
+				/open-transaction limit/
+			);
+			// the partial write must have been rolled back: no record by primary key...
+			assert.ok((await IndexedResource.get(101)) == null, 'timed-out write should not have been committed');
+			// ...and no orphaned secondary-index entry for the indexed value
+			const matches = [];
+			for await (const entry of IndexedResource.search([{ attribute: 't', value: 9999 }])) {
+				matches.push(entry);
+			}
+			assert.equal(matches.length, 0, 'timed-out write should not leave an orphaned index entry');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// Multi-store path: a transaction that reads one database and writes another holds the write on its
+	// `next` chain while the head (which only read) has no writes of its own. The head must still be treated
+	// as write-bearing and aborted, or the monitor would force-commit the second database's write (#1407).
+	it('aborts a multi-store txn whose write lives on the next chain, not force-committing it', async function () {
+		await IndexedResource.put(301, { t: 1 });
+		setExpiration(20);
+		try {
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await IndexedResource.get(301, context); // read database A -> head, no writes of its own
+					await OtherResource.put(302, { name: 'should not persist' }, context); // write database B -> next
+					await delay(150);
+				}),
+				/open-transaction limit/
+			);
+			assert.ok((await OtherResource.get(302)) == null, 'multi-store write should not have been committed');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// Canonical-source applies (replication / external caching source) have no resubscribe/resume path, so
+	// aborting one would drop the write while the resume cursor advances past it (harper-pro#348). They keep
+	// the prior force-commit behavior instead of being poisoned.
+	it('does not abort a source-apply txn open too long (preserves the write)', async function () {
+		setExpiration(20);
+		try {
+			const context = { sourceApply: true };
+			await transaction(context, async () => {
+				await IndexedResource.put(401, { t: 7 }, context);
+				await delay(150); // held past the limit; monitor must NOT poison a source-apply txn
+			});
+			assert.equal((await IndexedResource.get(401))?.t, 7, 'source-apply write should be preserved');
+		} finally {
+			setExpiration(30000);
+		}
 	});
 });
 
@@ -121,7 +222,15 @@ describe('Read Txn Expiration', () => {
 		assert.equal(result.name, 'two');
 	});
 
-	after(function () {
+	after(async function () {
 		setReadTxnExpiration(300000);
+		// On Node v24 the V8 exit-time finalizer order can call mdb_cursor_close on a cursor
+		// whose txn was force-aborted by checkReadTxnTimeouts above. Drain in-flight ops and
+		// reap orphaned cursor wrappers now, while the env is still in a stable state.
+		await new Promise((r) => setImmediate(r));
+		if (typeof global.gc === 'function') {
+			global.gc();
+			await new Promise((r) => setImmediate(r));
+		}
 	});
 });
