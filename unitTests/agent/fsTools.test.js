@@ -125,10 +125,7 @@ describe('agent/fsTools', () => {
 
 	it('read_file refuses paths that resolve outside scope via ..', async () => {
 		const escape = join('..', '..', 'etc', 'passwd');
-		await assert.rejects(
-			readFileTool.handler({ path: escape }, ctx(scopes)),
-			/outside the agent's 'components' scope/
-		);
+		await assert.rejects(readFileTool.handler({ path: escape }, ctx(scopes)), /outside the agent's 'components' scope/);
 	});
 
 	it('write_file enforces the byte cap', async () => {
