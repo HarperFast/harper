@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783930270445,
+  "lastUpdate": 1783930273242,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5144,6 +5144,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 159.81,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8bf5921e06349611773b4c1d4363088801d3b974",
+          "message": "ci(review): canary Claude reviews on claude-sonnet-5 (harper only) (#1759)\n\nOverride the reusable's model default (claude-sonnet-4-6) for this\nrepo's claude-review caller. harper is the A/B canary: highest review\ntraffic, and every ai-review-log entry records Model:, so calibration\ncan compare sonnet-5 vs sonnet-4-6 verdict mix directly at the same\nprompt ref (9cf49d2). Intro pricing ($2/$10 through 2026-08-31) offsets\nthe new tokenizer (~30% more tokens for equivalent text).\n\nWatch item: Sonnet 5 follows blocker-only severity instructions more\nliterally (documented code-review-harness effect) — if the deflation\nrate rises in the next calibration cycle, add coverage-first reporting\nto the run-notes surface before fleet rollout; if clean, promote to the\nreusable default.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-13T00:05:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/8bf5921e06349611773b4c1d4363088801d3b974"
+        },
+        "date": 1783930272475,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 7.59,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 7.45,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 11.22,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 7.8,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 15.15,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 7.54,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 17.48,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 7.78,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 10.14,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 83.42,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 39.72,
             "unit": "ms"
           }
         ]
