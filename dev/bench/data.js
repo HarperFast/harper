@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783843154438,
+  "lastUpdate": 1783930270445,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -2162,6 +2162,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1080.04,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8bf5921e06349611773b4c1d4363088801d3b974",
+          "message": "ci(review): canary Claude reviews on claude-sonnet-5 (harper only) (#1759)\n\nOverride the reusable's model default (claude-sonnet-4-6) for this\nrepo's claude-review caller. harper is the A/B canary: highest review\ntraffic, and every ai-review-log entry records Model:, so calibration\ncan compare sonnet-5 vs sonnet-4-6 verdict mix directly at the same\nprompt ref (9cf49d2). Intro pricing ($2/$10 through 2026-08-31) offsets\nthe new tokenizer (~30% more tokens for equivalent text).\n\nWatch item: Sonnet 5 follows blocker-only severity instructions more\nliterally (documented code-review-harness effect) — if the deflation\nrate rises in the next calibration cycle, add coverage-first reporting\nto the run-notes surface before fleet rollout; if clean, promote to the\nreusable default.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-13T00:05:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/8bf5921e06349611773b4c1d4363088801d3b974"
+        },
+        "date": 1783930269482,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 15304.63,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 24321.13,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 24072.92,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 16735.61,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 12299.5,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 22195.98,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 2341.32,
             "unit": "ops/sec"
           }
         ]
