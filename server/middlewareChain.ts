@@ -137,16 +137,18 @@ export function resolveDeps(entries: HttpEntry[], nameToEntry: Map<string, HttpE
 }
 
 /**
- * Normalizes a urlPath by ensuring a leading slash and stripping a single trailing slash
- * (except for the root '/'). '/api', 'api', and '/api/' are treated equivalently for
- * routing/matching — pathnames always begin with '/', so a slash-less urlPath could
- * otherwise never match anything (#1583).
+ * Normalizes a urlPath by ensuring a leading slash and stripping trailing slashes.
+ * '/api', 'api', and '/api/' are treated equivalently for routing/matching — pathnames
+ * always begin with '/', so a slash-less urlPath could otherwise never match anything (#1583).
+ * A urlPath that constrains nothing — the root mount ('/'), empty, or undefined — normalizes
+ * to undefined: root-mounted handlers join the default chain and no prefix is stripped from
+ * their requests (#1766).
  */
 export function normalizeUrlPath(urlPath: string | undefined): string | undefined {
-	if (!urlPath) return urlPath;
+	if (!urlPath) return undefined;
 	if (!urlPath.startsWith('/')) urlPath = '/' + urlPath;
-	if (urlPath.length <= 1) return urlPath;
-	return urlPath.endsWith('/') ? urlPath.slice(0, -1) : urlPath;
+	urlPath = urlPath.replace(/\/+$/, '');
+	return urlPath.length <= 1 ? undefined : urlPath;
 }
 
 /**

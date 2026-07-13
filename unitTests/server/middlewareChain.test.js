@@ -297,6 +297,18 @@ describe('matchesRoute', () => {
 		assert.strictEqual(matchesRoute(req('/api', 'other.com'), route), false);
 		assert.strictEqual(matchesRoute(req('/other', 'example.com'), route), false);
 	});
+
+	it('root mount (urlPath "/") constrains nothing — matches every path (#1766)', () => {
+		assert.strictEqual(matchesRoute(req('/'), { urlPath: '/' }), true);
+		assert.strictEqual(matchesRoute(req('/index.html'), { urlPath: '/' }), true);
+		assert.strictEqual(matchesRoute(req('/assets/app.js'), { urlPath: '/' }), true);
+	});
+
+	it('host-constrained root mount degrades to host-only matching (#1766)', () => {
+		const route = { host: 'example.com', urlPath: '/' };
+		assert.strictEqual(matchesRoute(req('/deep/path', 'example.com'), route), true);
+		assert.strictEqual(matchesRoute(req('/deep/path', 'other.com'), route), false);
+	});
 });
 
 // --------------------------------------------------------------------------
@@ -668,15 +680,18 @@ describe('stripPrefix', () => {
 describe('normalizeUrlPath', () => {
 	it('returns undefined for undefined/empty', () => {
 		assert.strictEqual(normalizeUrlPath(undefined), undefined);
-		assert.strictEqual(normalizeUrlPath(''), '');
+		assert.strictEqual(normalizeUrlPath(''), undefined);
 	});
 
-	it('preserves root "/"', () => {
-		assert.strictEqual(normalizeUrlPath('/'), '/');
+	it('normalizes the root mount to undefined — no path constraint (#1766)', () => {
+		assert.strictEqual(normalizeUrlPath('/'), undefined);
+		assert.strictEqual(normalizeUrlPath('//'), undefined);
+		assert.strictEqual(normalizeUrlPath('///'), undefined);
 	});
 
-	it('strips a single trailing slash', () => {
+	it('strips trailing slashes', () => {
 		assert.strictEqual(normalizeUrlPath('/api/'), '/api');
+		assert.strictEqual(normalizeUrlPath('/api//'), '/api');
 	});
 
 	it('leaves paths without trailing slash unchanged', () => {
@@ -714,6 +729,47 @@ describe('stripPrefix originalPathname', () => {
 		const withSlash = stripPrefix(req('/assets/'), '/assets');
 		assert.strictEqual(withSlash.pathname, '/');
 		assert.strictEqual(withSlash.originalPathname, '/assets/');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// root mount (urlPath: '/') — joins the default chain, pathname unstripped (#1766)
+// ---------------------------------------------------------------------------
+
+describe('root mount (urlPath: "/")', () => {
+	it('receives every request with the pathname unstripped', () => {
+		const seen = [];
+		const responders = [
+			{
+				name: 'static',
+				port: 9000,
+				urlPath: '/',
+				listener: (r, next) => {
+					seen.push(r.pathname);
+					return next(r);
+				},
+			},
+		];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED);
+		chain(req('/'));
+		chain(req('/index.html'));
+		chain(req('/assets/app.js'));
+		assert.deepStrictEqual(seen, ['/', '/index.html', '/assets/app.js']);
+	});
+
+	it('joins the default chain with before/after ordering intact', () => {
+		const order = [];
+		const listener = (name) => (r, next) => {
+			order.push(name);
+			return next(r);
+		};
+		const responders = [
+			{ name: 'static', port: 9000, urlPath: '/', before: 'authentication', listener: listener('static') },
+			{ name: 'authentication', port: 9000, listener: listener('authentication') },
+		];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED);
+		chain(req('/index.html'));
+		assert.deepStrictEqual(order, ['static', 'authentication']);
 	});
 });
 
