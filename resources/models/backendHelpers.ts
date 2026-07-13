@@ -83,7 +83,9 @@ export function isRetriableStatus(status: number): boolean {
  * clamps a past HTTP-date to 0.
  */
 export function parseRetryAfterMs(header: string | null): number | undefined {
-	if (!header) return undefined;
+	// Whitespace-only must be unparseable, not Number(' ') === 0 — a 0ms "retry after"
+	// would skip the computed backoff entirely.
+	if (!header?.trim()) return undefined;
 	const seconds = Number(header);
 	if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1000 : undefined;
 	const date = Date.parse(header);

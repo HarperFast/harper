@@ -411,6 +411,12 @@ describe('backendHelpers retry (#1594)', () => {
 			assert.strictEqual(parseRetryAfterMs('-5'), undefined);
 			assert.strictEqual(parseRetryAfterMs('soon'), undefined);
 		});
+
+		it('treats empty and whitespace-only headers as unparseable, not 0', () => {
+			assert.strictEqual(parseRetryAfterMs(''), undefined);
+			assert.strictEqual(parseRetryAfterMs(' '), undefined);
+			assert.strictEqual(parseRetryAfterMs('\t'), undefined);
+		});
 	});
 
 	describe('computeRetryDelayMs', () => {
