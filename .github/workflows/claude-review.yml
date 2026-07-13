@@ -45,6 +45,14 @@ jobs:
       # CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
       # is parsed literally so we can't interpolate a variable.
       ai-review-prompts-ref: 9cf49d23cb046ecd6c87f3bba86dc3338d6998fb
+      # CANARY (2026-07-11): run this repo's Claude reviews on Sonnet 5
+      # while the fleet default stays claude-sonnet-4-6. Every ai-review-log
+      # entry records `Model:`, so calibration can compare sonnet-5 vs
+      # sonnet-4-6 verdict mix directly — watch the severity-deflation rate
+      # (Sonnet 5 follows blocker-only instructions more literally; known
+      # code-review-harness effect). Promote to the reusable's default or
+      # revert based on the next calibration cycle.
+      model: claude-sonnet-5
       review-layers: |
         universal
         harper/common
