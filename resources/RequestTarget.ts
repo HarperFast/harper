@@ -68,6 +68,15 @@ export class RequestTarget extends URLSearchParams {
 	declare allowConditionsOnDynamicAttributes?: boolean;
 
 	/**
+	 * Predicate-aware vector search (#1241). A `(record) => boolean` filter evaluated during HNSW
+	 * traversal (and as a post-filter for other paths), so a vector sort keeps exploring until it has
+	 * enough MATCHING nearest neighbors instead of post-filtering an under-filled candidate set. The
+	 * function must be synchronous and side-effect free; the record it receives is frozen. JS-API only —
+	 * never parsed from a REST query string (no eval of user-supplied code over HTTP).
+	 */
+	declare vectorFilter?: (record: any) => boolean;
+
+	/**
 	 * When `false`, the query reads against the latest committed data without holding a consistent
 	 * read snapshot open for the duration of the iteration. This trades read consistency (rows
 	 * written after the scan starts may be observed) for not pinning a snapshot that blocks

@@ -2854,6 +2854,17 @@ export function makeTable(options) {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
+			// Record-level read guard (#1241): a resource may define a static allowReadRecord(user, record)
+			// that participates in query execution (pushed into HNSW traversal for vector sorts, applied as a
+			// post-filter otherwise). Resolve off the actual (possibly subclassed) constructor so overrides win.
+			// SCOPE: this is a QUERY-result filter, not a general read-authorization boundary — direct
+			// single-record get(id) does not consult it (use allowRead/instance hooks for that). It must be
+			// synchronous, side-effect free, and fast; it can run once per candidate record during traversal.
+			const allowReadRecord = (this.constructor as any).allowReadRecord;
+			const recordAccess =
+				typeof allowReadRecord === 'function' || typeof target.vectorFilter === 'function'
+					? { allowReadRecord, user: (context as any)?.user, vectorFilter: target.vectorFilter }
+					: undefined;
 			const entries = executeConditions(
 				conditions,
 				operator,
@@ -2862,16 +2873,28 @@ export function makeTable(options) {
 				target,
 				context,
 				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
-				filtered
+				filtered,
+				recordAccess
 			);
 			const ensure_loaded = (target as any).ensureLoaded !== false;
+			// Authoritative RBAC enforcement (#1241): the guards inside executeConditions evaluate the LOCAL
+			// record, but on a caching table transformEntryForSelect may then revalidate an expired/invalidated
+			// row from source and return a DIFFERENT record. An authorization check must hold on the record
+			// actually returned, so allowReadRecord is re-checked there, after materialization (the earlier
+			// evaluation stays as a prune that also bounds HNSW traversal). vectorFilter and condition filters
+			// intentionally keep the local-record semantics all query filters have on caching tables.
+			const recordGuard =
+				typeof allowReadRecord === 'function'
+					? (record: any) => allowReadRecord((context as any)?.user, record)
+					: undefined;
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
 				readTxn,
 				filtered,
 				ensure_loaded,
-				true
+				true,
+				recordGuard
 			);
 			let results = TableResource.transformToOrderedSelect(
 				entries,
@@ -3082,9 +3105,12 @@ export function makeTable(options) {
 		 * @param filtered
 		 * @param ensure_loaded
 		 * @param canSkip
+		 * @param recordGuard record-level read check (#1241) applied to the record actually being
+		 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
+		 * authorization verdict can't be made on bytes that differ from what the caller receives.
 		 * @returns
 		 */
-		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?) {
+		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?, recordGuard?) {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
@@ -3164,6 +3190,10 @@ export function makeTable(options) {
 					}
 				}
 				if (record == null) return canSkip ? SKIP : record;
+				// Record-level RBAC (#1241): enforced here because `record` is now the final, materialized
+				// record — a caching table's source revalidation (above) may have replaced the local copy the
+				// query filters evaluated. Fail closed on the record actually being returned.
+				if (recordGuard && !recordGuard(record)) return canSkip ? SKIP : undefined;
 				if (select && !(select[0] === '*' && select.length === 1)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
