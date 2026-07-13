@@ -11,8 +11,9 @@ import { generateJsonApi } from '../resources/openApi.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
+import { entryMap } from '../resources/RecordEncoder.ts';
 
-const { errorToString } = harperLogger;
+const { errorToString, errorForLog } = harperLogger;
 const etagBytes = new Uint8Array(8);
 const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
 let httpOptions = {};
@@ -29,6 +30,21 @@ function finalizeResponse(responseData, headers, status, request) {
 	if (Object.isFrozen(responseData)) {
 		// make a copy if it is a frozen record
 		responseData = Object.assign({}, responseData);
+	} else if (entryMap.has(responseData)) {
+		// A table/cache record handed to us for the response is also the live object that the
+		// resolving read queued for its store commit (see getFromSource in Table.ts, which shares
+		// one object so the response reflects commit-stamped timestamps). Mutating it below —
+		// reassigning `.headers` to a web `Headers` (whose entries are not own-enumerable, so it
+		// encodes as `{}`) or defaulting `.status` — writes straight through to what gets persisted,
+		// silently emptying the stored headers on the next read. On RocksDB the commit encodes before
+		// this runs so it goes unnoticed; on LMDB the commit is deferred (async txn + the blob
+		// durability gate widened in #1641) and encodes the corrupted object. Copy so response
+		// mutations never reach the stored record. Preserving the prototype keeps computed-attribute
+		// getters resolving (entryMap-backed methods like getUpdatedTime() return undefined on the
+		// copy, but nothing on this path reads them); it also means a stored field that shadows a
+		// same-named computed attribute would hit the prototype's setter here rather than becoming an
+		// own property — a schema shape that shouldn't exist. See HarperFast/harper#1702.
+		responseData = Object.assign(Object.create(Object.getPrototypeOf(responseData)), responseData);
 	}
 	// merge headers from response
 	const responseHeaders = mergeHeaders(responseData.headers, headers);
@@ -238,6 +254,20 @@ async function http(request: Request, nextHandler) {
 			headers,
 			body: undefined,
 		};
+		// #1565 converse: a declared `@table(cacheControl: "...")`/static cacheControl is emitted on
+		// anonymous reads so a shared cache/CDN can store public responses. Emission requires the
+		// explicit declaration — "the anonymous request succeeded" alone doesn't establish that the
+		// content is uniformly public (an allowRead gated on IP or headers would leak across a
+		// URL-keyed cache). Authenticated responses are excluded here — the auth layer applies a
+		// `private` floor to them instead.
+		if (!request.user && (method === 'GET' || method === 'HEAD')) {
+			const responseStatus = responseObject.status;
+			if (responseStatus === 200 || responseStatus === 304) {
+				const cacheControl = (resource as any)?.cacheControl;
+				// setIfNone: a resource-set Cache-Control (including a full no-store opt-out) always wins
+				if (cacheControl) headers.setIfNone('Cache-Control', cacheControl);
+			}
+		}
 		const loadedFromSource = target.loadedFromSource;
 		if (loadedFromSource !== undefined) {
 			// this appears to be a caching table with a source
@@ -259,8 +289,8 @@ async function http(request: Request, nextHandler) {
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
 		if (statusCode) {
-			if (statusCode === 500) harperLogger.warn(error);
-			else harperLogger.info(error);
+			if (statusCode === 500) harperLogger.warn(errorForLog(error));
+			else harperLogger.info(errorForLog(error));
 			if (statusCode === 405) {
 				if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 				if (error.allow) {
@@ -268,7 +298,7 @@ async function http(request: Request, nextHandler) {
 					headers.setIfNone('Allow', error.allow.map((method) => method.toUpperCase()).join(', '));
 				}
 			}
-		} else harperLogger.error(error);
+		} else harperLogger.error(errorForLog(error));
 
 		// RFC 9457 Problem Details
 		const status = statusCode || 500;
@@ -335,7 +365,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			let hasError;
 			(ws as any).on('error', (error) => {
 				hasError = true;
-				harperLogger.warn(error);
+				harperLogger.warn(errorForLog(error));
 			});
 			let deserializer;
 			(ws as any).on('message', function message(body) {
@@ -398,9 +428,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				}
 			} catch (error) {
 				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
-					else harperLogger.info(error);
-				} else harperLogger.error(error);
+					if (error.statusCode === 500) harperLogger.warn(errorForLog(error));
+					else harperLogger.info(errorForLog(error));
+				} else harperLogger.error(errorForLog(error));
 				ws.close(
 					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 						1011, // otherwise generic internal error

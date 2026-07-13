@@ -190,10 +190,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
 					transaction.timestamp = version;
-					// we treat this as a retry, because it is (and we want to skip writing to the transaction log)
+					// retries=1 routes operation.commit() through its retry path (no duplicate audit staging)
 					transaction.retries = 1;
-					// Explicit replay marker so the write path skips schema validation (harper#1316). Keyed
-					// off this rather than `retries`, which conflict retries also bump and never reset.
+					// Explicit replay marker: skips schema validation (harper#1316) and makes save() stamp
+					// the native transaction isRetry, so replayed writes are never re-appended to the
+					// transaction log being iterated (re-appending would prevent replay convergence).
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;

@@ -12,9 +12,13 @@ describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
 		CachingTableStaleWhileRevalidate,
+		SwrQueryTable,
 		Source,
 		sourceRequests = 0,
 		sourceResponses = 0;
+	let swrEnabled = true;
+	let sourceGate = null; // when set, SwrQueryTable's source defers responding until the test releases it
+	let observedSwrIds = []; // ids the SwrQueryTable SWR hook saw via this.getId(), for the per-row-identity test
 	let events = [];
 	let timer = 0;
 	let return_value = true;
@@ -91,6 +95,40 @@ describe('Caching', () => {
 			allowStaleWhileRevalidate(_entry, _id) {
 				return true;
 			}
+		};
+		// Indexed, object-sourced table whose allowStaleWhileRevalidate is gated by `swrEnabled`, so the
+		// same table exercises both the SWR and non-SWR query paths (harper#1578).
+		SwrQueryTable = table({
+			table: 'SwrQueryTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+			],
+		});
+		SwrQueryTable.sourcedFrom({
+			get(id) {
+				sourceRequests++;
+				return new Promise((resolve) => {
+					const respond = () => {
+						sourceResponses++;
+						resolve(return_value && { id, name: 'name ' + id });
+					};
+					// A gate lets a test hold the source response open deterministically (no timing races);
+					// otherwise fall back to the shared `timer` delay.
+					if (sourceGate) sourceGate(respond);
+					else setTimeout(respond, timer);
+				});
+			},
+		});
+		SwrQueryTable.prototype.allowStaleWhileRevalidate = function () {
+			// Record the identity the hook sees so a test can assert it matches the current row (harper#1578).
+			observedSwrIds.push(this.getId());
+			// The stale record must be loaded on the query-path instance, matching the single-record get path:
+			// a hook consulting this.getRecord()/this.<field> should see the stale row, not undefined (harper#1578).
+			assert.ok(this.getRecord(), 'SWR hook should see the loaded stale record, not undefined');
+			assert.equal(this.getRecord().id, this.getId());
+			return swrEnabled;
 		};
 	});
 	it('Has isCaching flag', async function () {
@@ -302,6 +340,95 @@ describe('Caching', () => {
 		result = await CachingTableStaleWhileRevalidate.primaryStore.get(23);
 		assert.equal(sourceRequests, 1); // should be cached again
 		assert(result);
+	});
+
+	// harper#1578: a query touching an expired row must consult allowStaleWhileRevalidate and serve the
+	// stale row while revalidating in the background, matching the single-record get path above.
+	it('Allows stale-while-revalidate for queries', async function () {
+		try {
+			swrEnabled = true;
+			timer = 0;
+			SwrQueryTable.setTTLExpiration({ expiration: 50, eviction: 100 }); // don't expire/evict on a timer; we force staleness explicitly
+			await SwrQueryTable.get(23); // warm the cache with a fresh entry (ungated)
+			// Force the entry stale (present but expired) deterministically, avoiding TTL timing races.
+			await SwrQueryTable.put(23, { id: 23, name: 'name 23' }, { expiresAt: 1 });
+			sourceRequests = 0;
+			sourceResponses = 0;
+			// Gate the revalidation so we can assert the query returned the stale row WITHOUT the source
+			// having responded — no timing race.
+			let releaseSource;
+			sourceGate = (respond) => (releaseSource = respond);
+			const results = [];
+			for await (const record of SwrQueryTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
+				results.push(record);
+			}
+			assert.equal(results.length, 1); // stale row served without waiting on source
+			assert.equal(results[0].id, 23);
+			assert.equal(sourceRequests, 1); // background revalidation was started
+			assert.equal(sourceResponses, 0); // and the query did NOT block on it (response still gated)
+			assert(releaseSource, 'the source revalidation should be in-flight (gated)');
+			releaseSource(); // now let the background revalidation complete
+			await waitFor(() => sourceResponses === 1);
+		} finally {
+			sourceGate = null;
+			timer = 0;
+		}
+	});
+
+	// Guard the negative: without SWR (or when it returns false), a query over an expired row must still
+	// block on the upstream fetch, so the fix does not silently change non-SWR tables.
+	it('Query over expired row blocks on source when stale-while-revalidate is not allowed', async function () {
+		try {
+			swrEnabled = false;
+			timer = 0;
+			SwrQueryTable.setTTLExpiration({ expiration: 50, eviction: 100 });
+			await SwrQueryTable.get(23); // warm the cache with a fresh entry
+			await SwrQueryTable.put(23, { id: 23, name: 'name 23' }, { expiresAt: 1 }); // force stale
+			sourceRequests = 0;
+			sourceResponses = 0;
+			const results = [];
+			for await (const record of SwrQueryTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
+				results.push(record);
+			}
+			assert.equal(results.length, 1);
+			assert.equal(results[0].id, 23);
+			assert.equal(sourceRequests, 1);
+			assert.equal(sourceResponses, 1); // the query blocked until the source responded
+		} finally {
+			timer = 0;
+			swrEnabled = true;
+		}
+	});
+
+	// Guard against a single shared SWR instance leaking one row's identity to the others: a query over
+	// several expired rows must invoke allowStaleWhileRevalidate with each row's own id (harper#1578).
+	it('Query revalidation sees each row identity for a per-row SWR policy', async function () {
+		const ids = [24, 25, 26];
+		try {
+			swrEnabled = true;
+			timer = 0;
+			SwrQueryTable.setTTLExpiration({ expiration: 50, eviction: 100 });
+			for (const id of ids) await SwrQueryTable.get(id); // warm each entry
+			// Force all three stale and give them a shared indexed name so one query returns all of them.
+			for (const id of ids) await SwrQueryTable.put(id, { id, name: 'shared-swr' }, { expiresAt: 1 });
+			observedSwrIds = [];
+			const results = [];
+			for await (const record of SwrQueryTable.search({ conditions: [{ attribute: 'name', value: 'shared-swr' }] })) {
+				results.push(record.id);
+			}
+			assert.deepEqual(
+				[...results].sort((a, b) => a - b),
+				ids
+			); // all three stale rows served
+			// The SWR hook must have seen each row's own id via this.getId(), not the first row's repeated.
+			assert.deepEqual(
+				[...observedSwrIds].sort((a, b) => a - b),
+				ids
+			);
+		} finally {
+			timer = 0;
+			observedSwrIds = [];
+		}
 	});
 
 	it('Caching directives', async function () {

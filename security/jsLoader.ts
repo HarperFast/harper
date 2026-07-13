@@ -8,6 +8,7 @@ import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
 import { ApplicationScope } from '../components/ApplicationScope.ts';
+import { getSecretsForComponent, runWithComponentBinding } from '../components/componentSecrets.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
@@ -76,6 +77,13 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 		}
 	}
 	const moduleUrl = (filePath instanceof URL ? filePath : pathToFileURL(filePath)).toString();
+	// Bind the component-load context for the duration of the load, so the process-wide `secrets`
+	// export (reached under the native loader, or by natively-loaded dependencies that import the
+	// real `harper` package) resolves to this scope's component while its modules evaluate.
+	return runWithComponentBinding(scope?.name, () => importScoped(moduleUrl, scope));
+}
+
+async function importScoped(moduleUrl: string, scope?: ApplicationScope) {
 	try {
 		const loaderMode = scope?.mode;
 		if (scope && loaderMode !== 'native') {
@@ -773,6 +781,7 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 		logger: scope.logger ?? logger,
 		resources: scope.resources,
 		config: scope.config ?? {},
+		secrets: getSecretsForComponent(scope.name),
 		fetch: APPLICATIONS_LOCKDOWN === 'ses' ? secureOnlyFetch : fetch,
 		console,
 		global: appGlobal,
@@ -790,6 +799,9 @@ function getHarperExports(scope: ApplicationScope) {
 		logger: scope.logger ?? logger,
 		resources: scope.resources,
 		config: scope.config ?? {},
+		// The scoped-secrets view (#1550), bound exactly to this scope's component — per-scope, unlike
+		// the process-wide singletons below.
+		secrets: getSecretsForComponent(scope.name),
 		Resource,
 		tables,
 		databases,

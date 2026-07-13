@@ -18,6 +18,7 @@ import {
 	LOCAL_ONLY,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import './blob.ts';
 import {
 	blobsWereEncoded,
@@ -118,6 +119,12 @@ export class RecordEncoder extends StructonEncoder {
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
+	// Self-versioning mode for stores whose writes never stage a timestamp (HNSW/custom-index
+	// object stores). When set, each encode stamps a fresh monotonic version into the 8-byte
+	// metadata prefix so the value carries a version the RocksDB Verification Table can extract —
+	// enabling race-safe cache verification of graph nodes during traversal. Unlike primary-record
+	// writes, this never reads or clears the shared timestampNextEncoding global (harper#1307).
+	autoVersion = false;
 	constructor(options) {
 		options.useBigIntExtension = true;
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
@@ -168,6 +175,33 @@ export class RecordEncoder extends StructonEncoder {
 				// undecodable on the non-versioned read path (null → replication wedge).
 				lastValueEncoding = superEncode.call(this, record, options);
 				return lastValueEncoding;
+			}
+			if (this.autoVersion && this.isRocksDB) {
+				// Self-versioned index store (RocksDB only — the Verification Table is RocksDB-specific):
+				// prefix the record-encoder metadata header so each node carries a version the VT can
+				// extract and the decode path recognises. The header is [8-byte BE float64 version]
+				// [4-byte BE metadata word], exactly the format decode() expects: the version's first
+				// byte (0x42 for current-era ms timestamps) triggers metadata detection, and the
+				// ACTION_32_BIT-tagged flags word (flags = 0 — no expiration/residency/etc.) is required
+				// so decode consumes a metadata word rather than mis-reading the struct's first byte as
+				// flags — the flags word being mandatory was the actual bug behind earlier failures,
+				// NOT any struct incompatibility. Use the same reserve-start mechanism the primary
+				// metadata path below uses (the 2048|valueStart option reserves valueStart bytes at the
+				// front of the encode buffer; we write the header in place), which works fine with the
+				// forced randomAccessStructure/typed-struct mode of custom-object indexes — verified
+				// against the cold/frozen-read (#1161) and concurrent multi-worker (#386) suites. This
+				// avoids a per-write extra allocation + full-payload copy. Never touch the shared
+				// timestampNextEncoding/metadataInNextEncoding globals — those belong to the enclosing
+				// primary-record write whose commit nests this index encode (harper#1307).
+				const valueStart = 12; // 8-byte version + 4-byte metadata word
+				const encoded = superEncode.call(this, record, options | 2048 | valueStart);
+				const position = encoded.start || 0;
+				const dataView =
+					encoded.dataView || (encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
+				dataView.setFloat64(position, getNextMonotonicTime()); // version (big-endian, rocksdb stores it directly)
+				dataView.setUint32(position + 8, ACTION_32_BIT << 24); // metadata word: ACTION_32_BIT tag, flags = 0
+				lastValueEncoding = encoded.subarray(position + valueStart, encoded.end);
+				return encoded;
 			}
 			// this handles our custom metadata encoding, prefixing the record with metadata, including the local
 			// timestamp into the audit record, invalidation status and residency information
@@ -457,52 +491,37 @@ function getTimestamp() {
 }
 
 export function handleLocalTimeForGets(store, rootStore) {
-	const isRocksDB = store instanceof RocksDatabase;
+	if ((store as any).isPrimaryRocksDatabase) {
+		(store as any).initStore(rootStore);
+		return store;
+	}
 	store.readCount = 0;
 	store.cachePuts = false;
 	store.rootStore = rootStore;
 	store.encoder.rootStore = rootStore;
-	store.encoder.isRocksDB = isRocksDB;
 	store.decoder = store.encoder;
 	const storeGetEntry = store.getEntry;
-	const storeGetSync = store.getSync;
-	const storeGet = store.get;
 
 	store.getEntry = function (id, options) {
 		store.readCount++;
 		lastMetadata = null;
-		if (isRocksDB) {
-			return when(
-				options?.async ? storeGet.call(store, id, options) : storeGetSync.call(store, id, options),
-				(entry) => {
-					if (entry) {
-						if (entry[METADATA]) {
-							entry.metadataFlags = entry[METADATA];
-							return withEntry(entry);
-						} else return { value: entry };
-					} else return entry;
-				}
-			);
-		} else {
-			let entry: Entry = storeGetEntry.call(this, id, options);
-			if (lastMetadata) {
-				entry.metadataFlags = lastMetadata[METADATA];
-				entry.localTime = lastMetadata.localTime;
-				entry.residencyId = lastMetadata.residencyId;
-				entry.nodeId = lastMetadata.nodeId;
-				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
-				entry.size = lastMetadata.size;
-				if (lastMetadata.expiresAt >= 0) {
-					entry.expiresAt = lastMetadata.expiresAt;
-				}
-				if (isRocksDB) entry.version = lastMetadata.localTime;
-				if (entry.value) {
-					entryMap.set(entry.value, entry); // allow the record to access the entry
-				}
-				entry.key = id;
+		let entry: Entry = storeGetEntry.call(this, id, options);
+		if (lastMetadata) {
+			entry.metadataFlags = lastMetadata[METADATA];
+			entry.localTime = lastMetadata.localTime;
+			entry.residencyId = lastMetadata.residencyId;
+			entry.nodeId = lastMetadata.nodeId;
+			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+			entry.size = lastMetadata.size;
+			if (lastMetadata.expiresAt >= 0) {
+				entry.expiresAt = lastMetadata.expiresAt;
 			}
-			return entry && withEntry(entry);
+			if (entry.value) {
+				entryMap.set(entry.value, entry); // allow the record to access the entry
+			}
+			entry.key = id;
 		}
+		return entry && withEntry(entry);
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
 		function withEntry(entry) {
 			if (entry.value) {
@@ -547,15 +566,9 @@ export function handleLocalTimeForGets(store, rootStore) {
 		if (options.values === false || options.onlyCount) return iterable;
 		return iterable.map((entry) => {
 			// if we have metadata, move the metadata to the entry
-			if (isRocksDB) {
-				if (entry.value?.[METADATA]) {
-					entry.metadataFlags = entry.value[METADATA];
-					Object.assign(entry, entry.value);
-				}
-			} else if (lastMetadata) {
+			if (lastMetadata) {
 				entry.metadataFlags = lastMetadata[METADATA];
 				entry.localTime = lastMetadata.localTime;
-				if (isRocksDB) entry.version = lastMetadata.localTime;
 				entry.residencyId = lastMetadata.residencyId;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
@@ -575,36 +588,35 @@ export function handleLocalTimeForGets(store, rootStore) {
 		});
 	};
 
-	if (!isRocksDB) {
-		// add read transaction tracking
-		const txn = store.useReadTransaction();
-		txn.done();
-		if (!txn.done.isTracked) {
-			const Txn = txn.constructor;
-			const use = txn.use;
-			const done = txn.done;
-			Txn.prototype.use = function () {
-				if (!this.timerTracked) {
-					this.timerTracked = true;
-					trackedTxns.push(new WeakRef(this));
-				}
-				use.call(this);
-			};
-			Txn.prototype.done = function () {
-				if (this.isDone) return;
-				done.call(this);
-				this.openTimer = 0; // reset so idle pool time doesn't accumulate toward the stale-open threshold
-				if (this.isDone) {
-					for (let i = 0; i < trackedTxns.length; i++) {
-						const txn = trackedTxns[i].deref();
-						if (!txn || txn.isDone || txn.isCommitted) {
-							trackedTxns.splice(i--, 1);
-						}
+	// add read transaction tracking (LMDB only — RocksDB primary stores are PrimaryRocksDatabase and
+	// return early above; only LMDB stores reach here)
+	const txn = store.useReadTransaction();
+	txn.done();
+	if (!txn.done.isTracked) {
+		const Txn = txn.constructor;
+		const use = txn.use;
+		const done = txn.done;
+		Txn.prototype.use = function () {
+			if (!this.timerTracked) {
+				this.timerTracked = true;
+				trackedTxns.push(new WeakRef(this));
+			}
+			use.call(this);
+		};
+		Txn.prototype.done = function () {
+			if (this.isDone) return;
+			done.call(this);
+			this.openTimer = 0; // reset so idle pool time doesn't accumulate toward the stale-open threshold
+			if (this.isDone) {
+				for (let i = 0; i < trackedTxns.length; i++) {
+					const txn = trackedTxns[i].deref();
+					if (!txn || txn.isDone || txn.isCommitted) {
+						trackedTxns.splice(i--, 1);
 					}
 				}
-			};
-			Txn.prototype.done.isTracked = true;
-		}
+			}
+		};
+		Txn.prototype.done.isTracked = true;
 	}
 
 	return store;

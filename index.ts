@@ -90,6 +90,7 @@ import type { Logger } from './utility/logging/logger.ts';
 import type { models as ModelsImport } from './resources/models/Models.ts';
 import type { operation as OperationImport } from './server/serverHelpers/serverUtilities.ts';
 import type { Resource as ResourceImport } from './resources/Resource.ts';
+import type { SecretsView as SecretsImport } from './components/componentSecrets.ts'; // per-component secrets view (#1550)
 import type { server as ServerImport } from './server/Server.ts';
 import type { tables as TablesImport } from './resources/databases.ts';
 type ThreadsImport = unknown[]; // TODO: figure out actual type for this
@@ -113,6 +114,7 @@ declare global {
 	const models: typeof ModelsImport;
 	const operation: typeof OperationImport;
 	const Resource: typeof ResourceImport;
+	const secrets: SecretsImport;
 	const server: typeof ServerImport;
 	const tables: typeof TablesImport;
 	const threads: ThreadsImport;
@@ -127,6 +129,7 @@ export declare const logger: Logger;
 export declare const models: typeof ModelsImport;
 export declare const operation: typeof OperationImport;
 export declare const Resource: typeof ResourceImport;
+export declare const secrets: SecretsImport;
 export declare const server: typeof ServerImport;
 export declare const tables: typeof TablesImport;
 export declare const threads: ThreadsImport;
@@ -140,6 +143,7 @@ exports.logger = {};
 exports.models = undefined;
 exports.operation = undefined;
 exports.Resource = undefined;
+exports.secrets = undefined;
 exports.server = {};
 exports.tables = {};
 exports.threads = [];

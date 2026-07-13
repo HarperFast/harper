@@ -24,15 +24,15 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 
 ### Core dispatch
 
-| File                             | Purpose                                                                                                                                                                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Server.ts`                      | Defines the `Server` interface — the contract that protocol plugins use to register listeners. Has `socket()`, `http()`, `ws()`, `upgrade()`, `contentTypes`, `getUser()`, `operation()`, `replication`, etc. |
-| `http.ts`                        | Native HTTP/WS server. Registration entry points (`onRequest`, `onUpgrade`, `onWebSocket`), per-port middleware chains, UDS support, PROXY protocol. **See section map below.**                               |
-| `middlewareChain.ts`             | Topological sort respecting `before`/`after` constraints on listener registrations (`topoSort`). Falls back to registration order on cycle.                                                                   |
-| `REST.ts`                        | Resource-routed REST handler: URL → `Resource.getResource()` → method dispatch + content negotiation.                                                                                                         |
-| `graphqlQuerying.ts`             | GraphQL query/mutation/subscription execution against Resources.                                                                                                                                              |
-| `mqtt.ts`                        | MQTT broker (connect/sub/pub mapped onto Resource interface).                                                                                                                                                 |
-| `DurableSubscriptionsSession.ts` | Persistent subscription state (resume across reconnects).                                                                                                                                                     |
+| File                             | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Server.ts`                      | Defines the `Server` interface — the contract that protocol plugins use to register listeners. Has `socket()`, `http()`, `ws()`, `upgrade()`, `contentTypes`, `getUser()`, `operation()`, `replication`, etc.                                                                                                                                                                                                                       |
+| `http.ts`                        | Native HTTP/WS server. Registration entry points (`onRequest`, `onUpgrade`, `onWebSocket`), per-port middleware chains, UDS support, PROXY protocol. **See section map below.**                                                                                                                                                                                                                                                     |
+| `middlewareChain.ts`             | Topological sort respecting `before`/`after` constraints on listener registrations (`topoSort`). Falls back to registration order on cycle. Also `urlPath`/`host` sub-route dispatch: a mount is a prefix with a segment boundary, the mount prefix is stripped from `request.pathname` before the sub-chain runs, and the root mount `'/'` normalizes to _no_ path constraint (joins the default chain, nothing stripped — #1766). |
+| `REST.ts`                        | Resource-routed REST handler: URL → `Resource.getResource()` → method dispatch + content negotiation.                                                                                                                                                                                                                                                                                                                               |
+| `graphqlQuerying.ts`             | GraphQL query/mutation/subscription execution against Resources.                                                                                                                                                                                                                                                                                                                                                                    |
+| `mqtt.ts`                        | MQTT broker (connect/sub/pub mapped onto Resource interface).                                                                                                                                                                                                                                                                                                                                                                       |
+| `DurableSubscriptionsSession.ts` | Persistent subscription state (resume across reconnects).                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### Operations & Fastify
 
@@ -119,6 +119,16 @@ The default WebSocket upgrade handler is registered automatically inside `onWebS
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
+
+### Response Cache-Control / Vary policy (#1518, #1565)
+
+Three tiers, applied in two places:
+
+1. **App/resource explicit** — a `Cache-Control` set by the resource (or `@table(cacheControl: "...")` for anonymous reads, emitted in `REST.ts → http()`) always wins. The declaration is required: anonymous readability alone never emits shared-cache headers, because a request-attribute-gated `allowRead` (IP, headers) would make inferred `public` unsound.
+2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved or credentials were rejected (401), _unless_ the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
+3. **CORS partitioning** — when CORS is enabled, every response gets `Vary: Origin` (the ACAO header is reflected per-origin, and its absence on no-Origin requests is origin-dependent too).
+
+The `@table(cacheControl:)` value is persisted on the primary-key attribute (like `expiration`), so all threads and future boots see it; `resources/databases.ts → table()` treats `null` as "schema explicitly has none" (clears on reload) and `undefined` as "caller is not schema-defining" (no clobber from `add_attribute`/cluster schema events).
 
 ---
 

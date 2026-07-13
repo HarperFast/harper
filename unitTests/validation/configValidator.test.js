@@ -265,6 +265,8 @@ describe('Test configValidator module', () => {
 			},
 		};
 		const helpers = { state: { path: ['customFunctions', 'processes'] } };
+		const original_platform = process.platform;
+		const set_platform = (value) => Object.defineProperty(process, 'platform', { value, configurable: true });
 		let os_cpus_stub;
 		let logger_info_stub;
 
@@ -276,14 +278,25 @@ describe('Test configValidator module', () => {
 		afterEach(() => {
 			os_cpus_stub.restore();
 			logger_info_stub.restore();
+			set_platform(original_platform);
 		});
 
 		it('Test happy path, correct info message is logged and correct number of processes returned', () => {
+			// CPU-based defaulting only applies where SO_REUSEPORT lets workers share the ports
+			set_platform('linux');
 			os_cpus_stub.returns([1, 2, 3, 4, 5, 6]);
 			const result = set_default_processes(parent, helpers);
 
 			expect(result).to.equal(5);
 			expect(logger_info_stub.firstCall.args[0]).to.include(`defaulting customFunctions.processes to ${result}`);
+		});
+
+		it('Defaults to a single worker on platforms without SO_REUSEPORT (macOS, Windows)', () => {
+			os_cpus_stub.returns([1, 2, 3, 4, 5, 6]);
+			for (const platform of ['darwin', 'win32']) {
+				set_platform(platform);
+				expect(set_default_processes(parent, helpers)).to.equal(1);
+			}
 		});
 	});
 
@@ -366,14 +379,43 @@ describe('Test configValidator module', () => {
 		expect(result.message).to.equal("'routes' does not match any of the allowed types");
 	});
 
+	it('Test routesValidator accepts directional controlled-flow fields', () => {
+		const test_array = [
+			{ hostname: 'node-two', port: 9933, replicates: { sends: false, receives: true } },
+			{
+				hostname: 'node-three',
+				replicates: { sends: true, sendsTo: [{ target: 'node-three', database: 'data', excludeTables: ['secret'] }] },
+			},
+			// top-level form, plus entries that intentionally omit target/source and database
+			// (these mean "any peer" / "any database" and must validate)
+			{ host: 'node-four', receivesFrom: ['node-five', { source: 'node-six' }, { excludeTables: ['t'] }] },
+		];
+		const result = routesValidator(test_array);
+		expect(result).to.equal(undefined); // validateBySchema returns undefined when valid
+	});
+
+	it('Test routesValidator rejects a directional field of the wrong type', () => {
+		const result = routesValidator([{ hostname: 'node-two', replicates: { sends: 'yes' } }]);
+		expect(result.message).to.equal("'routes' does not match any of the allowed types");
+	});
+
 	it('Test validateRotationInterval invalid unit', () => {
 		const validate_interval = config_val.__get__('validateRotationInterval');
 		const message_stub = sinon.stub();
 		const helpers = { message: message_stub };
 		validate_interval('10B', helpers);
 		expect(helpers.message.args[0][0]).to.equal(
-			'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)'
+			'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)'
 		);
+	});
+
+	it('Test validateRotationInterval accepts minutes (lowercase m) and days', () => {
+		const validate_interval = config_val.__get__('validateRotationInterval');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		expect(validate_interval('30m', helpers)).to.equal('30m');
+		expect(validate_interval('1D', helpers)).to.equal('1D');
+		expect(message_stub.called).to.be.false;
 	});
 
 	it('Test validateRotationInterval invalid value', () => {
@@ -384,6 +426,42 @@ describe('Test configValidator module', () => {
 		expect(helpers.message.args[0][0]).to.equal(
 			"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'"
 		);
+	});
+
+	it('Test validateRotationRetention invalid unit', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		validate_retention('30B', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			'Invalid logging.rotation.retention unit. Available units are D (days), H (hours), M (months) or m (minutes)'
+		);
+	});
+
+	it('Test validateRotationRetention invalid value', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		validate_retention('THIRTYD', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'"
+		);
+
+		for (const invalid of ['-5D', '0D', '', null]) {
+			message_stub.resetHistory();
+			validate_retention(invalid, helpers);
+			expect(helpers.message.args[0][0]).to.equal(
+				"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'"
+			);
+		}
+	});
+
+	it('Test validateRotationRetention valid value', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		expect(validate_retention('30D', helpers)).to.equal('30D');
+		expect(message_stub.called).to.be.false;
 	});
 
 	describe('mcp config', () => {

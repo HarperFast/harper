@@ -17,6 +17,8 @@
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { cpus } from 'node:os';
 import request from 'supertest';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
@@ -33,6 +35,104 @@ const RESOURCES_JS =
 
 const skipSuite = process.platform === 'win32';
 
+/**
+ * Poll until the JS-computed `jsTotalPrice` resolver is live on *every* http
+ * worker before any real read or write lands.
+ *
+ * `jsTotalPrice` is `@computed @indexed` with no `from` expression — its
+ * resolver is registered at runtime by resources.js (`setComputedAttribute`),
+ * which sets per-worker in-memory state (Table.ts `userResolvers`), not at
+ * schema-load time. The `/Product/` route (from the `@export`ed table) starts
+ * serving as soon as the schema loads, which can be *before* resources.js
+ * finishes running on a worker. Two failure modes flow from that, and Harper
+ * runs many http workers (default: cpus-1), so a request can be load-balanced
+ * (SO_REUSEPORT) to a worker that is still cold:
+ *   - a PUT handled by a cold worker computes the `@indexed` value with a
+ *     missing resolver, freezing `jsTotalPrice` as `undefined` in the index, so
+ *     the `?jsTotalPrice=119` filter misses the record; and
+ *   - a GET `?select(jsTotalPrice)` served by a cold worker recomputes the
+ *     value with a missing resolver and returns null.
+ *
+ * The route probe in installAppComponent only proves the table is reachable on
+ * one worker, not that the resolver is registered everywhere. This gate seeds a
+ * throwaway record and reads the on-demand computed value in bursts (each burst
+ * opens fresh connections — the client sends `Connection: close` — so requests
+ * spread across workers) until several consecutive bursts see zero cold
+ * responses, i.e. every worker has run resources.js. This is a client-side
+ * readiness poll, in the spirit of restartHttpWorkers, so the suite stays
+ * multi-worker (this is a functional test, not a single-thread special case).
+ *
+ * The probe record uses taxRate 0 so its computed values are PROBE_COMPUTED (a
+ * value distinct from the 119 the real assertions filter on), so that even if
+ * its cleanup delete is missed the leaked probe can never satisfy the
+ * `?jsTotalPrice=119` / `?totalPrice=119` filter tests. readsPerBurst scales
+ * with the host core count (workers default to cpus-1) so a straggler worker is
+ * reliably hit even on high-core CI hosts.
+ */
+const PROBE_PRICE = 100;
+const PROBE_COMPUTED = 100; // price + price * 0
+
+async function waitForComputedResolver(
+	client,
+	{ readsPerBurst = Math.max(60, cpus().length * 8), requiredCleanBursts = 3, timeoutMs = 60000 } = {}
+) {
+	const probeId = '__computed_ready_probe__';
+	const cleanup = () =>
+		request(client.restURL)
+			.delete(`/Product/${probeId}`)
+			.set(client.headers)
+			.catch(() => {});
+	const deadline = Date.now() + timeoutMs;
+	try {
+		// Seed the probe record. A cold/restarting worker can transiently reset the
+		// connection during warm-up, so retry (treating rejects + non-204 alike)
+		// rather than failing the suite on a transient error.
+		let seeded = false;
+		while (!seeded && Date.now() < deadline) {
+			try {
+				const r = await request(client.restURL)
+					.put(`/Product/${probeId}`)
+					.set(client.headers)
+					.send({ id: probeId, price: PROBE_PRICE, taxRate: 0 });
+				seeded = r?.status === 204;
+			} catch {
+				// connection refused/reset while workers warm up — retry
+			}
+			if (!seeded) await sleep(150);
+		}
+		if (!seeded) throw new Error('failed to seed the computed-resolver probe record');
+
+		let cleanBursts = 0;
+		let lastCold = -1;
+		while (Date.now() < deadline) {
+			let cold = 0;
+			for (let i = 0; i < readsPerBurst; i++) {
+				// A request to a cold/restarting worker may reject (ECONNRESET/
+				// ECONNREFUSED) or return a non-computed value; both count as cold so
+				// the gate keeps polling instead of failing on a transient error.
+				try {
+					const r = await client.reqRest(`/Product/${probeId}?select(id,price,taxRate,jsTotalPrice)`);
+					if (!(r?.status === 200 && r?.body?.jsTotalPrice === PROBE_COMPUTED)) cold++;
+				} catch {
+					cold++;
+				}
+			}
+			lastCold = cold;
+			if (cold === 0) {
+				if (++cleanBursts >= requiredCleanBursts) return;
+			} else {
+				cleanBursts = 0;
+			}
+			await sleep(150);
+		}
+		throw new Error(
+			`jsTotalPrice resolver not live on all workers within ${timeoutMs}ms (last burst cold=${lastCold}/${readsPerBurst})`
+		);
+	} finally {
+		await cleanup();
+	}
+}
+
 suite('Computed indexed properties', { skip: skipSuite }, (ctx) => {
 	let client;
 
@@ -46,6 +146,8 @@ suite('Computed indexed properties', { skip: skipSuite }, (ctx) => {
 			probePath: '/Product/',
 			restartTimeoutMs: 120000,
 		});
+
+		await waitForComputedResolver(client);
 	});
 
 	after(async () => {
@@ -97,11 +199,13 @@ suite('Computed indexed properties', { skip: skipSuite }, (ctx) => {
 		assert.equal(r.body[0].taxRate, 0.19, r.text);
 		assert.equal(r.body[0].totalPrice, 119, r.text);
 		assert.equal(r.body[0].notIndexedTotalPrice, 119, r.text);
-		// jsTotalPrice is intentionally not asserted here: search_by_value returns
-		// the stored indexed value, which can be null if the record was PUT before
-		// resources.js finished initialising (setComputedAttribute is a runtime
-		// call, not a schema-time expression). The value is verified via REST GET
-		// with ?select below, which computes it on-demand.
+		// jsTotalPrice is intentionally not asserted here: search_by_value is an
+		// operations-API call served on the main thread, but the jsTotalPrice
+		// resolver is registered by resources.js (setComputedAttribute) only on the
+		// http workers. get_attributes recomputes computed fields on the main
+		// thread, where the resolver is absent, so it resolves to null. The value
+		// is verified via REST GET with ?select below (served by an http worker,
+		// which has the resolver).
 	});
 
 	test('REST GET by id returns raw fields', async () => {

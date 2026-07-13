@@ -23,6 +23,21 @@ export async function signalSchemaChange(message: any) {
 	}
 }
 
+/**
+ * Notify local listeners that JS resources have just been registered (resources.js loaded). This is
+ * deliberately local-only — no ITC broadcast — because every worker registers its own JS resources,
+ * so the dependent rebuild (MCP application tools) belongs in the worker where the registration
+ * happened. See `resourceHandler` in server/itc/serverHandlers.js and issue #1448.
+ */
+export function signalResourcesRegistered() {
+	try {
+		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		serverItcHandlers.resourceHandler();
+	} catch (err) {
+		hdbLogger.error(err);
+	}
+}
+
 export async function signalUserChange(message: any) {
 	try {
 		hdbLogger.trace('signalUserChange called with message:', message);

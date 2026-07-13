@@ -140,6 +140,18 @@ function isFrozenRecordObject(value: any): boolean {
 		Object.isFrozen(value)
 	);
 }
+// Freeze a decoded record value for cache integrity, guarding the bare-TypedArray-root case:
+// V8 throws "Cannot freeze array buffer views with elements" on Object.freeze of a non-empty
+// TypedArray/DataView (#1298). _writeUpdate now rejects such roots on write, but this read-side
+// guard still backstops records that bypass validation (source/cache population, replication of
+// legacy data) and lets an already-poisoned table be read again after upgrade. The freeze is
+// shallow anyway, so a typed-array root needs none. Only freeze plain objects: skip ArrayBuffer
+// views/ArrayBuffers, and short-circuit primitives/null/undefined to avoid a needless native
+// Object.freeze call on the hot read/scan path.
+export function freezeRecord(value: any): void {
+	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
+		Object.freeze(value);
+}
 export const INVALIDATED = 1;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
@@ -203,6 +215,7 @@ export function makeTable(options) {
 		replicate,
 		description,
 		hidden,
+		cacheControl,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
@@ -306,6 +319,8 @@ export function makeTable(options) {
 		static description = description;
 		static properties = properties;
 		static hidden = hidden;
+		// default `Cache-Control` for anonymous REST reads (from `@table(cacheControl: "...")`), see REST.ts
+		static cacheControl = cacheControl;
 		static outputSchemas: { [verb: string]: JsonSchemaFragment } | undefined;
 		static mcp: { annotations?: { [verb: string]: any } } | undefined;
 		static replicate = replicate;
@@ -326,6 +341,9 @@ export function makeTable(options) {
 		static getResidencyById: (id: Id) => number | void;
 		static get expirationMS() {
 			return expirationMs;
+		}
+		static get evictionMS() {
+			return evictionMs;
 		}
 		static dbisDB = dbisDb;
 		static schemaDefined = schemaDefined;
@@ -1901,6 +1919,33 @@ export function makeTable(options) {
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							transaction.checkOverloaded();
+							// A record must be a plain object. Reject primitive, string/number, bare-binary,
+							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
+							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
+							// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
+							// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
+							// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
+							// publish payloads are unaffected.)
+							const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
+							if (
+								recordUpdate === null ||
+								typeof recordUpdate !== 'object' ||
+								isBinaryRoot ||
+								Array.isArray(recordUpdate)
+							) {
+								// Avoid dumping every byte of a large binary body or huge payload into the error.
+								let received: string;
+								if (isBinaryRoot) {
+									received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
+								} else {
+									const full = stringify(recordUpdate) ?? typeof recordUpdate;
+									received = full.length > 200 ? full.slice(0, 200) + '...' : full;
+								}
+								throw new ClientError(
+									`A record must be an object, but received ${received}. To store binary data, put it ` +
+										`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
+								);
+							}
 							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
 							// caching relies on it), so mutating in place would corrupt cached/shared state.
 							// validate() coerces values and we stamp created/updated times + the primary key
@@ -1952,6 +1997,16 @@ export function makeTable(options) {
 				},
 				before: writeToSource(),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
+					// save(); log entries are not part of the aborted rocks transaction, so they survive).
+					// Only such a write can find its own orphaned entry in the dedup lookups below and must
+					// not treat it as "already applied". Per-write on purpose: the transaction-wide retry
+					// flag would also suppress dedup for a genuine re-delivered duplicate co-batched with
+					// the conflicting write (double-applying it) and for fresh writes staged through a
+					// reused transaction whose retries counter is stale. Sticky on purpose: a proxy read
+					// from the last attempt's skipped state launders when a recommit round self-skips
+					// (walk identity tie against its own staged record) before a fresh-transaction replay.
+					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2072,8 +2127,12 @@ export function makeTable(options) {
 							// local audit time, not version, so this version-keyed lookup doesn't apply there (LMDB keeps the
 							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard.
-							if (isRocksDB && dedupVersionCouldBeRetained(txnTime)) {
+							// check above remains the read-your-writes guard. Never when this write staged in a prior
+							// failed attempt: that attempt already appended this write's own audit entry, so the lookup
+							// would find it and skip the write as "already applied" when the record was never committed.
+							// A recommit of the same transaction survived that skip only because the old write batch
+							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnTime)) {
 								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -2132,7 +2191,11 @@ export function makeTable(options) {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
+							// Never a duplicate for a write that staged in a prior failed attempt: that attempt already
+							// appended this write's own audit entry, so the lookup would match it while the record was
+							// never committed (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
+								if (stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								return (
@@ -3040,6 +3103,7 @@ export function makeTable(options) {
 			}
 			let transformCache;
 			const source = this.source;
+			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
@@ -3077,7 +3141,23 @@ export function makeTable(options) {
 								message: 'This entry has expired',
 							};
 						}
-						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context);
+						// Stale-while-revalidate is an instance method, but a query has no per-row resource
+						// instance to consult (the single-record `get` path passes `this`). Construct one for this
+						// row — via the same `new constructor(id, context)` the framework's getResource uses — so
+						// the hook sees the current row's identity (this.getId()) and record state, matching the
+						// single-record path. It must be a real instance, not the bare class prototype: every
+						// resource prototype chain ends in a tracked-property Proxy, so reading an absent property
+						// (probing for an undefined `allowStaleWhileRevalidate`, or a hook touching `this.x`) on a
+						// non-instance invokes getChanges() with no backing state and throws (harper#1578). We also
+						// load the stale entry into it (as the single-record path does via _updateResource) so a
+						// hook consulting this.getRecord()/this.<field> sees the stale row, not undefined. `entry`
+						// here may be lazy (its `.value` is a GC-able deref, undefined once collected), so we set the
+						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
+						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
+						const swrResource = new resourceClass(entry.key ?? entry, context);
+						resourceClass._updateResource(swrResource, entry);
+						swrResource.setRecord(record);
+						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform);
 						}
@@ -4148,7 +4228,7 @@ export function makeTable(options) {
 										});
 										if (value?.then) hasPromises = true;
 										// for now, we shouldn't be getting promises until rocksdb
-										if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
 									});
 									return relationship.filterMissing
@@ -4163,7 +4243,7 @@ export function makeTable(options) {
 									transaction: txnForContext(context).getReadTxn(),
 								});
 								// for now, we shouldn't be getting promises until rocksdb
-								if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+								if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 								return value;
 							};
 							attribute.set = (object, related) => {
@@ -4534,7 +4614,7 @@ export function makeTable(options) {
 			// we need to freeze entry records to ensure the integrity of the cache;
 			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 			// issues
-			Object.freeze(entry?.value);
+			freezeRecord(entry?.value);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&
