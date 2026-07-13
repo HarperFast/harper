@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { isSSHAuthFailure } = require('#src/components/Application');
+const { isSSHAuthFailure, assertApplicationConfig } = require('#src/components/Application');
 
 describe('isSSHAuthFailure', () => {
 	it('returns true for "Could not read from remote repository"', () => {
@@ -63,5 +63,38 @@ npm error 404 '@scope/nonexistent-pkg@latest' is not in this registry.
 
 	it('returns false for empty stderr', () => {
 		assert.strictEqual(isSSHAuthFailure(''), false);
+	});
+});
+
+describe('assertApplicationConfig registryAuth', () => {
+	it('accepts a config with no registryAuth', () => {
+		assert.doesNotThrow(() => assertApplicationConfig('app', { package: 'npm:@org/app@1.0.0' }));
+	});
+
+	it('accepts registryAuth reference entries', () => {
+		assert.doesNotThrow(() =>
+			assertApplicationConfig('app', {
+				package: 'npm:@org/app@1.0.0',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', secret: 'deploy.app.gh', scope: '@org' }],
+			})
+		);
+	});
+
+	it('rejects registryAuth that is not an array', () => {
+		assert.throws(
+			() => assertApplicationConfig('app', { package: 'p', registryAuth: { registry: 'r', secret: 's' } }),
+			/expected array/
+		);
+	});
+
+	it('rejects a registryAuth entry carrying a literal token (references only on disk)', () => {
+		assert.throws(
+			() => assertApplicationConfig('app', { package: 'p', registryAuth: [{ registry: 'r', token: 'tok' }] }),
+			/expected \{ registry, secret, scope\? \} reference/
+		);
+	});
+
+	it('rejects a registryAuth entry missing registry/secret', () => {
+		assert.throws(() => assertApplicationConfig('app', { package: 'p', registryAuth: [{ secret: 's' }] }), /reference/);
 	});
 });

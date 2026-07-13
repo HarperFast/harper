@@ -115,6 +115,10 @@ function bisectInsert(arr: Candidate[], distance: number): number {
 const ENTRY_POINT = Symbol.for('entryPoint');
 const KEY_PREFIX = Symbol.for('key');
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
+// Visit budget for the post-delete connectivity probe (repairSeveredNeighbors, #1712). Severed
+// islands are small (bounded by the deleted node's neighborhood), so a probe that visits this many
+// nodes without reaching the entry point is treated as connected-but-far and repaired conservatively.
+const PROBE_VISIT_LIMIT = 256;
 type Connection = {
 	id: number;
 	distance: number;
@@ -142,7 +146,12 @@ export class HierarchicalNavigableSmallWorld {
 	// Index options that only affect search, not the stored graph — changing them must not trigger a
 	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
 	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
-	static searchOnlyOptions = ['efConstructionSearch'];
+	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal.
+	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion'];
+	// Signals to search.ts that this index accepts a per-record predicate in search() and applies it
+	// during traversal (predicate-aware / ACORN-style filtering), so companion conditions and RBAC can
+	// be pushed down instead of post-filtering an under-filled candidate set (#1241).
+	filteredSearch = true;
 	indexStore: any;
 	M: number = 16; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list
@@ -152,6 +161,17 @@ export class HierarchicalNavigableSmallWorld {
 	// a value of 1 is extremely aggressive.
 	optimizeRouting = 0.5;
 	nodesVisitedCount = 0;
+	// Visit-budget multiplier for predicate-aware traversal (#1241). When a filter is selective enough
+	// that layer-0 results never fill `ef`, the "closest candidate worse than worst result" stop rule
+	// never triggers, so maxVisits = ef * filterExpansion caps how many nodes an under-filled filtered
+	// search visits before returning what it has (approximate, like all ANN). It does NOT bound a filter
+	// that fills `ef` — that terminates naturally. Default 24 (not the 8 the design sketch assumed):
+	// this HNSW visits a large fraction of the graph per query, so filling `ef` at selectivity `s` needs
+	// ~ef/s visits; a multiplier of 24 fills down to ~4% selectivity before the budget bites, keeping
+	// recall at or above post-filtering across the range the query planner routes to traversal. Raising
+	// it is nearly free for condition-derived filters (they fill and self-terminate); it mainly trades
+	// latency for recall on selective *function* predicates. Per-query override via the search options.
+	filterExpansion = 24;
 
 	idIncrementer: BigInt64Array | undefined;
 	distance: (a: number[], b: number[]) => number;
@@ -188,6 +208,7 @@ export class HierarchicalNavigableSmallWorld {
 			if (options.efConstructionSearch !== undefined) this.efConstructionSearch = options.efConstructionSearch;
 			if (options.mL !== undefined) this.mL = options.mL;
 			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
+			if (options.filterExpansion !== undefined) this.filterExpansion = options.filterExpansion;
 		}
 	}
 	index(primaryKey: Id, vector: number[], existingVector?: number[], options: any = {}) {
@@ -497,6 +518,10 @@ export class HierarchicalNavigableSmallWorld {
 			this.indexStore.remove(safeKey, options);
 		}
 		const needsReindexing = new Map();
+		// On DELETE, track every neighbor that loses an edge: the empty-list check below only
+		// catches fully-orphaned nodes, but a cluster can stay internally connected while losing
+		// its only bridges to the entry point — see repairSeveredNeighbors (#1712).
+		const edgeLosingNeighborIds = vector ? undefined : new Set<number>();
 		// remove connections to this node that are no longer valid
 		if (oldNode.level !== undefined) {
 			for (let l = 0; l <= oldNode.level; l++) {
@@ -505,6 +530,7 @@ export class HierarchicalNavigableSmallWorld {
 					// get and copy the neighbor node so we can modify it
 					const neighborNode = updateNode(neighborId, this.safeGetSync(neighborId, options));
 					if (!neighborNode) continue;
+					edgeLosingNeighborIds?.add(neighborId);
 					// On an UPDATE (vector != null), only remove the reverse edge at
 					// the exact level l where the old connection existed. Sweeping 0..l would destroy reverse
 					// edges at lower levels that were just re-added by addConnection or preserved by the
@@ -580,7 +606,90 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			this.index(key, orphanVector, orphanVector, options);
 		}
+		if (edgeLosingNeighborIds?.size) this.repairSeveredNeighbors(edgeLosingNeighborIds, options);
 		this.checkSymmetry(nodeId, this.safeGetSync(nodeId, options), options);
+	}
+
+	/**
+	 * After a delete, a neighbor that lost an edge can be severed from the entry point even with
+	 * non-empty connection lists: a locally-connected cluster whose only bridges ran through the
+	 * deleted node becomes a disconnected island, unreachable by search at any ef (#1712). The
+	 * empty-list orphan check in index() can't see this, so probe each edge-losing neighbor's
+	 * connectivity and reindex the ones that are cut off.
+	 *
+	 * The probe is a level-prioritized best-first traversal (hubs first, since the entry point is
+	 * a high-level node), treating edges as undirected — the same assumption validateConnectivity
+	 * makes. Note the direction difference: the probe walks source→entry-point over stored
+	 * (outgoing) edges while search walks entry-point→outward, so an asymmetric edge could make
+	 * the probe claim connectivity that search doesn't have. Edges are bidirectional by
+	 * construction (checkSymmetry logs violations), and reverse-reachability from the entry point
+	 * would be O(N) per delete, so this is a deliberate residual. In a connected component the
+	 * probe reaches the known-connected set within a few hops; in an island it exhausts the
+	 * island quickly. If it exceeds PROBE_VISIT_LIMIT without an answer (pathologically distant
+	 * entry point — or an island larger than the budget), reinsert just the probe source: a
+	 * wasted reinsert in the connected case, and in the oversized-island case a partial repair
+	 * (the source relinks to the live graph, the rest of the island stays severed — reindexing
+	 * replaces the source's edges rather than bridging through them, and reindexing all 256+
+	 * probed nodes on what is usually just a distant entry point would be far too expensive).
+	 */
+	private repairSeveredNeighbors(neighborIds: Set<number>, options: any) {
+		const entryPointId = this.indexStore.getSync(ENTRY_POINT, options);
+		if (entryPointId === undefined) return;
+		const knownConnected = new Set<number>([entryPointId]);
+		for (const sourceId of neighborIds) {
+			if (knownConnected.has(sourceId)) continue;
+			const sourceNode = this.safeGetSync(sourceId, options);
+			if (!sourceNode || sourceNode.level === undefined) continue; // already removed or stale reference
+			const visited = new Map<number, Node>([[sourceId, sourceNode]]);
+			const frontier = new MinHeap();
+			frontier.push({ id: sourceId, distance: -sourceNode.level, node: sourceNode });
+			let verdict: 'connected' | 'island' | 'inconclusive' = 'island';
+			probe: for (;;) {
+				const current = frontier.pop();
+				if (!current) break; // exhausted the reachable set without touching the connected component
+				for (let l = 0; l <= current.node.level; l++) {
+					for (const { id: neighborId } of current.node[l] || []) {
+						if (neighborId === undefined) continue;
+						if (knownConnected.has(neighborId)) {
+							verdict = 'connected';
+							break probe;
+						}
+						if (visited.has(neighborId)) continue;
+						const node = this.safeGetSync(neighborId, options);
+						if (!node || node.level === undefined) continue; // stale reference
+						visited.set(neighborId, node);
+						frontier.push({ id: neighborId, distance: -node.level, node });
+					}
+				}
+				if (visited.size > PROBE_VISIT_LIMIT) {
+					verdict = 'inconclusive';
+					break;
+				}
+			}
+			if (verdict === 'connected') {
+				// every visited node connects to the source, which reaches the connected component
+				for (const id of visited.keys()) knownConnected.add(id);
+			} else {
+				// island: reinsert every member so the whole cluster relinks to the live graph;
+				// inconclusive: reinsert only the source (partial repair — see docstring)
+				if (verdict === 'inconclusive') {
+					logger.warn?.('connectivity probe exceeded visit budget after a delete, reinserting only', sourceId);
+				}
+				const toReindex = verdict === 'island' ? visited.values() : [sourceNode];
+				logger.debug?.('reindexing nodes severed from the entry point by a delete', sourceId);
+				for (const node of toReindex) {
+					const nodeVector =
+						node.scale !== undefined ? dequantizeInt8(node.vector as Int8Array, node.scale) : (node.vector as number[]);
+					this.index(node.primaryKey, nodeVector, nodeVector, options);
+				}
+				if (verdict === 'island') {
+					// the whole reindexed island is now relinked; skip re-probing its members
+					for (const id of visited.keys()) knownConnected.add(id);
+				} else {
+					knownConnected.add(sourceId);
+				}
+			}
+		}
 	}
 
 	private safeGetSync(key: any, options?: any): any {
@@ -643,7 +752,13 @@ export class HierarchicalNavigableSmallWorld {
 		ef: number,
 		level: number,
 		options: { transaction?: any } = {},
-		distanceFunction = this.distance
+		distanceFunction = this.distance,
+		// Predicate-aware traversal (#1241, layer 0 only). `filter` decides result admission by primary
+		// key; non-matching nodes still route (they stay in the candidate/visited sets) so the graph
+		// remains navigable under selective filters (ACORN). `filterState` carries the visit budget and
+		// per-query counters. Both are undefined for routing layers and for unfiltered searches.
+		filter?: (primaryKey: Id) => boolean,
+		filterState?: FilterState
 	): SearchResults {
 		// Pre-compute query magnitude for cosine; use cached invMag on stored nodes to skip sqrt per neighbor.
 		// Asymmetric distance: the query stays full-precision float; a stored neighbor may be int8
@@ -697,13 +812,62 @@ export class HierarchicalNavigableSmallWorld {
 
 		const candidates = new MinHeap();
 		candidates.push(initialCandidate);
-		const results = [initialCandidate] as SearchResults;
 
+		if (!filter) {
+			// Unfiltered path (unchanged): results are seeded with the entry point and every visited
+			// node is admitted; the stop rule is "closest remaining candidate worse than worst result".
+			const results = [initialCandidate] as SearchResults;
+			while (candidates.size > 0) {
+				const current = candidates.pop()!;
+				const furthestDistance = results[results.length - 1].distance;
+
+				if (current.distance > furthestDistance) break;
+
+				for (const { id: neighborId } of current.node[level] || []) {
+					if (visited.has(neighborId) || neighborId === undefined) continue;
+					visited.add(neighborId);
+
+					const neighbor = this.safeGetSync(neighborId, options);
+					if (!neighbor) continue;
+					this.nodesVisitedCount++;
+					const distance = computeDistance(neighbor.vector, neighbor.invMag, neighbor.scale);
+
+					if (distance < furthestDistance || results.length < ef) {
+						const candidate: Candidate = { id: neighborId, distance, node: neighbor };
+						candidates.push(candidate);
+						results.splice(bisectInsert(results, distance), 0, candidate);
+						if (results.length > ef) results.pop();
+					}
+				}
+			}
+			results.visited = visited.size;
+			return results;
+		}
+
+		// Predicate-aware path (#1241). `results` holds only nodes the filter admits, but every visited
+		// node still routes: it enters the candidate heap and can be expanded, preserving connectivity
+		// through non-matching regions. Because matches accrue slower than visits, the distance stop rule
+		// only applies once `ef` matches are in hand; until then we keep expanding.
+		//
+		// maxVisits = ef * filterExpansion is a hard ceiling on layer-0 node visits. It has to be
+		// generous enough NOT to truncate a non-selective filter before it fills `ef` (filling at
+		// selectivity `s` costs ~ef/s visits) — that is why the default filterExpansion is larger than a
+		// standard-HNSW rule of thumb, since this index visits a large fraction of the graph per query.
+		// It matters as a genuine bound in two cases: a selective filter that can never fill `ef` (where
+		// the alternative is crawling the whole graph — the same regime the planner diverts to the exact
+		// brute-force path for condition filters, leaving function predicates the real beneficiary), and
+		// a filter that fills `ef` with distant matches (a loose worst-match bound would otherwise let
+		// the distance rule explore almost everything).
+		// search() always supplies filterState alongside filter; default one for any direct caller that doesn't.
+		if (!filterState) filterState = { maxVisits: Infinity, nodesVisited: 0, filterEvaluations: 0 };
+		const results = [] as unknown as SearchResults;
+		if (this.admit(filter, filterState, entryPoint.primaryKey)) results.push(initialCandidate);
+		let budgetExhausted = false;
 		while (candidates.size > 0) {
 			const current = candidates.pop()!;
-			const furthestDistance = results[results.length - 1].distance;
-
-			if (current.distance > furthestDistance) break;
+			// Once we have ef matches, the worst of them bounds useful exploration; before that, keep going.
+			const furthestDistance = results.length >= ef ? results[results.length - 1].distance : Infinity;
+			if (results.length >= ef && current.distance > furthestDistance) break;
 
 			for (const { id: neighborId } of current.node[level] || []) {
 				if (visited.has(neighborId) || neighborId === undefined) continue;
@@ -712,18 +876,39 @@ export class HierarchicalNavigableSmallWorld {
 				const neighbor = this.safeGetSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
+				filterState.nodesVisited++;
 				const distance = computeDistance(neighbor.vector, neighbor.invMag, neighbor.scale);
 
+				// Route through any node that could still improve the result set (under-filled or nearer
+				// than the current worst match) — filtering does not prune the graph, only admission.
 				if (distance < furthestDistance || results.length < ef) {
 					const candidate: Candidate = { id: neighborId, distance, node: neighbor };
 					candidates.push(candidate);
-					results.splice(bisectInsert(results, distance), 0, candidate);
-					if (results.length > ef) results.pop();
+					if (this.admit(filter, filterState, neighbor.primaryKey)) {
+						results.splice(bisectInsert(results, distance), 0, candidate);
+						if (results.length > ef) results.pop();
+					}
+				}
+				if (filterState.nodesVisited >= filterState.maxVisits) {
+					budgetExhausted = true;
+					break;
 				}
 			}
+			if (budgetExhausted) break;
 		}
 		results.visited = visited.size;
 		return results;
+	}
+
+	/**
+	 * Evaluate the traversal predicate for one node, counting the evaluation for `explain`. Kept as a
+	 * tiny helper so both the entry-point seed and the neighbor loop share the counting path. The filter
+	 * itself memoizes verdicts per query (a node can be reached from multiple neighbors), so this stays
+	 * cheap even when the predicate loads a record.
+	 */
+	private admit(filter: (primaryKey: Id) => boolean, filterState: FilterState | undefined, primaryKey: Id): boolean {
+		if (filterState) filterState.filterEvaluations++;
+		return filter(primaryKey);
 	}
 
 	/**
@@ -745,6 +930,7 @@ export class HierarchicalNavigableSmallWorld {
 			distance,
 			comparator,
 			ef,
+			filterExpansion,
 		}: {
 			target: number[];
 			value: number;
@@ -752,8 +938,14 @@ export class HierarchicalNavigableSmallWorld {
 			distance: string;
 			comparator: string;
 			ef?: number;
+			filterExpansion?: number;
 		},
-		context: any
+		context: any,
+		// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
+		// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
+		// search.ts from companion AND conditions, a caller-supplied `vectorFilter`, and record-level
+		// RBAC. Must be synchronous and side-effect free. JS-API only (never from a REST query string).
+		filter?: (primaryKey: Id) => boolean
 	) {
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
 		let limitInclusive = false; // true for `le`, false for `lt`
@@ -793,14 +985,34 @@ export class HierarchicalNavigableSmallWorld {
 				: (this.indexStore.getStats?.()?.entryCount ?? 0);
 			effectiveEf = autoScaleEf(nodeCount);
 		}
+		// Predicate-aware traversal budget (#1241): matches accrue slower than visits under a selective
+		// filter, so bound layer-0 work at ef * filterExpansion nodes. Only built when a filter is active.
+		const filterState: FilterState | undefined = filter
+			? {
+					maxVisits: effectiveEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion),
+					nodesVisited: 0,
+					filterEvaluations: 0,
+				}
+			: undefined;
 		let entryPoint = this.getEntryPoint(options);
-		if (!entryPoint) return [];
+		if (!entryPoint) return withStats([], filterState);
 		let entryPointId = entryPoint.id;
 		let results: Candidate[] = [];
-		// For each level from top to bottom
+		// For each level from top to bottom. The filter applies only at layer 0 (result admission);
+		// upper layers route unfiltered so non-matching hubs still guide the descent.
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(target, entryPointId, entryPoint, effectiveEf, l, options, distanceFunction);
+			results = this.searchLayer(
+				target,
+				entryPointId,
+				entryPoint,
+				effectiveEf,
+				l,
+				options,
+				distanceFunction,
+				l === 0 ? filter : undefined,
+				l === 0 ? filterState : undefined
+			);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -812,11 +1024,14 @@ export class HierarchicalNavigableSmallWorld {
 			results = results.filter((candidate) =>
 				limitInclusive ? candidate.distance <= limit : candidate.distance < limit
 			);
-		return results.map((candidate) => ({
-			// we return the result as an entry so we can provide distance as metadata
-			key: candidate.node.primaryKey, // return value
-			distance: candidate.distance,
-		}));
+		return withStats(
+			results.map((candidate) => ({
+				// we return the result as an entry so we can provide distance as metadata
+				key: candidate.node.primaryKey, // return value
+				distance: candidate.distance,
+			})),
+			filterState
+		);
 	}
 	/**
 	 * Exact distance between a query and a record's FULL-precision vector, mirroring search()'s metric
@@ -1052,3 +1267,22 @@ type Candidate = {
 	node: Node;
 };
 type SearchResults = Candidate[] & { visited: number };
+// Per-query state for predicate-aware traversal (#1241): the visit budget plus counters surfaced for
+// tuning (nodesVisited / filterEvaluations). One instance per search(), threaded to the layer-0 searchLayer.
+type FilterState = {
+	maxVisits: number;
+	nodesVisited: number;
+	filterEvaluations: number;
+};
+/**
+ * Attach filtered-traversal counters to the returned entries array so callers (search.ts / explain) can
+ * report how much of the graph a filtered query touched. No-op for unfiltered searches. Non-enumerable so
+ * the stats don't leak into iteration/serialization of the result entries.
+ */
+function withStats<T extends any[]>(entries: T, filterState: FilterState | undefined): T {
+	if (filterState) {
+		Object.defineProperty(entries, 'nodesVisited', { value: filterState.nodesVisited, enumerable: false });
+		Object.defineProperty(entries, 'filterEvaluations', { value: filterState.filterEvaluations, enumerable: false });
+	}
+	return entries;
+}

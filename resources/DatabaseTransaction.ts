@@ -9,7 +9,8 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Transaction as RocksTransaction, type Store as RocksStore } from '@harperfast/rocksdb-js';
+import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
+const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 
@@ -33,6 +34,23 @@ export function replicationConfirmation(callback) {
 let txnExpiration = envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000;
 
 class StartedTransaction extends Error {}
+
+/**
+ * Built when the long-transaction monitor aborts a write-bearing transaction that stayed open past the
+ * limit (STORAGE_MAXTRANSACTIONOPENTIME). Surfacing this instead of silently force-committing a partial
+ * write set preserves atomicity and avoids the index corruption described in issue #1407: the
+ * application gets an actionable error and owns how it splits long-running work into smaller
+ * transactions, while core keeps the consistency guarantee.
+ */
+export function transactionOpenTooLongError(): ServerError {
+	// 422 rather than 503: the condition is deterministic for a given transaction shape, so a retryable
+	// status (503/408) would invite clients and gateways to auto-retry the same doomed long transaction.
+	// 422 signals the request itself must change (split the work), which is the actionable response.
+	return new ServerError(
+		'Transaction was aborted after exceeding the open-transaction limit; split long-running work into smaller transactions',
+		422
+	);
+}
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -72,6 +90,9 @@ export type TransactionWrite = {
 	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
 	// reset at the top of each commit-handler invocation so retries see a fresh state.
 	skipped?: boolean;
+	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
+	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
+	appendedAuditEntry?: boolean;
 };
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
@@ -109,8 +130,12 @@ export class DatabaseTransaction implements Transaction {
 	// An explicit marker rather than overloading `retries`, which is also bumped by transient
 	// conflict retries and never reset, so it cannot reliably signal "this is a replay".
 	declare isReplay?: boolean;
+	// Set by the long-transaction monitor when it aborts a write-bearing transaction that exceeded the
+	// open-transaction limit. Once poisoned, any further addWrite/commit throws transactionOpenTooLongError
+	// so the request rolls back cleanly instead of silently committing a partial write set (issue #1407).
+	declare timedOut?: boolean;
 
-	getReadTxn(): ReadTransaction {
+	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.timeout = txnExpiration; // reset the timeout
 		if (this.transaction) {
@@ -119,7 +144,12 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 
-		this.transaction = new RocksTransaction(this.db.store);
+		// `disableSnapshot` (requested via `snapshot: false` on a query) reads against the latest
+		// committed data without pinning a consistent snapshot — so a long scan does not hold a
+		// snapshot that blocks compaction. Only applied when creating the transaction fresh; an
+		// already-open transaction keeps whatever snapshot mode it was created with.
+		// `coordinatedRetry` signals IsBusy write conflicts as RETRY_NOW rather than ERR_BUSY.
+		this.transaction = new RocksTransaction(this.db.store, { coordinatedRetry: true, disableSnapshot });
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
@@ -134,8 +164,8 @@ export class DatabaseTransaction implements Transaction {
 		return this.transaction;
 	}
 
-	useReadTxn() {
-		const readTxn = this.getReadTxn();
+	useReadTxn(disableSnapshot?: boolean) {
+		const readTxn = this.getReadTxn(disableSnapshot);
 		if (DEBUG_LONG_TXNS) this.stackTraces.push(new StartedTransaction());
 		this.readTxnsUsed++;
 		return readTxn;
@@ -173,6 +203,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	addWrite(operation: TransactionWrite) {
+		if (this.timedOut) throw transactionOpenTooLongError();
 		this.writes.push(operation);
 		if (!operation.deferSave) {
 			// Setting saved to false means to defer saving
@@ -187,7 +218,7 @@ export class DatabaseTransaction implements Transaction {
 		return operation;
 	}
 
-	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false) {
+	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
 		let txnTime = this.timestamp;
 		transaction ??= this.transaction;
 		let immediateCommit = false;
@@ -205,11 +236,13 @@ export class DatabaseTransaction implements Transaction {
 			if (txnTime) {
 				transaction.setTimestamp(txnTime);
 			}
-		} else {
 		}
-		if (this.retries > 0) {
-			// This marks the Rocks transaction as a retry so we don't write the transaction log again
-			(transaction as any).isRetry = true;
+		if (this.isReplay) {
+			// Replayed writes came FROM the transaction log; never re-append them —
+			// replay iterates that same log, so re-appending prevents convergence
+			// (boot hangs replaying its own output). Conflict retries stamp isRetry
+			// at the retry sites in commit(); this is the replay-path equivalent.
+			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		if (reloadEntry || operation.entry === undefined) {
@@ -228,8 +261,16 @@ export class DatabaseTransaction implements Transaction {
 			if (result?.then) this.completions.push(result);
 		}
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
+		// Sticky record that THIS write staged with its audit entry appended (log entries are written
+		// at staging and are not part of the transaction, so they survive an abort). isRetry stagings
+		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
+		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
+		// retries where a recommit round self-skips before a fresh-transaction replay.
+		if (!operation.skipped && !(transaction as RocksTransactionWithRetry).isRetry) {
+			operation.appendedAuditEntry = true;
+		}
 		if (immediateCommit) {
-			return this.commit({ transaction }); // immediately commit if the harper transaction is closed
+			return this.commit({ ...options, transaction }); // immediately commit if the harper transaction is closed
 		}
 	}
 
@@ -237,11 +278,12 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
+		if (this.timedOut) throw transactionOpenTooLongError();
 		let transaction = options.transaction ?? this.transaction; // we need to preserve this transaction as we might to resurrect it if we have to retry
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
 			if (!operation || (this.retries === 0 && operation.saved)) continue;
-			this.save(operation, transaction, i < this.validated);
+			this.save(operation, transaction, i < this.validated, options);
 		}
 		this.validated = this.writes.length;
 		const completions = this.completions;
@@ -254,7 +296,9 @@ export class DatabaseTransaction implements Transaction {
 					return this.commit(options);
 				}
 				this.open = TRANSACTION_STATE.CLOSED;
-				let commitResolution: MaybePromise<void>;
+				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
+				// coordinatedRetry, or void on a normal commit/abort.
+				let commitResolution: Promise<number | void> | void;
 				if (--this.readTxnsUsed > 0) {
 					// we still have outstanding iterators using the transaction, we can't just commit/abort it, we will still
 					// need to use it
@@ -279,10 +323,11 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
-							// rocksdb-js 2.2.0 widened commit()'s resolution to include the
-							// coordinated-retry sentinel (RETRY_NOW); we don't pass
-							// coordinatedRetry, so it never resolves to the sentinel here. Cast
-							// away the sentinel to keep commitResolution void.
+							// The transaction was created with coordinatedRetry:true (see
+							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE.
+							// That sentinel is handled in the resolve callback below and the
+							// cast to Promise<void> is safe — the sentinel never propagates
+							// past that branch.
 							commitResolution = transaction.commit() as Promise<void>;
 						} else {
 							try {
@@ -312,7 +357,29 @@ export class DatabaseTransaction implements Transaction {
 					}
 					const completions = [];
 					return commitResolution.then(
-						() => {
+						(commitResult) => {
+							if (commitResult === RETRY_NOW_VALUE) {
+								this.retries++;
+								harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
+								// Mark this specific native transaction as a retry so RocksTransactionLogStore
+								// skips re-writing its already-staged txn-log entries (#2).
+								(transaction as RocksTransactionWithRetry).isRetry = true;
+								// Mirror the ERR_BUSY cap/warn policy: non-sourceApply transactions abort
+								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
+								if (this.retries > MAX_RETRIES) {
+									if (!this.sourceApply) {
+										throw new ServerError(
+											`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+										);
+									}
+									if (this.retries % MAX_RETRIES === 0) {
+										harperLogger.warn?.(
+											`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} coordinated retries; continuing to retry`
+										);
+									}
+								}
+								return this.commit({ ...options, transaction });
+							}
 							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
 							// rejection — or a synchronous throw — via logging rather than failing the commit, since
 							// the write is already durable.
@@ -351,6 +418,7 @@ export class DatabaseTransaction implements Transaction {
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
+							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.writes = [];
 							if (this.#context?.resourceCache) this.#context.resourceCache = null;
 							this.next = null;
@@ -363,6 +431,13 @@ export class DatabaseTransaction implements Transaction {
 							});
 						},
 						(error) => {
+							// Coordinated transactions surface conflicts as RETRY_NOW (handled in the
+							// resolve branch above) and never reach here with ERR_BUSY. But not every
+							// write transaction is coordinated — a write that reaches save() with no
+							// prior getReadTxn() (immediate/publish/invalidate writes) is created
+							// without coordinatedRetry and still rejects with ERR_BUSY on conflict.
+							// Keep the backoff retry as the fallback for those paths.
+							//
 							// ERR_BUSY: optimistic-transaction write conflict. ERR_TRY_AGAIN: RocksDB kTryAgain —
 							// the transaction's snapshot sequence fell outside the memtable conflict-check window
 							// (max_write_buffer_size_to_maintain), which happens under bulk-ingest bursts such as a
@@ -374,6 +449,36 @@ export class DatabaseTransaction implements Transaction {
 								// for future transactions
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								if (error.code === 'ERR_TRY_AGAIN') {
+									// ERR_BUSY recovers on recommit: the save loop re-writes each key, re-tracking it at
+									// the current sequence, so validation passes once the contention clears. ERR_TRY_AGAIN
+									// never does: the memtable history validation needs is gone (flushed during a
+									// bulk-ingest burst), and recommitting re-checks the same stranded snapshot, so it
+									// fails forever even on an idle database. A source-apply transaction's uncapped retry
+									// then spins for good and wedges the replication apply loop at its commit await,
+									// freezing every leg of that database on the node. Replay onto a fresh transaction
+									// instead: the save loop reloads each entry through it and re-resolves against
+									// current state. Carry over the commit hook the transaction-log store attached
+									// (aftercommit emit / structure watermarks; it reads its state off the original
+									// transaction object, which abort() leaves intact); the retry-site isRetry stamp
+									// below keeps the log entries themselves from being re-added.
+									const retryTransaction: RocksTransactionWithRetry = new RocksTransaction(
+										(this.writes.find((write) => write)?.store.store ?? this.db.store) as RocksStore
+									);
+									if (this.timestamp) retryTransaction.setTimestamp(this.timestamp);
+									(retryTransaction as any).onCommit = (transaction as any).onCommit;
+									try {
+										transaction.abort();
+									} catch (abortError) {
+										// usually already released by the failed commit; log for the unexpected case
+										harperLogger.debug?.('aborting stranded transaction after failed commit', abortError);
+									}
+									transaction = retryTransaction;
+								}
+								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
+								// Stamp AFTER the possible ERR_TRY_AGAIN swap above so the fresh replay transaction is
+								// marked too; otherwise it would re-stage audit/change-feed log entries on recommit.
+								(transaction as RocksTransactionWithRetry).isRetry = true;
 								if (this.retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
 									// external caching source) must never drop a write on a transient conflict: there is no
@@ -384,6 +489,13 @@ export class DatabaseTransaction implements Transaction {
 									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES) {
 										if (!neverDropOnConflict) {
+											// giving up: release the current transaction (original or the fresh replay above)
+											// so the throw does not leak its native handle
+											try {
+												transaction.abort();
+											} catch (abortError) {
+												harperLogger.debug?.('aborting conflicted transaction after exhausting retries', abortError);
+											}
 											throw new ServerError(
 												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 											);
@@ -398,10 +510,10 @@ export class DatabaseTransaction implements Transaction {
 									}
 									// start delaying, back off to try to space out transactions and avoid excessive conflicts
 									return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
-										this.commit({ transaction })
+										this.commit({ ...options, transaction })
 									);
 								}
-								return this.commit({ transaction }); // try again
+								return this.commit({ ...options, transaction }); // try again
 							} else throw error;
 						}
 					);
@@ -444,6 +556,45 @@ export class DatabaseTransaction implements Transaction {
 		// reset the transaction
 		this.writes = [];
 		if (this.#context?.resourceCache) this.#context.resourceCache = null;
+	}
+	/**
+	 * True if this transaction — or any database in its multi-store `next` chain — has writes accumulated
+	 * that have not yet been committed. Writes to a second database live on `next` (see txnForContext), so a
+	 * transaction that reads database A (head, tracked via its read snapshot, empty `writes`) and writes
+	 * database B (`next`) must still count as write-bearing, or the monitor would misclassify it as read-only
+	 * and force-commit B's writes via the commit cascade (issue #1407, multi-store path).
+	 */
+	hasPendingWrites(): boolean {
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			if (txn.writes.some((write) => write)) return true;
+		}
+		return false;
+	}
+	/**
+	 * Abort and poison this transaction because it exceeded the open-transaction limit. The next write or
+	 * commit throws transactionOpenTooLongError so the request fails cleanly and rolls back, rather than the
+	 * monitor force-committing a partial write set on the application's behalf (issue #1407). The whole
+	 * multi-store `next` chain is poisoned and aborted: writes to a second database live on `next`, so
+	 * leaving it un-poisoned would let the head's commit cascade force-commit them (or orphan its resources
+	 * until it self-times-out).
+	 */
+	abortDueToTimeout(): void {
+		// Poison every link first, then abort each, so a throw from one link's abort() can't leave later links
+		// in the chain un-poisoned (and thus eligible to be force-committed by a later commit cascade).
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.timedOut = true;
+			// Force the CLOSED path when releasing the read snapshot: doneReadTxn() flushes lingering writes via
+			// commit() while open === LINGERING, and commit() now throws transactionOpenTooLongError once poisoned.
+			// Closing first makes the release discard (abort) the uncommitted writes instead, which is the intent.
+			txn.open = TRANSACTION_STATE.CLOSED;
+		}
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			try {
+				txn.abort();
+			} catch (error) {
+				harperLogger.debug?.(`Error aborting timed-out transaction in chain: ${error.message}`);
+			}
+		}
 	}
 	directCommitSync(): void {
 		trackedTxns.delete(this);
@@ -504,25 +655,43 @@ function startMonitoringTxns() {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				harperLogger.error(
-					`Transaction was open too long and has been committed, from table: ${
-						(txn.db as any)?.name + (url ? ' path: ' + url : '')
-					}`,
-					...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
-					...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
-				);
-				// reset the transaction
-				try {
-					const result = txn.commit();
-					if ((result as any)?.then) {
-						(result as any).catch((error) => {
-							harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
-						});
+				if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
+					// Abort and surface an error rather than force-committing a partial write set: silently
+					// committing on the application's behalf breaks atomicity and can leave orphaned
+					// secondary-index entries that only a full index rebuild repairs (issue #1407). The app
+					// owns long-running work (split into smaller transactions); core owns consistency.
+					// Canonical-source applies (replication peer / external caching source) and crash-recovery
+					// replay are excluded: they have no resubscribe/resume path, so aborting a write would drop
+					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
+					// those, keep the prior force-commit behavior below.
+					harperLogger.error(
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : []),
+						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
+					);
+					try {
+						txn.abortDueToTimeout();
+					} catch (error) {
+						harperLogger.debug?.(`Error aborting timed out transaction: ${error.message}`);
 					}
-				} catch (error) {
-					harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+				} else {
+					// Read-only long transaction (no atomicity/index risk — e.g. a large scan or export), or a
+					// canonical-source apply/replay that must never drop a write: preserve the prior behavior of
+					// committing to close out the snapshot without poisoning the transaction.
+					try {
+						const result = txn.commit();
+						if ((result as any)?.then) {
+							(result as any).catch((error) => {
+								harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+							});
+						}
+					} catch (error) {
+						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+					}
+					txn.timeout = txnExpiration;
 				}
-				txn.timeout = txnExpiration;
 			} else {
 				txn.timeout -= txnExpiration;
 			}

@@ -6,6 +6,7 @@ const {
 	collapseData,
 	GenericTrackedObject,
 } = require('#src/resources/tracked');
+const harperLogger = require('#src/utility/logging/harper_logger');
 describe('Tracked Object', () => {
 	let source = {
 		str: 'string',
@@ -87,5 +88,55 @@ describe('Tracked Object', () => {
 		assert.equal(hasChanges(instance), true);
 		assert.equal(collapseData(instance).arrayOfStrings[0], 'str1');
 		assert.equal(collapseData(instance).arrayOfStrings[2], 'another string');
+	});
+});
+
+describe('updateAndFreeze CRDT operations', () => {
+	it('applies a recognized add operation', () => {
+		const result = updateAndFreeze({ count: 5 }, { count: { __op__: 'add', value: 3 } });
+		assert.strictEqual(result.count, 8);
+	});
+
+	it('skips an unrecognized operation instead of throwing (apply path must not wedge)', () => {
+		// On the write/replication apply path a throw would abort the commit and can wedge a
+		// subscription, so an op this version can't apply is warned + skipped; the field keeps its
+		// base value and a full-copy re-converges the record.
+		const original = harperLogger.warn;
+		let warned = '';
+		harperLogger.warn = (message) => {
+			warned = message;
+		};
+		try {
+			let result;
+			assert.doesNotThrow(() => {
+				result = updateAndFreeze({ count: 5 }, { count: { __op__: 'multiply', value: 3 } });
+			});
+			assert.strictEqual(result.count, 5); // unchanged base value
+			assert.match(warned, /unrecognized CRDT operation "multiply"/);
+		} finally {
+			harperLogger.warn = original;
+		}
+	});
+
+	it('does not invoke a non-operation crdt export named by a crafted __op__', () => {
+		// Ops resolve against the explicit registry, not the crdt.ts export namespace. Before that,
+		// `__op__: 'getRecordAtTime'` resolved to the exported function and was invoked with the
+		// wrong arguments — throwing and wedging the apply path. It must now warn + skip like any
+		// other unrecognized op.
+		const original = harperLogger.warn;
+		let warned = '';
+		harperLogger.warn = (message) => {
+			warned = message;
+		};
+		try {
+			let result;
+			assert.doesNotThrow(() => {
+				result = updateAndFreeze({ count: 5 }, { count: { __op__: 'getRecordAtTime', value: 3 } });
+			});
+			assert.strictEqual(result.count, 5);
+			assert.match(warned, /unrecognized CRDT operation "getRecordAtTime"/);
+		} finally {
+			harperLogger.warn = original;
+		}
 	});
 });

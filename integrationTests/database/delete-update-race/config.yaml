@@ -1,0 +1,6 @@
+# QA-349 — DELETE vs concurrent UPDATE race.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true

@@ -140,6 +140,18 @@ function isFrozenRecordObject(value: any): boolean {
 		Object.isFrozen(value)
 	);
 }
+// Freeze a decoded record value for cache integrity, guarding the bare-TypedArray-root case:
+// V8 throws "Cannot freeze array buffer views with elements" on Object.freeze of a non-empty
+// TypedArray/DataView (#1298). _writeUpdate now rejects such roots on write, but this read-side
+// guard still backstops records that bypass validation (source/cache population, replication of
+// legacy data) and lets an already-poisoned table be read again after upgrade. The freeze is
+// shallow anyway, so a typed-array root needs none. Only freeze plain objects: skip ArrayBuffer
+// views/ArrayBuffers, and short-circuit primitives/null/undefined to avoid a needless native
+// Object.freeze call on the hot read/scan path.
+export function freezeRecord(value: any): void {
+	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
+		Object.freeze(value);
+}
 export const INVALIDATED = 1;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
@@ -203,6 +215,7 @@ export function makeTable(options) {
 		replicate,
 		description,
 		hidden,
+		cacheControl,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
@@ -306,6 +319,8 @@ export function makeTable(options) {
 		static description = description;
 		static properties = properties;
 		static hidden = hidden;
+		// default `Cache-Control` for anonymous REST reads (from `@table(cacheControl: "...")`), see REST.ts
+		static cacheControl = cacheControl;
 		static outputSchemas: { [verb: string]: JsonSchemaFragment } | undefined;
 		static mcp: { annotations?: { [verb: string]: any } } | undefined;
 		static replicate = replicate;
@@ -326,6 +341,9 @@ export function makeTable(options) {
 		static getResidencyById: (id: Id) => number | void;
 		static get expirationMS() {
 			return expirationMs;
+		}
+		static get evictionMS() {
+			return evictionMs;
 		}
 		static dbisDB = dbisDb;
 		static schemaDefined = schemaDefined;
@@ -727,7 +745,7 @@ export function makeTable(options) {
 							// return 504 (rather than 404) if there is no content and the cache-control header
 							// dictates not to go to source
 							if (!this.doesExist()) throw new ServerError('Entry is not cached', 504);
-							if (hasSourceGet && target) target.loadedFromSource = false; // mark it as cached
+							if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 						} else if (resourceOptions?.ensureLoaded) {
 							const loadingFromSource = ensureLoadedFromSource(
 								(this.constructor as any).source,
@@ -743,7 +761,7 @@ export function makeTable(options) {
 									TableResource._updateResource(this, entry);
 									return this;
 								});
-							} else if (hasSourceGet) target.loadedFromSource = false; // mark it as cached
+							} else if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 						}
 						return this;
 					}
@@ -1209,7 +1227,12 @@ export function makeTable(options) {
 				let allowed = true;
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowRead(context.user, target, context);
+					try {
+						allowed = this.allowRead(context.user, target, context);
+					} catch {
+						// allow* threw — fail closed rather than letting the request proceed
+						throw new AccessViolation(context.user);
+					}
 				}
 				return promiseNormalize(
 					when(
@@ -1224,6 +1247,7 @@ export function makeTable(options) {
 									// return 504 (rather than 404) if there is no content and the cache-control header
 									// dictates not to go to source
 									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+									if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 								} else if (ensureLoaded) {
 									const loadingFromSource = ensureLoadedFromSource(
 										constructor.source,
@@ -1236,7 +1260,7 @@ export function makeTable(options) {
 									if (loadingFromSource) {
 										txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 										return loadingFromSource.then((entry) => entry?.value);
-									}
+									} else if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 								}
 								return entry?.value;
 							});
@@ -1300,7 +1324,10 @@ export function makeTable(options) {
 										if (!property.name) property = { name: property };
 										if (!property.checkPermission && (target as any).checkPermission)
 											property.checkPermission = (target as any).checkPermission;
-										if (!relatedTable.prototype.allowRead.call(null, user, property, context)) return false;
+										// Invoke the related table's allowRead on a properly-bound instance rather than
+										// `.call(null, ...)` so `this` is a valid resource of the related type.
+										const relatedResource = new relatedTable(undefined, context);
+										if (!relatedResource.allowRead(user, property, context)) return false;
 										if (!property.select) return property.name; // no select was applied, just return the name
 									}
 									return property;
@@ -1892,6 +1919,33 @@ export function makeTable(options) {
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							transaction.checkOverloaded();
+							// A record must be a plain object. Reject primitive, string/number, bare-binary,
+							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
+							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
+							// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
+							// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
+							// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
+							// publish payloads are unaffected.)
+							const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
+							if (
+								recordUpdate === null ||
+								typeof recordUpdate !== 'object' ||
+								isBinaryRoot ||
+								Array.isArray(recordUpdate)
+							) {
+								// Avoid dumping every byte of a large binary body or huge payload into the error.
+								let received: string;
+								if (isBinaryRoot) {
+									received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
+								} else {
+									const full = stringify(recordUpdate) ?? typeof recordUpdate;
+									received = full.length > 200 ? full.slice(0, 200) + '...' : full;
+								}
+								throw new ClientError(
+									`A record must be an object, but received ${received}. To store binary data, put it ` +
+										`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
+								);
+							}
 							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
 							// caching relies on it), so mutating in place would corrupt cached/shared state.
 							// validate() coerces values and we stamp created/updated times + the primary key
@@ -1943,6 +1997,16 @@ export function makeTable(options) {
 				},
 				before: writeToSource(),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
+					// save(); log entries are not part of the aborted rocks transaction, so they survive).
+					// Only such a write can find its own orphaned entry in the dedup lookups below and must
+					// not treat it as "already applied". Per-write on purpose: the transaction-wide retry
+					// flag would also suppress dedup for a genuine re-delivered duplicate co-batched with
+					// the conflicting write (double-applying it) and for fresh writes staged through a
+					// reused transaction whose retries counter is stale. Sticky on purpose: a proxy read
+					// from the last attempt's skipped state launders when a recommit round self-skips
+					// (walk identity tie against its own staged record) before a fresh-transaction replay.
+					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2063,8 +2127,12 @@ export function makeTable(options) {
 							// local audit time, not version, so this version-keyed lookup doesn't apply there (LMDB keeps the
 							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard.
-							if (isRocksDB && dedupVersionCouldBeRetained(txnTime)) {
+							// check above remains the read-your-writes guard. Never when this write staged in a prior
+							// failed attempt: that attempt already appended this write's own audit entry, so the lookup
+							// would find it and skip the write as "already applied" when the record was never committed.
+							// A recommit of the same transaction survived that skip only because the old write batch
+							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnTime)) {
 								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -2123,7 +2191,11 @@ export function makeTable(options) {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
+							// Never a duplicate for a write that staged in a prior failed attempt: that attempt already
+							// appended this write's own audit entry, so the lookup would match it while the record was
+							// never committed (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
+								if (stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								return (
@@ -2570,7 +2642,13 @@ export function makeTable(options) {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			if (target.checkPermission) {
 				// requesting authorization verification
-				const allowed = this.allowRead((context as any).user, target, context);
+				let allowed;
+				try {
+					allowed = this.allowRead((context as any).user, target, context);
+				} catch {
+					// allow* threw — fail closed rather than letting the request proceed
+					throw new AccessViolation((context as any).user);
+				}
 				if (!allowed) {
 					throw new AccessViolation((context as any).user);
 				}
@@ -2772,7 +2850,21 @@ export function makeTable(options) {
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
-			const readTxn = txn.useReadTxn();
+			// When the query opts out of a snapshot (`snapshot: false`, e.g. long-running analytics
+			// scans), the read transaction reads against the latest committed data without pinning a
+			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
+			const readTxn = txn.useReadTxn(target.snapshot === false);
+			// Record-level read guard (#1241): a resource may define a static allowReadRecord(user, record)
+			// that participates in query execution (pushed into HNSW traversal for vector sorts, applied as a
+			// post-filter otherwise). Resolve off the actual (possibly subclassed) constructor so overrides win.
+			// SCOPE: this is a QUERY-result filter, not a general read-authorization boundary — direct
+			// single-record get(id) does not consult it (use allowRead/instance hooks for that). It must be
+			// synchronous, side-effect free, and fast; it can run once per candidate record during traversal.
+			const allowReadRecord = (this.constructor as any).allowReadRecord;
+			const recordAccess =
+				typeof allowReadRecord === 'function' || typeof target.vectorFilter === 'function'
+					? { allowReadRecord, user: (context as any)?.user, vectorFilter: target.vectorFilter }
+					: undefined;
 			const entries = executeConditions(
 				conditions,
 				operator,
@@ -2781,16 +2873,28 @@ export function makeTable(options) {
 				target,
 				context,
 				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
-				filtered
+				filtered,
+				recordAccess
 			);
 			const ensure_loaded = (target as any).ensureLoaded !== false;
+			// Authoritative RBAC enforcement (#1241): the guards inside executeConditions evaluate the LOCAL
+			// record, but on a caching table transformEntryForSelect may then revalidate an expired/invalidated
+			// row from source and return a DIFFERENT record. An authorization check must hold on the record
+			// actually returned, so allowReadRecord is re-checked there, after materialization (the earlier
+			// evaluation stays as a prune that also bounds HNSW traversal). vectorFilter and condition filters
+			// intentionally keep the local-record semantics all query filters have on caching tables.
+			const recordGuard =
+				typeof allowReadRecord === 'function'
+					? (record: any) => allowReadRecord((context as any)?.user, record)
+					: undefined;
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
 				readTxn,
 				filtered,
 				ensure_loaded,
-				true
+				true,
+				recordGuard
 			);
 			let results = TableResource.transformToOrderedSelect(
 				entries,
@@ -3001,9 +3105,12 @@ export function makeTable(options) {
 		 * @param filtered
 		 * @param ensure_loaded
 		 * @param canSkip
+		 * @param recordGuard record-level read check (#1241) applied to the record actually being
+		 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
+		 * authorization verdict can't be made on bytes that differ from what the caller receives.
 		 * @returns
 		 */
-		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?) {
+		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?, recordGuard?) {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
@@ -3022,6 +3129,7 @@ export function makeTable(options) {
 			}
 			let transformCache;
 			const source = this.source;
+			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
@@ -3059,13 +3167,33 @@ export function makeTable(options) {
 								message: 'This entry has expired',
 							};
 						}
-						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context);
+						// Stale-while-revalidate is an instance method, but a query has no per-row resource
+						// instance to consult (the single-record `get` path passes `this`). Construct one for this
+						// row — via the same `new constructor(id, context)` the framework's getResource uses — so
+						// the hook sees the current row's identity (this.getId()) and record state, matching the
+						// single-record path. It must be a real instance, not the bare class prototype: every
+						// resource prototype chain ends in a tracked-property Proxy, so reading an absent property
+						// (probing for an undefined `allowStaleWhileRevalidate`, or a hook touching `this.x`) on a
+						// non-instance invokes getChanges() with no backing state and throws (harper#1578). We also
+						// load the stale entry into it (as the single-record path does via _updateResource) so a
+						// hook consulting this.getRecord()/this.<field> sees the stale row, not undefined. `entry`
+						// here may be lazy (its `.value` is a GC-able deref, undefined once collected), so we set the
+						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
+						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
+						const swrResource = new resourceClass(entry.key ?? entry, context);
+						resourceClass._updateResource(swrResource, entry);
+						swrResource.setRecord(record);
+						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform);
 						}
 					}
 				}
 				if (record == null) return canSkip ? SKIP : record;
+				// Record-level RBAC (#1241): enforced here because `record` is now the final, materialized
+				// record — a caching table's source revalidation (above) may have replaced the local copy the
+				// query filters evaluated. Fail closed on the record actually being returned.
+				if (recordGuard && !recordGuard(record)) return canSkip ? SKIP : undefined;
 				if (select && !(select[0] === '*' && select.length === 1)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -3230,6 +3358,9 @@ export function makeTable(options) {
 			// snapshot:false, which catches any commits that land during yield points; dropping in the
 			// listener avoids duplicate delivery.
 			let dropDuringReplay = false;
+			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
+			let reloadResnapshotRunning = false;
+			let reloadResnapshotPending = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const subscription = addSubscription(
 				TableResource,
@@ -3243,9 +3374,15 @@ export function makeTable(options) {
 							// we only send the full message, this are individual messages that can be sent out of order
 							// TODO: Do we want to have a limit to how far out-of-order we are willing to send?
 							value = auditRecord.getValue?.(primaryStore, getFullRecord);
-						} else if (type !== 'end_txn' && type !== 'reload') {
-							// 'reload' is a whole-table marker with a null id and no record (harper-pro#489); pass it
-							// through verbatim so subscribers re-read the table, skipping the per-record lookup below.
+						} else if (type === 'reload') {
+							// Whole-table marker with a null id and no record (harper-pro#489): a copyApply base copy
+							// back-filled rows with no per-row audit events. For a user table, re-deliver the current
+							// scope as 'put's so MQTT/SSE/WS subscribers recover the snapshotted records, and do NOT
+							// forward the bare marker (harper-pro#495). System-DB subscribers (knownNodes etc.) instead
+							// get the raw marker and run their own bespoke whole-table rescan.
+							if (databaseName !== 'system') return scheduleReloadResnapshot();
+							// system DB: fall through to forward the bare 'reload' event verbatim.
+						} else if (type !== 'end_txn') {
 							// these are events that indicate that the primary record has changed. I believe we always want to simply
 							// send the latest value. Note that it is fine to synchronously access these records, they should have just
 							// been written, so are fresh in memory.
@@ -3366,7 +3503,7 @@ export function makeTable(options) {
 								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
 						}
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							send(history[--i]);
 						}
 						// Use the latest record cursor saw (history[0] = most recent due to reverse
@@ -3475,7 +3612,7 @@ export function makeTable(options) {
 							} else break;
 							if (count) count--;
 						} while (nextTime > startTime && count !== 0);
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							send(history[--i]);
 						}
 					}
@@ -3506,6 +3643,78 @@ export function makeTable(options) {
 				}
 				subscription.send(event);
 			}
+			// #region reload re-snapshot (harper-pro#495)
+			// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
+			// listener above never fires for them and an already-connected subscriber would miss them until
+			// the next direct write. After the copy, a whole-table 'reload' marker is delivered here (id=null).
+			// For a user table we react by re-delivering the subscription's current scope as ordinary 'put'
+			// events — so EVERY consumer that funnels through subscribe() (MQTT, SSE, WS) recovers the records
+			// uniformly, with no per-protocol handling. System-DB reloads are NOT re-snapshotted: their
+			// subscribers (knownNodes peer-discovery, hdb_certificate CA install) run a bespoke whole-table
+			// rescan off the raw marker, which a per-row re-emit cannot express (it can't drop stale rows).
+			// Yields the latest committed value (snapshot:false) and skips tombstones, mirroring the
+			// omitCurrent initial-snapshot scan.
+			async function* currentScopeRecords() {
+				const isCollection = request.isCollection ?? thisId == null;
+				if (isCollection) {
+					let sinceYield = 0;
+					for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
+						start: thisId ?? false,
+						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+						versions: true,
+						snapshot: false, // no need for a snapshot, just want the latest data
+					})) {
+						if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+							sinceYield = 0;
+							await rest();
+						}
+						if (!value) continue; // skip tombstones
+						yield { id, localTime, value, version, type: 'put', size };
+					}
+				} else {
+					const entry = primaryStore.getEntry(thisId);
+					if (entry?.value) yield { id: thisId, ...entry, type: 'put' };
+				}
+			}
+			// Drain the current scope into the subscription with the same back-pressure as the live path.
+			// Coalesced: a marker that arrives while a re-snapshot is running just re-arms it once more (so
+			// markers for several tables, or a marker landing mid-scan, are not lost), and we never run two
+			// scans concurrently. The first thing it does is `await rest()` (a setImmediate macrotask), so the
+			// scan never executes inside the synchronous broadcast listener — which on the same-thread
+			// aftercommit path holds an inter-thread lock that must not span event-loop turns.
+			async function runReloadResnapshot() {
+				reloadResnapshotRunning = true;
+				try {
+					await rest(); // defer off the broadcast listener's stack before scanning
+					while (reloadResnapshotPending) {
+						reloadResnapshotPending = false;
+						// Subscription.end() nulls `subscriptions`; bail the moment it closes — before, between,
+						// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
+						// the finally re-arm won't re-loop.
+						if (!subscription.subscriptions) return;
+						for await (const record of currentScopeRecords()) {
+							if (!subscription.subscriptions) return;
+							send(record);
+							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+								if ((await subscription.waitForDrain()) === false) return;
+							}
+						}
+					}
+				} catch (error) {
+					harperLogger.error?.('Error in reload re-snapshot:', error);
+				} finally {
+					reloadResnapshotRunning = false;
+					// A marker that landed after the last pending-check but before we cleared the flag would
+					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
+					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
+				}
+			}
+			function scheduleReloadResnapshot() {
+				if (!subscription.subscriptions) return;
+				reloadResnapshotPending = true;
+				if (!reloadResnapshotRunning) runReloadResnapshot();
+			}
+			// #endregion
 			return subscription;
 		}
 
@@ -3701,12 +3910,10 @@ export function makeTable(options) {
 									);
 								break;
 							case 'ID':
-								if (
-									!(
-										typeof value === 'string' ||
-										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
-									)
-								)
+								if (!(
+									typeof value === 'string' ||
+									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
+								))
 									(validationErrors || (validationErrors = [])).push(
 										`Value ${stringify(value)} in property ${name} must be a string, or an array of strings`
 									);
@@ -4051,7 +4258,7 @@ export function makeTable(options) {
 										});
 										if (value?.then) hasPromises = true;
 										// for now, we shouldn't be getting promises until rocksdb
-										if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
 									});
 									return relationship.filterMissing
@@ -4066,7 +4273,7 @@ export function makeTable(options) {
 									transaction: txnForContext(context).getReadTxn(),
 								});
 								// for now, we shouldn't be getting promises until rocksdb
-								if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+								if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 								return value;
 							};
 							attribute.set = (object, related) => {
@@ -4437,7 +4644,7 @@ export function makeTable(options) {
 			// we need to freeze entry records to ensure the integrity of the cache;
 			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 			// issues
-			Object.freeze(entry?.value);
+			freezeRecord(entry?.value);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&
@@ -4554,6 +4761,11 @@ export function makeTable(options) {
 		}
 	}
 
+	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {
+		// cache disposition is a per-get result, recorded on the RequestTarget of the get (#1576)
+		// target may be a primitive id on instance-API calls, which can't hold the flag
+		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
+	}
 	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
@@ -4786,7 +4998,7 @@ export function makeTable(options) {
 				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
 			else {
 				// served from cache after waiting for another request to resolve
-				if (target) target.loadedFromSource = false;
+				setLoadedFromSource(target, false);
 				whenResolved(entry);
 			}
 		};
@@ -4801,7 +5013,7 @@ export function makeTable(options) {
 			});
 		}
 		// lock acquired — this request will actually load from source
-		if (target) target.loadedFromSource = true;
+		setLoadedFromSource(target, true);
 
 		const existingRecord = existingEntry?.value;
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing

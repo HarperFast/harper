@@ -819,7 +819,12 @@ export function convertToMS(interval: any) {
 	if (typeof interval === 'number') seconds = interval;
 	if (typeof interval === 'string') {
 		seconds = parseFloat(interval);
+		// Note the case-sensitive units: `M` is a (30-day) month, `m` is a minute.
 		switch (interval.slice(-1)) {
+			case 'y':
+			case 'Y':
+				seconds *= 86400 * 365;
+				break;
 			case 'M':
 				seconds *= 86400 * 30;
 				break;

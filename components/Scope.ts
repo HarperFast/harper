@@ -10,7 +10,9 @@ import { Models, models as modelsSingleton } from '../resources/models/Models.ts
 import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
+import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
+import { getSecretsForComponent } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
@@ -104,7 +106,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 							const scopeConfig = (scopeRef.options?.getAll() as any) ?? {};
 							return method.call(target, listener, {
 								name: pluginName,
-								urlPath: scopeConfig.urlPath || undefined,
+								// resolve to the same base the entry pipeline uses ('assets' -> '/assets/',
+								// './x' -> '/<name>/x/') so route matching sees a real pathname prefix (#1583)
+								urlPath: scopeConfig.urlPath ? resolveBaseURLPath(pluginName, scopeConfig.urlPath) : undefined,
 								host: scopeConfig.host || undefined,
 								...options,
 							});
@@ -141,6 +145,17 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	get logger(): Logger {
 		return this.#logger;
+	}
+
+	/**
+	 * The application's secrets view (#1550): hdb_secret rows granted to this application plus its
+	 * declared global-tier env names. Frozen, enumerable, values decrypted at component load.
+	 * Keyed by the ApplicationScope's name (the application directory name — the identity grants
+	 * and env declarations use, and the same binding `import { secrets } from 'harper'` resolves);
+	 * `#appName` can differ on paths like RUN_HDB_APP, where it is the full directory path.
+	 */
+	get secrets(): Readonly<Record<string, string>> {
+		return getSecretsForComponent(this.applicationScope?.name ?? this.#appName);
 	}
 
 	get appName(): string {

@@ -155,3 +155,96 @@ console.log(`  Latency:            ${fmtNs(avgNs)}/query avg`);
 console.log(`  Throughput:         ${qps.toFixed(0)} qps`);
 console.log(`  Nodes visited/query: ${(hnsw.nodesVisitedCount / N_QUERIES).toFixed(1)}`);
 console.log(`  Recall@${TOP_K}:          ${(recall * 100).toFixed(1)}%\n`);
+
+// ---------------------------------------------------------------------------
+// Filtered-recall scenario (#1241): recall@K vs. selectivity for three strategies —
+//   post-filter    : plain search, then drop non-matching from the fixed top-ef set (today's behavior)
+//   predicate      : predicate-aware traversal (filter passed into search, ACORN-style)
+//   brute-force    : exact distance over the matching set only (the selective-filter fallback)
+// Predicate traversal should dominate post-filter on recall at low selectivity without pathological
+// latency; brute-force is the crossover once the matching set is tiny.
+// ---------------------------------------------------------------------------
+
+const idxOf = (key) => parseInt(key.slice(1));
+const SELECTIVITIES = [0.5, 0.1, 0.01, 0.001];
+
+console.log(`Filtered recall@${TOP_K} vs. selectivity (${N_QUERIES} queries):\n`);
+console.log('  selectivity   matches   post-filter   predicate   brute-force   pred.lat    bf.lat');
+console.log('  ' + '-'.repeat(88));
+
+for (const p of SELECTIVITIES) {
+	// Deterministic-ish membership: mark a p-fraction of vectors as matching the companion predicate.
+	const matches = new Array(N_VECTORS);
+	let matchCount = 0;
+	for (let i = 0; i < N_VECTORS; i++) {
+		matches[i] = Math.random() < p;
+		if (matches[i]) matchCount++;
+	}
+	if (matchCount === 0) {
+		console.log(
+			`  ${(p * 100).toFixed(1).padStart(9)}%   ${String(matchCount).padStart(7)}   (no matching vectors — skipped)`
+		);
+		continue;
+	}
+	const filter = (key) => matches[idxOf(key)];
+	const k = Math.min(TOP_K, matchCount);
+
+	// Ground truth: the k nearest among the matching vectors only.
+	const filteredGT = queries.map((query) => {
+		const scored = [];
+		for (let i = 0; i < N_VECTORS; i++) if (matches[i]) scored.push({ i, d: cosineDistance(query, vectors[i]) });
+		scored.sort((a, b) => a.d - b.d);
+		return new Set(scored.slice(0, k).map((x) => x.i));
+	});
+
+	let postRecall = 0;
+	let predRecall = 0;
+	let bfRecall = 0;
+	let predNs = 0;
+	let bfNs = 0;
+
+	for (let q = 0; q < N_QUERIES; q++) {
+		const query = queries[q];
+		const gt = filteredGT[q];
+
+		// post-filter: unfiltered search, then keep matching, take k
+		const plain = hnsw.search({ target: query, comparator: 'sort', descending: false }, {});
+		const postIdx = new Set(
+			plain
+				.filter((r) => matches[idxOf(r.key)])
+				.slice(0, k)
+				.map((r) => idxOf(r.key))
+		);
+		postRecall += overlap(gt, postIdx) / k;
+
+		// predicate-aware traversal
+		const t0 = performance.now();
+		const pred = hnsw.search({ target: query, comparator: 'sort', descending: false }, {}, filter);
+		predNs += (performance.now() - t0) * 1e6;
+		const predIdx = new Set(pred.slice(0, k).map((r) => idxOf(r.key)));
+		predRecall += overlap(gt, predIdx) / k;
+
+		// brute-force over the matching set
+		const b0 = performance.now();
+		const scored = [];
+		for (let i = 0; i < N_VECTORS; i++) if (matches[i]) scored.push({ i, d: cosineDistance(query, vectors[i]) });
+		scored.sort((a, b) => a.d - b.d);
+		bfNs += (performance.now() - b0) * 1e6;
+		const bfIdx = new Set(scored.slice(0, k).map((x) => x.i));
+		bfRecall += overlap(gt, bfIdx) / k;
+	}
+
+	const pct = (x) => `${((x / N_QUERIES) * 100).toFixed(1)}%`.padStart(9);
+	console.log(
+		`  ${(p * 100).toFixed(1).padStart(9)}%   ${String(matchCount).padStart(7)}   ` +
+			`${pct(postRecall).padStart(11)}   ${pct(predRecall).padStart(9)}   ${pct(bfRecall).padStart(11)}   ` +
+			`${fmtNs(predNs / N_QUERIES).padStart(8)}   ${fmtNs(bfNs / N_QUERIES).padStart(8)}`
+	);
+}
+console.log('');
+
+function overlap(a, b) {
+	let n = 0;
+	for (const x of a) if (b.has(x)) n++;
+	return n;
+}

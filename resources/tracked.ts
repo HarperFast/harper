@@ -1,6 +1,7 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 function getChanges(target) {
 	let changes = target.getChanges();
@@ -59,13 +60,11 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					break;
 				case 'ID':
 					set = function (value) {
-						if (
-							!(
-								typeof value === 'string' ||
-								(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
-								(value == null && attribute.nullable !== false)
-							)
-						)
+						if (!(
+							typeof value === 'string' ||
+							(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
+							(value == null && attribute.nullable !== false)
+						))
 							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
 						getChanges(this)[name] = value;
 					};
@@ -99,12 +98,10 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 				case 'Long':
 					set = function (value) {
 						let scalarValue = value?.__op__ ? value.value : value;
-						if (
-							!(
-								(Math.round(scalarValue) === value && Math.abs(scalarValue) <= 9007199254740992) ||
-								(value == null && attribute.nullable !== false)
-							)
-						) {
+						if (!(
+							(Math.round(scalarValue) === value && Math.abs(scalarValue) <= 9007199254740992) ||
+							(value == null && attribute.nullable !== false)
+						)) {
 							if (typeof scalarValue === 'number' && Math.abs(scalarValue) <= 9007199254740992) {
 								// if it just needs to be rounded, do the conversion without complaining
 								scalarValue = Math.round(scalarValue);
@@ -427,9 +424,18 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
-				const operation = crdtOperations[value?.__op__];
-				if (!operation) throw new Error('Invalid CRDT operation ' + value.__op__);
-				else operation(mergedUpdatedObject, key, value);
+				// Resolve against the explicit operation registry, not the crdt.ts export namespace,
+				// so a crafted/corrupt `__op__` naming another export can't be invoked as an operation.
+				const operation = crdtOperations.operations[value.__op__];
+				if (operation) operation(mergedUpdatedObject, key, value);
+				else {
+					// An unrecognized CRDT operation — corruption, or an op type from a newer node this
+					// version can't apply. This runs on the write/replication apply path, where throwing
+					// would abort the commit and can wedge a subscription, so skip the op instead: the
+					// field keeps its base value and a full-copy re-converges the record. Read-path
+					// reconstruction (crdt.applyForward/applyReverse) still throws loudly by design.
+					harperLogger.warn(`Skipping unrecognized CRDT operation "${value.__op__}" on property "${key}"`);
+				}
 				continue;
 			} else value = updateAndFreeze(value);
 		}
@@ -588,6 +594,7 @@ export class Addition {
 		this.value = value;
 	}
 	update(previousValue) {
-		return (+previousValue || 0) + this.value;
+		// Shared with crdt.add so the read path folds identically to the storage path.
+		return crdtOperations.addValues(previousValue, this.value);
 	}
 }

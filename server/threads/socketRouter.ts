@@ -18,7 +18,7 @@ if (isMainThread) {
 			harperLogger.disableStdio();
 			return;
 		}
-		console.error('uncaughtException', error);
+		console.error('uncaughtException', harperLogger.errorForLog(error));
 	});
 }
 
@@ -30,6 +30,10 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	startTransactionLogCooling();
 	try {
 		if (dynamicThreads) {
+			// No caller currently passes dynamicThreads. If one ever does, note that the main thread
+			// does not bind ports in this mode, so on platforms without SO_REUSEPORT (macOS/Windows)
+			// worker 0's exclusive HTTP bind would silently swallow an external EADDRINUSE — the
+			// external-conflict detection in listenOnPorts() assumes the main thread binds first.
 			startHTTPWorker(0, 1);
 		} else {
 			const { loadRootComponents } = require('../loadRootComponents.js');

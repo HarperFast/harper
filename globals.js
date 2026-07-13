@@ -6,6 +6,7 @@ global.logger = exports.logger = {};
 global.models = exports.models = undefined;
 global.operation = exports.operation = undefined;
 global.Resource = exports.Resource = undefined;
+global.secrets = exports.secrets = undefined;
 global.server = exports.server = {};
 global.tables = exports.tables = {};
 global.threads = exports.threads = [];

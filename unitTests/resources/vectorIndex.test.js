@@ -367,7 +367,6 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		assert(invertedSimiliarities <= 6, `expected at most 6 distance inversions, got ${invertedSimiliarities}`);
 	}
 });
-
 describe('HNSW concurrent PUT race condition (issue #386)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const WORKER_COUNT = 4;
@@ -1271,6 +1270,352 @@ describeUnlessLmdb('HNSW int8 threshold queries (lt/le) — exact boundary after
 				Math.abs(r.$distance - exact) < 1e-10,
 				`$distance ${r.$distance} should equal exact sq-euclidean ${exact} for record id=${r.id}`
 			);
+		}
+	});
+});
+
+// A self-contained in-memory index store, mirroring the one used by the 5.1 GA fixes above, so the
+// predicate-aware traversal mechanism (#1241) can be exercised at the index level without a real DB.
+function newMockIndexStore() {
+	const nodes = new Map();
+	let ep;
+	return {
+		encoder: { useFloat32: false },
+		getSync(key) {
+			if (key === Symbol.for('entryPoint')) return ep;
+			const k = typeof key === 'number' ? key : JSON.stringify(key);
+			return nodes.get(k);
+		},
+		put(key, value) {
+			if (key === Symbol.for('entryPoint')) return void (ep = value);
+			const k = typeof key === 'number' ? key : JSON.stringify(key);
+			nodes.set(k, value);
+		},
+		remove(key) {
+			if (key === Symbol.for('entryPoint')) return void (ep = undefined);
+			const k = typeof key === 'number' ? key : JSON.stringify(key);
+			nodes.delete(k);
+		},
+		*getRange({ start = 0, end = Infinity } = {}) {
+			for (const [k, v] of nodes) if (typeof k === 'number' && k >= start && k <= end) yield { key: k, value: v };
+		},
+		getKeys() {
+			return [];
+		},
+		getUserSharedBuffer(_name, buffer) {
+			return buffer;
+		},
+	};
+}
+
+const describeUnlessLmdbFilter = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
+
+describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
+	// 1D euclidean vectors [i] put euclidean distance from [0] at i^2 — nearest neighbor is the smallest key.
+	function buildLine(count, options = { distance: 'euclidean', quantization: 'none', optimizeRouting: 0 }) {
+		const hnsw = new HierarchicalNavigableSmallWorld(newMockIndexStore(), options);
+		for (let i = 0; i < count; i++) hnsw.index(i, [i], null, {});
+		return hnsw;
+	}
+
+	it('admits only matching nodes at layer 0, while non-matching nodes still route', () => {
+		const hnsw = buildLine(100);
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			even
+		);
+		assert(results.length > 0, 'expected matching results');
+		assert(
+			results.every((r) => Number(r.key) % 2 === 0),
+			'every admitted node must satisfy the filter'
+		);
+		// key 1 is the 2nd-nearest overall but odd: it must route (help reach 0/2/…) yet never be admitted.
+		assert(!results.some((r) => r.key === 1), 'a non-matching nearest node must not be admitted');
+		assert.strictEqual(results[0].key, 0, 'nearest matching node first');
+		assert.strictEqual(results[1].key, 2, 'then the next matching node');
+	});
+
+	it('keeps traversing until it has the k nearest MATCHING nodes (no under-fill)', () => {
+		const hnsw = buildLine(100);
+		const everyTenth = (pk) => Number(pk) % 10 === 0; // matches 0,10,20,…,90 — sparse near the target
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			everyTenth
+		);
+		assert(
+			results.every((r) => Number(r.key) % 10 === 0),
+			'all results match'
+		);
+		// The five nearest matching nodes, in order — a fixed-candidate post-filter would miss most of these.
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((r) => r.key),
+			[0, 10, 20, 30, 40]
+		);
+	});
+
+	it('bounds work with a visit budget and returns partial results, not an error', () => {
+		const hnsw = buildLine(200);
+		const matchesNothing = () => false;
+		// ef 10 * filterExpansion 2 = 20-node budget; 200 nodes, none matching → budget must stop it.
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false, ef: 10, filterExpansion: 2 },
+			{ transaction: undefined },
+			matchesNothing
+		);
+		assert.strictEqual(results.length, 0, 'no matches yields an empty result, not an error');
+		assert(results.nodesVisited > 0, 'some nodes were visited');
+		assert(results.nodesVisited <= 20, `visit budget must bound traversal, got ${results.nodesVisited}`);
+	});
+
+	it('exposes nodesVisited and filterEvaluations for tuning', () => {
+		const hnsw = buildLine(50);
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			even
+		);
+		assert.strictEqual(typeof results.nodesVisited, 'number');
+		assert.strictEqual(typeof results.filterEvaluations, 'number');
+		assert(results.nodesVisited > 0 && results.filterEvaluations > 0, 'counters populated');
+		assert(results.filterEvaluations >= results.length, 'at least one evaluation per admitted result');
+	});
+
+	it('excludes deleted nodes from filtered results', () => {
+		const hnsw = buildLine(50);
+		hnsw.index(10, null, null, {}); // delete two matching nodes
+		hnsw.index(20, null, null, {});
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			even
+		);
+		assert(!results.some((r) => r.key === 10 || r.key === 20), 'deleted nodes must not be returned');
+		assert(
+			results.some((r) => r.key === 0) && results.some((r) => r.key === 2),
+			'surviving matching nodes remain findable'
+		);
+	});
+
+	it('works on an int8 (quantized) index', () => {
+		const hnsw = buildLine(50, { distance: 'euclidean' }); // int8 quantization on by default
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			even
+		);
+		assert(
+			results.every((r) => Number(r.key) % 2 === 0),
+			'quantized graph still honors the filter'
+		);
+		assert.strictEqual(results[0].key, 0, 'nearest matching node first on the int8 graph');
+	});
+});
+
+describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => {
+	let T, Tq;
+	before(async () => {
+		T = table({
+			table: 'HNSWFilter',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'ownerId', indexed: true },
+				{ name: 'active', indexed: true, type: 'Boolean' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < 60; i++) {
+			await T.put(i, {
+				group: i % 2 === 0 ? 'blue' : 'red',
+				ownerId: i % 3,
+				active: i % 5 !== 0,
+				vector: [i, 0],
+			});
+		}
+		Tq = table({
+			table: 'HNSWFilterInt8',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' }, // int8 default
+			],
+		});
+		for (let i = 0; i < 40; i++) {
+			await Tq.put(i, { group: i % 2 === 0 ? 'blue' : 'red', vector: [i, 0.5] });
+		}
+	});
+	after(() => {
+		T.dropTable();
+		Tq.dropTable();
+	});
+
+	it('vectorFilter returns the k nearest MATCHING records', async () => {
+		const results = await fromAsync(
+			T.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					vectorFilter: (record) => record.group === 'blue',
+					select: ['id', 'group'],
+					limit: 5,
+				},
+				{}
+			)
+		);
+		assert.strictEqual(results.length, 5, 'limit is filled with matching records, not under-filled');
+		assert(
+			results.every((r) => r.group === 'blue'),
+			'every returned record matches the vectorFilter'
+		);
+		assert.deepStrictEqual(
+			results.map((r) => r.id),
+			[0, 2, 4, 6, 8],
+			'the five nearest blue records'
+		);
+	});
+
+	it('allowReadRecord restricts a vector search to records the user may see', async () => {
+		T.allowReadRecord = (user, record) => record.ownerId === user.id;
+		try {
+			const results = await fromAsync(
+				T.search(
+					{
+						sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+						select: ['id', 'ownerId'],
+						limit: 5,
+					},
+					{ user: { id: 1 } }
+				)
+			);
+			assert(
+				results.every((r) => r.ownerId === 1),
+				'a restricted user only sees their own records'
+			);
+			// ownerId === 1 for ids 1,4,7,10,13,… — the k nearest VISIBLE, not k-minus-redacted.
+			assert.deepStrictEqual(
+				results.map((r) => r.id),
+				[1, 4, 7, 10, 13]
+			);
+		} finally {
+			delete T.allowReadRecord;
+		}
+	});
+
+	it('re-checks allowReadRecord on the source-revalidated record, not the stale cached copy', async () => {
+		// A caching table: the query filters evaluate the LOCAL (possibly stale) copy, but the
+		// returned record may be revalidated from source. The authorization verdict must hold on
+		// the record actually returned (transformEntryForSelect recordGuard), or ownership changes
+		// at the source would leak through the stale-copy verdict.
+		const sourceRecords = new Map();
+		const C = table({
+			table: 'RBACCachingTest',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'kind', indexed: true }, { name: 'ownerId' }],
+		});
+		C.sourcedFrom({
+			get(id) {
+				return sourceRecords.get(id);
+			},
+		});
+		C.allowReadRecord = (user, record) => record.ownerId === user.id;
+		try {
+			sourceRecords.set(1, { kind: 'doc', ownerId: 1 });
+			C.setTTLExpiration(0.01); // 10ms — expiry retains the stale value (unlike invalidate), which is the vulnerable path
+			const cached = await C.get(1, { user: { id: 1 } });
+			assert.strictEqual(cached.ownerId, 1, 'cache populated with the original owner');
+			// Ownership changes at the source; let the cached copy expire so the next query revalidates
+			// while the STALE value (ownerId 1) is still what the query filters evaluate.
+			sourceRecords.set(1, { kind: 'doc', ownerId: 2 });
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			const results = await fromAsync(
+				C.search({ conditions: [{ attribute: 'kind', value: 'doc' }] }, { user: { id: 1 } })
+			);
+			assert.strictEqual(results.length, 0, 'a record now owned by another user must not be returned');
+		} finally {
+			delete C.allowReadRecord;
+			C.dropTable();
+		}
+	});
+
+	it('enforces allowReadRecord on OR queries (no RBAC bypass)', async () => {
+		T.allowReadRecord = (user, record) => record.ownerId === user.id;
+		try {
+			// active=true OR active=false spans every record; the record guard must still filter the union.
+			const results = await fromAsync(
+				T.search(
+					{
+						conditions: [
+							{ attribute: 'active', comparator: 'equals', value: true },
+							{ attribute: 'active', comparator: 'equals', value: false },
+						],
+						operator: 'or',
+						select: ['id', 'ownerId'],
+					},
+					{ user: { id: 2 } }
+				)
+			);
+			assert(results.length > 0, 'expected some visible records');
+			assert(
+				results.every((r) => r.ownerId === 2),
+				'an OR union must still be filtered by allowReadRecord'
+			);
+		} finally {
+			delete T.allowReadRecord;
+		}
+	});
+
+	it('honors a companion AND condition during the vector query', async () => {
+		const results = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'active', comparator: 'equals', value: true }],
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					select: ['id', 'active'],
+					limit: 5,
+				},
+				{}
+			)
+		);
+		assert.strictEqual(results.length, 5);
+		assert(
+			results.every((r) => r.active === true),
+			'every result satisfies the companion condition'
+		);
+		// active === (i % 5 !== 0) → inactive at 0,5,10,… so nearest active are 1,2,3,4,6.
+		assert.deepStrictEqual(
+			results.map((r) => r.id),
+			[1, 2, 3, 4, 6]
+		);
+	});
+
+	it('combines int8 quantization + vectorFilter + exact rerank', async () => {
+		const results = await fromAsync(
+			Tq.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0.5], distance: 'euclidean' },
+					vectorFilter: (record) => record.group === 'blue',
+					select: ['id', 'group', 'vector', '$distance'],
+					limit: 5,
+				},
+				{}
+			)
+		);
+		assert.strictEqual(results.length, 5);
+		assert(
+			results.every((r) => r.group === 'blue'),
+			'filter honored on the quantized graph'
+		);
+		for (const r of results) {
+			// $distance is recomputed from the full-precision record vector (exact), not the int8 approximation.
+			const exact = (r.vector[0] - 0) ** 2 + (r.vector[1] - 0.5) ** 2;
+			assert(Math.abs(r.$distance - exact) < 1e-9, `$distance ${r.$distance} should equal exact ${exact}`);
 		}
 	});
 });

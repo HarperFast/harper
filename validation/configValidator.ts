@@ -14,16 +14,54 @@ import * as validator from './validationWrapper.ts';
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
-const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
+const INVALID_INTERVAL_UNIT_MSG =
+	'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
 const INVALID_INTERVAL_VALUE_MSG =
 	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
+const INVALID_RETENTION_UNIT_MSG =
+	'Invalid logging.rotation.retention unit. Available units are D (days), H (hours), M (months) or m (minutes)';
+const INVALID_RETENTION_VALUE_MSG =
+	"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'";
+// Units accepted for rotation durations, matching convertToMS: note capital M (months) vs lowercase m (minutes).
+const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
+// Controlled-flow ("directional") replication fields. A route's `replicates` is either a boolean
+// (full replication on/off) or an object describing per-direction flow; `sends`/`receives` and
+// `sendsTo`/`receivesFrom` are also accepted as top-level route keys (iterateRoutes normalizes both
+// forms). Entries in sendsTo/receivesFrom are a peer name (string) or an object scoping the edge by
+// target/source + database, with an optional per-table excludeTables list. harper-pro#498 — these
+// were previously unvalidated (allowUnknown), so typos/wrong types passed silently.
+const routeEntryConstraints = Joi.alternatives([
+	string,
+	{
+		target: string,
+		source: string,
+		database: string,
+		excludeTables: array.items(string),
+	},
+]);
+const replicatesConstraints = Joi.alternatives([
+	boolean,
+	{
+		sends: boolean,
+		sendsTo: array.items(routeEntryConstraints),
+		receives: boolean,
+		receivesFrom: array.items(routeEntryConstraints),
+	},
+]);
+const directionalRouteFields = {
+	replicates: replicatesConstraints,
+	sends: boolean,
+	receives: boolean,
+	sendsTo: array.items(routeEntryConstraints),
+	receivesFrom: array.items(routeEntryConstraints),
+};
 export const routeConstraints = Joi.alternatives([
 	array
 		.items(
@@ -31,10 +69,12 @@ export const routeConstraints = Joi.alternatives([
 			{
 				host: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			},
 			{
 				hostname: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			}
 		)
 		.empty(null),
@@ -64,6 +104,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 		certificate: pemFileConstraints,
 		certificateAuthority: pemFileConstraints,
 		privateKey: pemFileConstraints,
+		// Periodic re-read interval (ms) for the cert-file watcher's polling safety net.
+		// 0 disables polling, leaving only the inotify-based chokidar watcher. Honored on the
+		// top-level tls block (a single global setting); see getCertificateWatchInterval in security/keys.ts.
+		certificateWatchInterval: number.min(0).optional().empty(null),
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
@@ -214,6 +258,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				compress: boolean.optional(),
 				interval: string.custom(validateRotationInterval).optional().empty(null),
 				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
+				retention: string.custom(validateRotationRetention).optional().empty(null),
 				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
 			root: rootConstraints,
@@ -281,6 +326,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 					})
 				),
 				maxHeapMemory: number.min(0).optional(),
+				preload: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
+				preloadRequire: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({
@@ -358,7 +409,7 @@ function validateRotationMaxSize(value, helpers) {
 
 function validateRotationInterval(value, helpers) {
 	const unit = value.slice(-1);
-	if (unit !== 'D' && unit !== 'H' && unit !== 'M') {
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
 		return helpers.message(INVALID_INTERVAL_UNIT_MSG);
 	}
 
@@ -369,9 +420,38 @@ function validateRotationInterval(value, helpers) {
 
 	return value;
 }
+function validateRotationRetention(value, helpers) {
+	if (typeof value !== 'string' || !value.trim()) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
+	const unit = value.slice(-1);
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
+		return helpers.message(INVALID_RETENTION_UNIT_MSG);
+	}
+
+	// parseFloat + strictly-positive check: convertToMS accepts fractional intervals, and a zero or
+	// negative retention makes every rotated log older than the (<=0) window, deleting them immediately.
+	const age = parseFloat(value.slice(0, -1));
+	if (isNaN(age) || age <= 0) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
+	return value;
+}
 
 function setDefaultThreads(parent, helpers) {
 	const configParam = helpers.state.path.join('.');
+	// Without SO_REUSEPORT (macOS is unreliable, Windows lacks it) worker threads cannot share the
+	// HTTP/socket ports — the main thread binds them all first and serves alone, so extra HTTP
+	// workers never receive direct TCP traffic. Default to a single worker there; an explicit
+	// threads.count still overrides.
+	if (process.platform === 'darwin' || process.platform === 'win32') {
+		hdbLogger.info(
+			`Defaulting ${configParam} to 1 on ${process.platform}: without SO_REUSEPORT, additional HTTP workers cannot share the server ports`
+		);
+		return 1;
+	}
 	let processors = os.cpus().length;
 
 	// default to one less than the number of logical CPU/processors so we can have good concurrency with the

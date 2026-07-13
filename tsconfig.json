@@ -37,6 +37,10 @@
 		// Allow .ts extensions in imports (will be transpiled to .js by esbuild)
 		"allowImportingTsExtensions": true,
 
+		// Codebase is not strict-clean yet; pin explicitly so a compiler upgrade
+		// that flips this default (e.g. TypeScript 7) doesn't silently change results
+		"strict": false,
+
 		// Enforce erasable syntax only so we can use Node.js type-stripping
 		"erasableSyntaxOnly": true,
 		// Required: third-party type declarations (alasql, mathjs, msgpackr) have incompatible type errors

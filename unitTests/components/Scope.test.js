@@ -1,7 +1,7 @@
 const { Scope, MissingDefaultFilesOptionError } = require('#src/components/Scope');
 const { Models } = require('#src/resources/models/Models');
 const { EventEmitter } = require('node:events');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');

@@ -17,7 +17,7 @@
  *    backfill, while a genuine option change does.
  */
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases, canonicalizeIndexOptions } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -144,7 +144,7 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 
 		// Genuine option change (M: 16 -> 32) -> rebuild.
 		const changed = reload(TABLE, { type: 'HNSW', M: 32 });
-		assert.notEqual(changed.indexingOperation, buildOp, 'a genuine option change must re-trigger a backfill');
+		assert.notStrictEqual(changed.indexingOperation, buildOp, 'a genuine option change must re-trigger a backfill');
 		assert.ok(changed.indexingOperation, 'a genuine option change should install an indexingOperation');
 		await changed.indexingOperation;
 

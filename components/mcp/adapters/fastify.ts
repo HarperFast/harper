@@ -21,6 +21,8 @@ interface FastifyLikeRequest {
 	method: string;
 	headers: Record<string, string | string[] | undefined>;
 	body: unknown;
+	/** Client socket IP (Fastify's request.ip). */
+	ip?: string;
 	/**
 	 * `authAndEnsureUserOnRequest` sets the full user (incl. role + permission
 	 * tree) on `req.hdb_user`. Used for session binding (`username`) and
@@ -53,6 +55,7 @@ export function createFastifyHandler(profile: McpProfile) {
 			user: request.hdb_user?.username ?? '',
 			userObject: (request.hdb_user ?? undefined) as NormRequest['userObject'],
 			profile,
+			clientIp: request.ip,
 		};
 
 		const res = await handleMcpRequest(norm);

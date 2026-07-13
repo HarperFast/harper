@@ -1,7 +1,7 @@
 import { getSuperUser } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
-import { validateOperationToken, validateRefreshToken } from './tokenAuthentication.ts';
+import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
 import { table, type Table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -10,7 +10,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent, AuthAuditLog } = harperLogger;
 import serverHandlers from '../server/itc/serverHandlers.js';
 const { user } = serverHandlers;
-import { Headers } from '../server/serverHelpers/Headers.ts';
+import { Headers, addVaryHeader } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
@@ -33,15 +33,26 @@ function getSessionTable() {
 	return _sessionTable;
 }
 const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
+// env-var strings need boolean parsing: a raw 'false'/'0' string is truthy, which would turn
+// AUTHENTICATION_AUTHORIZELOCAL=false into an *enabled* auth bypass
+function envFlag(value: string | undefined): boolean | undefined {
+	if (value === undefined) return undefined;
+	const normalized = value.trim().toLowerCase();
+	return normalized !== 'false' && normalized !== '0' && normalized !== '';
+}
 // check the environment for a flag to bypass authentication (for testing) since it doesn't necessarily get set on child threads
 let AUTHORIZE_LOCAL =
-	process.env.AUTHENTICATION_AUTHORIZELOCAL ??
+	envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ??
 	env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
-	process.env.DEV_MODE;
+	envFlag(process.env.DEV_MODE);
 const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
+
+// RFC 9111 cache-scope directives; boundaries on both sides so a token like `public-foo` doesn't match
+const SHARED_CACHE_OPTIN = /(^|[,\s])(public|s-maxage)($|[\s,;=])/i;
+const PRIVATE_SCOPE = /(^|[,\s])(private|no-store)($|[\s,;=])/i;
 
 let authorizationCache = new Map();
 server.onInvalidatedUser(() => {
@@ -61,6 +72,9 @@ export async function authentication(request, nextHandler) {
 	const cookie = headers.cookie;
 	let origin = headers.origin;
 	let responseHeaders = [];
+	// a 401 that gets rewritten to a login-redirect 302 below must still be treated as
+	// identity-dependent by applyResponseHeaders
+	let wasUnauthorized = false;
 	try {
 		if (origin) {
 			const accessList = request.isOperationsServer
@@ -80,6 +94,8 @@ export async function authentication(request, nextHandler) {
 						['Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS'],
 						['Access-Control-Allow-Headers', accessControlAllowHeaders],
 						['Access-Control-Allow-Origin', origin],
+						// the preflight response is keyed on the request Origin — a shared cache must partition on it
+						['Vary', 'Origin'],
 					]);
 					if (ENABLE_SESSIONS) headers.set('Access-Control-Allow-Credentials', 'true');
 					return {
@@ -201,6 +217,10 @@ export async function authentication(request, nextHandler) {
 						case 'Bearer':
 							try {
 								newUser = await validateOperationToken(credentials);
+								// Capture the token's expiry so a live subscription opened with this bearer
+								// token can be revoked once it expires (#1414).
+								const decoded = decodeJWT(credentials);
+								if (newUser && decoded?.exp) newUser.authExpiresAt = decoded.exp;
 							} catch (error) {
 								if (error.message === 'invalid token') {
 									// see if they provided a refresh token; we can allow that and pass it on to operations API
@@ -315,14 +335,17 @@ export async function authentication(request, nextHandler) {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 				});
 			};
-			request.login = async function (username: string, password: string) {
-				const user: any = (request.user = await server.authenticateUser(username, password, request));
+			request.login = async function (username: string, password?: string, token?: string) {
+				const user: any = (request.user = token
+					? await validateLoginToken(token)
+					: await server.authenticateUser(username, password, request));
 				request.session.update({ user: user && (user.getId?.() ?? user.username) });
 			};
 		}
 		const response = await nextHandler(request);
 		if (!response) return response;
 		if (response.status === 401) {
+			wasUnauthorized = true;
 			if (
 				headers['user-agent']?.startsWith('Mozilla') &&
 				headers.accept?.startsWith('text/html') &&
@@ -340,12 +363,49 @@ export async function authentication(request, nextHandler) {
 	}
 	function applyResponseHeaders(response) {
 		const l = responseHeaders.length;
-		if (l > 0) {
+		// a response is identity-dependent if a principal was resolved (Authorization/session/mTLS) or
+		// if we are rejecting the credentials (401, possibly rewritten to a login redirect); such a
+		// response must never be stored by a shared cache and served to a different principal (#1565)
+		const rejectedAuth = response?.status === 401 || wasUnauthorized;
+		const identityDependent = !!request.user || rejectedAuth;
+		// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
+		// its absence when no Origin was sent is origin-dependent too — so a shared cache must
+		// partition on Origin either way (#1518)
+		const corsEnabled = request.isOperationsServer ? operationsCors : appsCors;
+		if ((l > 0 || corsEnabled || identityDependent) && typeof response === 'object') {
 			let headers = response.headers;
-			if (!headers) response.headers = headers = new Headers();
-			for (let i = 0; i < l; ) {
+			// normalize plain-object headers so get/set below work uniformly
+			if (!headers || typeof headers.set !== 'function') response.headers = headers = new Headers(headers);
+			for (let i = 0; i < l;) {
 				const name = responseHeaders[i++];
 				headers.set(name, responseHeaders[i++]);
+			}
+			if (corsEnabled) addVaryHeader(headers, 'Origin');
+			// #1565: keep identity-dependent responses out of shared caches. An explicit
+			// `public`/`s-maxage` set by the app is RFC 9111's opt-in for shared-caching an
+			// authenticated response, so that is trusted as-is — but only for successfully
+			// authenticated responses; a credential rejection must never opt into shared caching.
+			// Otherwise partition on the credential headers and ensure a `private` scope
+			// (`private, no-cache` when none was set, so browsers still revalidate against the
+			// ETag/Last-Modified we emit).
+			if (identityDependent) {
+				const existingCacheControl = headers.get('Cache-Control');
+				const cacheControlString = existingCacheControl
+					? Array.isArray(existingCacheControl)
+						? existingCacheControl.join(', ')
+						: existingCacheControl
+					: '';
+				const optedIn = !rejectedAuth && SHARED_CACHE_OPTIN.test(cacheControlString);
+				if (!optedIn) {
+					addVaryHeader(headers, 'Authorization');
+					if (ENABLE_SESSIONS) addVaryHeader(headers, 'Cookie');
+					// a 401 never opts into shared caching: any non-private Cache-Control it carries is
+					// replaced outright (an existing private/no-store is already at least as strict)
+					if (!cacheControlString || (rejectedAuth && !PRIVATE_SCOPE.test(cacheControlString)))
+						headers.set('Cache-Control', 'private, no-cache');
+					else if (!PRIVATE_SCOPE.test(cacheControlString))
+						headers.set('Cache-Control', cacheControlString + ', private');
+				}
 			}
 		}
 		responseHeaders = null;
@@ -374,7 +434,7 @@ export async function login(loginObject) {
 	loginObject.baseResponse.headers.set = (name, value) => {
 		loginObject.fastifyResponse.header(name, value);
 	};
-	await loginObject.baseRequest.login(loginObject.username, loginObject.password ?? '');
+	await loginObject.baseRequest.login(loginObject.username, loginObject.password ?? '', loginObject.token);
 	return 'Login successful';
 }
 

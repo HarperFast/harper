@@ -1,5 +1,6 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const sinon = require('sinon');
+const { Headers } = require('#src/server/serverHelpers/Headers');
 
 // First set up test environment
 const testUtils = require('../testUtils.js');
@@ -87,9 +88,7 @@ describe('auth.ts - certificate verification integration', function () {
 
 			response = {
 				status: 200,
-				headers: {
-					set: sandbox.stub(),
-				},
+				headers: new Headers(),
 				body: {},
 			};
 
@@ -346,9 +345,7 @@ describe('auth.ts - certificate verification integration', function () {
 
 			nextHandler = sandbox.stub().resolves({
 				status: 200,
-				headers: {
-					set: sandbox.stub(),
-				},
+				headers: new Headers(),
 			});
 		});
 

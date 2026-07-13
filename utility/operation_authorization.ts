@@ -25,7 +25,11 @@ import readLog from '../utility/logging/readLog.ts';
 import * as commonUtils from './common_utils.ts';
 import * as restart from '../bin/restart.ts';
 import * as terms from './hdbTerms.ts';
-import { expandOperationsPerms } from './operationPermissions.ts';
+import {
+	expandOperationsPerms,
+	registerGrantableOperation,
+	unregisterGrantableOperation,
+} from './operationPermissions.ts';
 import * as permsTranslator from '../security/permissionsTranslator.js';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
@@ -41,6 +45,7 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
+import * as secretOperations from '../components/secretOperations.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -106,6 +111,33 @@ class permission {
 		// Undefined for ops that aren't user-addressable (SQL sub-ops, internal-only ops).
 		this.api_name = apiName;
 	}
+}
+
+/**
+ * Register an authorization entry for a dynamically-registered operation (via
+ * server.registerOperation), so it flows through verifyPerms and the role `operations`
+ * allowlist exactly like a built-in op — instead of hand-rolling an inline super_user check.
+ * Keyed by the snake_case API operation name (which registerOperation also forces onto the
+ * handler's `.name`, the key verifyPerms looks up). SU-only by default.
+ */
+export function registerOperationPermission(
+	apiName: string,
+	{ requiresSu = false, perms = [] }: { requiresSu?: boolean; perms?: string[] } = {}
+) {
+	requiredPermissions.set(apiName, new (permission as any)(requiresSu, perms, apiName));
+	// Also make the op grantable in a role's `operations` allowlist (validateOperations), so a
+	// declared permission can be both enforced AND granted — not just enforced.
+	registerGrantableOperation(apiName);
+}
+
+/**
+ * Remove an authorization entry registered via registerOperationPermission (both the verifyPerms
+ * entry and the grantable-op mark). Mirrors registerOperationPermission; primarily for tests that
+ * register throwaway ops and must not leak them into the process-global registries.
+ */
+export function unregisterOperationPermission(apiName: string) {
+	requiredPermissions.delete(apiName);
+	unregisterGrantableOperation(apiName);
 }
 
 requiredPermissions.set(write.insert.name, new (permission as any)(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
@@ -263,6 +295,33 @@ requiredPermissions.set(
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
 );
 
+// Secrets-store operations. All SU-only; the handlers ALSO enforce super_user directly, so these
+// cannot be delegated through a role's `operations` allowlist (gate-2 bypass below).
+requiredPermissions.set(
+	secretOperations.setSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.grantSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GRANT_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.revokeSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.REVOKE_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.listSecrets.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_SECRETS)
+);
+requiredPermissions.set(
+	secretOperations.deleteSecret.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_SECRET)
+);
+requiredPermissions.set(
+	secretOperations.getSecretsPublicKey.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
+);
+
 //Below are functions that are currently open to all roles
 requiredPermissions.set(regDeprecated.getRegistrationInfo.name, new (permission as any)(false, []));
 requiredPermissions.set(user.userInfo.name, new (permission as any)(false, [], terms.OPERATIONS_ENUM.USER_INFO));
@@ -311,6 +370,8 @@ module.exports = {
 	verifyPerms,
 	verifyPermsAST,
 	verifyBulkLoadAttributePerms,
+	registerOperationPermission,
+	unregisterOperationPermission,
 };
 
 /**
