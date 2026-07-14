@@ -756,15 +756,19 @@ function transactional(
 					// starts_with/prefix SEED (a multi-record scan, see Table.search), so an entry verdict
 					// would gate — or worse, grant — the whole scan; both methods invoke instance search()
 					// directly, which consumes checkPermission and arms the per-record guard.
-					// subscribe/connect defer too: Table.subscribe filters each delivered event through
-					// the record-scoped check (#1419), so grant-time evaluation of a record-scoped
-					// override (against a bare collection resource) would only produce spurious verdicts.
+					// subscribe/connect are NOT deferred: the entry check is the connection grant, and an
+					// allowRead override there may be connection-level, not record-level — e.g. an MQTT
+					// topic ACL (@harperdb/acl-connect) decides on context.topic, not record fields, and
+					// must run at subscribe time to reject the topic. A record-level override instead
+					// returns permissive at collection scope (no record loaded) to open the subscription,
+					// and Table.subscribe then filters each delivered event per record (#1419).
 					// Record-scoping is SYNC-only: an async allowRead override keeps this entry check,
 					// which awaits its verdict and fails closed on rejection (#1422 gap 1) — the sync
-					// per-record/per-event paths cannot await it.
+					// per-record traversal path cannot await it.
 					if (
 						options.type === 'read' &&
-						(isSubscribeAction || options.method !== 'get' || query.isCollection) &&
+						!isSubscribeAction &&
+						(options.method !== 'get' || query.isCollection) &&
 						(resource.constructor as any)?.supportsRowLevelAllowRead &&
 						!(resource.allowRead as any)?.isDefaultAllowRead &&
 						(resource.allowRead as any)?.constructor?.name !== 'AsyncFunction'
